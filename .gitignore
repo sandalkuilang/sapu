@@ -1,0 +1,5 @@
+node_modules/
+**/.cc-writes/
+.claude/worktrees/
+# local, per maintainer: names of the consumer repos this checkout must never mention (tests/engine.test.ts)
+.sapu-banned

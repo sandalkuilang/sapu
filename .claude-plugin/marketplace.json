@@ -1,0 +1,14 @@
+{
+  "name": "sapu",
+  "owner": {
+    "name": "Yudha"
+  },
+  "description": "Marketplace for the sapu plugin: autonomous backlog sweeps with a per-repo contract.",
+  "plugins": [
+    {
+      "name": "sapu",
+      "source": "./plugins/sapu",
+      "description": "Autonomous issue sweeps driven by a per-repo contract. Install at project scope so each repo opts in explicitly."
+    }
+  ]
+}

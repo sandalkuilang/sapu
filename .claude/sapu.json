@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "repo": "sandalkuilang/sapu",
+  "ghUser": "sandalkuilang",
+  "gitEmail": "yudha_hyp@yahoo.com",
+  "baseBranch": "main",
+  "gate": {
+    "fast": "npm test",
+    "merge": "scripts/merge-gate.sh",
+    "summaryStart": "Test Files",
+    "redIf": null
+  },
+  "redAreas": null,
+  "redAreaSpecialists": [],
+  "mergeAfter": null,
+  "labels": { "tierPrefix": "risk:", "inProgress": "agent:in-progress", "done": "agent:done" },
+  "securityEpic": null,
+  "invariantDomains": "the guard's rules, the scope lock, the merge gate and the review floor: anything that lets an agent do more than before",
+  "testResources": "nothing outside your worktree",
+  "guard": { "envFiles": [], "postgres": null, "deny": [] }
+}

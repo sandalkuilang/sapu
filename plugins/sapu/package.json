@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Marks the plugin's scripts as ES modules so Node runs them without a warning. The plugin has no dependencies."
+}

@@ -1,0 +1,16 @@
+{
+  "description": "sapu guard: refuses the Bash commands, file reads/writes and searches a subagent may never make (acts for every subagent, never for the orchestrator; see scripts/sapu-guard.mjs)",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/sapu-guard.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

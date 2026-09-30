@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 992" role="img" aria-label="The sapu orchestrator: Step 0 scope-locks the run, Phase A drains every open PR, Phase B works open issues in parallel waves where each wave is one workflow call running a forge worker per issue in its own worktree with tiered review and up to two fix cycles; workers never merge, only the orchestrator merges through the merge gate.">
+  <title>/sapu — the backlog orchestrator</title>
+  <desc>Step 0 runs the scope lock. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through the merge gate; a PR closed as STALE at classification, or blocked after two fix cycles (including a merge gate that stayed red), is not merged. Phase B triages open issues into SKIP, DUPLICATE and WORK, then runs waves of at most four issues; each wave is one Workflow call (sapu-wave.js) that dispatches one forge worker per issue in its own worktree, has each PR reviewed independently — the tier sets a reviewer floor and the reviewer is never weaker than the author, and a diff touching a red area (or a red-area check that could not run) is raised to the red review pair on the full diff — allows up to two fix cycles and one escalation up the worker ladder, and returns merge-ready PRs without merging. Only the orchestrator merges, through sapu-merge.sh and the merge gate. Waves continue while the orchestrator's context stays under 250k tokens; then a summary goes to project memory and the owner starts a fresh session, which resumes from it.</desc>
+  <style>
+    :root{
+      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
+      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
+      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
+        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
+        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
+      }
+    }
+    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .bg{fill:var(--bg)}
+    .h{font-size:21px;font-weight:700}
+    .sub{font-size:13px;fill:var(--muted)}
+    .sec{font-size:15px;font-weight:700;fill:var(--accent)}
+    .ttl{font-size:14px;font-weight:700}
+    .t{font-size:13px}
+    .sm{font-size:12.5px;fill:var(--muted)}
+    .c-limit{fill:var(--limit)} .c-accent{fill:var(--accent)}
+    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
+    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
+    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
+    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
+    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.5}
+    .frame{fill:var(--accentfill);stroke:var(--accent);stroke-width:1.8}
+    .flow{stroke:var(--ink);stroke-width:1.8;fill:none}
+    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
+    .loop{stroke:var(--limit);stroke-width:1.7;fill:none;stroke-dasharray:5 4}
+    .ah-flow{fill:var(--ink)} .ah-writes{fill:var(--writes)} .ah-loop{fill:var(--limit)}
+  </style>
+  <defs>
+    <marker id="af" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-flow"/></marker>
+    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
+    <marker id="al" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-loop"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="920" height="992" rx="16"/>
+
+  <text x="24" y="40" class="h">/sapu — sweep the backlog clean</text>
+  <text x="24" y="62" class="sub">PRs first (Phase A), then issues in parallel waves (Phase B). Only the orchestrator merges.</text>
+
+  <!-- legend -->
+  <rect x="24" y="80" width="872" height="36" rx="8" class="box"/>
+  <line x1="40" y1="98" x2="68" y2="98" class="flow" marker-end="url(#af)"/>
+  <text x="76" y="102" class="sm">flow</text>
+  <line x1="170" y1="98" x2="198" y2="98" class="loop" marker-end="url(#al)"/>
+  <text x="206" y="102" class="sm">fix / retry loop</text>
+  <line x1="380" y1="98" x2="408" y2="98" class="writes" marker-end="url(#aw)"/>
+  <text x="416" y="102" class="sm">produces</text>
+  <rect x="540" y="91" width="26" height="14" rx="3" class="limit-b"/>
+  <text x="574" y="102" class="sm">hard limit</text>
+
+  <!-- step 0 -->
+  <rect x="24" y="132" width="872" height="40" rx="8" class="reads-b"/>
+  <text x="40" y="157" class="t"><tspan class="ttl">Step 0 · scope lock</tspan> — <tspan class="mono">sapu-contract.mjs check</tspan> (gh account · git email · origin) · read profile</text>
+
+  <!-- Phase A -->
+  <text x="24" y="204" class="sec">Phase A · drain every open PR (one session)</text>
+  <rect x="24" y="216" width="112" height="68" rx="8" class="box"/>
+  <text x="80" y="244" class="t" text-anchor="middle">inventory</text>
+  <text x="80" y="264" class="sm" text-anchor="middle">open PRs</text>
+
+  <rect x="163" y="216" width="200" height="68" rx="8" class="box2"/>
+  <text x="263" y="237" class="t" text-anchor="middle">classify each PR</text>
+  <text x="263" y="256" class="sm" text-anchor="middle">READY · NEEDS-FIX · STALE</text>
+  <text x="263" y="274" class="sm" text-anchor="middle">DRAFT · NEEDS-AI</text>
+
+  <rect x="390" y="216" width="170" height="68" rx="8" class="box2"/>
+  <text x="475" y="244" class="t" text-anchor="middle">review by tier</text>
+  <text x="475" y="264" class="sm" text-anchor="middle">author ≠ reviewer</text>
+
+  <rect x="587" y="216" width="146" height="68" rx="8" class="limit-b"/>
+  <text x="660" y="244" class="t" text-anchor="middle">merge gate</text>
+  <text x="660" y="264" class="sm mono" text-anchor="middle">sapu-merge.sh</text>
+
+  <rect x="760" y="216" width="136" height="68" rx="8" class="writes-b"/>
+  <text x="828" y="244" class="t" text-anchor="middle">merged</text>
+  <text x="828" y="264" class="sm" text-anchor="middle">to base</text>
+
+  <path d="M136,250 L161,250" class="flow" marker-end="url(#af)"/>
+  <path d="M363,250 L388,250" class="flow" marker-end="url(#af)"/>
+  <path d="M560,250 L585,250" class="flow" marker-end="url(#af)"/>
+  <path d="M733,250 L758,250" class="writes" marker-end="url(#aw)"/>
+  <path d="M475,284 L475,302 L263,302 L263,288" class="loop" marker-end="url(#al)"/>
+  <text x="369" y="322" class="sm" text-anchor="middle">NEEDS-FIX → fix, then re-verify (≤ 2 cycles)</text>
+
+  <path d="M200,284 L200,335 L585,335" class="flow" marker-end="url(#af)"/>
+  <rect x="587" y="312" width="309" height="46" rx="8" class="box"/>
+  <text x="603" y="330" class="t">not merged: STALE closed at classify</text>
+  <text x="603" y="348" class="sm">· blocked (reason) after ≤ 2 fix cycles</text>
+  <text x="896" y="380" class="sm" text-anchor="end">then the owner starts a fresh session for Phase B (same one if no PR was open)</text>
+
+  <!-- Phase B -->
+  <text x="24" y="404" class="sec">Phase B · work open issues in parallel waves</text>
+  <rect x="24" y="422" width="170" height="80" rx="8" class="box2"/>
+  <text x="109" y="446" class="t" text-anchor="middle">inventory + triage</text>
+  <text x="109" y="466" class="sm" text-anchor="middle">SKIP · DUPLICATE</text>
+  <text x="109" y="485" class="sm" text-anchor="middle">WORK (tier + worker)</text>
+  <path d="M194,462 L222,462" class="flow" marker-end="url(#af)"/>
+
+  <rect x="224" y="422" width="548" height="372" rx="12" class="frame"/>
+  <text x="240" y="446" class="ttl c-accent">Wave — one Workflow call (sapu-wave.js)</text>
+  <text x="240" y="468" class="sm">per issue, own worktree · ≤ 4 issues · ≤ 2 running tests (default)</text>
+
+  <rect x="240" y="482" width="156" height="58" rx="8" class="box"/>
+  <text x="318" y="506" class="t" text-anchor="middle">forge worker</text>
+  <text x="318" y="526" class="sm" text-anchor="middle">plan · TDD · open PR</text>
+  <path d="M396,511 L422,511" class="flow" marker-end="url(#af)"/>
+
+  <rect x="424" y="482" width="156" height="58" rx="8" class="box"/>
+  <text x="502" y="506" class="t" text-anchor="middle">reviewer by tier</text>
+  <text x="502" y="526" class="sm" text-anchor="middle">never the author</text>
+  <path d="M580,511 L606,511" class="writes" marker-end="url(#aw)"/>
+
+  <rect x="608" y="482" width="148" height="58" rx="8" class="writes-b"/>
+  <text x="682" y="506" class="t" text-anchor="middle">ready PR</text>
+  <text x="682" y="526" class="sm" text-anchor="middle">not merged here</text>
+
+  <path d="M502,540 L502,558 L318,558 L318,544" class="loop" marker-end="url(#al)"/>
+  <text x="410" y="578" class="sm" text-anchor="middle">findings → fix + delta re-review (≤ 2 cycles)</text>
+  <text x="240" y="600" class="sm">ESCALATE → one worker up the ladder, once; then blocked</text>
+
+  <text x="240" y="630" class="ttl">Reviewer: the tier sets a floor — never weaker than the author</text>
+  <rect x="240" y="640" width="516" height="30" rx="7" class="box"/>
+  <circle cx="256" cy="655" r="6" fill="#2f9e44"/>
+  <text x="270" y="660" class="t">green → ≥ sonnet-medium (Phase A: orchestrator inline)</text>
+  <rect x="240" y="676" width="516" height="30" rx="7" class="box"/>
+  <circle cx="256" cy="691" r="6" fill="#e8a72b"/>
+  <text x="270" y="696" class="t">yellow → ≥ sonnet-high</text>
+  <rect x="240" y="712" width="516" height="30" rx="7" class="box"/>
+  <circle cx="256" cy="727" r="6" fill="#d1453b"/>
+  <text x="270" y="732" class="t">red → Opus pair: qa + domain specialist</text>
+  <text x="240" y="760" class="sm">a red-area diff, or an unrun red-area check, is raised to the red pair</text>
+  <text x="240" y="780" class="sm">worker by difficulty: sonnet-low … opus-high (red ≥ sonnet-high)</text>
+
+  <!-- merge, outside the wave -->
+  <path d="M756,511 L788,511" class="writes" marker-end="url(#aw)"/>
+  <rect x="790" y="476" width="106" height="72" rx="8" class="limit-b"/>
+  <text x="843" y="500" class="t" text-anchor="middle">merge gate</text>
+  <text x="843" y="519" class="sm" text-anchor="middle">orchestrator</text>
+  <text x="843" y="536" class="sm" text-anchor="middle">only</text>
+  <path d="M843,548 L843,572" class="flow" marker-end="url(#af)"/>
+  <rect x="790" y="574" width="106" height="52" rx="8" class="writes-b"/>
+  <text x="843" y="597" class="t" text-anchor="middle">merged</text>
+  <text x="843" y="616" class="sm" text-anchor="middle">to base</text>
+  <text x="843" y="650" class="sm mono" text-anchor="middle">sapu-merge.sh</text>
+
+  <!-- across the sweep -->
+  <rect x="24" y="812" width="872" height="88" rx="9" class="box"/>
+  <text x="40" y="836" class="t">Waves continue in one session while orchestrator context stays under 250k tokens; then a summary goes to</text>
+  <text x="40" y="858" class="t">project memory and the owner starts a fresh /sapu session, which resumes from it. The sweep ends when</text>
+  <text x="40" y="880" class="t">no WORK is left and no open PR remains.</text>
+
+  <rect x="24" y="914" width="872" height="58" rx="9" class="limit-b"/>
+  <text x="40" y="938" class="t"><tspan class="ttl c-limit">Guard hook</tspan> refuses forbidden commands from every subagent — never the orchestrator.</text>
+  <text x="40" y="960" class="t">Workers never merge or touch the main checkout, the repo's protected DBs (contract guard), or real env files.</text>
+</svg>

@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 944" role="img" aria-label="nemesis red-teams the repo's local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback or an owner-attested private dev address; dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0 to 7 from residue intake and recon through business logic to detection-integrity, with six bypass classes every cycle, filing security-labelled GitHub issues. Non-destructive, seeded low-privilege accounts only.">
+  <title>/nemesis — authorized red-team, dev only</title>
+  <desc>nemesis attacks the repo's own dev environment only. A hard gate is checked at every cycle start, before any active testing: an owner-signed, non-expired authorization.yml with an explicit attestation; every target on the allowlist and passing the host floor on its resolved address (loopback, or a private address the owner-signed file names and marks dev; any public address refused), with every production domain on scope.forbidden; dev environments only; and no .nemesis/STOP file. Any failure means file a BLOCKED issue and stop. Separately, a kill switch halts a running cycle (authorization invalid or expired, a target resolving off-allowlist or to a public or unknown address, a prohibited action needed, an anomaly or error-rate spike, a single-packet batch behaving unexpectedly, or a STOP file) and files a HALT issue. The methodology runs Pass 0 residue intake, Pass 1 recon and multi-tier surface, Pass 2 auth/session/step-up, Pass 3 authorization (highest value), Pass 4 injection, Pass 5 business logic (where the money is), Pass 6 API/config hygiene, Pass 7 detection-integrity, then triage and filing. Six bypass classes A to F run every domain every cycle, for outsider and insider alike. It files security-labelled GitHub issues naming the file and seam, keeps state under .nemesis/, and hands findings to /forge, which puts almost all in its red tier. Fix-mode is off by default.</desc>
+  <style>
+    :root{
+      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
+      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
+      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
+        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
+        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
+      }
+    }
+    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .bg{fill:var(--bg)}
+    .h{font-size:21px;font-weight:700}
+    .sub{font-size:13px;fill:var(--muted)}
+    .ttl{font-size:14px;font-weight:700}
+    .t{font-size:13px}
+    .sm{font-size:12.5px;fill:var(--muted)}
+    .pnum{font-size:12px;font-weight:700;fill:var(--muted)}
+    .bp{font-size:12px} .bps{font-size:12px;fill:var(--muted)}
+    .pnm{font-size:13px;font-weight:700}
+    .c-limit{fill:var(--limit)} .c-accent{fill:var(--accent)}
+    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
+    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
+    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
+    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
+    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.6}
+    .star{fill:var(--accentfill);stroke:var(--accent);stroke-width:1.6}
+    .flow{stroke:var(--ink);stroke-width:1.8;fill:none}
+    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
+    .gate{stroke:var(--limit);stroke-width:1.8;fill:none}
+    .ah-flow{fill:var(--ink)} .ah-writes{fill:var(--writes)} .ah-gate{fill:var(--limit)}
+  </style>
+  <defs>
+    <marker id="af" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-flow"/></marker>
+    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
+    <marker id="ag" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-gate"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="920" height="944" rx="16"/>
+
+  <text x="24" y="40" class="h">/nemesis — authorized red-team of the dev app</text>
+  <text x="24" y="62" class="sub">Doctrine: falsify, never confirm — concurrent not sequential, every tier not one, tampered not well-formed.</text>
+
+  <!-- reads -->
+  <rect x="24" y="80" width="872" height="40" rx="8" class="reads-b"/>
+  <text x="40" y="105" class="t"><tspan class="ttl">Reads</tspan> — profile <tspan class="mono">.claude/sapu/nemesis.md</tspan> + <tspan class="mono">.nemesis/config.yml</tspan> + owner-signed <tspan class="mono">authorization.yml</tspan></text>
+
+  <!-- hard gate -->
+  <rect x="24" y="132" width="560" height="160" rx="10" class="limit-b"/>
+  <text x="40" y="156" class="ttl c-limit">Hard gate — every cycle, before ANY active testing</text>
+  <text x="40" y="180" class="t">1 · authorization.yml signed, not expired, attested</text>
+  <text x="40" y="202" class="t">2 · every target on allowlist · resolved address = loopback</text>
+  <text x="56" y="220" class="sm">or an owner-attested private dev address — public is refused</text>
+  <text x="56" y="238" class="sm">and every production domain is on scope.forbidden</text>
+  <text x="40" y="262" class="t">3 · environments = dev only</text>
+  <text x="40" y="282" class="t">4 · no <tspan class="mono">.nemesis/STOP</tspan> file</text>
+
+  <rect x="608" y="132" width="288" height="160" rx="10" class="box"/>
+  <text x="624" y="156" class="ttl">On the gate</text>
+  <text x="624" y="182" class="t">pass → begin the passes</text>
+  <text x="624" y="212" class="t c-limit">fail any check →</text>
+  <text x="624" y="234" class="t">file <tspan class="mono">[NEMESIS][BLOCKED]</tspan>,</text>
+  <text x="624" y="256" class="t">test nothing, and stop</text>
+  <path d="M584,210 L606,210" class="gate" marker-end="url(#ag)"/>
+
+  <!-- passes -->
+  <text x="24" y="322" class="ttl">Methodology — passes (★ highest value)</text>
+  <rect x="24" y="332" width="168" height="48" rx="8" class="box2"/><text x="34" y="350" class="pnum">Pass 0</text><text x="34" y="368" class="pnm">Residue intake</text>
+  <rect x="200" y="332" width="168" height="48" rx="8" class="box2"/><text x="210" y="350" class="pnum">Pass 1</text><text x="210" y="368" class="pnm">Recon · surface</text>
+  <rect x="376" y="332" width="168" height="48" rx="8" class="box2"/><text x="386" y="350" class="pnum">Pass 2</text><text x="386" y="368" class="pnm">Auth / session</text>
+  <rect x="552" y="332" width="168" height="48" rx="8" class="star"/><text x="562" y="350" class="pnum c-accent">Pass 3 ★</text><text x="562" y="368" class="pnm">Authorization</text>
+  <rect x="728" y="332" width="168" height="48" rx="8" class="box2"/><text x="738" y="350" class="pnum">Pass 4</text><text x="738" y="368" class="pnm">Injection</text>
+  <path d="M192,356 L198,356" class="flow" marker-end="url(#af)"/>
+  <path d="M368,356 L374,356" class="flow" marker-end="url(#af)"/>
+  <path d="M544,356 L550,356" class="flow" marker-end="url(#af)"/>
+  <path d="M720,356 L726,356" class="flow" marker-end="url(#af)"/>
+  <path d="M812,380 L812,394 L108,394 L108,410" class="flow" marker-end="url(#af)"/>
+
+  <rect x="24" y="412" width="168" height="48" rx="8" class="star"/><text x="34" y="430" class="pnum c-accent">Pass 5 ★</text><text x="34" y="448" class="pnm">Business logic</text>
+  <rect x="200" y="412" width="168" height="48" rx="8" class="box2"/><text x="210" y="430" class="pnum">Pass 6</text><text x="210" y="448" class="pnm">API / config</text>
+  <rect x="376" y="412" width="168" height="48" rx="8" class="box2"/><text x="386" y="430" class="pnum">Pass 7</text><text x="386" y="448" class="pnm">Detection</text>
+  <rect x="552" y="412" width="168" height="48" rx="8" class="box"/><text x="562" y="430" class="pnum">then</text><text x="562" y="448" class="pnm">Triage · ≥2 repro</text>
+  <rect x="728" y="412" width="168" height="48" rx="8" class="writes-b"/><text x="738" y="430" class="pnum">then</text><text x="738" y="448" class="pnm">File issues</text>
+  <path d="M192,436 L198,436" class="flow" marker-end="url(#af)"/>
+  <path d="M368,436 L374,436" class="flow" marker-end="url(#af)"/>
+  <path d="M544,436 L550,436" class="flow" marker-end="url(#af)"/>
+  <path d="M720,436 L726,436" class="writes" marker-end="url(#aw)"/>
+
+  <!-- six bypass classes -->
+  <text x="24" y="492" class="ttl">Six bypass classes — every domain, every cycle · outsider + insider</text>
+  <rect x="24" y="502" width="141" height="44" rx="7" class="box"/><text x="94" y="520" class="bp" text-anchor="middle">A window direction</text><text x="94" y="537" class="bps" text-anchor="middle">latest-dated first</text>
+  <rect x="177" y="502" width="141" height="44" rx="7" class="box"/><text x="247" y="520" class="bp" text-anchor="middle">B TOCTOU</text><text x="247" y="537" class="bps" text-anchor="middle">concurrent reqs</text>
+  <rect x="330" y="502" width="141" height="44" rx="7" class="box"/><text x="400" y="520" class="bp" text-anchor="middle">C no re-check</text><text x="400" y="537" class="bps" text-anchor="middle">at execution</text>
+  <rect x="483" y="502" width="141" height="44" rx="7" class="box"/><text x="553" y="520" class="bp" text-anchor="middle">D splitting</text><text x="553" y="537" class="bps" text-anchor="middle">second route</text>
+  <rect x="636" y="502" width="120" height="44" rx="7" class="box"/><text x="696" y="520" class="bp" text-anchor="middle">E UI-only</text><text x="696" y="537" class="bps" text-anchor="middle">hit the API</text>
+  <rect x="768" y="502" width="128" height="44" rx="7" class="box"/><text x="832" y="520" class="bp" text-anchor="middle">F actor=subject</text><text x="832" y="537" class="bps" text-anchor="middle">value from body</text>
+
+  <!-- output -->
+  <rect x="24" y="562" width="872" height="62" rx="10" class="writes-b"/>
+  <text x="40" y="586" class="ttl">Output</text>
+  <text x="600" y="586" class="sm">state under <tspan class="mono">.nemesis/state/</tspan> + run.log</text>
+  <text x="40" y="608" class="t">GitHub issues — labels <tspan class="mono">security · nemesis · severity:s1..s4</tspan> · names the file + seam · ASVS + CWE · attacker</text>
+
+  <!-- prohibitions + kill switch -->
+  <rect x="24" y="640" width="560" height="284" rx="10" class="limit-b"/>
+  <text x="40" y="664" class="ttl c-limit">Absolute prohibitions</text>
+  <text x="40" y="688" class="t">· never production, never out-of-scope targets</text>
+  <text x="40" y="710" class="t">· non-destructive — mutations only on disposable fixtures</text>
+  <text x="40" y="732" class="t">· no persistence / backdoors / C2 · no bulk exfiltration</text>
+  <text x="40" y="754" class="t">· seeded low-privilege test accounts only</text>
+  <text x="40" y="776" class="t">· no DoS / flood — race carve-out is ONE single-packet</text>
+  <text x="56" y="794" class="sm">batch, 2–5 (≤~30) requests, benchmark sequentially first</text>
+  <text x="40" y="818" class="t">· read-only on source unless fix-mode on (off by default)</text>
+  <text x="40" y="846" class="sm">The social-engineering / out-of-band ban bars the ACTION,</text>
+  <text x="40" y="864" class="sm">never the REASONING — the app's controls against those</text>
+  <text x="40" y="882" class="sm">threats are still analysed and filed.</text>
+  <text x="40" y="906" class="sm">Findings hand off to /forge, which puts almost all in its red tier.</text>
+
+  <rect x="608" y="640" width="288" height="284" rx="10" class="box"/>
+  <text x="624" y="664" class="ttl">Kill switch — halts mid-run</text>
+  <text x="624" y="688" class="t">Halt + file <tspan class="mono">[NEMESIS][HALT]</tspan> when:</text>
+  <text x="624" y="714" class="t">· authorization invalid / expired</text>
+  <text x="624" y="736" class="t">· a target resolves off-allowlist</text>
+  <text x="640" y="754" class="sm">or to a public / unknown IP</text>
+  <text x="624" y="778" class="t">· a prohibited action is needed</text>
+  <text x="624" y="800" class="t">· anomaly / error rate spikes</text>
+  <text x="624" y="822" class="t">· a single-packet batch misbehaves</text>
+  <text x="640" y="840" class="sm">(never repeat it)</text>
+  <text x="624" y="864" class="t">· <tspan class="mono">.nemesis/STOP</tspan> exists</text>
+  <text x="624" y="890" class="sm">when in doubt, stop and ask</text>
+  <text x="624" y="908" class="sm">via an issue; never improvise.</text>
+</svg>

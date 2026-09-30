@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 922" role="img" aria-label="momus makes one bounded release-readiness pass across nine areas A to I with a security lens on each, grading findings by evidence tier and confidence and by a four-level severity ladder; its deliverable is a written report and it files GitHub issues only when separately asked, never writing a ship or no-ship verdict.">
+  <title>/momus — release-readiness auditor</title>
+  <desc>One invocation is one bounded pass: ORIENT, SCOPE, READ and PROBE, CROSS-CHECK, FALSIFY, REPORT, PERSIST. It covers nine areas A to I — tenant isolation and personal data, authentication and authorization with a business-process map, data and migrations, error handling and information leakage, configuration and secrets against CIS, resilience and silent-wrong-number risk, test coverage with direct-API proof, operational readiness, and contracts/code health — each with a security lens for outsiders and insiders. Evidence tiers T1 to T4 map to confidence CERTAIN, LIKELY or SUSPECTED; severity is BLOCKER, HIGH, MEDIUM or LOW. The deliverable is a written report; it files GitHub issues only when separately asked, never writes a ship or no-ship verdict, and keeps state under .momus/.</desc>
+  <style>
+    :root{
+      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
+      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
+      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
+        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
+        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
+      }
+    }
+    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .bg{fill:var(--bg)}
+    .h{font-size:21px;font-weight:700}
+    .sub{font-size:13px;fill:var(--muted)}
+    .ttl{font-size:14px;font-weight:700}
+    .t{font-size:13px}
+    .sm{font-size:12.5px;fill:var(--muted)}
+    .area{font-size:13px;font-weight:700}
+    .c-limit{fill:var(--limit)}
+    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
+    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
+    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
+    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
+    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.5}
+    .flow{stroke:var(--ink);stroke-width:1.8;fill:none}
+    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
+    .ah-flow{fill:var(--ink)} .ah-writes{fill:var(--writes)}
+  </style>
+  <defs>
+    <marker id="af" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-flow"/></marker>
+    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="920" height="922" rx="16"/>
+
+  <text x="24" y="40" class="h">/momus — release-readiness auditor</text>
+  <text x="24" y="62" class="sub">One bounded pass across a fixed checklist. Prove it is not ready; a written report is the deliverable.</text>
+
+  <!-- reads -->
+  <rect x="24" y="80" width="872" height="40" rx="8" class="reads-b"/>
+  <text x="40" y="105" class="t"><tspan class="ttl">Reads</tspan> — profile <tspan class="mono">.claude/sapu/momus.md</tspan> + <tspan class="mono">.momus/config.yml</tspan> · <tspan class="mono">.momus/ledger.json</tspan></text>
+
+  <!-- pass strip -->
+  <text x="24" y="156" class="ttl">The pass</text>
+  <rect x="24" y="166" width="104" height="34" rx="7" class="box"/><text x="76" y="188" class="t" text-anchor="middle">ORIENT</text>
+  <rect x="146" y="166" width="96" height="34" rx="7" class="box"/><text x="194" y="188" class="t" text-anchor="middle">SCOPE</text>
+  <rect x="260" y="166" width="150" height="34" rx="7" class="box"/><text x="335" y="188" class="t" text-anchor="middle">READ &amp; PROBE</text>
+  <rect x="428" y="166" width="140" height="34" rx="7" class="box"/><text x="498" y="188" class="t" text-anchor="middle">CROSS-CHECK</text>
+  <rect x="586" y="166" width="104" height="34" rx="7" class="box"/><text x="638" y="188" class="t" text-anchor="middle">FALSIFY</text>
+  <rect x="708" y="166" width="94" height="34" rx="7" class="writes-b"/><text x="755" y="188" class="t" text-anchor="middle">REPORT</text>
+  <rect x="820" y="166" width="76" height="34" rx="7" class="box"/><text x="858" y="188" class="t" text-anchor="middle">PERSIST</text>
+  <path d="M128,183 L144,183" class="flow" marker-end="url(#af)"/>
+  <path d="M242,183 L258,183" class="flow" marker-end="url(#af)"/>
+  <path d="M410,183 L426,183" class="flow" marker-end="url(#af)"/>
+  <path d="M568,183 L584,183" class="flow" marker-end="url(#af)"/>
+  <path d="M690,183 L706,183" class="flow" marker-end="url(#af)"/>
+  <path d="M802,183 L818,183" class="flow" marker-end="url(#af)"/>
+
+  <!-- nine areas -->
+  <text x="24" y="230" class="ttl">Nine areas (A–I) — a security lens on each: outsider + insider</text>
+  <g>
+    <rect x="24" y="242" width="281" height="84" rx="8" class="box2"/><text x="38" y="266" class="area">A · Tenant isolation</text><text x="38" y="288" class="sm">tenant id from session?</text><text x="38" y="308" class="sm">+ personal-data reads</text>
+    <rect x="319" y="242" width="281" height="84" rx="8" class="box2"/><text x="333" y="266" class="area">B · Auth &amp; authz</text><text x="333" y="288" class="sm">guard at every route</text><text x="333" y="308" class="sm">+ business-process map</text>
+    <rect x="614" y="242" width="282" height="84" rx="8" class="box2"/><text x="628" y="266" class="area">C · Data &amp; migrations</text><text x="628" y="288" class="sm">drift · drops · uniqueness</text><text x="628" y="308" class="sm">delete behaviour</text>
+
+    <rect x="24" y="338" width="281" height="84" rx="8" class="box2"/><text x="38" y="362" class="area">D · Errors &amp; leakage</text><text x="38" y="384" class="sm">raw errors · empty catch</text><text x="38" y="404" class="sm">un-transacted writes</text>
+    <rect x="319" y="338" width="281" height="84" rx="8" class="box2"/><text x="333" y="362" class="area">E · Config &amp; secrets</text><text x="333" y="384" class="sm">env fails loud? · CIS</text><text x="333" y="404" class="sm">committed secrets</text>
+    <rect x="614" y="338" width="282" height="84" rx="8" class="box2"/><text x="628" y="362" class="area">F · Resilience</text><text x="628" y="384" class="sm">partial writes · races</text><text x="628" y="404" class="sm">silent-wrong-number</text>
+
+    <rect x="24" y="434" width="281" height="84" rx="8" class="box2"/><text x="38" y="458" class="area">G · Test coverage</text><text x="38" y="480" class="sm">flows with zero tests</text><text x="38" y="500" class="sm">direct-API proof</text>
+    <rect x="319" y="434" width="281" height="84" rx="8" class="box2"/><text x="333" y="458" class="area">H · Ops readiness</text><text x="333" y="480" class="sm">isolation · logs · rollback</text><text x="333" y="500" class="sm">breach detection</text>
+    <rect x="614" y="434" width="282" height="84" rx="8" class="box2"/><text x="628" y="458" class="area">I · Contracts &amp; health</text><text x="628" y="480" class="sm">producer/consumer drift</text><text x="628" y="500" class="sm">code health = LOW</text>
+  </g>
+
+  <!-- severity + confidence -->
+  <rect x="24" y="534" width="432" height="132" rx="10" class="box"/>
+  <text x="40" y="558" class="ttl">Severity ladder</text>
+  <text x="40" y="582" class="t"><tspan class="c-limit" font-weight="700">BLOCKER</tspan> — data leak / loss / unusable</text>
+  <text x="40" y="604" class="t">HIGH — core flow broken</text>
+  <text x="40" y="626" class="t">MEDIUM — has a workaround</text>
+  <text x="40" y="648" class="t">LOW — cosmetic / tech debt</text>
+
+  <rect x="472" y="534" width="424" height="132" rx="10" class="box"/>
+  <text x="488" y="558" class="ttl">Evidence → confidence</text>
+  <text x="488" y="582" class="t">T1 live · T2 executed · T3 source · T4 inferred</text>
+  <text x="488" y="608" class="t">→ CERTAIN / LIKELY / SUSPECTED</text>
+  <text x="488" y="636" class="sm">static caps at LIKELY · T4 is never BLOCKER</text>
+
+  <!-- deliverable -->
+  <rect x="24" y="682" width="872" height="94" rx="10" class="writes-b"/>
+  <text x="40" y="706" class="ttl">Deliverable — a written report, every run</text>
+  <text x="40" y="728" class="t">severity counts · findings worst-first (severity + confidence + standard + attacker) · unread areas · standards</text>
+  <rect x="40" y="739" width="430" height="28" rx="6" class="box"/><text x="52" y="758" class="sm">Files GitHub issues only when separately asked</text>
+  <rect x="484" y="739" width="400" height="28" rx="6" class="box"/><text x="496" y="758" class="sm">State: <tspan class="mono">.momus/</tspan> ledger · run.log · report</text>
+
+  <!-- rails -->
+  <rect x="24" y="792" width="872" height="110" rx="10" class="limit-b"/>
+  <text x="40" y="816" class="ttl c-limit">Rails</text>
+  <text x="40" y="838" class="t">· You audit; you never fix — finish the report, then hand findings to /forge in a separate session.</text>
+  <text x="40" y="860" class="t">· Never write a ship / no-ship verdict — that decision belongs to whoever asked for the audit.</text>
+  <text x="40" y="882" class="sm">· Never write the shared dev DB (writes use a throwaway test DB) · every BLOCKER / HIGH needs ≥ 1 T1 / T2.</text>
+</svg>

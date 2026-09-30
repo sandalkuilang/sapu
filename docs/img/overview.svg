@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 800" role="img" aria-label="How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config; the sapu orchestrator drives forge workers through waves, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.">
+  <title>sapu — how the pieces fit</title>
+  <desc>The sapu plugin is an engine (skills, agents, guard hook, workflows, scripts) that knows no repo. Each repo supplies a committed contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init). An optional per-machine config (~/.config/sapu/config.json) limits where sapu may run. /sapu orchestrates forge workers in waves; /inspector runs momus, then argus, then nemesis; /dream runs standalone and read-only. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate.</desc>
+  <style>
+    :root{
+      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
+      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
+      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
+        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
+        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
+      }
+    }
+    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .bg{fill:var(--bg)}
+    .h{font-size:21px;font-weight:700}
+    .sub{font-size:13px;fill:var(--muted)}
+    .sec{font-size:15px;font-weight:700;fill:var(--accent)}
+    .ttl{font-size:14px;font-weight:700}
+    .t{font-size:13px}
+    .sm{font-size:12.5px;fill:var(--muted)}
+    .c-writes{fill:var(--writes)} .c-limit{fill:var(--limit)} .c-accent{fill:var(--accent)}
+    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
+    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
+    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
+    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
+    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.5}
+    .engine{fill:none;stroke:var(--accent);stroke-width:2}
+    .strip{fill:var(--accentfill)}
+    .flow{stroke:var(--ink);stroke-width:1.8;fill:none}
+    .reads{stroke:var(--reads);stroke-width:1.7;fill:none;stroke-dasharray:6 4}
+    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
+    .guard{stroke:var(--limit);stroke-width:1.6;fill:none;stroke-dasharray:3 4}
+    .ah-flow{fill:var(--ink)} .ah-reads{fill:var(--reads)} .ah-writes{fill:var(--writes)}
+  </style>
+  <defs>
+    <marker id="af" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-flow"/></marker>
+    <marker id="ar" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-reads"/></marker>
+    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
+  </defs>
+  <rect class="bg" x="0" y="0" width="920" height="800" rx="16"/>
+
+  <text x="24" y="40" class="h">sapu — how the pieces fit</text>
+  <text x="24" y="62" class="sub">A repo-agnostic engine, a per-repo contract, and an optional machine scope lock.</text>
+
+  <!-- legend -->
+  <rect x="24" y="80" width="872" height="36" rx="8" class="box"/>
+  <line x1="40" y1="98" x2="68" y2="98" class="reads" marker-end="url(#ar)"/>
+  <text x="76" y="102" class="sm">reads contract / profile / config</text>
+  <line x1="330" y1="98" x2="358" y2="98" class="flow" marker-end="url(#af)"/>
+  <text x="366" y="102" class="sm">flow / calls</text>
+  <line x1="480" y1="98" x2="508" y2="98" class="writes" marker-end="url(#aw)"/>
+  <text x="516" y="102" class="sm">produces</text>
+  <rect x="600" y="91" width="26" height="14" rx="3" class="limit-b"/>
+  <text x="634" y="102" class="sm">hard limit / guard</text>
+
+  <!-- inputs -->
+  <rect x="24" y="132" width="560" height="128" rx="10" class="reads-b"/>
+  <text x="40" y="156" class="ttl">Repo contract — committed</text>
+  <text x="40" y="181" class="t"><tspan class="mono">.claude/sapu.json</tspan> + <tspan class="mono">.claude/sapu/*.md</tspan> — drafted by /sapu:init</text>
+  <text x="40" y="205" class="sm">+ QA configs: .argus/ .momus/ .nemesis/ config.yml</text>
+  <text x="40" y="229" class="sm">not in it: nemesis targets — owner-signed, gitignored <tspan class="mono">authorization.yml</tspan></text>
+
+  <rect x="600" y="132" width="296" height="128" rx="10" class="limit-b"/>
+  <text x="616" y="156" class="ttl">Machine config — optional</text>
+  <text x="616" y="179" class="t mono">~/.config/sapu/config.json</text>
+  <text x="616" y="199" class="t">allowedRoots · projectScopeOnly</text>
+  <text x="616" y="224" class="sm">limits where sapu may run</text>
+  <text x="616" y="244" class="sm">on this machine</text>
+
+  <path d="M234,260 L234,294" class="reads" marker-end="url(#ar)"/>
+  <text x="246" y="282" class="sm">contract + profiles</text>
+  <path d="M686,260 L686,294" class="reads" marker-end="url(#ar)"/>
+  <text x="698" y="282" class="sm">scope lock</text>
+
+  <!-- engine -->
+  <rect x="24" y="296" width="872" height="190" rx="12" class="engine"/>
+  <path d="M36,297 L884,297 Q895,297 895,308 L895,330 L25,330 L25,308 Q25,297 36,297 Z" class="strip"/>
+  <text x="40" y="319" class="ttl c-accent">sapu plugin — the engine (knows no repo)</text>
+
+  <text x="40" y="351" class="sm">skills/</text>
+  <g class="t mono">
+    <rect x="40" y="360" width="70" height="30" rx="7" class="box2"/><text x="54" y="380">/sapu</text>
+    <rect x="122" y="360" width="78" height="30" rx="7" class="box2"/><text x="136" y="380">/forge</text>
+    <rect x="212" y="360" width="110" height="30" rx="7" class="box2"/><text x="226" y="380">/inspector</text>
+    <rect x="334" y="360" width="78" height="30" rx="7" class="box2"/><text x="348" y="380">/momus</text>
+    <rect x="424" y="360" width="78" height="30" rx="7" class="box2"/><text x="438" y="380">/argus</text>
+    <rect x="514" y="360" width="94" height="30" rx="7" class="box2"/><text x="528" y="380">/nemesis</text>
+    <rect x="620" y="360" width="78" height="30" rx="7" class="box2"/><text x="634" y="380">/dream</text>
+    <rect x="710" y="360" width="110" height="30" rx="7" class="box2"/><text x="724" y="380">/sapu:init</text>
+  </g>
+
+  <rect x="40" y="422" width="216" height="50" rx="8" class="box"/>
+  <text x="54" y="442" class="ttl">agents/</text>
+  <text x="54" y="462" class="sm">worker ladder + specialists</text>
+  <rect x="270" y="422" width="170" height="50" rx="8" class="limit-b"/>
+  <text x="284" y="442" class="ttl">hooks/ · guard</text>
+  <text x="284" y="462" class="sm">every subagent</text>
+  <rect x="454" y="422" width="236" height="50" rx="8" class="box"/>
+  <text x="468" y="442" class="ttl">workflows/</text>
+  <text x="468" y="462" class="sm mono">sapu-wave.js · inspector.js</text>
+  <rect x="704" y="422" width="182" height="50" rx="8" class="box"/>
+  <text x="714" y="442" class="ttl">scripts/</text>
+  <text x="714" y="462" class="sm">merge gate · scope lock</text>
+
+  <!-- how a run flows -->
+  <text x="24" y="520" class="sec">How a run flows</text>
+
+  <rect x="188" y="536" width="412" height="194" rx="10" class="guard"/>
+  <text x="200" y="555" class="sm c-limit">guard hook polices every subagent — not the orchestrator</text>
+
+  <rect x="24" y="568" width="120" height="52" rx="8" class="box"/>
+  <text x="84" y="590" class="t mono" text-anchor="middle">/sapu</text>
+  <text x="84" y="609" class="sm" text-anchor="middle">orchestrator</text>
+  <path d="M144,594 L198,594" class="flow" marker-end="url(#af)"/>
+  <text x="164" y="584" class="sm" text-anchor="middle">wave</text>
+
+  <rect x="200" y="568" width="170" height="52" rx="8" class="box2"/>
+  <text x="285" y="590" class="t" text-anchor="middle">forge worker × N</text>
+  <text x="285" y="609" class="sm" text-anchor="middle">own worktree each</text>
+  <path d="M370,594 L402,594" class="flow" marker-end="url(#af)"/>
+
+  <rect x="404" y="568" width="170" height="52" rx="8" class="box2"/>
+  <text x="489" y="590" class="t" text-anchor="middle">reviewer by tier</text>
+  <text x="489" y="609" class="sm" text-anchor="middle">never the author</text>
+  <path d="M574,594 L610,594" class="flow" marker-end="url(#af)"/>
+
+  <rect x="612" y="568" width="150" height="52" rx="8" class="limit-b"/>
+  <text x="687" y="590" class="t" text-anchor="middle">merge gate</text>
+  <text x="687" y="609" class="sm" text-anchor="middle">orchestrator only</text>
+  <path d="M762,594 L788,594" class="writes" marker-end="url(#aw)"/>
+
+  <rect x="790" y="568" width="106" height="52" rx="8" class="writes-b"/>
+  <text x="843" y="590" class="t" text-anchor="middle">merged PR</text>
+  <text x="843" y="609" class="sm" text-anchor="middle">to base</text>
+
+  <rect x="24" y="640" width="120" height="52" rx="8" class="box"/>
+  <text x="84" y="662" class="t mono" text-anchor="middle">/inspector</text>
+  <text x="84" y="681" class="sm" text-anchor="middle">sequencer</text>
+  <path d="M144,666 L198,666" class="flow" marker-end="url(#af)"/>
+
+  <g class="t mono">
+    <rect x="200" y="648" width="100" height="36" rx="8" class="box2"/><text x="250" y="671" text-anchor="middle">momus</text>
+    <rect x="336" y="648" width="100" height="36" rx="8" class="box2"/><text x="386" y="671" text-anchor="middle">argus</text>
+    <rect x="472" y="648" width="100" height="36" rx="8" class="box2"/><text x="522" y="671" text-anchor="middle">nemesis</text>
+  </g>
+  <path d="M300,666 L334,666" class="flow" marker-end="url(#af)"/>
+  <path d="M436,666 L470,666" class="flow" marker-end="url(#af)"/>
+  <text x="386" y="714" class="sm" text-anchor="middle">one after another, never in parallel</text>
+
+  <rect x="612" y="640" width="150" height="52" rx="8" class="box"/>
+  <text x="687" y="662" class="t mono" text-anchor="middle">/dream</text>
+  <text x="687" y="681" class="sm" text-anchor="middle">read-only</text>
+  <path d="M762,666 L788,666" class="writes" marker-end="url(#aw)"/>
+  <rect x="790" y="640" width="106" height="52" rx="8" class="writes-b"/>
+  <text x="843" y="662" class="t" text-anchor="middle">report</text>
+  <text x="843" y="681" class="sm mono" text-anchor="middle">dreams/</text>
+  <text x="612" y="714" class="sm">one local file; no GitHub writes</text>
+
+  <text x="24" y="758" class="t">Also produced — GitHub issues: argus, nemesis; sapu only for out-of-scope security gaps; momus only when asked</text>
+  <text x="24" y="780" class="t">Written reports: momus, inspector · state in the main checkout: <tspan class="mono">.argus/ .momus/ .nemesis/ dreams/</tspan></text>
+</svg>

@@ -1,0 +1,15 @@
+{
+  "name": "sapu-marketplace",
+  "private": true,
+  "description": "Tests and gate for the sapu Claude Code plugin (plugins/sapu). Nothing here is shipped: the plugin itself has no npm dependencies.",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "test": "vitest run",
+    "rule-guard": "node scripts/rule-guard.ts",
+    "gate": "claude plugin validate plugins/sapu && claude plugin validate . && node scripts/rule-guard.ts && vitest run"
+  },
+  "devDependencies": {
+    "vitest": "4.1.11"
+  }
+}
