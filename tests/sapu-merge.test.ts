@@ -258,6 +258,18 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.err).toMatch(/redIf/);
     expect(h.gh()).not.toMatch(/pr merge/);
   });
+
+  it("a refused push says why: the git/hook output is in the message, not thrown away", () => {
+    const h = harness();
+    h.pushToOrigin({ "other.txt": "x\n" }); // <base> moved on, so the PR is rebased and force-pushed
+    // A repo pre-push hook that needs something the fresh PR worktree lacks (e.g. installed dependencies).
+    writeFileSync(join(h.MAIN, ".git/hooks/pre-push"), "#!/bin/sh\necho 'hook says: typecheck failed, module not found' >&2\nexit 1\n", { mode: 0o755 });
+    const r = h.run();
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/push \(force-with-lease\) failed/);
+    expect(r.err).toMatch(/hook says: typecheck failed, module not found/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
 });
 
 describe("sapu-merge.sh — the scope lock of the machine config", () => {
@@ -478,6 +490,7 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     ["a body that is Part of an outsider's issue", { prJson: { body: "Part of #8." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a bare mention of an outsider's issue", { prJson: { body: "Closes #7. See #8 for the plan." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a GH-8 mention of an outsider's issue", { prJson: { body: "Closes #7 (GH-8)" }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
+    ["a stray `#N` in prose, naming the sentence and the fix", { prJson: { body: "Closes #7.\nThe change keeps invariant #8 intact." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8.*keeps invariant #8 intact.*without the #/],
     ["a mention of another repository's issue", { prJson: { body: "Closes #7, like other/repo#3 did" } }, /\(rule: referenced issue\).*other\/repo#3/],
     ["more commits than can be checked", { prJson: { commitsTotal: 101 } }, /\(rule: commit author\).*101 commits/],
     ["a PR GitHub returns as null", { prJson: { nullNode: true } }, /\(rule: unreadable\).*GitHub returned no PR #7/],

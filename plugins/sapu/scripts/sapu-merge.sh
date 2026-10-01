@@ -378,10 +378,14 @@ fi
 if [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" ]; then
   ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
   [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before push"
+  # The push output is kept, never discarded: a refusal (a lease that moved, a protected branch, a
+  # repo pre-push hook that needs what this fresh worktree lacks, such as installed dependencies)
+  # is otherwise indistinguishable from any other, and the operator has to reproduce it by hand.
   if [ "$REBASED" = 1 ]; then
-    git -C "$WT" push --force-with-lease="$HEAD:$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" origin "HEAD:refs/heads/$HEAD" >/dev/null 2>&1 || die "push (force-with-lease) failed"
+    PUSH_OUT="$(git -C "$WT" push --force-with-lease="$HEAD:$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" origin "HEAD:refs/heads/$HEAD" 2>&1)" \
+      || die "push (force-with-lease) failed: $(printf '%s' "$PUSH_OUT" | tail -n 12)"
   else
-    git -C "$WT" push origin "HEAD:refs/heads/$HEAD" >/dev/null 2>&1 || die "push failed"
+    PUSH_OUT="$(git -C "$WT" push origin "HEAD:refs/heads/$HEAD" 2>&1)" || die "push failed: $(printf '%s' "$PUSH_OUT" | tail -n 12)"
   fi
 fi
 SHA="$(git -C "$WT" rev-parse HEAD)"

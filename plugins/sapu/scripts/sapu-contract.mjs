@@ -721,6 +721,19 @@ export function bodyRefs(body) {
   return { closes, refs };
 }
 
+/**
+ * What to add to a "referenced issue" refusal: the line of the PR body that carries `#n` (a quote of
+ * the author's own text, cut short) and how to clear it when it was never a reference. A number
+ * written with a `#` in prose ("invariant #6") is read as issue #6 and refused when that issue's
+ * author is not trusted; the check stays strict, so the refusal has to be easy to act on.
+ */
+function mentionHint(body, n) {
+  const at = new RegExp(String.raw`(?<![\w&#/])#${n}\b`);
+  const line = String(body || "").replace(/```[\s\S]*?(```|$)/g, " ").split("\n").find((l) => at.test(l));
+  const quote = line ? ` Mentioned in: "${line.trim().replace(/\s+/g, " ").slice(0, 100)}".` : "";
+  return `${quote} If it is not a reference, write the number without the # (e.g. "invariant 6") or put it in backticks.`;
+}
+
 const PR_QUERY =
   "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){" +
   `number title body state isDraft isCrossRepository headRefName headRefOid baseRefName headRepository{nameWithOwner} author{${WHO}} ` +
@@ -786,7 +799,7 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
   for (const [rule, nums] of [["closing issue", closes], ["referenced issue", refNums]]) {
     for (const i of nums) {
       const v = issueTrust(c, i, trusted);
-      if (!v.trusted) return refuse(rule, `#${i}: ${v.reason}`);
+      if (!v.trusted) return refuse(rule, `#${i}: ${v.reason}${rule === "referenced issue" ? mentionHint(pr.body, i) : ""}`);
     }
   }
   return {
