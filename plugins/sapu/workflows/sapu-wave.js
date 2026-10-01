@@ -100,6 +100,9 @@ if (!Number.isInteger(runners) || runners < 1 || runners > 4) throw new Error('m
 // An unknown key is a typo or a stale name, and ignoring it silently drops what it meant
 // (a stale `npmCi: true` would run a dependency change in a shared wave without its clean install).
 const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker', 'domainReviewer']
+// A worker named without the plugin prefix (`sapu-sonnet-high`) is the same ladder agent: accept it
+// instead of failing the whole wave on a spelling the orchestrator then has to retry.
+for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
 const RENAMED = { npmCi: 'cleanInstall' }
 for (const it of input.items) {
   const unknown = Object.keys(it && typeof it === 'object' ? it : {}).filter((k) => !ITEM_KEYS.includes(k))
