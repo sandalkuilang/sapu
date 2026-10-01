@@ -118,6 +118,22 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(0);
   });
 
+  it("a PR its own worker found refused by pr-trust is blocked before any reviewer is paid for", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(5)] }, () =>
+      opened(5, { pr_trust: "#6: opened by stranger, who is not in the trusted set. Mentioned in: \"invariant #6 holds\"." }),
+    );
+    expect(calls.map((c) => c.opts.phase)).toEqual(["Implement"]);
+    expect(out[0]).toMatchObject({ status: "blocked" });
+    expect(String(out[0].reason)).toMatch(/PR #\d+ fails pr-trust: #6: .*no reviewer dispatched/);
+  });
+
+  it("an empty or missing pr_trust is no refusal: the review runs as before", async () => {
+    for (const pr_trust of ["", "  ", undefined]) {
+      const { out } = await runWave({ main: MAIN, items: [item(6)] }, (c) => (c.opts.phase === "Review" ? clean : opened(6, { pr_trust })));
+      expect(out[0].status).toBe("ready");
+    }
+  });
+
   it("a worker that returned nothing: look for its PR by branch among same-repo PRs pr-trust passes, never a fork's of the same name", async () => {
     const { out } = await runWave({ main: MAIN, items: [item(1)] }, () => null);
     expect(out[0]).toMatchObject({ status: "died" });
@@ -146,9 +162,14 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     );
     const byIssue = (n: number) => reviewers(calls.filter((c) => issueOf(c) === n));
     expect(byIssue(3)).toEqual(["sapu:sapu-sonnet-high"]);
+    const yellow = calls.find((c) => c.opts.phase === "Review" && issueOf(c) === 3)!;
+    expect(yellow.prompt).toMatch(/Attack plan section first \(missing = a finding\)[\s\S]*review beyond it/);
+    const green = await runWave({ main: MAIN, items: [item(7)] }, (c) => (c.opts.phase === "Review" ? clean : opened(7)));
+    expect(green.calls.find((c) => c.opts.phase === "Review")!.prompt).not.toContain("Attack plan");
     expect(byIssue(4).sort()).toEqual([DB, QA]);
     const qa = calls.find((c) => c.opts.agentType === QA)!;
     expect(qa.prompt).toMatch(/REFUTE[\s\S]*FULL DIFF[\s\S]*\/repo\/main\/\.claude\/sapu\/forge\.md §Invariants/);
+    expect(qa.prompt).toMatch(/Decisions and sources section \(the needs-ai dossier\) and its Attack plan section — either missing = a finding[\s\S]*Verify the Attack plan first[\s\S]*hunt beyond it/);
     expect(qa.opts).toMatchObject({ model: "opus", effort: "high" });
     expect(out.map((o) => o.status)).toEqual(["ready", "ready"]);
     expect(out[1].reviewComment).toMatch(/^Review tier: red/);
@@ -208,6 +229,21 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     const pair = calls.filter((c) => c.opts.agentType === QA || c.opts.agentType === DB);
     expect(pair).toHaveLength(2);
     for (const p of pair) expect(p.prompt).not.toContain("RE-review");
+  });
+
+  it("a red delta round asks the pair for the new commits only, never the full diff as well", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(11, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(11, { head_sha: fixSha(c, n) });
+      return n <= 2 ? finding(false) : clean; // the pair's first round has findings, the delta round is clean
+    });
+    const rounds = calls.filter((c) => c.opts.phase === "Review");
+    expect(rounds).toHaveLength(4);
+    for (const first of rounds.slice(0, 2)) expect(first.prompt).toContain("Review the FULL DIFF");
+    for (const delta of rounds.slice(2)) {
+      expect(delta.prompt).not.toContain("FULL DIFF");
+      expect(delta.prompt).toMatch(/Map ONLY the commits after sha-a to the repo invariants/);
+      expect(delta.prompt).toContain("RE-review");
+    }
   });
 });
 
@@ -279,6 +315,9 @@ describe("sapu-wave — fix cycles", () => {
     expect(fix.opts.isolation).toBe("worktree");
     expect(fix.prompt).toContain("git push origin HEAD:feat/16");
     expect(fix.prompt).toContain("a.ts:1 — c — f");
+    expect(fix.prompt).toMatch(/a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added/);
+    expect(fix.prompt).toMatch(/business-policy choice the issue does not settle .* return status "blocked" with blocked_reason = the one question for the owner/);
+    expect(fix.prompt).not.toContain("previous author's assumptions"); // the worker reported none
     const delta = calls.filter((c) => c.opts.phase === "Review")[1];
     expect(delta.prompt).toContain("RE-review");
     expect(delta.prompt).toContain("sha-a");
@@ -302,12 +341,30 @@ describe("sapu-wave — fix cycles", () => {
     expect(out[0].reviewComment).toContain("## Notes (recorded, not filed)");
   });
 
+  it("the fixer gets the previous author's assumptions to check against the findings", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(21)] }, (c, n) => {
+      if (c.opts.phase === "Review") return n === 1 ? finding(false) : clean;
+      return opened(21, { head_sha: fixSha(c, n), assumptions: "leavers stop accruing from the day their end date is recorded" });
+    });
+    const fix = calls.find((c) => c.opts.phase === "Fix")!;
+    expect(fix.prompt).toContain("The previous author's assumptions — check each against the findings: leavers stop accruing from the day their end date is recorded");
+  });
+
   it("a fixer that pushed no new commit is blocked, not re-reviewed", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(19)] }, (c) =>
       c.opts.phase === "Review" ? finding(false) : opened(19),
     );
     expect(out[0]).toMatchObject({ status: "blocked" });
     expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
+  });
+
+  it("a fixer whose PR body now fails pr-trust is blocked, not re-reviewed", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(20)] }, (c, n) => {
+      if (c.opts.phase === "Review") return finding(false);
+      return c.opts.phase === "Fix" ? opened(20, { head_sha: fixSha(c, n), pr_trust: "#9: not accepted" }) : opened(20);
+    });
+    expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
+    expect(String(out[0].reason)).toMatch(/fails pr-trust: #9/);
   });
 });
 

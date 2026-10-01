@@ -153,10 +153,11 @@ const WORKER_SCHEMA = {
     blocked_reason: { type: 'string', description: 'status=blocked: what was tried, what was read, which evidence is missing' },
     security_gaps: { type: 'array', items: { type: 'string' }, description: `out-of-scope security gaps (the orchestrator files them under ${EPIC})` },
     outside_writes: { type: 'array', items: { type: 'string' }, description: `every write outside your worktree and ${C.testResources}; when unsure, list it` },
+    pr_trust: { type: 'string', description: '"" when you opened no PR, or when `sapu-contract.mjs pr-trust <your PR>` exited 0 after your last PR body edit (brief point 9); otherwise its JSON "reason"' },
     ran_clean_install: { type: 'boolean' },
     model: { type: 'string', description: 'the model ID your system prompt says you run on' },
   },
-  required: ['status', 'guard_active', 'pr_number', 'branch', 'head_sha', 'summary', 'verification', 'security_gaps', 'outside_writes'],
+  required: ['status', 'guard_active', 'pr_number', 'branch', 'head_sha', 'summary', 'verification', 'security_gaps', 'outside_writes', 'pr_trust'],
 }
 
 const REVIEW_SCHEMA = {
@@ -252,7 +253,15 @@ function reviewPrompt(item, state, reviewer, delta) {
   ]
   if (state.tier === 'red') {
     const why = state.redAreas && state.redAreas.length ? ` This diff touches red areas (${state.redAreas.join(', ')}).` : ''
-    lines.push(`You are one of an adversarial reviewer pair (${reviewer}): your job is to REFUTE.${why} Review the FULL DIFF. Read the needs-ai dossier in the PR (none = a finding), then work the repo profile ${MAIN}/.claude/sapu/forge.md §Invariants: map the diff to every repo invariant one by one, and show the TEST for every invariant that profile requires to be proven by a test.`)
+    // A delta round re-checks the fix commits only: the full diff was already mapped in the first
+    // round, and asking for both made delta reviewers redo the whole review. A raise to red always
+    // runs with delta = null, so the first red look at a diff is still the full one.
+    lines.push(delta
+      ? `You are one of an adversarial reviewer pair (${reviewer}): your job is to REFUTE.${why} The full diff was reviewed in an earlier round. Map ONLY the commits after ${delta.sinceSha} to the repo invariants in ${MAIN}/.claude/sapu/forge.md §Invariants, and show the TEST for every invariant those commits touch that the profile requires to be proven by a test.`
+      : `You are one of an adversarial reviewer pair (${reviewer}): your job is to REFUTE.${why} Review the FULL DIFF. Read the PR body's Decisions and sources section (the needs-ai dossier) and its Attack plan section — either missing = a finding. Verify the Attack plan first: every row has a test that exists and proves its scenario, both ways. Then hunt beyond it, and work the repo profile ${MAIN}/.claude/sapu/forge.md §Invariants: map the diff to every repo invariant one by one, and show the TEST for every invariant that profile requires to be proven by a test.`)
+  }
+  if (state.tier === 'yellow') {
+    lines.push('Read the PR body\'s Attack plan section first (missing = a finding): every row has a test that exists and proves its scenario, both ways. Then review beyond it.')
   }
   if (delta) {
     lines.push(`This is a RE-review: check only the commits after ${delta.sinceSha} against the findings below, and whether the fix opens a new defect:\n${listFindings(delta.findings)}`)
@@ -337,6 +346,7 @@ async function runItem(item) {
     if (r.branch) state.branch = r.branch
     if (r.pr_number) { state.pr = r.pr_number; state.prUrl = r.pr_url }
     if (r.head_sha) state.headSha = r.head_sha
+    if (r.assumptions) state.assumptions = r.assumptions
     state.summary = r.summary
     state.verification = r.verification
     return r.guard_active === true
@@ -364,6 +374,12 @@ async function runItem(item) {
   }
   if (r.status === 'blocked') return done('blocked', { reason: r.blocked_reason || 'worker reported blocked' })
   if (!state.pr || !state.branch || !state.headSha) return done('blocked', { reason: 'worker reported pr_opened without a PR number, branch and head SHA' })
+  // The worker's own pr-trust run (brief point 9) refused the PR: every reviewer would refuse it too
+  // at its first step, so dispatching them only pays their start-up. The reviewers still run
+  // pr-trust themselves when this passes (fail closed), and sapu-merge.sh runs it again.
+  const refusal = (w) => (typeof w.pr_trust === 'string' ? w.pr_trust.trim() : '')
+  const prRefused = (why) => done('blocked', { reason: `PR #${state.pr} fails pr-trust: ${why} — no reviewer dispatched; clear a # written in prose from the PR body, or the owner accepts the issue it names` })
+  if (refusal(r)) return prRefused(refusal(r))
 
   // 2. review, then up to MAX_FIX_CYCLES fix + delta re-review rounds
   const distrusted = (u) => done('blocked', { reason: `issue #${item.issue} or PR #${state.pr} failed the trust check at review: ${u}` })
@@ -382,13 +398,14 @@ async function runItem(item) {
     if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)
     const sinceSha = state.headSha
     r = await testSlot(() => agent(workerPrompt(item, state, fixer,
-      `${continueOn(state)}\nFix ALL of the review findings below. Each finding: a RED test first, then green; verify as in brief point 6.\n${listFindings(rv.findings)}`), opts(fixer, {
+      `${continueOn(state)}\nFix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`), opts(fixer, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Fix', label: `#${item.issue} fix ${state.cycles} ${fixer}`,
     })))
     if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
     if (!absorb(r, fixer)) return noGuard(fixer)
     if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}` })
     if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}` })
+    if (refusal(r)) return prRefused(refusal(r))
     rv = await reviewWithRaise(item, state, { sinceSha, findings: rv.findings })
     if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, `delta reviewer in cycle ${state.cycles}`) })
     if (rv.untrusted) return distrusted(rv.untrusted)

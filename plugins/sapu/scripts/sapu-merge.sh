@@ -458,6 +458,10 @@ ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
 [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before merging"
 gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --match-head-commit "$SHA" >/dev/null \
   || die "gh pr merge failed (PR head may have moved since $SHA); worktree $WT kept"
+# One line per merge that really happened: sapu-metrics --merges-log counts merged PRs from this,
+# because a transcript only records the merge commands, not which of them merged.
+printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" >>"$MAIN/.git/sapu-merges.log" 2>/dev/null \
+  || say "warning: merged, but could not record it in $MAIN/.git/sapu-merges.log"
 
 RELABELED=""
 for i in $ISSUES; do
