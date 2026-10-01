@@ -197,6 +197,14 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
   });
 });
 
+describe("sapu-wave — worker names", () => {
+  it("accepts a ladder worker named without the plugin prefix", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(30, { worker: "sapu-sonnet-medium" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(30)));
+    expect(calls[0].opts.agentType).toBe("sapu:sapu-sonnet-medium");
+    expect(out[0].status).toBe("ready");
+  });
+});
+
 describe("sapu-wave — red-area raise (fail-closed)", () => {
   it("a 🟢 diff touching a red area gets the Opus pair on top, and red fixers are ≥ sapu:sapu-sonnet-high", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(8)] }, (c, n) => {

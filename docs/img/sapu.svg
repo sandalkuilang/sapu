@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 992" role="img" aria-label="The sapu orchestrator: Step 0 scope-locks the run, Phase A drains every open PR, Phase B works open issues in parallel waves where each wave is one workflow call running a forge worker per issue in its own worktree with tiered review and up to two fix cycles; workers never merge, only the orchestrator merges through the merge gate.">
   <title>/sapu — the backlog orchestrator</title>
-  <desc>Step 0 runs the scope lock. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through the merge gate; a PR closed as STALE at classification, or blocked after two fix cycles (including a merge gate that stayed red), is not merged. Phase B triages open issues into SKIP, DUPLICATE and WORK, then runs waves of at most four issues; each wave is one Workflow call (sapu-wave.js) that dispatches one forge worker per issue in its own worktree, has each PR reviewed independently — the tier sets a reviewer floor and the reviewer is never weaker than the author, and a diff touching a red area (or a red-area check that could not run) is raised to the red review pair on the full diff — allows up to two fix cycles and one escalation up the worker ladder, and returns merge-ready PRs without merging. Only the orchestrator merges, through sapu-merge.sh and the merge gate. Waves continue while the orchestrator's context stays under 375k tokens; then a summary goes to project memory and the owner starts a fresh session, which resumes from it.</desc>
+  <desc>Step 0 runs the scope lock. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through the merge gate; a PR closed as STALE at classification, or blocked after two fix cycles (including a merge gate that stayed red), is not merged. Phase B triages open issues into SKIP, DUPLICATE and WORK, then runs waves of at most four issues; each wave is one Workflow call (sapu-wave.js) that dispatches one forge worker per issue in its own worktree, has each PR reviewed independently — the tier sets a reviewer floor and the reviewer is never weaker than the author, and a diff touching a red area (or a red-area check that could not run) is raised to the red review pair on the full diff — allows up to two fix cycles and one escalation up the worker ladder, and returns merge-ready PRs without merging. Only the orchestrator merges, through sapu-merge.sh and the merge gate. Waves continue while the orchestrator's context stays under 750k tokens; then a summary goes to project memory and the owner starts a fresh session, which resumes from it.</desc>
   <style>
     :root{
       --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
@@ -94,7 +94,7 @@
   <rect x="587" y="312" width="309" height="46" rx="8" class="box"/>
   <text x="603" y="330" class="t">not merged: STALE closed at classify</text>
   <text x="603" y="348" class="sm">· blocked (reason) after ≤ 2 fix cycles</text>
-  <text x="896" y="380" class="sm" text-anchor="end">then Phase B in the same session while context is under 200k, else a fresh one</text>
+  <text x="896" y="380" class="sm" text-anchor="end">then Phase B in the same session while context is under 600k, else a fresh one</text>
 
   <!-- Phase B -->
   <text x="24" y="404" class="sec">Phase B · work open issues in parallel waves</text>
@@ -153,7 +153,7 @@
 
   <!-- across the sweep -->
   <rect x="24" y="812" width="872" height="88" rx="9" class="box"/>
-  <text x="40" y="836" class="t">Waves continue in one session while orchestrator context stays under 375k tokens; then a summary goes to</text>
+  <text x="40" y="836" class="t">Waves continue in one session while orchestrator context stays under 750k tokens; then a summary goes to</text>
   <text x="40" y="858" class="t">project memory and the owner starts a fresh /sapu session, which resumes from it. The sweep ends when</text>
   <text x="40" y="880" class="t">no WORK is left and no open PR remains.</text>
 
