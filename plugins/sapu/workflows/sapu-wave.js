@@ -335,7 +335,14 @@ async function runItem(item) {
     ...comments,
     `## Notes (recorded, not filed)\n\n${notes.length ? notes.map((n) => `- ${n}`).join('\n') : '- none'}`,
   ].join('\n\n---\n\n')
-  const done = (status, extra) => ({ ...state, status, reviewComment: comments.length ? reviewComment() : undefined, ...extra })
+  // The result lands in the orchestrator's context: only what it acts on (merge, comments, checkpoint,
+  // final report) is returned. Summary, verification and assumptions stay in the PR and the agents.
+  const done = (status, extra) => ({
+    issue: state.issue, tracker: item.tracker, status, tier: state.tier, redAreas: state.redAreas, worker: state.worker,
+    escalated: state.escalated, cycles: state.cycles, pr: state.pr, branch: state.branch,
+    securityGaps: state.securityGaps, outsideWrites: state.outsideWrites, ranCleanInstall: state.ranCleanInstall,
+    modelWarnings: state.modelWarnings, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
+  })
   const absorb = (r, who) => {
     state.author = atLeast(who, state.author) // the reviewer is never weaker than the strongest author
     state.securityGaps.push(...(r.security_gaps || []))
