@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="115" height="20" role="img" aria-label="node: ≥ 22.18">
+  <title>node: ≥ 22.18</title>
+  <clipPath id="r"><rect width="115" height="20" rx="3"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="40" height="20" fill="#5a5a5a"/>
+    <rect x="40" width="75" height="20" fill="#3c873a"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
+    <text x="20" y="14">node</text>
+    <text x="77" y="14">≥ 22.18</text>
+  </g>
+</svg>
