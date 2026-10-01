@@ -92,6 +92,13 @@ Closes #<issue-number>
 ## How
 <key implementation decisions; anything a reviewer should understand>
 
+## Decisions and sources
+<label `needs-ai` or tier 🔴: each decision → its sources (URL + access date) → the alternative rejected and why (SKILL.md §`needs-ai`); otherwise "none">
+
+## Attack plan
+<🟡/🔴, written BEFORE the first edit: one row per AC and per bypass class A–F (§Inline review angle 4) that applies, scope edges included (existing data or periods, rollout, date bounds), each both ways>
+- <AC or class> — <concrete scenario> — refused: <test file:line> — legitimate still passes: <test file:line>
+
 ## Testing
 - [ ] Unit/integration tests added or updated
 - [ ] Diff-scoped tests pass locally (full suite only if step 8 escalated)

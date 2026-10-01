@@ -6,6 +6,8 @@ import {
   computeSubagentUsage,
   countMerges,
   isMergeCommand,
+  mergesInWindow,
+  withMerges,
 } from "../plugins/sapu/scripts/sapu-metrics.ts";
 
 const usage = (input: number, read: number, create: number, output: number) => ({
@@ -69,12 +71,49 @@ describe("computeMetrics", () => {
     expect(m.tokensPerPr).toBe(m.totalTokens);
   });
 
+  it("prices each step by its model and token kind: cache reads are cheap, writes and output are not", () => {
+    const step = (id: string, model: string, u: object) => line({ type: "assistant", uuid: id, message: { id, model, usage: u, content: [] } });
+    const m = computeMetrics(
+      [
+        // Opus: 1M cache read ($0.20) + 1M output ($20)
+        step("a", "claude-opus-5-5", usage(0, 1_000_000, 0, 1_000_000)),
+        // Sonnet: 1M input ($2) + 1M cache write, 400k of it 1 h ($1.50 + $1.60)
+        step("b", "claude-sonnet-5-5", { ...usage(1_000_000, 0, 1_000_000, 0), cache_creation: { ephemeral_5m_input_tokens: 600_000, ephemeral_1h_input_tokens: 400_000 } }),
+      ].join("\n"),
+    );
+    expect(m.cost).toBeCloseTo(0.2 + 20 + 2 + 1.5 + 1.6, 6);
+  });
+
+  it("takes a step's final output count when its lines carry a partial one first", () => {
+    const part = (out: number, uuid: string) => line({ type: "assistant", uuid, message: { id: "m1", model: "claude-sonnet-5-5", usage: usage(0, 1_000, 0, out), content: [] } });
+    const m = computeMetrics([part(10, "u1"), part(900, "u2"), part(900, "u3")].join("\n"));
+    expect(m.steps).toBe(1);
+    expect(m.totalTokens).toBe(1_000 + 900);
+    expect(m.cost).toBeCloseTo((1_000 * 0.2 + 900 * 10) / 1e6, 9);
+  });
+
   it("reports tokens per PR as undefined, not zero, when nothing merged", () => {
     const m = computeMetrics(
       line({ type: "assistant", uuid: "u", message: { id: "m", usage: usage(1, 0, 0, 1) } }),
     );
     expect(m.mergedPrs).toBe(0);
     expect(m.tokensPerPr).toBeNull();
+  });
+});
+
+describe("merges log", () => {
+  const log = ["2026-10-01T01:00:00Z 3081 aaa", "2026-10-01T02:00:00Z 3088 bbb", "2026-10-01T02:30:00Z 3088 ccc", "2026-10-01T09:00:00Z 3099 ddd", "garbage"].join("\n");
+
+  it("counts distinct PRs merged inside the session's window", () => {
+    expect(mergesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toBe(2);
+    expect(mergesInWindow(log, undefined, undefined)).toBe(3);
+    expect(mergesInWindow("", "a", "z")).toBe(0);
+  });
+
+  it("re-bases the per-PR figures on that count", () => {
+    const m = withMerges({ steps: 1, avgContext: 1, maxContext: 1, totalTokens: 900, cost: 9, mergedPrs: 12, tokensPerPr: 75, costPerPr: 0.75 }, 3);
+    expect([m.mergedPrs, m.tokensPerPr, m.costPerPr]).toEqual([3, 300, 3]);
+    expect(withMerges(m, 0).costPerPr).toBeNull();
   });
 });
 
@@ -163,6 +202,14 @@ describe("compareToBaseline", () => {
     ).toEqual([]);
   });
 
+  it("compares sweep cost per PR only when both the run and the baseline have it", () => {
+    const m = { steps: 1, avgContext: 1, maxContext: 0, totalTokens: 0, cost: 0, mergedPrs: 1, tokensPerPr: 1, costPerPr: 0 };
+    const withCost = { ...b, sweepCostPerPr: 8 };
+    expect(compareToBaseline(m, withCost, null, 12)).toEqual([]);
+    expect(compareToBaseline(m, withCost, null, 12.01)[0]).toMatch(/sweep cost per merged PR .* \$12\.01 .* \$8\.00/);
+    expect(compareToBaseline(m, b, null, 99)).toEqual([]);
+  });
+
   it("compares sweep tokens per PR only when both the run and the baseline have it", () => {
     const m = { steps: 1, avgContext: 1, maxContext: 0, totalTokens: 0, mergedPrs: 1, tokensPerPr: 1 };
     const withSweep = { ...b, sweepTokensPerPr: 20_000_000 };
@@ -185,8 +232,8 @@ describe("computeSubagentUsage", () => {
       { agentType: "empty", jsonl: "" },
     ]);
     expect(usageByType).toEqual([
-      { agentType: "workflow", agents: 1, steps: 1, avgFirstContext: 500_000, totalTokens: 500_010 },
-      { agentType: "sapu-sonnet-high", agents: 2, steps: 3, avgFirstContext: 90_000, totalTokens: 290_030 },
+      { agentType: "workflow", agents: 1, steps: 1, avgFirstContext: 500_000, totalTokens: 500_010, cost: expect.closeTo(0.1002, 6) },
+      { agentType: "sapu-sonnet-high", agents: 2, steps: 3, avgFirstContext: 90_000, totalTokens: 290_030, cost: expect.closeTo(0.0586, 6) },
     ]);
   });
 });
