@@ -27,6 +27,7 @@ if [ -n "\${HX_GATE_BIG:-}" ]; then
   exit 0
 fi
 echo "preparing"
+[ -z "\${HX_GATE_MARK:-}" ] || touch "$PWD/.gate-prepared"
 if [ -n "\${HX_GATE_LAST:-}" ]; then echo "$HX_GATE_LAST"; echo; echo "   "; exit "\${HX_GATE_RC:-0}"; fi
 echo "Gate summary"
 echo "✓ 3 passed"
@@ -271,6 +272,27 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.err).toMatch(/push \(force-with-lease\) failed/);
     expect(r.err).toMatch(/hook says: typecheck failed, module not found/);
     expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.gateLog()).toContain("gate ran:"); // the push comes after the gate now
+  });
+
+  it("a rebased PR is pushed only after a green gate, so a pre-push hook that needs the gate's preparation passes", () => {
+    const h = harness();
+    h.pushToOrigin({ "other.txt": "x\n" }); // <base> moved on: rebase + force-with-lease push
+    // The repo's pre-push hook works only in a worktree the gate has prepared (installed dependencies).
+    writeFileSync(join(h.MAIN, ".git/hooks/pre-push"), "#!/bin/sh\n[ -f .gate-prepared ] || { echo 'hook: no dependencies installed' >&2; exit 1; }\n", { mode: 0o755 });
+    const r = h.run({ HX_GATE_MARK: "1" });
+    expect(r.err).not.toMatch(/push .*failed/);
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/PR #7 merged/);
+  });
+
+  it("a red gate pushes nothing: origin's PR branch is left exactly as it was", () => {
+    const h = harness();
+    h.pushToOrigin({ "other.txt": "x\n" });
+    const before = execFileSync("git", ["-C", h.bare, "rev-parse", "refs/heads/feat/x"], { encoding: "utf8" });
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(execFileSync("git", ["-C", h.bare, "rev-parse", "refs/heads/feat/x"], { encoding: "utf8" })).toBe(before);
   });
 });
 
