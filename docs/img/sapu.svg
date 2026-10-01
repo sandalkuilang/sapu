@@ -94,7 +94,7 @@
   <rect x="587" y="312" width="309" height="46" rx="8" class="box"/>
   <text x="603" y="330" class="t">not merged: STALE closed at classify</text>
   <text x="603" y="348" class="sm">· blocked (reason) after ≤ 2 fix cycles</text>
-  <text x="896" y="380" class="sm" text-anchor="end">then the owner starts a fresh session for Phase B (same one if no PR was open)</text>
+  <text x="896" y="380" class="sm" text-anchor="end">then Phase B in the same session while context is under 200k, else a fresh one</text>
 
   <!-- Phase B -->
   <text x="24" y="404" class="sec">Phase B · work open issues in parallel waves</text>
