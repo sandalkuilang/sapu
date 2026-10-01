@@ -175,6 +175,7 @@ Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/sapu-wave.js", args: { .
 ```
 
 The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); a reviewer ≥ the author; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
+- `trail` = `[step, agent, model, result]` rows: show them as a table in the wave report (time/tokens: panel).
 - `ready` → `jq` its `reviewComment` from the result file into `$TMPDIR/sapu-review-pr<N>.md`, never printed, then B4.
 - `blocked` → its reason becomes an issue comment + the `agent:blocked` label; an open PR waits for the next session's Phase A. A canary reason = the hook is not live in Workflow: use the fallback below, report it.
 - `died` → check `gh pr list --head <branch> --json number,isCrossRepository` first (a PR may be open: only a same-repo one `pr-trust` passes), `git worktree unlock` when locked, put it in the next wave once; dies again → ⚠️ blocked.
