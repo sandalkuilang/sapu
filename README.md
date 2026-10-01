@@ -10,10 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-14b8a6.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/Claude%20Code-plugin-4f46e5.svg" alt="Claude Code plugin">
-  <img src="https://img.shields.io/badge/node-%E2%89%A5%2022.18-339933.svg" alt="Node 22.18 or newer">
-  <a href="https://github.com/sandalkuilang/sapu/stargazers"><img src="https://img.shields.io/github/stars/sandalkuilang/sapu?style=flat&color=fde68a" alt="GitHub stars"></a>
+  <a href="LICENSE"><img src="docs/img/badges/license.svg" alt="MIT license"></a>
+  <img src="docs/img/badges/claude-code.svg" alt="Claude Code plugin">
+  <img src="docs/img/badges/node.svg" alt="Node 22.18 or newer">
 </p>
 
 <p align="center">
