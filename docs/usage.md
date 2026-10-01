@@ -62,7 +62,7 @@ Without the aliases, the full names are `/sapu:sapu`, `/sapu:forge`, and so on. 
 `/sapu` tips:
 - Run it in a **new session**, and only one sapu session per repo at a time.
 - To skip certain PRs: `/sapu skip PR #<number>`.
-- A session stops by itself when its context passes about 375k tokens. Its summary is written to project memory, then you are asked to start a new session with `/sapu`, which continues from that summary.
+- A session stops by itself when its context passes about 750k tokens. Its summary is written to project memory, then you are asked to start a new session with `/sapu`, which continues from that summary.
 - The final report holds the PR and issue tables, the decisions taken with their sources, and the metrics per session: tokens and their cost in dollars at API prices (a weight for quota use on a subscription), per merged PR.
 
 What is enforced, and by what:
