@@ -317,7 +317,7 @@ fi
 
 # --- 5..: everything below has side effects; a dry run stops here with the plan -------------
 if [ "$DRY" = 1 ]; then
-  plan "git fetch origin $BASE $HEAD; rebase onto origin/$BASE only if every commit origin/$BASE..HEAD is by $GIT_EMAIL, else merge; push (--force-with-lease only after rebase)"
+  plan "git fetch origin $BASE $HEAD; rebase onto origin/$BASE only if every commit origin/$BASE..HEAD is by $GIT_EMAIL, else merge; push only after a green gate (--force-with-lease only after rebase)"
   if [ -n "$RED_AREAS" ]; then plan "red-area check (<MAIN>: $RED_AREAS --ref <sha>): red areas without a 'Review tier: red' first line in the comment = refuse"
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
   plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop)"
@@ -375,20 +375,29 @@ if ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$BASE" HEAD; the
     git -C "$WT" merge --no-edit "refs/remotes/origin/$BASE" >/dev/null 2>&1 || { git -C "$WT" merge --abort >/dev/null 2>&1 || true; die "merge of origin/$BASE conflicted (aborted; commits by another author present)"; }
   fi
 fi
-if [ "$(git -C "$WT" rev-parse HEAD)" != "$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" ]; then
+SHA="$(git -C "$WT" rev-parse HEAD)"
+# The lease is origin's head as fetched above, so a push made after the gate still refuses to
+# overwrite anything that landed on the branch in the meantime.
+LEASE="$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")"
+
+# The synced commit is pushed only after the gate is green (step 8): the gate is what prepares the
+# worktree (dependencies, DB), and a repo pre-push hook that typechecks or tests fails in a worktree
+# nothing has prepared yet. The gate runs on the local commit (the red-area check and the gate read
+# the shared object store), and the merge is pinned to that same SHA.
+push_synced() {
+  [ "$SHA" != "$LEASE" ] || return 0
   ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
   [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before push"
   # The push output is kept, never discarded: a refusal (a lease that moved, a protected branch, a
-  # repo pre-push hook that needs what this fresh worktree lacks, such as installed dependencies)
-  # is otherwise indistinguishable from any other, and the operator has to reproduce it by hand.
+  # repo pre-push hook) is otherwise indistinguishable from any other, and the operator has to
+  # reproduce it by hand.
   if [ "$REBASED" = 1 ]; then
-    PUSH_OUT="$(git -C "$WT" push --force-with-lease="$HEAD:$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" origin "HEAD:refs/heads/$HEAD" 2>&1)" \
+    PUSH_OUT="$(git -C "$WT" push --force-with-lease="$HEAD:$LEASE" origin "HEAD:refs/heads/$HEAD" 2>&1)" \
       || die "push (force-with-lease) failed: $(printf '%s' "$PUSH_OUT" | tail -n 12)"
   else
     PUSH_OUT="$(git -C "$WT" push origin "HEAD:refs/heads/$HEAD" 2>&1)" || die "push failed: $(printf '%s' "$PUSH_OUT" | tail -n 12)"
   fi
-fi
-SHA="$(git -C "$WT" rev-parse HEAD)"
+}
 
 # --- 6. red areas need the 🔴 pair (A3 NEEDS-AI) -------------------------------------------------------------
 # Fail-closed backstop for the review-tier raise (sapu-wave.js): the diff is classified by the
@@ -437,7 +446,8 @@ if [ -n "$RED" ]; then
   exit 2
 fi
 
-# --- 8. green: comment, merge (pinned to the gated SHA), then clean up --------------------------------------------------------
+# --- 8. green: push the synced commit, comment, merge (pinned to the gated SHA), then clean up -------------------------------
+push_synced
 GATE_LINE="$(printf '%s\n' "$SUMMARY" | grep -E '[0-9]+ passed' | tail -1 || true)"
 FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 {

@@ -420,12 +420,13 @@ skipping none (each failure = non-zero exit + a one-line reason):
    child by a trusted id only;
 6. the PR worktree: reuse the one holding that branch, else create `wt-pr-<N>`; dirty = refuse;
 7. fetch its head, which must be the head step 4 read; rebase onto `origin/<base>` ONLY when all
-   its commits belong to `gitEmail`, else `git merge origin/<base>`; conflict = abort + stop; push
-   (`--force-with-lease` only after a rebase);
+   its commits belong to `gitEmail`, else `git merge origin/<base>`; conflict = abort + stop; NOT
+   pushed yet (a repo pre-push hook may need what only the gate prepares);
 8. the red-area classifier from the main checkout (`redAreas --ref <SHA>`): a red area without a
    first line `Review tier: red` in the review comment = refuse; classifier failed = refuse;
 9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself);
-10. green: the gate summary pasted into the review comment, then `gh pr comment`, then
+10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
+    after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
     `gh pr merge --squash --delete-branch --match-head-commit <gated SHA>` (commits landing during
     the gate are not merged untested);
 11. relabel the issues of the body's `Closes/Fixes/Resolves #X` list (`labels.inProgress` →
