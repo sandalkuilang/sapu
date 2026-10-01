@@ -205,6 +205,11 @@ function limiter(n) {
 }
 const testSlot = limiter(runners)
 
+// One row per agent call, for the wave table: [step, agent, model/effort, result]. The script has no
+// clock and sees no per-agent tokens, so time and tokens stay in the Workflow panel.
+const trailRow = (state, step, agent, result) => state.trail.push([step, agent, (MODEL[agent] || PAIR_MODEL).join('/'), result])
+const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}` : 'died')
+
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, LADDER.length - 1)]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
@@ -280,6 +285,10 @@ async function review(item, state, delta) {
     return pair ? testSlot(run) : run()
   }
   const results = await parallel(reviewers.map(call))
+  reviewers.forEach((r, i) => {
+    const v = results[i]
+    trailRow(state, delta ? 'Review (delta)' : 'Review', r, !v ? 'died' : typeof v.untrusted === 'string' && v.untrusted.trim() ? 'untrusted' : v.findings.length ? `${v.findings.length} finding(s)` : 'clean')
+  })
   // Fail closed, but say WHICH reviewer returned nothing (a mistyped contract agent never runs).
   if (results.some((r) => !r)) return { dead: reviewers.filter((_, i) => !results[i]) }
   // A trust check that refused (an outsider edited the accepted issue, say) ends the item: nothing
@@ -327,7 +336,7 @@ async function reviewWithRaise(item, state, delta) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, author: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [] }
+  const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, author: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
   const comments = []
   const notes = []
   const reviewComment = () => [
@@ -341,7 +350,7 @@ async function runItem(item) {
     issue: state.issue, tracker: item.tracker, status, tier: state.tier, redAreas: state.redAreas, worker: state.worker,
     escalated: state.escalated, cycles: state.cycles, pr: state.pr, branch: state.branch,
     securityGaps: state.securityGaps, outsideWrites: state.outsideWrites, ranCleanInstall: state.ranCleanInstall,
-    modelWarnings: state.modelWarnings, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
+    modelWarnings: state.modelWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
   })
   const absorb = (r, who) => {
     state.author = atLeast(who, state.author) // the reviewer is never weaker than the strongest author
@@ -364,6 +373,7 @@ async function runItem(item) {
   let r = await testSlot(() => agent(workerPrompt(item, state, state.worker), opts(state.worker, {
     isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Implement', label: `#${item.issue} ${state.worker}`,
   })))
+  trailRow(state, 'Implement', state.worker, workerResult(r))
   if (!r) return done('died', { reason: 'worker returned nothing; before a retry look for its PR with `gh pr list --head <branch> --json number,isCrossRepository` — only a same-repo PR that `sapu-contract.mjs pr-trust <N>` passes is its (a fork can use any branch name)' })
   if (!absorb(r, state.worker)) return noGuard(state.worker)
   if (r.status === 'escalate') {
@@ -375,6 +385,7 @@ async function runItem(item) {
       `${continueOn(state)}\nThe previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`), opts(state.worker, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Implement', label: `#${item.issue} ${state.worker} (escalated)`,
     })))
+    trailRow(state, 'Implement (escalated)', state.worker, workerResult(r))
     if (!r) return done('died', { reason: 'escalated worker returned nothing' })
     if (!absorb(r, state.worker)) return noGuard(state.worker)
     if (r.status === 'escalate') return done('blocked', { reason: `second ESCALATE: ${r.escalate_question} — ${r.escalate_at || '?'}` })
@@ -408,6 +419,7 @@ async function runItem(item) {
       `${continueOn(state)}\nFix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`), opts(fixer, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Fix', label: `#${item.issue} fix ${state.cycles} ${fixer}`,
     })))
+    trailRow(state, `Fix ${state.cycles}`, fixer, workerResult(r))
     if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
     if (!absorb(r, fixer)) return noGuard(fixer)
     if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}` })
@@ -429,4 +441,11 @@ const results = await parallel(input.items.map((item) => () => runItem(item)))
 const out = results.map((r, i) => r || { issue: input.items[i].issue, status: 'died', reason: 'item crashed inside the workflow' })
 for (const r of out) for (const w of r.modelWarnings || []) log(`WARNING #${r.issue}: ${w} — requested model not applied`)
 log(out.map((r) => `#${r.issue} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}`).join(', '))
+// The wave table: every agent call per issue, then the issue's outcome. `trail` is on each result too,
+// so the orchestrator can paste the same table in its report.
+const cell = (s) => String(s ?? '').replace(/\|/g, '/').replace(/\s+/g, ' ')
+log(['| Issue | Step | Agent | Model | Result |', '|---|---|---|---|---|', ...out.flatMap((r) => {
+  const id = `#${r.issue}${r.tracker ? ` (${r.tracker})` : ''}`
+  return [...(r.trail || []).map((t) => `| ${id} | ${t.map(cell).join(' | ')} |`), `| ${id} | **outcome** | | | ${cell(r.status)}${r.tier ? ` (${r.tier}, ${r.cycles || 0} fix)` : ''} |`]
+})].join('\n'))
 return out

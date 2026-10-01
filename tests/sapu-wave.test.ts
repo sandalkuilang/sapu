@@ -332,6 +332,22 @@ describe("sapu-wave — fix cycles", () => {
     expect(reviewers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
   });
 
+  it("every agent call lands in the result's trail and in the logged wave table", async () => {
+    const { out, logs } = await runWave({ main: MAIN, items: [item(17)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? finding(true) : clean) : opened(17, { head_sha: fixSha(c, n) }),
+    );
+    expect(out[0].trail).toEqual([
+      ["Implement", "sapu:sapu-sonnet-medium", "sonnet/medium", `pr_opened PR #${1017}`],
+      ["Review", "sapu:sapu-sonnet-medium", "sonnet/medium", "1 finding(s)"],
+      ["Fix 1", "sapu:sapu-sonnet-high", "sonnet/high", `pr_opened PR #${1017}`],
+      ["Review (delta)", "sapu:sapu-sonnet-high", "sonnet/high", "clean"],
+    ]);
+    const table = logs[logs.length - 1];
+    expect(table).toContain("| Issue | Step | Agent | Model | Result |");
+    expect(table).toContain(`| #17 | Fix 1 | sapu:sapu-sonnet-high | sonnet/high | pr_opened PR #${1017} |`);
+    expect(table).toContain("| #17 | **outcome** | | | ready (green, 1 fix) |");
+  });
+
   it("still open after 2 fix cycles → blocked, never a third", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(18)] }, (c, n) =>
       c.opts.phase === "Review" ? finding(false) : opened(18, { head_sha: fixSha(c, n) }),
