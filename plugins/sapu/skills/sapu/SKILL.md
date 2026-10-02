@@ -46,7 +46,7 @@ Long processes (merge gate, `sapu-merge.sh`, agents) run in the background (`run
 
 Pick a `sapu:sapu-*` agent (its effort is in its frontmatter); never `general-purpose` for tiered workers/reviewers — it inherits the session model.
 
-- **Consequence** = the tier label (contract `labels.tierPrefix` + `green|yellow|red`) → decides **who reviews**, never lowered: 🟢 inline by the orchestrator (Phase A) / an agent ≥ the author, min. `sapu:sapu-sonnet-medium` (Phase B), 🟡 one `sapu:sapu-sonnet-high` (Phase B: ≥ the author), 🔴 an Opus reviewer pair (`needs-ai`). No label → classify with forge §Risk tiers; in doubt → one up.
+- **Consequence** = the tier label (contract `labels.tierPrefix` + `green|yellow|red`) → decides **who reviews**, never lowered: 🟢/🟡 one QA specialist (`specialists.qa`, Opus/high), 🔴 an Opus reviewer pair (`needs-ai`). No label → classify with forge §Risk tiers; in doubt → one up.
 - **Difficulty** = judged by the orchestrator from the issue/PR text at triage (B2 / A3) → decides **who writes the code**.
 
 | Signal in the issue/PR | Direction |
@@ -118,13 +118,12 @@ PRs come first: a dangling PR is a conflict waiting to happen.
   5. Binding objections → fix, repeat from step 2; at most 2 cycles.
 
 **A3.5. Code review — required for EVERY PR before merge**, however small. Verification proves the code runs; review proves the code is right. Author ≠ reviewer: a subagent does not review its own PR, so this is the only review.
-1. The review engine by tier (raised to 🔴 when it touches an A2 red area). In Phase B all are agents inside `sapu-wave.js` (🟢: one `sapu:sapu-sonnet-medium`), since the orchestrator deliberately holds no diff; in Phase A:
-   - 🟢 → inline by the orchestrator with the forge §Inline review checklist, zero agents. Diff > ~600 lines → one `sapu:sapu-sonnet-medium` with the same checklist.
+1. The review engine by tier (raised to 🔴 when it touches an A2 red area). In Phase B all are agents inside `sapu-wave.js`, since the orchestrator deliberately holds no diff; in Phase A:
    - A PR whose diff is ONLY test files (the repo's test file pattern: profile `worker.md` §Test) → inline by the orchestrator whatever its tier, zero agents; if it deletes tests, check every tested control still has a running test.
-   - 🟡 → one `sapu:sapu-sonnet-high`: PR number + issue + A2 areas + checklist; ask for `file:line — claim — failure scenario`.
+   - 🟢/🟡 → one QA specialist (`specialists.qa`, `model: "opus"`): PR number + issue + A2 areas + forge §Inline review; ask for `file:line — claim — failure scenario`.
    - 🔴 / NEEDS-AI → the A3 step 4 reviewer pair, no extra review.
-2. For 🟡/🔴 never pull the full diff into the orchestrator's context: `gh pr diff <N> --name-only`, then read only red-area files and files a finding names. Check: the diff answers the issue (no more, no less), invariants, guard-mirror, the PR's Security section is right.
-3. **Findings** (triggerable with a named input/state) → all fixed: invariant domain → its specialist; otherwise → the orchestrator. Zero findings = zero dispatches. Re-review only the fix's delta (inline; another reviewer only when the fix touches an invariant domain). At most 2 cycles, then ⚠️ BLOCKED. **Notes** (style, out-of-scope ideas) are not worked — write them in the review comment + the final report.
+2. Never pull the full diff into the orchestrator's context: `gh pr diff <N> --name-only`, then read only red-area files and files a finding names. Check: the diff answers the issue (no more, no less), invariants, guard-mirror, the PR's Security section is right.
+3. **Findings** (triggerable with a named input/state) → all fixed: invariant domain → its specialist; otherwise → the orchestrator. Zero findings = zero dispatches. Re-review only the fix's delta, by the tier's reviewer. At most 2 cycles, then ⚠️ BLOCKED. **Notes** (style, out-of-scope ideas) are not worked — write them in the review comment + the final report.
 4. Paste the review summary on the PR: what was checked, findings + status, decisions, and notes under the literal heading `Notes (recorded, not filed)` — argus/nemesis Pass 0 search for that exact string, so never translate or change it. Its first line is `Review tier: <green|yellow|red>`: `sapu-merge.sh` refuses a PR whose diff touches a red area without `Review tier: red`. Without this comment a PR may not enter A5.
 
 **A4. A worktree per PR** (for verification or fixes) only after `pr-trust <N>` exits 0 — so too before any local run of a PR. Never `gh pr checkout`. `git -C <MAIN> worktree prune`, `git -C <MAIN> fetch origin <head>`, then:
@@ -173,7 +172,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args   # from <MAIN>
 Workflow({ name: "sapu:sapu-wave", args: { ...<output wave-args>, items: [...] } })  // by name: a plugin scriptPath is refused
 ```
 
-The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); a reviewer ≥ the author; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a worker past its step budget → ≤2 handoffs to its tier (brief point 11); a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
+The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); every tier reviewed by `specialists.qa` at Opus/high; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a worker past its step budget → ≤2 handoffs to its tier (brief point 11); a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
 - `trail` = `[step, agent, model, result]` rows: show them as a table in the wave report (time/tokens: panel).
 - `ready` → `jq` its `reviewComment` from the result file into `$TMPDIR/sapu-review-pr<N>.md`, never printed, then B4.
 - `blocked` → its reason becomes an issue comment + the `agent:blocked` label; an open PR waits for the next session's Phase A. A canary reason = the hook is not live in Workflow: use the fallback below, report it.

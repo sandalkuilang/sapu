@@ -9,7 +9,7 @@
 // every agent below starts from a clean context. The control flow is code, not prose,
 // pinned by tests/sapu-wave.test.ts:
 //   - at most `maxTestRunners` (default 2) agents that may run tests at once;
-//   - author != reviewer, and the reviewer is never a weaker agent than the final author;
+//   - author != reviewer: every tier is reviewed by the contract QA specialist at Opus/high, never a ladder worker;
 //   - a diff touching a red area gets the 🔴 pair on its FULL diff, and "the red-area check
 //     could not run" counts as red (fail-closed; sapu-merge.sh re-checks at merge);
 //   - at most 2 fix cycles, one escalation step, every continuing agent in its own worktree;
@@ -61,7 +61,6 @@ const PAIR_MODEL = ['opus', 'high']
 // session model) nor a ladder worker (LADDER_AGENT in sapu-contract.mjs, SAPU_AGENT in the guard).
 const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/
 const notSpecialist = (t) => t === 'general-purpose' || LADDER_AGENT.test(t)
-const REVIEWER_FLOOR = { green: 'sapu:sapu-sonnet-medium', yellow: RED_FLOOR }
 const MAX_FIX_CYCLES = 2
 // Each worker step re-sends its whole, growing context, so a 200-step run costs far more than two
 // 100-step ones. Past the step budget (subagent-brief.md point 11) a worker commits WIP and hands off.
@@ -284,12 +283,12 @@ function reviewPrompt(item, state, reviewer, delta) {
 
 async function review(item, state, delta) {
   const pair = state.tier === 'red'
-  const reviewers = pair ? [S.qa, state.domainReviewer] : [atLeast(state.author, REVIEWER_FLOOR[state.tier])]
+  // Every tier is reviewed by the contract's QA specialist (never a ladder worker); 🔴 adds the domain half.
+  const reviewers = pair ? [S.qa, state.domainReviewer] : [S.qa]
   const call = (r) => () => {
     const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: `#${item.issue} review ${r}${delta ? ' (delta)' : ''}` }
-    const run = () => agent(reviewPrompt(item, state, r, delta), pair ? { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra } : opts(r, extra))
-    // The QA specialist runs suites by habit; the pair counts against the test-runner limit.
-    return pair ? testSlot(run) : run()
+    // The QA specialist runs suites by habit, so every review counts against the test-runner limit.
+    return testSlot(() => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra }))
   }
   const results = await parallel(reviewers.map(call))
   reviewers.forEach((r, i) => {
@@ -343,7 +342,7 @@ async function reviewWithRaise(item, state, delta) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, author: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
+  const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
   const comments = []
   const notes = []
   const reviewComment = () => [
@@ -360,7 +359,6 @@ async function runItem(item) {
     modelWarnings: state.modelWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
   })
   const absorb = (r, who) => {
-    state.author = atLeast(who, state.author) // the reviewer is never weaker than the strongest author
     state.securityGaps.push(...(r.security_gaps || []))
     state.outsideWrites.push(...(r.outside_writes || []))
     state.ranCleanInstall = state.ranCleanInstall || !!r.ran_clean_install

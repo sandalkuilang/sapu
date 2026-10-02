@@ -74,6 +74,8 @@ const finding = (invariant = false) => ({
 });
 const workers = (calls: Call[]) => calls.filter((c) => c.opts.phase !== "Review").map((c) => c.opts.agentType);
 const reviewers = (calls: Call[]) => calls.filter((c) => c.opts.phase === "Review").map((c) => c.opts.agentType);
+// The 🟢/🟡 review (one QA specialist), as opposed to the 🔴 pair: told apart by the tier in its prompt.
+const solo = (c: Call) => c.opts.phase === "Review" && !c.prompt.includes(", tier red)");
 // A fixer that pushes a new commit each cycle.
 const fixSha = (c: Call, n: number) => (c.opts.phase === "Fix" ? `sha-fix-${n}` : "sha-a");
 
@@ -85,7 +87,8 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls[0].opts).toMatchObject({ agentType: "sapu:sapu-sonnet-medium", model: "sonnet", effort: "medium", isolation: "worktree", phase: "Implement" });
     expect(calls[0].prompt).toContain(`${PLUGIN}/skills/sapu/subagent-brief.md`);
     expect(calls[0].prompt).toContain("Your ID (DB names, logs, PR body file): issue1");
-    expect(reviewers(calls)).toEqual(["sapu:sapu-sonnet-medium"]);
+    expect(reviewers(calls)).toEqual([QA]);
+    expect(calls[1].opts).toMatchObject({ model: "opus", effort: "high" });
     expect(calls[1].prompt).toContain("node --import tsx scripts/red-area.ts --ref sha-a");
     expect(out[0]).toMatchObject({ status: "ready", pr: 1001, branch: "feat/1", cycles: 0, escalated: false });
     expect(out[0].reviewComment).toMatch(/^Review tier: green/);
@@ -141,15 +144,15 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(String(out[0].reason)).toMatch(/pr-trust/);
   });
 
-  it("the reviewer is never weaker than the final author", async () => {
+  it("every tier is reviewed by specialists.qa at Opus/high, never a ladder worker, whatever the author", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(2, { worker: "sapu:sapu-opus-high" })] }, (c) =>
       c.opts.phase === "Review" ? clean : opened(2),
     );
-    expect(reviewers(calls)).toEqual(["sapu:sapu-opus-high"]);
+    expect(reviewers(calls)).toEqual([QA]);
     expect(calls[1].opts).toMatchObject({ model: "opus", effort: "high" });
   });
 
-  it("yellow gets sapu:sapu-sonnet-high; red gets the adversarial pair on the full diff, both clean", async () => {
+  it("yellow gets specialists.qa; red gets the adversarial pair on the full diff, both clean", async () => {
     const { out, calls } = await runWave(
       {
         main: MAIN,
@@ -161,13 +164,13 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
       (c) => (c.opts.phase === "Review" ? clean : opened(issueOf(c))),
     );
     const byIssue = (n: number) => reviewers(calls.filter((c) => issueOf(c) === n));
-    expect(byIssue(3)).toEqual(["sapu:sapu-sonnet-high"]);
+    expect(byIssue(3)).toEqual([QA]);
     const yellow = calls.find((c) => c.opts.phase === "Review" && issueOf(c) === 3)!;
     expect(yellow.prompt).toMatch(/Attack plan section first \(missing = a finding\)[\s\S]*review beyond it/);
     const green = await runWave({ main: MAIN, items: [item(7)] }, (c) => (c.opts.phase === "Review" ? clean : opened(7)));
     expect(green.calls.find((c) => c.opts.phase === "Review")!.prompt).not.toContain("Attack plan");
     expect(byIssue(4).sort()).toEqual([DB, QA]);
-    const qa = calls.find((c) => c.opts.agentType === QA)!;
+    const qa = calls.find((c) => c.opts.agentType === QA && issueOf(c) === 4)!;
     expect(qa.prompt).toMatch(/REFUTE[\s\S]*FULL DIFF[\s\S]*\/repo\/main\/\.claude\/sapu\/forge\.md §Invariants/);
     expect(qa.prompt).toMatch(/Decisions and sources section \(the needs-ai dossier\) and its Attack plan section — either missing = a finding[\s\S]*Verify the Attack plan first[\s\S]*hunt beyond it/);
     expect(qa.opts).toMatchObject({ model: "opus", effort: "high" });
@@ -209,11 +212,11 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
   it("a 🟢 diff touching a red area gets the Opus pair on top, and red fixers are ≥ sapu:sapu-sonnet-high", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(8)] }, (c, n) => {
       if (c.opts.phase !== "Review") return opened(8, { head_sha: fixSha(c, n) });
-      if (c.opts.agentType === "sapu:sapu-sonnet-medium") return { ...clean, red_areas: ["schema/migrations/seed"] };
+      if (solo(c)) return { ...clean, red_areas: ["schema/migrations/seed"] };
       return c.opts.agentType === QA && n <= 3 ? finding(false) : clean;
     });
-    expect(reviewers(calls).slice(0, 3).sort()).toEqual([DB, QA, "sapu:sapu-sonnet-medium"]);
-    expect(calls.find((c) => c.opts.agentType === QA)?.prompt).toContain("schema/migrations/seed");
+    expect(reviewers(calls).slice(0, 3).sort()).toEqual([DB, QA, QA]);
+    expect(calls.find((c) => c.opts.agentType === QA && !solo(c))?.prompt).toContain("schema/migrations/seed");
     expect(calls.find((c) => c.opts.phase === "Fix")?.opts.agentType).toBe("sapu:sapu-sonnet-high");
     expect(reviewers(calls).slice(3).sort()).toEqual([DB, QA]);
     expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
@@ -222,9 +225,9 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
   it("a red-area check that did not run counts as red", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(9)] }, (c) => {
       if (c.opts.phase !== "Review") return opened(9);
-      return c.opts.agentType === "sapu:sapu-sonnet-medium" ? { ...clean, red_area_ran: false } : clean;
+      return solo(c) ? { ...clean, red_area_ran: false } : clean;
     });
-    expect(reviewers(calls).sort()).toEqual([ARCHITECT, QA, "sapu:sapu-sonnet-medium"]);
+    expect(reviewers(calls).sort()).toEqual([ARCHITECT, QA, QA]);
     expect(out[0]).toMatchObject({ tier: "red", redAreas: ["unknown: the red-area check did not run"] });
   });
 
@@ -232,9 +235,9 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     const { calls } = await runWave({ main: MAIN, items: [item(10)] }, (c, n) => {
       if (c.opts.phase !== "Review") return opened(10, { head_sha: fixSha(c, n) });
       if (n === 1) return finding(false);
-      return c.opts.agentType === "sapu:sapu-sonnet-medium" ? { ...clean, red_areas: ["payments/webhooks/reconciliation/ledger"] } : clean;
+      return solo(c) ? { ...clean, red_areas: ["payments/webhooks/reconciliation/ledger"] } : clean;
     });
-    const pair = calls.filter((c) => c.opts.agentType === QA || c.opts.agentType === DB);
+    const pair = calls.filter((c) => c.opts.phase === "Review" && !solo(c));
     expect(pair).toHaveLength(2);
     for (const p of pair) expect(p.prompt).not.toContain("RE-review");
   });
@@ -364,12 +367,12 @@ describe("sapu-wave — fix cycles", () => {
     expect(out[0]).toMatchObject({ status: "ready", cycles: 1 });
   });
 
-  it("an invariant-domain finding is fixed one step up the ladder, and re-reviewed at that level", async () => {
+  it("an invariant-domain finding is fixed one step up the ladder, and re-reviewed by specialists.qa", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(17)] }, (c, n) =>
       c.opts.phase === "Review" ? (n === 1 ? finding(true) : clean) : opened(17, { head_sha: fixSha(c, n) }),
     );
     expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
-    expect(reviewers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
+    expect(reviewers(calls)).toEqual([QA, QA]);
   });
 
   it("every agent call lands in the result's trail and in the logged wave table", async () => {
@@ -378,9 +381,9 @@ describe("sapu-wave — fix cycles", () => {
     );
     expect(out[0].trail).toEqual([
       ["Implement", "sapu:sapu-sonnet-medium", "sonnet/medium", `pr_opened PR #${1017}`],
-      ["Review", "sapu:sapu-sonnet-medium", "sonnet/medium", "1 finding(s)"],
+      ["Review", QA, "opus/high", "1 finding(s)"],
       ["Fix 1", "sapu:sapu-sonnet-high", "sonnet/high", `pr_opened PR #${1017}`],
-      ["Review (delta)", "sapu:sapu-sonnet-high", "sonnet/high", "clean"],
+      ["Review (delta)", QA, "opus/high", "clean"],
     ]);
     const table = logs[logs.length - 1];
     expect(table).toContain("| Issue | Step | Agent | Model | Result |");
@@ -548,7 +551,7 @@ describe("sapu-wave — contract-driven behaviour", () => {
       { main: MAIN, contract: { ...CONTRACT, redAreas: null }, items: [item(40)] },
       (c) => (c.opts.phase === "Review" ? { ...clean, red_area_ran: false } : opened(40)),
     );
-    expect(reviewers(calls)).toEqual(["sapu:sapu-sonnet-medium"]);
+    expect(reviewers(calls)).toEqual([QA]);
     expect(calls[1].prompt).toContain("has no red-area classifier");
     expect(out[0]).toMatchObject({ status: "ready", tier: "green" });
   });
@@ -557,7 +560,7 @@ describe("sapu-wave — contract-driven behaviour", () => {
   const raisedPair = async (contract: object, area: string, issue: number) => {
     const { calls } = await runWave({ main: MAIN, contract, items: [item(issue)] }, (c) => {
       if (c.opts.phase !== "Review") return opened(issue);
-      return c.opts.agentType === "sapu:sapu-sonnet-medium" ? { ...clean, red_areas: [area] } : clean;
+      return solo(c) ? { ...clean, red_areas: [area] } : clean;
     });
     return calls.filter((c) => c.opts.phase === "Review").slice(1);
   };
@@ -606,20 +609,20 @@ describe("sapu-wave — contract-driven behaviour", () => {
       (c) => {
         if (c.opts.phase !== "Review") return opened(48);
         if (c.opts.agentType === "legacy-ui-reviewr") return null;
-        return c.opts.agentType === "sapu:sapu-sonnet-medium" ? { ...clean, red_areas: ["ui/admin"] } : clean;
+        return solo(c) ? { ...clean, red_areas: ["ui/admin"] } : clean;
       },
     );
     expect(literal.out[0]).toMatchObject({ status: "died" });
     expect(String(literal.out[0].reason)).toContain("legacy-ui-reviewr comes from the repo contract");
     // a built-in that returns nothing is named too, without blaming the contract
     const builtIn = await runWave({ main: MAIN, items: [item(49)] }, (c) => (c.opts.phase === "Review" ? null : opened(49)));
-    expect(builtIn.out[0]).toMatchObject({ status: "died", reason: "reviewer returned nothing: sapu:sapu-sonnet-medium" });
+    expect(builtIn.out[0]).toMatchObject({ status: "died", reason: `reviewer returned nothing: ${QA}` });
     // a delta round names it as well
     const delta = await runWave({ main: MAIN, items: [item(50)] }, (c, n) => {
       if (c.opts.phase !== "Review") return opened(50, { head_sha: fixSha(c, n) });
       return n === 1 ? finding(false) : null;
     });
-    expect(delta.out[0]).toMatchObject({ status: "died", reason: "delta reviewer in cycle 1 returned nothing: sapu:sapu-sonnet-medium" });
+    expect(delta.out[0]).toMatchObject({ status: "died", reason: `delta reviewer in cycle 1 returned nothing: ${QA}` });
   });
 
   it("refuses a wave without the contract or the plugin root", async () => {
