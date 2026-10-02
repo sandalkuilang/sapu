@@ -2,7 +2,7 @@
 // The inspector skill (skills/inspector/SKILL.md) as code: momus -> argus -> nemesis, one full pass
 // each, every phase finished before the next starts, each on its own model/effort, plus a read-only
 // team review when the operator names a scope.
-// Invoke: Workflow({ scriptPath: "<pluginRoot>/workflows/inspector.js", args: { main, pluginRoot, contract, scope? } })
+// Invoke: Workflow({ name: "sapu:inspector", args: { main, pluginRoot, contract, scope? } })
 // where {main, pluginRoot, contract} is the output of `scripts/sapu-contract.mjs wave-args`.
 //
 // Pinned by tests/inspector.test.ts:
