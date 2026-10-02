@@ -171,7 +171,7 @@ After the script succeeds: sync ONLY the open PRs that share files with the one 
 node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args   # from <MAIN>: {"main","pluginRoot","contract"}
 ```
 ```js
-Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/sapu-wave.js", args: { ...<output wave-args>, items: [...] } })
+Workflow({ name: "sapu:sapu-wave", args: { ...<output wave-args>, items: [...] } })  // by name: a plugin scriptPath is refused
 ```
 
 The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); a reviewer ≥ the author; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
