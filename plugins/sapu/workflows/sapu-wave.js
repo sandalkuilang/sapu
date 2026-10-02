@@ -1,6 +1,6 @@
 // workflows/sapu-wave.js (sapu plugin)
 // One Phase B wave of the sapu skill (skills/sapu/SKILL.md §B3), as code.
-// Invoke: Workflow({ scriptPath: "<pluginRoot>/workflows/sapu-wave.js", args: { main, pluginRoot, contract, items } })
+// Invoke: Workflow({ name: "sapu:sapu-wave", args: { main, pluginRoot, contract, items } })
 // where {main, pluginRoot, contract} is the output of `scripts/sapu-contract.mjs wave-args`.
 //
 // WHY A SCRIPT. Every orchestrator step re-sends the orchestrator's whole context (hundreds of

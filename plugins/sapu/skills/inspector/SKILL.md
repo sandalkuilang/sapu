@@ -22,7 +22,7 @@ From the main checkout:
 **Whenever this skill is invoked, after Step 0, call the Workflow tool:**
 
 ```js
-Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/workflows/inspector.js", args: { ...<output wave-args>, scope: "<the user's arguments, if any>" } })
+Workflow({ name: "sapu:inspector", args: { ...<output wave-args>, scope: "<the user's arguments, if any>" } })
 ```
 
 Do not manually run momus, then argus, then nemesis one at a time in the current session — the whole point of this skill is that the model/effort decision below happens automatically, every time, without being re-derived or re-asked. This IS the skill's own explicit instruction to call Workflow, which is itself the legitimate opt-in Workflow's own gating rules require ("the user invoked a skill... whose instructions tell you to call Workflow") — no separate "use a workflow" phrasing needs to be re-obtained from the user each time this skill runs.
