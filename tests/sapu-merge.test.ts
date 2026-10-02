@@ -219,7 +219,7 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.status).toBe(0);
     expect(r.out).toMatch(/PR #7 merged/);
     expect(h.gh()).toMatch(/gh pr merge 7 --repo owner\/app --squash --delete-branch --match-head-commit [0-9a-f]{40}/);
-    expect(readFileSync(join(h.MAIN, ".git/sapu-merges.log"), "utf8")).toMatch(/^\d{4}-\d\d-\d\dT\S+Z 7 [0-9a-f]{40}\n$/);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-merges.log"), "utf8")).toMatch(/^\d{4}-\d\d-\d\dT\S+Z 7 [0-9a-f]{40} gate=\d+s\n$/);
     expect(h.after()).toEqual([`merged wt=present src=${h.MAIN}/scripts/after.sh`]);
     expect(existsSync(h.WT)).toBe(false);
   });
