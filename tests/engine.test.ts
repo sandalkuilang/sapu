@@ -423,6 +423,15 @@ describe("issue and PR text reaches an agent only through the trust commands", (
     expect(rawReads(readFileSync(path, "utf8"))).toEqual([]);
   });
 
+  it("security gaps are filed one issue per class, insider-only gaps go to the epic, and sweep-filed issues wait behind the older backlog", () => {
+    const skill = readFileSync(join(PLUGIN, "skills/sapu/SKILL.md"), "utf8");
+    // filing one issue per reviewer finding grew the backlog faster than waves closed it
+    expect(skill).toMatch(/One issue per class, not per finding/);
+    expect(skill).toMatch(/same class as an open issue[^.]*→ a comment on that issue/);
+    expect(skill).toMatch(/needing an insider[^.]*→ one comment on the epic/);
+    expect(skill).toMatch(/issues this sweep filed go after the older backlog/);
+  });
+
   it("the orchestrator lists issues and PRs by number and author only, never applies the acceptance label, and finds a worker's PR among trusted same-repo ones", () => {
     const skill = readFileSync(join(PLUGIN, "skills/sapu/SKILL.md"), "utf8");
     // no title reaches the orchestrator before a verdict: it reads hundreds of them per triage
@@ -505,7 +514,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 describe("context budgets", () => {
   // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
   const BUDGETS: Record<string, number> = {
-    "skills/sapu/SKILL.md": 35_900,
+    "skills/sapu/SKILL.md": 36_400,
     "skills/sapu/subagent-brief.md": 11_600,
     "skills/forge/SKILL.md": 15_000,
     "skills/forge/reference.md": 16_000,
