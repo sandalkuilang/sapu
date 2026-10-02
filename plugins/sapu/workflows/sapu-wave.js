@@ -287,8 +287,9 @@ async function review(item, state, delta) {
   const reviewers = pair ? [S.qa, state.domainReviewer] : [S.qa]
   const call = (r) => () => {
     const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: `#${item.issue} review ${r}${delta ? ' (delta)' : ''}` }
-    // The QA specialist runs suites by habit, so every review counts against the test-runner limit.
-    return testSlot(() => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra }))
+    const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra })
+    // Only the 🔴 pair counts against the test-runner limit: a lone 🟢/🟡 review never queues behind workers.
+    return pair ? testSlot(run) : run()
   }
   const results = await parallel(reviewers.map(call))
   reviewers.forEach((r, i) => {

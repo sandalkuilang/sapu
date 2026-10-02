@@ -33,7 +33,7 @@ async function runWave(args: unknown, respond: (c: Call, n: number) => unknown) 
   const agent = async (prompt: string, opts: Opts = {}) => {
     const call = { prompt, opts };
     calls.push(call);
-    const runsTests = opts.phase === "Implement" || opts.phase === "Fix" || (opts.phase === "Review" && opts.agentType === full.contract?.specialists?.qa);
+    const runsTests = opts.phase === "Implement" || opts.phase === "Fix" || (opts.phase === "Review" && opts.agentType === full.contract?.specialists?.qa && prompt.includes(", tier red)"));
     if (runsTests) maxActive = Math.max(maxActive, ++active);
     try {
       await new Promise((r) => setTimeout(r, 2));
