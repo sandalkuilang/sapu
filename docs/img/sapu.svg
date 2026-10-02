@@ -137,7 +137,7 @@
   <circle cx="256" cy="727" r="6" fill="#d1453b"/>
   <text x="270" y="732" class="t">red → Opus pair: qa + domain specialist</text>
   <text x="240" y="760" class="sm">a red-area diff, or an unrun red-area check, is raised to the red pair</text>
-  <text x="240" y="780" class="sm">worker by difficulty: sonnet-low … opus-high (red ≥ sonnet-high)</text>
+  <text x="240" y="780" class="sm">worker by difficulty: sonnet-medium … opus-high (red ≥ sonnet-high)</text>
 
   <!-- merge, outside the wave -->
   <path d="M756,511 L788,511" class="writes" marker-end="url(#aw)"/>

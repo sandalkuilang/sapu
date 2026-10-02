@@ -60,19 +60,18 @@ Pick a `sapu:sapu-*` agent (its effort is in its frontmatter); never `general-pu
 
 | Worker | Model / effort | Used for |
 |---|---|---|
-| `sapu:sapu-sonnet-low` | Sonnet / low | mechanical; 🟢 without judgment |
-| `sapu:sapu-sonnet-medium` | Sonnet / medium | ordinary 🟢 |
+| `sapu:sapu-sonnet-medium` | Sonnet / medium | ordinary and mechanical 🟢 (no low-effort worker: a fix cycle costs more than the effort saves) |
 | `sapu:sapu-sonnet-high` | Sonnet / high | 🟡; 🔴 whose spec the issue settles fully |
 | `sapu:sapu-opus-medium` | Opus / medium | 🟡/🔴 with judgment the issue already bounds |
 | `sapu:sapu-opus-high` | Opus / high | open design, research, new rules, the `model:opus` label |
 
 **Hard limits (win over rubric and labels):** (1) 🔴 never below `sapu:sapu-sonnet-high`; (2) an A2 red area without a written design decision → `sapu:sapu-opus-high`; (3) review follows consequence, not difficulty.
 
-Examples: 🔴 with a full design and no open questions → `sapu:sapu-sonnet-high`, review still the Opus pair. 🔴 money/payment/permission still holding owner questions → `sapu:sapu-opus-high`. 🟢 i18n text → `sapu:sapu-sonnet-low`.
+Examples: 🔴 with a full design and no open questions → `sapu:sapu-sonnet-high`, review still the Opus pair. 🔴 money/payment/permission still holding owner questions → `sapu:sapu-opus-high`. 🟢 i18n text → `sapu:sapu-sonnet-medium`.
 
 **Label overrides:** `model:opus` = force `sapu:sapu-opus-high`. `model:sonnet` = force `sapu:sapu-sonnet-high` for a 🔴 the owner knows is mechanical; hard limits (2) and (3) still stand above it. Specialists are called by **role** (`qa`, `architect`, `db`, `developer`, `ux`, `writer`, `product`); their agent = the `sapu-contract.mjs specialists` map (also in `wave-args`): the repo's agent when the contract names one, else the built-in `sapu:sapu-<role>` (all Opus/high). `Agent` calls: 🟢/🟡 issues → `model: "sonnet"`; the 🔴 pair → always `model: "opus"`, effort = its agent's frontmatter.
 
-**Escalation.** A worker that meets a judgment call its issue does NOT settle stops and returns `ESCALATE: <one-sentence question> — <file:line>` (brief point 8). `sapu-wave.js` (or the orchestrator, without Workflow) re-sends the work, with the question, to the worker one level up (low → medium → high → opus-medium → opus-high). At most one escalation per issue; a second one, or one from `sapu:sapu-opus-high` → `blocked-with-reason`.
+**Escalation.** A worker that meets a judgment call its issue does NOT settle stops and returns `ESCALATE: <one-sentence question> — <file:line>` (brief point 8). `sapu-wave.js` (or the orchestrator, without Workflow) re-sends the work, with the question, to the worker one level up (medium → high → opus-medium → opus-high). At most one escalation per issue; a second one, or one from `sapu:sapu-opus-high` → `blocked-with-reason`.
 
 **Record usage:** every item that ends is recorded in its closing comment and the final report's table — worker, rubric reason (≤1 line), escalation yes/no. The rubric is tuned from this data, not guesses.
 
@@ -174,7 +173,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args   # from <MAIN>
 Workflow({ name: "sapu:sapu-wave", args: { ...<output wave-args>, items: [...] } })  // by name: a plugin scriptPath is refused
 ```
 
-The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); a reviewer ≥ the author; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
+The script enforces, and `tests/sapu-wave.test.ts` in the plugin repo proves it: a valid table; a worker per issue (an ID per tracker finding) in its own worktree, explicit model/effort, the guard canary; the limit of 2 (the 🔴 pair counts); a reviewer ≥ the author; a 🟢/🟡 diff touching a red area (a check that did not run = red) → the 🔴 pair on the FULL diff; author fixes in a new worktree (invariant domain → one level up, 🔴 ≥ `sapu:sapu-sonnet-high`) + a delta re-review, ≤2 cycles; one escalation; a worker past its step budget → ≤2 handoffs to its tier (brief point 11); a refused trust check = `blocked`. It does NOT merge. It runs in the background — wait for its notification (§No polling). Result per issue:
 - `trail` = `[step, agent, model, result]` rows: show them as a table in the wave report (time/tokens: panel).
 - `ready` → `jq` its `reviewComment` from the result file into `$TMPDIR/sapu-review-pr<N>.md`, never printed, then B4.
 - `blocked` → its reason becomes an issue comment + the `agent:blocked` label; an open PR waits for the next session's Phase A. A canary reason = the hook is not live in Workflow: use the fallback below, report it.

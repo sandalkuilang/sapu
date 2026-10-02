@@ -9,7 +9,7 @@ plugins/sapu/
   .claude-plugin/plugin.json
   CONTRACT.md                     the repo contract format
   skills/                         sapu, forge, argus, momus, nemesis, inspector, dream, init
-  agents/                         the worker ladder sapu-sonnet-low … sapu-opus-high, and the built-in specialists sapu-qa … sapu-product
+  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, and the built-in specialists sapu-qa … sapu-product
   hooks/hooks.json                PreToolUse guard (Bash + Read/Write/Edit), active for every subagent, not for the orchestrator
   workflows/sapu-wave.js          one Phase B wave as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code

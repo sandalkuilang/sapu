@@ -294,6 +294,38 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(calls[1].prompt).not.toContain("HEAD:worktree-agent-a1b2");
   });
 
+  it("a handoff continues on a fresh agent of the SAME tier, from the WIP commit and the note", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(31)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n === 1
+        ? opened(31, { status: "handoff", pr_number: 0, head_sha: "sha-wip", handoff_note: "left: fix x.ts:4" })
+        : opened(31);
+    });
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium"]);
+    expect(calls[1].opts.isolation).toBe("worktree");
+    expect(calls[1].prompt).toContain("git reset --hard sha-wip");
+    expect(calls[1].prompt).toContain("left: fix x.ts:4");
+    expect(out[0]).toMatchObject({ status: "ready", escalated: false, worker: "sapu:sapu-sonnet-medium" });
+  });
+
+  it("a fixer's handoff keeps the findings, and handoffs stop after MAX_HANDOFFS", async () => {
+    const fix = await runWave({ main: MAIN, items: [item(32)] }, (c, n) => {
+      if (c.opts.phase === "Review") return n === 1 ? finding() : clean;
+      if (c.opts.phase === "Fix" && n === 1) return opened(32, { status: "handoff", head_sha: "sha-fix-wip", handoff_note: "half" });
+      return opened(32, { head_sha: fixSha(c, n) });
+    });
+    const fixers = fix.calls.filter((c) => c.opts.phase === "Fix");
+    expect(fixers).toHaveLength(2);
+    expect(fixers[1].prompt).toContain("git reset --hard sha-fix-wip");
+    expect(fixers[1].prompt).toContain("a.ts:1 — c — f");
+    expect(fix.out[0]).toMatchObject({ status: "ready", cycles: 1 });
+
+    const endless = await runWave({ main: MAIN, items: [item(33)] }, () => opened(33, { status: "handoff", pr_number: 0, handoff_note: "more" }));
+    expect(workers(endless.calls)).toHaveLength(3);
+    expect(endless.out[0]).toMatchObject({ status: "blocked" });
+    expect(String(endless.out[0].reason)).toContain("handoffs");
+  });
+
   it("a second ESCALATE, or one from sapu:sapu-opus-high, is blocked", async () => {
     const esc = (n: number) => opened(n, { status: "escalate", pr_number: 0, escalate_question: "q" });
     const twice = await runWave({ main: MAIN, items: [item(13)] }, () => esc(13));
@@ -475,7 +507,7 @@ describe("sapu-wave — agent registry drift", () => {
 
   it("its ladder and model/effort map are exactly the plugin agents' frontmatter, cheapest first", () => {
     const ladder = listed("LADDER");
-    expect(ladder).toEqual(["sapu:sapu-sonnet-low", "sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high", "sapu:sapu-opus-medium", "sapu:sapu-opus-high"]);
+    expect(ladder).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high", "sapu:sapu-opus-medium", "sapu:sapu-opus-high"]);
     const files = agentFiles.filter((f) => /^sapu-(sonnet|opus)-.*\.md$/.test(f));
     expect(files.map((f) => `sapu:${f.replace(/\.md$/, "")}`).sort()).toEqual([...ladder].sort());
     for (const f of files) {
