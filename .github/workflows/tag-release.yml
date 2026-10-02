@@ -1,0 +1,20 @@
+# Tags every released version: a push to main that changes the plugin's version gets the lightweight
+# tag v<version> on that commit, so a release can never ship untagged (2.2.9 once did).
+name: tag-release
+on:
+  push:
+    branches: [main]
+    paths: [plugins/sapu/.claude-plugin/plugin.json]
+permissions:
+  contents: write
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag v<version> unless it exists
+        run: |
+          v="v$(jq -r .version plugins/sapu/.claude-plugin/plugin.json)"
+          if git ls-remote --exit-code --tags origin "refs/tags/$v" >/dev/null; then echo "$v already tagged"; exit 0; fi
+          git tag "$v" "$GITHUB_SHA"
+          git push origin "$v"
