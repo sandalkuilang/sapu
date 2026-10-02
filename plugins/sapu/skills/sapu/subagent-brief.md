@@ -24,7 +24,7 @@ Read by EVERY Phase B subagent as its first step — the first worker as well as
    - A test setup failure that looks like "no tests" (profile §Test names its form in this repo) is a failure, not a wrong path. Never report that run as green.
    - Prove a new test RED first (a WIP commit without the fix, or `git stash push -m sapu-<ID>` then `apply` by SHA — not `pop`), then green.
    - Run ONLY the tests that touch your diff (profile §Test can widen that per area). The full suite is the orchestrator's business.
-   - Make the whole fix, then test once. A failing e2e: its assertion + `head -60` of its error-context file; never `Read` a whole `test-results/` file or trace.
+   - RED proof done, make the whole fix, then run its tests: not edit → test per line. A failing e2e: its assertion + `head -60` of its error-context file; never `Read` a whole `test-results/` file or trace.
    - e2e/server tests: never adopt an already-running server that belongs to another session (profile §Test names the ports to change).
    - Edit files that are scanned by regexes or translation dictionaries surgically; never run a mass formatter (`prettier --write` and the like) over files you did not change.
 
