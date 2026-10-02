@@ -423,8 +423,12 @@ LOG="${TMPDIR:-/tmp}/gate-pr$PR.log"
 say "gate running at $SHA (workers=$WORKERS) — log: $LOG"
 GATE_RC=0
 AFTER_PENDING=1
+GATE_START=$SECONDS
 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
   run_contract "$WT" "$WT" "$GATE_MERGE" >"$LOG" 2>&1 || GATE_RC=$?
+# Gate wall-clock goes into the merges log: SKILL.md B3 drops an overlapping wave to one test runner
+# when the gate measures more than 50% slower.
+GATE_SECS=$((SECONDS - GATE_START))
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
 # install first): not a verdict on the PR, so not "GATE RED".
 if [ "$GATE_RC" = 75 ]; then
@@ -470,7 +474,7 @@ gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --match-head-commit "$
   || die "gh pr merge failed (PR head may have moved since $SHA); worktree $WT kept"
 # One line per merge that really happened: sapu-metrics --merges-log counts merged PRs from this,
 # because a transcript only records the merge commands, not which of them merged.
-printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" >>"$MAIN/.git/sapu-merges.log" 2>/dev/null \
+printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-merges.log" 2>/dev/null \
   || say "warning: merged, but could not record it in $MAIN/.git/sapu-merges.log"
 
 RELABELED=""
