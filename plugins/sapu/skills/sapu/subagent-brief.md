@@ -20,7 +20,7 @@ Read by EVERY Phase B subagent as its first step — the first worker as well as
 
 4. **Isolated test resources** — named per profile §Test DB, always containing `<ID>`. The protected targets (profile §Protected targets; `guard` in the contract) belong to other sessions: never use them. The orchestrator already started the infrastructure, never `up` it again. Non-secret env comes from the repo's committed test env (profile §Test DB). **NEVER link, `source`, copy, or display `<MAIN>`'s real env** (`.env`, `.env.local`, and those the profile names), and never copy a secret into any file (`/tmp`/scratchpad included). A test that needs a real secret = a finding (mock it, name it in your return).
 
-5. **Tests:** profile §Test — this repo's diff-scoped test command (it caps CPU, uses your isolated resources, trims output).
+5. **Tests:** profile §Test — this repo's diff-scoped test command (it caps CPU, uses your isolated resources, trims output). A test never runs DDL or holds locks on shared DB objects (gate files run in parallel): it makes its own.
    - A test setup failure that looks like "no tests" (profile §Test names its form in this repo) is a failure, not a wrong path. Never report that run as green.
    - Prove a new test RED first (a WIP commit without the fix, or `git stash push -m sapu-<ID>` then `apply` by SHA — not `pop`), then green.
    - Run ONLY the tests that touch your diff (profile §Test can widen that per area). The full suite is the orchestrator's business.
