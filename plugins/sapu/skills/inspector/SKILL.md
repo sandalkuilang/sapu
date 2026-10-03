@@ -9,6 +9,8 @@ Not a fourth methodology. INSPECTOR has no evidence rules, no severity ladder, a
 
 This skill is the engine and knows no repo. It carries no profile of its own: every repo fact reaches the phases through their own profiles (`<profiles>/momus.md`, `argus.md`, `nemesis.md`), and the repo and security epic come from the contract (`.claude/sapu.json`, `${CLAUDE_PLUGIN_ROOT}/CONTRACT.md`).
 
+**Policy.** First `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed inspector` (exit 1 = stop and quote it). When its `policy` has `fileIssues: false` or `traces: "none"`, `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` governs filing and every GitHub write.
+
 ## Step 0 — before dispatching anything
 
 From the main checkout:

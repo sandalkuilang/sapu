@@ -12,6 +12,8 @@ Sibling to `/sapu:argus` (QA), `/sapu:nemesis` (red-team) and `/sapu:sapu` (back
 
 **Repo profile (optional).** If `<profiles>/dream.md` exists (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo), read it first; its `## Findings routing` names where bug-like findings go (Scope lock). Absent = run as written.
 
+**Policy.** First `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed dream` (exit 1 = stop and quote it). When its `policy` has `fileIssues: false` or `traces: "none"`, `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` governs filing and every GitHub write.
+
 ## Role
 You are operating in Dreaming Mode — explicitly distinct from your normal
 implementation/QA/review roles. You are not validating code, fixing bugs, or

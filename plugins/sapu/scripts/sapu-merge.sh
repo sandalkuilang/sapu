@@ -29,7 +29,8 @@
 # origin's head must be the head that verdict read.
 #
 # EXIT: 0 = merged (or dry-run plan clean); 2 = gate red; 3 = merged, but mergeAfter failed
-# (fix what it reported before the next merge); other non-zero = stopped, one-line reason on
+# (fix what it reported before the next merge); 4 = gate green, handed off for review (policy
+# merge: human — nothing merged); other non-zero = stopped, one-line reason on
 # stderr — including a gate that exits 75 (EX_TEMPFAIL: it could not even start, not a PR
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
 # it keeps.
@@ -95,6 +96,10 @@ TRUSTED=("$BASE_SHA")
 GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"
 RED_AREAS="$(cget .redAreas)"; MERGE_AFTER="$(cget .mergeAfter)"
 L_IN_PROGRESS="$(cget .labels.inProgress)"; L_DONE="$(cget .labels.done)"
+# The repo's policy (CONTRACT.md §Policy; absent = sapu merges, leaves its comment and labels).
+P_MERGE="$(printf '%s' "$CONTRACT" | jq -r '.policy.merge // "sapu"')"
+P_TRACES="$(printf '%s' "$CONTRACT" | jq -r '.policy.traces // "visible"')"
+P_REVIEWERS="$(printf '%s' "$CONTRACT" | jq -r '(.policy.reviewers // []) | join(" ")')"
 
 CONTRACT_FILE=".claude/sapu.json"
 
@@ -322,7 +327,8 @@ if [ "$DRY" = 1 ]; then
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
   plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop)"
   plan "(real runs hold a lock dir $MAIN/.git/sapu-merge.lock; a second run dies)"
-  plan "green: append gate summary to review comment, gh pr comment, gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"
+  if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
+  else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"; fi
   plan "relabel issues from every 'Closes/Fixes/Resolves #N[, #M...]' in PR body: $L_IN_PROGRESS -> $L_DONE (Refs #N untouched)"
   plan "after merge: fetch origin $BASE; git -C $MAIN merge --ff-only origin/$BASE ONLY if <MAIN> is on $BASE with a clean tree (else WARNING, continue)"
   if [ -n "$MERGE_AFTER" ]; then plan "mergeAfter once on every exit after the gate started, while $WT still exists: $MERGE_AFTER (SAPU_OUTCOME=merged|not-merged)"; fi
@@ -466,10 +472,30 @@ FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
   cat "$COMMENT_FILE"
   printf '\n\n**Merge gate** (`%s`, workers=%s) at `%s`:\n\n```\n%s\n```\n' "$GATE_MERGE" "$WORKERS" "$SHA" "$SUMMARY"
 } >"$FULL_COMMENT"
-ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
-[ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before commenting"
-gh pr comment "$PR" --repo "$REPO" --body-file "$FULL_COMMENT" >/dev/null || die "gh pr comment failed"
-rm -f "$FULL_COMMENT"
+if [ "$P_TRACES" = none ]; then
+  # traces: none — the review and the gate summary stay on this machine; nothing on the PR says sapu.
+  KEEP="$MAIN/.git/sapu-review-pr$PR.md"
+  mv "$FULL_COMMENT" "$KEEP" 2>/dev/null && say "review + gate summary kept locally: $KEEP" || rm -f "$FULL_COMMENT"
+else
+  ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
+  [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before commenting"
+  gh pr comment "$PR" --repo "$REPO" --body-file "$FULL_COMMENT" >/dev/null || die "gh pr comment failed"
+  rm -f "$FULL_COMMENT"
+fi
+
+# merge: human — a person approves and merges. The PR leaves draft and goes to the reviewers;
+# nothing is merged, relabelled or fast-forwarded (exit 4 = handed off).
+if [ "$P_MERGE" = human ]; then
+  ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
+  [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before the hand-off"
+  gh pr ready "$PR" --repo "$REPO" >/dev/null 2>&1 || true # already ready = fine
+  for r in $P_REVIEWERS; do
+    gh pr edit "$PR" --repo "$REPO" --add-reviewer "$r" >/dev/null 2>&1 || say "warning: could not request a review from $r"
+  done
+  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-handoffs.log" 2>/dev/null || true
+  printf 'sapu-merge: PR #%s gate green at %s, handed off for review%s (merge: human)\n' "$PR" "$SHA" "${P_REVIEWERS:+ to $P_REVIEWERS}"
+  exit 4
+fi
 
 # Issues closed by the PR body (ISSUES, read at 3b): every issue number in a Closes/Fixes/Resolves
 # list ("Closes #1, #2 and #3"); 'Refs #N' is deliberately not relabelled.
@@ -486,6 +512,7 @@ printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GAT
   || say "warning: merged, but could not record it in $MAIN/.git/sapu-merges.log"
 
 RELABELED=""
+[ "$P_TRACES" = none ] && ISSUES="" # traces: none — no sapu labels on the issues either
 for i in $ISSUES; do
   if gh issue edit "$i" --repo "$REPO" --remove-label "$L_IN_PROGRESS" --add-label "$L_DONE" >/dev/null 2>&1; then
     RELABELED="$RELABELED #$i"
