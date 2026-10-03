@@ -532,6 +532,13 @@ describe("manifests", () => {
   const plugin = JSON.parse(readFileSync(join(PLUGIN, ".claude-plugin/plugin.json"), "utf8"));
   const market = JSON.parse(readFileSync(join(ROOT, ".claude-plugin/marketplace.json"), "utf8"));
 
+  it("every workflow names the plugin version it ships in, so a running wave shows which sapu it is", () => {
+    for (const f of ["sapu-wave.js", "inspector.js"]) {
+      const d = /description: '([^']*(?:\\'[^']*)*)'/.exec(readFileSync(join(PLUGIN, "workflows", f), "utf8"));
+      expect(d?.[1], f).toMatch(new RegExp(`^sapu v${plugin.version.replace(/\./g, "\\.")} — `));
+    }
+  });
+
   it("the marketplace entry name equals the plugin name, and the plugin is sapu", () => {
     expect(plugin.name).toBe("sapu");
     expect(market.plugins.map((p: { name: string }) => p.name)).toEqual(["sapu"]);
