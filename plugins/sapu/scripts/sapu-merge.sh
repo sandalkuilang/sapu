@@ -356,7 +356,15 @@ fi
 # A pre-existing worktree must match origin (or be ahead of it only by unpushed work we push).
 # Behind only is normal: a sapu-wave.js fixer works in its own worktree and pushes HEAD:<branch>,
 # leaving the original worker's worktree behind. Catch that up by fast-forward; a worktree with
-# commits origin lacks (diverged) holds someone's unpushed work and is never overwritten.
+# commits origin lacks (diverged) holds someone's unpushed work and is never overwritten — except
+# this script's own leftover: a red gate keeps the worktree at step 5's local rebase, which is
+# pushed only when green. When every commit of it past origin/<base> has a patch-equal twin on
+# origin/<HEAD> (`git cherry` prints no `+`) and nothing is uncommitted, restart from origin.
+if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD \
+  && git -C "$WT" diff --quiet HEAD \
+  && ! git -C "$WT" cherry "refs/remotes/origin/$HEAD" HEAD "refs/remotes/origin/$BASE" | grep -q '^+'; then
+  git -C "$WT" reset -q --hard "refs/remotes/origin/$HEAD" || die "reset of $WT to origin/$HEAD failed"
+fi
 if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD; then
   git -C "$WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$HEAD" \
     || die "worktree $WT has diverged from origin/$HEAD; reconcile by hand"
