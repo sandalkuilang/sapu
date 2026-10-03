@@ -495,7 +495,7 @@ describe("loadContract and the CLI", () => {
     expect(JSON.parse(run("show")).repo).toBe("owner/app");
     expect(run("get", "gate.fast").trim()).toBe("npm run check -- --fast");
     const w = JSON.parse(run("wave-args"));
-    expect(Object.keys(w)).toEqual(["main", "pluginRoot", "contract"]);
+    expect(Object.keys(w)).toEqual(["main", "pluginRoot", "profiles", "contract"]);
     expect(w.pluginRoot).toMatch(/plugins\/sapu$/);
     expect(w.contract).not.toHaveProperty("guard");
   });
@@ -1094,5 +1094,64 @@ describe("safeLanes: how many Phase B lanes the machine carries", () => {
     const out = JSON.parse(execFileSync("node", [join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs"), "lanes"], { cwd: tmpdir(), encoding: "utf8" }));
     expect(out.lanes).toBeGreaterThanOrEqual(1);
     expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "cpus", "ramGB", "load1", "memFreePct"]);
+  });
+});
+
+describe("a LOCAL contract home: ~/.config/sapu/repos/<owner>__<name>/, outside the repo", () => {
+  const mk = (name: string) => {
+    const repo = join(root, name);
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    git(repo, "remote", "add", "origin", `https://github.com/${FIXTURE_CONTRACT.repo}.git`);
+    commit(repo, { "README.md": "x\n" });
+    const home = fakeHome(`${name}-home`);
+    const dir = join(home, ".config/sapu/repos/owner__app");
+    mkdirSync(dir, { recursive: true });
+    return { repo, home, dir };
+  };
+
+  it("is used when the repo commits none: show, home and wave-args point at it, nothing in the repo", () => {
+    const { repo, home, dir } = mk("local-ok");
+    writeFileSync(join(dir, "sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    expect(JSON.parse(cli(repo, ["show"], { home }).out).repo).toBe("owner/app");
+    const h = JSON.parse(cli(repo, ["home"], { home }).out);
+    expect(h.mode).toBe("local");
+    expect(realpathSync(h.dir)).toBe(realpathSync(dir));
+    expect(JSON.parse(cli(repo, ["wave-args"], { home }).out).profiles).toMatch(/\.config\/sapu\/repos\/owner__app$/);
+    expect(git(repo, "status", "--porcelain")).toBe("");
+  });
+
+  it("without one, home is the repo's .claude/sapu", () => {
+    const { repo, home } = mk("local-none");
+    const h = JSON.parse(cli(repo, ["home"], { home }).out);
+    expect(h.mode).toBe("repo");
+    expect(h.dir).toBe(join(realpathSync(repo), ".claude/sapu"));
+  });
+
+  it("refuses two contracts, a contract for another repo, and one behind a symlink", () => {
+    const both = mk("local-both");
+    writeFileSync(join(both.dir, "sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    commit(both.repo, { ".claude/sapu.json": JSON.stringify(FIXTURE_CONTRACT) });
+    expect(cli(both.repo, ["show"], { home: both.home }).err).toMatch(/two sapu contracts/);
+
+    const other = mk("local-other");
+    writeFileSync(join(other.dir, "sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, repo: "someone/else" }));
+    const r = cli(other.repo, ["show"], { home: other.home });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/repo is "someone\/else" but this checkout's origin is owner\/app/);
+
+    const linked = mk("local-link");
+    const real = join(root, "local-link-real.json");
+    writeFileSync(real, JSON.stringify(FIXTURE_CONTRACT));
+    symlinkSync(real, join(linked.dir, "sapu.json"));
+    expect(cli(linked.repo, ["show"], { home: linked.home }).err).toMatch(/behind a symlink/);
+  });
+
+  it("profiles are checked in the local home, not the repo", () => {
+    const { repo, home, dir } = mk("local-profiles");
+    writeFileSync(join(dir, "sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    const r = cli(repo, ["profiles"], { home });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/sapu\.md: \(file missing\)/);
   });
 });

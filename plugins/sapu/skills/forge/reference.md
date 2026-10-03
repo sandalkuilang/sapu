@@ -1,6 +1,6 @@
 # Forge reference — priority, commands, labels, templates
 
-Lookup material for the forge skill (SKILL.md in this skill's directory). Repo facts come from the contract `.claude/sapu.json` and the repo profile `.claude/sapu/forge.md` (cited as *profile §…*); the placeholders `<repo>`, `<base>`, `<inProgress>`, `<done>`, `<queued>`, `<blocked>`, `<tier label>` are defined in SKILL.md §Scope lock.
+Lookup material for the forge skill (SKILL.md in this skill's directory). Repo facts come from the contract `.claude/sapu.json` and the repo profile `<profiles>/forge.md` (cited as *profile §…*); the placeholders `<repo>`, `<base>`, `<inProgress>`, `<done>`, `<queued>`, `<blocked>`, `<tier label>` are defined in SKILL.md §Scope lock.
 
 ## Issue priority ladder
 
@@ -120,7 +120,7 @@ Decisions: <security decisions taken + standard/source, or "none">
 
 ## Inline review — the review checklist (every tier)
 
-Review angles, worked sequentially by one reviewer: forge step 9/11's QA specialist (🟢/🟡), the `needs-ai` refutation pair (🔴), the step 11 fix-delta re-check, and sapu A3.5. **First read the repo profile `.claude/sapu/forge.md`** — angles 4, 5 and 7 use its §Invariants, §Inline review and §Security bar. Read the full diff plus the enclosing function of every hunk, then go angle by angle and write findings as `file:line — claim — concrete failure scenario`. Only findings you can trigger with named inputs/state count; everything else is a note, not a finding.
+Review angles, worked sequentially by one reviewer: forge step 9/11's QA specialist (🟢/🟡), the `needs-ai` refutation pair (🔴), the step 11 fix-delta re-check, and sapu A3.5. **First read the repo profile `<profiles>/forge.md`** — angles 4, 5 and 7 use its §Invariants, §Inline review and §Security bar. Read the full diff plus the enclosing function of every hunk, then go angle by angle and write findings as `file:line — claim — concrete failure scenario`. Only findings you can trigger with named inputs/state count; everything else is a note, not a finding.
 
 1. **Line-by-line** — inverted/wrong condition, off-by-one, null/undefined deref, missing `await`, falsy-zero check, wrong-variable copy-paste, swallowed catch, unescaped regex.
 2. **Removed behavior** — for every deleted/replaced line, name the invariant it enforced and find where the new code re-establishes it. Dropped guard, narrowed validation, deleted test = finding.

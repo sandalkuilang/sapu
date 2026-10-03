@@ -7,7 +7,7 @@ description: Use when running a full release-readiness sweep of the current repo
 
 Not a fourth methodology. INSPECTOR has no evidence rules, no severity ladder, and no findings of its own — it dispatches the other three, in a fixed order, one fully finished before the next starts, each on its own model/effort, and hands back one combined summary at the end.
 
-This skill is the engine and knows no repo. It carries no profile of its own: every repo fact reaches the phases through their own profiles (`.claude/sapu/momus.md`, `argus.md`, `nemesis.md`), and the repo and security epic come from the contract (`.claude/sapu.json`, `${CLAUDE_PLUGIN_ROOT}/CONTRACT.md`).
+This skill is the engine and knows no repo. It carries no profile of its own: every repo fact reaches the phases through their own profiles (`<profiles>/momus.md`, `argus.md`, `nemesis.md`), and the repo and security epic come from the contract (`.claude/sapu.json`, `${CLAUDE_PLUGIN_ROOT}/CONTRACT.md`).
 
 ## Step 0 — before dispatching anything
 
@@ -15,7 +15,7 @@ From the main checkout:
 
 1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" check` — the scope lock plus the contract schema. Non-zero → stop, report its message, dispatch nothing. Never `gh auth switch`: a wrong account is a stop, not something to fix yourself.
 2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args` → `{"main","pluginRoot","contract"}` (`contract.specialists` = the resolved specialist map the team review dispatches).
-3. The three phase profiles are committed: `git -C <main> cat-file -e HEAD:.claude/sapu/momus.md` (then `argus.md`, `nemesis.md`). One missing → stop and tell the user to run `/sapu:init`. Each phase would stop on it anyway; this stops before three agents pay their start-up cost for nothing.
+3. The three phase profiles exist: `<profiles>/momus.md`, `argus.md`, `nemesis.md` (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`; in the repo they must be committed). One missing → stop and tell the user to run `/sapu:init`. Each phase would stop on it anyway; this stops before three agents pay their start-up cost for nothing.
 
 ## How this is invoked — automatic, not manual sequencing
 
