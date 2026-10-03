@@ -5,6 +5,7 @@ import {
   computeMetrics,
   computeSubagentUsage,
   countMerges,
+  gatesInWindow,
   isMergeCommand,
   mergesInWindow,
   withMerges,
@@ -114,6 +115,32 @@ describe("merges log", () => {
     const m = withMerges({ steps: 1, avgContext: 1, maxContext: 1, totalTokens: 900, cost: 9, mergedPrs: 12, tokensPerPr: 75, costPerPr: 0.75 }, 3);
     expect([m.mergedPrs, m.tokensPerPr, m.costPerPr]).toEqual([3, 300, 3]);
     expect(withMerges(m, 0).costPerPr).toBeNull();
+  });
+});
+
+describe("gates log", () => {
+  const log = [
+    "2026-10-01T01:00:00Z 3081 aaa red gate=400s failed=a.test.ts verdict=unknown",
+    "2026-10-01T01:10:00Z 3081 bbb green gate=420s failed=-",
+    "2026-10-01T02:00:00Z 3088 ccc red gate=410s failed=a.test.ts verdict=known-flake",
+    "2026-10-01T02:20:00Z 3088 ddd setup-failed gate=5s failed=-",
+    "2026-10-01T09:00:00Z 3099 eee green gate=60s failed=-",
+    "garbage",
+  ].join("\n");
+
+  it("counts every gate run inside the window, red and known-flake reds apart, and the minutes gated", () => {
+    expect(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual({ runs: 4, red: 2, knownFlake: 1, setupFailed: 1, minutes: 20.6 });
+    expect(gatesInWindow("", "a", "z")).toEqual({ runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 });
+  });
+});
+
+describe("wall-clock", () => {
+  const at = (timestamp: string) => line({ type: "user", timestamp });
+
+  it("splits the session's wall-clock into its waits longer than 5 minutes and the rest", () => {
+    const m = computeMetrics(["2026-10-01T01:00:00Z", "2026-10-01T01:04:00Z", "2026-10-01T01:30:00Z", "2026-10-01T01:31:00Z", "2026-10-01T02:00:00Z"].map(at).join("\n"));
+    expect([m.wallMinutes, m.waitMinutes]).toEqual([60, 55]);
+    expect(computeMetrics("").wallMinutes).toBe(0);
   });
 });
 

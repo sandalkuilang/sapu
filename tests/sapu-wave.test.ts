@@ -222,6 +222,38 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
   });
 
+  it("the worker runs the classifier on its own head before the PR (its prompt names the command)", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(12)] }, (c) => (c.opts.phase === "Review" ? clean : opened(12)));
+    expect(calls[0].prompt).toContain("node --import tsx scripts/red-area.ts --ref HEAD");
+    const none = await runWave({ main: MAIN, contract: { ...CONTRACT, redAreas: null }, items: [item(13)] }, (c) => (c.opts.phase === "Review" ? clean : opened(13)));
+    expect(none.calls[0].prompt).not.toContain("--ref HEAD");
+  });
+
+  it("red areas the worker reports start the 🔴 pair at once: no lone 🟢 review first, fixers ≥ the red floor", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(14)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(14, { head_sha: fixSha(c, n), red_areas: ["schema/migrations/seed"] });
+      return n <= 2 ? finding(false) : clean;
+    });
+    expect(calls.filter(solo)).toHaveLength(0);
+    expect(reviewers(calls).slice(0, 2).sort()).toEqual([DB, QA]);
+    expect(calls.find((c) => c.opts.phase === "Fix")?.opts.agentType).toBe("sapu:sapu-sonnet-high");
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
+    expect(out[0].reviewComment).toMatch(/^Review tier: red/);
+  });
+
+  it("a worker's red_areas only ever raise: [] or none leaves the reviewers' own fail-closed check in charge", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(15)] }, (c) => {
+      if (c.opts.phase !== "Review") return opened(15, { red_areas: [] });
+      return solo(c) ? { ...clean, red_areas: ["payments"] } : clean;
+    });
+    expect(reviewers(calls).sort()).toEqual([DB, QA, QA]);
+    expect(out[0]).toMatchObject({ tier: "red" });
+    const noClassifier = await runWave({ main: MAIN, contract: { ...CONTRACT, redAreas: null }, items: [item(16)] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(16, { red_areas: ["schema"] }),
+    );
+    expect(reviewers(noClassifier.calls)).toEqual([QA]);
+  });
+
   it("a red-area check that did not run counts as red", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(9)] }, (c) => {
       if (c.opts.phase !== "Review") return opened(9);

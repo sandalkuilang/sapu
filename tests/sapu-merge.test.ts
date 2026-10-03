@@ -27,6 +27,7 @@ if [ -n "\${HX_GATE_BIG:-}" ]; then
   exit 0
 fi
 echo "preparing"
+[ -z "\${HX_GATE_OUT:-}" ] || printf '%s\\n' "$HX_GATE_OUT"
 [ -z "\${HX_GATE_MARK:-}" ] || touch "$PWD/.gate-prepared"
 if [ -n "\${HX_GATE_LAST:-}" ]; then echo "$HX_GATE_LAST"; echo; echo "   "; exit "\${HX_GATE_RC:-0}"; fi
 echo "Gate summary"
@@ -318,6 +319,62 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.err).toMatch(/diverged/);
     expect(h.gh()).not.toMatch(/pr merge/);
    }, 30_000);
+});
+
+describe("sapu-merge.sh — every gate run is recorded, a red one with its failing tests and a flake verdict", () => {
+  const gates = (h: { MAIN: string }) => {
+    const f = join(h.MAIN, ".git/sapu-gates.log");
+    return existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : [];
+  };
+  const seed = (h: { MAIN: string }, ...lines: string[]) => writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), lines.map((l) => `${l}\n`).join(""));
+  const FAILS = " FAIL  apps/a.test.ts > orders > races\nFAILED tests/test_b.py::test_x - AssertionError\n FAIL  apps/a.test.ts > orders > again";
+
+  it("green: one line with no failing tests", () => {
+    const h = harness();
+    expect(h.run().status).toBe(0);
+    expect(gates(h)).toEqual([expect.stringMatching(/^\d{4}-\d\d-\d\dT\S+Z 7 [0-9a-f]{40} green gate=\d+s failed=-$/)]);
+  });
+
+  it("red: the failing test files the runner printed (vitest/jest and pytest), deduplicated, and an unknown verdict", () => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
+    expect(r.status).toBe(2);
+    expect(gates(h)).toEqual([expect.stringMatching(/ 7 [0-9a-f]{40} red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py verdict=unknown$/)]);
+    expect(r.err).toMatch(/verdict: unknown/);
+    expect(r.err).toMatch(/not seen red in another PR: apps\/a\.test\.ts, tests\/test_b\.py/);
+  });
+
+  it("red where every failing test also failed another PR's gate: known-flake, naming those PRs; still no merge", () => {
+    const h = harness();
+    seed(h, "2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts verdict=unknown", "2026-10-01T02:00:00Z 6 bbb red gate=400s failed=x.test.ts,tests/test_b.py verdict=unknown");
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
+    expect(r.status).toBe(2);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(r.err).toMatch(/verdict: known-flake/);
+    expect(r.err).toMatch(/apps\/a\.test\.ts \(PR #5\)/);
+    expect(r.err).toMatch(/tests\/test_b\.py \(PR #6\)/);
+    expect(gates(h).at(-1)).toMatch(/ red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py verdict=known-flake$/);
+  });
+
+  it("this PR's own earlier reds prove nothing: the verdict stays unknown", () => {
+    const h = harness();
+    seed(h, "2026-10-01T01:00:00Z 7 aaa red gate=400s failed=apps/a.test.ts verdict=unknown");
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.err).toMatch(/verdict: unknown \(the log names no failing test\)/);
+    expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- verdict=unknown$/)]);
+  });
+
+  it("a gate that could not start is recorded as setup-failed", () => {
+    const h = harness();
+    expect(h.run({ HX_GATE_RC: "75", HX_GATE_LAST: "no database" }).status).toBe(1);
+    expect(gates(h)).toEqual([expect.stringMatching(/ setup-failed gate=\d+s failed=-$/)]);
+  });
 });
 
 describe("sapu-merge.sh — the scope lock of the machine config", () => {

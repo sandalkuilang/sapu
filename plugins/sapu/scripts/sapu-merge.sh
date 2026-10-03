@@ -33,7 +33,8 @@
 # merge: human — nothing merged); other non-zero = stopped, one-line reason on
 # stderr — including a gate that exits 75 (EX_TEMPFAIL: it could not even start, not a PR
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
-# it keeps.
+# it keeps. Every gate run is one line of <MAIN>/.git/sapu-gates.log; a red one names its failing
+# test files and a flake verdict (`known-flake`: each also failed another PR's gate; else `unknown`).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
@@ -325,7 +326,7 @@ if [ "$DRY" = 1 ]; then
   plan "git fetch origin $BASE $HEAD; rebase onto origin/$BASE only if every commit origin/$BASE..HEAD is by $GIT_EMAIL, else merge; push only after a green gate (--force-with-lease only after rebase)"
   if [ -n "$RED_AREAS" ]; then plan "red-area check (<MAIN>: $RED_AREAS --ref <sha>): red areas without a 'Review tier: red' first line in the comment = refuse"
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
-  plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop)"
+  plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $MAIN/.git/sapu-gates.log)"
   plan "(real runs hold a lock dir $MAIN/.git/sapu-merge.lock; a second run dies)"
   if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
   else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"; fi
@@ -443,9 +444,18 @@ SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE=
 # Gate wall-clock goes into the merges log: SKILL.md B3 drops an overlapping wave to one test runner
 # when the gate measures more than 50% slower.
 GATE_SECS=$((SECONDS - GATE_START))
+# Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
+# judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
+# merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
+GATES_LOG="$MAIN/.git/sapu-gates.log"
+gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict]
+  printf '%s %s %s %s gate=%ss failed=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "${3:+ verdict=$3}" >>"$GATES_LOG" 2>/dev/null \
+    || say "warning: could not record the gate run in $GATES_LOG"
+}
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
 # install first): not a verdict on the PR, so not "GATE RED".
 if [ "$GATE_RC" = 75 ]; then
+  gate_record setup-failed -
   LAST="$(grep -v '^[[:space:]]*$' "$LOG" | tail -n 1 || true)"
   die "gate setup failed (not a PR defect): ${LAST:-the gate printed nothing} — log: $LOG — worktree $WT kept"
 fi
@@ -461,8 +471,30 @@ if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; 
 if [ -n "$RED" ]; then
   FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed 's/ [0-9.]*s.*//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
+  # The failing test FILES, from anywhere in the log: vitest/jest ` FAIL  <file> > …`, pytest
+  # `FAILED <file>::…`. ponytail: two runners' formats; another runner records failed=-.
+  TESTS="$( { grep -E '^[[:space:]]*FAIL[[:space:]]' "$LOG" | awk '{print $2}' || true
+             grep -E '^FAILED [^ ]+::' "$LOG" | sed -E 's/^FAILED ([^:]+)::.*/\1/' || true; } | sort -u | paste -sd, -)"
+  # Flake verdict: a failing test that also failed ANOTHER PR's gate (this PR's own reds prove
+  # nothing) was not caused by this diff. Every one of them seen elsewhere = known-flake. A verdict
+  # never merges anything: only a green gate does.
+  VERDICT=unknown; SEEN=(); NEW=()
+  if [ -n "$TESTS" ]; then
+    IFS=, read -r -a TS <<<"$TESTS"
+    for t in "${TS[@]}"; do
+      prs="$(awk -v pr="$PR" -v t="$t" '$4 == "red" && $2 != pr && $6 ~ /^failed=/ {
+        n = split(substr($6, 8), f, ","); for (i = 1; i <= n; i++) if (f[i] == t) { print "#" $2; break } }' "$GATES_LOG" 2>/dev/null | sort -u | paste -sd, - || true)"
+      if [ -n "$prs" ]; then SEEN+=("$t (PR $prs)"); else NEW+=("$t"); fi
+    done
+    [ "${#NEW[@]}" -gt 0 ] || VERDICT=known-flake
+  fi
+  gate_record red "${TESTS:--}" "$VERDICT"
+  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
+  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test also failed another PR's gate: $(IFS=';'; printf '%s' "${SEEN[*]}")"
+  else say "verdict: unknown — not seen red in another PR: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; also red elsewhere: $(IFS=';'; printf '%s' "${SEEN[*]}")}"; fi
   exit 2
 fi
+gate_record green -
 
 # --- 8. green: push the synced commit, comment, merge (pinned to the gated SHA), then clean up -------------------------------
 push_synced

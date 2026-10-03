@@ -38,8 +38,13 @@
 // of the `.meta.json` next to each file ("workflow" when there is none). Only aggregates are
 // printed; the orchestrator never opens those transcripts itself.
 //
+//   - Wall-clock = first to last transcript timestamp; waiting = the gaps over WAIT_GAP_MIN minutes
+//     between consecutive lines (the orchestrator idle on agents, a gate or a person).
+//   - Gate runs = with --gates-log <MAIN>/.git/sapu-gates.log, every sapu-merge.sh gate run in the
+//     window: red ones, those sapu-merge.sh judged known-flake, setup failures, minutes gated.
+//
 // USAGE
-//   node scripts/sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--baseline <file>] [--json]
+//   node scripts/sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--gates-log <file>] [--baseline <file>] [--json]
 // Exit: 0 = ok, 1 = worse than baseline by more than 50%, 2 = usage error.
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -80,7 +85,13 @@ export interface SweepMetrics {
   /** ISO timestamps of the first and last transcript line that has one. */
   startedAt?: string;
   endedAt?: string;
+  /** Minutes from startedAt to endedAt, and the part of it spent in gaps over WAIT_GAP_MIN between lines. */
+  wallMinutes?: number;
+  waitMinutes?: number;
 }
+
+/** A gap between two orchestrator transcript lines longer than this is waiting (on agents, a gate, a person). */
+export const WAIT_GAP_MIN = 5;
 
 interface Usage {
   input_tokens?: number;
@@ -167,6 +178,7 @@ export function computeMetrics(jsonl: string): SweepMetrics {
   let mergedPrs = 0;
   let startedAt: string | undefined;
   let endedAt: string | undefined;
+  let waitMs = 0;
 
   for (const raw of jsonl.split("\n")) {
     if (!raw.trim()) continue;
@@ -177,6 +189,8 @@ export function computeMetrics(jsonl: string): SweepMetrics {
       continue; // a truncated last line of a live transcript
     }
     if (typeof line.timestamp === "string") {
+      const gap = endedAt ? Date.parse(line.timestamp) - Date.parse(endedAt) : 0;
+      if (gap > WAIT_GAP_MIN * 60_000) waitMs += gap;
       startedAt ??= line.timestamp;
       endedAt = line.timestamp;
     }
@@ -232,6 +246,8 @@ export function computeMetrics(jsonl: string): SweepMetrics {
     costPerPr: mergedPrs > 0 ? cost / mergedPrs : null,
     startedAt,
     endedAt,
+    wallMinutes: startedAt && endedAt ? Math.round((Date.parse(endedAt) - Date.parse(startedAt)) / 60_000) : 0,
+    waitMinutes: Math.round(waitMs / 60_000),
   };
 }
 
@@ -246,6 +262,36 @@ export function mergesInWindow(log: string, from: string | undefined, to: string
     if (m && (!from || m[1] >= from) && (!to || m[1] <= to)) prs.add(m[2]);
   }
   return prs.size;
+}
+
+export interface GateRuns {
+  runs: number;
+  red: number;
+  /** Red runs whose every failing test had also failed another PR's gate (sapu-merge.sh's verdict). */
+  knownFlake: number;
+  setupFailed: number;
+  /** Minutes spent in gates, one decimal. */
+  minutes: number;
+}
+
+/**
+ * Gate runs in a sapu-merge.sh gates log (`<ISO time> <PR> <SHA> <green|red|setup-failed> gate=<s>s
+ * failed=<files|-> [verdict=<v>]` per line) within [from, to].
+ */
+export function gatesInWindow(log: string, from: string | undefined, to: string | undefined): GateRuns {
+  const g: GateRuns = { runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 };
+  let secs = 0;
+  for (const l of log.split("\n")) {
+    const m = /^(\S+) \d+ \S+ (green|red|setup-failed) gate=(\d+)s(?: .*?verdict=(\S+))?/.exec(l);
+    if (!m || (from && m[1] < from) || (to && m[1] > to)) continue;
+    g.runs++;
+    secs += Number(m[3]);
+    if (m[2] === "red") g.red++;
+    if (m[2] === "setup-failed") g.setupFailed++;
+    if (m[4] === "known-flake") g.knownFlake++;
+  }
+  g.minutes = Math.round(secs / 6) / 10;
+  return g;
 }
 
 /** Re-bases a metrics object on a merged-PR count from elsewhere (the merges log). */
@@ -381,17 +427,17 @@ function fmt(n: number): string {
 
 function main(argv: readonly string[]): number {
   const valueOf = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const flagValues = new Set(["--baseline", "--merges-log"].map((f) => argv.indexOf(f) + 1).filter((i) => i > 0));
+  const flagValues = new Set(["--baseline", "--merges-log", "--gates-log"].map((f) => argv.indexOf(f) + 1).filter((i) => i > 0));
   const path = argv.find((a, i) => !a.startsWith("--") && !flagValues.has(i));
   if (!path) {
-    console.error("usage: sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--baseline <file>] [--json]");
+    console.error("usage: sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--gates-log <file>] [--baseline <file>] [--json]");
     return 2;
   }
   if (/[\\/]subagents[\\/]/.test(path)) {
     console.error("sapu-metrics: pass the orchestrator transcript, not a subagent transcript");
     return 2;
   }
-  for (const flag of ["--baseline", "--merges-log"]) {
+  for (const flag of ["--baseline", "--merges-log", "--gates-log"]) {
     const v = valueOf(flag);
     if (argv.includes(flag) && (!v || v.startsWith("--"))) {
       console.error(`sapu-metrics: ${flag} needs a file`);
@@ -402,6 +448,8 @@ function main(argv: readonly string[]): number {
   const mergesLog = valueOf("--merges-log");
   // A missing log = no merge recorded yet (sapu-merge.sh creates it on the first merge).
   if (mergesLog) m = withMerges(m, mergesInWindow(existsSync(mergesLog) ? readFileSync(mergesLog, "utf8") : "", m.startedAt, m.endedAt));
+  const gatesLog = valueOf("--gates-log");
+  const gates = gatesLog ? gatesInWindow(existsSync(gatesLog) ? readFileSync(gatesLog, "utf8") : "", m.startedAt, m.endedAt) : null;
   const withSubagents = argv.includes("--with-subagents");
   const agents = withSubagents ? computeSubagentUsage(readSubagentTranscripts(path)) : [];
   const sweepTotal = m.totalTokens + agents.reduce((s, a) => s + a.totalTokens, 0);
@@ -409,7 +457,7 @@ function main(argv: readonly string[]): number {
   const sweepTokensPerPr = withSubagents && m.mergedPrs > 0 ? Math.round(sweepTotal / m.mergedPrs) : null;
   const sweepCostPerPr = withSubagents && m.mergedPrs > 0 ? sweepCost / m.mergedPrs : null;
   if (argv.includes("--json")) {
-    console.info(JSON.stringify(withSubagents ? { ...m, agents, sweepTotal, sweepTokensPerPr, sweepCost, sweepCostPerPr } : m));
+    console.info(JSON.stringify({ ...m, ...(gates ? { gates } : {}), ...(withSubagents ? { agents, sweepTotal, sweepTokensPerPr, sweepCost, sweepCostPerPr } : {}) }));
   } else {
     const perPr = (v: number | null, f: (n: number) => string) => (v === null ? "n/a (no merge)" : f(v));
     console.info(`steps:              ${m.steps}`);
@@ -421,6 +469,8 @@ function main(argv: readonly string[]): number {
     console.info(`merged PRs:         ${m.mergedPrs}${mergesLog ? "" : " (guessed from merge commands: pass --merges-log for the real count)"}`);
     console.info(`tokens per PR:      ${perPr(m.tokensPerPr, fmt)}`);
     console.info(`cost per PR:        ${perPr(m.costPerPr, usd)}`);
+    console.info(`wall-clock:         ${m.wallMinutes} min (waiting in gaps over ${WAIT_GAP_MIN} min: ${m.waitMinutes} min), ${perPr(m.mergedPrs > 0 ? (m.wallMinutes ?? 0) / m.mergedPrs : null, (n) => `${Math.round(n)} min`)} per PR`);
+    if (gates) console.info(`gate runs:          ${gates.runs} (${gates.red} red, ${gates.knownFlake} of them known-flake; ${gates.setupFailed} setup-failed), ${gates.minutes} min in gates`);
     if (withSubagents) {
       console.info("subagents (type | agents | steps | avg first-step context | total | cost):");
       for (const a of agents) {
