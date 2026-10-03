@@ -42,6 +42,23 @@ One `ctx_batch_execute` (or one shell command) for all of it, output trimmed:
 
 A repo without real tests: **never** write a fake `gate.merge` (e.g. lint only) so that sapu can run — autonomous merging without a test gate is forbidden. Report the missing prerequisites and stop for sapu/forge; the other skills whose prerequisites are met may still be set up.
 
+## 3b. Policy — the owner decides how sapu behaves here (popup)
+
+Every `policy` field (CONTRACT.md §Policy) is the owner's choice, asked with **AskUserQuestion**; nothing is hard-wired off, a default only pre-selects an option marked "(Recommended)". Evidence first, in the scan's batch:
+- `gh api repos/<repo> --jq '{type: .owner.type, owner: .owner.login}'` — someone else's repo (an organization, or an owner that is not the gh account)?
+- `gh api repos/<repo>/branches/<base>/protection --jq '.required_pull_request_reviews.required_approving_review_count // 0'` (403/404 = unknown) — do people have to approve?
+- `CODEOWNERS` (`.github/`, root, `docs/`) — reviewer candidates; `.github/pull_request_template.md` — the PR shape the repo expects.
+- `gh issue list --assignee <ghUser> --json number --limit 100` — does the owner work from assigned issues?
+- The slash commands and skills listed in this session (the Skill tool's list) — candidates for a required pre-PR step.
+
+Defaults: the owner's own repo → the behaviour before policies (`repo`, `sapu`, `trusted`, `visible`, file issues, every skill whose prerequisites hold, no pre-PR step). Someone else's repo → `local`, `human`, `assigned`, `none`, no issue filing, `sapu` + `forge`. Evidence overrides a default (branch protection with approvals → `human`).
+
+- **Popup 1** (4 questions): where the contract lives (`repo` committed / `local` = `~/.config/sapu/repos/<owner>__<name>/`, nothing in the repo) · who merges (`sapu` after a green gate / `human`: sapu hands the PR to reviewers) · which issues (all trusted / assigned to me / one label — Other = the label) · traces on GitHub (`visible` / `none`).
+- **Popup 2**: may sapu file new issues · which skills may run (**multiSelect**: sapu, forge, argus, momus, nemesis, inspector, dream) · a required pre-PR command (none / each detected candidate, e.g. `/dev-review`; Other = any `/command args`) · when merge is `human`: reviewers to request (from CODEOWNERS/branch protection; Other = logins).
+- **Popup 3**, only with a pre-PR command: which severities must reach **0** before the PR is handed in (**multiSelect** critical, medium, low) · where its output goes (PR body / PR comment). There is no round limit to ask about: the loop runs until zero and stops only on a contradiction.
+
+Write exactly the answers into `policy` (omit a field only when the answer equals its default). Show the resulting block in the step 5 summary.
+
 ## 4. Draft
 
 - **`.claude/sapu.json`**: every CONTRACT.md field filled with a decision, none left at a default. What the scan cannot settle (e.g. `securityEpic`, `invariantDomains`, the protected targets) → ask the owner, one question per decision, with a proposal already grounded in evidence. `guard.postgres`/`envFiles`/`deny` = every target that, if a worker touched it, would damage data or other sessions.
@@ -49,13 +66,14 @@ A repo without real tests: **never** write a fake `gate.merge` (e.g. lint only) 
 - **Profiles `.claude/sapu/<skill>.md`** for every skill whose prerequisites are met: `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" profiles --list` prints the sections (`## …`) each skill's engine reads. Write every section from the scan and CLAUDE.md (reference CLAUDE.md, never copy it). A section that genuinely does not apply in this repo: write one line saying why, never delete it.
 - **Aliases** so that the owner only types `/<name>`, not `/sapu:<name>`: for each skill the repo enables (except `init` — `/init` belongs to Claude Code), write `.claude/skills/<name>/SKILL.md` = an exact copy of `${CLAUDE_PLUGIN_ROOT}/skills/init/alias-template.md` with `<name>` replaced (a separate file: the argument placeholder in it would be substituted if it were written in this SKILL.md). Project level only, **never** `~/.claude/skills` (that reaches every repo on this machine); a name already used by another skill in this repo is skipped and reported.
 - A contract that is ignored → propose `.gitignore` exceptions (`!/.claude/sapu/`, `!/.claude/sapu.json`) as part of the draft.
+- **`local` home**: write `sapu.json` and the profiles into `~/.config/sapu/repos/<owner>__<name>/` (created by init, never by a worker) instead of `.claude/`; nothing is committed, no PR. Aliases go to `.claude/skills/` only when that path is ignored; otherwise add it to `<MAIN>/.git/info/exclude` (local, never committed) first. Never edit the repo's `.gitignore` for a local home.
 - Labels that do not exist yet → propose `gh label create` for each contract label; create them only after the owner agrees.
 
 ## 5. Owner confirmation, then verification
 
 Show a summary: identity (repo, gh account, git email), `gate.fast`, `gate.merge`, the protected targets, the security epic, the status of `.nemesis/authorization.yml` (present/signed/expired — init does not confirm its content), and the prerequisites not yet met. Ask the owner to confirm the **account** explicitly. **init does not fill nemesis targets:** the owner personally fills `scope`/`forbidden` and signs `.nemesis/authorization.yml` — that file is the record, not the profile. At most, init offers an empty template; without that file with an attestation, nemesis refuses to run.
 
-Then, from the init branch's checkout: `sapu-contract.mjs show --working-tree` (schema) and `sapu-contract.mjs profiles --working-tree` (profile sections) must be green — without `--working-tree` both read the main checkout's HEAD, which does not hold the contract yet. `sapu-contract.mjs check` (scope lock) and the other skills read the contract **committed** at the main checkout's HEAD, so they only go green after the init PR is merged; until then, `preflight` is the key evidence. Write the files on a new branch and open a PR (not a commit to the base branch), or hand the diff to the owner if they choose to review it themselves. The final report: the files written, decisions + their sources, the prerequisites still missing per skill.
+A `local` home: `sapu-contract.mjs show`, `profiles` and `home` (must print `local`) read it directly and must be green now; there is no PR. A `repo` home: from the init branch's checkout, `sapu-contract.mjs show --working-tree` (schema) and `sapu-contract.mjs profiles --working-tree` (profile sections) must be green — without `--working-tree` both read the main checkout's HEAD, which does not hold the contract yet. `sapu-contract.mjs check` (scope lock) and the other skills read the contract **committed** at the main checkout's HEAD, so they only go green after the init PR is merged; until then, `preflight` is the key evidence. Write the files on a new branch and open a PR (not a commit to the base branch), or hand the diff to the owner if they choose to review it themselves. The final report: the files written, decisions + their sources, the prerequisites still missing per skill.
 
 ## Prohibitions
 

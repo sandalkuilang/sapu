@@ -25,6 +25,21 @@ and the repo commits no contract of its own (two contracts = neither rules). Sub
 there: the guard refuses every write under `~/.config/sapu/`, so a worker cannot change the rules
 that judge it — the same reason the committed contract is read from HEAD.
 
+**Policy — how sapu behaves in this repo (optional `policy` object).** Every field is the owner's
+choice; `/sapu:init` asks each one in a popup. An absent field keeps the behaviour sapu had before
+policies, so a default never hides a restriction. `sapu-contract.mjs policy` prints the resolved
+block; the orchestrator reads `skills/sapu/policy.md` when any field is off its default.
+
+| Field | Values (default first) | Enforced by |
+|---|---|---|
+| `merge` | `"sapu"` / `"human"` | `sapu-merge.sh`: with `human` it runs the gate, takes the PR out of draft, requests `reviewers`, never merges (exit 4) |
+| `reviewers` | `[]` / GitHub logins | `sapu-merge.sh` (review requests); `pr-reviews` shows only their review text (plus the trusted set's) |
+| `issues` | `"trusted"` / `"assigned"` / `{"label": "x"}` | the orchestrator's B1 selection; `issue-trust` still decides each issue |
+| `fileIssues` | `true` / `false` | the skills: no `gh issue create` at all; gaps go to the PR's Notes or the local record |
+| `traces` | `"visible"` / `"none"` | `sapu-merge.sh` posts no review/gate comment and no labels (kept in `.git/`); workers and the orchestrator leave no sapu/agent wording; `labels` becomes optional |
+| `skills` | all / any non-empty subset | every skill's first step `sapu-contract.mjs allowed <skill>` |
+| `prePr` | `null` / `{"run": "/cmd args", "severities": [...], "paste": "body" or "comment"}` | `sapu-wave.js`: fresh rounds of the command until every listed severity reports 0 — no round limit; a contradiction stops it for the owner; fixes get a delta senior review |
+
 No silent defaults: a missing required field = the skill stops with a message that points to
 `/sapu:init`. The only exceptions, recorded and deliberate: the optional fields
 `specialists` (§Specialist agents), whose default is the plugin's built-in agents, and

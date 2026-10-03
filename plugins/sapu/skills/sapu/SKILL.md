@@ -82,7 +82,7 @@ Examples: 🔴 with a full design and no open questions → `sapu:sapu-sonnet-hi
 ## Step 0 — Setup
 
 1. `git worktree list` — first line = the main checkout, kept as **`<MAIN>`**. All orchestration goes through `git -C <MAIN>` / absolute paths. In `<MAIN>` only `git merge --ff-only origin/<base>` (`<base>` = contract `baseBranch`), only when the tree is clean and on `<base>` — `sapu-merge.sh` does it after every merge, so what is built from `<MAIN>` is not stale; **never** `checkout`/`pull`/`stash`/`reset` in `<MAIN>` — other sessions use it, and its working tree may be dirty or on another branch (the ff is then skipped with a warning, never forced); record `git -C <MAIN> status --short` in the final report and never touch its content. Git stash is shared by every worktree: never a bare `git stash`, use a WIP commit.
-2. Scope lock (above), then `Read <profiles>/sapu.md` — this repo's orchestrator profile. `git -C <MAIN> fetch origin <base>`.
+2. Scope lock (above), `sapu-contract.mjs allowed sapu`, then `Read <profiles>/sapu.md` — this repo's orchestrator profile. `sapu-contract.mjs policy`: a field off its default → Read `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` (it wins for this repo). `git -C <MAIN> fetch origin <base>`.
 3. Test infrastructure once, here: profile §Step 0 (containers, test DB port, committed test env, protected targets). The repo's real env (`.env`, `.env.local`, and contract `guard.envFiles`) is never linked into any worktree.
 4. The `<MAIN>` health check in profile §Step 0 (e.g. workspace links a worktree could hijack), if any. Repeat it whenever a worktree is removed.
 5. `echo sapu-run-<date-time>` — a unique marker for finding this session's transcript (§Sessions and waves, metrics).

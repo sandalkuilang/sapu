@@ -9,6 +9,8 @@ Fixer to `/sapu:argus`/`/sapu:nemesis`: they file, forge closes. **Attended** wo
 
 Engine only: every repo fact comes from the contract (`.claude/sapu.json`) and the repo profile (`<profiles>/forge.md`, cited as *profile §…*; `<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo). *reference* = `${CLAUDE_PLUGIN_ROOT}/skills/forge/reference.md`.
 
+**Policy.** First `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed forge` (exit 1 = stop and quote it). When its `policy` has `fileIssues: false` or `traces: "none"`, `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` governs filing and every GitHub write.
+
 ## Scope lock — profile and contract first
 
 1. Read the repo profile `<profiles>/forge.md` at the repo root (`git rev-parse --show-toplevel`). Missing — or missing a *profile §…* hook this skill names (a repo with nothing to say writes `none`) → STOP, tell the user to run `/sapu:init`; never guess a default.
