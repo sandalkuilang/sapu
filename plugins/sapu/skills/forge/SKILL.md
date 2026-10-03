@@ -1,17 +1,17 @@
 ---
 name: forge
-description: Use when picking up an open GitHub issue in a repo that carries a sapu contract (`.claude/sapu.json` + `.claude/sapu/forge.md`) and driving it end-to-end — plan, TDD implementation, self-review, PR — under the risk-tiered merge policy. Also use when asked to work through the issue backlog, resolve findings filed by argus or nemesis, or "ship" a piece of work. Triggers: "pick up issue #N", "work the backlog", "implement issue #N end to end", "ship this issue", "run the engineering loop".
+description: Use when picking up an open GitHub issue in a repo that carries a sapu contract and forge profile and driving it end-to-end — plan, TDD implementation, self-review, PR — under the risk-tiered merge policy. Also use when asked to work through the issue backlog, resolve findings filed by argus or nemesis, or "ship" a piece of work. Triggers: "pick up issue #N", "work the backlog", "implement issue #N end to end", "ship this issue", "run the engineering loop".
 ---
 
 # Forge — Issue-to-PR Engineering Loop
 
 Fixer to `/sapu:argus`/`/sapu:nemesis`: they file, forge closes. **Attended** workflow — normal tool-approval prompts stay in effect; branch → PR `Closes #N` → squash-merge. An unattended `--dangerously-skip-permissions` loop is NOT configured and must not be inferred from this skill.
 
-Engine only: every repo fact comes from the contract (`.claude/sapu.json`) and the repo profile (`.claude/sapu/forge.md`, cited as *profile §…*). *reference* = `${CLAUDE_PLUGIN_ROOT}/skills/forge/reference.md`.
+Engine only: every repo fact comes from the contract (`.claude/sapu.json`) and the repo profile (`<profiles>/forge.md`, cited as *profile §…*; `<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo). *reference* = `${CLAUDE_PLUGIN_ROOT}/skills/forge/reference.md`.
 
 ## Scope lock — profile and contract first
 
-1. Read the repo profile `.claude/sapu/forge.md` at the repo root (`git rev-parse --show-toplevel`). Missing — or missing a *profile §…* hook this skill names (a repo with nothing to say writes `none`) → STOP, tell the user to run `/sapu:init`; never guess a default.
+1. Read the repo profile `<profiles>/forge.md` at the repo root (`git rev-parse --show-toplevel`). Missing — or missing a *profile §…* hook this skill names (a repo with nothing to say writes `none`) → STOP, tell the user to run `/sapu:init`; never guess a default.
 2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" check` — exit 0 prints the contract JSON; keep `repo`, `baseBranch`, `gate.fast`, `labels`, `securityEpic`. Non-zero → STOP with its message. Then `sapu-contract.mjs specialists` prints the role → agent map: every specialist below is named by role (`specialists.<role>`) and dispatched with `subagent_type` = that map's value (the repo's own agent, else the built-in `sapu:sapu-<role>`).
 3. `gh repo view --json nameWithOwner -q .nameWithOwner` must print the contract's `repo` — else STOP.
 

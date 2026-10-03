@@ -10,7 +10,7 @@ description: Autonomous forward-looking research + speculation mode — deep-res
 
 Sibling to `/sapu:argus` (QA), `/sapu:nemesis` (red-team) and `/sapu:sapu` (backlog sweep) — but unlike them, DREAM does not check the contract: no target repo, no state dir, no `.claude/sapu.json` (it writes nothing to GitHub). It exists only where the plugin is installed (project scope) and runs cold every invocation: research fresh, speculate, write one report, stop.
 
-**Repo profile (optional).** If `.claude/sapu/dream.md` exists in the project, read it first; its `## Findings routing` names where bug-like findings go (Scope lock). Absent = run as written.
+**Repo profile (optional).** If `<profiles>/dream.md` exists (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo), read it first; its `## Findings routing` names where bug-like findings go (Scope lock). Absent = run as written.
 
 ## Role
 You are operating in Dreaming Mode — explicitly distinct from your normal

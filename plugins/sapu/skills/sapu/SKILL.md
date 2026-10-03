@@ -1,13 +1,13 @@
 ---
 name: sapu
-description: Use when asked to sweep the current repo's backlog clean — Phase A (drains ALL open PRs: merge / fix / close) runs first; each Phase B issue is one Workflow call, two at a time (the plugin's workflows/sapu-wave.js: forge workers, tiered reviewers, fix cycles), and waves continue in the same session while the orchestrator's context stays under 750k, after which it updates `sapu-sweep-state` in project memory and asks the owner to start a fresh /sapu:sapu session; the sweep ends (final gate, branch cleanup, final report) in the session whose triage finds no WORK backlog left. Every issue ends merged, skipped-with-reason, or blocked-with-reason. Drains the backlog; files no new issues except out-of-scope security gaps under the repo's security epic. Fully autonomous orchestration; only the orchestrator merges. Needs the repo contract (.claude/sapu.json + .claude/sapu/*.md; /sapu:init writes them). Triggers: "/sapu", "sapu", "drain the backlog", "sweep the repo".
+description: Use when asked to sweep the current repo's backlog clean — Phase A (drains ALL open PRs: merge / fix / close) runs first; each Phase B issue is one Workflow call, two at a time (the plugin's workflows/sapu-wave.js: forge workers, tiered reviewers, fix cycles), and waves continue in the same session while the orchestrator's context stays under 750k, after which it updates `sapu-sweep-state` in project memory and asks the owner to start a fresh /sapu:sapu session; the sweep ends (final gate, branch cleanup, final report) in the session whose triage finds no WORK backlog left. Every issue ends merged, skipped-with-reason, or blocked-with-reason. Drains the backlog; files no new issues except out-of-scope security gaps under the repo's security epic. Fully autonomous orchestration; only the orchestrator merges. Needs the repo contract (/sapu:init writes it). Triggers: "/sapu", "sapu", "drain the backlog", "sweep the repo".
 ---
 
 # Sapu — Backlog-Sweeping Orchestrator (PRs first, then Issues)
 
 `/sapu:forge` works ONE issue through to a PR; sapu sweeps EVERYTHING — open PRs first (Phase A), then issues in parallel waves (Phase B) — until the backlog is zero or every remaining item has a written reason (§Sessions and waves). Subagents take one issue to an open PR (the worker brief), then **stop**; review is by independent reviewers, merge only by the orchestrator.
 
-This skill is an **engine**: it knows nothing about any particular repo. Repo facts come from the contract (`${CLAUDE_PLUGIN_ROOT}/CONTRACT.md`): `.claude/sapu.json` (read by the scripts) and the profile `.claude/sapu/sapu.md` (read by you, in Step 0). Every "profile §X" below = the `## X` section of that profile. A referenced section missing from the profile = stop and ask the owner to complete it via `/sapu:init` — never guess a repo value.
+This skill is an **engine**: it knows nothing about any particular repo. Repo facts come from the contract (`${CLAUDE_PLUGIN_ROOT}/CONTRACT.md`): `.claude/sapu.json` (read by the scripts) and the profile `<profiles>/sapu.md` (Step 0; `<profiles>` = `sapu-contract.mjs home` dir). Every "profile §X" below = the `## X` section of that profile. A referenced section missing from the profile = stop and ask the owner to complete it via `/sapu:init` — never guess a repo value.
 
 ## Standing rules
 
@@ -82,7 +82,7 @@ Examples: 🔴 with a full design and no open questions → `sapu:sapu-sonnet-hi
 ## Step 0 — Setup
 
 1. `git worktree list` — first line = the main checkout, kept as **`<MAIN>`**. All orchestration goes through `git -C <MAIN>` / absolute paths. In `<MAIN>` only `git merge --ff-only origin/<base>` (`<base>` = contract `baseBranch`), only when the tree is clean and on `<base>` — `sapu-merge.sh` does it after every merge, so what is built from `<MAIN>` is not stale; **never** `checkout`/`pull`/`stash`/`reset` in `<MAIN>` — other sessions use it, and its working tree may be dirty or on another branch (the ff is then skipped with a warning, never forced); record `git -C <MAIN> status --short` in the final report and never touch its content. Git stash is shared by every worktree: never a bare `git stash`, use a WIP commit.
-2. Scope lock (above), then `Read <MAIN>/.claude/sapu/sapu.md` — this repo's orchestrator profile. `git -C <MAIN> fetch origin <base>`.
+2. Scope lock (above), then `Read <profiles>/sapu.md` — this repo's orchestrator profile. `git -C <MAIN> fetch origin <base>`.
 3. Test infrastructure once, here: profile §Step 0 (containers, test DB port, committed test env, protected targets). The repo's real env (`.env`, `.env.local`, and contract `guard.envFiles`) is never linked into any worktree.
 4. The `<MAIN>` health check in profile §Step 0 (e.g. workspace links a worktree could hijack), if any. Repeat it whenever a worktree is removed.
 5. `echo sapu-run-<date-time>` — a unique marker for finding this session's transcript (§Sessions and waves, metrics).

@@ -1030,6 +1030,10 @@ describe("sapu's machine config (~/.config/sapu/) is written by the person at th
     ["git config --file ~/.config/sapu/config.json a.b c"],
     ["cd ~/.config && rm -rf sapu"],
     ["bash -c 'rm ~/.config/sapu/config.json'"],
+    // a local contract home: the rules that judge a worker are as out of its reach as the machine config
+    ["echo '{}' > ~/.config/sapu/repos/owner__app/sapu.json"],
+    ["sed -i '' 's/merge/x/' ~/.config/sapu/repos/owner__app/worker.md"],
+    ["rm -rf ~/.config/sapu/repos"],
     // removing or replacing what holds it takes the config with it
     ["rm -rf ~/.config"],
     ["mv ~/.config ~/.config.bak"],

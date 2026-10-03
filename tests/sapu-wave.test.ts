@@ -602,7 +602,7 @@ describe("sapu-wave — contract-driven behaviour", () => {
       (c) => (c.opts.phase !== "Review" ? opened(47) : c.opts.agentType === "team-dbb" ? null : clean),
     );
     expect(typo.out[0]).toMatchObject({ status: "died" });
-    expect(String(typo.out[0].reason)).toMatch(/reviewer returned nothing: team-dbb — team-dbb comes from the repo contract: check that agent name in \.claude\/sapu\.json \(specialists \/ redAreaSpecialists\)/);
+    expect(String(typo.out[0].reason)).toMatch(/reviewer returned nothing: team-dbb — team-dbb comes from the repo contract: check that agent name in the repo contract \(specialists \/ redAreaSpecialists\)/);
     // a literal redAreaSpecialists agent on a diff-raised pair: the same hint
     const literal = await runWave(
       { main: MAIN, contract: { ...CONTRACT, redAreaSpecialists: [{ match: "^ui/", agent: "legacy-ui-reviewr" }] }, items: [item(48)] },

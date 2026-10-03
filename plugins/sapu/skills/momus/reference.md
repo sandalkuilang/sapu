@@ -1,6 +1,6 @@
 # MOMUS reference — per-area checklist, templates, state
 
-Each section says what the area's checks look for; this repo's commands for them are in the profile (`.claude/sapu/momus.md`, `## Area A`–`## Area I`). Commands are starting points to adapt to what actually matches in the running tree, not output to copy verbatim into a report — §0 rule 2 (SKILL.md in this skill's directory) still applies: never paste a command's output unless you actually ran it this pass. Globs in `--include` are quoted because the user's shell may be zsh (an unquoted `--include=*.ts` aborts with "no matches found").
+Each section says what the area's checks look for; this repo's commands for them are in the profile (`<profiles>/momus.md`, `## Area A`–`## Area I`). Commands are starting points to adapt to what actually matches in the running tree, not output to copy verbatim into a report — §0 rule 2 (SKILL.md in this skill's directory) still applies: never paste a command's output unless you actually ran it this pass. Globs in `--include` are quoted because the user's shell may be zsh (an unquoted `--include=*.ts` aborts with "no matches found").
 
 ## §A Tenant-Scope Isolation
 
