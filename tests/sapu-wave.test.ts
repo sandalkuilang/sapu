@@ -253,6 +253,18 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     expect(out[0].reviewComment).toMatch(/^Review tier: red \(red areas: payments\)/);
   });
 
+  it("a reviewer whose classifier did not run adds the architect, never replaces the worker's areas or domain half", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(20)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(20, { head_sha: fixSha(c, n), red_areas: ["payments"] });
+      if (n <= 3) return c.opts.agentType === QA ? { ...finding(false), red_area_ran: false } : { ...clean, red_areas: ["payments"] };
+      return { ...clean, red_areas: ["payments"] };
+    });
+    expect(reviewers(calls).slice(0, 3)).toEqual([QA, DB, ARCHITECT]);
+    expect(reviewers(calls).slice(3).sort()).toEqual([DB, QA]);
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red" });
+    expect(out[0].redAreas).toEqual(["payments", "unknown: the red-area check did not run"]);
+  });
+
   it("the worker's areas and the reviewers' agree: the pair is not doubled", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(18)] }, (c) =>
       c.opts.phase === "Review" ? { ...clean, red_areas: ["schema/migrations"] } : opened(18, { red_areas: ["schema/migrations"] }),

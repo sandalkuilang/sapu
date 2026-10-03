@@ -479,9 +479,18 @@ if [ -n "$RED" ]; then
   # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and
   # no space or comma is taken (the ledger is space- and comma-separated). ponytail: two runners'
   # formats; any other runner records failed=- and gets no verdict.
-  TESTS="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG" | sed -nE \
+  CLEAN="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG")"
+  FILES="$(sed -nE \
     -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' \
-    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' | sort -u | paste -sd, -)"
+    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' <<<"$CLEAN")"
+  TESTS="$(printf '%s\n' "$FILES" | grep . | sort -u | paste -sd, - || true)"
+  # A failure line no file was read from (pytest ERROR, a path with a space) or an unhandled error
+  # outside any test = something besides the named tests failed: never known-flake.
+  RAW="$(grep -cE '^[[:space:]]*FAIL[[:space:]]|^(FAILED|ERROR) ' <<<"$CLEAN" || true)"
+  READ="$(printf '%s\n' "$FILES" | grep -c . || true)"
+  OTHER=""
+  [ "$RAW" = "$READ" ] || OTHER="$((RAW - READ)) failure line(s) without a readable file"
+  if grep -qE 'Unhandled (Error|Rejection)' <<<"$CLEAN"; then OTHER="${OTHER:+$OTHER; }an unhandled error outside any test"; fi
   # Flake verdict. PROVEN flaky = a file that failed ANOTHER PR's gate on a tree whose gate then
   # went green on that same tree (no code changed in between). A red run elsewhere alone is not
   # proof: that PR may really have broken it. known-flake = every failing file proven flaky, and
@@ -503,6 +512,7 @@ if [ -n "$RED" ]; then
     done
   fi
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
+  [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"

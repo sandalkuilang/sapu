@@ -388,6 +388,15 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.err).toMatch(/verdict: unknown/);
   });
 
+  it("a failure line no file could be read from (pytest ERROR, a path with a space) or a vitest Unhandled Error keeps the verdict unknown", () => {
+    for (const extra of ["ERROR tests/test_c.py::test_setup - fixture", " FAIL  |db| apps/api/pay roll.test.ts > x", "⎯⎯ Unhandled Errors ⎯⎯\nVitest caught 1 unhandled error"]) {
+      const h = harness();
+      seed(h, ...provenBy(5, "apps/a.test.ts"));
+      const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${extra}` });
+      expect(r.err, extra).toMatch(/verdict: unknown \(not only tests failed: /);
+    }
+  });
+
   it("a red that is not only tests (a gate.redIf line) is never known-flake, even with every test proven", () => {
     const h = harness();
     seed(h, ...provenBy(5, "apps/a.test.ts"));

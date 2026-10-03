@@ -363,12 +363,15 @@ async function reviewWithRaise(item, state, delta) {
     if (!state.workerRaised || delta) return rv
     state.workerRaised = false
     if (rv.redAreas.length === 0) return rv
-    state.redAreas = rv.redAreas
+    // A reviewer whose check did not run knows no areas: the architect reviews on top (fail-closed),
+    // and the worker's areas and domain half stay for the delta rounds.
+    const unchecked = rv.redAreas.includes(UNCHECKED)
     const want = specialistFor(rv.redAreas)
-    if (want === state.domainReviewer) return rv
-    state.domainReviewer = want
+    state.redAreas = unchecked ? [...new Set([...state.redAreas, ...rv.redAreas])] : rv.redAreas
+    if (want === state.domainReviewer) return { ...rv, redAreas: state.redAreas }
+    if (!unchecked) state.domainReviewer = want
     const half = await review(item, state, null, [want])
-    return half.dead || half.untrusted ? half : combine(rv, half)
+    return half.dead || half.untrusted ? half : combine({ ...rv, redAreas: state.redAreas }, half)
   }
   if (rv.redAreas.length === 0) return rv
   state.tier = 'red'
