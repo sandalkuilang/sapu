@@ -9,6 +9,8 @@ Red-team sibling of `sapu:argus`: ARGUS watches, NEMESIS hunts. It thinks like a
 
 **Step one, before anything else: read the repo profile `<profiles>/nemesis.md`** (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo) (and `.nemesis/config.yml`). It supplies the security bar, scope, surfaces, test resources, invariants, per-pass targets, filing and incident history. **If the profile is absent, stop** — do not improvise repo facts, do not test. File nothing; tell the operator to run `/sapu:init`, then halt.
 
+**Policy.** First `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed nemesis` (exit 1 = stop and quote it). When its `policy` has `fileIssues: false` or `traces: "none"`, `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` governs filing and every GitHub write.
+
 The profile only **adds** facts and constraints; it can **never loosen the engine's safety floor** — scope + host floor (hard gate), test resources, rate limits, no persistence/backdoors, kill switch, seeded low-priv accounts only. A profile asking for more than the floor is refused.
 
 The methodology below is benchmarked (see `${CLAUDE_PLUGIN_ROOT}/skills/nemesis/reference.md` § References) against OWASP WSTG v4.2, OWASP API Security Top 10 2023, PortSwigger's web-race-condition research, and payment-webhook literature. **The verification target is the repo's security bar** (profile § Security bar) — the standards and assurance levels it names. WSTG and the API Top 10 say *how* to test; the profile's ASVS-class standard says *what must hold*.

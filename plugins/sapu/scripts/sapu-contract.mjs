@@ -27,6 +27,11 @@
 //   sapu-contract.mjs home        prints {mode: "repo"|"local", dir}: where this repo's contract and
 //                                 profiles live (<dir>/<skill>.md). local = ~/.config/sapu/repos/<owner>__<name>/,
 //                                 outside the repo, used when a sapu.json is there (localHome)
+//   sapu-contract.mjs policy      prints the repo's policy with every absent field at its default
+//                                 (resolvePolicy: merge, reviewers, issues, fileIssues, traces, skills, prePr)
+//   sapu-contract.mjs pr-reviews <N>  PR <N>'s reviews + inline review comments by the trusted set and
+//                                 policy.reviewers only (prReviews); others are counted as withheld
+//   sapu-contract.mjs allowed <skill>  exit 0 when policy.skills allows <skill>, else 1 with the reason
 //   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
 //                                 Phase B lanes this machine carries now (safeLanes); no contract needed
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
@@ -129,6 +134,46 @@ export function trustedSet(c, owner) {
   return out;
 }
 
+/** The skills a policy can allow (`policy.skills`). */
+export const SKILLS = ["sapu", "forge", "argus", "momus", "nemesis", "inspector", "dream"];
+/** Severities a pre-PR review command reports, highest first. */
+export const SEVERITIES = ["critical", "medium", "low"];
+
+/**
+ * How sapu behaves in this repo: who merges, which issues it takes, what it may leave on GitHub.
+ * Every field is the owner's choice (/sapu:init asks each one); an absent policy or field keeps the
+ * behaviour sapu had before policies existed, so the default is never a hidden restriction.
+ */
+export const DEFAULT_POLICY = { merge: "sapu", reviewers: [], issues: "trusted", fileIssues: true, traces: "visible", skills: SKILLS, prePr: null };
+
+/** The policy with every absent field at its default. */
+export function resolvePolicy(c) {
+  return { ...DEFAULT_POLICY, ...((c && c.policy) || {}) };
+}
+
+function policyProblems(p) {
+  const errs = [];
+  if (!p || typeof p !== "object" || Array.isArray(p)) return ["policy must be an object"];
+  for (const k of Object.keys(p)) if (!(k in DEFAULT_POLICY)) errs.push(`policy: unknown key "${k}"`);
+  const one = (k, ok, msg) => k in p && !ok(p[k]) && errs.push(`policy.${k} ${msg}`);
+  one("merge", (v) => v === "sapu" || v === "human", 'must be "sapu" (sapu merges after a green gate) or "human" (sapu hands the PR to reviewers)');
+  one("reviewers", (v) => Array.isArray(v) && v.every((x) => typeof x === "string" && GH_LOGIN.test(x)), "must be an array of GitHub logins");
+  one("issues", (v) => v === "trusted" || v === "assigned" || (v && typeof v === "object" && Object.keys(v).join() === "label" && isStr(v.label)), 'must be "trusted", "assigned" or {"label": "<name>"}');
+  one("fileIssues", (v) => typeof v === "boolean", "must be true or false");
+  one("traces", (v) => v === "visible" || v === "none", 'must be "visible" or "none"');
+  one("skills", (v) => Array.isArray(v) && v.length > 0 && v.every((x) => SKILLS.includes(x)), `must be a non-empty array of ${SKILLS.join(", ")}`);
+  one(
+    "prePr",
+    (v) =>
+      v === null ||
+      (v && typeof v === "object" && Object.keys(v).every((k) => ["run", "severities", "paste"].includes(k)) && isStr(v.run) && v.run.startsWith("/") &&
+        Array.isArray(v.severities) && v.severities.length > 0 && v.severities.every((x) => SEVERITIES.includes(x)) && (v.paste === "body" || v.paste === "comment")),
+    `must be null or {"run": "/<command> [args]", "severities": [${SEVERITIES.map((x) => `"${x}"`).join(", ")}] (each must reach 0), "paste": "body" | "comment"}`,
+  );
+  if ((p.merge ?? "sapu") === "sapu" && Array.isArray(p.reviewers) && p.reviewers.length) errs.push('policy.reviewers only applies with merge "human"');
+  return errs;
+}
+
 /** Every schema error in `c` (empty = valid). Unknown keys are errors: a typo must not silently drop a rule. */
 export function validate(c) {
   const errs = [];
@@ -138,7 +183,14 @@ export function validate(c) {
     for (const k of allowed) if (!(k in obj)) errs.push(`${where}: missing "${k}" (write null when a field does not apply)`);
   };
   if (!c || typeof c !== "object" || Array.isArray(c)) return ["the contract must be a JSON object"];
-  keys(c, "sapu.json", ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", "labels", "securityEpic", "invariantDomains", "testResources", "guard"], ["specialists", "trustedAuthors", "requireSignedCommits"]);
+  // traces "none" puts no sapu label anywhere, so its labels block is optional.
+  const noTraces = c.policy && typeof c.policy === "object" && c.policy.traces === "none";
+  keys(
+    c,
+    "sapu.json",
+    ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", ...(noTraces && !("labels" in c) ? [] : ["labels"]), "securityEpic", "invariantDomains", "testResources", "guard"],
+    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels"],
+  );
   need(c.version === 1, "version must be 1");
   need(typeof c.repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(c.repo), "repo must be owner/name");
   need(isStr(c.ghUser), "ghUser must be a non-empty string");
@@ -206,10 +258,11 @@ export function validate(c) {
     keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors"]);
     for (const k of ["tierPrefix", "inProgress", "done"]) need(isStr(c.labels[k]), `labels.${k} must be a non-empty string`);
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
-  } else errs.push("labels must be an object");
+  } else if (!(noTraces && !("labels" in c))) errs.push("labels must be an object");
   need(c.securityEpic === null || (Number.isInteger(c.securityEpic) && c.securityEpic > 0), "securityEpic must be an issue number or null");
   need(isStr(c.invariantDomains), "invariantDomains must be a non-empty string");
   need(isStr(c.testResources), "testResources must be a non-empty string");
+  if ("policy" in c) policyProblems(c.policy).forEach((e) => errs.push(e));
   const g = c.guard;
   if (g && typeof g === "object") {
     keys(g, "guard", ["envFiles", "postgres", "deny"]);
@@ -795,6 +848,27 @@ export function trustedComments(c, n, trusted = resolveTrusted(c)) {
   return { comments, withheld: all.length - comments.length };
 }
 
+/**
+ * A PR's reviews and inline review comments by the people who may steer a fix: the trusted set plus
+ * `policy.reviewers` (merge "human": the colleagues who approve). Everyone else is counted, never
+ * shown. `state` = each such reviewer's latest review state (APPROVED, CHANGES_REQUESTED, ...).
+ */
+export function prReviews(c, n, trusted = resolveTrusted(c)) {
+  const ids = new Set(trusted.map((t) => t.id));
+  const logins = new Set(resolvePolicy(c).reviewers.map(lc));
+  const ok = (x) => ids.has(x.id) || logins.has(lc(x.login));
+  const reviews = ghJson(["api", "--paginate", `repos/${c.repo}/pulls/${n}/reviews?per_page=100`, "--jq", ".[] | {login: .user.login, id: .user.id, state, submittedAt: .submitted_at, body} | @json"], { lines: true });
+  const inline = ghJson(["api", "--paginate", `repos/${c.repo}/pulls/${n}/comments?per_page=100`, "--jq", ".[] | {login: .user.login, id: .user.id, path, line, body} | @json"], { lines: true });
+  const state = {};
+  for (const r of reviews.filter(ok)) state[r.login] = r.state;
+  return {
+    state,
+    reviews: reviews.filter(ok).map((r) => ({ author: r.login, state: r.state, submittedAt: r.submittedAt, body: r.body })),
+    comments: inline.filter(ok).map((x) => ({ author: x.login, path: x.path, line: x.line, body: x.body })),
+    withheld: reviews.length + inline.length - reviews.filter(ok).length - inline.filter(ok).length,
+  };
+}
+
 // An issue as a PR body names it: #N, owner/repo#N, GH-N, or a github.com issue/PR URL.
 const ONE_REF = String.raw`(?:https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
 const CLOSE_LIST = new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+(${ONE_REF}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${ONE_REF})*)`, "gi");
@@ -933,8 +1007,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1008,10 +1082,29 @@ function main(argv) {
     process.stdout.write(typeof v === "string" ? `${v}\n` : `${JSON.stringify(v)}\n`);
     return;
   }
+  if (cmd === "policy") {
+    process.stdout.write(`${JSON.stringify(resolvePolicy(contract))}\n`);
+    return;
+  }
+  if (cmd === "pr-reviews") {
+    if (!/^[1-9]\d*$/.test(arg ?? "")) fail("usage: sapu-contract.mjs pr-reviews <N>");
+    try {
+      process.stdout.write(`${JSON.stringify(prReviews(contract, Number(arg)), null, 2)}\n`);
+    } catch (e) {
+      fail(`cannot read the reviews of PR #${arg} (${e.message}): fix nothing on unread reviews`);
+    }
+    return;
+  }
+  if (cmd === "allowed") {
+    if (!SKILLS.includes(arg)) fail(`allowed needs a skill name: ${SKILLS.join(", ")}`);
+    if (!resolvePolicy(contract).skills.includes(arg)) fail(`${arg} is not allowed in this repo (policy.skills: ${resolvePolicy(contract).skills.join(", ")}); /sapu:init changes it`);
+    process.stdout.write(`${arg} allowed\n`);
+    return;
+  }
   if (cmd === "wave-args") {
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, policy: resolvePolicy(contract) } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }

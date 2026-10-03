@@ -82,6 +82,10 @@ if (!('redAreas' in C) || (C.redAreas !== null && typeof C.redAreas !== 'string'
 if (!('securityEpic' in C)) throw new Error('args.contract.securityEpic must be an issue number or null')
 if (!Array.isArray(C.redAreaSpecialists)) throw new Error('args.contract.redAreaSpecialists must be an array')
 const S = C.specialists
+// The repo's policy (sapu-contract.mjs wave-args resolves it; an older caller without it = the defaults).
+const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, prePr: null }
+// The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
+const PREPR_AGENT = 'general-purpose'
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
 for (const r of ROLES) if (typeof S[r] !== 'string' || !S[r].trim()) throw new Error(`args.contract.specialists.${r} must be a subagent type`)
@@ -171,6 +175,17 @@ const WORKER_SCHEMA = {
   required: ['status', 'guard_active', 'pr_number', 'branch', 'head_sha', 'summary', 'verification', 'security_gaps', 'outside_writes', 'pr_trust'],
 }
 
+const PREPR_SCHEMA = {
+  type: 'object',
+  required: ['counts', 'findings', 'output_file', 'pasted'],
+  properties: {
+    counts: { type: 'object', required: ['critical', 'medium', 'low'], properties: { critical: { type: 'integer' }, medium: { type: 'integer' }, low: { type: 'integer' } } },
+    findings: { type: 'array', items: { type: 'object', required: ['severity', 'where', 'what'], properties: { severity: { type: 'string', enum: ['critical', 'medium', 'low'] }, where: { type: 'string' }, what: { type: 'string' } } } },
+    output_file: { type: 'string' },
+    pasted: { type: 'boolean' },
+  },
+}
+
 const REVIEW_SCHEMA = {
   type: 'object',
   properties: {
@@ -239,6 +254,8 @@ function workerPrompt(item, state, worker, extra) {
   ]
   if (item.cleanInstall) lines.push('This issue changes dependencies or the schema → use the clean-install setup from the repo profile (brief point 3).')
   if (item.tracker) lines.push(`Your scope is ONLY finding ${item.tracker}; PR body \`Refs #${item.issue} (${item.tracker})\`, not \`Closes\`.`)
+  if (P.merge === 'human') lines.push('This repo is merged by people, not sapu: open the PR as a draft (`gh pr create --draft`); it leaves draft only when every check, the review and the pre-PR command are clean.')
+  if (P.traces === 'none') lines.push('Leave no trace of sapu or of an agent on GitHub: no labels, no comments of your own; the PR title, body and commits read like the repo\'s own (its PR template when it has one).')
   if (extra) lines.push(extra)
   lines.push('Your final answer = StructuredOutput per the schema (brief point 10).')
   return lines.join('\n')
@@ -346,6 +363,21 @@ async function reviewWithRaise(item, state, delta) {
   }
 }
 
+// The repo's pre-PR command (policy.prePr), run by a FRESH agent every round — like a person calling it
+// again — on the PR as it is now. It reports counts per severity; at zero for every listed one it
+// pastes the command's whole output where the policy says.
+function prePrPrompt(item, state, round) {
+  const pp = P.prePr
+  return [
+    `Round ${round} of the repo's required pre-PR review for PR #${state.pr} (issue #${item.issue}) in ${REPO}. Main checkout: ${MAIN}.`,
+    `Run \`${pp.run}\` through the Skill tool with the PR URL (\`gh pr view ${state.pr} --repo ${REPO} --json url -q .url\`) as its argument; the linked issue is #${item.issue}. Run it exactly as written: do not shorten, skip or steer it, and never edit code yourself.`,
+    `Where it saves a report file inside a checkout, move that file to $TMPDIR so nothing lands in the repo. output_file = the path of the full final output (as the command printed it) in $TMPDIR.`,
+    `Count its findings per severity (critical / medium / low; a "warning" carries its own Medium or Low tag) into counts, and list every one in findings (severity, where = file:line or area, what = the finding in one or two sentences).`,
+    `Only when counts are 0 for ${pp.severities.join(', ')}: paste the WHOLE output, unchanged, ${pp.paste === 'body' ? `into the PR body — append it under a heading line naming the command, replacing that section if a previous round put one there (\`gh pr edit ${state.pr} --repo ${REPO} --body-file <file>\`)` : `as one PR comment (\`gh pr comment ${state.pr} --repo ${REPO} --body-file <file>\`)`}, and set pasted = true. Otherwise pasted = false and change nothing on GitHub.`,
+    'Your final answer = StructuredOutput per the schema.',
+  ].join('\n')
+}
+
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
   const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
@@ -423,39 +455,90 @@ async function runItem(item) {
   const prRefused = (why) => done('blocked', { reason: `PR #${state.pr} fails pr-trust: ${why} — no reviewer dispatched; clear a # written in prose from the PR body, or the owner accepts the issue it names` })
   if (refusal(r)) return prRefused(refusal(r))
 
-  // 2. review, then up to MAX_FIX_CYCLES fix + delta re-review rounds
+  // 2. review, then up to MAX_FIX_CYCLES fix + delta re-review rounds in all. Returns an item result
+  // to stop with, or null once clean. `since` = a delta review of the commits after that SHA.
   const distrusted = (u) => done('blocked', { reason: `issue #${item.issue} or PR #${state.pr} failed the trust check at review: ${u}` })
-  let rv = await reviewWithRaise(item, state, null)
-  if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, 'reviewer') })
-  if (rv.untrusted) return distrusted(rv.untrusted)
-  comments.push(rv.comment)
-  notes.push(...rv.notes)
-  state.securityGaps.push(...rv.securityGaps)
-  while (!rv.clean) {
-    if (state.cycles === MAX_FIX_CYCLES) {
-      return done('blocked', { reason: `findings still open after ${MAX_FIX_CYCLES} fix cycles:\n${listFindings(rv.findings)}` })
-    }
-    state.cycles++
-    let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
-    if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)
-    const sinceSha = state.headSha
-    r = await runWorker(fixer, {
-      cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: `#${item.issue} fix ${state.cycles} ${fixer}`,
-      task: `Fix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
-    })
-    if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
-    if (!absorb(r, fixer)) return noGuard(fixer)
-    if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}` })
-    if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}` })
-    if (refusal(r)) return prRefused(refusal(r))
-    rv = await reviewWithRaise(item, state, { sinceSha, findings: rv.findings })
-    if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, `delta reviewer in cycle ${state.cycles}`) })
+  const reviewUntilClean = async (since) => {
+    let rv = await reviewWithRaise(item, state, since)
+    if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, since ? 'delta reviewer after the pre-PR fixes' : 'reviewer') })
     if (rv.untrusted) return distrusted(rv.untrusted)
     comments.push(rv.comment)
     notes.push(...rv.notes)
     state.securityGaps.push(...rv.securityGaps)
+    while (!rv.clean) {
+      if (state.cycles === MAX_FIX_CYCLES) {
+        return done('blocked', { reason: `findings still open after ${MAX_FIX_CYCLES} fix cycles:\n${listFindings(rv.findings)}` })
+      }
+      state.cycles++
+      let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
+      if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)
+      const sinceSha = state.headSha
+      r = await runWorker(fixer, {
+        cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: `#${item.issue} fix ${state.cycles} ${fixer}`,
+        task: `Fix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
+      })
+      if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
+      if (!absorb(r, fixer)) return noGuard(fixer)
+      if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}` })
+      if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}` })
+      if (refusal(r)) return prRefused(refusal(r))
+      rv = await reviewWithRaise(item, state, { sinceSha, findings: rv.findings })
+      if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, `delta reviewer in cycle ${state.cycles}`) })
+      if (rv.untrusted) return distrusted(rv.untrusted)
+      comments.push(rv.comment)
+      notes.push(...rv.notes)
+      state.securityGaps.push(...rv.securityGaps)
+    }
+    return null
   }
-  return done('ready')
+
+  // 3. the repo's pre-PR command (policy.prePr), run fresh until it reports zero of every listed
+  // severity — no round limit. Returns an item result to stop with, or null once clean. It stops
+  // only on a contradiction: a finding that asks to undo an earlier round's deliberate fix goes to
+  // the owner instead of round-tripping forever.
+  const fixedByPrePr = []
+  let prePrRound = 0
+  const prePrUntilZero = async () => {
+    for (;;) {
+      const round = ++prePrRound
+      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: `#${item.issue} ${P.prePr.run} ${round}` })
+      if (!pr) return done('died', { reason: `${P.prePr.run} round ${round} returned nothing` })
+      const open = pr.findings.filter((f) => P.prePr.severities.includes(f.severity))
+      const counted = P.prePr.severities.reduce((n, k) => n + (pr.counts[k] || 0), 0)
+      trailRow(state, `${P.prePr.run} ${round}`, PREPR_AGENT, `${pr.counts.critical}C/${pr.counts.medium}M/${pr.counts.low}L`)
+      if (!counted && !open.length) {
+        if (!pr.pasted) return done('blocked', { reason: `${P.prePr.run} is clean but its output was not pasted into the PR ${P.prePr.paste}` })
+        state.prePr = { rounds: round, output_file: pr.output_file }
+        return null
+      }
+      const sinceSha = state.headSha
+      r = await runWorker(state.worker, {
+        cont: true, step: `${P.prePr.run} fix ${round}`, phase: 'Fix', label: `#${item.issue} ${P.prePr.run} fix ${round} ${state.worker}`,
+        task: `The repo's required pre-PR review (${P.prePr.run}) reported the findings below; every ${P.prePr.severities.join('/')} one must reach zero before the PR is handed in. Fix ALL of them, with tests where behaviour changes, then verify as in brief point 6 and push. A finding that asks to undo something an earlier round fixed on purpose (listed after the findings) is a contradiction: do not flip-flop — return status "blocked" with blocked_reason starting "CONTRADICTION:" naming both findings.\n${open.map((f, i) => `${i + 1}. [${f.severity}] ${f.where} — ${f.what}`).join('\n')}${fixedByPrePr.length ? `\nFixed in earlier rounds:\n${fixedByPrePr.map((f) => `- [${f.severity}] ${f.where} — ${f.what}`).join('\n')}` : ''}`,
+      })
+      if (!r) return done('died', { reason: `fixer returned nothing in ${P.prePr.run} round ${round}` })
+      if (!absorb(r, state.worker)) return noGuard(state.worker)
+      if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in ${P.prePr.run} round ${round}` })
+      if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in ${P.prePr.run} round ${round}` })
+      if (refusal(r)) return prRefused(refusal(r))
+      fixedByPrePr.push(...open)
+    }
+  }
+
+  let stop = await reviewUntilClean(null)
+  if (stop) return stop
+  // The pre-PR fixes are code too: the senior review sees them (delta), and when that review makes
+  // the author change code again, the pre-PR command runs again on the result. Ends when both are
+  // clean on the same commit.
+  while (P.prePr) {
+    const reviewed = state.headSha
+    if ((stop = await prePrUntilZero())) return stop
+    if (state.headSha === reviewed) break
+    const clean = state.headSha
+    if ((stop = await reviewUntilClean({ sinceSha: reviewed, findings: [] }))) return stop
+    if (state.headSha === clean) break
+  }
+  return done('ready', state.prePr ? { prePr: state.prePr } : undefined)
 }
 
 phase('Implement')

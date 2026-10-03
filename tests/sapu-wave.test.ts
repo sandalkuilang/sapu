@@ -630,3 +630,83 @@ describe("sapu-wave — contract-driven behaviour", () => {
     await expect(runWave({ main: MAIN, pluginRoot: "rel", items: [item(1)] }, () => null)).rejects.toThrow(/pluginRoot/);
   });
 });
+
+describe("sapu-wave — the repo's pre-PR command (policy.prePr): fresh rounds until zero, no round limit", () => {
+  const PRE = { run: "/dev-review", severities: ["critical", "medium", "low"], paste: "body" };
+  const withPolicy = (policy: object) => ({ ...CONTRACT, policy: { merge: "sapu", traces: "visible", fileIssues: true, prePr: null, ...policy } });
+  const pre = (c: number, m: number, l: number, pasted = false) => ({
+    counts: { critical: c, medium: m, low: l },
+    findings: [...Array(c).fill({ severity: "critical", where: "a.ts:1", what: "crit" }), ...Array(m).fill({ severity: "medium", where: "b.ts:2", what: "med" }), ...Array(l).fill({ severity: "low", where: "c.ts:3", what: "low" })],
+    output_file: "/tmp/dev-review.md",
+    pasted,
+  });
+  const phases = (calls: Call[]) => calls.map((c) => c.opts.phase);
+
+  it("clean on the first round: pasted, ready, run by an agent that has the Skill tool", async () => {
+    const { out, calls } = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(41)] }, (c) =>
+      c.opts.phase === "Review" ? clean : c.opts.phase === "Pre-PR" ? pre(0, 0, 0, true) : opened(41),
+    );
+    expect(phases(calls)).toEqual(["Implement", "Review", "Pre-PR"]);
+    const p = calls[2];
+    expect(p.opts).toMatchObject({ agentType: "general-purpose", model: "opus", effort: "high" });
+    expect(p.prompt).toContain("Run `/dev-review` through the Skill tool");
+    expect(p.prompt).toMatch(/paste the WHOLE output, unchanged, into the PR body/);
+    expect(out[0]).toMatchObject({ status: "ready", prePr: { rounds: 1 } });
+  });
+
+  it("LOW counts too: findings go to the author, the fixes get a delta senior review, then a fresh round", async () => {
+    const { out, calls } = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(42)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      if (c.opts.phase === "Pre-PR") return n === 1 ? pre(0, 0, 1) : pre(0, 0, 0, true);
+      return opened(42, { head_sha: c.opts.phase === "Fix" ? `sha-pre-${n}` : "sha-a" });
+    });
+    expect(phases(calls)).toEqual(["Implement", "Review", "Pre-PR", "Fix", "Pre-PR", "Review"]);
+    expect(calls[3].prompt).toContain("1. [low] c.ts:3 — low");
+    expect(calls[5].prompt).toMatch(/commits? (after|since)|delta/i);
+    expect(out[0]).toMatchObject({ status: "ready", prePr: { rounds: 2 } });
+  });
+
+  it("has no round limit: seven dirty rounds, then clean, is still ready", async () => {
+    const { out, calls } = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(43)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      if (c.opts.phase === "Pre-PR") return n <= 7 ? pre(0, 1, 0) : pre(0, 0, 0, true);
+      return opened(43, { head_sha: c.opts.phase === "Fix" ? `sha-${n}` : "sha-a" });
+    });
+    expect(calls.filter((c) => c.opts.phase === "Pre-PR")).toHaveLength(8);
+    expect(out[0]).toMatchObject({ status: "ready", prePr: { rounds: 8 } });
+  });
+
+  it("stops on a contradiction, and when a clean output was not pasted", async () => {
+    const contra = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(44)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      if (c.opts.phase === "Pre-PR") return pre(0, 1, 0);
+      if (c.opts.phase === "Fix" && n === 2) return opened(44, { status: "blocked", blocked_reason: "CONTRADICTION: round 2 undoes round 1" });
+      return opened(44, { head_sha: c.opts.phase === "Fix" ? `sha-${n}` : "sha-a" });
+    });
+    expect(contra.out[0]).toMatchObject({ status: "blocked" });
+    expect(String(contra.out[0].reason)).toMatch(/^CONTRADICTION/);
+    expect(contra.calls.find((c) => c.opts.phase === "Fix" && c.prompt.includes("Fixed in earlier rounds"))?.prompt).toContain("[medium] b.ts:2 — med");
+
+    const unpasted = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(45)] }, (c) =>
+      c.opts.phase === "Review" ? clean : c.opts.phase === "Pre-PR" ? pre(0, 0, 0, false) : opened(45),
+    );
+    expect(unpasted.out[0]).toMatchObject({ status: "blocked" });
+    expect(String(unpasted.out[0].reason)).toMatch(/not pasted/);
+  });
+
+  it("only the listed severities gate: with critical+medium, a Low finding does not block", async () => {
+    const { out, calls } = await runWave({ main: MAIN, contract: withPolicy({ prePr: { ...PRE, severities: ["critical", "medium"] } }), items: [item(46)] }, (c) =>
+      c.opts.phase === "Review" ? clean : c.opts.phase === "Pre-PR" ? { ...pre(0, 0, 2), pasted: true } : opened(46),
+    );
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(0);
+    expect(out[0]).toMatchObject({ status: "ready" });
+  });
+
+  it("merge: human opens a draft PR; traces: none tells the worker to leave no sapu trace", async () => {
+    const { calls } = await runWave({ main: MAIN, contract: withPolicy({ merge: "human", traces: "none" }), items: [item(47)] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(47),
+    );
+    expect(calls[0].prompt).toContain("gh pr create --draft");
+    expect(calls[0].prompt).toMatch(/Leave no trace of sapu/);
+  });
+});

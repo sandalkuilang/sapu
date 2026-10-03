@@ -636,3 +636,35 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     expect(h.gh()).not.toMatch(/pr merge/);
   });
 });
+
+describe("sapu-merge.sh — the repo's policy (who merges, what stays on GitHub)", () => {
+  it("merge: human — gate green, the PR goes ready + to the reviewers, nothing is merged (exit 4)", () => {
+    const h = harness({ contract: { policy: { merge: "human", reviewers: ["boss"] } } });
+    const r = h.run();
+    expect(r.status).toBe(4);
+    expect(r.out).toMatch(/handed off for review to boss \(merge: human\)/);
+    expect(h.gh()).toMatch(/gh pr ready 7/);
+    expect(h.gh()).toMatch(/--add-reviewer boss/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.gh()).toMatch(/pr comment 7/); // traces visible: the review comment still goes up
+    expect(existsSync(join(h.MAIN, ".git/sapu-merges.log"))).toBe(false);
+    expect(h.after()).toEqual([`not-merged wt=present src=${h.MAIN}/scripts/after.sh`]); // cleanup still runs
+  });
+
+  it("traces: none — no review or gate comment and no labels on GitHub; the record stays in .git", () => {
+    const h = harness({ contract: { policy: { traces: "none" } } });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).not.toMatch(/pr comment/);
+    expect(h.gh()).not.toMatch(/issue edit/);
+    expect(h.gh()).toMatch(/pr merge 7/);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-review-pr7.md"), "utf8")).toMatch(/Merge gate/);
+  });
+
+  it("both: handed off with nothing on GitHub but the PR itself", () => {
+    const h = harness({ contract: { policy: { merge: "human", traces: "none" } } });
+    const r = h.run();
+    expect(r.status).toBe(4);
+    expect(h.gh()).not.toMatch(/pr comment|pr merge|issue edit/);
+  });
+});
