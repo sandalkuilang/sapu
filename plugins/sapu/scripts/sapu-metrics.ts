@@ -188,11 +188,13 @@ export function computeMetrics(jsonl: string): SweepMetrics {
     } catch {
       continue; // a truncated last line of a live transcript
     }
+    // Timestamps can step back (replayed or interleaved lines): the window is min..max, and a gap
+    // counts only past the latest time seen so far, so waiting never exceeds wall-clock.
     if (typeof line.timestamp === "string") {
       const gap = endedAt ? Date.parse(line.timestamp) - Date.parse(endedAt) : 0;
       if (gap > WAIT_GAP_MIN * 60_000) waitMs += gap;
-      startedAt ??= line.timestamp;
-      endedAt = line.timestamp;
+      if (!startedAt || line.timestamp < startedAt) startedAt = line.timestamp;
+      if (!endedAt || line.timestamp > endedAt) endedAt = line.timestamp;
     }
     if (line.type !== "assistant" || !line.message) continue;
 

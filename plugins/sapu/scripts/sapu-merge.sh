@@ -34,7 +34,8 @@
 # stderr — including a gate that exits 75 (EX_TEMPFAIL: it could not even start, not a PR
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
 # it keeps. Every gate run is one line of <MAIN>/.git/sapu-gates.log; a red one names its failing
-# test files and a flake verdict (`known-flake`: each also failed another PR's gate; else `unknown`).
+# test files and a flake verdict (`known-flake`: each proven flaky, i.e. red then green on one tree
+# in another PR's gates, and nothing but tests failed; else `unknown`).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
@@ -447,9 +448,12 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>]
+# The tree, not the SHA: a rebase changes the SHA of the very same code.
 GATES_LOG="$MAIN/.git/sapu-gates.log"
+TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict]
-  printf '%s %s %s %s gate=%ss failed=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "${3:+ verdict=$3}" >>"$GATES_LOG" 2>/dev/null \
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -471,27 +475,40 @@ if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; 
 if [ -n "$RED" ]; then
   FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed 's/ [0-9.]*s.*//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
-  # The failing test FILES, from anywhere in the log: vitest/jest ` FAIL  <file> > …`, pytest
-  # `FAILED <file>::…`. ponytail: two runners' formats; another runner records failed=-.
-  TESTS="$( { grep -E '^[[:space:]]*FAIL[[:space:]]' "$LOG" | awk '{print $2}' || true
-             grep -E '^FAILED [^ ]+::' "$LOG" | sed -E 's/^FAILED ([^:]+)::.*/\1/' || true; } | sort -u | paste -sd, -)"
-  # Flake verdict: a failing test that also failed ANOTHER PR's gate (this PR's own reds prove
-  # nothing) was not caused by this diff. Every one of them seen elsewhere = known-flake. A verdict
-  # never merges anything: only a green gate does.
+  # The failing test FILES, from anywhere in the log, colour codes stripped: vitest/jest
+  # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and
+  # no space or comma is taken (the ledger is space- and comma-separated). ponytail: two runners'
+  # formats; any other runner records failed=- and gets no verdict.
+  TESTS="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG" | sed -nE \
+    -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' \
+    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' | sort -u | paste -sd, -)"
+  # Flake verdict. PROVEN flaky = a file that failed ANOTHER PR's gate on a tree whose gate then
+  # went green on that same tree (no code changed in between). A red run elsewhere alone is not
+  # proof: that PR may really have broken it. known-flake = every failing file proven flaky, and
+  # nothing else made this gate red. A verdict never merges anything: only a green gate does.
+  # ponytail: the last 1000 runs are the ledger's memory; a flake older than that is unknown again.
+  PROVEN="$( { tail -n 1000 "$GATES_LOG" 2>/dev/null || true; } | awk -v pr="$PR" '
+    $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
+      k = $2 " " $7
+      if ($4 == "green") green[k] = 1
+      else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)
+    }
+    END { for (k in red) if (k in green) { split(k, p, " "); n = split(red[k], f, ","); for (i = 1; i <= n; i++) if (f[i] != "") print f[i], "#" p[1] } }')"
   VERDICT=unknown; SEEN=(); NEW=()
   if [ -n "$TESTS" ]; then
     IFS=, read -r -a TS <<<"$TESTS"
     for t in "${TS[@]}"; do
-      prs="$(awk -v pr="$PR" -v t="$t" '$4 == "red" && $2 != pr && $6 ~ /^failed=/ {
-        n = split(substr($6, 8), f, ","); for (i = 1; i <= n; i++) if (f[i] == t) { print "#" $2; break } }' "$GATES_LOG" 2>/dev/null | sort -u | paste -sd, - || true)"
+      prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
       if [ -n "$prs" ]; then SEEN+=("$t (PR $prs)"); else NEW+=("$t"); fi
     done
-    [ "${#NEW[@]}" -gt 0 ] || VERDICT=known-flake
   fi
+  case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
+  if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
-  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test also failed another PR's gate: $(IFS=';'; printf '%s' "${SEEN[*]}")"
-  else say "verdict: unknown — not seen red in another PR: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; also red elsewhere: $(IFS=';'; printf '%s' "${SEEN[*]}")}"; fi
+  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)"
+  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")"
+  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}"; fi
   exit 2
 fi
 gate_record green -

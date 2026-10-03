@@ -142,6 +142,11 @@ describe("wall-clock", () => {
     expect([m.wallMinutes, m.waitMinutes]).toEqual([60, 55]);
     expect(computeMetrics("").wallMinutes).toBe(0);
   });
+
+  it("a transcript whose timestamps step back (replays, subagent lines) never counts more waiting than wall-clock", () => {
+    const m = computeMetrics(["2026-10-01T01:00:00Z", "2026-10-01T02:00:00Z", "2026-10-01T01:10:00Z", "2026-10-01T02:02:00Z"].map(at).join("\n"));
+    expect([m.wallMinutes, m.waitMinutes]).toEqual([62, 60]);
+  });
 });
 
 describe("isMergeCommand", () => {

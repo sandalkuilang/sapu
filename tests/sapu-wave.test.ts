@@ -241,6 +241,34 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     expect(out[0].reviewComment).toMatch(/^Review tier: red/);
   });
 
+  it("the author never picks its own domain reviewer: the reviewers' areas decide, and a different specialist reviews the full diff too", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(17)] }, (c) => {
+      if (c.opts.phase !== "Review") return opened(17, { red_areas: ["docs"] });
+      return { ...clean, red_areas: ["payments"] };
+    });
+    expect(reviewers(calls)).toEqual([QA, ARCHITECT, DB]);
+    const db = calls.find((c) => c.opts.agentType === DB)!;
+    expect(db.prompt).not.toContain("RE-review");
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["payments"] });
+    expect(out[0].reviewComment).toMatch(/^Review tier: red \(red areas: payments\)/);
+  });
+
+  it("the worker's areas and the reviewers' agree: the pair is not doubled", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(18)] }, (c) =>
+      c.opts.phase === "Review" ? { ...clean, red_areas: ["schema/migrations"] } : opened(18, { red_areas: ["schema/migrations"] }),
+    );
+    expect(reviewers(calls).sort()).toEqual([DB, QA]);
+  });
+
+  it("fixers are not asked to run the classifier (their result never raises the tier)", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(19)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(19, { head_sha: fixSha(c, n) });
+      return n === 1 ? finding(false) : clean;
+    });
+    expect(calls.find((c) => c.opts.phase === "Implement")!.prompt).toContain("--ref HEAD");
+    expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).not.toContain("--ref HEAD");
+  });
+
   it("a worker's red_areas only ever raise: [] or none leaves the reviewers' own fail-closed check in charge", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(15)] }, (c) => {
       if (c.opts.phase !== "Review") return opened(15, { red_areas: [] });
