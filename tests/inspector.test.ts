@@ -297,7 +297,7 @@ describe("inspector — the skill and the script agree", () => {
     };
     const check = at('sapu-contract.mjs" check');
     const waveArgs = at('sapu-contract.mjs" wave-args');
-    const profiles = at("HEAD:.claude/sapu/momus.md");
+    const profiles = at("The three phase profiles exist: `<profiles>/momus.md`");
     const workflow = at('Workflow({ name: "sapu:inspector"');
     expect(check).toBeLessThan(waveArgs);
     expect(waveArgs).toBeLessThan(profiles);

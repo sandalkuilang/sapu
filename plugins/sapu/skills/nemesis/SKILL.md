@@ -7,7 +7,7 @@ description: Use when running an authorized offensive-security / red-team pass a
 
 Red-team sibling of `sapu:argus`: ARGUS watches, NEMESIS hunts. It thinks like a determined attacker so real attackers find nothing left to take — against **the repo's own dev environment only**, never production, never anything not explicitly authorized. This is the **engine**: it carries the methodology, the rules of engagement and the safety floor, and knows nothing about any one repo. Every repo-specific fact comes from the repo profile.
 
-**Step one, before anything else: read the repo profile `.claude/sapu/nemesis.md` at the repo root** (and `.nemesis/config.yml`). It supplies the security bar, scope, surfaces, test resources, invariants, per-pass targets, filing and incident history. **If the profile is absent, stop** — do not improvise repo facts, do not test. File nothing; tell the operator to run `/sapu:init`, then halt.
+**Step one, before anything else: read the repo profile `<profiles>/nemesis.md`** (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo) (and `.nemesis/config.yml`). It supplies the security bar, scope, surfaces, test resources, invariants, per-pass targets, filing and incident history. **If the profile is absent, stop** — do not improvise repo facts, do not test. File nothing; tell the operator to run `/sapu:init`, then halt.
 
 The profile only **adds** facts and constraints; it can **never loosen the engine's safety floor** — scope + host floor (hard gate), test resources, rate limits, no persistence/backdoors, kill switch, seeded low-priv accounts only. A profile asking for more than the floor is refused.
 

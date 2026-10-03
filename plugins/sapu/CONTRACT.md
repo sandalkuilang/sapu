@@ -13,6 +13,18 @@ The contract has three layers:
 | Per-skill profile | `.claude/sapu/<skill>.md` (`sapu`, `worker`, `forge`, `argus`, `momus`, `nemesis`, `dream`) | the skill concerned, as its first step |
 | Existing QA configuration | `.argus/config.yml`, `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged) |
 
+**Where it lives: in the repo, or local.** By default the contract and profiles are committed in
+the repo (the table above). A repo that must not show sapu at all (someone else's repo, an
+employer's) can keep them **local** instead: `~/.config/sapu/repos/<owner>__<name>/sapu.json` and
+`<owner>__<name>/<skill>.md` beside it, where `<owner>/<name>` is the checkout's `origin`. Nothing
+then enters the repo's history or working tree. `sapu-contract.mjs home` prints which one applies
+(`{mode: "repo"|"local", dir}`); the skills call the profile directory `<profiles>`. A local
+contract is judged like a committed one plus: it is a plain file (no symlink between it and the
+home directory), it resolves outside the checkout, its `repo` equals the origin it was found by,
+and the repo commits no contract of its own (two contracts = neither rules). Subagents cannot write
+there: the guard refuses every write under `~/.config/sapu/`, so a worker cannot change the rules
+that judge it — the same reason the committed contract is read from HEAD.
+
 No silent defaults: a missing required field = the skill stops with a message that points to
 `/sapu:init`. The only exceptions, recorded and deliberate: the optional fields
 `specialists` (§Specialist agents), whose default is the plugin's built-in agents, and

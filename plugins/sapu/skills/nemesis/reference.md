@@ -2,7 +2,7 @@
 
 Lookup material for the nemesis skill (SKILL.md in this directory). Read the pass you're on and the surface rows it touches; don't front-load all of it. Persist progress after every pass into `.nemesis/state/` so a crash never loses ground.
 
-This file is the **engine's** probe design — repo-agnostic technique. Every concrete target (the grown-surface rows, the named endpoints, the invariant and issue refs, the file/seam locations, the env-var names) lives in the repo profile `.claude/sapu/nemesis.md`, read at cycle start. Where a pass below says "the profile names…", that is the hook: keep the generic technique here, get the target there.
+This file is the **engine's** probe design — repo-agnostic technique. Every concrete target (the grown-surface rows, the named endpoints, the invariant and issue refs, the file/seam locations, the env-var names) lives in the repo profile `<profiles>/nemesis.md`, read at cycle start. Where a pass below says "the profile names…", that is the hook: keep the generic technique here, get the target there.
 
 Everything here is **probe design**, not a findings list. A row names a seam and the falsification test; whether it's a *finding* is decided by ≥2 clean reproductions in Pass 7, never by this doc. Phrase what you file as what you proved, not what this doc predicted.
 

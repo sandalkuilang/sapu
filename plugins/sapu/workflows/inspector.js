@@ -51,11 +51,12 @@ if (typeof input === 'string') throw new Error('args must be {main, pluginRoot, 
 if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('args is missing: pass the output of sapu-contract.mjs wave-args ({main, pluginRoot, contract}) plus an optional scope')
 // An unknown key is a typo or a stale name; ignoring it silently drops what it meant (a `scop`
 // would run the whole repo instead of the scope the operator asked for).
-const ARG_KEYS = ['main', 'pluginRoot', 'contract', 'scope']
+const ARG_KEYS = ['main', 'pluginRoot', 'profiles', 'contract', 'scope']
 const unknownKeys = Object.keys(input).filter((k) => !ARG_KEYS.includes(k))
 if (unknownKeys.length) throw new Error(`unknown arg key(s) ${unknownKeys.join(', ')}; allowed: ${ARG_KEYS.join(', ')}`)
 if (typeof input.main !== 'string' || !input.main.startsWith('/')) throw new Error('args.main must be the absolute path of the main checkout')
 if (typeof input.pluginRoot !== 'string' || !input.pluginRoot.startsWith('/')) throw new Error('args.pluginRoot must be the absolute path of the plugin (sapu-contract.mjs wave-args)')
+if (input.profiles !== undefined && (typeof input.profiles !== 'string' || !input.profiles.startsWith('/'))) throw new Error('args.profiles must be the absolute path of the profile directory (sapu-contract.mjs wave-args)')
 const C = input.contract
 if (!C || typeof C !== 'object' || Array.isArray(C)) throw new Error('args.contract is missing: pass the output of sapu-contract.mjs wave-args')
 if (typeof C.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(C.repo)) throw new Error('args.contract.repo must be owner/name')
@@ -71,6 +72,8 @@ for (const r of ROLES) if (typeof S[r] !== 'string' || !S[r].trim()) throw new E
 
 const MAIN = input.main
 const PLUGIN = input.pluginRoot
+// The repo profiles: <MAIN>/.claude/sapu, or a local home outside the repo (sapu-contract.mjs home).
+const PROFILES = input.profiles || `${input.main}/.claude/sapu`
 const REPO = C.repo
 const EPIC = C.securityEpic
 const scope = (input.scope ?? '').trim()
@@ -81,7 +84,7 @@ const SCOPE_BLOCK = scope
     'Spend your budget inside this scope. Anything you happen to trip over outside it is still worth one line in the report, ' +
     'but do not go breadth-first across the whole repo -- go deep here.\n' +
     'Locate the scope\'s code yourself before you start -- its backend module(s) and jobs, its pages, its data models, its spec docs ' +
-    '(source roots: the repo profiles under .claude/sapu/; spec docs: the business-truth docs of `.argus/config.yml`) -- and list what you found.\n' +
+    '(source roots: the repo profiles under ' + PROFILES + '/; spec docs: the business-truth docs of `.argus/config.yml`) -- and list what you found.\n' +
     '=== END SCOPE ===\n'
   : ''
 
@@ -103,7 +106,7 @@ const UNTRUSTED_TEXT =
 const SECURITY_BAR =
   '\n\n=== SECURITY BAR (binding for every phase) ===\n' +
   'Audit against the security bar your profile names (momus: `## Security bar`; argus: `## Written rules`; nemesis: `## Security bar`; ' +
-  'a team reviewer reads the one in .claude/sapu/momus.md `## Security bar`) -- OWASP ASVS 5.0 at the levels the repo sets, NIST SP 800-63B-4, ' +
+  'a team reviewer reads the one in ' + PROFILES + '/momus.md `## Security bar`) -- OWASP ASVS 5.0 at the levels the repo sets, NIST SP 800-63B-4, ' +
   'CIS Benchmarks, and the data-protection law it names; never a weaker reading.\n' +
   'Ask every surface twice. OUTSIDER: internet attacker, phishing, stolen session or cookie, bots. ' +
   'INSIDER: staff acting within a legitimate role (the highest roles included -- the profile names them), whoever holds server or database access, two roles colluding.\n' +
@@ -207,7 +210,7 @@ const blockedNote = (who, r) => {
 log(`Phase 1/3: momus establishing a release-readiness baseline on ${REPO} (${MODELS.momus.join(', ')})${scope ? `; scope: ${scope}` : ''}`)
 phase('Momus')
 const momus = await agent(
-  load('momus', `${MAIN}/.claude/sapu/momus.md`) +
+  load('momus', `${PROFILES}/momus.md`) +
   'Then execute a COMPLETE, REAL momus release-readiness pass against this repo -- ' +
   'all 9 areas (A-I), following every evidence rule, the exact BLOCKER/HIGH/MEDIUM/LOW severity definitions, and every rail in the skill. ' +
   'This is a real run: actually read the files, actually run the commands its profile names (schema validation, the test suite against a throwaway test database, git log, grep), actually falsify each candidate before writing it down. ' +
@@ -232,7 +235,7 @@ const BASELINE = momus.status === 'blocked'
 
 phase('Argus')
 const argus = await agent(
-  load('argus', `${MAIN}/.claude/sapu/argus.md (its index names the argus-<topic>.md files to load as needed)`) +
+  load('argus', `${PROFILES}/argus.md (its index names the argus-<topic>.md files to load as needed)`) +
   'Then execute ONE COMPLETE, REAL bounded argus QA cycle against this repo, exactly per its own cycle (ORIENT through PERSIST), including its own evidence tiers, falsification discipline, and filing gates. ' +
   BASELINE +
   'File real GitHub issues per argus\'s own filing gates (dedup, fingerprint, single-defect-per-issue). ' + BLOCKED + ' Return the structured summary.' + SCOPE_BLOCK + SECURITY_BAR + '\n\n' +
@@ -246,7 +249,7 @@ log(`argus done: ${argus.issues_filed?.length ?? 0} issues filed, ${argus.candid
 
 phase('Nemesis')
 const nemesis = await agent(
-  load('nemesis', `${MAIN}/.claude/sapu/nemesis.md`) +
+  load('nemesis', `${PROFILES}/nemesis.md`) +
   'Then execute ONE COMPLETE, REAL bounded nemesis red-team cycle against this repo\'s DEV environment only, exactly per its own hard gate, absolute prohibitions, and methodology (recon -> auth/session -> authorization -> injection -> business-logic -> API/config -> detection-integrity). ' +
   `Apply the skill's hard gate IN FULL before any active testing (the owner-signed ${MAIN}/.nemesis/authorization.yml: attestation, expiry, environments_allowed, the resolved-address host floor, and the ${MAIN}/.nemesis/STOP kill switch) -- non-negotiable, never skip it or proceed past a failure; ` +
   'when it fails, do exactly what the skill says for a failed gate and return status "blocked" with the reason. ' +
@@ -266,7 +269,7 @@ if (scope) {
   phase('Team')
   const COMMON = 'Read CLAUDE.md at the repo root FIRST and treat its invariants and recorded decisions as binding -- ' +
     'a deliberate recorded decision is not a defect, and calling one a defect is the main failure mode here. ' +
-    'Also read the spec docs for this scope: pick them from the business-truth docs in `.argus/config.yml` and the decision documents .claude/sapu/momus.md `## Decision documents` names. ' +
+    'Also read the spec docs for this scope: pick them from the business-truth docs in `.argus/config.yml` and the decision documents ' + PROFILES + '/momus.md `## Decision documents` names. ' +
     'Ground EVERY finding in file:line evidence you actually opened; no speculation, ' +
     'no "consider adding" boilerplate. If you find nothing at a severity, say so plainly rather than padding.' + SCOPE_BLOCK + SECURITY_BAR
 
@@ -282,11 +285,11 @@ if (scope) {
     ),
     () => agent(
       COMMON + '\n\nYou are reviewing the scoped area as a SENIOR UI/UX DESIGNER. Read every page for this scope and its components ' +
-      '(the web root: .claude/sapu/argus.md `## Glossary`). Judge: task flow and information architecture, how many steps a real user ' +
+      '(the web root: ' + PROFILES + '/argus.md `## Glossary`). Judge: task flow and information architecture, how many steps a real user ' +
       'needs for the routine jobs in this area, error and empty states, ' +
       'destructive-action affordances, WCAG 2.2 AA basics (labels, focus, contrast tokens, keyboard reachability), ' +
       'i18n coverage per the repo\'s i18n rule (CLAUDE.md -- every supported locale, no hardcoded user-facing strings, enum labels through the repo\'s helper), ' +
-      'and whether mutation controls are permission-gated per the repo\'s UI-gating rule (CLAUDE.md; the term is resolved in .claude/sapu/momus.md `## Glossary`). ' +
+      'and whether mutation controls are permission-gated per the repo\'s UI-gating rule (CLAUDE.md; the term is resolved in ' + PROFILES + '/momus.md `## Glossary`). ' +
       'Be concrete about what a user would get stuck on, with the file and line that causes it.',
       opts('team', { label: 'team:ux', phase: 'Team', schema: REVIEW_SCHEMA, agentType: S.ux }),
     ),
@@ -296,7 +299,7 @@ if (scope) {
 
   const tests = await agent(
     COMMON + '\n\nYou are the SENIOR QA ANALYST owning this scope\'s test suite. READ-ONLY on the main checkout: never edit, delete, or create a file in it (the guard refuses it anyway). ' +
-    `AUDIT: run the scope's tests with the repo's own test command and test-database rules -- ${MAIN}/.claude/sapu/worker.md \`## Test\` and \`## Test DB\` (a throwaway test database only, ` +
+    `AUDIT: run the scope's tests with the repo's own test command and test-database rules -- ${PROFILES}/worker.md \`## Test\` and \`## Test DB\` (a throwaway test database only, ` +
     'never a target `## Protected targets` names; drop what you created per `## Teardown`) -- ONE suite at a time, never concurrently: ' +
     'concurrent suites against one database server can drop each other\'s worker databases. Report what actually passes and fails, with output. ' +
     'Then hunt for validation defects in scope with live in-process HTTP probes (the framework\'s inject / test client) from a throwaway test file written ONLY in a scratch worktree ' +

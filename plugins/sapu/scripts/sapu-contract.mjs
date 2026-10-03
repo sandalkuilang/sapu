@@ -7,7 +7,7 @@
 //                                 allowed roots and project-scope rule when it sets them) + schema;
 //                                 prints the contract JSON. Every skill that writes to GitHub runs it first.
 //   sapu-contract.mjs show        schema only, no network; prints the contract JSON
-//   sapu-contract.mjs wave-args   prints {main, pluginRoot, contract} for the sapu-wave and inspector
+//   sapu-contract.mjs wave-args   prints {main, pluginRoot, profiles, contract} for the sapu-wave and inspector
 //                                 workflows' args (contract.specialists = the resolved role map)
 //   sapu-contract.mjs specialists prints the resolved role -> subagent type map (resolveSpecialists)
 //   sapu-contract.mjs trusted     prints the trusted set as JSON [{login, id}]: the active gh account
@@ -24,6 +24,9 @@
 //                                 trusted, signatures when requireSignedCommits, every issue it closes or
 //                                 refs passing issueTrust); the verdict carries the PR facts sapu-merge.sh
 //                                 uses. A refusal prints only {trusted, pr, author, rule, reason}.
+//   sapu-contract.mjs home        prints {mode: "repo"|"local", dir}: where this repo's contract and
+//                                 profiles live (<dir>/<skill>.md). local = ~/.config/sapu/repos/<owner>__<name>/,
+//                                 outside the repo, used when a sapu.json is there (localHome)
 //   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
 //                                 Phase B lanes this machine carries now (safeLanes); no contract needed
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
@@ -264,6 +267,8 @@ export function checkoutRoot(cwd) {
  */
 export function loadContract(root, { workingTree = false, ref = "HEAD" } = {}) {
   if (!root) return { error: "not inside a git repository", missing: true };
+  const local = localContractFile(root);
+  if (local) return loadLocalContract(root, local, { workingTree, ref });
   let raw;
   let where;
   if (workingTree) {
@@ -287,6 +292,63 @@ export function loadContract(root, { workingTree = false, ref = "HEAD" } = {}) {
   }
   const errs = validate(c);
   return errs.length ? { error: `${where} is invalid:\n  - ${errs.join("\n  - ")}` } : { contract: c };
+}
+
+/**
+ * Where a LOCAL contract for `root` would live: ~/.config/sapu/repos/<owner>__<name>/ (that path only,
+ * like the machine config; the repo is named by its origin remote). The contract and the profiles
+ * then never enter the repository: nothing in its history or working tree shows sapu.
+ */
+export function localHome(nwo) {
+  return path.join(os.homedir(), ".config", "sapu", "repos", nwo.replace("/", "__"));
+}
+
+/** The local contract file for `root` when one exists (or a broken link stands there), else null. */
+function localContractFile(root) {
+  const nwo = nwoFromRemote(sh("git", ["-C", root, "remote", "get-url", "origin"], root));
+  if (!nwo) return null;
+  const f = path.join(localHome(nwo), "sapu.json");
+  try {
+    fs.lstatSync(f);
+    return { file: f, nwo };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A local contract, judged like a committed one plus: no symlink between it and the home directory,
+ * not inside the checkout, `repo` equal to the origin it was found by, and no committed contract
+ * beside it (two contracts = which one rules is unclear, so neither does).
+ */
+function loadLocalContract(root, { file, nwo }, { workingTree, ref }) {
+  const committed = workingTree ? fs.existsSync(path.join(root, CONTRACT_PATH)) : spawnSync("git", ["-C", root, "cat-file", "-e", `${ref}:${CONTRACT_PATH}`]).status === 0;
+  if (committed) return { error: `two sapu contracts: ${file} and ${CONTRACT_PATH} in the repo — keep one` };
+  let link;
+  try {
+    link = symlinkOnTheWay(file, path.resolve(os.homedir()));
+  } catch (e) {
+    return { error: e.message };
+  }
+  if (link) return { error: `local contract ${file} sits behind a symlink (${link}): sapu reads it only as a plain file` };
+  const m = realThroughAncestors(root);
+  const f = realThroughAncestors(file);
+  if (f === m || f.startsWith(m + path.sep)) return { error: `local contract ${file} resolves inside the repository (${f})` };
+  let c;
+  try {
+    c = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    return { error: `${file} cannot be read as JSON: ${e.message}` };
+  }
+  const errs = validate(c);
+  if (c && c.repo !== nwo) errs.push(`repo is "${c.repo}" but this checkout's origin is ${nwo}`);
+  return errs.length ? { error: `${file} is invalid:\n  - ${errs.join("\n  - ")}` } : { contract: c, home: { mode: "local", dir: path.dirname(file) } };
+}
+
+/** Where this checkout's contract and profiles live: {mode: "repo"|"local", dir} (profiles are <dir>/<skill>.md). */
+export function contractHome(root) {
+  const local = root && localContractFile(root);
+  return local ? { mode: "local", dir: path.dirname(local.file) } : { mode: "repo", dir: root ? path.join(root, ".claude", "sapu") : null };
 }
 
 // .native canonicalises letter case too: on a case-insensitive disk `~/documents` is `~/Documents`.
@@ -359,7 +421,7 @@ function symlinkOnTheWay(file, stop) {
       st = fs.lstatSync(p);
     } catch (e) {
       if (e.code === "ENOENT") continue;
-      throw new Error(`machine config ${file} cannot be checked: ${e.message}`);
+      throw new Error(`${file} cannot be checked: ${e.message}`);
     }
     if (st.isSymbolicLink()) return `${p} -> ${fs.readlinkSync(p)}`;
   }
@@ -558,15 +620,18 @@ function repoFiles(root, rev) {
  */
 export function profileProblems(root, skills = Object.keys(PROFILE_SECTIONS), { rev = "HEAD" } = {}) {
   const out = {};
-  const files = repoFiles(root, rev);
+  // A local home is outside git: its files are read as they are, whatever `rev` says.
+  const home = contractHome(root);
+  const files = home.mode === "local" ? repoFiles(home.dir, null) : repoFiles(root, rev);
+  const dir = home.mode === "local" ? "." : ".claude/sapu";
   for (const s of skills) {
     const spec = PROFILE_SECTIONS[s];
-    const names = files.list(".claude/sapu").filter((f) => f === `${s}.md` || (f.startsWith(`${s}-`) && f.endsWith(".md")));
+    const names = files.list(dir).filter((f) => f === `${s}.md` || (f.startsWith(`${s}-`) && f.endsWith(".md")));
     if (!names.includes(`${s}.md`)) {
       if (!spec.optional) out[s] = ["(file missing)"];
       continue;
     }
-    const text = names.map((f) => files.read(`.claude/sapu/${f}`)).join("\n");
+    const text = names.map((f) => files.read(`${dir}/${f}`)).join("\n");
     const heads = new Set(text.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.slice(3).trim()));
     const missing = spec.sections.filter((h) => !heads.has(h));
     if (missing.length) out[s] = missing;
@@ -868,8 +933,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -913,6 +978,11 @@ function main(argv) {
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
     return;
   }
+  if (cmd === "home") {
+    if (!mainDir) fail("not inside a git repository");
+    process.stdout.write(`${JSON.stringify(contractHome(mainDir))}\n`);
+    return;
+  }
   if (cmd === "profiles") {
     if (arg === "--list") {
       for (const [s, spec] of Object.entries(PROFILE_SECTIONS)) process.stdout.write(`.claude/sapu/${s}.md${spec.optional ? " (optional)" : ""}: ${spec.sections.map((h) => `## ${h}`).join(" | ")}\n`);
@@ -941,7 +1011,7 @@ function main(argv) {
   if (cmd === "wave-args") {
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }
