@@ -24,6 +24,8 @@
 //                                 trusted, signatures when requireSignedCommits, every issue it closes or
 //                                 refs passing issueTrust); the verdict carries the PR facts sapu-merge.sh
 //                                 uses. A refusal prints only {trusted, pr, author, rule, reason}.
+//   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
+//                                 Phase B lanes this machine carries now (safeLanes); no contract needed
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
 //   sapu-contract.mjs profiles    every .claude/sapu/<skill>.md carries the sections its skill reads
 //                                 (`--list` prints them; /sapu:init writes them)
@@ -428,6 +430,34 @@ function sh(cmd, args, cwd) {
   } catch {
     return "";
   }
+}
+
+/**
+ * How many Phase B lanes (each = one worker running tests) a machine carries right now: a ceiling
+ * from its size, one less while it is already loaded (the merge gate, another app, a slow suite).
+ */
+export function safeLanes({ cpus, ramGB, load1, memFreePct }) {
+  // ponytail: ~4 cores and ~3 GB per lane, 8 GB kept for the merge gate, the OS and the app; caps
+  // at 4 because merges are one at a time. Retune from pilot data (load, flakes, gate time).
+  const ceiling = Math.max(1, Math.min(4, Math.floor(cpus / 4), Math.floor((ramGB - 8) / 3)));
+  const busy = load1 > cpus || memFreePct < 20;
+  return { lanes: busy ? Math.max(1, ceiling - 1) : ceiling, ceiling, busy };
+}
+
+/** This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping. */
+export function machineNow() {
+  let memFreePct = (os.freemem() / os.totalmem()) * 100;
+  if (process.platform === "darwin") {
+    const level = Number(sh("sysctl", ["-n", "kern.memorystatus_level"], "/"));
+    if (level > 0) memFreePct = level;
+  } else {
+    try {
+      const m = fs.readFileSync("/proc/meminfo", "utf8");
+      const kb = (k) => Number(new RegExp(`^${k}:\\s+(\\d+)`, "m").exec(m)?.[1]);
+      if (kb("MemAvailable") > 0) memFreePct = (kb("MemAvailable") / kb("MemTotal")) * 100;
+    } catch {}
+  }
+  return { cpus: os.cpus().length, ramGB: Math.round(os.totalmem() / 2 ** 30), load1: Math.round(os.loadavg()[0] * 10) / 10, memFreePct: Math.round(memFreePct) };
 }
 
 /**
@@ -838,8 +868,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -848,6 +878,11 @@ function main(argv) {
   if (withText && cmd !== "issue-trust" && cmd !== "pr-trust") fail("--text is only for `issue-trust <N>` and `pr-trust <N>`");
   if (ref !== null && (workingTree || !["show", "check", "get", "trusted", "issue-trust", "pr-trust"].includes(cmd) || !/^[\w./@^~][\w./@^~-]*$/.test(ref))) {
     fail("--ref <ref> is for `show`, `check`, `get`, `trusted`, `issue-trust` and `pr-trust`, with a plain git revision, and never with --working-tree");
+  }
+  if (cmd === "lanes") {
+    const m = machineNow();
+    process.stdout.write(`${JSON.stringify({ ...safeLanes(m), ...m })}\n`);
+    return;
   }
   const mainDir = findMain(process.cwd());
   const here = workingTree ? checkoutRoot(process.cwd()) : mainDir;

@@ -1,6 +1,7 @@
 // workflows/sapu-wave.js (sapu plugin)
-// One Phase B lane of the sapu skill (skills/sapu/SKILL.md §B3: one issue per call, two lanes in
-// flight, so a ready PR merges without waiting for a slower issue), as code; it takes any batch.
+// One Phase B lane of the sapu skill (skills/sapu/SKILL.md §B3: one issue per call, as many lanes
+// as `sapu-contract.mjs lanes` allows, so a ready PR merges without waiting for a slower issue),
+// as code; it takes any batch.
 // Invoke: Workflow({ name: "sapu:sapu-wave", args: { main, pluginRoot, contract, items } })
 // where {main, pluginRoot, contract} is the output of `scripts/sapu-contract.mjs wave-args`.
 //

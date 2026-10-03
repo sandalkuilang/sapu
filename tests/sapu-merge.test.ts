@@ -294,6 +294,30 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.status).toBe(2);
     expect(execFileSync("git", ["-C", h.bare, "rev-parse", "refs/heads/feat/x"], { encoding: "utf8" })).toBe(before);
   });
+  it("a re-run after a red gate picks up the worktree its own rebase left behind (never 'diverged')", () => {
+    const h = harness();
+    h.pushToOrigin({ "other.txt": "x\n" }); // <base> moved on: the first run rebases locally, then goes red
+    expect(h.run({ HX_GATE_RC: "1" }).status).toBe(2);
+    const r = h.run();
+    expect(r.err).not.toMatch(/diverged/);
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/PR #7 merged/);
+  }, 30_000); // two runs
+
+  it("a kept worktree holding a commit origin lacks is still refused, never overwritten", () => {
+    const h = harness();
+    expect(h.run({ HX_GATE_RC: "1" }).status).toBe(2);
+    writeFileSync(join(h.WT, "src/local.txt"), "unpushed\n");
+    execFileSync("git", ["-C", h.WT, "add", "-A"]);
+    execFileSync("git", ["-C", h.WT, "commit", "-q", "-m", "unpushed work"]);
+    h.pushToOrigin({ "other.txt": "x\n" });
+    h.git("fetch", "-q", "origin");
+    execFileSync("git", ["-C", h.WT, "rebase", "-q", "origin/main"], { env: { ...process.env, GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    const r = h.run();
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/diverged/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+   }, 30_000);
 });
 
 describe("sapu-merge.sh — the scope lock of the machine config", () => {
