@@ -9,7 +9,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+
+// Each test builds real git repos and runs the script end to end: 2-5 s on an idle machine, so
+// vitest's 5 s default timed tests out under load (a flake, not a defect).
+vi.setConfig({ testTimeout: 20_000 });
 
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { type Commit, GH_API, type IssueSpec, type PrSpec, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -21,6 +25,7 @@ afterAll(() => rmSync(top, { recursive: true, force: true }));
 
 const GATE = `#!/usr/bin/env bash
 echo "gate ran: $0 in $PWD"
+[ -z "\${HX_GATE_OUT:-}" ] || printf '%s\\n' "$HX_GATE_OUT"
 if [ -n "\${HX_GATE_BIG:-}" ]; then
   echo "Gate summary"; echo "⊘ skipped-check (no database)"
   yes "filler line ................................................................" | head -n 30000
@@ -318,6 +323,108 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.err).toMatch(/diverged/);
     expect(h.gh()).not.toMatch(/pr merge/);
    }, 30_000);
+});
+
+describe("sapu-merge.sh — every gate run is recorded, a red one with its failing tests and a flake verdict", () => {
+  const gates = (h: { MAIN: string }) => {
+    const f = join(h.MAIN, ".git/sapu-gates.log");
+    return existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : [];
+  };
+  const seed = (h: { MAIN: string }, ...lines: string[]) => writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), lines.map((l) => `${l}\n`).join(""));
+  // Another PR's runs on one tree: red with `files`, then green on that same tree = those files proven flaky.
+  const provenBy = (pr: number, files: string, tree = `t${pr}`) => [
+    `2026-10-01T01:00:00Z ${pr} aaa red gate=400s failed=${files} tree=${tree} verdict=unknown`,
+    `2026-10-01T01:10:00Z ${pr} bbb green gate=400s failed=- tree=${tree}`,
+  ];
+  const FAILS = " FAIL  apps/a.test.ts > orders > races\nFAILED tests/test_b.py::test_x - AssertionError\n FAIL  apps/a.test.ts > orders > again";
+
+  it("green: one line with no failing tests and the gated tree", () => {
+    const h = harness();
+    expect(h.run().status).toBe(0);
+    expect(gates(h)).toEqual([expect.stringMatching(/^\d{4}-\d\d-\d\dT\S+Z 7 [0-9a-f]{40} green gate=\d+s failed=- tree=[0-9a-f]{40}$/)]);
+  });
+
+  it("red: the failing test files the runner printed (vitest/jest and pytest), deduplicated, and an unknown verdict", () => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
+    expect(r.status).toBe(2);
+    expect(gates(h)).toEqual([expect.stringMatching(/ 7 [0-9a-f]{40} red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py tree=[0-9a-f]{40} verdict=unknown$/)]);
+    expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts, tests\/test_b\.py/);
+  });
+
+  it("a vitest project label, colour codes, an empty FAIL line and a path with a space are never taken for a file", () => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  |db| apps/api/new.test.ts > breaks\n\x1b[31m FAIL \x1b[39m |pure| src/c.test.ts > x\n FAIL \n FAIL  src/my file.test.ts > y" });
+    expect(gates(h)).toEqual([expect.stringMatching(/ failed=apps\/api\/new\.test\.ts,src\/c\.test\.ts tree=/)]);
+  });
+
+  it("known-flake only when every failing file is PROVEN flaky: red, then green on the same tree, in another PR; still no merge", () => {
+    const h = harness();
+    seed(h, ...provenBy(5, "apps/a.test.ts"), ...provenBy(6, "x.test.ts,tests/test_b.py"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
+    expect(r.status).toBe(2);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(r.err).toMatch(/verdict: known-flake/);
+    expect(r.err).toMatch(/apps\/a\.test\.ts \(PR #5\)/);
+    expect(r.err).toMatch(/tests\/test_b\.py \(PR #6\)/);
+    expect(gates(h).at(-1)).toMatch(/ red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py tree=[0-9a-f]{40} verdict=known-flake$/);
+  });
+
+  it("a file that failed another PR's gate but never went green on that tree is not proven: that PR may really have broken it", () => {
+    const h = harness();
+    seed(
+      h,
+      "2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown",
+      "2026-10-01T01:30:00Z 5 ccc green gate=400s failed=- tree=t5-fixed",
+    );
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+  });
+
+  it("this PR's own red-then-green proves nothing for it", () => {
+    const h = harness();
+    seed(h, ...provenBy(7, "apps/a.test.ts"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("a failure line no file could be read from (pytest ERROR, a path with a space) or a vitest Unhandled Error keeps the verdict unknown", () => {
+    for (const extra of ["ERROR tests/test_c.py::test_setup - fixture", " FAIL  |db| apps/api/pay roll.test.ts > x", "⎯⎯ Unhandled Errors ⎯⎯\nVitest caught 1 unhandled error"]) {
+      const h = harness();
+      seed(h, ...provenBy(5, "apps/a.test.ts"));
+      const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${extra}` });
+      expect(r.err, extra).toMatch(/verdict: unknown \(not only tests failed: /);
+    }
+  });
+
+  it("a red that is not only tests (a gate.redIf line) is never known-flake, even with every test proven", () => {
+    const h = harness();
+    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_BIG: "1" });
+    expect(r.err).toMatch(/verdict: unknown \(not only tests failed: .*gate\.redIf/);
+  });
+
+  it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.err).toMatch(/verdict: unknown \(the log names no failing test\)/);
+    expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- tree=[0-9a-f]{40} verdict=unknown$/)]);
+  });
+
+  it("a gate that could not start is recorded as setup-failed", () => {
+    const h = harness();
+    expect(h.run({ HX_GATE_RC: "75", HX_GATE_LAST: "no database" }).status).toBe(1);
+    expect(gates(h)).toEqual([expect.stringMatching(/ setup-failed gate=\d+s failed=- tree=[0-9a-f]{40}$/)]);
+  });
+
+  it("a ledger that cannot be written warns once and changes nothing else", () => {
+    const h = harness();
+    mkdirSync(join(h.MAIN, ".git/sapu-gates.log"));
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/warning: could not record the gate run/);
+    expect(r.err).not.toMatch(/Is a directory|No such file/);
+  });
 });
 
 describe("sapu-merge.sh — the scope lock of the machine config", () => {
