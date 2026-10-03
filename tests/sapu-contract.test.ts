@@ -23,6 +23,7 @@ import {
   machineConfigPath,
   nwoFromRemote,
   resolveSpecialists,
+  safeLanes,
   underAllowedRoot,
   validate,
   validateMachineConfig,
@@ -1073,5 +1074,25 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
   it("an edit revision counts whether or not it was deleted, and one whose editor is gone refuses (pins the check)", () => {
     expect(judge(accepted("owner", { edits: [{ by: "stranger", minute: 7, deleted: true }], edited: null })).v.reason).toMatch(/edited by stranger \(id 666\) after/);
     expect(judge(accepted("owner", { edits: [{ by: null, minute: 7 }], edited: null })).v.reason).toMatch(/edited by a deleted account after/);
+  });
+});
+
+describe("safeLanes: how many Phase B lanes the machine carries", () => {
+  const idle = { load1: 1, memFreePct: 60 };
+  it("sizes the ceiling by cores and RAM, 1..4", () => {
+    expect(safeLanes({ cpus: 10, ramGB: 16, ...idle })).toEqual({ lanes: 2, ceiling: 2, busy: false });
+    expect(safeLanes({ cpus: 12, ramGB: 24, ...idle }).lanes).toBe(3);
+    expect(safeLanes({ cpus: 32, ramGB: 128, ...idle }).lanes).toBe(4);
+    expect(safeLanes({ cpus: 4, ramGB: 8, ...idle }).lanes).toBe(1);
+  });
+  it("drops one lane while the machine is already loaded, never below 1", () => {
+    expect(safeLanes({ cpus: 16, ramGB: 32, load1: 20, memFreePct: 60 })).toEqual({ lanes: 3, ceiling: 4, busy: true });
+    expect(safeLanes({ cpus: 16, ramGB: 32, load1: 1, memFreePct: 10 }).lanes).toBe(3);
+    expect(safeLanes({ cpus: 4, ramGB: 8, load1: 9, memFreePct: 5 }).lanes).toBe(1);
+  });
+  it("the CLI prints it with the figures it used, no contract needed", () => {
+    const out = JSON.parse(execFileSync("node", [join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs"), "lanes"], { cwd: tmpdir(), encoding: "utf8" }));
+    expect(out.lanes).toBeGreaterThanOrEqual(1);
+    expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "cpus", "ramGB", "load1", "memFreePct"]);
   });
 });
