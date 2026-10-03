@@ -222,6 +222,78 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
   });
 
+  it("the worker runs the classifier on its own head before the PR (its prompt names the command)", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(12)] }, (c) => (c.opts.phase === "Review" ? clean : opened(12)));
+    expect(calls[0].prompt).toContain("node --import tsx scripts/red-area.ts --ref HEAD");
+    const none = await runWave({ main: MAIN, contract: { ...CONTRACT, redAreas: null }, items: [item(13)] }, (c) => (c.opts.phase === "Review" ? clean : opened(13)));
+    expect(none.calls[0].prompt).not.toContain("--ref HEAD");
+  });
+
+  it("red areas the worker reports start the 🔴 pair at once: no lone 🟢 review first, fixers ≥ the red floor", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(14)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(14, { head_sha: fixSha(c, n), red_areas: ["schema/migrations/seed"] });
+      return n <= 2 ? finding(false) : clean;
+    });
+    expect(calls.filter(solo)).toHaveLength(0);
+    expect(reviewers(calls).slice(0, 2).sort()).toEqual([DB, QA]);
+    expect(calls.find((c) => c.opts.phase === "Fix")?.opts.agentType).toBe("sapu:sapu-sonnet-high");
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
+    expect(out[0].reviewComment).toMatch(/^Review tier: red/);
+  });
+
+  it("the author never picks its own domain reviewer: the reviewers' areas decide, and a different specialist reviews the full diff too", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(17)] }, (c) => {
+      if (c.opts.phase !== "Review") return opened(17, { red_areas: ["docs"] });
+      return { ...clean, red_areas: ["payments"] };
+    });
+    expect(reviewers(calls)).toEqual([QA, ARCHITECT, DB]);
+    const db = calls.find((c) => c.opts.agentType === DB)!;
+    expect(db.prompt).not.toContain("RE-review");
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["payments"] });
+    expect(out[0].reviewComment).toMatch(/^Review tier: red \(red areas: payments\)/);
+  });
+
+  it("a reviewer whose classifier did not run adds the architect, never replaces the worker's areas or domain half", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(20)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(20, { head_sha: fixSha(c, n), red_areas: ["payments"] });
+      if (n <= 3) return c.opts.agentType === QA ? { ...finding(false), red_area_ran: false } : { ...clean, red_areas: ["payments"] };
+      return { ...clean, red_areas: ["payments"] };
+    });
+    expect(reviewers(calls).slice(0, 3)).toEqual([QA, DB, ARCHITECT]);
+    expect(reviewers(calls).slice(3).sort()).toEqual([DB, QA]);
+    expect(out[0]).toMatchObject({ status: "ready", tier: "red" });
+    expect(out[0].redAreas).toEqual(["payments", "unknown: the red-area check did not run"]);
+  });
+
+  it("the worker's areas and the reviewers' agree: the pair is not doubled", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(18)] }, (c) =>
+      c.opts.phase === "Review" ? { ...clean, red_areas: ["schema/migrations"] } : opened(18, { red_areas: ["schema/migrations"] }),
+    );
+    expect(reviewers(calls).sort()).toEqual([DB, QA]);
+  });
+
+  it("fixers are not asked to run the classifier (their result never raises the tier)", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(19)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(19, { head_sha: fixSha(c, n) });
+      return n === 1 ? finding(false) : clean;
+    });
+    expect(calls.find((c) => c.opts.phase === "Implement")!.prompt).toContain("--ref HEAD");
+    expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).not.toContain("--ref HEAD");
+  });
+
+  it("a worker's red_areas only ever raise: [] or none leaves the reviewers' own fail-closed check in charge", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(15)] }, (c) => {
+      if (c.opts.phase !== "Review") return opened(15, { red_areas: [] });
+      return solo(c) ? { ...clean, red_areas: ["payments"] } : clean;
+    });
+    expect(reviewers(calls).sort()).toEqual([DB, QA, QA]);
+    expect(out[0]).toMatchObject({ tier: "red" });
+    const noClassifier = await runWave({ main: MAIN, contract: { ...CONTRACT, redAreas: null }, items: [item(16)] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(16, { red_areas: ["schema"] }),
+    );
+    expect(reviewers(noClassifier.calls)).toEqual([QA]);
+  });
+
   it("a red-area check that did not run counts as red", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(9)] }, (c) => {
       if (c.opts.phase !== "Review") return opened(9);
