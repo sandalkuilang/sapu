@@ -28,11 +28,12 @@
 
 ## What you get
 
-- 🧹 **One command, clean backlog.** `/sapu` drains every open PR, then works every issue in parallel waves.
-- 🔍 **Independent review.** Every PR is reviewed by an agent that is not its author, chosen by risk tier.
-- 🚦 **Merge only on green.** Workers never merge; one merge script does, after the gate passes.
+- 🧹 **One command, clean backlog.** `/sapu` drains every open PR, then works every issue in parallel lanes, one Workflow call per issue, as many at once as the machine carries.
+- 🔍 **Independent review.** Every PR is reviewed by an agent that is not its author: the `qa` specialist at Opus/high on every tier, an adversarial Opus pair on 🔴.
+- 🚦 **Merge only on green.** Workers never merge; one merge script does, after the gate passes, and logs every gate run so a flaky test is proven, never assumed.
 - 📜 **Zero repo knowledge in the plugin.** Each repo brings its own contract: account, gate commands, protected data.
-- 🛡️ **Safe by default.** Guard hook for subagents, scope lock per machine, trusted-author checks for public repos.
+- 🛡️ **Safe by default.** Guard hook on subagents' shell, file and MCP tools, scope lock per machine, trusted-author checks for public repos.
+- 🧽 **Tidies up only what is proven done.** Per the repo's policy (end of the sweep, every session, or never), sapu deletes only its own branches that are proven merged, with their clean worktrees.
 
 ## Quick start
 
@@ -57,8 +58,8 @@ Needs a GitHub remote, real tests to use as the merge gate, and a `CLAUDE.md`. F
 
 | Skill | Job |
 |---|---|
-| 🧹 `/sapu:sapu` | Orchestrator: drains every open PR, then works every issue in parallel waves until the backlog is clean. |
-| 🔨 `/sapu:forge` | One issue → one tested PR. |
+| 🧹 `/sapu:sapu` | Orchestrator: drains every open PR, then works every issue in parallel lanes until the backlog is clean. |
+| 🔨 `/sapu:forge` | One issue → one tested, reviewed PR, merged through the merge script when its risk tier allows. |
 | 👁️ `/sapu:argus` | Autonomous QA against the local dev app. |
 | ⚖️ `/sapu:momus` | Release-readiness audit. |
 | 🗡️ `/sapu:nemesis` | Red team against the local dev app (explicitly authorized targets only). |
@@ -70,9 +71,9 @@ Short aliases (`/sapu`, `/forge`, …) are created by `/sapu:init`.
 
 ## How it works
 
-The plugin is an **engine**: skills, agents, a guard hook and a merge script. It keeps no knowledge of any particular repo. Every repo fact lives in that repo's **contract** (`.claude/sapu.json` + `.claude/sapu/*.md`), in the format of [`plugins/sapu/CONTRACT.md`](plugins/sapu/CONTRACT.md).
+The plugin is an **engine**: skills, agents, a guard hook and a merge script. It keeps no knowledge of any particular repo. Every repo fact lives in that repo's **contract** (`.claude/sapu.json` + `.claude/sapu/*.md`, or a local copy outside the repo), in the format of [`plugins/sapu/CONTRACT.md`](plugins/sapu/CONTRACT.md).
 
-<img src="docs/img/sapu.svg" alt="The sapu orchestrator: Phase A drains PRs, Phase B runs waves of forge workers with tiered review, and only the orchestrator merges through the merge gate" width="100%">
+<img src="docs/img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and up to two fix cycles, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
 
 A picture tour of every skill: [How the agents work](docs/agents.md).
 
@@ -80,7 +81,7 @@ A picture tour of every skill: [How the agents work](docs/agents.md).
 
 | | |
 |---|---|
-| [Install and use](docs/usage.md) | Setup, day-to-day commands, updating, common problems |
+| [Install and use](docs/usage.md) | Setup, day-to-day commands, requirements and limits, cleanup, updating, common problems |
 | [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories |
 | [How the agents work](docs/agents.md) | One diagram per skill |
 | [Contributing](docs/contributing.md) | Repo layout, the gate, rule guard, versioning |

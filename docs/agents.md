@@ -2,15 +2,15 @@
 
 <sub>A picture tour of each skill. What to type is in the <a href="usage.md#day-to-day">usage table</a>.</sub>
 
-The plugin is the **engine** — skills, agents, a guard hook and a merge script — and it knows nothing about any one repo. Each repo brings a committed **contract** (`.claude/sapu.json` + `.claude/sapu/*.md` profiles, written by `/sapu:init`); an optional per-machine config decides where sapu may run.
+The plugin is the **engine** — skills, agents, a guard hook and a merge script — and it knows nothing about any one repo. Each repo brings a **contract** (`.claude/sapu.json` + `.claude/sapu/*.md` profiles, written by `/sapu:init`; committed, or kept local outside the repo); an optional per-machine config decides where sapu may run.
 
 <img src="img/overview.svg" alt="How the sapu engine, the per-repo contract and the optional machine config fit together, and which skill calls which" width="100%">
 
 ### /sapu — sweep the backlog
 
-Drains open PRs first (Phase A), then works open issues in parallel waves (Phase B). Each wave runs a **forge** worker per issue in its own worktree; every PR gets independent review chosen by risk tier (🟢/🟡/🔴; a pair for 🔴), with up to two fix cycles. Workers never merge — only the orchestrator does, through the merge gate.
+Locks its scope first (Step 0), drains open PRs (Phase A), then works open issues in parallel lanes (Phase B): each issue is one Workflow call running a **forge** worker in its own worktree, up to as many lanes as the machine carries, and a new lane starts as soon as one returns. Every PR is reviewed by the `qa` specialist at Opus/high, or by an adversarial Opus pair on 🔴 and on any diff that touches a red area, with up to two fix cycles; a worker past its step budget hands off to a fresh one of the same tier. Workers never merge: the orchestrator queues ready PRs through `sapu-merge.sh` (gate, flake ledger, merge, `mergeAfter`), one at a time. Each session ends by rewriting the `sapu-sweep-state` memory page (and cleans up merged branches when the repo's policy says `session`); the last one runs a final gate, the cleanup the policy asks for, and the report.
 
-<img src="img/sapu.svg" alt="The sapu orchestrator: Phase A drains PRs, Phase B runs waves of forge workers with tiered review, and only the orchestrator merges through the merge gate" width="100%">
+<img src="img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and up to two fix cycles, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
 
 ### /inspector — full sweep before release
 

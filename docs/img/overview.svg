@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 800" role="img" aria-label="How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config; the sapu orchestrator drives forge workers through waves, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 800" role="img" aria-label="How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config; the sapu orchestrator runs one forge worker per issue in parallel lanes, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.">
   <title>sapu — how the pieces fit</title>
-  <desc>The sapu plugin is an engine (skills, agents, guard hook, workflows, scripts) that knows no repo. Each repo supplies a committed contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init). An optional per-machine config (~/.config/sapu/config.json) limits where sapu may run. /sapu orchestrates forge workers in waves; /inspector runs momus, then argus, then nemesis; /dream runs standalone and read-only. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate.</desc>
+  <desc>The sapu plugin is an engine (skills, agents, guard hook, workflows, scripts) that knows no repo. Each repo supplies a contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init), committed in the repo or kept local under ~/.config/sapu/repos/. An optional per-machine config (~/.config/sapu/config.json) limits where sapu may run. /sapu runs one forge worker per issue in parallel lanes and merges ready PRs one at a time; /inspector runs momus, then argus, then nemesis; /dream runs standalone and read-only. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate.</desc>
   <style>
     :root{
       --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
@@ -60,10 +60,11 @@
 
   <!-- inputs -->
   <rect x="24" y="132" width="560" height="128" rx="10" class="reads-b"/>
-  <text x="40" y="156" class="ttl">Repo contract — committed</text>
-  <text x="40" y="181" class="t"><tspan class="mono">.claude/sapu.json</tspan> + <tspan class="mono">.claude/sapu/*.md</tspan> — drafted by /sapu:init</text>
-  <text x="40" y="205" class="sm">+ QA configs: .argus/ .momus/ .nemesis/ config.yml</text>
-  <text x="40" y="229" class="sm">not in it: nemesis targets — owner-signed, gitignored <tspan class="mono">authorization.yml</tspan></text>
+  <text x="40" y="156" class="ttl">Repo contract — committed, or local</text>
+  <text x="40" y="179" class="t"><tspan class="mono">.claude/sapu.json</tspan> + <tspan class="mono">.claude/sapu/*.md</tspan> — drafted by /sapu:init</text>
+  <text x="40" y="200" class="sm">or local, nothing in the repo: <tspan class="mono">~/.config/sapu/repos/&lt;owner&gt;__&lt;name&gt;/</tspan></text>
+  <text x="40" y="221" class="sm">+ QA configs: .argus/ .momus/ .nemesis/ config.yml</text>
+  <text x="40" y="242" class="sm">not in it: nemesis targets — owner-signed, gitignored <tspan class="mono">authorization.yml</tspan></text>
 
   <rect x="600" y="132" width="296" height="128" rx="10" class="limit-b"/>
   <text x="616" y="156" class="ttl">Machine config — optional</text>
@@ -105,7 +106,7 @@
   <text x="468" y="462" class="sm mono">sapu-wave.js · inspector.js</text>
   <rect x="704" y="422" width="182" height="50" rx="8" class="box"/>
   <text x="714" y="442" class="ttl">scripts/</text>
-  <text x="714" y="462" class="sm">merge gate · scope lock</text>
+  <text x="714" y="462" class="sm">merge · cleanup · checks</text>
 
   <!-- how a run flows -->
   <text x="24" y="520" class="sec">How a run flows</text>
@@ -117,11 +118,11 @@
   <text x="84" y="590" class="t mono" text-anchor="middle">/sapu</text>
   <text x="84" y="609" class="sm" text-anchor="middle">orchestrator</text>
   <path d="M144,594 L198,594" class="flow" marker-end="url(#af)"/>
-  <text x="164" y="584" class="sm" text-anchor="middle">wave</text>
+  <text x="164" y="584" class="sm" text-anchor="middle">lanes</text>
 
   <rect x="200" y="568" width="170" height="52" rx="8" class="box2"/>
   <text x="285" y="590" class="t" text-anchor="middle">forge worker × N</text>
-  <text x="285" y="609" class="sm" text-anchor="middle">own worktree each</text>
+  <text x="285" y="609" class="sm" text-anchor="middle">one per issue</text>
   <path d="M370,594 L402,594" class="flow" marker-end="url(#af)"/>
 
   <rect x="404" y="568" width="170" height="52" rx="8" class="box2"/>
@@ -131,7 +132,7 @@
 
   <rect x="612" y="568" width="150" height="52" rx="8" class="limit-b"/>
   <text x="687" y="590" class="t" text-anchor="middle">merge gate</text>
-  <text x="687" y="609" class="sm" text-anchor="middle">orchestrator only</text>
+  <text x="687" y="609" class="sm mono" text-anchor="middle">sapu-merge.sh</text>
   <path d="M762,594 L788,594" class="writes" marker-end="url(#aw)"/>
 
   <rect x="790" y="568" width="106" height="52" rx="8" class="writes-b"/>
@@ -161,6 +162,6 @@
   <text x="843" y="681" class="sm mono" text-anchor="middle">dreams/</text>
   <text x="612" y="714" class="sm">one local file; no GitHub writes</text>
 
-  <text x="24" y="758" class="t">Also produced — GitHub issues: argus, nemesis; sapu only for out-of-scope security gaps; momus only when asked</text>
+  <text x="24" y="758" class="t">Also produced — GitHub issues: argus, nemesis; sapu only for security gaps and a proven base flake; momus only when asked</text>
   <text x="24" y="780" class="t">Written reports: momus, inspector · state in the main checkout: <tspan class="mono">.argus/ .momus/ .nemesis/ dreams/</tspan></text>
 </svg>

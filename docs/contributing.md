@@ -10,12 +10,12 @@ plugins/sapu/
   CONTRACT.md                     the repo contract format
   skills/                         sapu, forge, argus, momus, nemesis, inspector, dream, init
   agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, and the built-in specialists sapu-qa … sapu-product
-  hooks/hooks.json                PreToolUse guard (Bash + Read/Write/Edit), active for every subagent, not for the orchestrator
-  workflows/sapu-wave.js          one Phase B wave as code
+  hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
+  workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
-  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts
+  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs
 scripts/rule-guard.ts             gate: a weakened engine rule needs a Rule-Change trailer (not shipped)
-tests/                            vitest: guard, workflows, contract, metrics, rule-guard, and "the engine is clean of repos"
+tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, and "the engine is clean of repos"
 ```
 
 The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`.
@@ -45,7 +45,7 @@ Before the tests, the gate runs `node scripts/rule-guard.ts`. It compares the br
 - one of the files that enforce the rules changed at all or was deleted — tightening changes included:
   - `plugins/sapu/hooks/hooks.json`
   - `plugins/sapu/scripts/sapu-guard.mjs`, `sapu-merge.sh`, `sapu-contract.mjs`
-  - `plugins/sapu/workflows/sapu-wave.js`
+  - `plugins/sapu/workflows/sapu-wave.js`, `inspector.js`
   - `tests/engine.test.ts` (here a context budget that went up or vanished is also named on its own)
   - `scripts/rule-guard.ts` and `tests/rule-guard.test.ts`
 - `gate` in `package.json` no longer runs `node scripts/rule-guard.ts` as an `&&` step of its own, or contains anywhere `||`, `;`, a lone `&`, a newline, or `exit`, which could make the gate pass while the guard is red (for example `… && vitest run || true`).

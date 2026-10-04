@@ -34,7 +34,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.5.2 — one Phase B lane: a forge worker in its own worktree, senior review by risk tier with a fail-closed red-area raise, up to 2 fix cycles, one escalation step, the repo\'s pre-PR command until zero; returns a merge-ready PR without merging',
+  description: 'sapu v2.5.3 — one Phase B lane: a forge worker in its own worktree, senior review by risk tier with a fail-closed red-area raise, up to 2 fix cycles, one escalation step, the repo\'s pre-PR command until zero; returns a merge-ready PR without merging',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Implement', detail: 'one forge worker per issue, isolated worktree' },
