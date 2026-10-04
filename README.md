@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/hero-dark.svg">
-    <img src="docs/img/hero.svg" alt="sapu" width="440">
+    <img src="docs/img/hero.svg" alt="sapu — a plugin marketplace for Claude Code" width="440">
   </picture>
 </p>
 
@@ -208,7 +208,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | **Trust checks** | In public repos, sapu works only issues and PRs from trusted authors (or accepted by a trusted account). |
 
 > [!IMPORTANT]
-> The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token. Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#usage).
+> The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token. Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#day-to-day).
 
 ## Docs
 

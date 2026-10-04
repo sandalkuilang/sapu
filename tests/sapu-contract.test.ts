@@ -195,6 +195,10 @@ describe("specialists — the optional role map", () => {
     expect(validate({ ...own, redAreaSpecialists: [{ match: "x", agent: "senior-dev-team:senior-qa-reviewer" }, { match: "y", agent: "senior-dev-team:senior-fullstack-database-engineer" }] })).toEqual([]);
   });
 
+  it("a contract still naming a removed built-in role agent (sapu:sapu-<role>) is refused with the way out", () => {
+    expect(validate({ ...clone(), specialists: { db: "sapu:sapu-db" } }).join("\n")).toMatch(/specialists\.db: "sapu:sapu-db" cannot be a specialist \(sapu no longer ships its own role agents; omit the role to use its senior-dev-team default\)/);
+  });
+
   it("qa may not resolve to the same agent as any domain role", () => {
     for (const d of ["architect", "db", "developer", "ux"]) {
       expect(validate({ ...clone(), specialists: { qa: "one", [d]: "one" } }).join("\n"), d).toMatch(new RegExp(`qa and ${d} both resolve to "one"`));

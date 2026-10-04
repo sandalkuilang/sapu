@@ -70,7 +70,14 @@ const MAX_FIX_CYCLES = 2 // 🟢/🟡; and every tier's first cycles
 // reports fewer findings than the one before, and no finding is reported by three reviews in a row
 // (its fixers could not fix it). A hard design keeps a chance; a loop that does not shrink stops.
 const MAX_FIX_CYCLES_RED = 5
-const findingKey = (f) => `${String(f.file_line).split(':')[0].trim().toLowerCase()}|${String(f.claim).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').slice(0, 6).join(' ')}`
+// A finding's identity across reviews: its file without any line form (a.ts:12, a.ts#L12, a.ts (line 12))
+// and its whole claim, normalised. Wrongly "the same" would block a PR whose findings were fixed, so
+// it errs the other way: a re-worded repeat counts as new (MAX_FIX_CYCLES_RED still bounds the loop).
+const findingKey = (f, i) => {
+  const file = String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/#l\d+.*$/, '').replace(/:\d+.*$/, '').trim()
+  const claim = String(f.claim).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  return claim ? `${file}|${claim}` : `${file}|#${i}` // no comparable claim: never "the same" as another
+}
 // Each worker step re-sends its whole, growing context, so a 200-step run costs far more than two
 // 100-step ones. Past the step budget (subagent-brief.md point 11) a worker commits WIP and hands off.
 const MAX_HANDOFFS = 2
@@ -352,8 +359,10 @@ async function review(item, state, delta, only) {
 // repo contract chose, where to check its spelling.
 function deadReviewers(dead, what) {
   const own = dead.filter((a) => CONTRACT_AGENTS.has(a))
+  const team = dead.filter((a) => a.startsWith('senior-dev-team:'))
   return `${what} returned nothing: ${dead.join(', ')}` +
-    (own.length ? ` — ${own.join(', ')} comes from the repo contract: check that agent name in the repo contract (specialists / redAreaSpecialists); an agent type that does not exist here cannot be dispatched` : '')
+    (own.length ? ` — ${own.join(', ')} comes from the repo contract: check that agent name in the repo contract (specialists / redAreaSpecialists); an agent type that does not exist here cannot be dispatched` : '') +
+    (team.length ? ` — ${team.join(', ')} comes from the senior-dev-team plugin, sapu's dependency: check it is installed and enabled (\`claude plugin list\`; install: \`claude plugin install senior-dev-team@<marketplace>\`)` : '')
 }
 
 // A 🟢/🟡 item whose diff touches a red area (or whose check could not run) gets the 🔴 pair,
@@ -510,9 +519,12 @@ async function runItem(item) {
     comments.push(rv.comment)
     notes.push(...rv.notes)
     state.securityGaps.push(...rv.securityGaps)
-    const seen = new Map() // finding key -> reviews in a row that reported it
-    let before = null // the previous review's finding count
+    let seen = new Map() // finding key -> reviews in a row that reported it
+    let before = null // the previous review's count of distinct findings
+    let tier = state.tier
     while (!rv.clean) {
+      // a tier raised mid-loop brings a new reviewer set: convergence starts over against it
+      if (state.tier !== tier) { tier = state.tier; seen = new Map(); before = null }
       const keys = new Set(rv.findings.map(findingKey))
       for (const k of [...seen.keys()]) if (!keys.has(k)) seen.delete(k)
       for (const k of keys) seen.set(k, (seen.get(k) || 0) + 1)
@@ -520,11 +532,11 @@ async function runItem(item) {
       const why =
         state.cycles >= cap ? `after ${cap} fix cycles`
         : state.cycles < MAX_FIX_CYCLES ? null
-        : before !== null && rv.findings.length >= before ? `not converging: ${rv.findings.length} finding(s) after ${before} the round before (cycle ${state.cycles})`
+        : before !== null && keys.size >= before ? `not converging: ${keys.size} finding(s) after ${before} the round before (cycle ${state.cycles})`
         : [...seen.values()].some((n) => n >= 3) ? `a finding was reported by three reviews in a row (cycle ${state.cycles})`
         : null
       if (why) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
-      before = rv.findings.length
+      before = keys.size
       state.cycles++
       let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
       if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)

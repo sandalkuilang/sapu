@@ -507,6 +507,43 @@ describe("sapu-wave — fix cycles", () => {
       expect(out[0]).toMatchObject({ status: "blocked", cycles: 5 });
       expect(out[0].reason).toMatch(/after 5 fix cycles/);
     });
+    it("a finding reported by only two reviews in a row does not stop a converging red", async () => {
+      const { out } = await red(65, [["a", "b", "c"], ["a", "d"], ["e"], []]);
+      expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+    });
+    it("the same finding with a moved line (:1, #L40, (line 7)) is one finding; distinct claims in one file are not", async () => {
+      let r = 0;
+      const shapes = ["a.ts:1", "a.ts#L40", "a.ts (line 7)"];
+      const same = (i: number) => ({ ...finding(false), findings: [{ file_line: shapes[i], claim: "The check does not validate the owner", failure_scenario: "f", invariant_domain: false }, { file_line: `x${i}.ts:1`, claim: `other ${i}`, failure_scenario: "f", invariant_domain: false }].slice(0, 2 - Math.min(i, 1)) });
+      const { out } = await runWave({ main: MAIN, items: [item(66, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+        if (c.opts.phase !== "Review") return opened(66, { head_sha: fixSha(c, n) });
+        if (c.opts.agentType !== QA) return clean;
+        return same(Math.min(r++, 2));
+      });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(out[0].reason).toMatch(/three reviews in a row|not converging/);
+      let q = 0;
+      const distinct = (i: number) => ({ ...finding(false), findings: [{ file_line: "a.ts:1", claim: `The function does not validate the ${["owner", "amount", "currency"][i]}`, failure_scenario: "f", invariant_domain: false }] });
+      const ok = await runWave({ main: MAIN, items: [item(67, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+        if (c.opts.phase !== "Review") return opened(67, { head_sha: fixSha(c, n) });
+        if (c.opts.agentType !== QA) return clean;
+        const k = q++;
+        return k < 3 ? (k < 2 ? { ...distinct(k), findings: [...distinct(k).findings, { file_line: `y${k}.ts:1`, claim: `extra ${k}`, failure_scenario: "f", invariant_domain: false }] } : distinct(k)) : clean;
+      });
+      expect(ok.out[0].reason || "").not.toMatch(/three reviews in a row/);
+    });
+    it("the pair reporting one finding twice counts it once", async () => {
+      let r = 0;
+      const rounds = [["a", "b", "c"], ["d", "e"], ["f"], []];
+      const { out } = await runWave({ main: MAIN, items: [item(68, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+        if (c.opts.phase !== "Review") return opened(68, { head_sha: fixSha(c, n) });
+        const k = c.opts.agentType === QA ? r++ : Math.max(r - 1, 0);
+        const set = rounds[Math.min(k, 3)];
+        return set.length ? { ...finding(false), findings: set.map((x) => ({ file_line: `${x}.ts:1`, claim: `claim ${x}`, failure_scenario: "f", invariant_domain: false })) } : clean;
+      });
+      expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+    });
+
     it("🟢 stays at 2 even while converging", async () => {
       let r = 0;
       const rounds = [["a", "b", "c"], ["a", "b"], ["a"]];
@@ -730,15 +767,18 @@ describe("sapu-wave — contract-driven behaviour", () => {
     );
     expect(literal.out[0]).toMatchObject({ status: "died" });
     expect(String(literal.out[0].reason)).toContain("legacy-ui-reviewr comes from the repo contract");
-    // a built-in that returns nothing is named too, without blaming the contract
+    // a senior-dev-team default that returns nothing is named too, with where to check the plugin, never blaming the contract
     const builtIn = await runWave({ main: MAIN, items: [item(49)] }, (c) => (c.opts.phase === "Review" ? null : opened(49)));
-    expect(builtIn.out[0]).toMatchObject({ status: "died", reason: `reviewer returned nothing: ${QA}` });
+    expect(builtIn.out[0]).toMatchObject({ status: "died" });
+    expect(String(builtIn.out[0].reason)).toMatch(new RegExp(`^reviewer returned nothing: ${QA} — ${QA} comes from the senior-dev-team plugin, sapu's dependency: check it is installed and enabled`));
+    expect(String(builtIn.out[0].reason)).not.toContain("repo contract");
     // a delta round names it as well
     const delta = await runWave({ main: MAIN, items: [item(50)] }, (c, n) => {
       if (c.opts.phase !== "Review") return opened(50, { head_sha: fixSha(c, n) });
       return n === 1 ? finding(false) : null;
     });
-    expect(delta.out[0]).toMatchObject({ status: "died", reason: `delta reviewer in cycle 1 returned nothing: ${QA}` });
+    expect(delta.out[0]).toMatchObject({ status: "died" });
+    expect(String(delta.out[0].reason)).toMatch(new RegExp(`^delta reviewer in cycle 1 returned nothing: ${QA} — `));
   });
 
   it("refuses a wave without the contract or the plugin root", async () => {

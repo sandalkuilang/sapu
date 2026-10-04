@@ -8,7 +8,7 @@ export default {
     const pill = theme === "dark" ? ["#1c1736", "#5b4aa3", "#c4b5fd"] : ["#f5f3ff", "#c4b5fd", "#5b21b6"];
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 548 150" width="548" height="150" role="img" aria-label="sapu, a Claude Code plugin marketplace: the sapu backlog sweeper and the senior-dev-team agents">
   <title>sapu</title>
-  <desc>The sapu logo, a broom sweeping sparkles on a teal-to-indigo tile, beside the word sapu and the caption: plugins for Claude Code.</desc>
+  <desc>The sapu logo, a broom sweeping sparkles on a teal-to-indigo tile, beside the word sapu, a for-Claude-Code chip and the caption: plugin marketplace.</desc>
   <defs>
     <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
     <linearGradient id="wm" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${ink}"/><stop offset="1" stop-color="${ink}"/></linearGradient>

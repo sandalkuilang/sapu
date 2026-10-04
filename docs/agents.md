@@ -8,7 +8,7 @@ The plugin is the **engine** — skills, the worker agents, a guard hook and a m
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/overview-dark.svg">
-  <img src="img/overview.svg" alt="How the sapu engine, the per-repo contract and the optional machine config fit together, and which skill calls which" width="100%">
+  <img src="img/overview.svg" alt="How the sapu engine, the per-repo contract, the optional machine config and the senior-dev-team specialists fit together, and which skill calls which" width="100%">
 </picture>
 
 ### /sapu — sweep the backlog
