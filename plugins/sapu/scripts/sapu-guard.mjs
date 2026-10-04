@@ -44,6 +44,9 @@
 // A contract that exists but is broken blocks every call except the canary; a repo with no
 // contract yet keeps the engine floor, except for a sapu worker, which never works without one.
 //
+// STEP BUDGET. A ladder worker's tool calls are counted per agent id (stepBudget below): a reminder
+// block at STEP_SOFT and every STEP_EVERY after, and past STEP_HARD only its handoff runs.
+//
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
 // (a subagent, a subagent's subagent, ...) and never for the orchestrator — the main session,
@@ -1305,6 +1308,45 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
   return null;
 }
 
+// The step budget of subagent-brief.md point 11, enforced here because prose was not obeyed: every
+// step re-sends a worker's whole, growing context, so one 225-step agent costs far more than two
+// fresh ones. At STEP_SOFT tool calls, and every STEP_EVERY after, ONE call is refused as a reminder
+// (re-issuing it passes: a worker a few steps from done finishes). Past STEP_HARD only the handoff
+// itself runs. Counted per agent id in <MAIN>/.git/sapu-steps/ (one byte appended per call, so the
+// file size is the count); ladder workers only, never reviewers or specialists.
+export const STEP_SOFT = 120;
+export const STEP_EVERY = 15;
+export const STEP_HARD = 170;
+// What a worker past STEP_HARD may still run: a WIP commit, a look at its state, its teardown.
+const HANDOFF_SEGMENT = /^(git(\s+-C\s+\S+)?\s+(add|commit|status|log|diff|rev-parse|show|branch)\b|echo\b|true$|\S+\s+teardown(\s|$)|\S*teardown\S*(\s|$))/;
+
+/**
+ * The step budget's verdict for one call of a ladder worker: the reason to block, or null.
+ * @param {{ main: string|null, agentId?: string, tool: string, command?: string }} i
+ */
+export function stepBudget({ main, agentId, tool, command }) {
+  if (!main || typeof agentId !== "string" || !agentId) return null;
+  const dir = path.join(main, ".git", "sapu-steps");
+  const file = path.join(dir, agentId.replace(/[^\w.-]/g, "_"));
+  let n;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(file, ".");
+    n = fs.statSync(file).size;
+  } catch {
+    return null; // ponytail: an unwritable counter never blocks work; the prose budget still stands
+  }
+  if (n > STEP_HARD) {
+    const segs = tool === "Bash" && typeof command === "string" ? command.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean) : [];
+    if (segs.length && segs.every((s) => HANDOFF_SEGMENT.test(s))) return null;
+    return `STEP BUDGET: past ${STEP_HARD} tool calls — hand off now (brief point 11): WIP commit (git add -A && git commit -m 'wip: handoff', unpushed), teardown, then return status "handoff" with branch, head_sha and a handoff_note of at most 10 lines. Only git add/commit/status/log/diff/rev-parse, echo and your teardown still run.`;
+  }
+  if (n >= STEP_SOFT && (n - STEP_SOFT) % STEP_EVERY === 0) {
+    return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit, teardown, return status "handoff" with a handoff_note. A fresh worker of your tier continues on a clean context. Close to done? Re-issue this call; it passes. Past ${STEP_HARD} calls only the handoff runs.`;
+  }
+  return null;
+}
+
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
  * (no agent_type) is never policed; every subagent is.
@@ -1331,7 +1373,7 @@ export function decide(input) {
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
-  return null;
+  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command }) : null;
 }
 
 /** True when this file is the process's entry point, however it was reached (symlink, relative path). */

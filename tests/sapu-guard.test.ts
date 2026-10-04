@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, STEP_EVERY, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -1216,5 +1216,74 @@ describe("round 5 — non-worker writes into <MAIN> are limited to the plugin's 
     expect(f(`${main}/.claude/sapu.json`, false)).toMatch(/main checkout/);
     expect(f(`${main}/.argus/cycle.json`, false)).toBeNull();
     expect(f(`${main}/.argus/cycle.json`, true)).toMatch(/main checkout/);
+  });
+});
+
+describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md point 11), in code", () => {
+  const budget = stepBudgetUntyped as (i: { main: string | null; agentId?: string; tool: string; command?: string }) => string | null;
+  const fresh = () => {
+    const m = mkdtempSync(join(tmpdir(), "sapu-steps-"));
+    mkdirSync(join(m, ".git"));
+    return m;
+  };
+  const calls = (m: string, id: string, n: number, command = "ls") => {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(budget({ main: m, agentId: id, tool: "Bash", command }));
+    return out;
+  };
+
+  it("lets the first STEP_SOFT - 1 calls through, then blocks ONE call as a reminder; the re-issued call passes", () => {
+    const m = fresh();
+    const out = calls(m, "a1", STEP_SOFT + 1);
+    expect(out.slice(0, STEP_SOFT - 1).every((r) => r === null)).toBe(true);
+    expect(out[STEP_SOFT - 1]).toMatch(/STEP BUDGET.*handoff/s);
+    expect(out[STEP_SOFT]).toBeNull();
+  });
+
+  it("reminds again every STEP_EVERY calls past the soft limit", () => {
+    const m = fresh();
+    const out = calls(m, "a2", STEP_SOFT + STEP_EVERY);
+    expect(out.filter(Boolean)).toHaveLength(2);
+    expect(out[STEP_SOFT + STEP_EVERY - 1]).toMatch(/STEP BUDGET/);
+  });
+
+  it("past STEP_HARD only the handoff runs: WIP commit, status, log, diff, echo, teardown", () => {
+    const m = fresh();
+    calls(m, "a3", STEP_HARD);
+    for (const ok of ["git add -A && git commit -m 'wip: handoff'", "git status --short", "git -C /wt log --oneline -3", "git rev-parse HEAD", "scripts/sapu-worktree.sh teardown issue7", "echo done"]) {
+      expect(budget({ main: m, agentId: "a3", tool: "Bash", command: ok }), ok).toBeNull();
+    }
+    for (const no of ["npm test", "git add -A && npm test", "sed -n 1,20p a.ts", "npm test teardown"]) {
+      expect(budget({ main: m, agentId: "a3", tool: "Bash", command: no }), no).toMatch(/STEP BUDGET.*hand off now/s);
+    }
+    expect(budget({ main: m, agentId: "a3", tool: "Read" })).toMatch(/hand off now/);
+  });
+
+  it("counts each agent apart, and does nothing without an agent id or a main checkout", () => {
+    const m = fresh();
+    calls(m, "a4", STEP_HARD + 1);
+    expect(budget({ main: m, agentId: "a5", tool: "Bash", command: "npm test" })).toBeNull();
+    expect(budget({ main: m, tool: "Bash", command: "npm test" })).toBeNull();
+    expect(budget({ main: null, agentId: "a4", tool: "Bash", command: "npm test" })).toBeNull();
+  });
+
+  it("the hook counts only ladder workers: a reviewer or specialist is never budgeted", () => {
+    const repo2 = mkdtempSync(join(tmpdir(), "sapu-steps-cli-"));
+    mkdirSync(join(repo2, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", repo2]);
+    commitContract(repo2, FIXTURE_CONTRACT);
+    const status = (agent_type: string, agent_id: string) => {
+      try {
+        execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: "Bash", agent_type, agent_id, tool_input: { command: "ls" }, cwd: repo2 }), stdio: ["pipe", "pipe", "pipe"] });
+        return 0;
+      } catch (e) {
+        return (e as { status: number }).status;
+      }
+    };
+    mkdirSync(join(repo2, ".git/sapu-steps"), { recursive: true });
+    writeFileSync(join(repo2, ".git/sapu-steps/w1"), ".".repeat(STEP_HARD));
+    writeFileSync(join(repo2, ".git/sapu-steps/r1"), ".".repeat(STEP_HARD));
+    expect(status("sapu:sapu-sonnet-high", "w1")).toBe(2);
+    expect(status("senior-qa-reviewer", "r1")).toBe(0);
   });
 });
