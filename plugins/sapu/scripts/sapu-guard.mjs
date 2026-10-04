@@ -1486,10 +1486,12 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
   const gitVerb = GIT_SERVER.test(server) && words.find((w) => /^(commit|add|checkout|reset|stash|push|merge|rebase|pull|fetch|clean)$/.test(w));
   if (gitVerb) {
     const branch = f.find(([k]) => /^(branch|branch_?name|target)$/i.test(k));
-    const reason = check({ command: `git ${gitVerb}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
+    const force = Object.entries(ti).some(([k, v]) => /^force/i.test(k) && v === true) ? " --force" : "";
+    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
     if (reason) return reason;
   }
-  const typed = LOCAL_SERVER.test(server) || words.some((w) => /^(terminal|process|send|keys|interact|type)$/.test(w));
+  // typed text is a command only on a shell-like server's terminal/process tool (not a chat message or a browser field)
+  const typed = LOCAL_SERVER.test(server) && words.some((w) => /^(terminal|process|keys|interact|send|write|input|run|exec|execute)$/.test(w));
   for (const [k, x] of f) {
     if (!(CMD_FIELD.test(k) || (typed && TYPED_FIELD.test(k))) || !x.trim()) continue;
     const reason = check({ command: x, cwd, main, rules, worker });

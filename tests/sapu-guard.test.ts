@@ -1445,6 +1445,7 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__tmux__send_keys", { session: "s", keys: "gh pr merge 5" }],
       ["mcp__serena__create_text_file", { relative_path: "src.txt", content: "x" }],
       ["mcp__fs__get_or_create_file", { path: join(repo4, "x.txt") }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", force: true }],
     ];
     for (const [t, i] of refused) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(2);
   });
@@ -1473,6 +1474,10 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__gitlab__create_branch", { branch: "feat-x", ref: "main" }],
       ["mcp__github__run_workflow", { owner: "o", repo: "r", workflow_id: "ci.yml", ref: "main" }],
       ["mcp__git__git_commit", { repo_path: wt4, message: "wip" }],
+      // text typed into a chat or a browser field is not a command
+      ["mcp__slack__slack_send_message", { channel: "c", text: "gh pr merge 5 is ready for you" }],
+      ["mcp__playwright__browser_type", { element: "e", ref: "r", text: "git stash" }],
+      ["mcp__terminal__create_note", { text: "git push origin main" }],
     ];
     for (const [t, i] of allowed) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(0);
   });
