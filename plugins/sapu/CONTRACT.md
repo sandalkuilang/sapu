@@ -497,7 +497,7 @@ could use them.
 - The guard hook (`PreToolUse` for `Bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
   `Grep`, `Glob`, and context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`,
   whose commands, shell code, spawn-call strings and paths are checked as the Bash/Read calls they
-  amount to) applies to **every subagent** in a repo that enables this plugin, including
+  amount to, where they run: the tool's `cwd`, else the main checkout) applies to **every subagent** in a repo that enables this plugin, including
   subagents spawned by other subagents (`Agent` is not a way around it), and never to the
   orchestrator (the main session, without `agent_type`). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a

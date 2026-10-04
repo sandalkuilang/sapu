@@ -1375,22 +1375,46 @@ export function stepBudget({ main, agentId, tool, command }) {
 
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
 // tells subagents to prefer them, so an honest worker would bypass every rule above. Each call is
-// checked as the Bash/Read calls it amounts to: batch commands and shell code as commands, a path as
-// a read, and in other languages the string a spawn call runs (`execSync('git push …')`). ponytail:
-// an interpreter's own code beyond that is the LIMITS case above, as with `node -e`.
+// checked as the Bash/Read calls it amounts to: batch commands (in every shape context-mode coerces),
+// shell code, paths, and in other languages the command a spawn call runs — a string, a list of
+// literal strings, or literals joined by `+`. They run where context-mode puts them: the tool's
+// `cwd`, else the project root = the main checkout (never the worker's worktree), so that is where
+// they are checked. ponytail: an interpreter's own code beyond that (built strings, ruby backticks,
+// other languages' process APIs) is the LIMITS case above, as with `node -e`.
 const CTX_TOOL = /__ctx_(execute|execute_file|batch_execute|index)$/;
-const SPAWN_CALL = /\b(?:execSync|execFileSync|spawnSync|exec|spawn|system|popen|Popen|check_output|check_call|run|call)\s*\(\s*[fr]?(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
+const LIT = String.raw`[fr]?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\`(?:\\.|[^\`\\])*\`)`;
+// Unambiguous process APIs anywhere; generic names only bare or on a process module (`db.exec(`, `/x/.exec(`, `suite.run(` are not).
+const SPAWN_NAME = String.raw`(?:\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open)|(?:\b(?:subprocess|os|child_process|cp)\.|(?<![\w.$]))(?:exec|run|call|system|popen))`;
+const SPAWN_CALL = new RegExp(String.raw`${SPAWN_NAME}\s*\(\s*(\[[^\]]*\]|${LIT}(?:\s*,\s*\[[^\]]*\])?)`, "g");
+const unquote = (l) => l.replace(/^[fr]?(["'`])([\s\S]*)\1$/, "$2");
+const literals = (t) => (t.match(new RegExp(LIT, "g")) || []).map(unquote);
+
+/** context-mode's `commands`, as its coerceCommandsArray reads them: a JSON string, a bare string, strings or {command}. */
+function ctxCommands(v) {
+  if (typeof v === "string") {
+    try {
+      const j = JSON.parse(v);
+      v = Array.isArray(j) ? j : [v];
+    } catch {
+      v = [v];
+    }
+  }
+  return Array.isArray(v) ? v.map((c) => (typeof c === "string" ? c : c && c.command)) : [];
+}
 
 /** The Bash/Read calls a context-mode MCP call amounts to, or null for any other tool. */
 export function ctxCalls(tool, ti) {
   const m = CTX_TOOL.exec(tool || "");
   if (!m) return null;
   const out = [];
-  if (m[1] === "batch_execute") for (const c of Array.isArray(ti.commands) ? ti.commands : []) out.push({ command: c && c.command });
+  if (m[1] === "batch_execute") for (const c of ctxCommands(ti.commands)) out.push({ command: c });
   if (typeof ti.path === "string" && ti.path) out.push({ filePath: ti.path });
   if (typeof ti.code === "string") {
     if (/^(shell|bash|sh|zsh)$/i.test(ti.language || "")) out.push({ command: ti.code });
-    else for (const s of ti.code.matchAll(SPAWN_CALL)) out.push({ command: s[2] });
+    else {
+      const code = ti.code.replace(/(["'])\s*\+\s*(["'])/g, ""); // 'git push ' + 'origin main'
+      for (const s of code.matchAll(SPAWN_CALL)) out.push({ command: literals(s[1]).join(" ") });
+    }
   }
   return out;
 }
@@ -1405,8 +1429,10 @@ export function decide(input) {
   const ti = input.tool_input || {};
   const ctx = ctxCalls(tool, ti);
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx) return null;
-  const cwd = (ctx && typeof ti.cwd === "string" && ti.cwd) || input.cwd || process.cwd();
-  const main = findMain(cwd);
+  const here = input.cwd || process.cwd();
+  // The agent's own location decides the checkout and its rules; a ctx call is then judged where it runs.
+  const main = findMain(here);
+  const cwd = ctx && typeof ti.cwd === "string" && ti.cwd && /execute$/.test(tool) ? path.resolve(here, ti.cwd) : ctx ? main || here : here;
   const { contract, error, missing } = loadContract(main);
   const rules = contract ? compileRules(contract) : ENGINE_ONLY;
   // Two tiers: a sapu worker keeps the whole floor; any other subagent (reviewers, specialists,

@@ -1357,6 +1357,35 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
     expect(status("index", { path: join(repo3, ".env") })).toBe(2);
   });
 
+  it("reads every commands shape context-mode coerces, and list-form or concatenated spawn calls", () => {
+    expect(status("batch_execute", { commands: '[{"label":"a","command":"git push origin main"}]' })).toBe(2);
+    expect(status("batch_execute", { commands: "git push origin main" })).toBe(2);
+    expect(status("batch_execute", { commands: ["git push origin main"] })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "execFileSync('git', ['push', 'origin', 'main'])" })).toBe(2);
+    expect(status("execute", { language: "python", code: "subprocess.run(['gh', 'pr', 'merge', '5'])" })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "execSync('git push ' + 'origin main')" })).toBe(2);
+  });
+
+  it("judges a call without cwd where context-mode runs it: the main checkout, not the worker's worktree", () => {
+    const wt3 = join(repo3, ".claude/worktrees/w1");
+    execFileSync("git", ["-C", repo3, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt3]);
+    const inWt = (tool_input: unknown) => {
+      try {
+        execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + "execute", agent_type: "sapu:sapu-sonnet-high", agent_id: "c2", tool_input, cwd: wt3 }), stdio: ["pipe", "pipe", "pipe"] });
+        return 0;
+      } catch (e) {
+        return (e as { status: number }).status;
+      }
+    };
+    expect(inWt({ language: "shell", code: "git commit -am wip" })).toBe(2);
+    expect(inWt({ language: "shell", code: "echo x > src.txt" })).toBe(2);
+    expect(inWt({ language: "shell", cwd: wt3, code: "git commit -am wip" })).toBe(0);
+  });
+
+  it("does not take a non-spawn string for a command (db.exec, regex exec, test runner run)", () => {
+    expect(status("execute", { language: "javascript", code: 'db.exec("DELETE FROM t WHERE a > 2"); /x/.exec("3 > 2"); suite.run("a > b")' })).toBe(0);
+  });
+
   it("lets ordinary work through, and never polices the orchestrator", () => {
     expect(status("batch_execute", { commands: [{ label: "s", command: "git status --short" }] })).toBe(0);
     expect(status("execute", { language: "javascript", code: "console.log([1, 2].length)" })).toBe(0);
