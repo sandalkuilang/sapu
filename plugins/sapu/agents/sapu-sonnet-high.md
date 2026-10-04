@@ -1,6 +1,6 @@
 ---
 name: sapu-sonnet-high
-description: "sapu worker for 🟡 work and for 🔴 work whose design the issue already fully decides; the single reviewer for every 🟡 PR — Sonnet/high (the floor for any 🔴 work). Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
+description: "sapu worker for 🟡 work and for 🔴 work whose design the issue already fully decides (never a reviewer) — Sonnet/high (the floor for any 🔴 work). Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
 model: sonnet
 effort: high
 tools: Bash, Read, Edit, Write, Grep, Glob, Agent, ToolSearch, WebSearch, WebFetch, mcp__plugin_context-mode_context-mode__ctx_fetch_and_index, mcp__plugin_context-mode_context-mode__ctx_search, mcp__plugin_context-mode_context-mode__ctx_execute, mcp__plugin_context-mode_context-mode__ctx_batch_execute, StructuredOutput

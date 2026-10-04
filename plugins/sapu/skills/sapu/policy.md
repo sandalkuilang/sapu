@@ -28,7 +28,7 @@ Read this only when `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" poli
   - no "Review tier" or gate comment (sapu-merge.sh keeps them in `<MAIN>/.git/sapu-review-pr<N>.md`);
   - no word about sapu, agents or AI in commits, branches, PR titles or PR bodies.
 - PRs follow the repo's own template and conventions.
-- Blocked reasons and decisions for the owner go into the final report and the sweep-state memory, not onto GitHub.
+- Blocked reasons and decisions for the owner go into the final report and `sapu-sweep-state` (open ones only, rewritten whole), not onto GitHub.
 - Worktrees: if `.claude/worktrees/` is not ignored, add it to `<MAIN>/.git/info/exclude`, which is local and never committed. Never edit the repo's `.gitignore` for sapu.
 
 ## prePr
@@ -39,7 +39,7 @@ Read this only when `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" poli
   - This repeats until one round reports zero.
   - There is no round limit. Only a CONTRADICTION (a finding that undoes an earlier deliberate fix) stops it, as BLOCKED for the owner.
   - The clean output is pasted where `prePr.paste` says.
-- A PR you fix in Phase A goes through the same loop before `sapu-merge.sh`. Use one `Agent` call per round (`subagent_type: "general-purpose"`, the same instructions as `prePrPrompt` in sapu-wave.js).
+- A PR you fix in Phase A goes through the same loop before `sapu-merge.sh`. Use one `Agent` call per round (`subagent_type: "general-purpose"`, `model: "opus"`, the same instructions as `prePrPrompt` in sapu-wave.js).
 
 ## skills
 - Every skill starts with `sapu-contract.mjs allowed <skill>`. Exit 1 = stop and quote the reason.

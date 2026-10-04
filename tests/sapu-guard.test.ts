@@ -1326,3 +1326,40 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     expect(readFileSync(join(repo2, ".git/sapu-steps/w2"), "utf8")).toHaveLength(STEP_SOFT - 1);
   });
 });
+
+describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read calls they amount to", () => {
+  const repo3 = mkdtempSync(join(tmpdir(), "sapu-ctx-"));
+  mkdirSync(join(repo3, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo3]);
+  commitContract(repo3, FIXTURE_CONTRACT);
+  const T = "mcp__plugin_context-mode_context-mode__ctx_";
+  const status = (tool: string, tool_input: unknown, agent_type: string | null = "sapu:sapu-sonnet-high") => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + tool, ...(agent_type ? { agent_type, agent_id: "c1" } : {}), tool_input, cwd: repo3 }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("refuses what Bash would refuse: batch commands, shell code, and the string a spawn call runs in another language", () => {
+    expect(status("batch_execute", { commands: [{ label: "a", command: "ls" }, { label: "b", command: "git push origin main" }] })).toBe(2);
+    expect(status("execute", { language: "shell", code: "cd /tmp\ngh pr merge 5 --squash" })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "require('child_process').execSync('gh pr merge 5', {encoding:'utf8'})" })).toBe(2);
+    expect(status("execute", { language: "python", code: "import subprocess\nsubprocess.run(\"git push origin main\", shell=True)" })).toBe(2);
+    // a reviewer is policed too
+    expect(status("execute", { language: "shell", code: "gh pr merge 5" }, "senior-qa-reviewer")).toBe(2);
+  });
+
+  it("refuses a path Read would refuse", () => {
+    writeFileSync(join(repo3, ".env"), "SECRET=1\n");
+    expect(status("execute_file", { path: join(repo3, ".env"), language: "javascript", code: "console.log(1)" })).toBe(2);
+    expect(status("index", { path: join(repo3, ".env") })).toBe(2);
+  });
+
+  it("lets ordinary work through, and never polices the orchestrator", () => {
+    expect(status("batch_execute", { commands: [{ label: "s", command: "git status --short" }] })).toBe(0);
+    expect(status("execute", { language: "javascript", code: "console.log([1, 2].length)" })).toBe(0);
+    expect(status("execute", { language: "shell", code: "git push origin main" }, null)).toBe(0);
+  });
+});

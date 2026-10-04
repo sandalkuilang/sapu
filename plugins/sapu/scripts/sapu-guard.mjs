@@ -1317,7 +1317,7 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
 // A handoff command is never the call a reminder refuses. Counted per agent id in
 // <MAIN>/.git/sapu-steps/ (one byte appended per call, so the file size is the count; parallel calls
 // may shift a reminder by one, which is harmless); ladder workers only, and only calls the guard's
-// own rules let through. ponytail: hooked tools only (Bash, file and search tools), not WebFetch or
+// own rules let through. ponytail: hooked tools only (Bash, file, search and context-mode execute tools), not WebFetch or
 // Agent calls; an unwritable counter switches the budget off rather than block work.
 export const STEP_SOFT = 120;
 export const STEP_EVERY = 15;
@@ -1373,6 +1373,28 @@ export function stepBudget({ main, agentId, tool, command }) {
   return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
 }
 
+// context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
+// tells subagents to prefer them, so an honest worker would bypass every rule above. Each call is
+// checked as the Bash/Read calls it amounts to: batch commands and shell code as commands, a path as
+// a read, and in other languages the string a spawn call runs (`execSync('git push …')`). ponytail:
+// an interpreter's own code beyond that is the LIMITS case above, as with `node -e`.
+const CTX_TOOL = /__ctx_(execute|execute_file|batch_execute|index)$/;
+const SPAWN_CALL = /\b(?:execSync|execFileSync|spawnSync|exec|spawn|system|popen|Popen|check_output|check_call|run|call)\s*\(\s*[fr]?(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
+
+/** The Bash/Read calls a context-mode MCP call amounts to, or null for any other tool. */
+export function ctxCalls(tool, ti) {
+  const m = CTX_TOOL.exec(tool || "");
+  if (!m) return null;
+  const out = [];
+  if (m[1] === "batch_execute") for (const c of Array.isArray(ti.commands) ? ti.commands : []) out.push({ command: c && c.command });
+  if (typeof ti.path === "string" && ti.path) out.push({ filePath: ti.path });
+  if (typeof ti.code === "string") {
+    if (/^(shell|bash|sh|zsh)$/i.test(ti.language || "")) out.push({ command: ti.code });
+    else for (const s of ti.code.matchAll(SPAWN_CALL)) out.push({ command: s[2] });
+  }
+  return out;
+}
+
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
  * (no agent_type) is never policed; every subagent is.
@@ -1380,16 +1402,22 @@ export function stepBudget({ main, agentId, tool, command }) {
 export function decide(input) {
   if (!input || !(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
-  if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool)) return null;
-  const cwd = input.cwd || process.cwd();
   const ti = input.tool_input || {};
+  const ctx = ctxCalls(tool, ti);
+  if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx) return null;
+  const cwd = (ctx && typeof ti.cwd === "string" && ti.cwd) || input.cwd || process.cwd();
   const main = findMain(cwd);
   const { contract, error, missing } = loadContract(main);
   const rules = contract ? compileRules(contract) : ENGINE_ONLY;
   // Two tiers: a sapu worker keeps the whole floor; any other subagent (reviewers, specialists,
   // argus/momus/nemesis) may also file issues and write its state into <MAIN>.
   const worker = SAPU_AGENT.test(input.agent_type || "");
-  if (tool === "Bash") {
+  if (ctx) {
+    for (const c of ctx) {
+      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker }) : null;
+      if (reason) return `${reason} (inside ${tool.replace(/^.*__/, "")}, checked like Bash/Read)`;
+    }
+  } else if (tool === "Bash") {
     const reason = check({ command: ti.command, cwd, main, rules, worker });
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;
   } else {

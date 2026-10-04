@@ -451,7 +451,9 @@ skipping none (each failure = non-zero exit + a one-line reason):
    pushed yet (a repo pre-push hook may need what only the gate prepares);
 8. the red-area classifier from the main checkout (`redAreas --ref <SHA>`): a red area without a
    first line `Review tier: red` in the review comment = refuse; classifier failed = refuse;
-9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself);
+9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself); every
+   run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files
+   and a flake verdict);
 10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
     after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
     `gh pr merge --squash --delete-branch --match-head-commit <gated SHA>` (commits landing during
@@ -474,7 +476,7 @@ setup/test commands, incident examples, and business terms. The engine calls it 
 and reads it in its first step. Every profile holds the sections whose names its
 engine skill references (e.g. `## Invariants`, `## Red areas`), so engine + profile = the complete
 behaviour. Section names are English and match exactly the headings `sapu-contract.mjs profiles --list`
-prints. `worker.md` is read by every Phase B worker/reviewer, and holds the setup, test and
+prints. `worker.md` is read by every worker/reviewer (Phase A fixers too), and holds the setup, test and
 verification commands in the worktree along with the protected targets.
 
 ## Engine floor (the contract cannot switch it off)
@@ -493,9 +495,13 @@ by that measure: closed when an honest agent could stumble into them, recorded w
 could use them.
 
 - The guard hook (`PreToolUse` for `Bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
-  `Grep`, `Glob`) applies to **every subagent** in a repo that enables this plugin, including
+  `Grep`, `Glob`, and context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`,
+  whose commands, shell code, spawn-call strings and paths are checked as the Bash/Read calls they
+  amount to) applies to **every subagent** in a repo that enables this plugin, including
   subagents spawned by other subagents (`Agent` is not a way around it), and never to the
   orchestrator (the main session, without `agent_type`). A canary in every worker proves it is live.
+  For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
+  hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes.
   A contract that exists but is broken blocks every subagent call; a repo that has no committed contract
   yet blocks `sapu:sapu-*` workers and leaves this floor for other subagents.
   (Worker = the `sapu:sapu-<sonnet|opus>-<effort>` ladder; the built-in role agents `sapu:sapu-<role>`
