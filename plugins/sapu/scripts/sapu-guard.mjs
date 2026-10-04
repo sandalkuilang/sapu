@@ -45,7 +45,7 @@
 // contract yet keeps the engine floor, except for a sapu worker, which never works without one.
 //
 // STEP BUDGET. A ladder worker's tool calls are counted per agent id (stepBudget below): a reminder
-// block at STEP_SOFT and every STEP_EVERY after, and past STEP_HARD only its handoff runs.
+// block at STEP_SOFT, every STEP_EVERY after and every STEP_EVERY_LATE past STEP_HARD; never a hard stop.
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
@@ -1310,18 +1310,33 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
 
 // The step budget of subagent-brief.md point 11, enforced here because prose was not obeyed: every
 // step re-sends a worker's whole, growing context, so one 225-step agent costs far more than two
-// fresh ones. At STEP_SOFT tool calls, and every STEP_EVERY after, ONE call is refused as a reminder
-// (re-issuing it passes: a worker a few steps from done finishes). Past STEP_HARD only the handoff
-// itself runs. Counted per agent id in <MAIN>/.git/sapu-steps/ (one byte appended per call, so the
-// file size is the count); ladder workers only, never reviewers or specialists.
+// fresh ones. At STEP_SOFT tool calls ONE call is refused as a reminder to hand off, again every
+// STEP_EVERY calls, and every STEP_EVERY_LATE past STEP_HARD. Re-issuing the refused call passes, and
+// no call is ever refused for good: a worker a few steps from done finishes, and its teardown, WIP
+// commit and PR steps always run (a hard stop would leak test resources or lose unpushed work).
+// A handoff command is never the call a reminder refuses. Counted per agent id in
+// <MAIN>/.git/sapu-steps/ (one byte appended per call, so the file size is the count; parallel calls
+// may shift a reminder by one, which is harmless); ladder workers only, and only calls the guard's
+// own rules let through. ponytail: hooked tools only (Bash, file and search tools), not WebFetch or
+// Agent calls; an unwritable counter switches the budget off rather than block work.
 export const STEP_SOFT = 120;
 export const STEP_EVERY = 15;
 export const STEP_HARD = 170;
-// What a worker past STEP_HARD may still run: a WIP commit, a look at its state, its teardown.
-const HANDOFF_SEGMENT = /^(git(\s+-C\s+\S+)?\s+(add|commit|status|log|diff|rev-parse|show|branch)\b|echo\b|true$|\S+\s+teardown(\s|$)|\S*teardown\S*(\s|$))/;
+export const STEP_EVERY_LATE = 5;
+const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
+// A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
+// echo without substitution, a teardown script. Quoted text is dropped before splitting, so a `;` in
+// a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
+const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|\S+\s+teardown(\s.*)?|\S*teardown\S*(\s.*)?)$/;
+const isHandoff = (command) => {
+  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)/.test(command)) return false;
+  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+  const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
+  return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
+};
 
 /**
- * The step budget's verdict for one call of a ladder worker: the reason to block, or null.
+ * The step budget's verdict for one call of a ladder worker: the reminder to block it with, or null.
  * @param {{ main: string|null, agentId?: string, tool: string, command?: string }} i
  */
 export function stepBudget({ main, agentId, tool, command }) {
@@ -1333,18 +1348,16 @@ export function stepBudget({ main, agentId, tool, command }) {
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(file, ".");
     n = fs.statSync(file).size;
+    if (n === 1) for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
+    }
   } catch {
-    return null; // ponytail: an unwritable counter never blocks work; the prose budget still stands
+    return null;
   }
-  if (n > STEP_HARD) {
-    const segs = tool === "Bash" && typeof command === "string" ? command.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean) : [];
-    if (segs.length && segs.every((s) => HANDOFF_SEGMENT.test(s))) return null;
-    return `STEP BUDGET: past ${STEP_HARD} tool calls — hand off now (brief point 11): WIP commit (git add -A && git commit -m 'wip: handoff', unpushed), teardown, then return status "handoff" with branch, head_sha and a handoff_note of at most 10 lines. Only git add/commit/status/log/diff/rev-parse, echo and your teardown still run.`;
-  }
-  if (n >= STEP_SOFT && (n - STEP_SOFT) % STEP_EVERY === 0) {
-    return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit, teardown, return status "handoff" with a handoff_note. A fresh worker of your tier continues on a clean context. Close to done? Re-issue this call; it passes. Past ${STEP_HARD} calls only the handoff runs.`;
-  }
-  return null;
+  const due = n >= STEP_SOFT && (n <= STEP_HARD ? (n - STEP_SOFT) % STEP_EVERY === 0 : (n - STEP_HARD) % STEP_EVERY_LATE === 0);
+  if (!due || (tool === "Bash" && isHandoff(command))) return null;
+  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
 }
 
 /**

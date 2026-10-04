@@ -3,12 +3,12 @@
 // The repo rules come from a contract shaped like the first repo that ran sapu (fixture-contract.ts),
 // so every case the guard enforced before it became generic is still enforced through the contract.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, STEP_EVERY, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -1231,40 +1231,59 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     for (let i = 0; i < n; i++) out.push(budget({ main: m, agentId: id, tool: "Bash", command }));
     return out;
   };
+  // 1-based call numbers that were refused
+  const refused = (out: (string | null)[]) => out.flatMap((r, i) => (r ? [i + 1] : []));
 
-  it("lets the first STEP_SOFT - 1 calls through, then blocks ONE call as a reminder; the re-issued call passes", () => {
+  it("lets calls through up to STEP_SOFT, refuses ONE call there as a reminder; the re-issued call passes", () => {
     const m = fresh();
     const out = calls(m, "a1", STEP_SOFT + 1);
-    expect(out.slice(0, STEP_SOFT - 1).every((r) => r === null)).toBe(true);
-    expect(out[STEP_SOFT - 1]).toMatch(/STEP BUDGET.*handoff/s);
-    expect(out[STEP_SOFT]).toBeNull();
+    expect(refused(out)).toEqual([STEP_SOFT]);
+    expect(out[STEP_SOFT - 1]).toMatch(/STEP BUDGET.*handoff.*Re-issue/s);
   });
 
-  it("reminds again every STEP_EVERY calls past the soft limit", () => {
+  it("reminds every STEP_EVERY calls past the soft limit, and every STEP_EVERY_LATE past STEP_HARD", () => {
     const m = fresh();
-    const out = calls(m, "a2", STEP_SOFT + STEP_EVERY);
-    expect(out.filter(Boolean)).toHaveLength(2);
-    expect(out[STEP_SOFT + STEP_EVERY - 1]).toMatch(/STEP BUDGET/);
+    const out = calls(m, "a2", STEP_HARD + 2 * STEP_EVERY_LATE);
+    const want: number[] = [];
+    for (let n = STEP_SOFT; n <= STEP_HARD; n += STEP_EVERY) want.push(n);
+    for (let n = STEP_HARD + STEP_EVERY_LATE; n <= STEP_HARD + 2 * STEP_EVERY_LATE; n += STEP_EVERY_LATE) want.push(n);
+    expect(refused(out)).toEqual(want);
   });
 
-  it("past STEP_HARD only the handoff runs: WIP commit, status, log, diff, echo, teardown", () => {
+  it("never refuses a call for good: past STEP_HARD every other call, tests and teardown included, still runs", () => {
     const m = fresh();
-    calls(m, "a3", STEP_HARD);
-    for (const ok of ["git add -A && git commit -m 'wip: handoff'", "git status --short", "git -C /wt log --oneline -3", "git rev-parse HEAD", "scripts/sapu-worktree.sh teardown issue7", "echo done"]) {
-      expect(budget({ main: m, agentId: "a3", tool: "Bash", command: ok }), ok).toBeNull();
+    calls(m, "a3", STEP_HARD + STEP_EVERY_LATE - 1);
+    // the next call is due a reminder; whatever it is, re-issuing it passes
+    for (const c of ["npm test", "dropdb app_test_issue7", "docker compose -p issue7 down -v", "kill 4242"]) {
+      const first = budget({ main: m, agentId: "a3", tool: "Bash", command: c });
+      expect(budget({ main: m, agentId: "a3", tool: "Bash", command: c }), c).toBeNull();
+      if (first) calls(m, "a3", STEP_EVERY_LATE - 2); // back to just before the next reminder
     }
-    for (const no of ["npm test", "git add -A && npm test", "sed -n 1,20p a.ts", "npm test teardown"]) {
-      expect(budget({ main: m, agentId: "a3", tool: "Bash", command: no }), no).toMatch(/STEP BUDGET.*hand off now/s);
-    }
-    expect(budget({ main: m, agentId: "a3", tool: "Read" })).toMatch(/hand off now/);
   });
 
-  it("counts each agent apart, and does nothing without an agent id or a main checkout", () => {
+  it("a handoff command is never the call a reminder refuses", () => {
     const m = fresh();
-    calls(m, "a4", STEP_HARD + 1);
-    expect(budget({ main: m, agentId: "a5", tool: "Bash", command: "npm test" })).toBeNull();
+    const atReminder = (id: string, command: string) => {
+      calls(m, id, STEP_SOFT - 1);
+      return budget({ main: m, agentId: id, tool: "Bash", command });
+    };
+    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7"]) {
+      expect(atReminder(`h-${c}`, c), c).toBeNull();
+    }
+    for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test"]) {
+      expect(atReminder(`w-${c}`, c), c).toMatch(/STEP BUDGET/);
+    }
+  });
+
+  it("counts each agent apart, and does nothing without an agent id or a main checkout (or when .git is not a directory)", () => {
+    const m = fresh();
+    calls(m, "a5", STEP_SOFT - 1);
+    expect(budget({ main: m, agentId: "a6", tool: "Bash", command: "npm test" })).toBeNull();
     expect(budget({ main: m, tool: "Bash", command: "npm test" })).toBeNull();
-    expect(budget({ main: null, agentId: "a4", tool: "Bash", command: "npm test" })).toBeNull();
+    expect(budget({ main: null, agentId: "a5", tool: "Bash", command: "npm test" })).toBeNull();
+    const f = mkdtempSync(join(tmpdir(), "sapu-steps-file-"));
+    writeFileSync(join(f, ".git"), "gitdir: elsewhere\n");
+    for (let i = 0; i < STEP_SOFT; i++) expect(budget({ main: f, agentId: "a7", tool: "Bash", command: "ls" })).toBeNull();
   });
 
   it("the hook counts only ladder workers: a reviewer or specialist is never budgeted", () => {
@@ -1272,18 +1291,22 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     mkdirSync(join(repo2, ".claude"), { recursive: true });
     execFileSync("git", ["init", "-q", repo2]);
     commitContract(repo2, FIXTURE_CONTRACT);
-    const status = (agent_type: string, agent_id: string) => {
+    const status = (agent_type: string, agent_id: string, command = "ls") => {
       try {
-        execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: "Bash", agent_type, agent_id, tool_input: { command: "ls" }, cwd: repo2 }), stdio: ["pipe", "pipe", "pipe"] });
+        execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: "Bash", agent_type, agent_id, tool_input: { command }, cwd: repo2 }), stdio: ["pipe", "pipe", "pipe"] });
         return 0;
       } catch (e) {
         return (e as { status: number }).status;
       }
     };
     mkdirSync(join(repo2, ".git/sapu-steps"), { recursive: true });
-    writeFileSync(join(repo2, ".git/sapu-steps/w1"), ".".repeat(STEP_HARD));
-    writeFileSync(join(repo2, ".git/sapu-steps/r1"), ".".repeat(STEP_HARD));
+    writeFileSync(join(repo2, ".git/sapu-steps/w1"), ".".repeat(STEP_SOFT - 1));
+    writeFileSync(join(repo2, ".git/sapu-steps/r1"), ".".repeat(STEP_SOFT - 1));
     expect(status("sapu:sapu-sonnet-high", "w1")).toBe(2);
     expect(status("senior-qa-reviewer", "r1")).toBe(0);
+    // a call the guard's own rules refuse keeps its own reason and is not counted
+    writeFileSync(join(repo2, ".git/sapu-steps/w2"), ".".repeat(STEP_SOFT - 1));
+    expect(status("sapu:sapu-sonnet-high", "w2", "gh pr merge 1")).toBe(2);
+    expect(readFileSync(join(repo2, ".git/sapu-steps/w2"), "utf8")).toHaveLength(STEP_SOFT - 1);
   });
 });
