@@ -1,19 +1,23 @@
 # Contributing
 
+<sub><a href="../README.md">README</a> · <a href="usage.md">Install and use</a> · <a href="agents.md">How the agents work</a> · <a href="security.md">Safety and trust</a> · <b>Contributing</b></sub>
+
 ## What is in this repo
 
 ```
-.claude-plugin/marketplace.json   marketplace "sapu" → plugins/sapu
+.claude-plugin/marketplace.json   marketplace "sapu" → plugins/sapu, plugins/senior-dev-team
 .claude/sapu.json                 this repo's own sapu contract (its maintainer's identity)
 plugins/sapu/
-  .claude-plugin/plugin.json
+  .claude-plugin/plugin.json      version; dependencies: senior-dev-team
   CONTRACT.md                     the repo contract format
   skills/                         sapu, forge, argus, momus, nemesis, inspector, dream, init
-  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, and the built-in specialists sapu-qa … sapu-product
+  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, nothing else
   hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
   workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs
+plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
+docs/img/src/                     the diagram generator: one source per diagram, light and dark files
 scripts/rule-guard.ts             gate: a weakened engine rule needs a Rule-Change trailer (not shipped)
 tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, and "the engine is clean of repos"
 ```
@@ -56,5 +60,7 @@ Adding rules, moving clauses, or re-wrapping lines does not trigger it. When suc
 Rule-Change: <reason, at least 20 characters>
 ```
 
-Every PR that changes the content of `plugins/sapu/` must raise `version` in `plugins/sapu/.claude-plugin/plugin.json` in that same PR, and the `sapu vX.Y.Z — ` prefix of each workflow's `meta.description` with it (the Workflow panel shows it; `tests/engine.test.ts` checks they match): patch for fixes, minor for new behaviour. Claude Code's cache is keyed by version, so without a version bump consuming repos keep using the old copy. `tests/engine.test.ts` refuses a change without a version bump. After the merge, `.github/workflows/tag-release.yml` tags the commit `v<version>` and publishes it as the Latest GitHub Release; then run both commands of "Updating the plugin" in the consuming repos (between sweeps: a running session keeps its version until restarted). Auto-update is off for third-party marketplaces, so a version never changes silently.
+Every PR that changes the content of `plugins/sapu/` must raise `version` in `plugins/sapu/.claude-plugin/plugin.json` in that same PR, and the `sapu vX.Y.Z — ` prefix of each workflow's `meta.description` with it (the Workflow panel shows it; `tests/engine.test.ts` checks they match): patch for fixes, minor for new behaviour. Claude Code's cache is keyed by version, so without a version bump consuming repos keep using the old copy. `tests/engine.test.ts` refuses a change without a version bump. After the merge, `.github/workflows/tag-release.yml` tags the commit `v<version>` and publishes it as the Latest GitHub Release; then run both commands of "Updating the plugin" in the consuming repos (between sweeps: a running session keeps its version until restarted). Auto-update is off for third-party marketplaces, so a version never changes silently. The same version rule holds for `plugins/senior-dev-team/` and its own `plugin.json` (the test checks both; the Release tag follows sapu's version).
+
+Diagrams are generated, not hand-edited: change `docs/img/src/diagrams/<name>.mjs` (or the shared `lib.mjs`), then run `node docs/img/src/build.mjs <name>`; it writes `docs/img/<name>.svg` and `<name>-dark.svg` (set `OUT=<dir>` to write elsewhere, e.g. to compare). The logo, badges and icons are hand-made SVGs, edited directly. The README shows each through `<picture>`, so GitHub picks the file matching the reader's theme.
 

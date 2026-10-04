@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="166" height="22" viewBox="0 0 166 22" role="img" aria-label="senior-dev-team: 8 agents">
+  <title>senior-dev-team: 8 agents</title>
+  <desc>Badge: senior-dev-team, 8 agents.</desc>
+  <clipPath id="r"><rect width="166" height="22" rx="6"/></clipPath>
+  <g clip-path="url(#r)"><rect width="104" height="22" fill="#1e293b"/><rect x="104" width="62" height="22" fill="#6d28d9"/></g>
+  <g fill="#ffffff" text-anchor="middle" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;font-size:11px;font-weight:600">
+    <text x="52" y="15">senior-dev-team</text>
+    <text x="135" y="15">8 agents</text>
+  </g>
+</svg>

@@ -26,7 +26,7 @@
 
 export const meta = {
   name: 'inspector',
-  description: 'sapu v2.5.3 — sequence momus -> argus -> nemesis release-readiness and security sweep of the current repo (each phase held to its profile\'s security bar and the contract\'s securityEpic), each phase on its own model/effort, one combined result at the end',
+  description: 'sapu v2.6.0 — sequence momus -> argus -> nemesis release-readiness and security sweep of the current repo (each phase held to its profile\'s security bar and the contract\'s securityEpic), each phase on its own model/effort, one combined result at the end',
   whenToUse: 'Only from the inspector skill (skills/inspector/SKILL.md), with the output of sapu-contract.mjs wave-args.',
   phases: [
     { title: 'Momus', detail: 'release-readiness checklist baseline (A-I)', model: 'opus' },
@@ -63,7 +63,7 @@ if (typeof C.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(C.repo)) throw new 
 if (!('securityEpic' in C) || (C.securityEpic !== null && !(Number.isInteger(C.securityEpic) && C.securityEpic > 0))) throw new Error('args.contract.securityEpic must be an issue number or null')
 if (input.scope !== undefined && typeof input.scope !== 'string') throw new Error('args.scope must be free text (a string) when given')
 // The team reviewers are specialist ROLES; wave-args resolves each to the repo's own agent or the
-// plugin's built-in sapu:sapu-<role> (scripts/sapu-contract.mjs SPECIALIST_ROLES, pinned by the tests).
+// senior-dev-team default (scripts/sapu-contract.mjs DEFAULT_SPECIALISTS, pinned by the tests).
 const ROLES = ['qa', 'architect', 'db', 'developer', 'ux', 'writer', 'product']
 const S = C.specialists
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')

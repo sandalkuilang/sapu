@@ -1,5 +1,7 @@
 # Safety and trust
 
+<sub><a href="../README.md">README</a> · <a href="usage.md">Install and use</a> · <a href="agents.md">How the agents work</a> · <b>Safety and trust</b> · <a href="contributing.md">Contributing</a></sub>
+
 ## Where sapu may run
 
 Three layers, none of which assumes who the owner is:

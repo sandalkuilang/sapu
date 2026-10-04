@@ -1,0 +1,5 @@
+{
+ "label": "argus runs one bounded QA cycle of eleven phases from ORIENT to ROTATE, applying five review lenses and six bypass classes, grading every claim by evidence tier and falsifying it before filing de-duplicated GitHub issues; it tests but never fixes, using seeded accounts on the dev app only, and keeps state under .argus/.",
+ "desc": "One invocation is one bounded cycle of eleven phases: ORIENT, SELECT, INTAKE, CHARTER, EXECUTE, OBSERVE, MINIMIZE, TRIAGE, REPORT, PERSIST, ROTATE, each owing an artifact. Five lenses — User, PM, Senior QA, Auditor, Curator; the Auditor lens and bypass classes A to F run every cycle, and the Curator runs on rendered surfaces in live mode. Every claim is graded by evidence tier T1 to T4; S1 and S2 need at least one T1 observation, and each finding is falsified before filing. Output is de-duplicated GitHub issues fingerprinted by root cause, plus state under .argus/. argus tests but never fixes, works only the dev app with seeded accounts, and static mode caps severity at S3.",
+ "title": "/argus — autonomous QA cycle"
+}

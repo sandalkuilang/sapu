@@ -80,26 +80,40 @@ const isRegex = (v) => {
 const strArray = (v) => Array.isArray(v) && v.every(isStr);
 
 /**
- * The specialist roles the engine dispatches by name. Each has a built-in agent the plugin ships
- * (agents/sapu-<role>.md, dispatched as `sapu:sapu-<role>`); a repo may map any of them to a
- * stronger agent of its own through the optional contract field `specialists`.
+ * The specialist roles the engine dispatches by name. Each defaults to an agent of the
+ * senior-dev-team plugin (a dependency of sapu, installed with it; DEFAULT_SPECIALISTS); a repo
+ * may map any of them to an agent of its own through the optional contract field `specialists`.
  */
 export const SPECIALIST_ROLES = ["qa", "architect", "db", "developer", "ux", "writer", "product"];
 /** The roles that may be the domain half of the 🔴 review pair (qa is always the other half). */
 export const DOMAIN_ROLES = ["architect", "db", "developer", "ux"];
-const builtIn = (role) => `sapu:sapu-${role}`;
+/** Each role's default agent, from the senior-dev-team plugin. */
+export const DEFAULT_SPECIALISTS = {
+  qa: "senior-dev-team:senior-qa-reviewer",
+  architect: "senior-dev-team:senior-software-architect",
+  db: "senior-dev-team:senior-fullstack-database-engineer",
+  developer: "senior-dev-team:senior-fullstack-developer",
+  ux: "senior-dev-team:senior-ui-ux-designer",
+  writer: "senior-dev-team:senior-technical-writer",
+  product: "senior-dev-team:product-manager",
+};
+const builtIn = (role) => DEFAULT_SPECIALISTS[role];
 /** A worker of the plugin's ladder, under any plugin prefix (the same pattern as SAPU_AGENT in sapu-guard.mjs). */
 export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 /**
  * Why `t` cannot be a specialist, or null. A reviewer must be a dedicated agent with its own
  * model: `general-purpose` inherits the session's, and a ladder worker is a worker, not a reviewer.
  */
+/** The plugin's former built-in role agents (removed in 2.6.0): a contract still naming one dispatches nothing. */
+const REMOVED_ROLE_AGENT = /(^|:)sapu-(qa|architect|db|developer|ux|writer|product)$/;
 const notSpecialist = (t) =>
-  t === "general-purpose" ? "general-purpose inherits the session model" : LADDER_AGENT.test(t) ? "a worker of the sapu ladder is not a reviewer" : null;
+  t === "general-purpose" ? "general-purpose inherits the session model"
+  : LADDER_AGENT.test(t) ? "a worker of the sapu ladder is not a reviewer"
+  : REMOVED_ROLE_AGENT.test(t) ? "sapu no longer ships its own role agents; omit the role to use its senior-dev-team default" : null;
 
 /**
  * The full role -> subagent type map for `c`: the contract's `specialists` entry where it names
- * one, the plugin's built-in agent otherwise. `specialists` is optional on purpose (the one
+ * one, the senior-dev-team default otherwise. `specialists` is optional on purpose (the one
  * documented exception to "no silent defaults"): a contract written before the field existed
  * stays valid, so plugin and contract never have to be updated in lockstep.
  */
@@ -216,7 +230,7 @@ export function validate(c) {
   );
   if ("specialists" in c) {
     const s = c.specialists;
-    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push(`specialists must be an object mapping roles (${SPECIALIST_ROLES.join(", ")}) to subagent types; omit it to use the built-in agents`);
+    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push(`specialists must be an object mapping roles (${SPECIALIST_ROLES.join(", ")}) to subagent types; omit it to use the senior-dev-team defaults`);
     else
       for (const [k, v] of Object.entries(s)) {
         if (!SPECIALIST_ROLES.includes(k)) errs.push(`specialists: unknown role "${k}" (roles: ${SPECIALIST_ROLES.join(", ")})`);
@@ -712,6 +726,21 @@ export function userScopeInstall() {
 }
 
 /**
+ * Whether the senior-dev-team plugin (sapu's dependency, the default specialists) is installed and
+ * enabled here: true / false, or null when `claude plugin list --json` cannot be read.
+ */
+export function seniorDevTeamInstalled() {
+  let list;
+  try {
+    list = JSON.parse(execFileSync("claude", ["plugin", "list", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 20_000 }));
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(list)) return null;
+  return list.some((p) => p && typeof p.id === "string" && /^senior-dev-team@/.test(p.id) && p.enabled !== false && !(Array.isArray(p.errors) && p.errors.length));
+}
+
+/**
  * `gh <args>` parsed as one JSON document, or with `lines` as JSON Lines (a `--jq '… | @json'`
  * filter prints one per line, also across `--paginate` pages). Throws with gh's last error line:
  * the callers fail closed, since a trust answer GitHub did not give is not a yes.
@@ -1048,6 +1077,7 @@ function main(argv) {
       ghLogin: sh("gh", ["api", "user", "--jq", ".login"], dir) || null,
       gitEmail: mainDir ? sh("git", ["-C", dir, "config", "user.email"], dir) || null : null,
       userScopeInstall: userScopeInstall(),
+      seniorDevTeam: seniorDevTeamInstalled(),
       hasContract: mainDir ? fs.existsSync(path.join(mainDir, CONTRACT_PATH)) : false,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
@@ -1075,6 +1105,11 @@ function main(argv) {
   if (cmd === "check") {
     const problems = lockProblems(mainDir, contract, machineOrFail());
     if (problems.length) fail(`refusing to run here:\n  - ${problems.join("\n  - ")}`);
+    // the default specialists come from senior-dev-team: say so before a wave dispatches nothing
+    const defaults = Object.entries(resolveSpecialists(contract)).filter(([, a]) => a.startsWith("senior-dev-team:")).map(([r]) => r);
+    if (defaults.length && seniorDevTeamInstalled() === false) {
+      process.stderr.write(`sapu-contract: WARNING the senior-dev-team plugin is not installed or not enabled, but the roles ${defaults.join(", ")} use its agents: \`claude plugin install senior-dev-team@<marketplace>\` (the marketplace sapu came from), or map those roles in \`specialists\`.\n`);
+    }
   }
   if (cmd === "get") {
     if (!arg) fail("get needs a dotted path, e.g. gate.fast");

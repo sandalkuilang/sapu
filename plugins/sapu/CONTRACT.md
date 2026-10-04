@@ -43,7 +43,7 @@ block; the orchestrator reads `skills/sapu/policy.md` when any field is off its 
 
 No silent defaults: a missing required field = the skill stops with a message that points to
 `/sapu:init`. The only exceptions, recorded and deliberate: the optional fields
-`specialists` (§Specialist agents), whose default is the plugin's built-in agents, and
+`specialists` (§Specialist agents), whose default is the senior-dev-team plugin's agents, and
 `trustedAuthors`, `requireSignedCommits`, `labels.accepted` and `labels.acceptors` (§Trusted
 authors), whose defaults are the owner alone, `false`, `sapu:accepted` and the trusted set. The contract can only
 **add** restrictions: the engine's guardrails (see §Engine floor) cannot be switched off from the contract.
@@ -102,7 +102,7 @@ subagent write to `~/.config/sapu/`.
     { "match": "schema|payments", "agent": "db" }, // a role (architect|db|developer|ux) or a literal subagent type
     { "match": "^ui/", "agent": "ux" }
   ],                                    // no match → the architect role
-  "specialists": { "qa": "my-qa-agent" }, // OPTIONAL: role → subagent type; a role not named = the built-in sapu:sapu-<role>
+  "specialists": { "qa": "my-qa-agent" }, // OPTIONAL: role → subagent type; a role not named = its senior-dev-team default
   "trustedAuthors": [{ "login": "alice", "id": 2 }], // OPTIONAL: accounts trusted besides ghUser, by numeric id; absent = ghUser alone
   "requireSignedCommits": true,         // OPTIONAL (default false): every PR commit signed by a trusted id
   "mergeAfter": "scripts/sapu-hooks.sh after", // null = none
@@ -129,15 +129,15 @@ subagent write to `~/.config/sapu/`.
 
 The engine calls specialists by **role**, never by the name of an agent that exists on only one machine:
 
-| Role | Used for | Built-in |
+| Role | Used for | Default (the senior-dev-team plugin, a dependency of sapu) |
 |---|---|---|
-| `qa` | AC verification (forge step 9); the fixed half of every 🔴 pair; the inspector team's test reviewer | `sapu:sapu-qa` |
-| `architect` | 🔴/cross-domain plans (forge step 5); the default domain specialist of the 🔴 pair | `sapu:sapu-architect` |
-| `db` | schema, migrations, queries, indexes | `sapu:sapu-db` |
-| `developer` | the 🔴 code writer (forge step 7) | `sapu:sapu-developer` |
-| `ux` | flows, UI state, a11y; the inspector team's UI/UX reviewer | `sapu:sapu-ux` |
-| `writer` | CLAUDE.md and documentation | `sapu:sapu-writer` |
-| `product` | scope and priority; the inspector team's product reviewer | `sapu:sapu-product` |
+| `qa` | AC verification (forge step 9); the fixed half of every 🔴 pair; the inspector team's test reviewer | `senior-dev-team:senior-qa-reviewer` |
+| `architect` | 🔴/cross-domain plans (forge step 5); the default domain specialist of the 🔴 pair | `senior-dev-team:senior-software-architect` |
+| `db` | schema, migrations, queries, indexes | `senior-dev-team:senior-fullstack-database-engineer` |
+| `developer` | the 🔴 code writer (forge step 7) | `senior-dev-team:senior-fullstack-developer` |
+| `ux` | flows, UI state, a11y; the inspector team's UI/UX reviewer | `senior-dev-team:senior-ui-ux-designer` |
+| `writer` | CLAUDE.md and documentation | `senior-dev-team:senior-technical-writer` |
+| `product` | scope and priority; the inspector team's product reviewer | `senior-dev-team:product-manager` |
 
 `specialists` (optional) maps roles to the repo's own subagent types, e.g. `{"qa": "my-qa-agent"}`.
 Its keys are only those seven roles and its values non-empty strings; another key or a wrong type =
@@ -145,7 +145,7 @@ an invalid contract. A value must be a dedicated agent with its own model: `gene
 session model) and ladder workers (`sapu:sapu-<sonnet|opus>-<effort>`, under any plugin prefix)
 are refused, and so is a `qa` that resolves to the same agent as one of the domain roles
 (the 🔴 pair would become one agent twice). A missing field, and every role not named,
-uses the plugin's built-in agent (`agents/sapu-<role>.md`, all Opus/high). **This is a recorded
+uses its senior-dev-team default (all Opus/high; sapu declares the plugin as a dependency, so it is installed with sapu). **This is a recorded
 exception to "no silent defaults"**: a contract written before this field existed stays
 valid, so updating the plugin does not force the contract to change. Resolution lives in one place,
 `resolveSpecialists` in `sapu-contract.mjs`: `wave-args` passes the full map as
@@ -172,7 +172,7 @@ those role names are refused, and so is a literal type equal to the agent any of
 **The 🔴 pair's model — what is enforced, and where.** Inside a wave (`sapu-wave.js`) the 🔴 pair
 is forced to Opus/high per call, whatever agent is mapped. On the other paths (sapu Phase A, forge
 §`needs-ai`, the `Agent` fallback without Workflow) the `Agent` tool can only set the model: the pair is
-sent with `model: "opus"`, and its effort = its agent's frontmatter — the built-in agents are all
+sent with `model: "opus"`, and its effort = its agent's frontmatter — the senior-dev-team defaults are all
 Opus/high. A repo that maps roles to its own agents is responsible for those agents' effort.
 
 ### Trusted authors (public repositories)
@@ -512,8 +512,8 @@ could use them.
   a server's own configuration (its database connection, a browser click) is not traced.
   A contract that exists but is broken blocks every subagent call; a repo that has no committed contract
   yet blocks `sapu:sapu-*` workers and leaves this floor for other subagents.
-  (Worker = the `sapu:sapu-<sonnet|opus>-<effort>` ladder; the built-in role agents `sapu:sapu-<role>`
-  are specialists, not workers.)
+  (Worker = the `sapu:sapu-<sonnet|opus>-<effort>` ladder; the specialists, senior-dev-team's or a
+  repo's own, are not workers.)
 - **Two tiers.** `sapu:sapu-*` workers get the whole floor. Other subagents (reviewers,
   specialists, argus/momus/nemesis and their helpers) get the same floor **except** for two things:
   they may `gh issue create`, and they may write (Bash write forms as well as the `Write`/`Edit`/
