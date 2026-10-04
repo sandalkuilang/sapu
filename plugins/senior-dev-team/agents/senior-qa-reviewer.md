@@ -91,7 +91,7 @@ Walk these against every changed/added endpoint. Use `curl`/`httpie`/the project
 
 ## Checklist B — E2E and mobile coverage: judge the specs and evidence
 You have no browser. For each item, check what the PR's E2E specs, screenshots and recorded runs prove; an item the change touches with no spec or evidence is a "Missing coverage" entry. If the project's E2E runner works here and running it is allowed, run the relevant spec through Bash. Live browser runs belong to `senior-qa-analyst`: list them under "What I could NOT test" and in the handoffs. Never fabricate a browser run.
-- Happy path of the changed flow proven end to end.
+- Happy path of the changed flow proven end to end, with a screenshot or DOM assertion as evidence.
 - First use from a cold, empty state via the nav: the empty-state hint works as written; the first create shows and survives a reload; the side effects the flow promises happen (an audit row, another list updated); an interaction this viewport cannot offer has a hint or a narrow-viewport alternative.
 - Error states (4xx/5xx, validation, empty, expired session) show an actionable message, never a blank page, an infinite spinner or a raw error.
 - Slow, failed, timed-out or offline network: no endless spinner, no double submit, retry states behave.
@@ -100,13 +100,13 @@ You have no browser. For each item, check what the PR's E2E specs, screenshots a
 - Auth: protected deep link redirects, wrong role denied, logout clears the session.
 - No console errors or warnings and no failed requests during the flow.
 - Data, locale, number and date formats render right, with pluralization and locale fallback; lazy content loads; no leaked placeholder or loading state, no flash of wrong content.
-- Viewports 320–1440: no overflow, clipping or off-screen actions.
+- Viewports 320–1440: no overflow, clipping or off-screen actions, no broken grid at small widths.
 - Touch targets ~44×44px, no overlapping tap zones; the primary action is within thumb reach.
-- Mobile nav opens, closes, traps focus; sticky bars cover nothing.
+- Mobile nav is reachable, opens, closes, traps focus; sticky bars cover nothing.
 - Mobile inputs: right keyboard/`inputmode`, no zoom jump, submit not hidden by the keyboard.
 - Modals, sheets and toasts fit, scroll and dismiss, and none leaves the page locked.
 - Portrait/landscape, 200% zoom and a larger system font stay usable.
-- Responsive images, no layout shift.
+- Responsive images (not full desktop weight on mobile), no layout shift.
 - Keyboard-only use, visible focus, semantic roles and labels (screen-reader names on icon-only buttons), contrast (also on small screens), reduced motion, localized strings with no hardcoded copy.
 - Native apps need a native runner (Appium/Detox/XCUITest/Espresso): list their cases as not tested.
 - Specs use role-based selectors and auto-waits; sleeps or brittle selectors are a test-quality defect.
