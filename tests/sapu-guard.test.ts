@@ -1437,6 +1437,14 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__filesystem__move_file", { source: join(wt4, "a"), destination: join(repo4, "a") }],
       ["Monitor", { command: "git push origin main" }],
       ["PowerShell", { command: "gh pr merge 5" }],
+      ["mcp__github__graphql", { query: "mutation { addLabelsToLabelable(input: {}) { clientMutationId } }" }],
+      ["mcp__gitlab__accept_merge_request", { merge_request_iid: 3 }],
+      ["mcp__git__git_commit", { repo_path: repo4, message: "wip" }],
+      ["mcp__git__git_checkout", { repo_path: repo4, branch: "z" }],
+      ["mcp__desktop-commander__interact_with_process", { pid: 1, input: "git push origin main" }],
+      ["mcp__tmux__send_keys", { session: "s", keys: "gh pr merge 5" }],
+      ["mcp__serena__create_text_file", { relative_path: "src.txt", content: "x" }],
+      ["mcp__fs__get_or_create_file", { path: join(repo4, "x.txt") }],
     ];
     for (const [t, i] of refused) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(2);
   });
@@ -1454,6 +1462,17 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__notion__create_page", { parent: { page_id: "p" }, title: "x" }],
       ["mcp__plugin_context-mode_context-mode__ctx_search", { queries: ["x"] }],
       ["Monitor", { command: "gh pr checks 5" }],
+      // a search, a comment or a file may NAME a mutation or the word merge
+      ["mcp__github__search_code", { query: "mergePullRequest repo:o/r" }],
+      ["mcp__graft__graft_find_code", { query: "enablePullRequestAutoMerge" }],
+      ["mcp__github__add_issue_comment", { owner: "o", repo: "r", issue_number: 1, body: "our createLabel wrapper" }],
+      ["mcp__filesystem__edit_file", { path: join(wt4, "a.ts"), edits: [{ oldText: "x", newText: "mergePullRequest(input)" }] }],
+      ["mcp__gitlab__update_merge_request", { merge_request_iid: 3, title: "t" }],
+      ["mcp__gitlab__approve_merge_request", { merge_request_iid: 3 }],
+      ["mcp__gitlab__list_merge_requests", { target_branch: "main" }],
+      ["mcp__gitlab__create_branch", { branch: "feat-x", ref: "main" }],
+      ["mcp__github__run_workflow", { owner: "o", repo: "r", workflow_id: "ci.yml", ref: "main" }],
+      ["mcp__git__git_commit", { repo_path: wt4, message: "wip" }],
     ];
     for (const [t, i] of allowed) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(0);
   });

@@ -415,6 +415,12 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h2 = harness();
     seed(h2, ...provenBy(5, "apps/a.test.ts"));
     expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ vitest 30.2s" }).err).toMatch(/verdict: known-flake/);
+    const h3 = harness();
+    seed(h3, ...provenBy(5, "apps/a.test.ts"));
+    expect(h3.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ lint test files 3.0s" }).err).toMatch(/a non-test step failed: lint test files/);
+    const h4 = harness();
+    seed(h4, ...provenBy(5, "apps/a.test.ts"));
+    expect(h4.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ api specs 4.0s" }).err).toMatch(/verdict: known-flake/);
   });
 
   it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {

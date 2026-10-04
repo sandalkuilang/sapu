@@ -1364,7 +1364,7 @@ export function stepBudget({ main, agentId, tool, command }) {
   try {
     given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
   } catch {}
-  if (dueSlots <= given || (tool === "Bash" && isHandoff(command))) return null;
+  if (dueSlots <= given || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
   try {
     fs.writeFileSync(`${file}.r`, String(dueSlots));
   } catch {
@@ -1433,13 +1433,16 @@ export function ctxCalls(tool, ti) {
 // for a filesystem/shell-like server) as reads or writes. ponytail: field names are heuristics; an
 // effect hidden in a server's own config (its DB connection, a browser click) is a LIMIT.
 const READ_VERB = /^(get|list|search|read|view|fetch|find|query|describe|show|status|check|checks|diff|log|count|stat|head|info|inspect)$/;
-const WRITE_VERB = /^(write|edit|create|update|put|push|commit|move|rename|delete|remove|rm|mkdir|patch|save|copy|append|set|add|apply|replace|upload|insert|merge|close|reopen|label|labels|enable|run|exec|execute)$/;
+const WRITE_VERB = /^(write|edit|create|update|put|push|commit|move|rename|delete|remove|rm|mkdir|patch|save|copy|append|set|add|apply|replace|upload|insert|close|reopen|label|labels|enable|run|exec|execute|checkout|reset|stash|rebase|send|interact|type)$/;
 const CMD_FIELD = /^(command|cmd|script|shell|shell_command|args|argv)$/i;
-const CWD_FIELD = /^(cwd|workdir|working_?dir(ectory)?|dir|directory)$/i;
-const PATH_FIELD = /^(path|paths|file_?path|filename|file|source|destination|dest|from|to|target|old_?path|new_?path)$/i;
-const BRANCH_FIELD = /^(branch|ref|base|head|target_?branch|branch_?name)$/i;
+// typed into a terminal or process (desktop-commander input, tmux keys, iTerm text): only on a shell-like server
+const TYPED_FIELD = /^(input|keys|text|chars)$/i;
+const CWD_FIELD = /^(cwd|workdir|working_?dir(ectory)?|dir|directory|repo_?path)$/i;
+const PATH_FIELD = /^(path|paths|file_?path|filename|file|source|destination|dest|from|to|target|old_?path|new_?path|relative_?path|path_?in_?project)$/i;
+const BRANCH_FIELD = /^(branch|base|target_?branch|branch_?name)$/i; // not `ref`/`head`: often the source
 const REMOTE_FIELD = /^(owner|repo|repository|url|uri|bucket|page_?id|database_?id|project_?id)$/i;
-const LOCAL_SERVER = /filesystem|\bfs\b|shell|terminal|desktop|commander|local|files/i;
+const LOCAL_SERVER = /filesystem|\bfs\b|shell|terminal|desktop|commander|local|files|tmux|iterm|serena|jetbrains/i;
+const GIT_SERVER = /(^|[^a-z])git([^a-z]|$)/i; // a local git server (mcp-server-git), not github/gitlab
 const GQL_MERGE = /\b(mergePullRequest|enablePullRequestAutoMerge)\b/;
 const GQL_LABEL = /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/;
 
@@ -1458,13 +1461,16 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
   if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker }) : null;
   const server = tool.slice(5, Math.max(5, tool.lastIndexOf("__")));
   const words = tool.slice(tool.lastIndexOf("__") + 2).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_\-.]+/).filter(Boolean);
-  const reads = words.some((w) => READ_VERB.test(w));
-  const writes = !reads && words.some((w) => WRITE_VERB.test(w));
+  const writes = words.some((w) => WRITE_VERB.test(w)); // a write verb wins over a read verb (get_or_create, search_and_replace)
   const f = fieldsOf(ti);
-  // a merge verb merges (merge_pull_request, accept_merge_request, auto_merge); creating a merge request does not
-  if (words.includes("merge") && !reads && !words.some((w) => /^(create|open|new)$/.test(w))) return BLOCK.merge;
-  if (f.some(([, x]) => GQL_MERGE.test(x))) return BLOCK.merge;
-  if (f.some(([, x]) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+  // merges: merge_pull_request, accept_merge_request, set_auto_merge; not update/approve/list_merge_request(s)
+  if ((words[0] === "merge" || (words.includes("merge") && words.some((w) => /^(accept|auto)$/.test(w))) || words.includes("automerge")) && !words.some((w) => /^(get|list|status|check)$/.test(w))) return BLOCK.merge;
+  // GraphQL mutations only in a graphql tool's query: a search or a file may name them
+  if (words.some((w) => /^(graphql|gql)$/.test(w))) {
+    const q = f.filter(([k]) => /^(query|mutation|body)$/i.test(k)).map(([, x]) => x);
+    if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
+    if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+  }
   if (writes) {
     const bases = new Set([rules.base, "main", "master"].filter(Boolean));
     // a pull/merge request names the base it targets without moving it
@@ -1476,8 +1482,16 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;
+  // a local git server's tool is the git command it names (git_commit {repo_path} = `git commit` there)
+  const gitVerb = GIT_SERVER.test(server) && words.find((w) => /^(commit|add|checkout|reset|stash|push|merge|rebase|pull|fetch|clean)$/.test(w));
+  if (gitVerb) {
+    const branch = f.find(([k]) => /^(branch|branch_?name|target)$/i.test(k));
+    const reason = check({ command: `git ${gitVerb}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
+    if (reason) return reason;
+  }
+  const typed = LOCAL_SERVER.test(server) || words.some((w) => /^(terminal|process|send|keys|interact|type)$/.test(w));
   for (const [k, x] of f) {
-    if (!CMD_FIELD.test(k) || !x.trim()) continue;
+    if (!(CMD_FIELD.test(k) || (typed && TYPED_FIELD.test(k))) || !x.trim()) continue;
     const reason = check({ command: x, cwd, main, rules, worker });
     if (reason) return reason;
   }

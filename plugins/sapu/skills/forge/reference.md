@@ -51,7 +51,6 @@ git fetch origin <base> && git worktree add <MAIN>/.claude/worktrees/wt-<n> -b f
 git push -u origin HEAD            # never --no-verify (profile §Merge gate: what the pre-push hook runs)
 gh pr create --repo <repo> --base <base> --label "<tier label>" --title "..." --body-file "$TMPDIR/pr-body-<n>.md"
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-merge.sh" <N> $TMPDIR/sapu-review-pr<N>.md   # step 12: gate + merge, never by hand
-git -C <MAIN> worktree remove <MAIN>/.claude/worktrees/wt-<n> && gh pr merge <pr> --squash --delete-branch   # from <MAIN>
 gh issue comment <n> --repo <repo> --body "..."   # progress / blockers / decisions
 ```
 
