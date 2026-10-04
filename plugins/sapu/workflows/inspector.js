@@ -26,7 +26,7 @@
 
 export const meta = {
   name: 'inspector',
-  description: 'sapu v2.5.0 — sequence momus -> argus -> nemesis release-readiness and security sweep of the current repo (each phase held to its profile\'s security bar and the contract\'s securityEpic), each phase on its own model/effort, one combined result at the end',
+  description: 'sapu v2.5.1 — sequence momus -> argus -> nemesis release-readiness and security sweep of the current repo (each phase held to its profile\'s security bar and the contract\'s securityEpic), each phase on its own model/effort, one combined result at the end',
   whenToUse: 'Only from the inspector skill (skills/inspector/SKILL.md), with the output of sapu-contract.mjs wave-args.',
   phases: [
     { title: 'Momus', detail: 'release-readiness checklist baseline (A-I)', model: 'opus' },
