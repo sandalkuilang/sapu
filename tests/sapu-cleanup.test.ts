@@ -87,6 +87,10 @@ describe("sapu-cleanup — a real repository: no unmerged commit is ever proven 
   g(main, "checkout", "-q", "main");
   g(main, "fetch", "-q", "origin");
 
+  it("a base missing on origin stops it before any plan (nothing would be proven)", () => {
+    expect(() => gitFacts(main, "develop", [], Date.now())).toThrow(/origin\/develop does not exist/);
+  });
+
   it("a merged head proves only itself and its ancestors", () => {
     const f = gitFacts(main, "main", [head2], Date.now());
     expect(by(plan({ ...f, open: new Set(), base: "main" }))).toEqual({

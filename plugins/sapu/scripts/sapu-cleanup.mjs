@@ -6,8 +6,8 @@
 // origin/<base>, or its tip IS, or is an ancestor of, the head commit of a PR merged into <base>: then
 // no commit of the branch is missing from what was merged. Nothing weaker counts (a merged PR of the
 // same name, a closed issue): a reused name, a later local commit or a second attempt would be lost.
-// A deleted branch that is not in the base keeps its tip under refs/sapu-trash/<branch> (hidden from
-// `git branch`), so even a wrong merge record loses nothing.
+// Every deleted branch keeps its tip under refs/sapu-trash/<branch> (hidden from `git branch`), so
+// even a wrong merge record loses nothing. No origin/<base> stops the script before any plan.
 // Never touched: the base, the main checkout's branch, an open PR's head, a --keep name, a branch
 // outside sapu's own names (`<type>/issue-<N>-…`, `worktree-wf_*`, `worktree-agent-*`, `sapu-*`;
 // --all lifts this). A worktree is removed only when it has no uncommitted or untracked change, no
@@ -56,7 +56,8 @@ export function plan({ branches, worktrees, unsafe, inBase, reach, open, base, m
   return out;
 }
 
-const run = (cmd, args, cwd, input) => execFileSync(cmd, args, { cwd, encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 << 20 }).trim();
+// GIT_OPTIONAL_LOCKS=0: our own `git status` must not refresh an index and look like activity
+const run = (cmd, args, cwd, input) => execFileSync(cmd, args, { cwd, encoding: "utf8", input, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 << 20 }).trim();
 const tryRun = (...a) => {
   try {
     return run(...a);
@@ -82,6 +83,8 @@ export function worktreeUnsafe(wt, now = Date.now(), cwd = process.cwd()) {
 
 /** The git facts of `main` (a checkout whose origin/<base> is fresh), given the heads of PRs merged into <base>. */
 export function gitFacts(main, base, mergedOids, now = Date.now()) {
+  // no origin/<base> (a renamed base, a stale contract) proves nothing: stop before any plan
+  if (tryRun("git", ["-C", main, "rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}`], main) === null) throw new Error(`origin/${base} does not exist: fix baseBranch in the contract or fetch it`);
   const branches = run("git", ["-C", main, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"], main)
     .split("\n")
     .filter(Boolean)
@@ -102,7 +105,7 @@ export function gitFacts(main, base, mergedOids, now = Date.now()) {
   }
   // one rev-list for all branches: those reachable from origin/<base>
   const tips = new Set(branches.map((b) => b.tip));
-  const notInBase = new Set((tryRun("git", ["-C", main, "rev-list", "--stdin", `^origin/${base}`], main, [...tips].join("\n") + "\n") || "").split("\n").filter(Boolean));
+  const notInBase = new Set(run("git", ["-C", main, "rev-list", "--stdin", `^origin/${base}`], main, [...tips].join("\n") + "\n").split("\n").filter(Boolean));
   const inBase = new Set(branches.filter((b) => !notInBase.has(b.tip)).map((b) => b.name));
   const local = (tryRun("git", ["-C", main, "cat-file", "--batch-check=%(objectname) %(objecttype)"], main, mergedOids.join("\n") + "\n") || "")
     .split("\n")
@@ -154,8 +157,8 @@ function main(argv) {
       console.log(`DELETE ${s.branch} — ${s.why}${s.worktree ? ` (+ worktree ${s.worktree})` : ""}`);
       continue;
     }
-    // anything not already in the base keeps its tip: `git branch <name> refs/sapu-trash/<name>` restores it
-    if (!s.why.startsWith("in ") && tryRun("git", ["-C", MAIN, "update-ref", `refs/sapu-trash/${s.branch}`, `refs/heads/${s.branch}`], MAIN) === null) {
+    // every deleted tip is kept: `git branch <name> refs/sapu-trash/<name>` restores it
+    if (tryRun("git", ["-C", MAIN, "update-ref", `refs/sapu-trash/${s.branch}`, `refs/heads/${s.branch}`], MAIN) === null) {
       console.log(`KEEP   ${s.branch} — could not save its tip to refs/sapu-trash`);
       continue;
     }

@@ -33,7 +33,7 @@
 - 🚦 **Merge only on green.** Workers never merge; one merge script does, after the gate passes, and logs every gate run so a flaky test is proven, never assumed.
 - 📜 **Zero repo knowledge in the plugin.** Each repo brings its own contract: account, gate commands, protected data.
 - 🛡️ **Safe by default.** Guard hook on subagents' shell, file and MCP tools, scope lock per machine, trusted-author checks for public repos.
-- 🧽 **Tidies up only what is proven done.** Per the repo's policy (end of the sweep, every session, or never), sapu deletes only its own branches that are proven merged, with their clean worktrees, and keeps each deleted tip that is not already in the base under `refs/sapu-trash/`.
+- 🧽 **Tidies up only what is proven done.** Per the repo's policy (end of the sweep, every session, or never), sapu deletes only its own branches that are proven merged, with their clean worktrees, and keeps each deleted tip under `refs/sapu-trash/`.
 
 ## Quick start
 
