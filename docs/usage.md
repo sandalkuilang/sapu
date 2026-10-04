@@ -1,5 +1,7 @@
 # Install and use
 
+<sub><a href="../README.md">README</a> · <b>Install and use</b> · <a href="agents.md">How the agents work</a> · <a href="security.md">Safety and trust</a> · <a href="contributing.md">Contributing</a></sub>
+
 ## Install
 
 Add the marketplace, from GitHub:
@@ -21,6 +23,8 @@ Then, from the main checkout of the repo that opts in:
 ```bash
 claude plugin install sapu@sapu --scope project
 ```
+
+sapu depends on the [senior-dev-team](../plugins/senior-dev-team/README.md) plugin from the same marketplace, so this command installs and enables it too, at the same scope. Its agents are sapu's default specialists ("Specialist agents", below).
 
 When the marketplace repo is private, cloning it uses your existing git credentials (`gh auth git-credential`), so the active `gh` account must have access to that repo.
 
@@ -74,7 +78,7 @@ Without the aliases, the full names are `/sapu:sapu`, `/sapu:forge`, and so on. 
 - The sweep finishes in the session whose triage finds no work and no open PR left: a branch cleanup (unless the policy says `never`), a final full gate on the base branch, and the final report.
 - The final report holds the PR and issue tables, the decisions taken with their sources, and the metrics per session: tokens and their cost in dollars at API prices (a weight for quota use on a subscription), per merged PR.
 
-How a lane works: a forge worker from the ladder (`sapu-sonnet-medium` … `sapu-opus-high`, picked by difficulty) implements the issue in its own worktree and opens a PR. The `qa` specialist reviews it at Opus/high on every tier; a 🔴 issue, or a diff that touches a red area, gets an adversarial Opus pair instead (`qa` + a domain specialist). A worker whose own red-area check finds a red area raises the tier before review starts. Findings go to a fresh fixer of the same tier (one step up for an invariant domain) for at most two fix cycles, each followed by a review of the new commits; a judgment call the issue does not settle sends the work one step up the ladder, once. A worker past about 120 tool calls hands off: it commits its work in progress, tears down its test resources, and a fresh worker of the same tier continues from its note (at most two handoffs per step).
+How a lane works: a forge worker from the ladder (`sapu-sonnet-medium` … `sapu-opus-high`, picked by difficulty) implements the issue in its own worktree and opens a PR. The `qa` specialist (by default `senior-dev-team:senior-qa-reviewer`) reviews it at Opus/high on every tier; a 🔴 issue, or a diff that touches a red area, gets an adversarial Opus pair instead (`qa` + a domain specialist). A worker whose own red-area check finds a red area raises the tier before review starts. Findings go to a fresh fixer of the same tier (one step up for an invariant domain) for fix cycles, each followed by a review of the new commits: at most two on 🟢/🟡; on 🔴 up to five, but past the second only while the work converges, meaning each review reports fewer findings than the one before and no finding is reported by three reviews in a row. Otherwise the issue is blocked with the reason (a NEEDS-FIX PR in Phase A follows the same rule). A judgment call the issue does not settle sends the work one step up the ladder, once. A worker past about 120 tool calls hands off: it commits its work in progress, tears down its test resources, and a fresh worker of the same tier continues from its note (at most two handoffs per step).
 
 How a merge works: each ready PR goes through `sapu-merge.sh`, one at a time. The orchestrator runs it as a background command and waits for its notification; it never polls. The script runs the merge gate, records the run in the flake ledger, merges, and calls the repo's `mergeAfter`.
 - **A red gate** names its failing test files and a verdict. A PR gets at most one re-run. When it is red again, the failing files run on a fresh checkout of the base branch: red there too means a flaky test on the base branch (a *base flake*), which gets one `flake: <test file>` issue and is fixed at its source, never by a retry or a looser assertion; green there means the PR broke it.
@@ -100,7 +104,24 @@ What is enforced, and by what:
 
 ### Specialist agents
 
-Reviewers and advisers (the 🔴 review pair, forge's QA, the `/inspector` team review) are called by role: `qa`, `architect`, `db`, `developer`, `ux`, `writer`, `product`. The plugin ships built-in agents for all seven (`sapu:sapu-qa`, `sapu:sapu-architect`, …), so sapu runs on any machine without extra agents. A repo that has stronger agents of its own can map roles to them through the optional `specialists` field of `.claude/sapu.json`, e.g. `"specialists": {"qa": "my-qa-agent"}`; roles it does not name keep the built-in. The format is in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Specialist agents.
+Reviewers and advisers (the 🔴 review pair, forge's QA, the `/inspector` team review) are called by role. By default each role is an agent of the senior-dev-team plugin, which is installed with sapu; sapu itself ships only the worker ladder (`sapu-sonnet-medium` … `sapu-opus-high`):
+
+| Role | Default agent |
+|---|---|
+| `qa` | `senior-dev-team:senior-qa-reviewer` |
+| `architect` | `senior-dev-team:senior-software-architect` |
+| `db` | `senior-dev-team:senior-fullstack-database-engineer` |
+| `developer` | `senior-dev-team:senior-fullstack-developer` |
+| `ux` | `senior-dev-team:senior-ui-ux-designer` |
+| `writer` | `senior-dev-team:senior-technical-writer` |
+| `product` | `senior-dev-team:product-manager` |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/senior-dev-team-dark.svg">
+  <img src="img/senior-dev-team.svg" alt="The eight senior-dev-team agents and how sapu dispatches them by role: qa reviews every PR, a qa plus domain-specialist Opus pair reviews the red tier, and a scoped /inspector run adds a read-only team review" width="100%">
+</picture>
+
+A repo that has stronger agents of its own can map roles to them through the optional `specialists` field of `.claude/sapu.json`, e.g. `"specialists": {"qa": "my-qa-agent"}`; roles it does not name keep the default. The format is in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Specialist agents.
 
 ### Cleaning up branches
 
@@ -129,6 +150,10 @@ claude plugin marketplace update sapu
 claude plugin update sapu@sapu --scope project
 ```
 
+```bash
+claude plugin update senior-dev-team@sapu --scope project
+```
+
 Then start a new session. Both commands also work for a marketplace from a local folder: the first re-reads that folder, and the second copies its new version into the cache. When the version did not go up, nothing is copied. To check that the installed copy matches its source:
 
 ```bash
@@ -146,6 +171,7 @@ Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `
 | `machine config … is invalid` | The machine config is malformed (an unknown key, a wrong type, or an empty `allowedRoots`). Fix it per the section "Restricting where sapu may run". |
 | `… installed at USER scope …` / `cannot confirm the plugin's install scope` | The machine config sets `projectScopeOnly`, and the plugin is installed at user scope (or `claude plugin list --json` failed / shows no project-scope install). Uninstall it (`claude plugin uninstall sapu@sapu --scope user`), then install it with `--scope project` in the repo that opts in. |
 | `active gh account is "…", the contract needs "…"` | The active `gh` account is wrong. Switch it yourself with `gh auth switch --user <the contract's ghUser>`, then try again. |
+| A `senior-dev-team:…` agent is not found | The dependency is missing or disabled. Run `claude plugin install senior-dev-team@sapu --scope project` (or re-run the sapu install, which resolves missing dependencies), then start a new session. |
 | A lane stops with a "canary" reason | The guard hook is not active. Make sure `claude plugin list` shows `sapu@sapu` enabled at project scope, then start a new session. |
 | A lane's issue blocked with `PR #… fails pr-trust: … no reviewer dispatched` | The worker's own `pr-trust` check refused its PR, usually a `#` written in prose (`invariant #6`) that names an issue outside the trusted set. Edit the PR body (`invariant 6`, or put the number in backticks); the next session's Phase A picks the PR up. |
 | `refusing untrusted PR #… (rule: …)` | `pr-trust` refused it: a fork, an author or commit author outside the trusted set, an unsigned commit (with `requireSignedCommits`), or an issue it closes or refs that fails `issue-trust`. sapu never gates or merges it: review it yourself, or, when its author should be trusted, add `{"login", "id"}` to `trustedAuthors`. |

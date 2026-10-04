@@ -52,7 +52,7 @@
 // (a subagent, a subagent's subagent, ...) and never for the orchestrator — the main session,
 // which merges, runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh. Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
-// (a reviewer, a specialist — the built-in `sapu:sapu-<role>` agents included —,
+// (a reviewer, a specialist — the senior-dev-team agents included —,
 // argus/momus/nemesis and their helpers) gets the same floor EXCEPT that it may run
 // `gh issue create` and may write into <MAIN>'s STATE_DIRS (`.argus/`, `.momus/`, `.nemesis/`,
 // `.claude/agent-memory/`, `.claude/agent-memory-local/`, `dreams/`), because filing findings and keeping that state is their

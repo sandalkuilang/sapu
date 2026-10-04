@@ -80,14 +80,24 @@ const isRegex = (v) => {
 const strArray = (v) => Array.isArray(v) && v.every(isStr);
 
 /**
- * The specialist roles the engine dispatches by name. Each has a built-in agent the plugin ships
- * (agents/sapu-<role>.md, dispatched as `sapu:sapu-<role>`); a repo may map any of them to a
- * stronger agent of its own through the optional contract field `specialists`.
+ * The specialist roles the engine dispatches by name. Each defaults to an agent of the
+ * senior-dev-team plugin (a dependency of sapu, installed with it; DEFAULT_SPECIALISTS); a repo
+ * may map any of them to an agent of its own through the optional contract field `specialists`.
  */
 export const SPECIALIST_ROLES = ["qa", "architect", "db", "developer", "ux", "writer", "product"];
 /** The roles that may be the domain half of the 🔴 review pair (qa is always the other half). */
 export const DOMAIN_ROLES = ["architect", "db", "developer", "ux"];
-const builtIn = (role) => `sapu:sapu-${role}`;
+/** Each role's default agent, from the senior-dev-team plugin. */
+export const DEFAULT_SPECIALISTS = {
+  qa: "senior-dev-team:senior-qa-reviewer",
+  architect: "senior-dev-team:senior-software-architect",
+  db: "senior-dev-team:senior-fullstack-database-engineer",
+  developer: "senior-dev-team:senior-fullstack-developer",
+  ux: "senior-dev-team:senior-ui-ux-designer",
+  writer: "senior-dev-team:senior-technical-writer",
+  product: "senior-dev-team:product-manager",
+};
+const builtIn = (role) => DEFAULT_SPECIALISTS[role];
 /** A worker of the plugin's ladder, under any plugin prefix (the same pattern as SAPU_AGENT in sapu-guard.mjs). */
 export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 /**
@@ -99,7 +109,7 @@ const notSpecialist = (t) =>
 
 /**
  * The full role -> subagent type map for `c`: the contract's `specialists` entry where it names
- * one, the plugin's built-in agent otherwise. `specialists` is optional on purpose (the one
+ * one, the senior-dev-team default otherwise. `specialists` is optional on purpose (the one
  * documented exception to "no silent defaults"): a contract written before the field existed
  * stays valid, so plugin and contract never have to be updated in lockstep.
  */
@@ -216,7 +226,7 @@ export function validate(c) {
   );
   if ("specialists" in c) {
     const s = c.specialists;
-    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push(`specialists must be an object mapping roles (${SPECIALIST_ROLES.join(", ")}) to subagent types; omit it to use the built-in agents`);
+    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push(`specialists must be an object mapping roles (${SPECIALIST_ROLES.join(", ")}) to subagent types; omit it to use the senior-dev-team defaults`);
     else
       for (const [k, v] of Object.entries(s)) {
         if (!SPECIALIST_ROLES.includes(k)) errs.push(`specialists: unknown role "${k}" (roles: ${SPECIALIST_ROLES.join(", ")})`);

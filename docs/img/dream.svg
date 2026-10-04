@@ -1,128 +1,149 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 706" role="img" aria-label="dream runs three phases — deep research into two or three of nine technology domains per run (stalest first, or weighted to a given focus with about 20% outside it), then eight to twelve falsifiable hypotheses each with a cited reasoning chain and a kill condition, then grounding two or three of them into one-month experiments for this project. It modifies no code and opens no issues; its only write is one local report.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 884" width="920" height="884" role="img" aria-label="dream runs three phases — deep research into two or three of nine technology domains per run (stalest first, or weighted to a given focus with about 20% outside it), then eight to twelve falsifiable hypotheses each with a cited reasoning chain and a kill condition, then grounding two or three of them into one-month experiments for this project. It modifies no code and opens no issues; its only write is one local report.">
   <title>/dream — forward-looking research, read-only</title>
   <desc>dream runs cold every time and needs no contract; an optional profile names where bug-like findings are routed. Phase 1 (about 40 percent of effort) researches papers and talks, what frontier labs ship, adjacent fields, current failure patterns and GitHub trending in two or three domains per run, rotated through a pool of nine (auth, security, UI/UX, performance, database, hosting, HCI, dashboards, payments) stalest first — or weighted to a given focus with about 20 percent outside it — tagging every claim HAPPENING, EMERGING or EXTRAPOLATION. Phase 2 generates 8 to 12 ideas, each with a cited reasoning chain, the shift, why now, what breaks first, the senior engineer's objection, a concrete artifact, a kill condition and a confidence, then a diversity check. Phase 3 grounds 2 to 3 ideas in this project with architecture impact, a one-month experiment and the cost of being early or late. dream modifies no code and opens no issues; its only write is one local report under dreams/.</desc>
   <style>
-    :root{
-      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
-      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
-      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
-    }
-    @media (prefers-color-scheme: dark){
-      :root{
-        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
-        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
-        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
-      }
-    }
-    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .bg{fill:var(--bg)}
-    .h{font-size:21px;font-weight:700}
-    .sub{font-size:13px;fill:var(--muted)}
-    .ttl{font-size:14px;font-weight:700}
-    .badge{font-size:12.5px;font-weight:700;fill:var(--accent)}
-    .t{font-size:13px}
-    .sm{font-size:12.5px;fill:var(--muted)}
-    .c-writes{fill:var(--writes)} .c-limit{fill:var(--limit)} .c-accent{fill:var(--accent)}
-    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
-    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
-    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
-    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
-    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.5}
-    .flow{stroke:var(--ink);stroke-width:2;fill:none}
-    .reads{stroke:var(--reads);stroke-width:1.7;fill:none;stroke-dasharray:6 4}
-    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
-    .ah-flow{fill:var(--ink)} .ah-reads{fill:var(--reads)} .ah-writes{fill:var(--writes)}
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
   </style>
   <defs>
-    <marker id="af" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-flow"/></marker>
-    <marker id="ar" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-reads"/></marker>
-    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
   </defs>
-  <rect class="bg" x="0" y="0" width="920" height="706" rx="16"/>
-
-  <text x="24" y="40" class="h">/dream — where is this heading?</text>
-  <text x="24" y="62" class="sub">Deep research → falsifiable hypotheses → near-term experiments for this project. Read-only.</text>
-
-  <!-- legend -->
-  <rect x="24" y="80" width="872" height="36" rx="8" class="box"/>
-  <line x1="40" y1="98" x2="68" y2="98" class="flow" marker-end="url(#af)"/>
-  <text x="76" y="102" class="sm">flow</text>
-  <line x1="170" y1="98" x2="198" y2="98" class="reads" marker-end="url(#ar)"/>
-  <text x="206" y="102" class="sm">reads</text>
-  <line x1="310" y1="98" x2="338" y2="98" class="writes" marker-end="url(#aw)"/>
-  <text x="346" y="102" class="sm">produces</text>
-  <rect x="460" y="91" width="26" height="14" rx="3" class="limit-b"/>
-  <text x="494" y="102" class="sm">hard limit</text>
-
-  <!-- reads -->
-  <rect x="24" y="132" width="872" height="40" rx="8" class="reads-b"/>
-  <text x="40" y="157" class="t"><tspan class="ttl">Reads</tspan> — optional profile <tspan class="mono">.claude/sapu/dream.md</tspan> (findings routing) + project context · no contract needed</text>
-  <path d="M160,172 L160,190" class="reads" marker-end="url(#ar)"/>
-
-  <!-- phase 1 -->
-  <rect x="24" y="192" width="272" height="320" rx="10" class="box2"/>
-  <text x="40" y="216" class="ttl">Phase 1 · Research</text>
-  <text x="280" y="216" class="badge" text-anchor="end">≈ 40%</text>
-  <text x="40" y="242" class="sm">sources</text>
-  <text x="40" y="262" class="t">· papers and talks, 6–12 months</text>
-  <text x="40" y="282" class="t">· what frontier labs ship</text>
-  <text x="40" y="302" class="t">· adjacent fields, failures</text>
-  <text x="40" y="322" class="t">· GitHub trending + dependents</text>
-  <text x="40" y="348" class="sm">domains: 2–3 per run, rotating</text>
-  <text x="40" y="368" class="t">auth · security · UI/UX</text>
-  <text x="40" y="388" class="t">performance · database · hosting</text>
-  <text x="40" y="408" class="t">HCI · dashboards · payments</text>
-  <text x="40" y="434" class="sm">every claim tagged</text>
-  <text x="40" y="454" class="t">HAPPENING · EMERGING</text>
-  <text x="40" y="474" class="t">EXTRAPOLATION — cite or cut</text>
-  <text x="40" y="498" class="sm">note contradicting evidence</text>
-
-  <!-- phase 2 -->
-  <rect x="324" y="192" width="272" height="320" rx="10" class="box2"/>
-  <text x="340" y="216" class="ttl">Phase 2 · Dreaming</text>
-  <text x="580" y="216" class="badge" text-anchor="end">8–12 ideas</text>
-  <text x="340" y="242" class="sm">each idea carries</text>
-  <text x="340" y="262" class="t">· cited reasoning chain</text>
-  <text x="340" y="282" class="t">· the shift: before → after</text>
-  <text x="340" y="302" class="t">· why now (a named curve)</text>
-  <text x="340" y="322" class="t">· what breaks first</text>
-  <text x="340" y="342" class="t">· senior engineer's objection</text>
-  <text x="340" y="362" class="t">· one concrete artifact</text>
-  <text x="340" y="382" class="t">· kill condition (falsifiable)</text>
-  <text x="340" y="402" class="t">· confidence</text>
-  <text x="340" y="428" class="sm">before output</text>
-  <text x="340" y="448" class="t">diversity check</text>
-  <text x="340" y="468" class="t">uncited link → cut or downgrade</text>
-
-  <!-- phase 3 -->
-  <rect x="624" y="192" width="272" height="320" rx="10" class="box2"/>
-  <text x="640" y="216" class="ttl">Phase 3 · Wake-up</text>
-  <text x="880" y="216" class="badge" text-anchor="end">2–3 ideas</text>
-  <text x="640" y="242" class="sm">grounded in THIS project</text>
-  <text x="640" y="262" class="t">· architecture impact</text>
-  <text x="654" y="282" class="sm">a real file, skill or service</text>
-  <text x="640" y="302" class="t">· one-month experiment</text>
-  <text x="654" y="322" class="sm">signal if right / if wrong</text>
-  <text x="640" y="342" class="t">· cost of early vs late</text>
-  <text x="640" y="368" class="sm">the report also has</text>
-  <text x="640" y="388" class="t">· a Conviction paragraph</text>
-  <text x="640" y="408" class="t">· Delta vs previous dreams</text>
-  <text x="654" y="428" class="sm">+ domain coverage table</text>
-
-  <path d="M296,352 L322,352" class="flow" marker-end="url(#af)"/>
-  <path d="M596,352 L622,352" class="flow" marker-end="url(#af)"/>
-
-  <!-- output -->
-  <text x="24" y="566" class="sm">/dream [focus] weights research to the focus, ~20% outside</text>
-  <path d="M760,512 L760,530" class="writes" marker-end="url(#aw)"/>
-  <rect x="544" y="532" width="352" height="56" rx="9" class="writes-b"/>
-  <text x="720" y="555" class="t" text-anchor="middle">one local report</text>
-  <text x="720" y="575" class="sm mono" text-anchor="middle">dreams/DREAM-{YYYY-MM-DD}[-{focus}].md</text>
-
-  <!-- read-only rail -->
-  <rect x="24" y="608" width="872" height="78" rx="10" class="limit-b"/>
-  <text x="40" y="630" class="ttl c-limit">Read-only — the hard limit</text>
-  <text x="40" y="652" class="t">Modifies no code and opens no issues — its only write is the report above.</text>
-  <text x="40" y="672" class="t">A bug-like finding is named in prose and pointed at the project's QA skill (e.g. /argus); never filed.</text>
+  <rect x="0.5" y="0.5" width="919" height="883" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="884" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">FORWARD RESEARCH · /dream</text>
+  <text x="32" y="78" class="h1">Where is this heading?</text>
+  <text x="32" y="102" class="sub">Deep research → falsifiable hypotheses → near-term experiments for this project. Read-only.</text>
+  <path d="M32,140 L58,140" class="ar" marker-end="url(#mn)"/>
+  <text x="66" y="144" class="cap">flow</text>
+  <path d="M109.6,140 L135.6,140" class="ar-b" marker-end="url(#mb)"/>
+  <text x="143.6" y="144" class="cap">reads</text>
+  <path d="M195.6,140 L221.6,140" class="ar-g" marker-end="url(#mg)"/>
+  <text x="229.6" y="144" class="cap">produces</text>
+  <rect x="299.6" y="133" width="22" height="14" rx="4" class="k-red"/>
+  <text x="329.6" y="144" class="cap">hard limit</text>
+  <rect x="32" y="162" width="856" height="46" rx="12" class="k-blue" />
+  <rect x="44" y="168" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(50.375,174.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-blue"/></g>
+  <text x="90" y="190" class="t"><tspan class="tb">Reads</tspan>  optional profile <tspan class="mono">.claude/sapu/dream.md</tspan> (findings routing) + project context  ·  no contract needed</text>
+  <rect x="32" y="236" width="266" height="446" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="252" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,258.75) scale(0.9375)"><path d="M10.5 4a6.5 6.5 0 1 0 0.01 0 M15.5 15.5L20 20" class="ico ico-w"/></g>
+  <text x="96" y="268" class="ttl">Phase 1 · Research</text>
+  <text x="96" y="286" class="cap">≈ 40% of the effort</text>
+  <text x="48" y="320" class="lbl">SOURCES</text>
+  <text x="48" y="340" class="cap">· papers and talks, 6–12 months</text>
+<text x="48" y="358" class="cap">· what frontier labs ship</text>
+<text x="48" y="376" class="cap">· adjacent fields, failures</text>
+<text x="48" y="394" class="cap">· GitHub trending + dependents</text>
+  <text x="48" y="432" class="lbl">DOMAINS · 2–3 PER RUN, ROTATING</text>
+  <rect x="48" y="442" width="47" height="22" rx="11" class="chip"/>
+  <text x="58" y="457" class="chipt muted">auth</text>
+  <rect x="101" y="442" width="70" height="22" rx="11" class="chip"/>
+  <text x="111" y="457" class="chipt muted">security</text>
+  <rect x="177" y="442" width="60" height="22" rx="11" class="chip"/>
+  <text x="187" y="457" class="chipt muted">UI/UX</text>
+  <rect x="48" y="470" width="92" height="22" rx="11" class="chip"/>
+  <text x="58" y="485" class="chipt muted">performance</text>
+  <rect x="146" y="470" width="73" height="22" rx="11" class="chip"/>
+  <text x="156" y="485" class="chipt muted">database</text>
+  <rect x="48" y="498" width="63" height="22" rx="11" class="chip"/>
+  <text x="58" y="513" class="chipt muted">hosting</text>
+  <rect x="117" y="498" width="46" height="22" rx="11" class="chip"/>
+  <text x="127" y="513" class="chipt muted">HCI</text>
+  <rect x="169" y="498" width="85" height="22" rx="11" class="chip"/>
+  <text x="179" y="513" class="chipt muted">dashboards</text>
+  <rect x="48" y="526" width="73" height="22" rx="11" class="chip"/>
+  <text x="58" y="541" class="chipt muted">payments</text>
+  <text x="48" y="576" class="lbl">EVERY CLAIM TAGGED</text>
+  <rect x="48" y="586" width="93" height="22" rx="11" class="k-green"/>
+  <text x="58" y="601" class="chipt c-green">HAPPENING</text>
+  <rect x="147" y="586" width="85" height="22" rx="11" class="k-amber"/>
+  <text x="157" y="601" class="chipt c-amber">EMERGING</text>
+  <rect x="48" y="614" width="125" height="22" rx="11" class="k-violet"/>
+  <text x="58" y="629" class="chipt c-violet">EXTRAPOLATION</text>
+  <text x="48" y="658" class="cap">cite or cut · note contradicting evidence</text>
+  <path d="M303,276 L322,276" class="ar" marker-end="url(#mn)"/>
+  <rect x="327" y="236" width="266" height="446" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="343" y="252" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(349.75,258.75) scale(0.9375)"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z M18.5 16l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" class="ico ico-w"/></g>
+  <text x="391" y="268" class="ttl">Phase 2 · Dreaming</text>
+  <text x="391" y="286" class="cap">8–12 ideas</text>
+  <text x="343" y="320" class="lbl">EACH IDEA CARRIES</text>
+  <text x="343" y="340" class="cap">· a cited reasoning chain</text>
+<text x="343" y="358" class="cap">· the shift: before → after</text>
+<text x="343" y="376" class="cap">· why now (a named curve)</text>
+<text x="343" y="394" class="cap">· what breaks first</text>
+<text x="343" y="412" class="cap">· the senior engineer's objection</text>
+<text x="343" y="430" class="cap">· one concrete artifact</text>
+<text x="343" y="448" class="cap">· a kill condition (falsifiable)</text>
+<text x="343" y="466" class="cap">· a confidence</text>
+  <text x="343" y="506" class="lbl">BEFORE OUTPUT</text>
+  <rect x="343" y="518" width="234" height="54" rx="10" class="sunken" />
+  <text x="357" y="540" class="tb">diversity check</text>
+  <text x="357" y="560" class="cap">uncited link → cut or downgrade</text>
+  <path d="M598,276 L617,276" class="ar" marker-end="url(#mn)"/>
+  <rect x="622" y="236" width="266" height="446" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="638" y="252" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(644.75,258.75) scale(0.9375)"><path d="M12 3a9 9 0 1 0 0.01 0 M12 7.5a4.5 4.5 0 1 0 0.01 0 M12 11.2a.8 .8 0 1 0 0.01 0" class="ico ico-w"/></g>
+  <text x="686" y="268" class="ttl">Phase 3 · Wake-up</text>
+  <text x="686" y="286" class="cap">2–3 ideas</text>
+  <text x="638" y="320" class="lbl">GROUNDED IN THIS PROJECT</text>
+  <text x="638" y="342" class="t">· architecture impact</text>
+  <text x="648" y="360" class="cap">a real file, skill or service</text>
+  <text x="638" y="384" class="t">· one-month experiment</text>
+  <text x="648" y="402" class="cap">signal if right / if wrong</text>
+  <text x="638" y="426" class="t">· cost of early vs late</text>
+  <text x="648" y="444" class="cap"></text>
+  <text x="638" y="486" class="lbl">THE REPORT ALSO HAS</text>
+  <text x="638" y="506" class="cap">· a Conviction paragraph</text>
+<text x="638" y="524" class="cap">· Delta vs previous dreams</text>
+<text x="638" y="542" class="cap">+ a domain coverage table</text>
+  <text x="32" y="708" class="cap"><tspan class="mono">/dream [focus]</tspan> weights research to the focus, ~20% outside it</text>
+  <path d="M755,684 L755,722" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="462" y="726" width="426" height="52" rx="12" class="k-green" />
+  <rect x="474" y="735" width="34" height="34" rx="9.5625" class="tile-green"/>
+  <g transform="translate(480.375,741.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-green"/></g>
+  <text x="520" y="748" class="tb">one local report</text>
+  <text x="520" y="767" class="cap mono">dreams/DREAM-{YYYY-MM-DD}[-{focus}].md</text>
+  <rect x="32" y="798" width="856" height="66" rx="14" class="k-red" />
+  <rect x="44" y="814" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,820.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="90" y="826" class="t"><tspan class="tb c-red">Read-only</tspan>  — the hard limit. Modifies no code and opens no issues; its only write is the report above.</text>
+  <text x="90" y="846" class="cap">A bug-like finding is named in prose and pointed at the project's QA skill (e.g. /argus); never filed.</text>
 </svg>

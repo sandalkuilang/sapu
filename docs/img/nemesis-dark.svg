@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1110" width="920" height="1110" role="img" aria-label="nemesis red-teams the repo's local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback or an owner-attested private dev address; dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0 to 7 from residue intake and recon through business logic to detection-integrity, with six bypass classes every cycle, filing security-labelled GitHub issues. Non-destructive, seeded low-privilege accounts only.">
+  <title>/nemesis — authorized red-team, dev only</title>
+  <desc>nemesis attacks the repo's own dev environment only. A hard gate is checked at every cycle start, before any active testing: an owner-signed, non-expired authorization.yml with an explicit attestation; every target on the allowlist and passing the host floor on its resolved address (loopback, or a private address the owner-signed file names and marks dev; any public address refused), with every production domain on scope.forbidden; dev environments only; and no .nemesis/STOP file. Any failure means file a BLOCKED issue and stop. Separately, a kill switch halts a running cycle (authorization invalid or expired, a target resolving off-allowlist or to a public or unknown address, a prohibited action needed, an anomaly or error-rate spike, a single-packet batch behaving unexpectedly, or a STOP file) and files a HALT issue. The methodology runs Pass 0 residue intake, Pass 1 recon and multi-tier surface, Pass 2 auth/session/step-up, Pass 3 authorization (highest value), Pass 4 injection, Pass 5 business logic (where the money is), Pass 6 API/config hygiene, Pass 7 detection-integrity, then triage and filing. Six bypass classes A to F run every domain every cycle, for outsider and insider alike. It files security-labelled GitHub issues naming the file and seam, keeps state under .nemesis/, and hands findings to /forge, which puts almost all in its red tier. Fix-mode is off by default.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#0f1623;stroke:#263247;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#a5b4fc}
+    .h1{font-size:25px;font-weight:750;fill:#f1f5f9;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#9fb0c6}
+    .sec{font-size:15px;font-weight:700;fill:#f1f5f9}
+    .sec2{font-size:12.5px;fill:#9fb0c6}
+    .ttl{font-size:14px;font-weight:650;fill:#f1f5f9}
+    .t{font-size:13px;fill:#dbe3ee}
+    .tb{font-size:13px;font-weight:650;fill:#f1f5f9}
+    .cap{font-size:12px;fill:#9fb0c6}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#9fb0c6}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#f1f5f9} .muted{fill:#9fb0c6} .accent{fill:#a5b4fc} .tealt{fill:#5eead4}
+    .card{fill:#172133;stroke:#2e3c55;stroke-width:1}
+    .sunken{fill:#121a28;stroke:#253147;stroke-width:1}
+    .chip{fill:#121a28;stroke:#2e3c55;stroke-width:1}
+    .ar{stroke:#8796ad;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#22c55e;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#f59e0b;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#93c5fd;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#a78bfa;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#ef4444;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#8796ad} .m-g{stroke:#22c55e} .m-a{stroke:#f59e0b} .m-b{stroke:#93c5fd} .m-v{stroke:#a78bfa}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#9fb0c6} .ico-w{stroke:#ffffff}
+    .rule{stroke:#2e3c55;stroke-width:1}
+    .c-blue{fill:#93c5fd} .k-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1.25} .s-blue{stroke:#93c5fd} .f-blue{fill:#93c5fd} .tile-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1}
+    .c-green{fill:#4ade80} .k-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1.25} .s-green{stroke:#22c55e} .f-green{fill:#22c55e} .tile-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1}
+    .c-amber{fill:#fbbf24} .k-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1.25} .s-amber{stroke:#f59e0b} .f-amber{fill:#f59e0b} .tile-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1}
+    .c-red{fill:#fca5a5} .k-red{fill:#2a1216;stroke:#8f3434;stroke-width:1.25} .s-red{stroke:#ef4444} .f-red{fill:#ef4444} .tile-red{fill:#2a1216;stroke:#8f3434;stroke-width:1}
+    .c-violet{fill:#c4b5fd} .k-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1.25} .s-violet{stroke:#a78bfa} .f-violet{fill:#a78bfa} .tile-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.35"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.25"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1109" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1110" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">AUTHORIZED RED TEAM · /nemesis</text>
+  <text x="32" y="78" class="h1">Authorized red-team of the dev app</text>
+  <text x="32" y="102" class="sub">Doctrine: falsify, never confirm — concurrent not sequential, every tier not one, tampered not well-formed.</text>
+  <rect x="32" y="128" width="856" height="46" rx="12" class="k-blue" />
+  <rect x="44" y="134" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(50.375,140.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-blue"/></g>
+  <text x="90" y="156" class="t"><tspan class="tb">Reads</tspan>  profile <tspan class="mono">.claude/sapu/nemesis.md</tspan> + <tspan class="mono">.nemesis/config.yml</tspan> + owner-signed <tspan class="mono">authorization.yml</tspan></text>
+  <rect x="32" y="194" width="572" height="172" rx="14" class="k-red" />
+  <rect x="48" y="210" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(54.375,216.375) scale(0.8854166666666667)"><path d="M7 11V8a5 5 0 0 1 10 0v3 M5.5 11h13v9.5h-13z M12 15v2.5" class="ico s-red"/></g>
+  <text x="94" y="226" class="t"><tspan class="tb c-red">Hard gate</tspan></text>
+  <text x="166.92" y="226" class="cap">every cycle, before ANY active testing</text>
+  <circle cx="58" cy="254" r="8" class="tile-red"/>
+  <text x="58" y="258" class="chipt c-red" text-anchor="middle">1</text>
+  <text x="74" y="258" class="cap"><tspan class="mono">authorization.yml</tspan> signed, not expired, attested</text>
+  <circle cx="58" cy="273" r="8" class="tile-red"/>
+  <text x="58" y="277" class="chipt c-red" text-anchor="middle">2</text>
+  <text x="74" y="277" class="cap">every target on the allowlist · resolved address = loopback</text>
+  <text x="74" y="296" class="cap">or an owner-attested private dev address — public is refused,</text>
+  <text x="74" y="315" class="cap">and every production domain is on <tspan class="mono">scope.forbidden</tspan></text>
+  <circle cx="58" cy="330" r="8" class="tile-red"/>
+  <text x="58" y="334" class="chipt c-red" text-anchor="middle">3</text>
+  <text x="74" y="334" class="cap">environments = dev only</text>
+  <circle cx="58" cy="349" r="8" class="tile-red"/>
+  <text x="58" y="353" class="chipt c-red" text-anchor="middle">4</text>
+  <text x="74" y="353" class="cap">no <tspan class="mono">.nemesis/STOP</tspan> file</text>
+  <path d="M606,280 L622,280" class="ar" marker-end="url(#mn)"/>
+  <rect x="626" y="194" width="262" height="172" rx="14" class="card" filter="url(#sh)"/>
+  <text x="642" y="226" class="ttl">On the gate</text>
+  <rect x="642" y="242" width="56" height="22" rx="11" class="k-green"/>
+  <circle cx="654" cy="253" r="4" class="f-green"/>
+  <text x="663" y="257" class="chipt c-green">pass</text>
+  <text x="710" y="257" class="t">→ begin the passes</text>
+  <rect x="642" y="278" width="51" height="22" rx="11" class="k-red"/>
+  <circle cx="654" cy="289" r="4" class="f-red"/>
+  <text x="663" y="293" class="chipt c-red">fail</text>
+  <text x="702" y="293" class="t">any check →</text>
+  <text x="642" y="320" class="cap">file <tspan class="mono">[NEMESIS][BLOCKED]</tspan>,</text>
+<text x="642" y="338" class="cap">test nothing, and stop</text>
+  <text x="32" y="402" class="lbl">METHODOLOGY · PASSES</text>
+  <text x="207.24500000000003" y="402" class="cap c-amber">★ highest value</text>
+  <rect x="32" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="44" y="438" class="tb">Pass 0</text>
+  <text x="44" y="458" class="cap">Residue intake</text>
+  <rect x="140" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="152" y="438" class="tb">Pass 1</text>
+  <text x="152" y="458" class="cap">Recon · surface</text>
+  <rect x="248" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="260" y="438" class="tb">Pass 2</text>
+  <text x="260" y="458" class="cap">Auth / session</text>
+  <rect x="356" y="414" width="100" height="62" rx="12" class="k-amber" />
+  <text x="368" y="438" class="tb c-amber">Pass 3 ★</text>
+  <text x="368" y="458" class="cap">Authorization</text>
+  <rect x="464" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="476" y="438" class="tb">Pass 4</text>
+  <text x="476" y="458" class="cap">Injection</text>
+  <rect x="572" y="414" width="100" height="62" rx="12" class="k-amber" />
+  <text x="584" y="438" class="tb c-amber">Pass 5 ★</text>
+  <text x="584" y="458" class="cap">Business logic</text>
+  <rect x="680" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="692" y="438" class="tb">Pass 6</text>
+  <text x="692" y="458" class="cap">API / config</text>
+  <rect x="788" y="414" width="100" height="62" rx="12" class="card" filter="url(#sh)"/>
+  <text x="800" y="438" class="tb">Pass 7</text>
+  <text x="800" y="458" class="cap">Detection</text>
+  <text x="32" y="512" class="cap">then</text>
+  <rect x="70" y="494" width="180" height="30" rx="15" class="sunken" />
+  <text x="160" y="514" class="tb" text-anchor="middle">Triage · ≥ 2 repro</text>
+  <path d="M254,509 L278,509" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="282" y="494" width="140" height="30" rx="15" class="k-green" />
+  <text x="352" y="514" class="tb c-green" text-anchor="middle">File issues</text>
+  <text x="32" y="558" class="lbl">SIX BYPASS CLASSES · EVERY DOMAIN, EVERY CYCLE · OUTSIDER + INSIDER</text>
+  <rect x="32" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="57" cy="594" r="11" fill="url(#brand)"/>
+  <text x="57" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">A</text>
+  <text x="46" y="626" class="tb">window direction</text>
+  <text x="46" y="644" class="cap">latest-dated first</text>
+  <rect x="176" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="201" cy="594" r="11" fill="url(#brand)"/>
+  <text x="201" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">B</text>
+  <text x="190" y="626" class="tb">TOCTOU</text>
+  <text x="190" y="644" class="cap">concurrent requests</text>
+  <rect x="320" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="345" cy="594" r="11" fill="url(#brand)"/>
+  <text x="345" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">C</text>
+  <text x="334" y="626" class="tb">no re-check</text>
+  <text x="334" y="644" class="cap">at execution</text>
+  <rect x="464" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="489" cy="594" r="11" fill="url(#brand)"/>
+  <text x="489" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">D</text>
+  <text x="478" y="626" class="tb">splitting</text>
+  <text x="478" y="644" class="cap">second route</text>
+  <rect x="608" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="633" cy="594" r="11" fill="url(#brand)"/>
+  <text x="633" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">E</text>
+  <text x="622" y="626" class="tb">UI-only</text>
+  <text x="622" y="644" class="cap">hit the API</text>
+  <rect x="752" y="570" width="136" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="777" cy="594" r="11" fill="url(#brand)"/>
+  <text x="777" y="598.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">F</text>
+  <text x="766" y="626" class="tb">actor = subject</text>
+  <text x="766" y="644" class="cap">value from body</text>
+  <rect x="32" y="676" width="856" height="66" rx="14" class="k-green" />
+  <rect x="48" y="692" width="34" height="34" rx="9.5625" class="tile-green"/>
+  <g transform="translate(54.375,698.375) scale(0.8854166666666667)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico s-green"/></g>
+  <text x="96" y="704" class="t"><tspan class="tb">Output</tspan>  GitHub issues — labels <tspan class="mono">security</tspan> · <tspan class="mono">nemesis</tspan> · <tspan class="mono">severity:s1..s4</tspan></text>
+  <text x="96" y="724" class="cap">names the file + seam · ASVS + CWE · attacker  ·  state under <tspan class="mono">.nemesis/state/</tspan> + run.log</text>
+  <rect x="32" y="762" width="516" height="300" rx="14" class="k-red" />
+  <rect x="48" y="778" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(54.375,784.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="94" y="800" class="t"><tspan class="tb c-red">Absolute prohibitions</tspan></text>
+  <text x="48" y="838" class="cap">· never production, never out-of-scope targets</text>
+<text x="48" y="857" class="cap">· non-destructive — mutations only on disposable fixtures</text>
+<text x="48" y="876" class="cap">· no persistence / backdoors / C2 · no bulk exfiltration</text>
+<text x="48" y="895" class="cap">· seeded low-privilege test accounts only</text>
+<text x="48" y="914" class="cap">· no DoS / flood — the race carve-out is ONE single-packet</text>
+<text x="58" y="933" class="cap">batch, 2–5 (≤ ~30) requests, benchmarked sequentially first</text>
+<text x="48" y="952" class="cap">· read-only on source unless fix-mode is on (off by default)</text>
+  <text x="48" y="988" class="cap">The social-engineering / out-of-band ban bars the ACTION, never the REASONING:</text>
+<text x="48" y="1007" class="cap">the app's controls against those threats are still analysed and filed.</text>
+<text x="48" y="1026" class="cap tealt">Findings hand off to /forge, which puts almost all in its red tier.</text>
+  <rect x="564" y="762" width="324" height="300" rx="14" class="k-red" />
+  <rect x="580" y="778" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(586.375,784.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-red"/></g>
+  <text x="626" y="794" class="t"><tspan class="tb c-red">Kill switch</tspan></text>
+  <text x="626" y="812" class="cap">halts mid-run</text>
+  <text x="580" y="842" class="cap">halt + file <tspan class="mono">[NEMESIS][HALT]</tspan> when:</text>
+  <text x="580" y="864" class="cap">· authorization invalid / expired</text>
+<text x="580" y="883" class="cap">· a target resolves off-allowlist</text>
+<text x="590" y="902" class="cap">or to a public / unknown IP</text>
+<text x="580" y="921" class="cap">· a prohibited action is needed</text>
+<text x="580" y="940" class="cap">· anomaly / error rate spikes</text>
+<text x="580" y="959" class="cap">· a single-packet batch misbehaves</text>
+<text x="590" y="978" class="cap">(never repeat it)</text>
+<text x="580" y="997" class="cap">· <tspan class="mono">.nemesis/STOP</tspan> exists</text>
+  <text x="580" y="1028" class="cap c-red">when in doubt, stop and ask</text>
+<text x="580" y="1046" class="cap c-red">via an issue; never improvise.</text>
+</svg>

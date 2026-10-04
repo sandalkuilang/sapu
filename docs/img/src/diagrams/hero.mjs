@@ -1,0 +1,34 @@
+import { THEMES, SANS, MONO } from "../lib.mjs";
+
+export default {
+  raw(theme) {
+    const t = THEMES[theme];
+    const ink = theme === "dark" ? "#f8fafc" : "#0f172a";
+    const muted = theme === "dark" ? "#a3b1c6" : "#475569";
+    const pill = theme === "dark" ? ["#1c1736", "#5b4aa3", "#c4b5fd"] : ["#f5f3ff", "#c4b5fd", "#5b21b6"];
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 548 150" width="548" height="150" role="img" aria-label="sapu, a Claude Code plugin marketplace: the sapu backlog sweeper and the senior-dev-team agents">
+  <title>sapu</title>
+  <desc>The sapu logo, a broom sweeping sparkles on a teal-to-indigo tile, beside the word sapu and the caption: plugins for Claude Code.</desc>
+  <defs>
+    <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="wm" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${ink}"/><stop offset="1" stop-color="${ink}"/></linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="9" flood-color="#4f46e5" flood-opacity="${theme === "dark" ? 0.45 : 0.28}"/></filter>
+  </defs>
+  <g transform="translate(24,15) scale(0.9375)" filter="url(#glow)">
+    <rect width="128" height="128" rx="28" fill="url(#lg)"/>
+    <g transform="rotate(38 64 64)" fill="#ffffff">
+      <rect x="61" y="12" width="6" height="58" rx="3"/>
+      <rect x="52" y="68" width="24" height="12" rx="3" fill="#fde68a"/>
+      <path d="M50 82h28l9 30H41z"/>
+      <path d="M56 88v20M64 88v22M72 88v20" stroke="#4f46e5" stroke-width="2" stroke-linecap="round" opacity=".35"/>
+    </g>
+    <path d="M104 18l3 8 8 3-8 3-3 8-3-8-8-3 8-3zM22 92l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" fill="#fde68a"/>
+  </g>
+  <text x="168" y="98" style="font-family:${SANS};font-size:84px;font-weight:800;letter-spacing:-.04em" fill="${ink}">sapu</text>
+  <rect x="366" y="56" width="164" height="30" rx="15" fill="${pill[0]}" stroke="${pill[1]}"/>
+  <text x="448" y="76" text-anchor="middle" style="font-family:${SANS};font-size:13px;font-weight:650" fill="${pill[2]}">for Claude Code</text>
+  <text x="368" y="110" style="font-family:${MONO};font-size:12px" fill="${muted}">plugin marketplace</text>
+</svg>
+`;
+  },
+};

@@ -1,0 +1,22 @@
+{
+  "name": "senior-dev-team",
+  "version": "1.0.0",
+  "description": "A senior software development team as subagents: product manager, architect, full-stack developer, database engineer, UI/UX designer, QA analyst and QA reviewer, technical writer.",
+  "author": {
+    "name": "Yudha"
+  },
+  "repository": "https://github.com/sandalkuilang/sapu",
+  "license": "MIT",
+  "keywords": [
+    "subagents",
+    "agents",
+    "product-management",
+    "architecture",
+    "full-stack",
+    "database",
+    "ui-ux",
+    "qa",
+    "code-review",
+    "technical-writing"
+  ]
+}

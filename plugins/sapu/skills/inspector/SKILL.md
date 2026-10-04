@@ -38,7 +38,7 @@ The user's arguments, if any, are a free-text scope (any area — `"authenticati
 | **momus** | Opus (`opus`, the newest) | high | Dense cross-referencing against the repo's genuinely subtle "is this a bug or a recorded decision" distinctions. Breadth-first, not deep chained logic — high is enough, doesn't need max. |
 | **argus** | Sonnet (`sonnet`, the newest) | high | Continuous, many-cycle bug-hunting. The triage/severity call deserves good reasoning without needing the top tier. |
 | **nemesis** | Opus (`opus`, the newest) | high | Highest-stakes phase — live exploitation plus multi-step business-logic chaining, where a wrong call is either a missed real vulnerability or a false alarm. Raise to `max` in `MODELS` of `workflows/inspector.js` if runs need to go deeper on Pass 5 chaining. |
-| **team** (scoped runs only) | Opus (`opus`, the newest) | high | Read-only product / UI-UX / tests review of the scoped area by the `product`, `ux` and `qa` specialists (the contract's `specialists` map, resolved by `wave-args`; built-in `sapu:sapu-<role>`) after the three phases. |
+| **team** (scoped runs only) | Opus (`opus`, the newest) | high | Read-only product / UI-UX / tests review of the scoped area by the `product`, `ux` and `qa` specialists (the contract's `specialists` map, resolved by `wave-args`; default: senior-dev-team) after the three phases. |
 
 Changing any of these is a one-line edit to `MODELS` in the plugin's `${CLAUDE_PLUGIN_ROOT}/workflows/inspector.js` (a plugin change, through the plugin's own PR gate; its `tests/inspector.test.ts` pins this table against the script) — don't re-litigate the choice inline each time the skill runs; edit the script once if the decision changes.
 

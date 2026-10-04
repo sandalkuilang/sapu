@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1700" width="920" height="1700" role="img" aria-label="The sapu orchestrator: Step 0 scope-locks the run; Phase A drains every open PR; Phase B works each open issue as one Workflow call, several lanes in parallel, where a forge worker opens a PR in its own worktree, the qa specialist or a red Opus pair reviews it, and fix cycles (at most two; on red up to five, only while they converge) or a step-budget handoff follow; ready PRs go through a merge queue in sapu-merge.sh (gate, flake ledger, merge, mergeAfter); each session ends by rewriting the sapu-sweep-state memory page, plus a cleanup when the repo's policy says session; the last session runs the cleanup the policy sets, a final full gate and the final report. Workers never merge.">
+  <title>/sapu — the backlog orchestrator</title>
+  <desc>Step 0 runs the scope lock and reads the profile and policy. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through sapu-merge.sh; a PR closed as STALE, or blocked when its fix cycles run out (the same rule as a lane's), is not merged. Phase B triages open issues (SKIP, DUPLICATE, POLICY GAP, WORK) and runs each WORK issue as one Workflow call of sapu-wave.js, a lane: up to `lanes` in flight (1 to 4, computed from the machine), and a new lane starts as soon as one returns. In a lane a forge worker from the ladder implements the issue in its own worktree and opens a PR; the qa specialist reviews every tier at Opus/high, and a red issue, a red-area diff, an unrun red-area check or the worker's own red-area report brings in an adversarial Opus pair (qa plus a domain specialist). Findings get fix cycles, each with a delta re-review: at most two on green and yellow; on red up to five, but past the second only while each review reports fewer findings than the one before and no finding is reported by three reviews in a row, otherwise the lane is blocked with the reason; a judgment call escalates one step up the ladder once; a worker past 120 tool calls hands off to a fresh worker of the same tier, at most twice per step. Ready PRs enter the merge queue: one sapu-merge.sh run at a time, in the background, awaited by notification; it runs the gate, records every run in the flake ledger, merges and calls mergeAfter. A red gate is never merged and is re-run at most once; red again, the failing files run on origin/base, where red means a base flake with one flake issue, fixed at its source. The end-of-wave net runs the full suite on the base branch at the cadence the profile sets. When a session reaches its context limit, it rewrites the sapu-sweep-state memory page (one page, at most 40 lines, open items only), cleans up when the repo's policy.cleanup is session, and the owner starts a fresh session that resumes from that page. The last session, with no work and no open PR left, cleans up unless the policy is never, runs a final full gate and writes the final report. The policy is set once in /sapu:init. Cleanup runs sapu-cleanup.mjs, which prints its plan, then with --apply deletes only sapu's own branches proven merged and removes only their clean worktrees. The guard hook checks every subagent, never the orchestrator.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#0f1623;stroke:#263247;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#a5b4fc}
+    .h1{font-size:25px;font-weight:750;fill:#f1f5f9;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#9fb0c6}
+    .sec{font-size:15px;font-weight:700;fill:#f1f5f9}
+    .sec2{font-size:12.5px;fill:#9fb0c6}
+    .ttl{font-size:14px;font-weight:650;fill:#f1f5f9}
+    .t{font-size:13px;fill:#dbe3ee}
+    .tb{font-size:13px;font-weight:650;fill:#f1f5f9}
+    .cap{font-size:12px;fill:#9fb0c6}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#9fb0c6}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#f1f5f9} .muted{fill:#9fb0c6} .accent{fill:#a5b4fc} .tealt{fill:#5eead4}
+    .card{fill:#172133;stroke:#2e3c55;stroke-width:1}
+    .sunken{fill:#121a28;stroke:#253147;stroke-width:1}
+    .chip{fill:#121a28;stroke:#2e3c55;stroke-width:1}
+    .ar{stroke:#8796ad;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#22c55e;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#f59e0b;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#93c5fd;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#a78bfa;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#ef4444;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#8796ad} .m-g{stroke:#22c55e} .m-a{stroke:#f59e0b} .m-b{stroke:#93c5fd} .m-v{stroke:#a78bfa}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#9fb0c6} .ico-w{stroke:#ffffff}
+    .rule{stroke:#2e3c55;stroke-width:1}
+    .c-blue{fill:#93c5fd} .k-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1.25} .s-blue{stroke:#93c5fd} .f-blue{fill:#93c5fd} .tile-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1}
+    .c-green{fill:#4ade80} .k-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1.25} .s-green{stroke:#22c55e} .f-green{fill:#22c55e} .tile-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1}
+    .c-amber{fill:#fbbf24} .k-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1.25} .s-amber{stroke:#f59e0b} .f-amber{fill:#f59e0b} .tile-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1}
+    .c-red{fill:#fca5a5} .k-red{fill:#2a1216;stroke:#8f3434;stroke-width:1.25} .s-red{stroke:#ef4444} .f-red{fill:#ef4444} .tile-red{fill:#2a1216;stroke:#8f3434;stroke-width:1}
+    .c-violet{fill:#c4b5fd} .k-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1.25} .s-violet{stroke:#a78bfa} .f-violet{fill:#a78bfa} .tile-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.35"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.25"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1699" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1700" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">THE ORCHESTRATOR · /sapu</text>
+  <text x="32" y="78" class="h1">Sweep the backlog clean</text>
+  <text x="32" y="102" class="sub">PRs first (Phase A), then issues in parallel lanes (Phase B). Only the orchestrator merges.</text>
+  <path d="M32,140 L58,140" class="ar" marker-end="url(#mn)"/>
+  <text x="66" y="144" class="cap">flow</text>
+  <path d="M109.6,140 L135.6,140" class="ar-a" marker-end="url(#ma)"/>
+  <text x="143.6" y="144" class="cap">fix / retry loop</text>
+  <path d="M249.6,140 L275.6,140" class="ar-g" marker-end="url(#mg)"/>
+  <text x="283.6" y="144" class="cap">produces</text>
+  <rect x="353.6" y="133" width="22" height="14" rx="4" class="k-red"/>
+  <text x="383.6" y="144" class="cap">hard limit</text>
+  <rect x="456" y="129" width="63" height="22" rx="11" class="k-green"/>
+  <circle cx="468" cy="140" r="4" class="f-green"/>
+  <text x="477" y="144" class="chipt c-green">green</text>
+  <rect x="525" y="129" width="63" height="22" rx="11" class="k-amber"/>
+  <circle cx="537" cy="140" r="4" class="f-amber"/>
+  <text x="546" y="144" class="chipt c-amber">yellow</text>
+  <rect x="594" y="129" width="50" height="22" rx="11" class="k-red"/>
+  <circle cx="606" cy="140" r="4" class="f-red"/>
+  <text x="615" y="144" class="chipt c-red">red</text>
+  <text x="652" y="144" class="cap">risk tier</text>
+  <line x1="46" y1="196" x2="46" y2="1404" class="rule" stroke-dasharray="2 5"/>
+  <circle cx="46" cy="191" r="14" fill="url(#brand)"/>
+  <text x="46" y="195.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">0</text>
+  <text x="80" y="196"><tspan class="sec">Step 0 · Scope lock</tspan></text>
+  <rect x="80" y="212" width="808" height="52" rx="12" class="k-blue" />
+  <rect x="92" y="221" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(98.375,227.375) scale(0.8854166666666667)"><path d="M7 11V8a5 5 0 0 1 10 0v3 M5.5 11h13v9.5h-13z M12 15v2.5" class="ico s-blue"/></g>
+  <text x="138" y="243" class="t"><tspan class="mono">sapu-contract.mjs check</tspan>  ·  gh account · git email · origin · allowed roots  ·  then read profile + policy</text>
+  <circle cx="46" cy="295" r="14" fill="url(#brand)"/>
+  <text x="46" y="299.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">A</text>
+  <text x="80" y="300"><tspan class="sec">Phase A · Drain every open PR</tspan><tspan class="sec2" dx="12">one session</tspan></text>
+  <rect x="80" y="352" width="112" height="74" rx="12" class="card" filter="url(#sh)"/>
+  <text x="136" y="379" class="tb" text-anchor="middle">inventory</text>
+  <text x="136" y="399" class="cap" text-anchor="middle">open PRs</text>
+  <rect x="220" y="352" width="176" height="74" rx="12" class="card" filter="url(#sh)"/>
+  <text x="308" y="379" class="tb" text-anchor="middle">classify each PR</text>
+  <text x="308" y="399" class="cap" text-anchor="middle">READY · NEEDS-FIX · STALE</text>
+  <text x="308" y="416" class="cap" text-anchor="middle">DRAFT · NEEDS-AI</text>
+  <rect x="424" y="352" width="150" height="74" rx="12" class="card" filter="url(#sh)"/>
+  <text x="499" y="379" class="tb" text-anchor="middle">review by tier</text>
+  <text x="499" y="399" class="cap" text-anchor="middle">author ≠ reviewer</text>
+  <rect x="602" y="352" width="146" height="74" rx="12" class="k-red" />
+  <text x="675" y="379" class="tb" text-anchor="middle">merge gate</text>
+  <text x="675" y="399" class="cap mono" text-anchor="middle">sapu-merge.sh</text>
+  <rect x="776" y="352" width="112" height="74" rx="12" class="k-green" />
+  <text x="832" y="379" class="tb" text-anchor="middle">merged</text>
+  <text x="832" y="399" class="cap" text-anchor="middle">to base</text>
+  <path d="M196,389 L216,389" class="ar" marker-end="url(#mn)"/>
+  <path d="M400,389 L420,389" class="ar" marker-end="url(#mn)"/>
+  <path d="M578,389 L598,389" class="ar" marker-end="url(#mn)"/>
+  <path d="M752,389 L772,389" class="ar-g" marker-end="url(#mg)"/>
+  <path d="M499,350 L499.0,343.0 Q499,336 492.0,336.0 L344.0,336.0 Q338,336 338.0,342.0 L338,348" class="ar-a" marker-end="url(#ma)"/>
+  <text x="509" y="340" class="cap c-amber">NEEDS-FIX → fix + re-verify, same cycle rule as a lane</text>
+  <path d="M260,428 L260.0,462.0 Q260,470 268.0,470.0 L520,470" class="ar" marker-end="url(#mn)"/>
+  <rect x="524" y="446" width="364" height="50" rx="12" class="sunken" />
+  <text x="540" y="467" class="cap"><tspan class="tb">not merged</tspan>  STALE: closed at classify</text>
+  <text x="540" y="485" class="cap">blocked (with the reason) when its fix cycles run out</text>
+  <text x="888" y="522" class="cap" text-anchor="end">then Phase B, in the same session while context is under 600k, else in a fresh one</text>
+  <circle cx="46" cy="555" r="14" fill="url(#brand)"/>
+  <text x="46" y="559.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">B</text>
+  <text x="80" y="560"><tspan class="sec">Phase B · Work open issues</tspan><tspan class="sec2" dx="12">one lane per issue</tspan></text>
+  <rect x="80" y="612" width="150" height="120" rx="12" class="card" filter="url(#sh)"/>
+  <text x="96" y="638" class="tb">inventory + triage</text>
+  <text x="96" y="660" class="cap">SKIP · DUPLICATE</text>
+<text x="96" y="679" class="cap">POLICY GAP</text>
+<text x="96" y="698" class="cap">WORK (tier + worker)</text>
+  <path d="M232,672 L250,672" class="ar" marker-end="url(#mn)"/>
+  <rect x="254" y="582" width="478" height="512" rx="16" class="k-violet" />
+  <text x="272" y="610" class="t"><tspan class="tb c-violet">Lane</tspan>  — one Workflow call per issue  <tspan class="mono">sapu-wave.js</tspan></text>
+  <text x="272" y="630" class="cap">own worktree · ≤ lanes in flight (1–4, per machine) · refilled as each returns</text>
+  <rect x="272" y="648" width="140" height="66" rx="12" class="card" filter="url(#sh)"/>
+  <text x="342" y="675" class="tb" text-anchor="middle">forge worker</text>
+  <text x="342" y="695" class="cap" text-anchor="middle">plan · TDD · open PR</text>
+  <path d="M416,681 L434,681" class="ar" marker-end="url(#mn)"/>
+  <rect x="438" y="648" width="140" height="66" rx="12" class="card" filter="url(#sh)"/>
+  <text x="508" y="675" class="tb" text-anchor="middle">review by tier</text>
+  <text x="508" y="695" class="cap" text-anchor="middle">never the author</text>
+  <path d="M582,681 L600,681" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="604" y="648" width="110" height="66" rx="12" class="k-green" />
+  <text x="659" y="675" class="tb" text-anchor="middle">ready PR</text>
+  <text x="659" y="695" class="cap" text-anchor="middle">not merged here</text>
+  <path d="M508,716 L508.0,724.0 Q508,732 500.0,732.0 L349.0,732.0 Q342,732 342.0,725.0 L342,718" class="ar-a" marker-end="url(#ma)"/>
+  <text x="518" y="736" class="cap c-amber">findings → fix + delta re-review</text>
+  <text x="272" y="762" class="lbl">FIX CYCLES</text>
+  <rect x="272" y="774" width="63" height="22" rx="11" class="k-green"/>
+  <circle cx="284" cy="785" r="4" class="f-green"/>
+  <text x="293" y="789" class="chipt c-green">green</text>
+  <rect x="341" y="774" width="63" height="22" rx="11" class="k-amber"/>
+  <circle cx="353" cy="785" r="4" class="f-amber"/>
+  <text x="362" y="789" class="chipt c-amber">yellow</text>
+  <text x="416" y="789" class="t"><tspan class="tb">at most 2</tspan> fix cycles</text>
+  <rect x="272" y="804" width="50" height="22" rx="11" class="k-red"/>
+  <circle cx="284" cy="815" r="4" class="f-red"/>
+  <text x="293" y="819" class="chipt c-red">red</text>
+  <text x="334" y="819" class="t"><tspan class="tb">up to 5</tspan>, but past the 2nd only while the work converges:</text>
+  <text x="272" y="846" class="cap">each review reports fewer findings than the one before, and no</text>
+<text x="272" y="865" class="cap">finding is reported by three reviews in a row; else blocked (reason)</text>
+<text x="272" y="884" class="cap"><tspan class="tb">ESCALATE</tspan> → one step up the ladder, once; then blocked</text>
+<text x="272" y="903" class="cap">past <tspan class="tb">120 tool calls</tspan> → handoff: WIP commit, then a fresh worker</text>
+<text x="272" y="922" class="cap">of the same tier continues from its note (≤ 2 handoffs per step)</text>
+  <line x1="272" y1="949" x2="714" y2="949" class="rule"/>
+  <text x="272" y="969" class="lbl">REVIEWER · NEVER THE AUTHOR, NEVER A LADDER WORKER</text>
+  <rect x="272" y="981" width="63" height="22" rx="11" class="k-green"/>
+  <circle cx="284" cy="992" r="4" class="f-green"/>
+  <text x="293" y="996" class="chipt c-green">green</text>
+  <rect x="341" y="981" width="63" height="22" rx="11" class="k-amber"/>
+  <circle cx="353" cy="992" r="4" class="f-amber"/>
+  <text x="362" y="996" class="chipt c-amber">yellow</text>
+  <text x="416" y="996" class="t">→ the <tspan class="tb">qa specialist</tspan> at Opus/high</text>
+  <rect x="272" y="1011" width="50" height="22" rx="11" class="k-red"/>
+  <circle cx="284" cy="1022" r="4" class="f-red"/>
+  <text x="293" y="1026" class="chipt c-red">red</text>
+  <text x="334" y="1026" class="t">→ an adversarial <tspan class="tb">Opus pair</tspan>: qa + a domain specialist</text>
+  <text x="272" y="1055" class="cap">also raised to the pair: a red-area diff · an unrun check · the worker's red areas</text>
+<text x="272" y="1074" class="cap">worker by difficulty: <tspan class="mono">sonnet-medium</tspan> … <tspan class="mono">opus-high</tspan> (red ≥ <tspan class="mono">sonnet-high</tspan>)</text>
+  <path d="M716,681 L752,681" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="756" y="612" width="132" height="250" rx="14" class="k-red" />
+  <rect x="770" y="626" width="32" height="32" rx="9" class="tile-red"/>
+  <g transform="translate(776,632) scale(0.8333333333333334)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z M8.8 12.2l2.3 2.3 4.3-4.6" class="ico s-red"/></g>
+  <text x="770" y="684" class="tb">merge queue</text>
+  <text x="770" y="704" class="cap">one at a time,</text>
+<text x="770" y="721" class="cap">background,</text>
+<text x="770" y="738" class="cap">no polling</text>
+  <text x="770" y="768" class="cap mono c-red">sapu-merge.sh</text>
+  <text x="770" y="788" class="cap">· gate</text>
+<text x="770" y="805" class="cap">· flake ledger</text>
+<text x="770" y="822" class="cap">· merge</text>
+<text x="770" y="839" class="cap">· mergeAfter</text>
+  <path d="M822,864 L822,896" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="756" y="900" width="132" height="62" rx="12" class="k-green" />
+  <text x="822" y="927" class="tb" text-anchor="middle">merged</text>
+  <text x="822" y="947" class="cap" text-anchor="middle">to base</text>
+  <rect x="80" y="1116" width="808" height="92" rx="14" class="k-red" />
+  <rect x="94" y="1132" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(100.375,1138.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="142" y="1146" class="t"><tspan class="tb c-red">Gate red = no merge</tspan>  ·  at most one re-run per PR  ·  every run goes to the flake ledger <tspan class="mono">.git/sapu-gates.log</tspan></text>
+  <text x="142" y="1168" class="cap">red again → the failing test files on <tspan class="mono">origin/&lt;base&gt;</tspan>: red there too = a base flake → one "flake: &lt;file&gt;" issue, fixed at its source</text>
+<text x="142" y="1187" class="cap">end-of-wave net: full suite on <tspan class="mono">origin/&lt;base&gt;</tspan> every 4th merge + when the queue drains (profile: other cadence, or none)</text>
+  <circle cx="46" cy="1257" r="14" fill="url(#brand)"/>
+  <text x="46" y="1261.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">↻</text>
+  <text x="80" y="1262"><tspan class="sec">End of each session</tspan><tspan class="sec2" dx="12">context past 750k (600k when Phase A ends)</tspan></text>
+  <rect x="80" y="1282" width="184" height="92" rx="12" class="card" filter="url(#sh)"/>
+  <text x="172" y="1309" class="tb" text-anchor="middle">session limit reached</text>
+  <text x="172" y="1329" class="cap" text-anchor="middle">checked between waves,</text>
+  <text x="172" y="1346" class="cap" text-anchor="middle">never inside a lane</text>
+  <path d="M268,1328 L284,1328" class="ar" marker-end="url(#mn)"/>
+  <rect x="288" y="1282" width="184" height="92" rx="12" class="card" filter="url(#sh)"/>
+  <text x="380" y="1309" class="tb" text-anchor="middle">rewrite the state page</text>
+  <text x="380" y="1329" class="cap mono" text-anchor="middle">sapu-sweep-state</text>
+  <text x="380" y="1346" class="cap" text-anchor="middle">one memory page, ≤ 40 lines,</text>
+  <text x="380" y="1363" class="cap" text-anchor="middle">open items only</text>
+  <path d="M476,1328 L492,1328" class="ar" marker-end="url(#mn)"/>
+  <rect x="496" y="1282" width="184" height="92" rx="12" class="card" filter="url(#sh)"/>
+  <text x="588" y="1309" class="tb" text-anchor="middle">cleanup</text>
+  <text x="588" y="1329" class="cap" text-anchor="middle">only if policy = session:</text>
+  <text x="588" y="1346" class="cap" text-anchor="middle">plan, then --apply</text>
+  <text x="588" y="1363" class="cap" text-anchor="middle">(default: only at Finish)</text>
+  <path d="M684,1328 L700,1328" class="ar" marker-end="url(#mn)"/>
+  <rect x="704" y="1282" width="184" height="92" rx="12" class="k-green" />
+  <text x="796" y="1309" class="tb" text-anchor="middle">a fresh /sapu</text>
+  <text x="796" y="1329" class="cap" text-anchor="middle">started by the owner: new</text>
+  <text x="796" y="1346" class="cap" text-anchor="middle">PRs first, then issues,</text>
+  <text x="796" y="1363" class="cap" text-anchor="middle">resuming from the page</text>
+  <circle cx="46" cy="1409" r="14" fill="url(#brand)"/>
+  <text x="46" y="1413.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">✓</text>
+  <text x="80" y="1414"><tspan class="sec">Finish · the last session</tspan></text>
+  <rect x="80" y="1434" width="184" height="74" rx="12" class="card" filter="url(#sh)"/>
+  <text x="172" y="1461" class="tb" text-anchor="middle">nothing left to work</text>
+  <text x="172" y="1481" class="cap" text-anchor="middle">no WORK, no open PR;</text>
+  <text x="172" y="1498" class="cap" text-anchor="middle">only SKIP / BLOCKED</text>
+  <path d="M268,1471 L284,1471" class="ar" marker-end="url(#mn)"/>
+  <rect x="288" y="1434" width="184" height="74" rx="12" class="card" filter="url(#sh)"/>
+  <text x="380" y="1461" class="tb" text-anchor="middle">cleanup per policy</text>
+  <text x="380" y="1481" class="cap" text-anchor="middle">finish (default) · never: skip</text>
+  <path d="M476,1471 L492,1471" class="ar" marker-end="url(#mn)"/>
+  <rect x="496" y="1434" width="184" height="74" rx="12" class="k-red" />
+  <text x="588" y="1461" class="tb" text-anchor="middle">final full gate</text>
+  <text x="588" y="1481" class="cap mono" text-anchor="middle">on origin/&lt;base&gt;</text>
+  <path d="M684,1471 L700,1471" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="704" y="1434" width="184" height="74" rx="12" class="k-green" />
+  <text x="796" y="1461" class="tb" text-anchor="middle">final report</text>
+  <text x="796" y="1481" class="cap" text-anchor="middle">PR + issue tables, metrics</text>
+  <text x="80" y="1536" class="cap">Cleanup = <tspan class="mono">sapu-cleanup.mjs</tspan> (plan, then <tspan class="mono">--apply</tspan>) when <tspan class="mono">policy.cleanup</tspan>, set once in /sapu:init, says so: only sapu's own branches</text>
+<text x="80" y="1555" class="cap">(<tspan class="mono">&lt;type&gt;/issue-&lt;N&gt;-…</tspan>, <tspan class="mono">worktree-wf_*</tspan>, <tspan class="mono">worktree-agent-*</tspan>, <tspan class="mono">sapu-*</tspan>) proven merged; worktrees only when clean, never --force.</text>
+  <rect x="32" y="1590" width="856" height="86" rx="14" class="k-red" />
+  <rect x="48" y="1606" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(54.375,1612.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-red"/></g>
+  <text x="96" y="1620" class="t"><tspan class="tb c-red">Guard hook</tspan>  checks every subagent's shell, file, search and MCP tool calls — never the orchestrator's.</text>
+  <text x="96" y="1641" class="cap">Workers never merge or touch the main checkout, the repo's protected DBs (contract guard), or real env files.</text>
+  <text x="96" y="1660" class="cap">Past 120 tool calls it reminds a worker to hand off. It stops honest mistakes; it is not a sandbox.</text>
+</svg>
