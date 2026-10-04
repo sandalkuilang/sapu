@@ -39,8 +39,10 @@ Each agent follows the dispatching prompt's rules over its own: it stays read-on
 
 ## Memory
 
-Every agent uses project-scoped memory, stored in `.claude/agent-memory/<agent-name>/` in the project. Decisions, conventions, and defect patterns learned in one repository stay in that repository. Agents never store secrets.
+Every agent uses project-scoped memory, stored in `.claude/agent-memory/senior-dev-team-<agent-name>/` in the project (the plugin name is part of the folder). Decisions, conventions, and defect patterns learned in one repository stay in that repository. Agents never store secrets.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+**Coming from the same agents installed by hand** (as user-level or project-level agent files)? Their memory lives in `.claude/agent-memory/<agent-name>/`; move each folder to `.claude/agent-memory/senior-dev-team-<agent-name>/` in every project, then remove the hand-installed copies so only the plugin's agents remain.
