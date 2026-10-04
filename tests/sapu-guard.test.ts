@@ -1276,6 +1276,13 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     expect(atReminder("redirect", "git log --oneline 2>&1")).toBeNull();
   });
 
+  it("a reminder whose record cannot be written never repeats: the call passes", () => {
+    const m = fresh();
+    calls(m, "u1", STEP_SOFT - 1);
+    mkdirSync(join(m, ".git/sapu-steps/u1.r"));
+    for (let i = 0; i < 5; i++) expect(budget({ main: m, agentId: "u1", tool: "Bash", command: "npm test" })).toBeNull();
+  });
+
   it("a reminder that fell on a handoff command is postponed to the next other call, not skipped", () => {
     const m = fresh();
     calls(m, "p1", STEP_SOFT - 1);

@@ -1367,7 +1367,9 @@ export function stepBudget({ main, agentId, tool, command }) {
   if (dueSlots <= given || (tool === "Bash" && isHandoff(command))) return null;
   try {
     fs.writeFileSync(`${file}.r`, String(dueSlots));
-  } catch {}
+  } catch {
+    return null; // a reminder that cannot be recorded would repeat on every call: let it through
+  }
   return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
 }
 
