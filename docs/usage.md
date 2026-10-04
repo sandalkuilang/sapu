@@ -49,7 +49,7 @@ A repo without tests can only use `/dream`.
 
 | To do what | Type | What happens |
 |---|---|---|
-| Clean up every open PR and issue | `/sapu` | **Phase A:** every open PR is reviewed, fixed, or closed. **Phase B:** issues are worked in waves (at most 4 issues per wave). Every PR is reviewed by an agent that is not its author, and a merge happens only after a green gate. Every issue ends *merged*, *skipped* (with a reason), or *blocked* (with a reason). |
+| Clean up every open PR and issue | `/sapu` | **Phase A:** every open PR is reviewed, fixed, or closed. **Phase B:** each issue is one Workflow call, up to `lanes` in flight (from the machine's cores and memory). Every PR is reviewed by an agent that is not its author, and a merge happens only after a green gate. Every issue ends *merged*, *skipped* (with a reason), or *blocked* (with a reason). |
 | Work one issue through to a PR | `/forge 123` | Creates a branch, implements + tests, then opens a PR. This skill never merges on its own. |
 | Hunt bugs, fraud gaps and UI defects in the running dev app | `/argus` | Needs the dev app running and `.argus/config.yml`. Findings are filed as deduplicated issues. |
 | Release-readiness audit | `/momus` | Produces a report per area. Issues are filed only when you ask for it. |
@@ -62,12 +62,22 @@ Without the aliases, the full names are `/sapu:sapu`, `/sapu:forge`, and so on. 
 `/sapu` tips:
 - Run it in a **new session**, and only one sapu session per repo at a time.
 - To skip certain PRs: `/sapu skip PR #<number>`.
-- A session stops by itself when its context passes about 750k tokens. Its summary is written to project memory, then you are asked to start a new session with `/sapu`, which continues from that summary.
+- A session ends between waves once its context passes about 750k tokens (600k at the end of Phase A). Its summary is written to project memory, then you are asked to start a new session with `/sapu`, which continues from that summary.
 - The final report holds the PR and issue tables, the decisions taken with their sources, and the metrics per session: tokens and their cost in dollars at API prices (a weight for quota use on a subscription), per merged PR.
+
+Requirements and limits (any repo, any stack, but these hold):
+- **Host:** Node ≥ 22.18, bash, git, jq and an authenticated `gh` on macOS or Linux (POSIX paths); a Claude Code version with the Workflow tool and `agent_type`/`agent_id` in hook input (without the Workflow tool, sapu falls back to the Agent tool).
+- **GitHub.com only**, and `origin` must be the repository itself (not a fork, not a GitHub Enterprise host, not an SSH host alias).
+- **Merges are squash merges** (`gh pr merge --squash`); a repo that disables squash merging cannot use sapu's merge yet.
+- **Context limits** (750k per session, 600k after Phase A) assume a model with a window of about 1M tokens; on a smaller window, compaction comes first.
+- **The flake ledger reads vitest/jest and pytest output.** Other runners still record every gate run, but their failures get no file names and so never a `known-flake` verdict (the safe side).
+- **Machine-tuned defaults:** the merge gate's `--workers 8` (4 beside a lane running tests) and the worker step budget (120 tool calls) are defaults measured on a 10-core machine.
+- **The engine's database floor knows Postgres** (`guard.postgres`); for other databases, add `guard.deny` rules in the contract.
+- **argus, momus and nemesis** are written for a web application with users and data; on a library or CLI repo, use `/sapu` and `/forge` only.
 
 What is enforced, and by what:
 - **The merge script** (`sapu-merge.sh`, the only way sapu merges) gates or merges only a PR that `sapu-contract.mjs pr-trust` passes (see "Public repositories"), only after a green gate, pinned to the gated commit. Each merge it makes is recorded in `.git/sapu-merges.log` of the main checkout, which the session metrics count merged PRs from, and every gate run, red ones too, in `.git/sapu-gates.log`: a red run names its failing test files and a flake verdict (`known-flake` when each of them is proven flaky: red, then green on the same tree, in another PR).
-- **The guard hook** refuses a worker or reviewer agent's direct push or force-push to the main branch, a merge, the common ways to bring a PR's or a fork's code into a worktree (`gh pr checkout`, fetching PR refs, applying a PR's diff, cloning), any change to the acceptance label, touching the dev database or `.env` files, and writing into the main checkout — the exact list, and what it does not trace, is in [`CONTRACT.md`](plugins/sapu/CONTRACT.md) §Engine floor. It reads commands, not intent: built for honest mistakes, it is not a sandbox against an agent set on getting around it. And it guards **subagents only**: a skill you start yourself (`/sapu`, `/forge`, `/argus`, `/momus`, `/nemesis`) runs at the top level, unguarded, with your gh token — there only the skills' own rules hold.
+- **The guard hook** refuses a worker or reviewer agent's direct push or force-push to the main branch, a merge, the common ways to bring a PR's or a fork's code into a worktree (`gh pr checkout`, fetching PR refs, applying a PR's diff, cloning), any change to the acceptance label, touching the dev database or `.env` files, and writing into the main checkout, also through `Monitor`, `PowerShell` or an MCP tool (context-mode's `ctx_*`, a terminal, filesystem or GitHub server: judged by the tool's name and fields); it also reminds a worker at 120 tool calls to hand off to a fresh one — the exact list, and what it does not trace, is in [`CONTRACT.md`](plugins/sapu/CONTRACT.md) §Engine floor. It reads commands, not intent: built for honest mistakes, it is not a sandbox against an agent set on getting around it. And it guards **subagents only**: a skill you start yourself (`/sapu`, `/forge`, `/argus`, `/momus`, `/nemesis`) runs at the top level, unguarded, with your gh token — there only the skills' own rules hold.
 - **The scope lock** (`sapu-contract.mjs check`) refuses to run in a checkout outside the roots the machine config allows, or with the wrong account.
 - Everything else in the skills — what to read, what counts as instructions — is a rule for the agents, not a lock.
 
@@ -111,5 +121,5 @@ Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `
 | `issue #… untrusted: …` | The issue's author is outside the trusted set, and no trusted account applied the acceptance label (or it was removed, or an outsider edited the text since). Read it; to let sapu work it, apply `sapu:accepted` (or the contract's `labels.accepted`). |
 | `trustedAuthors: "…" now resolves to …` | A trusted login was renamed, deleted, or taken by another account. Find out who that account is now, then fix or remove the entry. |
 | A merge exits with code 3 | The PR is already merged, but the repo's own cleanup (`mergeAfter`) failed. Read its message and fix it before the next merge. |
-| A merge exits with code 75 / "gate setup failed" | The infrastructure is not ready (for example, the DB container is down). This is not a PR defect: get the infrastructure ready, then try again. |
+| A merge says "gate setup failed" (the gate exited 75; the script exits 1) | The infrastructure is not ready (for example, the DB container is down). This is not a PR defect: get the infrastructure ready, then try again. |
 

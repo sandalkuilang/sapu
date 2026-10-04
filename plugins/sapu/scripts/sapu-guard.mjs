@@ -1317,7 +1317,7 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
 // A handoff command is never the call a reminder refuses. Counted per agent id in
 // <MAIN>/.git/sapu-steps/ (one byte appended per call, so the file size is the count; parallel calls
 // may shift a reminder by one, which is harmless); ladder workers only, and only calls the guard's
-// own rules let through. ponytail: hooked tools only (Bash, file and search tools), not WebFetch or
+// own rules let through. ponytail: hooked tools only (Bash, Monitor, PowerShell, file, search and MCP tools), not WebFetch or
 // Agent calls; an unwritable counter switches the budget off rather than block work.
 export const STEP_SOFT = 120;
 export const STEP_EVERY = 15;
@@ -1325,9 +1325,9 @@ export const STEP_HARD = 170;
 export const STEP_EVERY_LATE = 5;
 const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
 // A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
-// echo without substitution, a teardown script. Quoted text is dropped before splitting, so a `;` in
+// echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
 // a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
-const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|\S+\s+teardown(\s.*)?|\S*teardown\S*(\s.*)?)$/;
+const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
 const isHandoff = (command) => {
   // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
   if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
@@ -1364,13 +1364,151 @@ export function stepBudget({ main, agentId, tool, command }) {
   try {
     given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
   } catch {}
-  if (dueSlots <= given || (tool === "Bash" && isHandoff(command))) return null;
+  if (dueSlots <= given || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
   try {
     fs.writeFileSync(`${file}.r`, String(dueSlots));
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
   return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
+}
+
+// context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
+// tells subagents to prefer them, so an honest worker would bypass every rule above. Each call is
+// checked as the Bash/Read calls it amounts to: batch commands (in every shape context-mode coerces),
+// shell code, paths, and in other languages the command a spawn call runs — a string, a list of
+// literal strings, or literals joined by `+`. They are judged where they run (see decide()). ponytail: an interpreter's own code beyond that (built strings, ruby backticks,
+// other languages' process APIs) is the LIMITS case above, as with `node -e`.
+const CTX_TOOL = /__ctx_(execute|execute_file|batch_execute|index)$/;
+const LIT = String.raw`[fr]?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\`(?:\\.|[^\`\\])*\`)`;
+// Unambiguous process APIs anywhere; generic names (exec, run, call, system, popen) on a process module
+// or `require("child_process")`, or bare when the code imports child_process/subprocess/os — so
+// `db.exec("… > 2")`, a regex `.exec`, `suite.run(` or python's builtin `exec("…")` are not commands.
+const SPAWN_ANY = String.raw`\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open)`;
+const SPAWN_GENERIC = String.raw`(?:exec|run|call|system|popen)`;
+const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*)`;
+const IMPORTS_PROCESS = /child_process|\bsubprocess\b|\bimport\s+os\b|\bfrom\s+os\s+import\b/;
+const spawnCall = (bare) => new RegExp(String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""})\s*\(\s*(\[[^\]]*\]|${LIT}(?:\s*,\s*\[[^\]]*\])?)`, "g");
+const unquote = (l) => l.replace(/^[fr]?(["'`])([\s\S]*)\1$/, "$2");
+const literals = (t) => (t.match(new RegExp(LIT, "g")) || []).map(unquote);
+
+/** context-mode's `commands`, as its coerceCommandsArray reads them: a JSON string, a bare string, strings or {command}. */
+function ctxCommands(v) {
+  if (typeof v === "string") {
+    try {
+      const j = JSON.parse(v);
+      v = Array.isArray(j) ? j : [v];
+    } catch {
+      v = [v];
+    }
+  }
+  return Array.isArray(v) ? v.map((c) => (typeof c === "string" ? c : c && c.command)) : [];
+}
+
+/** The Bash/Read calls a context-mode MCP call amounts to, or null for any other tool. */
+export function ctxCalls(tool, ti) {
+  const m = CTX_TOOL.exec(tool || "");
+  if (!m) return null;
+  const out = [];
+  if (m[1] === "batch_execute") for (const c of ctxCommands(ti.commands)) out.push({ command: c });
+  if (typeof ti.path === "string" && ti.path) out.push({ filePath: ti.path });
+  if (typeof ti.code === "string") {
+    if (/^(shell|bash|sh|zsh)$/i.test(ti.language || "")) out.push({ command: ti.code });
+    else {
+      let code = ti.code;
+      const concat = new RegExp(String.raw`(${LIT})\s*\+\s*(${LIT})`); // "git push " + 'origin main'
+      for (let i = 0; i < 50 && concat.test(code); i++) code = code.replace(concat, (_, a, b) => JSON.stringify(unquote(a) + unquote(b)));
+      for (const s of code.matchAll(spawnCall(IMPORTS_PROCESS.test(code)))) out.push({ command: literals(s[1]).join(" ") });
+    }
+  }
+  return out;
+}
+
+// Every other MCP server (terminal, filesystem, git, GitHub, …) and the Monitor/PowerShell tools can
+// do what Bash and the file tools do, and agents without a `tools:` allowlist (general-purpose, a
+// repo's specialists, agents a worker spawns) inherit them all. They are judged generically, by the
+// tool's verbs (the words of its name after the server) and its fields: a merge verb, a write naming
+// the base branch or the acceptance label, a command field (as Bash, where the server runs it: a
+// cwd-like field, else the session's root = the main checkout) and local paths (absolute, or relative
+// for a filesystem/shell-like server) as reads or writes. ponytail: field names are heuristics; an
+// effect hidden in a server's own config (its DB connection, a browser click) is a LIMIT.
+const READ_VERB = /^(get|list|search|read|view|fetch|find|query|describe|show|status|check|checks|diff|log|count|stat|head|info|inspect)$/;
+const WRITE_VERB = /^(write|edit|create|update|put|push|commit|move|rename|delete|remove|rm|mkdir|patch|save|copy|append|set|add|apply|replace|upload|insert|close|reopen|label|labels|enable|run|exec|execute|checkout|reset|stash|rebase|send|interact|type)$/;
+const CMD_FIELD = /^(command|cmd|script|shell|shell_command|args|argv)$/i;
+// typed into a terminal or process (desktop-commander input, tmux keys, iTerm text): only on a shell-like server
+const TYPED_FIELD = /^(input|keys|text|chars)$/i;
+const CWD_FIELD = /^(cwd|workdir|working_?dir(ectory)?|dir|directory|repo_?path)$/i;
+const PATH_FIELD = /^(path|paths|file_?path|filename|file|source|destination|dest|from|to|target|old_?path|new_?path|relative_?path|path_?in_?project)$/i;
+const BRANCH_FIELD = /^(branch|base|target_?branch|branch_?name)$/i; // not `ref`/`head`: often the source
+const REMOTE_FIELD = /^(owner|repo|repository|url|uri|bucket|page_?id|database_?id|project_?id)$/i;
+const LOCAL_SERVER = /filesystem|\bfs\b|shell|terminal|desktop|commander|local|files|tmux|iterm|serena|jetbrains/i;
+const GIT_SERVER = /(^|[^a-z])git([^a-z]|$)/i; // a local git server (mcp-server-git), not github/gitlab
+const GQL_MERGE = /\b(mergePullRequest|enablePullRequestAutoMerge)\b/;
+const GQL_LABEL = /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/;
+
+/** The string fields of a tool input, deep: [key, value]; a command field given as a list is one command. */
+function fieldsOf(v, key = "", out = []) {
+  if (typeof v === "string") out.push([key, v]);
+  else if (Array.isArray(v)) {
+    if (CMD_FIELD.test(key) && v.every((x) => typeof x === "string")) out.push([key, v.join(" ")]);
+    else for (const x of v) fieldsOf(x, key, out);
+  } else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) fieldsOf(x, k, out);
+  return out;
+}
+
+/** The reason to refuse an MCP (non-context-mode), Monitor or PowerShell call, or null. */
+export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker = true }) {
+  if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker }) : null;
+  const server = tool.slice(5, Math.max(5, tool.lastIndexOf("__")));
+  const words = tool.slice(tool.lastIndexOf("__") + 2).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_\-.]+/).filter(Boolean);
+  const writes = words.some((w) => WRITE_VERB.test(w)); // a write verb wins over a read verb (get_or_create, search_and_replace)
+  const f = fieldsOf(ti);
+  // merges: merge_pull_request, accept_merge_request, set_auto_merge; not update/approve/list_merge_request(s)
+  if ((words[0] === "merge" || (words.includes("merge") && words.some((w) => /^(accept|auto)$/.test(w))) || words.includes("automerge")) && !words.some((w) => /^(get|list|status|check)$/.test(w))) return BLOCK.merge;
+  // GraphQL mutations only in a graphql tool's query: a search or a file may name them
+  if (words.some((w) => /^(graphql|gql)$/.test(w))) {
+    const q = f.filter(([k]) => /^(query|mutation|body)$/i.test(k)).map(([, x]) => x);
+    if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
+    if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+  }
+  if (writes) {
+    const bases = new Set([rules.base, "main", "master"].filter(Boolean));
+    // a pull/merge request names the base it targets without moving it
+    const targetsBase = words.some((w) => /^(pull|pr|request)$/.test(w));
+    if (!targetsBase && f.some(([k, x]) => BRANCH_FIELD.test(k) && bases.has(x.replace(/^refs\/heads\//, "").trim()))) return BLOCK.pushBase(rules.base);
+    // only a label field, or any field of a label tool: a file's content may contain the word
+    const labelTool = words.some((w) => /^labels?$/.test(w));
+    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.acceptLabel))) return BLOCK.acceptLabel;
+  }
+  const cwdF = f.find(([k]) => CWD_FIELD.test(k));
+  const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;
+  // a local git server's tool is the git command it names (git_commit {repo_path} = `git commit` there)
+  const gitVerb = GIT_SERVER.test(server) && words.find((w) => /^(commit|add|checkout|reset|stash|push|merge|rebase|pull|fetch|clean)$/.test(w));
+  if (gitVerb) {
+    const branch = f.find(([k]) => /^(branch|branch_?name|target)$/i.test(k));
+    const on = (v) => v === true || v === "true";
+    const flags = Object.entries(ti).flatMap(([k, v]) => (/^force_?with_?lease$/i.test(k) && on(v) ? ["--force-with-lease"] : /^force$/i.test(k) && on(v) ? ["--force"] : /^(options|flags|extra_?args)$/i.test(k) && Array.isArray(v) ? v.filter((x) => typeof x === "string") : []));
+    const force = flags.length ? ` ${flags.join(" ")}` : "";
+    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
+    if (reason) return reason;
+  }
+  // typed text is a command only on a shell-like server's terminal/process tool (not a chat message or a browser field)
+  const typed = LOCAL_SERVER.test(server) && words.some((w) => /^(terminal|process|keys|interact|send|write|input|run|exec|execute)$/.test(w));
+  for (const [k, x] of f) {
+    if (!(CMD_FIELD.test(k) || (typed && TYPED_FIELD.test(k))) || !x.trim()) continue;
+    const reason = check({ command: x, cwd, main, rules, worker });
+    if (reason) return reason;
+  }
+  if (f.some(([k]) => REMOTE_FIELD.test(k))) return null; // paths of a remote (a repo, a bucket, a page), not of this disk
+  for (const [k, x] of f) {
+    if (!PATH_FIELD.test(k) || !x) continue;
+    const home = x === "~" || x.startsWith("~/");
+    if (!home && !path.isAbsolute(x) && !cwdF && !LOCAL_SERVER.test(server)) continue;
+    const filePath = home ? path.join(process.env.HOME || "/", x.slice(1)) : path.resolve(cwd, x);
+    const reason = checkFile({ tool: writes ? "Write" : "Read", filePath, cwd, main, rules, worker });
+    if (reason) return reason;
+  }
+  return null;
 }
 
 /**
@@ -1380,16 +1518,31 @@ export function stepBudget({ main, agentId, tool, command }) {
 export function decide(input) {
   if (!input || !(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
-  if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool)) return null;
-  const cwd = input.cwd || process.cwd();
   const ti = input.tool_input || {};
-  const main = findMain(cwd);
+  const ctx = ctxCalls(tool, ti);
+  const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
+  if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
+  const here = input.cwd || process.cwd();
+  // The agent's own location decides the checkout and its rules; a ctx call's own cwd only moves where it is judged.
+  const main = findMain(here);
+  // Measured (context-mode 1.0.169): its hook gives shell ctx_execute and ctx_batch_execute the agent's
+  // cwd; another language's ctx_execute and ctx_execute_file run in the project root, the main checkout.
+  const ctxHere = /__ctx_batch_execute$/.test(tool) || (/__ctx_execute$/.test(tool) && /^(shell|bash|sh|zsh)$/i.test(ti.language || ""));
+  const cwd = !ctx ? here : typeof ti.cwd === "string" && ti.cwd && /execute$/.test(tool) ? path.resolve(here, ti.cwd) : ctxHere ? here : main || here;
   const { contract, error, missing } = loadContract(main);
   const rules = contract ? compileRules(contract) : ENGINE_ONLY;
   // Two tiers: a sapu worker keeps the whole floor; any other subagent (reviewers, specialists,
   // argus/momus/nemesis) may also file issues and write its state into <MAIN>.
   const worker = SAPU_AGENT.test(input.agent_type || "");
-  if (tool === "Bash") {
+  if (ctx) {
+    for (const c of ctx) {
+      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker }) : null;
+      if (reason) return `${reason} (inside ${tool.replace(/^.*__/, "")}, checked like Bash/Read)`;
+    }
+  } else if (other) {
+    const reason = checkOther({ tool, ti, here, main, rules, worker });
+    if (reason) return `${reason} (${tool}, judged by its name and fields like Bash/Read/Write)`;
+  } else if (tool === "Bash") {
     const reason = check({ command: ti.command, cwd, main, rules, worker });
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;
   } else {

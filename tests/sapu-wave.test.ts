@@ -381,6 +381,10 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(calls[1].prompt).toContain("git reset --hard sha-wip");
     expect(calls[1].prompt).toContain("left: fix x.ts:4");
     expect(out[0]).toMatchObject({ status: "ready", escalated: false, worker: "sapu:sapu-sonnet-medium" });
+    // the runtime validates a worker's answer against this schema: without these a handoff or a red area is refused
+    const schema = calls[0].opts.schema as { properties: Record<string, { enum?: string[] }> };
+    expect(schema.properties.status.enum).toEqual(expect.arrayContaining(["pr_opened", "escalate", "blocked", "handoff"]));
+    expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(["handoff_note", "head_sha", "red_areas"]));
   });
 
   it("a fixer's handoff keeps the findings, and handoffs stop after MAX_HANDOFFS", async () => {

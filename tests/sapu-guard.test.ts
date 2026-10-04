@@ -1267,7 +1267,7 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
       calls(m, id, STEP_SOFT - 1);
       return budget({ main: m, agentId: id, tool: "Bash", command });
     };
-    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7"]) {
+    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7", "npm run teardown -- issue7", "bash scripts/teardown.sh issue7", "node scripts/sapu-teardown.mjs"]) {
       expect(atReminder(`h-${c}`, c), c).toBeNull();
     }
     for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test", "git status & npm test"]) {
@@ -1324,5 +1324,200 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     writeFileSync(join(repo2, ".git/sapu-steps/w2"), ".".repeat(STEP_SOFT - 1));
     expect(status("sapu:sapu-sonnet-high", "w2", "gh pr merge 1")).toBe(2);
     expect(readFileSync(join(repo2, ".git/sapu-steps/w2"), "utf8")).toHaveLength(STEP_SOFT - 1);
+  });
+});
+
+describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read calls they amount to", () => {
+  const repo3 = mkdtempSync(join(tmpdir(), "sapu-ctx-"));
+  mkdirSync(join(repo3, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo3]);
+  commitContract(repo3, FIXTURE_CONTRACT);
+  const T = "mcp__plugin_context-mode_context-mode__ctx_";
+  const status = (tool: string, tool_input: unknown, agent_type: string | null = "sapu:sapu-sonnet-high") => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + tool, ...(agent_type ? { agent_type, agent_id: "c1" } : {}), tool_input, cwd: repo3 }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("refuses what Bash would refuse: batch commands, shell code, and the string a spawn call runs in another language", () => {
+    expect(status("batch_execute", { commands: [{ label: "a", command: "ls" }, { label: "b", command: "git push origin main" }] })).toBe(2);
+    expect(status("execute", { language: "shell", code: "cd /tmp\ngh pr merge 5 --squash" })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "require('child_process').execSync('gh pr merge 5', {encoding:'utf8'})" })).toBe(2);
+    expect(status("execute", { language: "python", code: "import subprocess\nsubprocess.run(\"git push origin main\", shell=True)" })).toBe(2);
+    // a reviewer is policed too
+    expect(status("execute", { language: "shell", code: "gh pr merge 5" }, "senior-qa-reviewer")).toBe(2);
+  });
+
+  it("refuses a path Read would refuse", () => {
+    writeFileSync(join(repo3, ".env"), "SECRET=1\n");
+    expect(status("execute_file", { path: join(repo3, ".env"), language: "javascript", code: "console.log(1)" })).toBe(2);
+    expect(status("index", { path: join(repo3, ".env") })).toBe(2);
+  });
+
+  it("reads every commands shape context-mode coerces, and list-form or concatenated spawn calls", () => {
+    expect(status("batch_execute", { commands: '[{"label":"a","command":"git push origin main"}]' })).toBe(2);
+    expect(status("batch_execute", { commands: "git push origin main" })).toBe(2);
+    expect(status("batch_execute", { commands: ["git push origin main"] })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "execFileSync('git', ['push', 'origin', 'main'])" })).toBe(2);
+    expect(status("execute", { language: "python", code: "subprocess.run(['gh', 'pr', 'merge', '5'])" })).toBe(2);
+    expect(status("execute", { language: "javascript", code: "execSync('git push ' + 'origin main')" })).toBe(2);
+  });
+
+  it("judges a call where it runs: its own cwd, else the agent's (a worktree agent's call without cwd runs in the worktree)", () => {
+    const wt3 = join(repo3, ".claude/worktrees/w1");
+    execFileSync("git", ["-C", repo3, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt3]);
+    const inWt = (tool_input: unknown) => {
+      try {
+        execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + "execute", agent_type: "sapu:sapu-sonnet-high", agent_id: "c2", tool_input, cwd: wt3 }), stdio: ["pipe", "pipe", "pipe"] });
+        return 0;
+      } catch (e) {
+        return (e as { status: number }).status;
+      }
+    };
+    expect(inWt({ language: "shell", code: "git commit -am wip" })).toBe(0);
+    expect(inWt({ language: "shell", code: "echo x > src.txt" })).toBe(0);
+    expect(inWt({ language: "shell", cwd: repo3, code: "git commit -am wip" })).toBe(2);
+    expect(inWt({ language: "shell", cwd: repo3, code: "echo x > src.txt" })).toBe(2);
+    expect(inWt({ language: "shell", cwd: "/tmp", code: `git -C ${repo3} commit -am x` })).toBe(2);
+  });
+
+  it("does not take a non-spawn string for a command (db.exec, regex exec, test runner run, python's exec)", () => {
+    expect(status("execute", { language: "javascript", code: 'db.exec("DELETE FROM t WHERE a > 2"); /x/.exec("3 > 2"); suite.run("a > b")' })).toBe(0);
+    expect(status("execute", { language: "python", code: 'exec("print(1 > 0)")' })).toBe(0);
+    expect(status("execute", { language: "javascript", code: 'const run = (q) => db.prepare(q).all(); run("SELECT * FROM t WHERE a > 2")' })).toBe(0);
+  });
+
+  it("reads a process module behind require() or an alias, a destructured exec, and mixed-quote concatenation", () => {
+    expect(status("execute", { language: "javascript", code: 'require("child_process").exec("git push origin main", cb)' })).toBe(2);
+    expect(status("execute", { language: "python", code: 'import subprocess as sp\nsp.run(["git", "push", "origin", "main"])' })).toBe(2);
+    expect(status("execute", { language: "javascript", code: 'const { exec } = require("child_process"); exec("gh pr merge 5")' })).toBe(2);
+    expect(status("execute", { language: "javascript", code: `execSync("git push " + 'origin main')` })).toBe(2);
+  });
+
+  it("lets ordinary work through, and never polices the orchestrator", () => {
+    expect(status("batch_execute", { commands: [{ label: "s", command: "git status --short" }] })).toBe(0);
+    expect(status("execute", { language: "javascript", code: "console.log([1, 2].length)" })).toBe(0);
+    expect(status("execute", { language: "shell", code: "git push origin main" }, null)).toBe(0);
+  });
+});
+
+describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", () => {
+  const repo4 = mkdtempSync(join(tmpdir(), "sapu-mcp-"));
+  mkdirSync(join(repo4, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo4]);
+  commitContract(repo4, FIXTURE_CONTRACT);
+  const wt4 = join(repo4, ".claude/worktrees/w1");
+  execFileSync("git", ["-C", repo4, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt4]);
+  writeFileSync(join(repo4, ".env"), "SECRET=1\n");
+  const run = (tool_name: string, tool_input: unknown, agent_type = "general-purpose", cwd = wt4) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name, agent_type, agent_id: "m1", tool_input, cwd }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("refuses what Bash/Write would refuse, through any server's tool", () => {
+    const refused: [string, unknown][] = [
+      ["mcp__terminal__run_in_terminal", { command: "git push origin main" }],
+      ["mcp__terminal__run_in_terminal", { command: "git commit -am x" }], // no cwd: runs at the session root
+      ["mcp__shell__execute", { cmd: ["gh", "pr", "merge", "5"] }],
+      ["mcp__github__merge_pull_request", { owner: "o", repo: "r", pull_number: 5 }],
+      ["mcp__ccd_pr__set_auto_merge", { enabled: true }],
+      ["mcp__github__create_or_update_file", { owner: "o", repo: "r", branch: "main", path: "a.ts", content: "x" }],
+      ["mcp__github__push_files", { owner: "o", repo: "r", branch: "refs/heads/main", files: [] }],
+      ["mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 3, labels: ["sapu:accepted"] }],
+      ["mcp__github__graphql", { query: "mutation { mergePullRequest(input: {}) { clientMutationId } }" }],
+      ["mcp__filesystem__write_file", { path: join(repo4, "src.txt"), content: "x" }],
+      ["mcp__filesystem__read_file", { path: join(repo4, ".env") }],
+      ["mcp__filesystem__move_file", { source: join(wt4, "a"), destination: join(repo4, "a") }],
+      ["Monitor", { command: "git push origin main" }],
+      ["PowerShell", { command: "gh pr merge 5" }],
+      ["mcp__github__graphql", { query: "mutation { addLabelsToLabelable(input: {}) { clientMutationId } }" }],
+      ["mcp__gitlab__accept_merge_request", { merge_request_iid: 3 }],
+      ["mcp__git__git_commit", { repo_path: repo4, message: "wip" }],
+      ["mcp__git__git_checkout", { repo_path: repo4, branch: "z" }],
+      ["mcp__desktop-commander__interact_with_process", { pid: 1, input: "git push origin main" }],
+      ["mcp__tmux__send_keys", { session: "s", keys: "gh pr merge 5" }],
+      ["mcp__serena__create_text_file", { relative_path: "src.txt", content: "x" }],
+      ["mcp__fs__get_or_create_file", { path: join(repo4, "x.txt") }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", force: true }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", force: "true" }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", options: ["--force"] }],
+    ];
+    for (const [t, i] of refused) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(2);
+  });
+
+  it("lets ordinary MCP work through", () => {
+    const allowed: [string, unknown][] = [
+      ["mcp__github__create_or_update_file", { owner: "o", repo: "r", branch: "feat-x", path: "src/a.ts", content: "sapu:accepted appears in text" }],
+      ["mcp__github__create_pull_request", { owner: "o", repo: "r", base: "main", head: "feat-x", title: "t" }],
+      ["mcp__github__get_merge_status", { owner: "o", repo: "r", pull_number: 5 }],
+      ["mcp__gitlab__create_merge_request", { source_branch: "feat-x", target_branch: "main" }],
+      ["mcp__filesystem__read_file", { path: join(wt4, "README.md") }],
+      ["mcp__filesystem__write_file", { path: join(wt4, "notes.txt"), content: "x" }],
+      ["mcp__terminal__run_in_terminal", { command: "git commit -am x", cwd: wt4 }],
+      ["mcp__browser__navigate", { url: "https://example.com" }],
+      ["mcp__notion__create_page", { parent: { page_id: "p" }, title: "x" }],
+      ["mcp__plugin_context-mode_context-mode__ctx_search", { queries: ["x"] }],
+      ["Monitor", { command: "gh pr checks 5" }],
+      // a search, a comment or a file may NAME a mutation or the word merge
+      ["mcp__github__search_code", { query: "mergePullRequest repo:o/r" }],
+      ["mcp__graft__graft_find_code", { query: "enablePullRequestAutoMerge" }],
+      ["mcp__github__add_issue_comment", { owner: "o", repo: "r", issue_number: 1, body: "our createLabel wrapper" }],
+      ["mcp__filesystem__edit_file", { path: join(wt4, "a.ts"), edits: [{ oldText: "x", newText: "mergePullRequest(input)" }] }],
+      ["mcp__gitlab__update_merge_request", { merge_request_iid: 3, title: "t" }],
+      ["mcp__gitlab__approve_merge_request", { merge_request_iid: 3 }],
+      ["mcp__gitlab__list_merge_requests", { target_branch: "main" }],
+      ["mcp__gitlab__create_branch", { branch: "feat-x", ref: "main" }],
+      ["mcp__github__run_workflow", { owner: "o", repo: "r", workflow_id: "ci.yml", ref: "main" }],
+      ["mcp__git__git_commit", { repo_path: wt4, message: "wip" }],
+      // text typed into a chat or a browser field is not a command
+      ["mcp__slack__slack_send_message", { channel: "c", text: "gh pr merge 5 is ready for you" }],
+      ["mcp__playwright__browser_type", { element: "e", ref: "r", text: "git stash" }],
+      ["mcp__terminal__create_note", { text: "git push origin main" }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", forceWithLease: true }],
+    ];
+    for (const [t, i] of allowed) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(0);
+  });
+
+  it("never polices the orchestrator, and a ladder worker's MCP calls count toward its step budget", () => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: "mcp__github__merge_pull_request", tool_input: {}, cwd: wt4 }), stdio: ["pipe", "pipe", "pipe"] });
+    } catch {
+      throw new Error("the orchestrator was policed");
+    }
+    expect(run("mcp__github__get_issue", { owner: "o", repo: "r", issue_number: 1 }, "sapu:sapu-sonnet-high")).toBe(0);
+    expect(readFileSync(join(repo4, ".git/sapu-steps/m1"), "utf8")).toHaveLength(1);
+  });
+});
+
+describe("sapu-guard — context-mode calls are judged where each kind runs (measured)", () => {
+  const repo5 = mkdtempSync(join(tmpdir(), "sapu-ctxcwd-"));
+  mkdirSync(join(repo5, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo5]);
+  commitContract(repo5, FIXTURE_CONTRACT);
+  const wt5 = join(repo5, ".claude/worktrees/w1");
+  execFileSync("git", ["-C", repo5, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt5]);
+  const T = "mcp__plugin_context-mode_context-mode__ctx_";
+  const run = (tool: string, tool_input: unknown) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + tool, agent_type: "sapu:sapu-sonnet-high", agent_id: "k1", tool_input, cwd: wt5 }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("shell execute and batch without cwd run in the agent's worktree; other languages and execute_file in the main checkout", () => {
+    expect(run("execute", { language: "shell", code: "git commit -am wip" })).toBe(0);
+    expect(run("batch_execute", { commands: [{ label: "c", command: "git commit -am wip" }] })).toBe(0);
+    expect(run("execute", { language: "python", code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(2);
+    expect(run("execute_file", { path: "README.md", language: "shell", code: "git checkout -b z" })).toBe(2);
+    expect(run("execute", { language: "python", cwd: wt5, code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(0);
   });
 });

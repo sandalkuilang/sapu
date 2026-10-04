@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 992" role="img" aria-label="The sapu orchestrator: Step 0 scope-locks the run, Phase A drains every open PR, Phase B works open issues in parallel waves where each wave is one workflow call running a forge worker per issue in its own worktree with tiered review and up to two fix cycles; workers never merge, only the orchestrator merges through the merge gate.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 992" role="img" aria-label="The sapu orchestrator: Step 0 scope-locks the run, Phase A drains every open PR, Phase B works each open issue as one workflow call, several in parallel, running a forge worker in its own worktree with tiered review and up to two fix cycles; workers never merge, only the orchestrator merges through the merge gate.">
   <title>/sapu — the backlog orchestrator</title>
-  <desc>Step 0 runs the scope lock. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through the merge gate; a PR closed as STALE at classification, or blocked after two fix cycles (including a merge gate that stayed red), is not merged. Phase B triages open issues into SKIP, DUPLICATE and WORK, then runs waves of at most four issues; each wave is one Workflow call (sapu-wave.js) that dispatches one forge worker per issue in its own worktree, has each PR reviewed independently — green and yellow by the qa specialist, red by the qa + domain pair, and a diff touching a red area (or a red-area check that could not run) is raised to the red review pair on the full diff — allows up to two fix cycles and one escalation up the worker ladder, and returns merge-ready PRs without merging. Only the orchestrator merges, through sapu-merge.sh and the merge gate. Waves continue while the orchestrator's context stays under 750k tokens; then a summary goes to project memory and the owner starts a fresh session, which resumes from it.</desc>
+  <desc>Step 0 runs the scope lock. Phase A drains all open PRs: inventory, classify (READY, NEEDS-FIX, STALE, DRAFT, NEEDS-AI), review by risk tier, then merge through the merge gate; a PR closed as STALE at classification, or blocked after two fix cycles (including a merge gate that stayed red), is not merged. Phase B triages open issues into SKIP, DUPLICATE and WORK, then runs each issue as one Workflow call (sapu-wave.js), up to `lanes` in flight that dispatches one forge worker per issue in its own worktree, has each PR reviewed independently — green and yellow by the qa specialist, red by the qa + domain pair, and a diff touching a red area (or a red-area check that could not run) is raised to the red review pair on the full diff — allows up to two fix cycles and one escalation up the worker ladder, and returns merge-ready PRs without merging. Only the orchestrator merges, through sapu-merge.sh and the merge gate. Waves continue while the orchestrator's context stays under 750k tokens; then a summary goes to project memory and the owner starts a fresh session, which resumes from it.</desc>
   <style>
     :root{
       --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
@@ -105,8 +105,8 @@
   <path d="M194,462 L222,462" class="flow" marker-end="url(#af)"/>
 
   <rect x="224" y="422" width="548" height="372" rx="12" class="frame"/>
-  <text x="240" y="446" class="ttl c-accent">Wave — one Workflow call (sapu-wave.js)</text>
-  <text x="240" y="468" class="sm">per issue, own worktree · ≤ 4 issues · ≤ 2 running tests (default)</text>
+  <text x="240" y="446" class="ttl c-accent">Lane — one Workflow call per issue (sapu-wave.js)</text>
+  <text x="240" y="468" class="sm">own worktree · lanes from cores/RAM · ≤ 2 running tests (default)</text>
 
   <rect x="240" y="482" width="156" height="58" rx="8" class="box"/>
   <text x="318" y="506" class="t" text-anchor="middle">forge worker</text>

@@ -1,6 +1,6 @@
 ---
 name: sapu-sonnet-medium
-description: "sapu worker for ordinary 🟢 (risk:green) work, and the reviewer for every 🟢 PR — Sonnet/medium. Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
+description: "sapu worker for ordinary 🟢 (risk:green) work (never a reviewer) — Sonnet/medium. Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
 model: sonnet
 effort: medium
 tools: Bash, Read, Edit, Write, Grep, Glob, Agent, ToolSearch, WebSearch, WebFetch, mcp__plugin_context-mode_context-mode__ctx_fetch_and_index, mcp__plugin_context-mode_context-mode__ctx_search, mcp__plugin_context-mode_context-mode__ctx_execute, mcp__plugin_context-mode_context-mode__ctx_batch_execute, StructuredOutput
