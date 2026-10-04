@@ -151,7 +151,13 @@ claude plugin update sapu@sapu --scope project
 ```
 
 ```bash
-claude plugin update senior-dev-team@sapu --scope project
+claude plugin update senior-dev-team@sapu
+```
+
+`update` does not install a dependency that was not there before: upgrading from a sapu older than 2.6.0, install the team once instead (user scope makes it available in every project, and it satisfies sapu at project scope too):
+
+```bash
+claude plugin install senior-dev-team@sapu --scope user
 ```
 
 Then start a new session. Both commands also work for a marketplace from a local folder: the first re-reads that folder, and the second copies its new version into the cache. When the version did not go up, nothing is copied. To check that the installed copy matches its source:

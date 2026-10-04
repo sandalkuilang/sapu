@@ -131,7 +131,7 @@ claude plugin marketplace add sandalkuilang/sapu
 claude plugin install sapu@sapu --scope project
 ```
 
-This also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope.
+A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once.
 
 **3 · Start a new session in that repo, then**
 
