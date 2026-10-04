@@ -532,6 +532,18 @@ describe("sapu-wave — fix cycles", () => {
       });
       expect(ok.out[0].reason || "").not.toMatch(/three reviews in a row/);
     });
+    it("findings whose claim has nothing comparable (punctuation only) are never taken for the same finding", async () => {
+      let r = 0;
+      const rounds = [3, 2, 1, 0];
+      const { out } = await runWave({ main: MAIN, items: [item(69, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+        if (c.opts.phase !== "Review") return opened(69, { head_sha: fixSha(c, n) });
+        if (c.opts.agentType !== QA) return clean;
+        const k = rounds[Math.min(r++, 3)];
+        return k ? { ...finding(false), findings: Array.from({ length: k }, () => ({ file_line: "a.ts:1", claim: "—", failure_scenario: "f", invariant_domain: false })) } : clean;
+      });
+      expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+    });
+
     it("the pair reporting one finding twice counts it once", async () => {
       let r = 0;
       const rounds = [["a", "b", "c"], ["d", "e"], ["f"], []];

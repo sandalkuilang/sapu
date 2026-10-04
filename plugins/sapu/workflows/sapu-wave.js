@@ -73,10 +73,11 @@ const MAX_FIX_CYCLES_RED = 5
 // A finding's identity across reviews: its file without any line form (a.ts:12, a.ts#L12, a.ts (line 12))
 // and its whole claim, normalised. Wrongly "the same" would block a PR whose findings were fixed, so
 // it errs the other way: a re-worded repeat counts as new (MAX_FIX_CYCLES_RED still bounds the loop).
-const findingKey = (f, i) => {
-  const file = String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/#l\d+.*$/, '').replace(/:\d+.*$/, '').trim()
+let uncomparable = 0
+const findingKey = (f) => {
+  const file = String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/\s+line\s+\d+.*$/, '').replace(/#l\d+.*$/, '').replace(/:l?\d+.*$/, '').trim()
   const claim = String(f.claim).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-  return claim ? `${file}|${claim}` : `${file}|#${i}` // no comparable claim: never "the same" as another
+  return claim ? `${file}|${claim}` : `${file}|#${++uncomparable}` // no comparable claim: never "the same" as any other
 }
 // Each worker step re-sends its whole, growing context, so a 200-step run costs far more than two
 // 100-step ones. Past the step budget (subagent-brief.md point 11) a worker commits WIP and hands off.
