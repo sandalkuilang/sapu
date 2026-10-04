@@ -1446,6 +1446,8 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__serena__create_text_file", { relative_path: "src.txt", content: "x" }],
       ["mcp__fs__get_or_create_file", { path: join(repo4, "x.txt") }],
       ["mcp__git__git_push", { repo_path: wt4, branch: "feat", force: true }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", force: "true" }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", options: ["--force"] }],
     ];
     for (const [t, i] of refused) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(2);
   });
@@ -1478,6 +1480,7 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__slack__slack_send_message", { channel: "c", text: "gh pr merge 5 is ready for you" }],
       ["mcp__playwright__browser_type", { element: "e", ref: "r", text: "git stash" }],
       ["mcp__terminal__create_note", { text: "git push origin main" }],
+      ["mcp__git__git_push", { repo_path: wt4, branch: "feat", forceWithLease: true }],
     ];
     for (const [t, i] of allowed) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(0);
   });

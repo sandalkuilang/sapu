@@ -1486,7 +1486,9 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
   const gitVerb = GIT_SERVER.test(server) && words.find((w) => /^(commit|add|checkout|reset|stash|push|merge|rebase|pull|fetch|clean)$/.test(w));
   if (gitVerb) {
     const branch = f.find(([k]) => /^(branch|branch_?name|target)$/i.test(k));
-    const force = Object.entries(ti).some(([k, v]) => /^force/i.test(k) && v === true) ? " --force" : "";
+    const on = (v) => v === true || v === "true";
+    const flags = Object.entries(ti).flatMap(([k, v]) => (/^force_?with_?lease$/i.test(k) && on(v) ? ["--force-with-lease"] : /^force$/i.test(k) && on(v) ? ["--force"] : /^(options|flags|extra_?args)$/i.test(k) && Array.isArray(v) ? v.filter((x) => typeof x === "string") : []));
+    const force = flags.length ? ` ${flags.join(" ")}` : "";
     const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
     if (reason) return reason;
   }
