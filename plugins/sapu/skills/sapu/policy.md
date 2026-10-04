@@ -43,3 +43,7 @@ Read this only when `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" poli
 
 ## skills
 - Every skill starts with `sapu-contract.mjs allowed <skill>`. Exit 1 = stop and quote the reason.
+
+## cleanup: "session" / "never"
+- `session`: run §Finish's branch & worktree cleanup (`sapu-cleanup.mjs`, plan then `--apply`) also at the end of every session that asks for a new one.
+- `never`: no cleanup at all, not even at §Finish; the final report says the branches and worktrees were kept.

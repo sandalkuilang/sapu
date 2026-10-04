@@ -38,6 +38,7 @@ block; the orchestrator reads `skills/sapu/policy.md` when any field is off its 
 | `fileIssues` | `true` / `false` | the skills: no `gh issue create` at all; gaps go to the PR's Notes or the local record |
 | `traces` | `"visible"` / `"none"` | `sapu-merge.sh` posts no review/gate comment and no labels (kept in `.git/`); workers and the orchestrator leave no sapu/agent wording; `labels` becomes optional |
 | `skills` | all / any non-empty subset | every skill's first step `sapu-contract.mjs allowed <skill>` |
+| `cleanup` | `"finish"` / `"session"` / `"never"` | the orchestrator runs `scripts/sapu-cleanup.mjs --apply` at §Finish (`finish`), also at the end of every session (`session`), or never; it deletes only sapu's own branches proven merged and only clean worktrees |
 | `prePr` | `null` / `{"run": "/cmd args", "severities": [...], "paste": "body" or "comment"}` | `sapu-wave.js`: fresh rounds of the command until every listed severity reports 0 — no round limit; a contradiction stops it for the owner; fixes get a delta senior review |
 
 No silent defaults: a missing required field = the skill stops with a message that points to

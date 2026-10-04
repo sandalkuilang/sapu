@@ -144,7 +144,7 @@ export const SEVERITIES = ["critical", "medium", "low"];
  * Every field is the owner's choice (/sapu:init asks each one); an absent policy or field keeps the
  * behaviour sapu had before policies existed, so the default is never a hidden restriction.
  */
-export const DEFAULT_POLICY = { merge: "sapu", reviewers: [], issues: "trusted", fileIssues: true, traces: "visible", skills: SKILLS, prePr: null };
+export const DEFAULT_POLICY = { merge: "sapu", reviewers: [], issues: "trusted", fileIssues: true, traces: "visible", skills: SKILLS, prePr: null, cleanup: "finish" };
 
 /** The policy with every absent field at its default. */
 export function resolvePolicy(c) {
@@ -161,6 +161,7 @@ function policyProblems(p) {
   one("issues", (v) => v === "trusted" || v === "assigned" || (v && typeof v === "object" && Object.keys(v).join() === "label" && isStr(v.label)), 'must be "trusted", "assigned" or {"label": "<name>"}');
   one("fileIssues", (v) => typeof v === "boolean", "must be true or false");
   one("traces", (v) => v === "visible" || v === "none", 'must be "visible" or "none"');
+  one("cleanup", (v) => v === "finish" || v === "session" || v === "never", 'must be "finish" (at the end of the sweep), "session" (also at the end of every session) or "never"');
   one("skills", (v) => Array.isArray(v) && v.length > 0 && v.every((x) => SKILLS.includes(x)), `must be a non-empty array of ${SKILLS.join(", ")}`);
   one(
     "prePr",

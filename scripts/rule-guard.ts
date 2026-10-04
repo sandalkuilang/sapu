@@ -82,6 +82,7 @@ export const ENFORCEMENT_FILES: Readonly<Record<string, string>> = {
   "plugins/sapu/scripts/sapu-merge.sh": "it is the merge path of every PR",
   "plugins/sapu/scripts/sapu-contract.mjs": "it loads and enforces the repo contract",
   "plugins/sapu/workflows/sapu-wave.js": "it runs every wave: workers, reviews, fix cycles",
+  "plugins/sapu/scripts/sapu-cleanup.mjs": "it deletes branches and worktrees",
   "plugins/sapu/workflows/inspector.js": "it sequences momus, argus and nemesis and picks their models",
   [BUDGET_FILE]: "it holds the engine scan and the context budgets",
   [GUARD_FILE]: "it is the rule guard itself",

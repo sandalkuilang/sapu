@@ -380,6 +380,7 @@ describe("what enforces the rules is ratcheted: any edit or deletion needs a tra
   it("the enforcement set is exactly these files, and each exists in this repo (a typo would guard nothing)", () => {
     expect(Object.keys(ENFORCEMENT_FILES).sort()).toEqual([
       "plugins/sapu/hooks/hooks.json",
+      "plugins/sapu/scripts/sapu-cleanup.mjs",
       "plugins/sapu/scripts/sapu-contract.mjs",
       "plugins/sapu/scripts/sapu-guard.mjs",
       "plugins/sapu/scripts/sapu-merge.sh",
