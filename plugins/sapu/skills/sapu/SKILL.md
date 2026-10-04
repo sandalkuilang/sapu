@@ -32,7 +32,7 @@ Most of a sweep's cost is subagents — measure with `sapu-metrics --with-subage
 
 ### Sessions and waves
 
-**All of Phase A = one session** (the PR drain runs inline and reads diffs). In Phase B **each issue = one Workflow call** (B3 lanes): its agents start clean and the orchestrator gets only compact results, so **the next wave may run in the same session while `last step context` from `sapu-metrics` < 750k** (a starting figure). After each wave (every PR merged or with a reason, checkpoint printed; a red net with its fix PR named), at A6 and before ending any session, the orchestrator rewrites ONE project-memory file, `sapu-sweep-state`, whole (Write; never append, never a section per wave or session): only what is open NOW — SKIP/BLOCKED + reason, next candidates, owner decisions pending, an unresolved net red, open base flakes — one line each (many SKIP/BLOCKED: one line per shared reason with their numbers), ≤40 lines. History: GitHub, `<MAIN>/.git/sapu-*.log`, the review files. Past the 750k limit, or Phase A ending above 600k: end by asking the owner to start a new `/sapu:sapu` session. A new session starts at A1 (new PRs first) then B1, and reads that memory summary.
+**All of Phase A = one session** (the PR drain runs inline and reads diffs). In Phase B **each issue = one Workflow call** (B3 lanes): its agents start clean and the orchestrator gets only compact results, so **the next wave may run in the same session while `last step context` from `sapu-metrics` < 750k** (a starting figure). After each wave (every PR merged or with a reason, checkpoint printed; a red net with its fix PR named), at A6 and before ending any session, the orchestrator rewrites ONE project-memory file, `sapu-sweep-state`, whole (Write; never append, never a section per wave or session): only what is open NOW — SKIP/BLOCKED + reason, next candidates, owner decisions pending, an unresolved net red, open base flakes — one line each (many SKIP/BLOCKED: one line per shared reason with their numbers), ≤40 lines. History: GitHub, `<MAIN>/.git/sapu-*.log`, the review files. Past the 750k limit, or Phase A ending above 600k: policy `cleanup: "session"` → §Finish's cleanup first; then end by asking the owner to start a new `/sapu:sapu` session. A new session starts at A1 (new PRs first) then B1, and reads that memory summary.
 
 **Session metrics — REQUIRED in the final report of EVERY wave session** (Phase A, each B wave, and the last session): run `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-metrics.ts" <session-transcript> --with-subagents --merges-log <MAIN>/.git/sapu-merges.log --gates-log <MAIN>/.git/sapu-gates.log --baseline <baseline file from profile §Context economy>` (Node ≥ 22.18 runs `.ts` directly; never `npx tsx`: the sandbox refuses its IPC) and paste its whole output. Session transcript = `~/.claude/projects/<slug>/<session-id>.jsonl`, `<slug>` = `<MAIN>`'s absolute path with every non-alphanumeric char replaced by `-` (e.g. `/srv/src/app` → `-srv-src-app`), `<session-id>` = this session's id; if unknown, find the transcript holding the Step 0 point 5 marker (`grep -l <marker> $(ls -t ~/.claude/projects/<slug>/*.jsonl | head -20)`) — the newest may be a parallel session's. The script reads subagent transcripts only as an aggregate; never open them yourself. Profile without a baseline file → run without `--baseline` and say so in the report. **Exit 1** (average context, tokens per PR, or sweep tokens or cost per PR worse than 1.5× the repo's baseline) = the TOP ⚠️ line of the report to the owner, carrying the script's message (not an issue).
 
@@ -160,7 +160,7 @@ After the script succeeds: sync ONLY the open PRs that share files with the one 
 
 **Report tracker issues** (momus/argus/nemesis — findings F1…Fn live in the body): WORK, one subagent per finding, PR `Refs #<N> (Fx)` (not `Closes`, and never write a closing verb + `#N` at all — forge reference §Rolling), lanes by file overlap; close the tracker after every finding has a disposition.
 
-**B3. Lanes: one Workflow call per WORK issue** (`${CLAUDE_PLUGIN_ROOT}/workflows/sapu-wave.js`, `items: [<it>]`), at most `lanes` in flight = workers running tests: before each launch `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" lanes` (cores, RAM, load and free memory now; too many suites at once multiply gate time + flakes). When a lane returns, handle its result AND launch the next issue in that same step: a ready PR never waits for a slower issue, a lane never idles (in the 2.2.9 pilot one did 25 min). Derived rules: (1) workers only `gate.fast` + diff tests (brief point 6); (2) the full gate only by the orchestrator, ONE at a time, just before merge (A5); (3) reviewers do not count, using no significant CPU. Wave table → `args`:
+**B3. Lanes: one Workflow call per WORK issue** (`${CLAUDE_PLUGIN_ROOT}/workflows/sapu-wave.js`, `items: [<it>]`), at most `lanes` in flight = workers running tests: before each launch `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" lanes` (cores, RAM, load and free memory now; too many suites at once multiply gate time + flakes). When a lane returns, handle its result AND launch the next issue in that same step: a ready PR never waits for a slower issue, a lane never idles. Derived rules: (1) workers only `gate.fast` + diff tests (brief point 6); (2) the full gate only by the orchestrator, ONE at a time, just before merge (A5); (3) reviewers do not count, using no significant CPU. Wave table → `args`:
 - The next issue waits while it (may) share files with a lane in flight or an unmerged `ready` PR (`gh pr diff <N> --name-only`).
 - An issue changing dependencies or the schema (its paths: profile §Wave) → SOLO: launched when no lane runs, nothing beside it, `cleanInstall: true` (brief point 3).
 - Per issue: `{ issue, title, tier: "green"|"yellow"|"red", worker }` from the B2 table, `tracker: "Fx"` for a tracker issue, and for 🔴 `domainReviewer` = the domain **role** touched (`architect`/`db`/`developer`/`ux`, brief point 7 roster).
@@ -208,23 +208,7 @@ This whole section (cleanup, final full gate, final report) runs in the LAST wav
 
 Done when no open PR is left but SKIP/BLOCKED ones with reasons, and every open issue ended merged / closed-as-duplicate / skipped / blocked with a reason. BLOCKED is written specifically enough for the next sweep to continue, not start over.
 
-**Branch & worktree cleanup** from `<MAIN>` (squash merges make `git branch --merged` untrustworthy):
-
-```bash
-git -C <MAIN> fetch --prune origin && git -C <MAIN> worktree prune
-PR_STATES=$(gh pr list --repo <repo> --state all --limit 500 --json headRefName,state)
-for b in $(git -C <MAIN> branch --format='%(refname:short)' | grep -vx '<base>'); do
-  st=$(echo "$PR_STATES" | jq -r --arg b "$b" '[.[] | select(.headRefName == $b)][0].state // "NONE"')
-  if [ "$st" = "MERGED" ] || [[ "$b" == worktree-agent-* ]] || git -C <MAIN> merge-base --is-ancestor "$b" origin/<base>; then
-    git -C <MAIN> branch -D "$b"
-  else
-    echo "KEEP $b (PR=$st)"   # includes CLOSED-unmerged: may hold another session's work
-  fi
-done
-git -C <MAIN> branch -r --format='%(refname:short)' | grep -vE 'origin/(<base>|HEAD)$'   # only open-PR heads may remain
-```
-
-`git -C <MAIN> branch -D` fails for a branch still checked out in another session's worktree — leave it and name it. Print `🧹 branches: N deleted, M kept (<names>)`, then repeat the `<MAIN>` health check (Step 0 point 4).
+**Branch & worktree cleanup**, per policy `cleanup` (`sapu-contract.mjs policy`; the owner chose it in `/sapu:init`, never asked here): `finish` (default) → here; `session` → also at the end of every session that asks for a new one; `never` → skip, say so in the report. From `<MAIN>`: `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-cleanup.mjs"` prints the plan (only sapu's own branches proven merged; only clean worktrees; never an open PR's head), then the same with `--apply`. Print its last line (`🧹 …`), then repeat the `<MAIN>` health check (Step 0 point 4).
 
 **The sweep's final full gate.** Profile §Finish (a throwaway worktree at `origin/<base>`, setup per profile `worker.md`). Print `✅ final gate green` or `⚠️ final gate RED — <where it is tracked>`. Red does not cancel the sweep's done status, but its line must go into the final report.
 

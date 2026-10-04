@@ -1164,7 +1164,7 @@ describe("policy: every field the owner's choice, absent = the behaviour before 
   it("absent policy resolves to the defaults; a partial one fills the rest", () => {
     expect(resolvePolicy(FIXTURE_CONTRACT)).toEqual(DEFAULT_POLICY);
     expect(resolvePolicy({ ...FIXTURE_CONTRACT, policy: { merge: "human" } })).toEqual({ ...DEFAULT_POLICY, merge: "human" });
-    expect(DEFAULT_POLICY).toMatchObject({ merge: "sapu", traces: "visible", fileIssues: true, issues: "trusted", prePr: null });
+    expect(DEFAULT_POLICY).toMatchObject({ merge: "sapu", traces: "visible", fileIssues: true, issues: "trusted", prePr: null, cleanup: "finish" });
   });
   it("accepts every documented shape", () => {
     expect(
@@ -1174,10 +1174,13 @@ describe("policy: every field the owner's choice, absent = the behaviour before 
       }),
     ).toEqual([]);
     expect(v({ issues: { label: "ready-for-ai" } })).toEqual([]);
+    for (const cleanup of ["finish", "session", "never"]) expect(v({ cleanup })).toEqual([]);
   });
   it("refuses unknown keys, wrong values, and reviewers when sapu merges", () => {
     expect(v({ mrege: "human" }).join()).toMatch(/policy: unknown key "mrege"/);
     expect(v({ merge: "boss" }).join()).toMatch(/policy.merge/);
+    expect(v({ cleanup: "always" }).join()).toMatch(/policy.cleanup/);
+    expect(v({ cleanup: true }).join()).toMatch(/policy.cleanup/);
     expect(v({ skills: [] }).join()).toMatch(/policy.skills/);
     expect(v({ skills: ["sapu", "hack"] }).join()).toMatch(/policy.skills/);
     expect(v({ prePr: { run: "dev-review", severities: ["low"], paste: "body" } }).join()).toMatch(/policy.prePr/);
