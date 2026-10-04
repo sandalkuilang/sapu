@@ -1270,9 +1270,18 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7"]) {
       expect(atReminder(`h-${c}`, c), c).toBeNull();
     }
-    for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test"]) {
+    for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test", "git status & npm test"]) {
       expect(atReminder(`w-${c}`, c), c).toMatch(/STEP BUDGET/);
     }
+    expect(atReminder("redirect", "git log --oneline 2>&1")).toBeNull();
+  });
+
+  it("a reminder that fell on a handoff command is postponed to the next other call, not skipped", () => {
+    const m = fresh();
+    calls(m, "p1", STEP_SOFT - 1);
+    expect(budget({ main: m, agentId: "p1", tool: "Bash", command: "git status" })).toBeNull();
+    expect(budget({ main: m, agentId: "p1", tool: "Bash", command: "npm test" })).toMatch(/STEP BUDGET/);
+    expect(budget({ main: m, agentId: "p1", tool: "Bash", command: "npm test" })).toBeNull();
   });
 
   it("counts each agent apart, and does nothing without an agent id or a main checkout (or when .git is not a directory)", () => {

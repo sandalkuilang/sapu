@@ -1329,7 +1329,8 @@ const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
 // a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
 const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|\S+\s+teardown(\s.*)?|\S*teardown\S*(\s.*)?)$/;
 const isHandoff = (command) => {
-  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)/.test(command)) return false;
+  // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
+  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
   const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
   const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
   return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
@@ -1355,8 +1356,18 @@ export function stepBudget({ main, agentId, tool, command }) {
   } catch {
     return null;
   }
-  const due = n >= STEP_SOFT && (n <= STEP_HARD ? (n - STEP_SOFT) % STEP_EVERY === 0 : (n - STEP_HARD) % STEP_EVERY_LATE === 0);
-  if (!due || (tool === "Bash" && isHandoff(command))) return null;
+  // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
+  // never skipped. The last one given is kept in `<id>.r`.
+  const soft = Math.floor((Math.min(n, STEP_HARD) - STEP_SOFT) / STEP_EVERY) + 1;
+  const dueSlots = n < STEP_SOFT ? 0 : soft + (n > STEP_HARD ? Math.floor((n - STEP_HARD) / STEP_EVERY_LATE) : 0);
+  let given = 0;
+  try {
+    given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
+  } catch {}
+  if (dueSlots <= given || (tool === "Bash" && isHandoff(command))) return null;
+  try {
+    fs.writeFileSync(`${file}.r`, String(dueSlots));
+  } catch {}
   return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
 }
 
