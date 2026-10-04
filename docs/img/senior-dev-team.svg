@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 954" width="920" height="954" role="img" aria-label="The senior-dev-team plugin: eight senior agents — product manager, software architect, full-stack developer, database engineer, UI/UX designer, QA analyst, QA reviewer and technical writer — and how sapu dispatches them by role: qa reviews every PR, a qa plus domain-specialist Opus pair reviews the red tier, and a scoped /inspector run adds a read-only team review. A repo can map any role to its own agent.">
+  <title>senior-dev-team — eight senior specialists, and how sapu uses them</title>
+  <desc>senior-dev-team is a second plugin in the sapu marketplace: eight senior agents, each with one role, a fixed method and a Handoffs section. Product manager (senior-dev-team:product-manager): PRDs, backlog priority, user stories, scope; sapu role product. Software architect (senior-dev-team:senior-software-architect): system design, trade-offs, migrations, ADRs; sapu role architect. Full-stack developer (senior-dev-team:senior-fullstack-developer): features, bug fixes, refactors and tests; sapu role developer. Database engineer (senior-dev-team:senior-fullstack-database-engineer): schemas, safe migrations, slow queries, indexes; sapu role db. UI/UX designer (senior-dev-team:senior-ui-ux-designer): flows, UI critique, tokens, accessibility, UX audits; sapu role ux. QA analyst (senior-dev-team:senior-qa-analyst): executed evidence: API, security, browser E2E; no default sapu role. QA reviewer (senior-dev-team:senior-qa-reviewer): code and diff review with evidence, no browser; sapu role qa. Technical writer (senior-dev-team:senior-technical-writer): READMEs, API references, guides, release notes; sapu role writer. sapu depends on the plugin and calls its specialists by role: the qa specialist reviews every PR at Opus/high and is never its author; a red-tier issue or a red-area diff gets an adversarial Opus pair, qa plus a domain specialist; a scoped /inspector run adds a read-only team review, product and ux in parallel, then qa and tests alone. A repo can map any role to its own agent through the optional specialists field of .claude/sapu.json; roles it does not name keep the default. Every agent runs on Opus at high effort with project-scoped memory, and follows the dispatching prompt's rules: read-only when told, never stops to ask the user, returns the structured output asked for, stays in its worktree.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="953" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="954" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">PLUGIN · senior-dev-team</text>
+  <text x="32" y="78" class="h1">Eight senior specialists, one team</text>
+  <text x="32" y="102" class="sub">A second plugin in this marketplace. sapu depends on it and calls its agents by role.</text>
+  <rect x="32" y="128" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="144" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,150.75) scale(0.9375)"><path d="M12 3a9 9 0 1 0 0.01 0 M12 7.5a4.5 4.5 0 1 0 0.01 0 M12 11.2a.8 .8 0 1 0 0.01 0" class="ico ico-w"/></g>
+  <text x="98" y="160" class="ttl">Product manager</text>
+  <text x="98" y="179" class="cap">PRDs, backlog priority, user stories, scope</text>
+  <rect x="48" y="192" width="388" height="22" rx="6" class="sunken" />
+  <text x="58" y="207" class="cap mono ink">senior-dev-team:product-manager</text>
+  <rect x="342" y="144" width="96" height="22" rx="11" class="k-violet"/>
+  <text x="352" y="159" class="chipt c-violet">role: product</text>
+  <rect x="468" y="128" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="484" y="144" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(490.75,150.75) scale(0.9375)"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z M3.5 12.5l8.5 4.5 8.5-4.5 M3.5 16.5l8.5 4.5 8.5-4.5" class="ico ico-w"/></g>
+  <text x="534" y="160" class="ttl">Software architect</text>
+  <text x="534" y="179" class="cap">system design, trade-offs, migrations, ADRs</text>
+  <rect x="484" y="192" width="388" height="22" rx="6" class="sunken" />
+  <text x="494" y="207" class="cap mono ink">senior-dev-team:senior-software-architect</text>
+  <rect x="769" y="144" width="105" height="22" rx="11" class="k-violet"/>
+  <text x="779" y="159" class="chipt c-violet">role: architect</text>
+  <rect x="32" y="238" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="254" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,260.75) scale(0.9375)"><path d="M8.5 7.5L4 12l4.5 4.5 M15.5 7.5L20 12l-4.5 4.5 M13.5 5l-3 14" class="ico ico-w"/></g>
+  <text x="98" y="270" class="ttl">Full-stack developer</text>
+  <text x="98" y="289" class="cap">features, bug fixes, refactors and tests</text>
+  <rect x="48" y="302" width="388" height="22" rx="6" class="sunken" />
+  <text x="58" y="317" class="cap mono ink">senior-dev-team:senior-fullstack-developer</text>
+  <rect x="333" y="254" width="105" height="22" rx="11" class="k-violet"/>
+  <text x="343" y="269" class="chipt c-violet">role: developer</text>
+  <rect x="468" y="238" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="484" y="254" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(490.75,260.75) scale(0.9375)"><path d="M5 6c0-1.7 3.1-3 7-3s7 1.3 7 3-3.1 3-7 3-7-1.3-7-3z M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6 M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" class="ico ico-w"/></g>
+  <text x="534" y="270" class="ttl">Database engineer</text>
+  <text x="534" y="289" class="cap">schemas, safe migrations, slow queries, indexes</text>
+  <rect x="484" y="302" width="388" height="22" rx="6" class="sunken" />
+  <text x="494" y="317" class="cap mono ink">senior-dev-team:senior-fullstack-database-engineer</text>
+  <rect x="810" y="254" width="64" height="22" rx="11" class="k-violet"/>
+  <text x="820" y="269" class="chipt c-violet">role: db</text>
+  <rect x="32" y="348" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="364" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,370.75) scale(0.9375)"><path d="M4.5 4h15a1.5 1.5 0 0 1 1.5 1.5v13a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-13A1.5 1.5 0 0 1 4.5 4z M3 9h18 M9.5 9v11" class="ico ico-w"/></g>
+  <text x="98" y="380" class="ttl">UI/UX designer</text>
+  <text x="98" y="399" class="cap">flows, UI critique, tokens, accessibility, UX audits</text>
+  <rect x="48" y="412" width="388" height="22" rx="6" class="sunken" />
+  <text x="58" y="427" class="cap mono ink">senior-dev-team:senior-ui-ux-designer</text>
+  <rect x="374" y="364" width="64" height="22" rx="11" class="k-violet"/>
+  <text x="384" y="379" class="chipt c-violet">role: ux</text>
+  <rect x="468" y="348" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="484" y="364" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(490.75,370.75) scale(0.9375)"><path d="M9 8.5a3 3 0 0 1 6 0 M8 9.5h8v4.5a4 4 0 0 1-8 0z M12 10v8 M8 12H4.5 M19.5 12H16 M8.3 16.2L5 18 M15.7 16.2L19 18 M8.5 9.5L6 7 M15.5 9.5L18 7" class="ico ico-w"/></g>
+  <text x="534" y="380" class="ttl">QA analyst</text>
+  <text x="534" y="399" class="cap">executed evidence: API, security, browser E2E</text>
+  <rect x="484" y="412" width="388" height="22" rx="6" class="sunken" />
+  <text x="494" y="427" class="cap mono ink">senior-dev-team:senior-qa-analyst</text>
+  <rect x="798" y="364" width="76" height="22" rx="11" class="chip"/>
+  <text x="808" y="379" class="chipt muted">on demand</text>
+  <rect x="32" y="458" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="474" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,480.75) scale(0.9375)"><path d="M10.5 4a6.5 6.5 0 1 0 0.01 0 M15.5 15.5L20 20" class="ico ico-w"/></g>
+  <text x="98" y="490" class="ttl">QA reviewer</text>
+  <text x="98" y="509" class="cap">code and diff review with evidence, no browser</text>
+  <rect x="48" y="522" width="388" height="22" rx="6" class="sunken" />
+  <text x="58" y="537" class="cap mono ink">senior-dev-team:senior-qa-reviewer</text>
+  <rect x="374" y="474" width="64" height="22" rx="11" class="k-violet"/>
+  <text x="384" y="489" class="chipt c-violet">role: qa</text>
+  <rect x="468" y="458" width="420" height="96" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="484" y="474" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(490.75,480.75) scale(0.9375)"><path d="M4 20h4.5L19 9.5 14.5 5 4 15.5z M12.5 7l4.5 4.5" class="ico ico-w"/></g>
+  <text x="534" y="490" class="ttl">Technical writer</text>
+  <text x="534" y="509" class="cap">READMEs, API references, guides, release notes</text>
+  <rect x="484" y="522" width="388" height="22" rx="6" class="sunken" />
+  <text x="494" y="537" class="cap mono ink">senior-dev-team:senior-technical-writer</text>
+  <rect x="788" y="474" width="86" height="22" rx="11" class="k-violet"/>
+  <text x="798" y="489" class="chipt c-violet">role: writer</text>
+  <circle cx="46" cy="593" r="14" fill="url(#brand)"/>
+  <text x="46" y="597.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">→</text>
+  <text x="70" y="598"><tspan class="sec">How sapu dispatches the team</tspan><tspan class="sec2" dx="12">by role, never by a bare agent name</tspan></text>
+  <rect x="32" y="620" width="168" height="170" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="638" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,644.75) scale(0.9375)"><path d="M4 6h12 M4 12h16 M4 18h9 M14 3.5L16.5 6 14 8.5 M18 9.5L20.5 12 18 14.5 M11 15.5L13.5 18 11 20.5" class="ico ico-w"/></g>
+  <text x="48" y="702" class="ttl">sapu</text>
+  <text x="48" y="722" class="cap">orchestrator +</text>
+<text x="48" y="739" class="cap">forge workers</text>
+  <path d="M200,705 L208.0,705.0 Q216,705 216.0,697.0 L216.0,653.0 Q216,645 224.0,645.0 L232,645" class="ar" marker-end="url(#mn)"/>
+  <rect x="236" y="620" width="652" height="50" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="250" y="634" width="63" height="22" rx="11" class="k-green"/>
+  <circle cx="262" cy="645" r="4" class="f-green"/>
+  <text x="271" y="649" class="chipt c-green">green</text>
+  <rect x="319" y="634" width="63" height="22" rx="11" class="k-amber"/>
+  <circle cx="331" cy="645" r="4" class="f-amber"/>
+  <text x="340" y="649" class="chipt c-amber">yellow</text>
+  <text x="396" y="650" class="t"><tspan class="tb">Every PR</tspan><tspan class="muted">  ·  </tspan>the qa specialist reviews at Opus/high, never the PR's author</text>
+  <path d="M200,705 L216.0,705.0 Q216,705 NaN,NaN LNaN,NaN Q216,705 216.0,705.0 L232,705" class="ar" marker-end="url(#mn)"/>
+  <rect x="236" y="680" width="652" height="50" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="250" y="694" width="50" height="22" rx="11" class="k-red"/>
+  <circle cx="262" cy="705" r="4" class="f-red"/>
+  <text x="271" y="709" class="chipt c-red">red</text>
+  <text x="314" y="710" class="t"><tspan class="tb">Red tier or red-area diff</tspan><tspan class="muted">  ·  </tspan>an adversarial Opus pair: qa + a domain specialist</text>
+  <path d="M200,705 L208.0,705.0 Q216,705 216.0,713.0 L216.0,757.0 Q216,765 224.0,765.0 L232,765" class="ar" marker-end="url(#mn)"/>
+  <rect x="236" y="740" width="652" height="50" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="250" y="754" width="76" height="22" rx="11" class="k-blue"/>
+  <text x="260" y="769" class="chipt c-blue">read-only</text>
+  <text x="340" y="770" class="t"><tspan class="tb">/inspector, scoped run</tspan><tspan class="muted">  ·  </tspan>read-only team review: product + ux in parallel, then qa / tests</text>
+  <rect x="32" y="808" width="856" height="64" rx="12" class="k-blue" />
+  <text x="48" y="834" class="t"><tspan class="tb">Bring your own agent.</tspan> Map a role in the optional <tspan class="mono">specialists</tspan> field of <tspan class="mono">.claude/sapu.json</tspan>; roles it does not name keep the default.</text>
+  <text x="48" y="856" class="cap mono c-blue">"specialists": {"qa": "my-qa-agent"}</text>
+  <text x="32" y="902" class="cap"><tspan class="tb">Every agent</tspan>  Opus / high · project-scoped memory · a Handoffs section naming who picks up next</text>
+  <text x="32" y="922" class="cap"><tspan class="tb">When dispatched</tspan>  follows the caller's rules: read-only when told, never stops to ask, returns the structured output asked for, stays in its worktree</text>
+</svg>

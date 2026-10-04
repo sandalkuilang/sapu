@@ -3,12 +3,17 @@
   "owner": {
     "name": "Yudha"
   },
-  "description": "Marketplace for the sapu plugin: autonomous backlog sweeps with a per-repo contract.",
+  "description": "Marketplace for the sapu plugin (autonomous backlog sweeps with a per-repo contract) and senior-dev-team (a senior software development team as subagents).",
   "plugins": [
     {
       "name": "sapu",
       "source": "./plugins/sapu",
       "description": "Autonomous issue sweeps driven by a per-repo contract. Install at project scope so each repo opts in explicitly."
+    },
+    {
+      "name": "senior-dev-team",
+      "source": "./plugins/senior-dev-team",
+      "description": "A senior software development team as subagents: product manager, architect, full-stack developer, database engineer, UI/UX designer, QA analyst and reviewer, technical writer. Installed with sapu; install it at user scope to use it in every project."
     }
   ]
 }

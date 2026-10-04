@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" role="img" aria-label="/sapu in 30 seconds: scope lock, drain open PRs, one lane per issue, review by an agent that is not the author with fix cycles, and a merge only on a green gate through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped or blocked, each with a reason.">
+  <title>/sapu in 30 seconds</title>
+  <desc>Five steps from an open backlog to merged work. Step 0: the scope lock checks the gh account, origin and the allowed roots. Phase A: every open PR is reviewed, fixed or closed. Phase B: each open issue is one lane, where a forge worker in its own worktree opens a PR. Review: never by the author; the qa specialist at Opus/high, and an adversarial Opus pair on the red tier; findings go back to the worker in fix cycles. Merge: only on a green gate, through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped with a reason, or blocked with a reason.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="419" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="420" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">ONE COMMAND · /sapu</text>
+  <text x="32" y="78" class="h1">From open backlog to merged work</text>
+  <text x="32" y="102" class="sub">Workers never merge. One script does, after the gate is green.</text>
+  <rect x="32" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="48" y="148" width="34" height="34" rx="9.5625" class="tile-violet"/>
+  <g transform="translate(54.375,154.375) scale(0.8854166666666667)"><path d="M7 11V8a5 5 0 0 1 10 0v3 M5.5 11h13v9.5h-13z M12 15v2.5" class="ico s-violet"/></g>
+  <text x="48" y="206" class="lbl">STEP 0</text>
+  <text x="48" y="228" class="ttl">Scope lock</text>
+  <text x="48" y="249" class="cap">account, origin and</text>
+<text x="48" y="266" class="cap">allowed roots checked</text>
+  <path d="M189,207 L203,207" class="ar" marker-end="url(#mn)"/>
+  <rect x="208" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="224" y="148" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(230.375,154.375) scale(0.8854166666666667)"><path d="M6 4.5a2 2 0 1 0 0.01 0 M6 15.5a2 2 0 1 0 0.01 0 M18 15.5a2 2 0 1 0 0.01 0 M6 8.5v7 M18 15.5V10a3 3 0 0 0-3-3h-4 M13 4.5L10.5 7 13 9.5" class="ico s-blue"/></g>
+  <text x="224" y="206" class="lbl">PHASE A</text>
+  <text x="224" y="228" class="ttl">Drain open PRs</text>
+  <text x="224" y="249" class="cap">every open PR:</text>
+<text x="224" y="266" class="cap">review, fix or close</text>
+  <path d="M365,207 L379,207" class="ar" marker-end="url(#mn)"/>
+  <rect x="384" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="400" y="148" width="34" height="34" rx="9.5625" class="tile-violet"/>
+  <g transform="translate(406.375,154.375) scale(0.8854166666666667)"><path d="M4 6h12 M4 12h16 M4 18h9 M14 3.5L16.5 6 14 8.5 M18 9.5L20.5 12 18 14.5 M11 15.5L13.5 18 11 20.5" class="ico s-violet"/></g>
+  <text x="400" y="206" class="lbl">PHASE B</text>
+  <text x="400" y="228" class="ttl">A lane per issue</text>
+  <text x="400" y="249" class="cap">forge worker in its</text>
+<text x="400" y="266" class="cap">own worktree, one PR</text>
+  <path d="M541,207 L555,207" class="ar" marker-end="url(#mn)"/>
+  <rect x="560" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="576" y="148" width="34" height="34" rx="9.5625" class="tile-amber"/>
+  <g transform="translate(582.375,154.375) scale(0.8854166666666667)"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z M12 9.2a2.8 2.8 0 1 0 0.01 0" class="ico s-amber"/></g>
+  <text x="576" y="206" class="lbl">REVIEW</text>
+  <text x="576" y="228" class="ttl">Never the author</text>
+  <text x="576" y="249" class="cap">qa at Opus/high;</text>
+<text x="576" y="266" class="cap">red: an Opus pair</text>
+  <path d="M717,207 L731,207" class="ar" marker-end="url(#mn)"/>
+  <rect x="736" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
+  <rect x="752" y="148" width="34" height="34" rx="9.5625" class="tile-green"/>
+  <g transform="translate(758.375,154.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z M8.8 12.2l2.3 2.3 4.3-4.6" class="ico s-green"/></g>
+  <text x="752" y="206" class="lbl">MERGE</text>
+  <text x="752" y="228" class="ttl">Green gate only</text>
+  <text x="752" y="249" class="cap"><tspan class="mono">sapu-merge.sh</tspan>,</text>
+<text x="752" y="266" class="cap">one PR at a time</text>
+  <path d="M636,284 L636.0,298.0 Q636,306 628.0,306.0 L468.0,306.0 Q460,306 460.0,298.0 L460,288" class="ar-a" marker-end="url(#ma)"/>
+  <text x="548" y="324" class="cap" text-anchor="middle">findings → fix cycles</text>
+  <path d="M812,284 L812,336" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="32" y="340" width="856" height="52" rx="14" class="k-green" />
+  <rect x="46" y="350" width="32" height="32" rx="9" class="tile-green"/>
+  <g transform="translate(52,356) scale(0.8333333333333334)"><path d="M12 3a9 9 0 1 0 0.01 0 M8 12.3l2.8 2.8 5.2-5.6" class="ico s-green"/></g>
+  <text x="90" y="371" class="t"><tspan class="tb">Backlog clean.</tspan>  Every issue ends <tspan class="tb">merged</tspan>, <tspan class="tb">skipped</tspan> (with a reason) or <tspan class="tb">blocked</tspan> (with a reason).</text>
+</svg>

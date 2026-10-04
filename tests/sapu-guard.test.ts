@@ -457,10 +457,10 @@ describe("sapu-guard CLI", () => {
     // ~20 guard processes plus a git commit: past 5 s on a loaded machine, so it gets its own budget.
   }, 30_000);
 
-  it("the plugin's built-in specialist role agents (sapu:sapu-<role>) are reviewers, not ladder workers", () => {
+  it("the default specialists (senior-dev-team:<agent>) are reviewers, not ladder workers", () => {
     commitContract(repo, FIXTURE_CONTRACT);
-    for (const role of ["qa", "architect", "db", "developer", "ux", "writer", "product"]) {
-      const t = `sapu:sapu-${role}`;
+    for (const agent of ["senior-qa-reviewer", "senior-software-architect", "senior-fullstack-database-engineer", "senior-fullstack-developer", "senior-ui-ux-designer", "senior-technical-writer", "product-manager"]) {
+      const t = `senior-dev-team:${agent}`;
       expect(bash("gh issue create --title x --body y", t), t).toBe(0);
       expect(bash("gh pr merge 1", t), t).toBe(2);
     }

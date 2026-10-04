@@ -179,7 +179,7 @@ describe("inspector — a scoped run adds the team review", () => {
     // the two read-only reviewers overlap; the suite runner starts only after both finished
     expect(product.start < ux.end && ux.start < product.end).toBe(true);
     expect(tests.start).toBeGreaterThan(Math.max(product.end, ux.end));
-    expect([product, ux, tests].map((c) => c.opts.agentType)).toEqual(["sapu:sapu-product", "sapu:sapu-ux", "sapu:sapu-qa"]);
+    expect([product, ux, tests].map((c) => c.opts.agentType)).toEqual(["senior-dev-team:product-manager", "senior-dev-team:senior-ui-ux-designer", "senior-dev-team:senior-qa-reviewer"]);
     for (const c of [product, ux, tests]) expect(c.opts).toMatchObject({ model: MODELS.team[0], effort: MODELS.team[1], phase: "Team" });
     expect(phases).toEqual(["Momus", "Argus", "Nemesis", "Team"]);
     expect(out).toMatchObject({ team: { product: REVIEW_OK, ux: REVIEW_OK, tests: REVIEW_OK }, failed: null });
@@ -188,7 +188,7 @@ describe("inspector — a scoped run adds the team review", () => {
   it("the team reviewers are the product, ux and qa roles of the contract's map", async () => {
     const specialists = { ...CONTRACT.specialists, product: "team-product", qa: "team-qa" };
     const { calls } = await runInspector(base({ contract: { ...CONTRACT, specialists }, scope: "HR" }));
-    expect(["team:product", "team:ux", "team:tests"].map((l) => find(calls, l).opts.agentType)).toEqual(["team-product", "sapu:sapu-ux", "team-qa"]);
+    expect(["team:product", "team:ux", "team:tests"].map((l) => find(calls, l).opts.agentType)).toEqual(["team-product", "senior-dev-team:senior-ui-ux-designer", "team-qa"]);
   });
 
   it("the tests reviewer runs one suite at a time with the repo's own test command and a throwaway database", async () => {

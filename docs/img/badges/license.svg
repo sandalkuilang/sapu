@@ -1,12 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="94" height="20" role="img" aria-label="license: MIT">
+<svg xmlns="http://www.w3.org/2000/svg" width="92" height="22" viewBox="0 0 92 22" role="img" aria-label="license: MIT">
   <title>license: MIT</title>
-  <clipPath id="r"><rect width="94" height="20" rx="3"/></clipPath>
-  <g clip-path="url(#r)">
-    <rect width="61" height="20" fill="#5a5a5a"/>
-    <rect x="61" width="33" height="20" fill="#0d9488"/>
-  </g>
-  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" font-size="11">
-    <text x="30" y="14">license</text>
-    <text x="77" y="14">MIT</text>
+  <desc>Badge: license, MIT.</desc>
+  <clipPath id="r"><rect width="92" height="22" rx="6"/></clipPath>
+  <g clip-path="url(#r)"><rect width="53" height="22" fill="#1e293b"/><rect x="53" width="39" height="22" fill="#0f766e"/></g>
+  <g fill="#ffffff" text-anchor="middle" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;font-size:11px;font-weight:600">
+    <text x="26.5" y="15">license</text>
+    <text x="72.5" y="15">MIT</text>
   </g>
 </svg>

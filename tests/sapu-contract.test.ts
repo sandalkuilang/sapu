@@ -15,6 +15,7 @@ import {
   LADDER_AGENT,
   PROFILE_SECTIONS,
   SPECIALIST_ROLES,
+  DEFAULT_SPECIALISTS,
   acceptedLabel,
   trustedSet,
   loadContract,
@@ -138,7 +139,7 @@ describe("validate", () => {
 });
 
 describe("specialists — the optional role map", () => {
-  const BUILT_IN = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, `sapu:sapu-${r}`]));
+  const BUILT_IN = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, DEFAULT_SPECIALISTS[r]]));
   const OWN = {
     qa: "team-qa",
     architect: "team-architect",
@@ -183,7 +184,7 @@ describe("specialists — the optional role map", () => {
   });
 
   it("a literal redAreaSpecialists agent may not be the RESOLVED qa, writer or product agent (a pair of one agent twice)", () => {
-    for (const agent of ["sapu:sapu-qa", "sapu:sapu-writer", "sapu:sapu-product"]) {
+    for (const agent of ["senior-dev-team:senior-qa-reviewer", "senior-dev-team:senior-technical-writer", "senior-dev-team:product-manager"]) {
       expect(validate({ ...clone(), redAreaSpecialists: [{ match: "x", agent }] }).join("\n"), agent).toMatch(/is the (qa|writer|product) agent, so it cannot be the domain half/);
     }
     // resolved through the repo's own map, not only the built-in names
@@ -191,7 +192,11 @@ describe("specialists — the optional role map", () => {
     expect(validate({ ...own, redAreaSpecialists: [{ match: "x", agent: "team-qa" }] }).join("\n")).toMatch(/"team-qa" is the qa agent/);
     expect(validate({ ...own, redAreaSpecialists: [{ match: "x", agent: "team-pm" }] }).join("\n")).toMatch(/"team-pm" is the product agent/);
     // the built-in qa is free to use once qa maps elsewhere; a domain agent's literal type stays fine
-    expect(validate({ ...own, redAreaSpecialists: [{ match: "x", agent: "sapu:sapu-qa" }, { match: "y", agent: "sapu:sapu-db" }] })).toEqual([]);
+    expect(validate({ ...own, redAreaSpecialists: [{ match: "x", agent: "senior-dev-team:senior-qa-reviewer" }, { match: "y", agent: "senior-dev-team:senior-fullstack-database-engineer" }] })).toEqual([]);
+  });
+
+  it("a contract still naming a removed built-in role agent (sapu:sapu-<role>) is refused with the way out", () => {
+    expect(validate({ ...clone(), specialists: { db: "sapu:sapu-db" } }).join("\n")).toMatch(/specialists\.db: "sapu:sapu-db" cannot be a specialist \(sapu no longer ships its own role agents; omit the role to use its senior-dev-team default\)/);
   });
 
   it("qa may not resolve to the same agent as any domain role", () => {
@@ -199,7 +204,7 @@ describe("specialists — the optional role map", () => {
       expect(validate({ ...clone(), specialists: { qa: "one", [d]: "one" } }).join("\n"), d).toMatch(new RegExp(`qa and ${d} both resolve to "one"`));
     }
     // mapping qa onto a built-in domain agent collides too
-    expect(validate({ ...clone(), specialists: { qa: "sapu:sapu-architect" } }).join("\n")).toMatch(/qa and architect both resolve/);
+    expect(validate({ ...clone(), specialists: { qa: "senior-dev-team:senior-software-architect" } }).join("\n")).toMatch(/qa and architect both resolve/);
     // writer and product may share an agent with anyone: they are never a pair half
     expect(validate({ ...clone(), specialists: { writer: "team-lead", product: "team-lead", architect: "team-lead" } })).toEqual([]);
   });
@@ -505,7 +510,7 @@ describe("loadContract and the CLI", () => {
 
   it("`wave-args` and `specialists` carry the RESOLVED role map: built-ins by default, the contract's own where it names one", () => {
     commit(repo, { ".claude/sapu.json": JSON.stringify(FIXTURE_CONTRACT) });
-    const builtIn = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, `sapu:sapu-${r}`]));
+    const builtIn = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, DEFAULT_SPECIALISTS[r]]));
     expect(JSON.parse(cli(repo, ["wave-args"]).out).contract.specialists).toEqual(builtIn);
     expect(JSON.parse(cli(repo, ["specialists"]).out)).toEqual(builtIn);
     commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, specialists: { qa: "team-qa", db: "team-db" } }) });

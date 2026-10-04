@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1044" width="920" height="1044" role="img" aria-label="momus makes one bounded release-readiness pass across nine areas A to I with a security lens on each, grading findings by evidence tier and confidence and by a four-level severity ladder; its deliverable is a written report and it files GitHub issues only when separately asked, never writing a ship or no-ship verdict.">
+  <title>/momus — release-readiness auditor</title>
+  <desc>One invocation is one bounded pass: ORIENT, SCOPE, READ and PROBE, CROSS-CHECK, FALSIFY, REPORT, PERSIST. It covers nine areas A to I — tenant isolation and personal data, authentication and authorization with a business-process map, data and migrations, error handling and information leakage, configuration and secrets against CIS, resilience and silent-wrong-number risk, test coverage with direct-API proof, operational readiness, and contracts/code health — each with a security lens for outsiders and insiders. Evidence tiers T1 to T4 map to confidence CERTAIN, LIKELY or SUSPECTED; severity is BLOCKER, HIGH, MEDIUM or LOW. The deliverable is a written report; it files GitHub issues only when separately asked, never writes a ship or no-ship verdict, and keeps state under .momus/.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#0f1623;stroke:#263247;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#a5b4fc}
+    .h1{font-size:25px;font-weight:750;fill:#f1f5f9;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#9fb0c6}
+    .sec{font-size:15px;font-weight:700;fill:#f1f5f9}
+    .sec2{font-size:12.5px;fill:#9fb0c6}
+    .ttl{font-size:14px;font-weight:650;fill:#f1f5f9}
+    .t{font-size:13px;fill:#dbe3ee}
+    .tb{font-size:13px;font-weight:650;fill:#f1f5f9}
+    .cap{font-size:12px;fill:#9fb0c6}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#9fb0c6}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#f1f5f9} .muted{fill:#9fb0c6} .accent{fill:#a5b4fc} .tealt{fill:#5eead4}
+    .card{fill:#172133;stroke:#2e3c55;stroke-width:1}
+    .sunken{fill:#121a28;stroke:#253147;stroke-width:1}
+    .chip{fill:#121a28;stroke:#2e3c55;stroke-width:1}
+    .ar{stroke:#8796ad;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#22c55e;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#f59e0b;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#93c5fd;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#a78bfa;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#ef4444;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#8796ad} .m-g{stroke:#22c55e} .m-a{stroke:#f59e0b} .m-b{stroke:#93c5fd} .m-v{stroke:#a78bfa}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#9fb0c6} .ico-w{stroke:#ffffff}
+    .rule{stroke:#2e3c55;stroke-width:1}
+    .c-blue{fill:#93c5fd} .k-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1.25} .s-blue{stroke:#93c5fd} .f-blue{fill:#93c5fd} .tile-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1}
+    .c-green{fill:#4ade80} .k-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1.25} .s-green{stroke:#22c55e} .f-green{fill:#22c55e} .tile-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1}
+    .c-amber{fill:#fbbf24} .k-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1.25} .s-amber{stroke:#f59e0b} .f-amber{fill:#f59e0b} .tile-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1}
+    .c-red{fill:#fca5a5} .k-red{fill:#2a1216;stroke:#8f3434;stroke-width:1.25} .s-red{stroke:#ef4444} .f-red{fill:#ef4444} .tile-red{fill:#2a1216;stroke:#8f3434;stroke-width:1}
+    .c-violet{fill:#c4b5fd} .k-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1.25} .s-violet{stroke:#a78bfa} .f-violet{fill:#a78bfa} .tile-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.35"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.25"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1043" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1044" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">RELEASE READINESS · /momus</text>
+  <text x="32" y="78" class="h1">Release-readiness auditor</text>
+  <text x="32" y="102" class="sub">One bounded pass across a fixed checklist. Prove it is not ready; a written report is the deliverable.</text>
+  <rect x="32" y="128" width="856" height="46" rx="12" class="k-blue" />
+  <rect x="44" y="134" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(50.375,140.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-blue"/></g>
+  <text x="90" y="156" class="t"><tspan class="tb">Reads</tspan>  profile <tspan class="mono">.claude/sapu/momus.md</tspan> + <tspan class="mono">.momus/config.yml</tspan>  ·  <tspan class="mono">.momus/ledger.json</tspan></text>
+  <text x="32" y="210" class="lbl">THE PASS</text>
+  <rect x="32" y="222" width="86" height="34" rx="17" class="card" />
+  <text x="75" y="244" class="chipt ink" text-anchor="middle">ORIENT</text>
+  <path d="M121,239 L142.33333333333334,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="145.33333333333331" y="222" width="82" height="34" rx="17" class="card" />
+  <text x="186.33333333333331" y="244" class="chipt ink" text-anchor="middle">SCOPE</text>
+  <path d="M230.33333333333331,239 L251.66666666666666,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="254.66666666666663" y="222" width="128" height="34" rx="17" class="card" />
+  <text x="318.66666666666663" y="244" class="chipt ink" text-anchor="middle">READ &amp; PROBE</text>
+  <path d="M385.66666666666663,239 L406.99999999999994,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="410" y="222" width="120" height="34" rx="17" class="card" />
+  <text x="470" y="244" class="chipt ink" text-anchor="middle">CROSS-CHECK</text>
+  <path d="M533,239 L554.3333333333334,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="557.3333333333334" y="222" width="94" height="34" rx="17" class="card" />
+  <text x="604.3333333333334" y="244" class="chipt ink" text-anchor="middle">FALSIFY</text>
+  <path d="M654.3333333333334,239 L675.6666666666667,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="678.6666666666667" y="222" width="90" height="34" rx="17" class="card" />
+  <text x="723.6666666666667" y="244" class="chipt ink" text-anchor="middle">REPORT</text>
+  <path d="M771.6666666666667,239 L793.0000000000001,239" class="ar" marker-end="url(#mn)"/>
+  <rect x="796.0000000000001" y="222" width="92" height="34" rx="17" class="card" />
+  <text x="842.0000000000001" y="244" class="chipt ink" text-anchor="middle">PERSIST</text>
+  <text x="32" y="296" class="lbl">NINE AREAS (A–I) · A SECURITY LENS ON EACH: OUTSIDER + INSIDER</text>
+  <rect x="32" y="310" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="60" cy="338" r="13" fill="url(#brand)"/>
+  <text x="60" y="342.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">A</text>
+  <text x="84" y="343" class="tb">Tenant isolation</text>
+  <text x="84" y="364" class="cap">tenant id from session?</text>
+  <text x="84" y="382" class="cap">+ personal-data reads</text>
+  <rect x="322" y="310" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="350" cy="338" r="13" fill="url(#brand)"/>
+  <text x="350" y="342.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">B</text>
+  <text x="374" y="343" class="tb">Auth &amp; authz</text>
+  <text x="374" y="364" class="cap">guard at every route</text>
+  <text x="374" y="382" class="cap">+ business-process map</text>
+  <rect x="612" y="310" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="640" cy="338" r="13" fill="url(#brand)"/>
+  <text x="640" y="342.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">C</text>
+  <text x="664" y="343" class="tb">Data &amp; migrations</text>
+  <text x="664" y="364" class="cap">drift · drops · uniqueness</text>
+  <text x="664" y="382" class="cap">delete behaviour</text>
+  <rect x="32" y="406" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="60" cy="434" r="13" fill="url(#brand)"/>
+  <text x="60" y="438.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">D</text>
+  <text x="84" y="439" class="tb">Errors &amp; leakage</text>
+  <text x="84" y="460" class="cap">raw errors · empty catch</text>
+  <text x="84" y="478" class="cap">un-transacted writes</text>
+  <rect x="322" y="406" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="350" cy="434" r="13" fill="url(#brand)"/>
+  <text x="350" y="438.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">E</text>
+  <text x="374" y="439" class="tb">Config &amp; secrets</text>
+  <text x="374" y="460" class="cap">env fails loud? · CIS</text>
+  <text x="374" y="478" class="cap">committed secrets</text>
+  <rect x="612" y="406" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="640" cy="434" r="13" fill="url(#brand)"/>
+  <text x="640" y="438.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">F</text>
+  <text x="664" y="439" class="tb">Resilience</text>
+  <text x="664" y="460" class="cap">partial writes · races</text>
+  <text x="664" y="478" class="cap">silent-wrong-number</text>
+  <rect x="32" y="502" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="60" cy="530" r="13" fill="url(#brand)"/>
+  <text x="60" y="534.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">G</text>
+  <text x="84" y="535" class="tb">Test coverage</text>
+  <text x="84" y="556" class="cap">flows with zero tests</text>
+  <text x="84" y="574" class="cap">direct-API proof</text>
+  <rect x="322" y="502" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="350" cy="530" r="13" fill="url(#brand)"/>
+  <text x="350" y="534.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">H</text>
+  <text x="374" y="535" class="tb">Ops readiness</text>
+  <text x="374" y="556" class="cap">isolation · logs · rollback</text>
+  <text x="374" y="574" class="cap">breach detection</text>
+  <rect x="612" y="502" width="276" height="84" rx="12" class="card" filter="url(#sh)"/>
+  <circle cx="640" cy="530" r="13" fill="url(#brand)"/>
+  <text x="640" y="534.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">I</text>
+  <text x="664" y="535" class="tb">Contracts &amp; health</text>
+  <text x="664" y="556" class="cap">producer/consumer drift</text>
+  <text x="664" y="574" class="cap">code health = LOW</text>
+  <rect x="32" y="610" width="420" height="168" rx="14" class="card" filter="url(#sh)"/>
+  <text x="48" y="640" class="ttl">Severity ladder</text>
+  <rect x="48" y="656" width="78" height="22" rx="11" class="k-red"/>
+  <text x="58" y="671" class="chipt c-red">BLOCKER</text>
+  <text x="140" y="671" class="t">data leak / loss / unusable</text>
+  <rect x="48" y="684" width="54" height="22" rx="11" class="k-amber"/>
+  <text x="58" y="699" class="chipt c-amber">HIGH</text>
+  <text x="140" y="699" class="t">core flow broken</text>
+  <rect x="48" y="712" width="70" height="22" rx="11" class="k-blue"/>
+  <text x="58" y="727" class="chipt c-blue">MEDIUM</text>
+  <text x="140" y="727" class="t">has a workaround</text>
+  <rect x="48" y="740" width="46" height="22" rx="11" class="chip"/>
+  <text x="58" y="755" class="chipt muted">LOW</text>
+  <text x="140" y="755" class="t">cosmetic / tech debt</text>
+  <rect x="468" y="610" width="420" height="168" rx="14" class="card" filter="url(#sh)"/>
+  <text x="484" y="640" class="ttl">Evidence → confidence</text>
+  <text x="484" y="668" class="t"><tspan class="tb">T1</tspan> live · <tspan class="tb">T2</tspan> executed · <tspan class="tb">T3</tspan> source · <tspan class="tb">T4</tspan> inferred</text>
+  <text x="484" y="696" class="t">→</text>
+  <rect x="504" y="682" width="78" height="22" rx="11" class="k-green"/>
+  <text x="514" y="697" class="chipt c-green">CERTAIN</text>
+  <rect x="588" y="682" width="70" height="22" rx="11" class="k-blue"/>
+  <text x="598" y="697" class="chipt c-blue">LIKELY</text>
+  <rect x="664" y="682" width="93" height="22" rx="11" class="chip"/>
+  <text x="674" y="697" class="chipt muted">SUSPECTED</text>
+  <text x="484" y="734" class="cap">static caps at LIKELY</text>
+  <text x="484" y="754" class="cap">T4 is never BLOCKER</text>
+  <rect x="32" y="798" width="856" height="92" rx="14" class="k-green" />
+  <rect x="48" y="814" width="34" height="34" rx="9.5625" class="tile-green"/>
+  <g transform="translate(54.375,820.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-green"/></g>
+  <text x="96" y="828" class="t"><tspan class="tb">Deliverable</tspan>  a written report, every run</text>
+  <text x="96" y="850" class="cap">severity counts · findings worst-first (severity + confidence + standard + attacker) · unread areas · standards</text>
+  <text x="96" y="870" class="cap">Files GitHub issues only when separately asked  ·  state: <tspan class="mono">.momus/</tspan> ledger · run.log · report</text>
+  <rect x="32" y="910" width="856" height="104" rx="14" class="k-red" />
+  <rect x="48" y="926" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(54.375,932.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="96" y="940" class="t"><tspan class="tb c-red">Rails</tspan></text>
+  <text x="96" y="962" class="cap">· You audit; you never fix — finish the report, then hand findings to /forge in a separate session.</text>
+<text x="96" y="980" class="cap">· Never write a ship / no-ship verdict — that decision belongs to whoever asked for the audit.</text>
+<text x="96" y="998" class="cap">· Never write the shared dev DB (writes use a throwaway test DB) · every BLOCKER / HIGH needs ≥ 1 T1 / T2.</text>
+</svg>

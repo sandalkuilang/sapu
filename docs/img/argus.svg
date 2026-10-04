@@ -1,123 +1,181 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 864" role="img" aria-label="argus runs one bounded QA cycle of eleven phases from ORIENT to ROTATE, applying five review lenses and six bypass classes, grading every claim by evidence tier and falsifying it before filing de-duplicated GitHub issues; it tests but never fixes, using seeded accounts on the dev app only, and keeps state under .argus/.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1040" width="920" height="1040" role="img" aria-label="argus runs one bounded QA cycle of eleven phases from ORIENT to ROTATE, applying five review lenses and six bypass classes, grading every claim by evidence tier and falsifying it before filing de-duplicated GitHub issues; it tests but never fixes, using seeded accounts on the dev app only, and keeps state under .argus/.">
   <title>/argus — autonomous QA cycle</title>
   <desc>One invocation is one bounded cycle of eleven phases: ORIENT, SELECT, INTAKE, CHARTER, EXECUTE, OBSERVE, MINIMIZE, TRIAGE, REPORT, PERSIST, ROTATE, each owing an artifact. Five lenses — User, PM, Senior QA, Auditor, Curator; the Auditor lens and bypass classes A to F run every cycle, and the Curator runs on rendered surfaces in live mode. Every claim is graded by evidence tier T1 to T4; S1 and S2 need at least one T1 observation, and each finding is falsified before filing. Output is de-duplicated GitHub issues fingerprinted by root cause, plus state under .argus/. argus tests but never fixes, works only the dev app with seeded accounts, and static mode caps severity at S3.</desc>
   <style>
-    :root{
-      --bg:#f4f7fc; --ink:#18212f; --muted:#4d596c; --panel:#ffffff; --panel2:#e9eff9; --edge:#8390a6;
-      --reads:#1f5fd6; --writes:#0d7a4d; --limit:#b3261e; --accent:#6a43c8;
-      --readsfill:#e3edff; --writesfill:#dcf3e8; --limitfill:#fce8e5; --accentfill:#efe8fc;
-    }
-    @media (prefers-color-scheme: dark){
-      :root{
-        --bg:#0f1522; --ink:#e8edf7; --muted:#a6b1c4; --panel:#1a2232; --panel2:#232d41; --edge:#5a677e;
-        --reads:#86abff; --writes:#62d49a; --limit:#ff8f84; --accent:#c3a9ff;
-        --readsfill:#17294a; --writesfill:#10301f; --limitfill:#3b1b18; --accentfill:#261f3d;
-      }
-    }
-    text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;fill:var(--ink)}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-    .bg{fill:var(--bg)}
-    .h{font-size:21px;font-weight:700}
-    .sub{font-size:13px;fill:var(--muted)}
-    .ttl{font-size:14px;font-weight:700}
-    .t{font-size:13px}
-    .sm{font-size:12.5px;fill:var(--muted)}
-    .ph{font-size:13px;font-weight:700}
-    .num{font-size:12px;font-weight:700;fill:#ffffff}
-    .c-limit{fill:var(--limit)} .c-accent{fill:var(--accent)}
-    .box{fill:var(--panel);stroke:var(--edge);stroke-width:1.4}
-    .box2{fill:var(--panel2);stroke:var(--edge);stroke-width:1.2}
-    .reads-b{fill:var(--readsfill);stroke:var(--reads);stroke-width:1.5}
-    .writes-b{fill:var(--writesfill);stroke:var(--writes);stroke-width:1.5}
-    .limit-b{fill:var(--limitfill);stroke:var(--limit);stroke-width:1.5}
-    .accent-b{fill:var(--accentfill);stroke:var(--accent);stroke-width:1.6}
-    .spine{stroke:var(--accent);stroke-width:2.6;fill:none}
-    .reads{stroke:var(--reads);stroke-width:1.7;fill:none;stroke-dasharray:6 4}
-    .writes{stroke:var(--writes);stroke-width:1.8;fill:none}
-    .ah-reads{fill:var(--reads)} .ah-writes{fill:var(--writes)} .ah-sp{fill:var(--accent)}
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
   </style>
   <defs>
-    <marker id="ar" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-reads"/></marker>
-    <marker id="aw" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" refX="9" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 Z" class="ah-writes"/></marker>
-    <marker id="asp" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" refX="6" refY="10" orient="auto"><path d="M1,1 L11,1 L6,10 Z" class="ah-sp"/></marker>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
   </defs>
-  <rect class="bg" x="0" y="0" width="920" height="864" rx="16"/>
-
-  <text x="24" y="40" class="h">/argus — one bounded QA cycle</text>
-  <text x="24" y="62" class="sub">Hunt bugs, business-rule breaks, insider fraud and rendered-surface defects on the live dev app. Test, never fix.</text>
-
-  <!-- reads -->
-  <rect x="24" y="80" width="872" height="40" rx="8" class="reads-b"/>
-  <text x="40" y="105" class="t"><tspan class="ttl">Reads</tspan> — profile <tspan class="mono">.claude/sapu/argus.md</tspan> + <tspan class="mono">.argus/config.yml</tspan> (repo, URLs, seeded accounts, scope, limits)</text>
-
-  <!-- left: council of five -->
-  <rect x="24" y="146" width="252" height="292" rx="10" class="accent-b"/>
-  <text x="40" y="170" class="ttl c-accent">Council of Five</text>
-  <text x="40" y="190" class="sm">each lens owes an output</text>
-  <text x="40" y="216" class="t">🧑 User — interrupted flow</text>
-  <text x="40" y="246" class="t">📋 PM — rule + money exposure</text>
-  <text x="40" y="276" class="t">🔬 Senior QA — boundaries, races</text>
-  <text x="40" y="306" class="t">🕵️ Auditor — insider fraud</text>
-  <text x="64" y="324" class="sm">runs every cycle</text>
-  <text x="40" y="350" class="t">🎨 Curator — rendered surface</text>
-  <text x="64" y="368" class="sm">live mode only · measured</text>
-  <rect x="40" y="388" width="220" height="34" rx="7" class="box"/>
-  <text x="150" y="409" class="sm" text-anchor="middle">+ six bypass classes A–F</text>
-
-  <!-- center spine: 11 phases -->
-  <text x="300" y="168" class="ttl">The cycle — each phase owes an artifact</text>
-  <path d="M312,180 L312,620" class="spine" marker-end="url(#asp)"/>
-
-  <circle cx="312" cy="195" r="11" fill="var(--accent)"/><text x="312" y="199" class="num" text-anchor="middle">1</text>
-  <rect x="332" y="180" width="300" height="30" rx="6" class="box"/><text x="344" y="200" class="t"><tspan class="ph">ORIENT</tspan> — preflight passes</text>
-  <circle cx="312" cy="235" r="11" fill="var(--accent)"/><text x="312" y="239" class="num" text-anchor="middle">2</text>
-  <rect x="332" y="220" width="300" height="30" rx="6" class="box"/><text x="344" y="240" class="t"><tspan class="ph">SELECT</tspan> — ranked area to probe</text>
-  <circle cx="312" cy="275" r="11" fill="var(--accent)"/><text x="312" y="279" class="num" text-anchor="middle">3</text>
-  <rect x="332" y="260" width="300" height="30" rx="6" class="box"/><text x="344" y="280" class="t"><tspan class="ph">INTAKE</tspan> — sapu / forge residue</text>
-  <circle cx="312" cy="315" r="11" fill="var(--accent)"/><text x="312" y="319" class="num" text-anchor="middle">4</text>
-  <rect x="332" y="300" width="300" height="30" rx="6" class="box"/><text x="344" y="320" class="t"><tspan class="ph">CHARTER</tspan> — plan + assumptions first</text>
-  <circle cx="312" cy="355" r="11" fill="var(--accent)"/><text x="312" y="359" class="num" text-anchor="middle">5</text>
-  <rect x="332" y="340" width="300" height="30" rx="6" class="box"/><text x="344" y="360" class="t"><tspan class="ph">EXECUTE</tspan> — probe log + tier</text>
-  <circle cx="312" cy="395" r="11" fill="var(--accent)"/><text x="312" y="399" class="num" text-anchor="middle">6</text>
-  <rect x="332" y="380" width="300" height="30" rx="6" class="box"/><text x="344" y="400" class="t"><tspan class="ph">OBSERVE</tspan> — read state back</text>
-  <circle cx="312" cy="435" r="11" fill="var(--accent)"/><text x="312" y="439" class="num" text-anchor="middle">7</text>
-  <rect x="332" y="420" width="300" height="30" rx="6" class="box"/><text x="344" y="440" class="t"><tspan class="ph">MINIMIZE</tspan> — strip to minimal repro</text>
-  <circle cx="312" cy="475" r="11" fill="var(--accent)"/><text x="312" y="479" class="num" text-anchor="middle">8</text>
-  <rect x="332" y="460" width="300" height="30" rx="6" class="box"/><text x="344" y="480" class="t"><tspan class="ph">TRIAGE</tspan> — candidates + refutation</text>
-  <circle cx="312" cy="515" r="11" fill="var(--accent)"/><text x="312" y="519" class="num" text-anchor="middle">9</text>
-  <rect x="332" y="500" width="300" height="30" rx="6" class="writes-b"/><text x="344" y="520" class="t"><tspan class="ph">REPORT</tspan> — file issues (gated)</text>
-  <circle cx="312" cy="555" r="11" fill="var(--accent)"/><text x="312" y="559" class="num" text-anchor="middle">10</text>
-  <rect x="332" y="540" width="300" height="30" rx="6" class="box"/><text x="344" y="560" class="t"><tspan class="ph">PERSIST</tspan> — journal + fingerprints</text>
-  <circle cx="312" cy="595" r="11" fill="var(--accent)"/><text x="312" y="599" class="num" text-anchor="middle">11</text>
-  <rect x="332" y="580" width="300" height="30" rx="6" class="box"/><text x="344" y="600" class="t"><tspan class="ph">ROTATE</tspan> — pin next cycle's lane</text>
-
-  <!-- right top: evidence law -->
-  <rect x="660" y="146" width="236" height="196" rx="10" class="box"/>
-  <text x="676" y="170" class="ttl">The law of evidence</text>
-  <text x="676" y="194" class="t">T1 observed — wire / DB / DOM</text>
-  <text x="676" y="216" class="t">T2 command or test you ran</text>
-  <text x="676" y="238" class="t">T3 read in source at a commit</text>
-  <text x="676" y="260" class="t">T4 inferred from T1–T3</text>
-  <line x1="676" y1="276" x2="880" y2="276" stroke="var(--edge)" stroke-width="1"/>
-  <text x="676" y="298" class="t">S1 / S2 need ≥ 1 T1 item</text>
-  <text x="676" y="320" class="t">falsify before filing</text>
-
-  <!-- right: output -->
-  <rect x="660" y="358" width="236" height="132" rx="10" class="writes-b"/>
-  <text x="676" y="382" class="ttl">Output</text>
-  <text x="676" y="406" class="t">de-duplicated GitHub issues</text>
-  <text x="676" y="426" class="sm">fingerprint the root cause</text>
-  <text x="676" y="448" class="t">one defect per issue</text>
-  <text x="676" y="472" class="t">state under <tspan class="mono">.argus/</tspan></text>
-  <path d="M632,515 L654,515 L654,490" class="writes" marker-end="url(#aw)"/>
-
-  <!-- hard limits -->
-  <rect x="24" y="644" width="872" height="196" rx="10" class="limit-b"/>
-  <text x="40" y="668" class="ttl c-limit">Hard limits</text>
-  <text x="40" y="694" class="t">· You test; you don't fix — no product-code edits, commits or PRs.</text>
-  <text x="40" y="717" class="t">· Asked to fix mid-cycle → end the cycle first, then hand to /forge in a separate session.</text>
-  <text x="40" y="740" class="t">· Dev / local only, seeded accounts only — never production, never real customer or employee data.</text>
-  <text x="40" y="763" class="t">· mode=static (servers down) caps every severity at S3 and needs a reachability chain.</text>
-  <text x="40" y="786" class="t">· A subagent returns a candidate, never a finding — the orchestrator re-runs the repro itself.</text>
-  <text x="40" y="809" class="t">· File only what you'd bet 4:1 a maintainer reproduces — a wrong issue gets implemented.</text>
+  <rect x="0.5" y="0.5" width="919" height="1039" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1040" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">AUTONOMOUS QA · /argus</text>
+  <text x="32" y="78" class="h1">One bounded QA cycle</text>
+  <text x="32" y="102" class="sub">Hunt bugs, business-rule breaks, insider fraud and rendered-surface defects on the live dev app. Test, never fix.</text>
+  <rect x="32" y="128" width="856" height="46" rx="12" class="k-blue" />
+  <rect x="44" y="134" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(50.375,140.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-blue"/></g>
+  <text x="90" y="156" class="t"><tspan class="tb">Reads</tspan>  profile <tspan class="mono">.claude/sapu/argus.md</tspan> + <tspan class="mono">.argus/config.yml</tspan> (repo, URLs, seeded accounts, scope, limits)</text>
+  <rect x="32" y="196" width="316" height="444" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="212" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,218.75) scale(0.9375)"><path d="M9 4.5a3.5 3.5 0 1 0 0.01 0 M3 20c0-3.6 2.7-6 6-6s6 2.4 6 6 M16.5 5.5a2.8 2.8 0 1 1 0 5.6 M17.5 14.2c2.2.5 3.5 2.6 3.5 5.3" class="ico ico-w"/></g>
+  <text x="96" y="228" class="ttl">Council of Five</text>
+  <text x="96" y="246" class="cap">each lens owes an output</text>
+  <rect x="48" y="272" width="284" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="299" r="13" class="tile-violet"/>
+  <text x="70" y="303" class="chipt c-violet" text-anchor="middle">U</text>
+  <text x="92" y="304" class="t"><tspan class="tb">User</tspan><tspan class="muted"> — </tspan>interrupted flow</text>
+  <rect x="48" y="334" width="284" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="361" r="13" class="tile-violet"/>
+  <text x="70" y="365" class="chipt c-violet" text-anchor="middle">PM</text>
+  <text x="92" y="366" class="t"><tspan class="tb">PM</tspan><tspan class="muted"> — </tspan>rule + money exposure</text>
+  <rect x="48" y="396" width="284" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="423" r="13" class="tile-violet"/>
+  <text x="70" y="427" class="chipt c-violet" text-anchor="middle">QA</text>
+  <text x="92" y="428" class="t"><tspan class="tb">Senior QA</tspan><tspan class="muted"> — </tspan>boundaries, races</text>
+  <rect x="48" y="458" width="284" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="485" r="13" class="tile-violet"/>
+  <text x="70" y="489" class="chipt c-violet" text-anchor="middle">A</text>
+  <text x="92" y="480" class="t"><tspan class="tb">Auditor</tspan><tspan class="muted"> — </tspan>insider fraud</text>
+  <text x="92" y="499" class="cap c-amber">runs every cycle</text>
+  <rect x="48" y="520" width="284" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="547" r="13" class="tile-violet"/>
+  <text x="70" y="551" class="chipt c-violet" text-anchor="middle">C</text>
+  <text x="92" y="542" class="t"><tspan class="tb">Curator</tspan><tspan class="muted"> — </tspan>rendered surface</text>
+  <text x="92" y="561" class="cap c-blue">live mode only · measured</text>
+  <text x="48" y="618" class="t"><tspan class="tb">+ six bypass classes A–F</tspan>, every cycle</text>
+  <rect x="364" y="196" width="524" height="444" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="380" y="212" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(386.75,218.75) scale(0.9375)"><path d="M20 12a8 8 0 1 1-2.4-5.7 M20 4v4.5h-4.5" class="ico ico-w"/></g>
+  <text x="428" y="228" class="ttl">The cycle</text>
+  <text x="428" y="246" class="cap">eleven phases · each owes an artifact</text>
+  <rect x="380" y="272" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="297" r="12" fill="url(#brand)"/>
+  <text x="402" y="301.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">1</text>
+  <text x="424" y="293" class="tb">ORIENT</text>
+  <text x="424" y="311" class="cap">preflight passes</text>
+  <rect x="380" y="332" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="357" r="12" fill="url(#brand)"/>
+  <text x="402" y="361.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">2</text>
+  <text x="424" y="353" class="tb">SELECT</text>
+  <text x="424" y="371" class="cap">ranked area to probe</text>
+  <rect x="380" y="392" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="417" r="12" fill="url(#brand)"/>
+  <text x="402" y="421.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">3</text>
+  <text x="424" y="413" class="tb">INTAKE</text>
+  <text x="424" y="431" class="cap">sapu / forge residue</text>
+  <rect x="380" y="452" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="477" r="12" fill="url(#brand)"/>
+  <text x="402" y="481.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">4</text>
+  <text x="424" y="473" class="tb">CHARTER</text>
+  <text x="424" y="491" class="cap">plan + assumptions first</text>
+  <rect x="380" y="512" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="537" r="12" fill="url(#brand)"/>
+  <text x="402" y="541.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">5</text>
+  <text x="424" y="533" class="tb">EXECUTE</text>
+  <text x="424" y="551" class="cap">probe log + tier</text>
+  <rect x="380" y="572" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="402" cy="597" r="12" fill="url(#brand)"/>
+  <text x="402" y="601.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">6</text>
+  <text x="424" y="593" class="tb">OBSERVE</text>
+  <text x="424" y="611" class="cap">read state back</text>
+  <rect x="634" y="272" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="656" cy="297" r="12" fill="url(#brand)"/>
+  <text x="656" y="301.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">7</text>
+  <text x="678" y="293" class="tb">MINIMIZE</text>
+  <text x="678" y="311" class="cap">strip to minimal repro</text>
+  <rect x="634" y="332" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="656" cy="357" r="12" fill="url(#brand)"/>
+  <text x="656" y="361.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">8</text>
+  <text x="678" y="353" class="tb">TRIAGE</text>
+  <text x="678" y="371" class="cap">candidates + refutation</text>
+  <rect x="634" y="392" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="656" cy="417" r="12" fill="url(#brand)"/>
+  <text x="656" y="421.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">9</text>
+  <text x="678" y="413" class="tb">REPORT</text>
+  <text x="678" y="431" class="cap">file issues (gated)</text>
+  <rect x="634" y="452" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="656" cy="477" r="12" fill="url(#brand)"/>
+  <text x="656" y="481.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">10</text>
+  <text x="678" y="473" class="tb">PERSIST</text>
+  <text x="678" y="491" class="cap">journal + fingerprints</text>
+  <rect x="634" y="512" width="238" height="50" rx="10" class="sunken" />
+  <circle cx="656" cy="537" r="12" fill="url(#brand)"/>
+  <text x="656" y="541.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">11</text>
+  <text x="678" y="533" class="tb">ROTATE</text>
+  <text x="678" y="551" class="cap">pin next cycle's lane</text>
+  <text x="646" y="602" class="cap c-violet">one invocation = one bounded cycle</text>
+  <rect x="32" y="660" width="520" height="166" rx="14" class="card" filter="url(#sh)"/>
+  <text x="48" y="690" class="ttl">The law of evidence</text>
+  <rect x="48" y="706" width="36" height="22" rx="11" class="k-green"/>
+  <text x="58" y="721" class="chipt c-green">T1</text>
+  <text x="98" y="721" class="t">observed — wire / DB / DOM</text>
+  <rect x="48" y="732" width="36" height="22" rx="11" class="k-blue"/>
+  <text x="58" y="747" class="chipt c-blue">T2</text>
+  <text x="98" y="747" class="t">a command or test you ran</text>
+  <rect x="48" y="758" width="36" height="22" rx="11" class="k-violet"/>
+  <text x="58" y="773" class="chipt c-violet">T3</text>
+  <text x="98" y="773" class="t">read in source at a commit</text>
+  <rect x="48" y="784" width="36" height="22" rx="11" class="chip"/>
+  <text x="58" y="799" class="chipt muted">T4</text>
+  <text x="98" y="799" class="t">inferred from T1–T3</text>
+  <rect x="330" y="706" width="206" height="98" rx="10" class="k-amber" />
+  <text x="346" y="732" class="tb c-amber">S1 / S2 need</text>
+  <text x="346" y="752" class="tb c-amber">≥ 1 T1 item</text>
+  <text x="346" y="782" class="cap">falsify before filing</text>
+  <rect x="568" y="660" width="320" height="166" rx="14" class="k-green" />
+  <rect x="584" y="676" width="34" height="34" rx="9.5625" class="tile-green"/>
+  <g transform="translate(590.375,682.375) scale(0.8854166666666667)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico s-green"/></g>
+  <text x="630" y="698" class="ttl">Output</text>
+  <text x="584" y="736" class="t">· de-duplicated GitHub issues</text>
+<text x="584" y="757" class="t">· the root cause fingerprinted</text>
+<text x="584" y="778" class="t">· one defect per issue</text>
+<text x="584" y="799" class="t">· state under <tspan class="mono">.argus/</tspan></text>
+  <rect x="32" y="846" width="856" height="168" rx="14" class="k-red" />
+  <rect x="44" y="862" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,868.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="90" y="876" class="t"><tspan class="tb c-red">Hard limits</tspan></text>
+  <text x="90" y="900" class="cap">· You test; you don't fix — no product-code edits, commits or PRs.</text>
+<text x="90" y="918" class="cap">· Asked to fix mid-cycle → end the cycle first, then hand to /forge in a separate session.</text>
+<text x="90" y="936" class="cap">· Dev / local only, seeded accounts only — never production, never real customer or employee data.</text>
+<text x="90" y="954" class="cap">· mode=static (servers down) caps every severity at S3 and needs a reachability chain.</text>
+<text x="90" y="972" class="cap">· A subagent returns a candidate, never a finding — the orchestrator re-runs the repro itself.</text>
+<text x="90" y="990" class="cap">· File only what you'd bet 4:1 a maintainer reproduces — a wrong issue gets implemented.</text>
 </svg>

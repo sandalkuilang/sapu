@@ -1,44 +1,76 @@
 # How the agents work
 
+<sub><a href="../README.md">README</a> · <a href="usage.md">Install and use</a> · <b>How the agents work</b> · <a href="security.md">Safety and trust</a> · <a href="contributing.md">Contributing</a></sub>
+
 <sub>A picture tour of each skill. What to type is in the <a href="usage.md#day-to-day">usage table</a>.</sub>
 
-The plugin is the **engine** — skills, agents, a guard hook and a merge script — and it knows nothing about any one repo. Each repo brings a **contract** (`.claude/sapu.json` + `.claude/sapu/*.md` profiles, written by `/sapu:init`; committed, or kept local outside the repo); an optional per-machine config decides where sapu may run.
+The plugin is the **engine** — skills, the worker agents, a guard hook and a merge script — and it knows nothing about any one repo. Its specialists (reviewers and advisers) come from the [senior-dev-team](../plugins/senior-dev-team/README.md) plugin, installed with sapu. Each repo brings a **contract** (`.claude/sapu.json` + `.claude/sapu/*.md` profiles, written by `/sapu:init`; committed, or kept local outside the repo); an optional per-machine config decides where sapu may run.
 
-<img src="img/overview.svg" alt="How the sapu engine, the per-repo contract and the optional machine config fit together, and which skill calls which" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/overview-dark.svg">
+  <img src="img/overview.svg" alt="How the sapu engine, the per-repo contract, the optional machine config and the senior-dev-team specialists fit together, and which skill calls which" width="100%">
+</picture>
 
 ### /sapu — sweep the backlog
 
-Locks its scope first (Step 0), drains open PRs (Phase A), then works open issues in parallel lanes (Phase B): each issue is one Workflow call running a **forge** worker in its own worktree, up to as many lanes as the machine carries, and a new lane starts as soon as one returns. Every PR is reviewed by the `qa` specialist at Opus/high, or by an adversarial Opus pair on 🔴 and on any diff that touches a red area, with up to two fix cycles; a worker past its step budget hands off to a fresh one of the same tier. Workers never merge: the orchestrator queues ready PRs through `sapu-merge.sh` (gate, flake ledger, merge, `mergeAfter`), one at a time. Each session ends by rewriting the `sapu-sweep-state` memory page (and cleans up merged branches when the repo's policy says `session`); the last one runs a the cleanup the policy asks for, the final gate, and the report.
+Locks its scope first (Step 0), drains open PRs (Phase A), then works open issues in parallel lanes (Phase B): each issue is one Workflow call running a **forge** worker in its own worktree, up to as many lanes as the machine carries, and a new lane starts as soon as one returns. Every PR is reviewed by the `qa` specialist (`senior-dev-team:senior-qa-reviewer` unless the repo maps its own) at Opus/high, or by an adversarial Opus pair on 🔴 and on any diff that touches a red area. 🟢/🟡 findings get at most two fix cycles; 🔴 may go on up to five, but past the second only while it converges (each review reports fewer findings than the one before, and no finding is reported by three reviews in a row), else it is blocked with the reason; a worker past its step budget hands off to a fresh one of the same tier. Workers never merge: the orchestrator queues ready PRs through `sapu-merge.sh` (gate, flake ledger, merge, `mergeAfter`), one at a time. Each session ends by rewriting the `sapu-sweep-state` memory page (and cleans up merged branches when the repo's policy says `session`); the last one runs the cleanup the policy asks for, the final gate, and the report.
 
-<img src="img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and up to two fix cycles, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/sapu-dark.svg">
+  <img src="img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge), a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
+</picture>
+
+### The specialists — senior-dev-team
+
+Reviewers and advisers are called by role. By default each role is an agent of the [senior-dev-team](../plugins/senior-dev-team/README.md) plugin, installed with sapu; a repo can map any role to its own agent ([Specialist agents](usage.md#specialist-agents)).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/senior-dev-team-dark.svg">
+  <img src="img/senior-dev-team.svg" alt="The eight senior-dev-team agents and how sapu dispatches them by role: qa reviews every PR, a qa plus domain-specialist Opus pair reviews the red tier, and a scoped /inspector run adds a read-only team review" width="100%">
+</picture>
 
 ### /inspector — full sweep before release
 
 Runs momus, then argus, then nemesis — one phase finished before the next starts, each on its own model and effort. momus's business-process gap rows become priority targets for the other two; a scoped run adds a read-only team review. One combined summary and a security roll-up at the end.
 
-<img src="img/inspector.svg" alt="inspector sequences momus then argus then nemesis, each on its own model and effort, ending with one combined summary and a security roll-up" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/inspector-dark.svg">
+  <img src="img/inspector.svg" alt="inspector sequences momus then argus then nemesis, each on its own model and effort, ending with one combined summary and a security roll-up" width="100%">
+</picture>
 
 ### /dream — where is this heading
 
 Read-only research: researches 2–3 of nine technology domains per run (stalest first, or weighted to a focus with ~20% outside it), then forms 8–12 falsifiable hypotheses each with a cited reasoning chain and a kill condition, then grounds two or three into one-month experiments for this project. It modifies no code and opens no issues; its only write is the report.
 
-<img src="img/dream.svg" alt="dream: deep research, then falsifiable hypotheses with kill conditions, then grounding into one-month experiments; read-only, one local report" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/dream-dark.svg">
+  <img src="img/dream.svg" alt="dream: deep research, then falsifiable hypotheses with kill conditions, then grounding into one-month experiments; read-only, one local report" width="100%">
+</picture>
 
 ### /argus — autonomous QA
 
 One bounded cycle of eleven phases (ORIENT → ROTATE), applying five review lenses and six bypass classes. Every claim is graded by evidence tier and falsified before it becomes a de-duplicated GitHub issue. Tests, never fixes; the dev app and seeded accounts only.
 
-<img src="img/argus.svg" alt="argus runs one eleven-phase QA cycle with five lenses and evidence tiers, filing de-duplicated issues; it tests but never fixes" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/argus-dark.svg">
+  <img src="img/argus.svg" alt="argus runs one eleven-phase QA cycle with five lenses and evidence tiers, filing de-duplicated issues; it tests but never fixes" width="100%">
+</picture>
 
 ### /momus — release-readiness audit
 
 One pass across nine areas (A–I), each read with a security lens for outsiders and insiders and graded by a four-level severity ladder. The deliverable is a written report; it files issues only when asked and never writes a ship/no-ship verdict.
 
-<img src="img/momus.svg" alt="momus audits nine areas A to I with a security lens and a four-level severity ladder; the deliverable is a written report" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/momus-dark.svg">
+  <img src="img/momus.svg" alt="momus audits nine areas A to I with a security lens and a four-level severity ladder; the deliverable is a written report" width="100%">
+</picture>
 
 ### /nemesis — authorized red-team
 
 Attacks the local dev app only. A hard gate — signed, unexpired authorization; allowlisted targets resolving to loopback (or an owner-attested private dev address); dev environments only; no STOP file — must pass before any active testing, and a kill switch halts the run mid-cycle. Then passes 0–7 from residue intake and recon through business logic to detection-integrity, plus six bypass classes every cycle. Files security issues; non-destructive, seeded low-privilege accounts only.
 
-<img src="img/nemesis.svg" alt="nemesis: a hard gate, then passes 0 to 7 from residue intake and recon to detection-integrity with six bypass classes, filing security issues against the dev app only" width="100%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/nemesis-dark.svg">
+  <img src="img/nemesis.svg" alt="nemesis: a hard gate, then passes 0 to 7 from residue intake and recon to detection-integrity with six bypass classes, filing security issues against the dev app only" width="100%">
+</picture>
 

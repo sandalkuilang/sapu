@@ -15,7 +15,7 @@
 //   - a diff touching a red area gets the 🔴 pair on its FULL diff, and "the red-area check
 //     could not run" counts as red (fail-closed; sapu-merge.sh re-checks at merge); the worker's
 //     own red-area check before its PR only ever raises the tier, so the pair can start at once;
-//   - at most 2 fix cycles, one escalation step, every continuing agent in its own worktree;
+//   - at most 2 fix cycles (🔴: up to 5 while each review reports fewer findings), one escalation step, every continuing agent in its own worktree;
 //   - a worker past its step budget hands off to a fresh agent of the same tier, at most MAX_HANDOFFS times;
 //   - the guard hook must answer the canary, or the item stops.
 //
@@ -34,7 +34,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.5.3 — one Phase B lane: a forge worker in its own worktree, senior review by risk tier with a fail-closed red-area raise, up to 2 fix cycles, one escalation step, the repo\'s pre-PR command until zero; returns a merge-ready PR without merging',
+  description: 'sapu v2.6.0 — one Phase B lane: a forge worker in its own worktree, senior review by risk tier with a fail-closed red-area raise, up to 2 fix cycles (red: up to 5 while converging), one escalation step, the repo\'s pre-PR command until zero; returns a merge-ready PR without merging',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Implement', detail: 'one forge worker per issue, isolated worktree' },
@@ -54,17 +54,31 @@ const MODEL = {
 }
 const RED_FLOOR = 'sapu:sapu-sonnet-high'
 // Specialists are named by ROLE; the contract maps each role to a subagent type (wave-args
-// resolves the map: the repo's own agent, else the plugin's built-in sapu:sapu-<role>).
+// resolves the map: the repo's own agent, else the senior-dev-team default, DEFAULT_SPECIALISTS).
 // Mirrors SPECIALIST_ROLES / DOMAIN_ROLES in scripts/sapu-contract.mjs (pinned by the tests).
 const ROLES = ['qa', 'architect', 'db', 'developer', 'ux', 'writer', 'product']
 const DOMAIN_ROLES = ['architect', 'db', 'developer', 'ux'] // the domain half of the 🔴 pair; qa is the other half
+const DEFAULT_SPECIALISTS = { qa: 'senior-dev-team:senior-qa-reviewer', architect: 'senior-dev-team:senior-software-architect', db: 'senior-dev-team:senior-fullstack-database-engineer', developer: 'senior-dev-team:senior-fullstack-developer', ux: 'senior-dev-team:senior-ui-ux-designer', writer: 'senior-dev-team:senior-technical-writer', product: 'senior-dev-team:product-manager' }
 // The 🔴 pair always runs on Opus/high, whatever agent the contract maps a role to.
 const PAIR_MODEL = ['opus', 'high']
 // A specialist is a dedicated agent with its own model: never general-purpose (it inherits the
 // session model) nor a ladder worker (LADDER_AGENT in sapu-contract.mjs, SAPU_AGENT in the guard).
 const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/
 const notSpecialist = (t) => t === 'general-purpose' || LADDER_AGENT.test(t)
-const MAX_FIX_CYCLES = 2
+const MAX_FIX_CYCLES = 2 // 🟢/🟡; and every tier's first cycles
+// 🔴 may go on past MAX_FIX_CYCLES, up to MAX_FIX_CYCLES_RED, only while it converges: each review
+// reports fewer findings than the one before, and no finding is reported by three reviews in a row
+// (its fixers could not fix it). A hard design keeps a chance; a loop that does not shrink stops.
+const MAX_FIX_CYCLES_RED = 5
+// A finding's identity across reviews: its file without any line form (a.ts:12, a.ts#L12, a.ts (line 12))
+// and its whole claim, normalised. Wrongly "the same" would block a PR whose findings were fixed, so
+// it errs the other way: a re-worded repeat counts as new (MAX_FIX_CYCLES_RED still bounds the loop).
+let uncomparable = 0
+const findingKey = (f) => {
+  const file = String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/\s+line\s+\d+.*$/, '').replace(/#l\d+.*$/, '').replace(/:l?\d+.*$/, '').trim()
+  const claim = String(f.claim).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+  return claim ? `${file}|${claim}` : `${file}|#${++uncomparable}` // no comparable claim: never "the same" as any other
+}
 // Each worker step re-sends its whole, growing context, so a 200-step run costs far more than two
 // 100-step ones. Past the step budget (subagent-brief.md point 11) a worker commits WIP and hands off.
 const MAX_HANDOFFS = 2
@@ -99,9 +113,9 @@ for (const s of C.redAreaSpecialists) {
   if (!ROLES.includes(s.agent) && [S.qa, S.writer, S.product].includes(s.agent)) throw new Error(`args.contract.redAreaSpecialists: ${s.agent} is the qa, writer or product agent, so it cannot be the domain half of the red pair`)
   if (!ROLES.includes(s.agent) && notSpecialist(s.agent)) throw new Error(`args.contract.redAreaSpecialists: ${s.agent} cannot be a specialist (general-purpose or a ladder worker)`)
 }
-// Agent types the repo contract chose (not the plugin's built-ins): a typo there dispatches nothing.
+// Agent types the repo contract chose (not the senior-dev-team defaults): a typo there dispatches nothing.
 const CONTRACT_AGENTS = new Set([
-  ...ROLES.filter((r) => S[r] !== `sapu:sapu-${r}`).map((r) => S[r]),
+  ...ROLES.filter((r) => S[r] !== DEFAULT_SPECIALISTS[r]).map((r) => S[r]),
   ...C.redAreaSpecialists.filter((s) => !ROLES.includes(s.agent)).map((s) => s.agent),
 ])
 if (!Array.isArray(input.items) || input.items.length === 0) throw new Error('args.items must be a non-empty wave table')
@@ -346,8 +360,10 @@ async function review(item, state, delta, only) {
 // repo contract chose, where to check its spelling.
 function deadReviewers(dead, what) {
   const own = dead.filter((a) => CONTRACT_AGENTS.has(a))
+  const team = dead.filter((a) => a.startsWith('senior-dev-team:'))
   return `${what} returned nothing: ${dead.join(', ')}` +
-    (own.length ? ` — ${own.join(', ')} comes from the repo contract: check that agent name in the repo contract (specialists / redAreaSpecialists); an agent type that does not exist here cannot be dispatched` : '')
+    (own.length ? ` — ${own.join(', ')} comes from the repo contract: check that agent name in the repo contract (specialists / redAreaSpecialists); an agent type that does not exist here cannot be dispatched` : '') +
+    (team.length ? ` — ${team.join(', ')} comes from the senior-dev-team plugin, sapu's dependency: check it is installed and enabled (\`claude plugin list\`; install: \`claude plugin install senior-dev-team@<marketplace>\`)` : '')
 }
 
 // A 🟢/🟡 item whose diff touches a red area (or whose check could not run) gets the 🔴 pair,
@@ -504,10 +520,24 @@ async function runItem(item) {
     comments.push(rv.comment)
     notes.push(...rv.notes)
     state.securityGaps.push(...rv.securityGaps)
+    let seen = new Map() // finding key -> reviews in a row that reported it
+    let before = null // the previous review's count of distinct findings
+    let tier = state.tier
     while (!rv.clean) {
-      if (state.cycles === MAX_FIX_CYCLES) {
-        return done('blocked', { reason: `findings still open after ${MAX_FIX_CYCLES} fix cycles:\n${listFindings(rv.findings)}` })
-      }
+      // a tier raised mid-loop brings a new reviewer set: convergence starts over against it
+      if (state.tier !== tier) { tier = state.tier; seen = new Map(); before = null }
+      const keys = new Set(rv.findings.map(findingKey))
+      for (const k of [...seen.keys()]) if (!keys.has(k)) seen.delete(k)
+      for (const k of keys) seen.set(k, (seen.get(k) || 0) + 1)
+      const cap = state.tier === 'red' ? MAX_FIX_CYCLES_RED : MAX_FIX_CYCLES
+      const why =
+        state.cycles >= cap ? `after ${cap} fix cycles`
+        : state.cycles < MAX_FIX_CYCLES ? null
+        : before !== null && keys.size >= before ? `not converging: ${keys.size} finding(s) after ${before} the round before (cycle ${state.cycles})`
+        : [...seen.values()].some((n) => n >= 3) ? `a finding was reported by three reviews in a row (cycle ${state.cycles})`
+        : null
+      if (why) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
+      before = keys.size
       state.cycles++
       let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
       if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { PROFILE_SECTIONS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
+import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
 
 const ROOT = join(__dirname, "..");
 const PLUGIN = join(ROOT, "plugins/sapu");
@@ -50,6 +50,7 @@ describe("the repository assumes no owner and names no consumer", () => {
   const ALLOWED_FIELDS: Readonly<Record<string, readonly string[]>> = {
     ".claude/sapu.json": ["repo", "ghUser", "gitEmail"], // this repository's maintainer identity; a fork replaces it
     "plugins/sapu/.claude-plugin/plugin.json": ["repository", "author"], // the plugin's own metadata
+    "plugins/senior-dev-team/.claude-plugin/plugin.json": ["repository", "author"], // the plugin's own metadata
     ".claude-plugin/marketplace.json": ["owner"], // the marketplace's own metadata
   };
   /** The one line of the license that names the copyright holder; every other line is scanned. */
@@ -141,7 +142,7 @@ describe("the repository assumes no owner and names no consumer", () => {
   /** The text scanned for `file`: the file, minus its explicitly allowed JSON fields. */
   function scanned(file: string): string {
     const text = readFileSync(join(ROOT, file), "utf8");
-    if (file === "LICENSE") return text.replace(LICENSE_HOLDER, "");
+    if (file === "LICENSE" || file.endsWith("/LICENSE")) return text.replace(LICENSE_HOLDER, "");
     const allowed = ALLOWED_FIELDS[file];
     if (!allowed) return text;
     const obj = JSON.parse(text);
@@ -161,34 +162,36 @@ describe("the repository assumes no owner and names no consumer", () => {
   });
 });
 
-describe("specialists are named by role, never by one machine's agents", () => {
-  // The engine dispatches specialists by ROLE: the contract's `specialists` map, else the plugin's
-  // built-in `sapu:sapu-<role>`. A literal agent name that exists only as one machine's user-level
-  // agent fails to dispatch on every other machine, so none may reappear in the plugin or README.
-  const SPECIALIST_BANS: ReadonlyArray<RegExp> = [/\bsenior-[a-z-]+/i, /\bproduct-manager\b/i];
+describe("specialists are named by role or through the senior-dev-team plugin, never by one machine's agents", () => {
+  // The engine dispatches specialists by ROLE: the contract's `specialists` map, else the
+  // senior-dev-team default (a dependency of sapu). A BARE agent name exists only as one machine's
+  // user-level agent and fails to dispatch elsewhere, so sapu and the README name them only with
+  // the plugin prefix (`senior-dev-team:<agent>`); the senior-dev-team plugin itself is exempt.
+  const SPECIALIST_BANS: ReadonlyArray<RegExp> = [/(?<![\w:-])senior-(?!dev-team\b)[a-z-]+/i, /(?<![\w:-])product-manager\b/i];
   const hits = (text: string) =>
     text.split("\n").flatMap((line, i) => (SPECIALIST_BANS.some((re) => re.test(line)) ? [`${i + 1}: ${line.trim().slice(0, 120)}`] : []));
 
-  it("the scan flags a re-inserted agent name and passes role names (canary: an emptied list turns this red)", () => {
+  it("the scan flags a bare agent name and passes role names and prefixed ones (canary: an emptied list turns this red)", () => {
     expect(hits("ok\n9. dispatch **one** `senior-qa-analyst` with the AC")).toEqual(["2: 9. dispatch **one** `senior-qa-analyst` with the AC"]);
     expect(hits('{ "match": "schema", "agent": "senior-fullstack-database-engineer" }')).toHaveLength(1);
     expect(hits("scope/prioritas → `product-manager`")).toHaveLength(1);
-    expect(hits("the QA specialist (`specialists.qa`; built-in `sapu:sapu-qa`), a PRODUCT MANAGER review")).toEqual([]);
+    expect(hits("the QA specialist (`specialists.qa`; default `senior-dev-team:senior-qa-reviewer`), a PRODUCT MANAGER review, `senior-dev-team:product-manager`, the senior-dev-team plugin")).toEqual([]);
   });
 
-  const scanned = [...walk(join(ROOT, "plugins")).map((f) => [relative(ROOT, f), f] as const), ["README.md", join(ROOT, "README.md")] as const];
+  const scanned = [...walk(join(ROOT, "plugins")).filter((f) => !relative(ROOT, f).startsWith("plugins/senior-dev-team/")).map((f) => [relative(ROOT, f), f] as const), ["README.md", join(ROOT, "README.md")] as const];
   it.each(scanned)("%s", (_name, path) => {
     expect(hits(readFileSync(path, "utf8"))).toEqual([]);
   });
 });
 
-describe("built-in specialist role agents keep the 🔴 pair's floor", () => {
+describe("the default specialists keep the 🔴 pair's floor", () => {
   // Outside the wave the pair is dispatched with the Agent tool, which sets the model but not the
-  // effort: the effort is the agent's frontmatter. Every built-in role is therefore Opus/high, and
-  // none may hand its review to a cheaper subagent (no `Agent` tool).
-  const front = (role: string, key: string) => new RegExp(`^${key}: (.+)$`, "m").exec(readFileSync(join(PLUGIN, "agents", `sapu-${role}.md`), "utf8"))?.[1];
+  // effort: the effort is the agent's frontmatter. Every default specialist is therefore Opus/high,
+  // and none may hand its review to a cheaper subagent (an explicit tools list without `Agent`).
+  const front = (role: string, key: string) =>
+    new RegExp(`^${key}: (.+)$`, "m").exec(readFileSync(join(ROOT, "plugins/senior-dev-team/agents", `${DEFAULT_SPECIALISTS[role].replace(/^senior-dev-team:/, "")}.md`), "utf8"))?.[1];
 
-  it.each(SPECIALIST_ROLES as string[])("sapu-%s is Opus/high and cannot dispatch subagents", (role) => {
+  it.each(SPECIALIST_ROLES as string[])("the %s default is Opus/high and cannot dispatch subagents", (role) => {
     expect([front(role, "model"), front(role, "effort")]).toEqual(["opus", "high"]);
     expect(front(role, "tools")!.split(",").map((t) => t.trim())).not.toContain("Agent");
   });
@@ -539,10 +542,14 @@ describe("manifests", () => {
     }
   });
 
-  it("the marketplace entry name equals the plugin name, and the plugin is sapu", () => {
+  it("the marketplace lists sapu and its dependency senior-dev-team, each entry named as its plugin", () => {
     expect(plugin.name).toBe("sapu");
-    expect(market.plugins.map((p: { name: string }) => p.name)).toEqual(["sapu"]);
-    expect(market.plugins[0].source).toBe("./plugins/sapu");
+    expect(market.plugins.map((p: { name: string; source: string }) => [p.name, p.source])).toEqual([
+      ["sapu", "./plugins/sapu"],
+      ["senior-dev-team", "./plugins/senior-dev-team"],
+    ]);
+    for (const p of market.plugins) expect(JSON.parse(readFileSync(join(ROOT, p.source, ".claude-plugin/plugin.json"), "utf8")).name).toBe(p.name);
+    expect(plugin.dependencies).toEqual(["senior-dev-team"]);
   });
 
   it("the guard hook points at a script that exists and fires on Bash, Monitor, PowerShell, every file read/write/search tool and every MCP tool", () => {
@@ -565,7 +572,7 @@ describe("manifests", () => {
   // Claude Code copies an installed plugin into a cache keyed by its version, so a change under
   // plugins/sapu that keeps the version never reaches an installed copy: `claude plugin update`
   // sees nothing new. Any change against the base branch must therefore raise the version.
-  it("a change under plugins/sapu raises the plugin version above the base branch's", () => {
+  it.each(["sapu", "senior-dev-team"])("a change under plugins/%s raises that plugin's version above the base branch's", (name) => {
     const git = (...a: string[]) => execFileSync("git", ["-C", ROOT, ...a], { encoding: "utf8" }).trim();
     let base: string;
     try {
@@ -573,13 +580,21 @@ describe("manifests", () => {
     } catch {
       return; // ponytail: no origin/main (a bare export) = nothing to compare against
     }
-    const changed = git("diff", "--name-only", base, "--", "plugins/sapu").split("\n").filter((f) => f && f !== "plugins/sapu/.claude-plugin/plugin.json");
+    const manifest = `plugins/${name}/.claude-plugin/plugin.json`;
+    const changed = git("diff", "--name-only", base, "--", `plugins/${name}`).split("\n").filter((f) => f && f !== manifest);
     if (changed.length === 0) return;
     // Above the base branch's TIP too, not only the merge-base: two PRs cut from one release that
     // both bump to the same number would otherwise both pass, and the second never reaches an
-    // installed copy that already pulled the first.
-    const versionAt = (ref: string) => JSON.parse(git("show", `${ref}:plugins/sapu/.claude-plugin/plugin.json`)).version as string;
-    expect(versionProblem(plugin.version, versionAt(base), versionAt("origin/main")), `plugins/sapu changed (${changed[0]}, …)`).toBeNull();
+    // installed copy that already pulled the first. A plugin new on this branch has no base version.
+    const versionAt = (ref: string) => {
+      try {
+        return JSON.parse(git("show", `${ref}:${manifest}`)).version as string;
+      } catch {
+        return "0.0.0";
+      }
+    };
+    const current = JSON.parse(readFileSync(join(ROOT, manifest), "utf8")).version as string;
+    expect(versionProblem(current, versionAt(base), versionAt("origin/main")), `plugins/${name} changed (${changed[0]}, …)`).toBeNull();
   });
 
   it("the version must exceed both the merge-base and the base branch tip", () => {
