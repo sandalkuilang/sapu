@@ -1382,8 +1382,17 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
     expect(inWt({ language: "shell", cwd: wt3, code: "git commit -am wip" })).toBe(0);
   });
 
-  it("does not take a non-spawn string for a command (db.exec, regex exec, test runner run)", () => {
+  it("does not take a non-spawn string for a command (db.exec, regex exec, test runner run, python's exec)", () => {
     expect(status("execute", { language: "javascript", code: 'db.exec("DELETE FROM t WHERE a > 2"); /x/.exec("3 > 2"); suite.run("a > b")' })).toBe(0);
+    expect(status("execute", { language: "python", code: 'exec("print(1 > 0)")' })).toBe(0);
+    expect(status("execute", { language: "javascript", code: 'const run = (q) => db.prepare(q).all(); run("SELECT * FROM t WHERE a > 2")' })).toBe(0);
+  });
+
+  it("reads a process module behind require() or an alias, a destructured exec, and mixed-quote concatenation", () => {
+    expect(status("execute", { language: "javascript", code: 'require("child_process").exec("git push origin main", cb)' })).toBe(2);
+    expect(status("execute", { language: "python", code: 'import subprocess as sp\nsp.run(["git", "push", "origin", "main"])' })).toBe(2);
+    expect(status("execute", { language: "javascript", code: 'const { exec } = require("child_process"); exec("gh pr merge 5")' })).toBe(2);
+    expect(status("execute", { language: "javascript", code: `execSync("git push " + 'origin main')` })).toBe(2);
   });
 
   it("lets ordinary work through, and never polices the orchestrator", () => {

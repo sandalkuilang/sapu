@@ -1383,9 +1383,14 @@ export function stepBudget({ main, agentId, tool, command }) {
 // other languages' process APIs) is the LIMITS case above, as with `node -e`.
 const CTX_TOOL = /__ctx_(execute|execute_file|batch_execute|index)$/;
 const LIT = String.raw`[fr]?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\`(?:\\.|[^\`\\])*\`)`;
-// Unambiguous process APIs anywhere; generic names only bare or on a process module (`db.exec(`, `/x/.exec(`, `suite.run(` are not).
-const SPAWN_NAME = String.raw`(?:\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open)|(?:\b(?:subprocess|os|child_process|cp)\.|(?<![\w.$]))(?:exec|run|call|system|popen))`;
-const SPAWN_CALL = new RegExp(String.raw`${SPAWN_NAME}\s*\(\s*(\[[^\]]*\]|${LIT}(?:\s*,\s*\[[^\]]*\])?)`, "g");
+// Unambiguous process APIs anywhere; generic names (exec, run, call, system, popen) on a process module
+// or `require("child_process")`, or bare when the code imports child_process/subprocess/os — so
+// `db.exec("… > 2")`, a regex `.exec`, `suite.run(` or python's builtin `exec("…")` are not commands.
+const SPAWN_ANY = String.raw`\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open)`;
+const SPAWN_GENERIC = String.raw`(?:exec|run|call|system|popen)`;
+const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*)`;
+const IMPORTS_PROCESS = /child_process|\bsubprocess\b|\bimport\s+os\b|\bfrom\s+os\s+import\b/;
+const spawnCall = (bare) => new RegExp(String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""})\s*\(\s*(\[[^\]]*\]|${LIT}(?:\s*,\s*\[[^\]]*\])?)`, "g");
 const unquote = (l) => l.replace(/^[fr]?(["'`])([\s\S]*)\1$/, "$2");
 const literals = (t) => (t.match(new RegExp(LIT, "g")) || []).map(unquote);
 
@@ -1412,8 +1417,10 @@ export function ctxCalls(tool, ti) {
   if (typeof ti.code === "string") {
     if (/^(shell|bash|sh|zsh)$/i.test(ti.language || "")) out.push({ command: ti.code });
     else {
-      const code = ti.code.replace(/(["'])\s*\+\s*(["'])/g, ""); // 'git push ' + 'origin main'
-      for (const s of code.matchAll(SPAWN_CALL)) out.push({ command: literals(s[1]).join(" ") });
+      let code = ti.code;
+      const concat = new RegExp(String.raw`(${LIT})\s*\+\s*(${LIT})`); // "git push " + 'origin main'
+      for (let i = 0; i < 50 && concat.test(code); i++) code = code.replace(concat, (_, a, b) => JSON.stringify(unquote(a) + unquote(b)));
+      for (const s of code.matchAll(spawnCall(IMPORTS_PROCESS.test(code)))) out.push({ command: literals(s[1]).join(" ") });
     }
   }
   return out;
