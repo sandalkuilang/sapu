@@ -494,14 +494,21 @@ the orchestrator merges, locked to the gated SHA; (4) only the trusted set's wor
 by that measure: closed when an honest agent could stumble into them, recorded when only intent
 could use them.
 
-- The guard hook (`PreToolUse` for `Bash`, `Read`, `Write`, `Edit`, `MultiEdit`, `NotebookEdit`,
-  `Grep`, `Glob`, and context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`,
-  whose commands, shell code, spawn-call strings and paths are checked as the Bash/Read calls they
-  amount to, where they run: the tool's `cwd`, else the main checkout) applies to **every subagent** in a repo that enables this plugin, including
+- The guard hook (`PreToolUse` for `Bash`, `Monitor`, `PowerShell`, `Read`, `Write`, `Edit`, `MultiEdit`,
+  `NotebookEdit`, `Grep`, `Glob` and every MCP tool) applies to **every subagent** in a repo that enables this plugin, including
   subagents spawned by other subagents (`Agent` is not a way around it), and never to the
   orchestrator (the main session, without `agent_type`). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
   hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes.
+- **MCP tools** reach agents without a `tools:` allowlist (general-purpose, a repo's specialists,
+  agents a worker spawns). context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`
+  are checked as the Bash/Read calls they amount to (commands in every shape, shell code, the command a
+  spawn call runs, paths), where each runs: its `cwd`, else the agent's for shell code and batches and the
+  main checkout for other languages and files. Any other MCP tool is judged by the verbs in its name and
+  its fields: a merge verb, a write naming the base branch, the acceptance label in a label field, a
+  command field (as Bash, at its cwd-like field or the main checkout), local paths (absolute, or relative
+  for a filesystem/shell-like server) as reads or writes. Field names are heuristics; an effect hidden in
+  a server's own configuration (its database connection, a browser click) is not traced.
   A contract that exists but is broken blocks every subagent call; a repo that has no committed contract
   yet blocks `sapu:sapu-*` workers and leaves this floor for other subagents.
   (Worker = the `sapu:sapu-<sonnet|opus>-<effort>` ladder; the built-in role agents `sapu:sapu-<role>`

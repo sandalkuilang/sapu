@@ -6,7 +6,7 @@
 // github.com URL, while the real remote stays the bare repo). Nothing here touches the network or
 // a real GitHub repo.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -36,6 +36,7 @@ echo "preparing"
 if [ -n "\${HX_GATE_LAST:-}" ]; then echo "$HX_GATE_LAST"; echo; echo "   "; exit "\${HX_GATE_RC:-0}"; fi
 echo "Gate summary"
 echo "✓ 3 passed"
+[ -z "\${HX_GATE_SUMMARY:-}" ] || printf '%s\\n' "$HX_GATE_SUMMARY"
 exit "\${HX_GATE_RC:-0}"
 `;
 const AFTER = `#!/usr/bin/env bash
@@ -212,7 +213,10 @@ exec "${REAL_GIT}" "$@"
     write: (files: Files) => write(MAIN, files),
     after: () => read(env.HX_AFTER_LOG).split("\n").filter(Boolean),
     gh: () => read(env.HX_GH_LOG),
-    gateLog: () => read(join(tmp, "gate-pr7.log")),
+    gateLog: () => {
+      const f = existsSync(tmp) && readdirSync(tmp).find((n) => n.startsWith("gate-pr7."));
+      return f ? read(join(tmp, f)) : read(join(tmp, "gate-pr7.none"));
+    },
   };
 }
 
@@ -402,6 +406,15 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     seed(h, ...provenBy(5, "apps/a.test.ts"));
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_BIG: "1" });
     expect(r.err).toMatch(/verdict: unknown \(not only tests failed: .*gate\.redIf/);
+  });
+
+  it("a failed non-test summary step (lint, typecheck) keeps the verdict unknown; a failed test step does not", () => {
+    const h = harness();
+    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ lint 2.1s" }).err).toMatch(/verdict: unknown \(not only tests failed: a non-test step failed: lint/);
+    const h2 = harness();
+    seed(h2, ...provenBy(5, "apps/a.test.ts"));
+    expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ vitest 30.2s" }).err).toMatch(/verdict: known-flake/);
   });
 
   it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {

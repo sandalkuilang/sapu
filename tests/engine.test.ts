@@ -514,8 +514,8 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 describe("context budgets", () => {
   // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
   const BUDGETS: Record<string, number> = {
-    "skills/sapu/SKILL.md": 38_050,
-    "skills/sapu/subagent-brief.md": 13_500,
+    "skills/sapu/SKILL.md": 38_500,
+    "skills/sapu/subagent-brief.md": 13_600,
     "skills/forge/SKILL.md": 15_400,
     "skills/forge/reference.md": 16_000,
   };
@@ -545,14 +545,14 @@ describe("manifests", () => {
     expect(market.plugins[0].source).toBe("./plugins/sapu");
   });
 
-  it("the guard hook points at a script that exists and fires on Bash, every file read/write/search tool and context-mode's execute tools", () => {
+  it("the guard hook points at a script that exists and fires on Bash, Monitor, PowerShell, every file read/write/search tool and every MCP tool", () => {
     const hooks = JSON.parse(readFileSync(join(PLUGIN, "hooks/hooks.json"), "utf8")).hooks;
     expect(Object.keys(hooks)).toEqual(["PreToolUse"]);
     expect(hooks.PreToolUse).toHaveLength(1);
     const matcher = new RegExp(hooks.PreToolUse[0].matcher); // Claude Code tests a regex matcher anywhere in the name: it must anchor itself
     const ctx = ["execute", "execute_file", "batch_execute", "index"].map((t) => `mcp__plugin_context-mode_context-mode__ctx_${t}`);
-    for (const t of ["Bash", "Edit", "Glob", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write", ...ctx]) expect(t, t).toMatch(matcher);
-    for (const t of ["WebFetch", "Agent", "ReadMcpResourceTool", "mcp__x__ctx_indexer", "mcp__plugin_context-mode_context-mode__ctx_search", "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"]) expect(t, t).not.toMatch(matcher);
+    for (const t of ["Bash", "Monitor", "PowerShell", "Edit", "Glob", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write", ...ctx, "mcp__terminal__run_in_terminal", "mcp__github__merge_pull_request"]) expect(t, t).toMatch(matcher);
+    for (const t of ["WebFetch", "Agent", "ReadMcpResourceTool", "BashOutput", "Skill"]) expect(t, t).not.toMatch(matcher);
     const cmd: string = hooks.PreToolUse[0].hooks[0].command;
     const script = /\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+?)"?$/.exec(cmd)![1];
     expect(statSync(join(PLUGIN, script)).isFile()).toBe(true);

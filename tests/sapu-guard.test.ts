@@ -1267,7 +1267,7 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
       calls(m, id, STEP_SOFT - 1);
       return budget({ main: m, agentId: id, tool: "Bash", command });
     };
-    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7"]) {
+    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7", "npm run teardown -- issue7", "bash scripts/teardown.sh issue7", "node scripts/sapu-teardown.mjs"]) {
       expect(atReminder(`h-${c}`, c), c).toBeNull();
     }
     for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test", "git status & npm test"]) {
@@ -1366,7 +1366,7 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
     expect(status("execute", { language: "javascript", code: "execSync('git push ' + 'origin main')" })).toBe(2);
   });
 
-  it("judges a call without cwd where context-mode runs it: the main checkout, not the worker's worktree", () => {
+  it("judges a call where it runs: its own cwd, else the agent's (a worktree agent's call without cwd runs in the worktree)", () => {
     const wt3 = join(repo3, ".claude/worktrees/w1");
     execFileSync("git", ["-C", repo3, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt3]);
     const inWt = (tool_input: unknown) => {
@@ -1377,9 +1377,11 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
         return (e as { status: number }).status;
       }
     };
-    expect(inWt({ language: "shell", code: "git commit -am wip" })).toBe(2);
-    expect(inWt({ language: "shell", code: "echo x > src.txt" })).toBe(2);
-    expect(inWt({ language: "shell", cwd: wt3, code: "git commit -am wip" })).toBe(0);
+    expect(inWt({ language: "shell", code: "git commit -am wip" })).toBe(0);
+    expect(inWt({ language: "shell", code: "echo x > src.txt" })).toBe(0);
+    expect(inWt({ language: "shell", cwd: repo3, code: "git commit -am wip" })).toBe(2);
+    expect(inWt({ language: "shell", cwd: repo3, code: "echo x > src.txt" })).toBe(2);
+    expect(inWt({ language: "shell", cwd: "/tmp", code: `git -C ${repo3} commit -am x` })).toBe(2);
   });
 
   it("does not take a non-spawn string for a command (db.exec, regex exec, test runner run, python's exec)", () => {
@@ -1399,5 +1401,96 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
     expect(status("batch_execute", { commands: [{ label: "s", command: "git status --short" }] })).toBe(0);
     expect(status("execute", { language: "javascript", code: "console.log([1, 2].length)" })).toBe(0);
     expect(status("execute", { language: "shell", code: "git push origin main" }, null)).toBe(0);
+  });
+});
+
+describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", () => {
+  const repo4 = mkdtempSync(join(tmpdir(), "sapu-mcp-"));
+  mkdirSync(join(repo4, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo4]);
+  commitContract(repo4, FIXTURE_CONTRACT);
+  const wt4 = join(repo4, ".claude/worktrees/w1");
+  execFileSync("git", ["-C", repo4, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt4]);
+  writeFileSync(join(repo4, ".env"), "SECRET=1\n");
+  const run = (tool_name: string, tool_input: unknown, agent_type = "general-purpose", cwd = wt4) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name, agent_type, agent_id: "m1", tool_input, cwd }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("refuses what Bash/Write would refuse, through any server's tool", () => {
+    const refused: [string, unknown][] = [
+      ["mcp__terminal__run_in_terminal", { command: "git push origin main" }],
+      ["mcp__terminal__run_in_terminal", { command: "git commit -am x" }], // no cwd: runs at the session root
+      ["mcp__shell__execute", { cmd: ["gh", "pr", "merge", "5"] }],
+      ["mcp__github__merge_pull_request", { owner: "o", repo: "r", pull_number: 5 }],
+      ["mcp__ccd_pr__set_auto_merge", { enabled: true }],
+      ["mcp__github__create_or_update_file", { owner: "o", repo: "r", branch: "main", path: "a.ts", content: "x" }],
+      ["mcp__github__push_files", { owner: "o", repo: "r", branch: "refs/heads/main", files: [] }],
+      ["mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 3, labels: ["sapu:accepted"] }],
+      ["mcp__github__graphql", { query: "mutation { mergePullRequest(input: {}) { clientMutationId } }" }],
+      ["mcp__filesystem__write_file", { path: join(repo4, "src.txt"), content: "x" }],
+      ["mcp__filesystem__read_file", { path: join(repo4, ".env") }],
+      ["mcp__filesystem__move_file", { source: join(wt4, "a"), destination: join(repo4, "a") }],
+      ["Monitor", { command: "git push origin main" }],
+      ["PowerShell", { command: "gh pr merge 5" }],
+    ];
+    for (const [t, i] of refused) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(2);
+  });
+
+  it("lets ordinary MCP work through", () => {
+    const allowed: [string, unknown][] = [
+      ["mcp__github__create_or_update_file", { owner: "o", repo: "r", branch: "feat-x", path: "src/a.ts", content: "sapu:accepted appears in text" }],
+      ["mcp__github__create_pull_request", { owner: "o", repo: "r", base: "main", head: "feat-x", title: "t" }],
+      ["mcp__github__get_merge_status", { owner: "o", repo: "r", pull_number: 5 }],
+      ["mcp__gitlab__create_merge_request", { source_branch: "feat-x", target_branch: "main" }],
+      ["mcp__filesystem__read_file", { path: join(wt4, "README.md") }],
+      ["mcp__filesystem__write_file", { path: join(wt4, "notes.txt"), content: "x" }],
+      ["mcp__terminal__run_in_terminal", { command: "git commit -am x", cwd: wt4 }],
+      ["mcp__browser__navigate", { url: "https://example.com" }],
+      ["mcp__notion__create_page", { parent: { page_id: "p" }, title: "x" }],
+      ["mcp__plugin_context-mode_context-mode__ctx_search", { queries: ["x"] }],
+      ["Monitor", { command: "gh pr checks 5" }],
+    ];
+    for (const [t, i] of allowed) expect(run(t, i), `${t} ${JSON.stringify(i)}`).toBe(0);
+  });
+
+  it("never polices the orchestrator, and a ladder worker's MCP calls count toward its step budget", () => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: "mcp__github__merge_pull_request", tool_input: {}, cwd: wt4 }), stdio: ["pipe", "pipe", "pipe"] });
+    } catch {
+      throw new Error("the orchestrator was policed");
+    }
+    expect(run("mcp__github__get_issue", { owner: "o", repo: "r", issue_number: 1 }, "sapu:sapu-sonnet-high")).toBe(0);
+    expect(readFileSync(join(repo4, ".git/sapu-steps/m1"), "utf8")).toHaveLength(1);
+  });
+});
+
+describe("sapu-guard — context-mode calls are judged where each kind runs (measured)", () => {
+  const repo5 = mkdtempSync(join(tmpdir(), "sapu-ctxcwd-"));
+  mkdirSync(join(repo5, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo5]);
+  commitContract(repo5, FIXTURE_CONTRACT);
+  const wt5 = join(repo5, ".claude/worktrees/w1");
+  execFileSync("git", ["-C", repo5, "-c", "user.email=t@example.com", "-c", "user.name=t", "worktree", "add", "-q", "-b", "w1", wt5]);
+  const T = "mcp__plugin_context-mode_context-mode__ctx_";
+  const run = (tool: string, tool_input: unknown) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name: T + tool, agent_type: "sapu:sapu-sonnet-high", agent_id: "k1", tool_input, cwd: wt5 }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number }).status;
+    }
+  };
+
+  it("shell execute and batch without cwd run in the agent's worktree; other languages and execute_file in the main checkout", () => {
+    expect(run("execute", { language: "shell", code: "git commit -am wip" })).toBe(0);
+    expect(run("batch_execute", { commands: [{ label: "c", command: "git commit -am wip" }] })).toBe(0);
+    expect(run("execute", { language: "python", code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(2);
+    expect(run("execute_file", { path: "README.md", language: "shell", code: "git checkout -b z" })).toBe(2);
+    expect(run("execute", { language: "python", cwd: wt5, code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(0);
   });
 });

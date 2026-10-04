@@ -435,7 +435,7 @@ if [ -n "$RED_AREAS" ]; then
 fi
 
 # --- 7. merge gate ------------------------------------------------------------------------------------------------
-LOG="${TMPDIR:-/tmp}/gate-pr$PR.log"
+LOG="$(mktemp "${TMPDIR:-/tmp}/gate-pr$PR.XXXXXX")" || die "cannot create the gate log in ${TMPDIR:-/tmp}" # unique: two repos may gate the same PR number
 say "gate running at $SHA (workers=$WORKERS) — log: $LOG"
 GATE_RC=0
 AFTER_PENDING=1
@@ -513,6 +513,9 @@ if [ -n "$RED" ]; then
   fi
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
+  # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
+  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9.]*s.*//' | grep -viE 'test|spec|jest|pytest|e2e|playwright|cypress' | paste -sd, - || true)"
+  [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
