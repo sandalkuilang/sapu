@@ -307,7 +307,7 @@ WT="$(worktree_for_branch "$HEAD")"
 CREATED_WT=0
 if [ -n "$WT" ]; then
   [ "$WT" != "$MAIN" ] || check_fail "branch $HEAD is checked out in <MAIN>; refusing to operate there"
-  plan "reuse worktree $WT (holds $HEAD)"
+  plan "reuse worktree $WT (holds $HEAD); local commits origin lacks = refuse, unless all are $GIT_EMAIL's wip commits (kept under refs/sapu-trash/superseded-wip/, then dropped)"
   if [ -d "$WT" ] && [ -n "$(git -C "$WT" status --porcelain)" ]; then
     check_fail "worktree $WT is dirty"
   fi
