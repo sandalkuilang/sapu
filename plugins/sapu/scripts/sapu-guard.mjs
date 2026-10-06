@@ -1539,31 +1539,20 @@ const realOr = (p) => { try { return fs.realpathSync(p); } catch { return path.r
 
 /** The session's project directory is <MAIN> or inside it: the checkout of CLAUDE_PROJECT_DIR (hooks get it), else the transcript's project slug. */
 function homeIsMain(input, main) {
+  const all = [...(typeof input.transcript_path === "string" ? input.transcript_path : "").matchAll(/[\\/]projects[\\/]([^\\/]+)[\\/]/g)];
+  const filed = all.length ? all[all.length - 1][1] : null;
+  // A session filed under one of <MAIN>'s worktrees started there, whatever else says so.
+  if (filed && [main, realLoose(main)].some((m) => filed.startsWith(slug(path.join(m, ".claude", "worktrees")) + "-"))) return false;
   const dir = process.env.CLAUDE_PROJECT_DIR;
   if (dir) {
     const top = checkoutRoot(dir);
     return Boolean(top) && realLoose(top) === realLoose(main);
   }
-  const all = [...(typeof input.transcript_path === "string" ? input.transcript_path : "").matchAll(/[\\/]projects[\\/]([^\\/]+)[\\/]/g)];
-  const m = all.length ? all[all.length - 1] : null;
-  return Boolean(m) && (m[1] === slug(main) || m[1] === slug(realOr(main)));
+  return Boolean(filed) && (filed === slug(main) || filed === slug(realLoose(main)));
 }
 
-/** The real path of `p`, or of its nearest existing ancestor plus the rest (a planned path). */
-function realLoose(p) {
-  let head = path.resolve(p);
-  const rest = [];
-  for (;;) {
-    try {
-      return path.join(fs.realpathSync(head), ...rest);
-    } catch {
-      const up = path.dirname(head);
-      if (up === head) return path.resolve(p);
-      rest.unshift(path.basename(head));
-      head = up;
-    }
-  }
-}
+/** The real path of `p` (case canonicalised), or of its nearest existing ancestor plus the rest (a planned path). */
+const realLoose = (p) => realPathOf(path.resolve(p));
 
 const under = (r, dir) => r === dir || r.startsWith(dir + path.sep);
 
@@ -1631,7 +1620,7 @@ function checkHome(input, main) {
   const sub = Boolean(input.agent_id);
   if (!sub && DISPATCH_TOOLS.has(tool)) {
     const wt = linkedWorktreeOf(here, main);
-    return wt ? `${/^[AEIOU]/.test(tool) ? "an" : "a"} ${tool} call starts its agents in your cwd, here the linked worktree ${wt}: their project memory and settings would come from it and be lost with it. cd "${main}" first (keep worktree work in git -C or a ( cd … ) subshell), then dispatch again.` : null;
+    return wt ? `${/^[AEIOU]/.test(tool) ? "an" : "a"} ${tool} call starts its agents in your cwd, here the linked worktree ${wt}: their project memory and settings would come from it and be lost with it. cd "${main}" first — or ExitWorktree, if you entered it with EnterWorktree — (keep worktree work in git -C or a ( cd … ) subshell), then dispatch again.` : null;
   }
   if (!sub && (tool === "Bash" || tool === "PowerShell") && typeof ti.command === "string" && !ti.run_in_background && !resetsCwd()) {
     const stops = tool === "Bash" ? topLevelStops(ti.command, here) : topLevelStopsPowerShell(ti.command, here);
@@ -1644,7 +1633,7 @@ function checkHome(input, main) {
   if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
     const f = ti.file_path ?? ti.notebook_path;
     if (typeof f !== "string") return null;
-    const abs = realPathOf(path.resolve(here, f));
+    const abs = realLoose(path.resolve(here, f));
     const wt = linkedWorktreeOf(abs, main);
     const rel = wt && path.relative(wt, abs);
     if (rel && /^\.claude[\\/]agent-memory(-local)?[\\/]/.test(rel)) return `agent memory written inside the linked worktree ${wt} is lost with it. Write this note to ${path.join(main, rel)} instead (the repo's memory, read by the next agent).`;

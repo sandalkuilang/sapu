@@ -1580,7 +1580,7 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
   });
 
   it("refuses the main session's Agent, Task and Workflow from a linked worktree, and nobody else's", () => {
-    for (const t of ["Agent", "Task", "Workflow"]) expect(dispatch(t, wt6), t).toMatch(/linked worktree .*cd ".*sapu-home-/s);
+    for (const t of ["Agent", "Task", "Workflow"]) expect(dispatch(t, wt6), t).toMatch(/linked worktree .*cd ".*sapu-home-[^"]*" first — or ExitWorktree/s);
     expect(dispatch("Agent", join(wt6, ".claude"))).not.toBe(0);
     for (const c of [repo6, join(repo6, "apps/api")]) expect(dispatch("Workflow", c), c).toBe(0);
     // A worker in its own isolation worktree asks one specialist (brief point 7): it cannot cd, so it is never refused.
@@ -1616,6 +1616,7 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
     expect(dispatch("Agent", wt6, {}, {})).toBe(0); // no CLAUDE_PROJECT_DIR, no transcript_path
     expect(dispatch("Agent", wt6, { transcript_path: projects(repo6) }, {})).not.toBe(0); // the transcript's project slug is the fallback
     expect(dispatch("Agent", wt6, { transcript_path: projects(wt6) }, {})).toBe(0);
+    expect(dispatch("Agent", wt6, { transcript_path: projects(wt6) })).toBe(0); // filed under a worktree: not <MAIN>'s session, whatever CLAUDE_PROJECT_DIR says
     expect(dispatch("Agent", tmpdir())).toBe(0);
   });
 });
