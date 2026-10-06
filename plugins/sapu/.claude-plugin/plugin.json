@@ -1,6 +1,6 @@
 {
   "name": "sapu",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Autonomous issue sweeps driven by a per-repo contract: sapu (orchestrator), forge (one issue to a PR), argus (QA), momus (release audit), nemesis (red team), inspector (momus → argus → nemesis), dream (forward-looking research into falsifiable, project-grounded hypotheses), init (repo contract). Install at project scope so each repo opts in explicitly.",
   "author": {
     "name": "Yudha"

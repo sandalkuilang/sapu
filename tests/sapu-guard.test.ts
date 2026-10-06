@@ -3,7 +3,7 @@
 // The repo rules come from a contract shaped like the first repo that ran sapu (fixture-contract.ts),
 // so every case the guard enforced before it became generic is still enforced through the contract.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -132,9 +132,10 @@ describe("sapu-guard — blocks", () => {
     expect(blocked(`git --git-dir ${main}/.git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`GIT_DIR=${main}/.git git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`git --work-tree=${wt} status`)).toBeNull();
-    // a cd inside a subshell, a pipeline or a background job does not move the parent
+    // a cd inside a subshell or a background job does not move the parent; one inside a pipeline
+    // may (zsh runs the last element in this shell), so what follows is judged fail-closed
     expect(blocked("(cd /tmp); git pull", main)).toMatch(/main checkout/);
-    expect(blocked("cd /tmp | true; git checkout main", main)).toMatch(/main checkout/);
+    expect(blocked("cd /tmp | true; git checkout main", main)).toMatch(/cannot be told .*pipeline/);
     expect(blocked(`GIT_DIR=/x/.git GIT_WORK_TREE=${main} git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`git --git-dir= --work-tree=${main} checkout .`)).toMatch(/main checkout/);
   });
@@ -336,7 +337,7 @@ describe("sapu-guard — no subagent applies, removes or redefines the acceptanc
   );
 });
 
-describe("sapu-guard CLI", () => {
+describe("sapu-guard CLI", { timeout: 30_000 }, () => {
   const run = (input: object) => {
     try {
       execFileSync("node", [GUARD], { input: JSON.stringify(input), stdio: ["pipe", "pipe", "pipe"] });
@@ -1404,7 +1405,8 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
   });
 });
 
-describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", () => {
+// Each case spawns the guard CLI ~20 times: 5 s is too tight while the machine runs another repo's gate.
+describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", { timeout: 30_000 }, () => {
   const repo4 = mkdtempSync(join(tmpdir(), "sapu-mcp-"));
   mkdirSync(join(repo4, ".claude"), { recursive: true });
   execFileSync("git", ["init", "-q", repo4]);
@@ -1519,5 +1521,132 @@ describe("sapu-guard — context-mode calls are judged where each kind runs (mea
     expect(run("execute", { language: "python", code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(2);
     expect(run("execute_file", { path: "README.md", language: "shell", code: "git checkout -b z" })).toBe(2);
     expect(run("execute", { language: "python", cwd: wt5, code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(0);
+  });
+});
+
+describe("sapu-guard — a line break after |, && or || continues the list", () => {
+  it("still sees a PR diff piped into patch across a line break", () => {
+    expect(blocked("gh pr diff 5 | patch -p1")).not.toBeNull();
+    expect(blocked("gh pr diff 5 |\n  patch -p1")).not.toBeNull();
+    expect(blocked("gh pr diff 5 | # apply it\n  patch -p1")).not.toBeNull();
+  });
+
+  it("judges what follows a cd inside a pipeline fail-closed (zsh runs the last element in this shell)", () => {
+    const into = join(main, "apps");
+    for (const c of [`echo x | cd ${main} && git checkout -b z`, `echo x | { cd ${main}; git checkout -b z; }`, `echo x |\n  { cd ${main}; git checkout -b z; }`, `echo x | {\n  cd ${main}; git checkout -b z; }`]) expect(blocked(c), c).not.toBeNull();
+    expect(blocked(`cd ${into} | cat; git status`)).toBeNull(); // nothing path-sensitive follows
+  });
+
+  it("restores the directory after a subshell that is piped or backgrounded", () => {
+    for (const c of ["(cd /tmp && true) | cat; git checkout -b z", "(cd /tmp && true) & git checkout -b z", `(cd ${wt} && true) | cat; git checkout -b z`]) expect(blocked(c, main), c).toMatch(/main checkout/);
+    expect(blocked("(cd /tmp && true) | cat; git checkout -b z", wt)).toBeNull();
+  });
+});
+
+describe("sapu-guard — a session whose project directory is <MAIN> keeps its cwd, dispatches and agent memory there", { timeout: 30_000 }, () => {
+  const repo6 = realpathSync(mkdtempSync(join(tmpdir(), "sapu-home-")));
+  mkdirSync(join(repo6, ".claude"), { recursive: true });
+  mkdirSync(join(repo6, "apps/api"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo6]);
+  commitContract(repo6, FIXTURE_CONTRACT);
+  const wt6 = join(repo6, ".claude/worktrees/pr-1");
+  execFileSync("git", ["-C", repo6, "worktree", "add", "-q", "--detach", wt6], { stdio: "ignore" });
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "sapu-home-outside-"))); // a linked worktree outside <MAIN>
+  rmSync(outside, { recursive: true });
+  execFileSync("git", ["-C", repo6, "worktree", "add", "-q", "--detach", outside], { stdio: "ignore" });
+  const bare = realpathSync(mkdtempSync(join(tmpdir(), "sapu-home-nocontract-")));
+  execFileSync("git", ["init", "-q", bare]);
+  execFileSync("git", ["-C", bare, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], { stdio: "ignore" });
+  const bareWt = join(bare, ".claude/worktrees/w");
+  execFileSync("git", ["-C", bare, "worktree", "add", "-q", "--detach", bareWt], { stdio: "ignore" });
+  afterAll(() => {
+    for (const d of [repo6, outside, bare]) rmSync(d, { recursive: true, force: true });
+  });
+  const projects = (dir: string) => join(tmpdir(), "projects", dir.replace(/[^A-Za-z0-9]/g, "-"), "s1.jsonl");
+  // The host's own values never leak in: each case sets the project directory it means.
+  const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "CLAUDE_PROJECT_DIR" && k !== "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"));
+  const run = (input: Record<string, unknown>, env: Record<string, string> = { CLAUDE_PROJECT_DIR: repo6 }) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify(input), env: { ...baseEnv, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { stderr: Buffer }).stderr.toString();
+    }
+  };
+  const bash = (command: string, cwd = repo6, extra = {}, env?: Record<string, string>) => run({ tool_name: "Bash", tool_input: { command }, cwd, ...extra }, env);
+  const dispatch = (tool_name: string, cwd: string, extra = {}, env?: Record<string, string>) => run({ tool_name, tool_input: { prompt: "review PR 1" }, cwd, ...extra }, env);
+  const sub = { agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r1" };
+  const worker = { agent_type: "sapu:sapu-opus-high", agent_id: "w1" };
+
+  it("refuses a main-session command that leaves the cwd in a linked worktree inside <MAIN> (the two seen in a sweep, and their spellings)", () => {
+    expect(bash(`cd ${wt6} && git fetch -q origin x; git status -sb`)).toMatch(/moves the session's cwd into the linked worktree .*pr-1.*git -C.*CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1/s);
+    expect(bash("git worktree add -q .claude/worktrees/new -b x origin/main; cd .claude/worktrees/new && npm audit fix")).toMatch(/worktrees\/new/); // not created yet
+    for (const c of [`pushd ${wt6}`, `cd -- ${wt6}`, `cd -P ${wt6}`, `builtin cd ${wt6}`, `command cd ${wt6}`, `{ cd ${wt6}; }`, `if true; then cd ${wt6}; fi`, `cd ${join(wt6, "apps")}`]) expect(bash(c), c).not.toBe(0);
+    expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path '${wt6}'; git status` }, cwd: repo6 })).toMatch(/linked worktree/);
+    expect(bash(`cd ${wt6}`, repo6, { agent_type: "reviewer" })).not.toBe(0); // a main session run with --agent has agent_type but no agent_id
+    // Every top-level stop counts: when the test fails, the cd back never runs.
+    for (const c of [`cd ${wt6} && npm test && cd ${repo6}`, `cd ${wt6} && make || cd ${repo6}`, `cd ${wt6} && npm test && cd -`, `if test -f x; then cd ${wt6}; else cd ${repo6}; fi`, `for d in a; do cd ${wt6}; done`, `cd ${wt6}; if false; then cd ${repo6}; fi`,
+      // a line break after && or || continues the list
+      `cd ${wt6} &&\n  npm test &&\n  cd ${repo6}`, `cd ${wt6}\nnpm test ||\n  cd ${repo6}`, `cd ${wt6} && npm test && # back\n cd ${repo6}`,
+      // a cd back that may fail, or to an unknowable place
+      `cd ${wt6}; npm test; cd ${repo6}/no-such-dir`, `cd ${wt6}; cd $(git rev-parse --show-toplevel)`,
+      // compound keywords count only where a command starts
+      `cd ${wt6}; if [ -f nope ]; then echo done; cd ${repo6}; fi`, `cd ${wt6}; if a; then if true; then :; fi; cd ${repo6}; fi`, `cd ${wt6}; if a; then echo fi; cd ${repo6}; fi`, `echo x | cd ${wt6}`, `(cd ${wt6} && npm test) | tail -5; cd ${wt6}`,
+    ]) expect(bash(c), c).not.toBe(0);
+    // ... unless a cd back always runs (after ; or a newline): Claude Code reads the cwd after the whole command.
+    for (const c of [`cd ${wt6} && git log -1; cd ${repo6}`, `cd ${wt6}; git status; cd -`, `pushd ${wt6} >/dev/null; npm test; popd >/dev/null`, `cd ${wt6} 2>/dev/null || true; cd ${repo6}`, `cd ${wt6}\ngit status\ncd ${repo6}`, `bash <<'EOF'\ncd ${wt6}\nnpm test\nEOF`, `if true; then ls; fi; cd ${wt6}; cd ${repo6}`]) expect(bash(c), c).toBe(0);
+    expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path:${wt6}` }, cwd: repo6 })).not.toBe(0);
+    expect(run({ tool_name: "Bash", tool_input: { command: `cd $HOME/.claude/worktrees/pr-1 && ls` }, cwd: repo6 }, { CLAUDE_PROJECT_DIR: repo6, HOME: repo6 })).not.toBe(0);
+    expect(bash("cd apps && ls", wt6)).toMatch(/already the linked worktree .*cd ".*sapu-home-[^"]*" &&/s);
+  });
+
+  it("lets through what does not move the cwd, a cd back, a worktree outside <MAIN> (Claude Code resets that itself), and a host that resets the cwd", () => {
+    for (const c of [`( cd ${wt6} && git status ); echo ok`, `cd ${wt6} | cat`, `cd ${wt6} &`, `git -C ${wt6} status`, `env -C ${wt6} git status`, `bash -c 'cd ${wt6} && ls'`, `x=$(cd ${wt6} && pwd)`, "cd apps/api && ls", "cd $SOMEWHERE && ls", `cd ${outside} && ls`]) expect(bash(c), c).toBe(0);
+    expect(run({ tool_name: "Bash", tool_input: { command: `cd ${wt6} && npm test`, run_in_background: true }, cwd: repo6 })).toBe(0); // a background command's cd never carries over
+    expect(bash(`cd ${repo6} && git diff`, wt6)).toBe(0);
+    expect(run({ tool_name: "PowerShell", tool_input: { command: "Set-Location $env:TEMP" }, cwd: repo6 })).toBe(0);
+    expect(bash(`cd ${wt6} && ls`, repo6, {}, { CLAUDE_PROJECT_DIR: repo6, CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" })).toBe(0);
+    expect(bash(`cd ${wt6}`, repo6, sub)).toBe(0); // a subagent's cd never carries over
+  });
+
+  it("refuses the main session's Agent, Task and Workflow from a linked worktree, and nobody else's", () => {
+    for (const t of ["Agent", "Task", "Workflow"]) expect(dispatch(t, wt6), t).toMatch(/linked worktree .*cd ".*sapu-home-[^"]*" first — or ExitWorktree/s);
+    expect(dispatch("Agent", join(wt6, ".claude"))).not.toBe(0);
+    for (const c of [repo6, join(repo6, "apps/api")]) expect(dispatch("Workflow", c), c).toBe(0);
+    // A worker in its own isolation worktree asks one specialist (brief point 7): it cannot cd, so it is never refused.
+    expect(dispatch("Agent", wt6, worker)).toBe(0);
+    expect(dispatch("Agent", wt6, sub)).toBe(0);
+  });
+
+  it("sends a reviewer's agent memory from a worktree to <MAIN>; <MAIN>'s memory stays writable; a sapu worker is not sent anywhere", () => {
+    const note = ".claude/agent-memory/senior-dev-team-senior-qa-reviewer/MEMORY.md";
+    expect(run({ tool_name: "Write", cwd: wt6, ...sub, tool_input: { file_path: join(wt6, note), content: "x" } })).toContain(`Write this note to ${join(repo6, note)}`);
+    expect(run({ tool_name: "Edit", cwd: wt6, ...sub, tool_input: { file_path: note, old_string: "a", new_string: "b" } })).not.toBe(0); // relative to its cwd
+    expect(run({ tool_name: "Write", cwd: wt6, ...sub, tool_input: { file_path: join(repo6, note), content: "x" } })).toBe(0);
+    expect(run({ tool_name: "Write", cwd: wt6, ...worker, tool_input: { file_path: join(wt6, note), content: "x" } })).toBe(0);
+  });
+
+  it("finds <MAIN> through a symlink or a project directory below it", () => {
+    const link = join(realpathSync(tmpdir()), `sapu-home-link-${process.pid}`);
+    rmSync(link, { force: true });
+    symlinkSync(repo6, link);
+    try {
+      expect(bash(`cd ${link}/.claude/worktrees/pr-1`, link, {}, { CLAUDE_PROJECT_DIR: link })).not.toBe(0);
+      expect(dispatch("Agent", wt6, {}, { CLAUDE_PROJECT_DIR: join(repo6, "apps/api") })).not.toBe(0);
+    } finally {
+      rmSync(link, { force: true });
+    }
+  });
+
+  it("leaves alone a session whose project directory is a worktree, a repo without a contract, and a host that names no project", () => {
+    const desk = { CLAUDE_PROJECT_DIR: wt6 };
+    expect(dispatch("Agent", wt6, {}, desk)).toBe(0);
+    expect(bash(`cd ${join(wt6, "apps")} && ls`, wt6, {}, desk)).toBe(0);
+    expect(dispatch("Agent", bareWt, {}, { CLAUDE_PROJECT_DIR: bare })).toBe(0);
+    expect(dispatch("Agent", wt6, {}, {})).toBe(0); // no CLAUDE_PROJECT_DIR, no transcript_path
+    expect(dispatch("Agent", wt6, { transcript_path: projects(repo6) }, {})).not.toBe(0); // the transcript's project slug is the fallback
+    expect(dispatch("Agent", wt6, { transcript_path: projects(wt6) }, {})).toBe(0);
+    expect(dispatch("Agent", wt6, { transcript_path: projects(wt6) })).toBe(0); // filed under a worktree: not <MAIN>'s session, whatever CLAUDE_PROJECT_DIR says
+    expect(dispatch("Agent", tmpdir())).toBe(0);
   });
 });
