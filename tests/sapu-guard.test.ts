@@ -1536,6 +1536,11 @@ describe("sapu-guard — a line break after |, && or || continues the list", () 
     for (const c of [`echo x | cd ${main} && git checkout -b z`, `echo x | { cd ${main}; git checkout -b z; }`, `echo x |\n  { cd ${main}; git checkout -b z; }`, `echo x | {\n  cd ${main}; git checkout -b z; }`]) expect(blocked(c), c).not.toBeNull();
     expect(blocked(`cd ${into} | cat; git status`)).toBeNull(); // nothing path-sensitive follows
   });
+
+  it("restores the directory after a subshell that is piped or backgrounded", () => {
+    for (const c of ["(cd /tmp && true) | cat; git checkout -b z", "(cd /tmp && true) & git checkout -b z", `(cd ${wt} && true) | cat; git checkout -b z`]) expect(blocked(c, main), c).toMatch(/main checkout/);
+    expect(blocked("(cd /tmp && true) | cat; git checkout -b z", wt)).toBeNull();
+  });
 });
 
 describe("sapu-guard — a session whose project directory is <MAIN> keeps its cwd, dispatches and agent memory there", { timeout: 30_000 }, () => {
@@ -1586,7 +1591,7 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
       // a cd back that may fail, or to an unknowable place
       `cd ${wt6}; npm test; cd ${repo6}/no-such-dir`, `cd ${wt6}; cd $(git rev-parse --show-toplevel)`,
       // compound keywords count only where a command starts
-      `cd ${wt6}; if [ -f nope ]; then echo done; cd ${repo6}; fi`, `cd ${wt6}; if a; then if true; then :; fi; cd ${repo6}; fi`, `cd ${wt6}; if a; then echo fi; cd ${repo6}; fi`, `echo x | cd ${wt6}`,
+      `cd ${wt6}; if [ -f nope ]; then echo done; cd ${repo6}; fi`, `cd ${wt6}; if a; then if true; then :; fi; cd ${repo6}; fi`, `cd ${wt6}; if a; then echo fi; cd ${repo6}; fi`, `echo x | cd ${wt6}`, `(cd ${wt6} && npm test) | tail -5; cd ${wt6}`,
     ]) expect(bash(c), c).not.toBe(0);
     // ... unless a cd back always runs (after ; or a newline): Claude Code reads the cwd after the whole command.
     for (const c of [`cd ${wt6} && git log -1; cd ${repo6}`, `cd ${wt6}; git status; cd -`, `pushd ${wt6} >/dev/null; npm test; popd >/dev/null`, `cd ${wt6} 2>/dev/null || true; cd ${repo6}`, `cd ${wt6}\ngit status\ncd ${repo6}`, `bash <<'EOF'\ncd ${wt6}\nnpm test\nEOF`, `if true; then ls; fi; cd ${wt6}; cd ${repo6}`]) expect(bash(c), c).toBe(0);

@@ -171,7 +171,12 @@ export function tokenize(src) {
       return;
     }
     if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
-    else if (cmds.length && (op === ")" || op === "|" || op === "&")) cmds[cmds.length - 1].post = op;
+    else if (cmds.length && (op === ")" || op === "|" || op === "&")) {
+      // `(…) | x` / `(…) &`: keep the subshell's ")" so its directory is restored; the pipe or job
+      // applies to the subshell as a whole, which never moves this shell anyway.
+      const last = cmds[cmds.length - 1];
+      if (!(last.post === ")" && op !== ")")) last.post = op;
+    }
     toks = [];
     pre = op;
     preCond = cond;
