@@ -51,7 +51,7 @@
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
 // (a subagent, a subagent's subagent, ...); the orchestrator — the main session, which merges,
 // runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
-// agents from (Agent/Task/Workflow from a linked worktree: checkDispatch). Two tiers:
+// agents from (HOME CHECKOUT below: checkHome). Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
 // (a reviewer, a specialist — the senior-dev-team agents included —,
 // argus/momus/nemesis and their helpers) gets the same floor EXCEPT that it may run
@@ -91,10 +91,11 @@
 // known one by one; an unknown option that takes a value can hide the program after it. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
 // (non-2 exit) — the canary is what catches a dead guard.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, findMain, loadContract } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1518,26 +1519,109 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
  */
 const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 
-/**
- * A dispatched agent starts in the dispatcher's cwd, and its project memory (.claude/agent-memory)
- * and project settings come from that checkout. Measured: reviewers dispatched while the
- * orchestrator's cwd was left in a PR worktree started with none of the repo's reviewer memory and
- * wrote their notes into that worktree, to be lost with it. So in a sapu repo every dispatch comes
- * from the main checkout.
- */
-function checkDispatch(input) {
-  const here = input.cwd || process.cwd();
-  const main = findMain(here);
-  const root = main && checkoutRoot(here);
-  if (!root) return null;
+// HOME CHECKOUT. An agent starts in the session's cwd AT THE MOMENT IT IS SPAWNED (a Workflow's
+// agents too, long after the Workflow call), and its project memory (.claude/agent-memory) and
+// project settings come from that checkout. Measured in a sweep: after an orchestrator Bash call
+// `cd <MAIN>/.claude/worktrees/<x> && …` left the session's cwd in a PR worktree, the reviewers
+// spawned next started with none of the repo's reviewer memory and wrote their notes into that
+// worktree, to be lost with it. So, in a repo with a sapu contract and a session that started in
+// <MAIN>: (1) the orchestrator never moves its cwd into a linked worktree, (2) never dispatches
+// from one, (3) no subagent writes agent memory into one. A session that STARTED in a worktree
+// (a desktop worktree session) keeps that worktree as its home and is left alone.
+
+/** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
+const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
+
+/** The session's home is <MAIN>: its transcript lives under ~/.claude/projects/<slug(MAIN)>/. */
+function homeIsMain(input, main) {
+  const m = /[\\/]projects[\\/]([^\\/]+)[\\/]/.exec(typeof input.transcript_path === "string" ? input.transcript_path : "");
+  if (!m) return false;
   const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-  if (real(root) === real(main) || loadContract(main).missing) return null;
-  return `a ${input.tool_name} call starts its agents in your cwd, here the linked worktree ${root}: their project memory and settings would come from it and be lost with it. cd "${main}" first (keep work in a worktree to git -C or a ( cd … ) subshell), then dispatch again.`;
+  return m[1] === slug(main) || m[1] === slug(real(main));
+}
+
+/** The linked worktree holding `p` (an existing or a planned path), or null: one `git worktree list` names, or any path under <MAIN>/.claude/worktrees/. */
+function linkedWorktreeOf(p, main) {
+  const r = path.resolve(p);
+  const under = (dir) => r === dir || r.startsWith(dir + path.sep);
+  const conventional = path.join(main, ".claude", "worktrees");
+  if (under(conventional) && r !== conventional) return path.join(conventional, path.relative(conventional, r).split(path.sep)[0]);
+  let list = "";
+  try { list = execFileSync("git", ["-C", main, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; }
+  const roots = list.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9)).slice(1);
+  return roots.find((w) => under(path.resolve(w))) || null;
+}
+
+/** Where the shell's cwd ends after `command` run from `dir` (top-level cd/pushd only: subshells, pipelines and background jobs do not move it); UNKNOWN when it cannot be told. */
+export function finalDir(command, dir) {
+  let cur = dir;
+  const saved = [];
+  for (const c of tokenize(stripHeredocs(command)).cmds) {
+    if (c.pre === "(") saved.push(cur);
+    const before = cur;
+    const a = c.toks.slice(programIndex(c.toks));
+    const prog = a.length ? bare(a[0].v) : "";
+    if (prog === "cd" || prog === "pushd") {
+      const target = a[1];
+      if (!target) cur = process.env.HOME || cur;
+      else if (cur === UNKNOWN || target.dyn || expandHome(target) === null) cur = UNKNOWN;
+      else if (target.v === "-") cur = UNKNOWN;
+      else cur = path.resolve(cur, expandHome(target));
+    } else if (prog === "popd") cur = UNKNOWN;
+    if (c.pre === "|" || c.post === "|" || c.post === "&") cur = before;
+    if (c.post === ")" && saved.length) cur = saved.pop();
+  }
+  return cur;
+}
+
+/** Rules (1) and (2) for the main session, and (3) for a subagent's file write; null when none applies. */
+function checkHome(input, main) {
+  if (!main || !homeIsMain(input, main) || loadContract(main).missing) return null;
+  const here = input.cwd || process.cwd();
+  const tool = input.tool_name;
+  const ti = input.tool_input || {};
+  if (DISPATCH_TOOLS.has(tool)) {
+    const wt = linkedWorktreeOf(here, main);
+    return wt ? `${/^[AEIOU]/.test(tool) ? "an" : "a"} ${tool} call starts its agents in your cwd, here the linked worktree ${wt}: their project memory and settings would come from it and be lost with it. cd "${main}" first (keep worktree work in git -C or a ( cd … ) subshell), then dispatch again.` : null;
+  }
+  if (!(input.agent_type || input.agent_id) && tool === "Bash" && typeof ti.command === "string") {
+    const end = finalDir(ti.command, here);
+    const wt = end !== UNKNOWN && linkedWorktreeOf(end, main);
+    return wt ? `this command leaves the session's cwd in the linked worktree ${wt}, and every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell.` : null;
+  }
+  if ((input.agent_type || input.agent_id) && WRITE_TOOLS.has(tool)) {
+    const f = ti.file_path ?? ti.notebook_path;
+    if (typeof f !== "string") return null;
+    const abs = path.resolve(here, f);
+    const wt = linkedWorktreeOf(abs, main);
+    const rel = wt && path.relative(wt, abs);
+    if (rel && /^\.claude[\\/]agent-memory(-local)?[\\/]/.test(rel)) return `agent memory written inside the linked worktree ${wt} is lost with it. Write this note to ${path.join(main, rel)} instead (the repo's memory, read by the next agent).`;
+  }
+  return null;
+}
+
+/** Cheap pre-filter, so ordinary calls never pay for `git worktree list`. */
+function mayLeaveHome(input) {
+  const ti = input.tool_input || {};
+  if (DISPATCH_TOOLS.has(input.tool_name)) return true;
+  const sub = Boolean(input.agent_type || input.agent_id);
+  if (!sub && input.tool_name === "Bash") return typeof ti.command === "string" && /\b(cd|pushd)\b/.test(ti.command);
+  return sub && WRITE_TOOLS.has(input.tool_name) && /agent-memory/.test(String(ti.file_path ?? ti.notebook_path ?? ""));
+}
+
+/** The home rules place memory; they never block a call because they failed to evaluate it. */
+function checkHomeSafe(input) {
+  try {
+    return checkHome(input, findMain(input.cwd || process.cwd()));
+  } catch {
+    return null;
+  }
 }
 
 export function decide(input) {
   if (!input) return null;
-  if (DISPATCH_TOOLS.has(input.tool_name)) return checkDispatch(input);
+  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
+  if (home || DISPATCH_TOOLS.has(input.tool_name)) return home;
   if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
