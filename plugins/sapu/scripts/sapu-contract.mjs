@@ -212,7 +212,8 @@ export function validate(c) {
   need(typeof c.gitEmail === "string" && /^[^@\s]+@[^@\s]+$/.test(c.gitEmail), "gitEmail must be an email");
   need(typeof c.baseBranch === "string" && /^[\w./-]+$/.test(c.baseBranch), "baseBranch must be a branch name");
   if (c.gate && typeof c.gate === "object") {
-    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"]);
+    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra"]);
+    need(!("infra" in c.gate) || c.gate.infra === null || isStr(c.gate.infra), "gate.infra must be a command or null");
     need(isStr(c.gate.fast), "gate.fast must be a command");
     need(isStr(c.gate.merge), "gate.merge must be a command");
     need(isRegex(c.gate.summaryStart), "gate.summaryStart must be a valid regex");
@@ -1138,6 +1139,19 @@ function main(argv) {
     return;
   }
   if (cmd === "wave-args") {
+    // A lane on infrastructure that is down only burns a worker (it waited 18 min on a stopped DB):
+    // the repo's own probe must pass before any lane is built.
+    // `--no-infra`: a caller whose agents run no tests (the inspector) skips it.
+    const infra = contract.gate && contract.gate.infra;
+    if (isStr(infra) && !process.argv.includes("--no-infra")) {
+      const r = spawnSync("bash", ["-c", infra], { cwd: mainDir, encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      const code = r.error && r.error.code;
+      if (r.status !== 0 || code) {
+        const how = code === "ETIMEDOUT" ? "timed out after 60 s" : code === "ENOENT" ? "could not run (no bash)" : code ? `failed (${code})` : `exited ${r.status}`;
+        const last = (`${r.stderr || ""}`.trim() || `${r.stdout || ""}`.trim()).split("\n").pop().slice(0, 200);
+        fail(`test infrastructure is down: gate.infra (${infra}) ${how}${last ? ` — ${last}` : ""}. Bring it up as the profile's Step 0 says, then build the lane again.`);
+      }
+    }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
     const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, policy: resolvePolicy(contract) } };

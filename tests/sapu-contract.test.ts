@@ -508,6 +508,23 @@ describe("loadContract and the CLI", () => {
     expect(w.contract).not.toHaveProperty("guard");
   });
 
+  it("`wave-args` refuses to build a lane while the contract's gate.infra probe fails", () => {
+    const withInfra = (infra: unknown) => commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, infra } }) });
+    withInfra("echo 'connection refused on :5432' >&2; exit 3");
+    const down = cli(repo, ["wave-args"]);
+    expect(down.status).not.toBe(0);
+    expect(down.err).toMatch(/test infrastructure is down: gate\.infra .* exited 3 — connection refused on :5432\. Bring it up/);
+    withInfra("seq 300000; echo 'db down' >&2; exit 1"); // a big output keeps the real reason
+    expect(cli(repo, ["wave-args"]).err).toMatch(/exited 1 — db down\./);
+    expect(cli(repo, ["wave-args", "--no-infra"]).status).toBe(0); // the inspector runs no tests
+    withInfra("true");
+    expect(JSON.parse(cli(repo, ["wave-args"]).out).main).toBeTruthy();
+    withInfra(null);
+    expect(cli(repo, ["wave-args"]).status).toBe(0);
+    withInfra(5);
+    expect(cli(repo, ["check"]).err).toMatch(/gate\.infra must be a command or null/);
+  });
+
   it("`wave-args` and `specialists` carry the RESOLVED role map: built-ins by default, the contract's own where it names one", () => {
     commit(repo, { ".claude/sapu.json": JSON.stringify(FIXTURE_CONTRACT) });
     const builtIn = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, DEFAULT_SPECIALISTS[r]]));

@@ -16,7 +16,7 @@ This skill is the engine and knows no repo. It carries no profile of its own: ev
 From the main checkout:
 
 1. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" check` — the scope lock plus the contract schema. Non-zero → stop, report its message, dispatch nothing. Never `gh auth switch`: a wrong account is a stop, not something to fix yourself.
-2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args` → `{"main","pluginRoot","contract"}` (`contract.specialists` = the resolved specialist map the team review dispatches).
+2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args --no-infra` → `{"main","pluginRoot","contract"}` (`contract.specialists` = the resolved specialist map the team review dispatches).
 3. The three phase profiles exist: `<profiles>/momus.md`, `argus.md`, `nemesis.md` (`<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`; in the repo they must be committed). One missing → stop and tell the user to run `/sapu:init`. Each phase would stop on it anyway; this stops before three agents pay their start-up cost for nothing.
 
 ## How this is invoked — automatic, not manual sequencing

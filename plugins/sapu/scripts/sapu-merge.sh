@@ -307,7 +307,7 @@ WT="$(worktree_for_branch "$HEAD")"
 CREATED_WT=0
 if [ -n "$WT" ]; then
   [ "$WT" != "$MAIN" ] || check_fail "branch $HEAD is checked out in <MAIN>; refusing to operate there"
-  plan "reuse worktree $WT (holds $HEAD)"
+  plan "reuse worktree $WT (holds $HEAD); local commits origin lacks = refuse, unless all are $GIT_EMAIL's wip commits (kept under refs/sapu-trash/superseded-wip/, then dropped)"
   if [ -d "$WT" ] && [ -n "$(git -C "$WT" status --porcelain)" ]; then
     check_fail "worktree $WT is dirty"
   fi
@@ -351,11 +351,28 @@ PR_OID="$(jget .headRefOid)"
 [ -n "$PR_OID" ] && [ "$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" = "$PR_OID" ] \
   || die "origin/$HEAD is not the head GitHub reported for PR #$PR (${PR_OID:-none}) when its trust was checked: it moved — run again"
 
+# Unpushed WIP a handoff superseded: the handing-off worker's local branch keeps its `wip` commit
+# while the next worker, starting from that SHA in another worktree, pushes its own history.
+# Dropped only when EVERY local-only commit is a `wip…` commit by the contract's identity; its tip
+# is kept under refs/sapu-trash/superseded-wip/ first (`git branch <name> <ref>` restores it).
+superseded_wip() { # <commit-ish>
+  local revs
+  revs="$(git -C "$MAIN" log --format='%ae%x09%s' "refs/remotes/origin/$HEAD..$1" 2>/dev/null)" || return 1
+  [ -n "$revs" ] || return 1
+  printf '%s\n' "$revs" | awk -F'\t' -v e="$GIT_EMAIL" 'tolower($1) != tolower(e) || tolower($2) !~ /^wip([^a-z]|$)/ { bad = 1 } END { exit bad }'
+}
+keep_superseded() { # <sha>
+  git -C "$MAIN" update-ref "refs/sapu-trash/superseded-wip/$1" "$1" || die "could not save superseded WIP $1 to refs/sapu-trash"
+  say "superseded handoff WIP $1 dropped from $HEAD (kept at refs/sapu-trash/superseded-wip/$1)"
+}
+
 if [ "$CREATED_WT" = 1 ]; then
   if git -C "$MAIN" rev-parse --verify -q "refs/heads/$HEAD" >/dev/null; then
     # A local branch exists but is checked out nowhere: reuse only if it holds nothing origin lacks.
-    git -C "$MAIN" merge-base --is-ancestor "refs/heads/$HEAD" "refs/remotes/origin/$HEAD" \
-      || die "local branch $HEAD has commits not on origin/$HEAD; read them first"
+    if ! git -C "$MAIN" merge-base --is-ancestor "refs/heads/$HEAD" "refs/remotes/origin/$HEAD"; then
+      superseded_wip "refs/heads/$HEAD" || die "local branch $HEAD has commits not on origin/$HEAD; read them first"
+      keep_superseded "$(git -C "$MAIN" rev-parse "refs/heads/$HEAD")"
+    fi
     git -C "$MAIN" worktree add --no-track -B "$HEAD" "$WT" "refs/remotes/origin/$HEAD" >/dev/null 2>&1 || die "worktree add failed"
   else
     git -C "$MAIN" worktree add --no-track -b "$HEAD" "$WT" "refs/remotes/origin/$HEAD" >/dev/null 2>&1 || die "worktree add failed"
@@ -371,6 +388,12 @@ fi
 if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD \
   && git -C "$WT" diff --quiet HEAD \
   && ! git -C "$WT" cherry "refs/remotes/origin/$HEAD" HEAD "refs/remotes/origin/$BASE" | grep -q '^+'; then
+  git -C "$WT" reset -q --hard "refs/remotes/origin/$HEAD" || die "reset of $WT to origin/$HEAD failed"
+fi
+if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD \
+  && ! git -C "$WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$HEAD" \
+  && git -C "$WT" diff --quiet HEAD && superseded_wip "$(git -C "$WT" rev-parse HEAD)"; then
+  keep_superseded "$(git -C "$WT" rev-parse HEAD)"
   git -C "$WT" reset -q --hard "refs/remotes/origin/$HEAD" || die "reset of $WT to origin/$HEAD failed"
 fi
 if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD; then
@@ -448,12 +471,14 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>]
+# steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
+# (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
 GATES_LOG="$MAIN/.git/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
-gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict]
-  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" >>"$GATES_LOG"; } 2>/dev/null \
+gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -473,7 +498,7 @@ RED=""
 if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; }a summary line matches gate.redIf ($RED_IF)"; fi
 [ -n "$SUMMARY" ] || RED="${RED:+$RED; }no gate summary in log (gate.summaryStart: $SUMMARY_START)"
 if [ -n "$RED" ]; then
-  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed 's/ [0-9.]*s.*//' | paste -sd, - || true)"
+  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
   # The failing test FILES, from anywhere in the log, colour codes stripped: vitest/jest
   # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and
@@ -519,7 +544,7 @@ if [ -n "$RED" ]; then
   STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
-  gate_record red "${TESTS:--}" "$VERDICT"
+  gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
   elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")"
