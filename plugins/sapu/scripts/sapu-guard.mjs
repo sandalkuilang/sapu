@@ -165,6 +165,11 @@ export function tokenize(src) {
   const end = (op, cond = false) => {
     push();
     const kept = toks.filter((t) => t.v !== "{" && t.v !== "}");
+    // A line break (or comment) right after `|`, `&&` or `||` continues that list: `a |⏎ b` is a pipeline.
+    if (!kept.length && op === ";" && (pre === "|" || preCond)) {
+      toks = [];
+      return;
+    }
     if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
     else if (cmds.length && (op === ")" || op === "|" || op === "&")) cmds[cmds.length - 1].post = op;
     toks = [];
@@ -1606,10 +1611,15 @@ export function topLevelStops(command, dir) {
   for (const c of tokenize(dropHeredocBodies(command)).cmds) {
     if (c.pre === "(") saved.push(cur);
     const before = cur;
-    const first = c.toks[0]?.v;
-    if (COMPOUND_OPEN.has(first)) compound++;
-    let a = c.toks.slice(programIndex(c.toks));
-    while (a.length && PREFIX_WORDS.has(a[0].v)) a = a.slice(1);
+    const at = programIndex(c.toks);
+    for (const t of c.toks.slice(0, at)) if (COMPOUND_OPEN.has(t.v) && !t.dyn) compound++; // `then if …` skipped as keywords
+    let a = c.toks.slice(at);
+    const closes = a.length > 0 && COMPOUND_CLOSE.has(a[0].v);
+    while (a.length && PREFIX_WORDS.has(a[0].v)) {
+      if (COMPOUND_OPEN.has(a[0].v)) compound++;
+      a = a.slice(1);
+    }
+    if (a.length && COMPOUND_OPEN.has(a[0].v)) compound++; // for/case/select
     const prog = a.length ? bare(a[0].v) : "";
     const moves = prog === "cd" || prog === "pushd" || prog === "popd";
     if (prog === "cd" || prog === "pushd") {
@@ -1618,7 +1628,7 @@ export function topLevelStops(command, dir) {
       if (a[k] && a[k].v === "--") k++;
       const target = a[k];
       let next;
-      if (!target) next = prog === "cd" ? process.env.HOME || cur : UNKNOWN;
+      if (!target) next = prog === "cd" && c.post !== "(" ? process.env.HOME || cur : UNKNOWN; // `cd $(…)`: the target is the substitution
       else if (target.v === "-") next = prev ?? UNKNOWN;
       else if (cur === UNKNOWN || expandHome(target) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
       else next = path.resolve(cur, expandHome(target));
@@ -1631,7 +1641,7 @@ export function topLevelStops(command, dir) {
     }
     const transient = c.pre === "|" || c.post === "|" || c.post === "&";
     if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond && !compound });
-    if (COMPOUND_CLOSE.has(first) || c.toks.some((t, k) => k > 0 && COMPOUND_CLOSE.has(t.v) && !t.dyn)) compound = Math.max(0, compound - 1);
+    if (closes) compound = Math.max(0, compound - 1);
     if (transient) cur = before;
     if (c.post === ")" && saved.length) cur = saved.pop();
   }
@@ -1666,7 +1676,7 @@ function checkHome(input, main) {
     for (const st of stops) {
       const inWt = inMainTree(st.dir) && linkedWorktreeOf(st.dir, main);
       if (inWt) wt = inWt;
-      else if (st.always && st.dir !== UNKNOWN) wt = null;
+      else if (st.always && st.dir !== UNKNOWN && fs.existsSync(st.dir)) wt = null; // a cd back that cannot fail
     }
     if (!wt) return null;
     const already = linkedWorktreeOf(here, main);
