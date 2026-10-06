@@ -95,7 +95,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1519,80 +1519,132 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
  */
 const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 
-// HOME CHECKOUT. An agent starts in the session's cwd AT THE MOMENT IT IS SPAWNED (a Workflow's
-// agents too, long after the Workflow call), and its project memory (.claude/agent-memory) and
-// project settings come from that checkout. Measured in a sweep: after an orchestrator Bash call
-// `cd <MAIN>/.claude/worktrees/<x> && …` left the session's cwd in a PR worktree, the reviewers
-// spawned next started with none of the repo's reviewer memory and wrote their notes into that
-// worktree, to be lost with it. So, in a repo with a sapu contract and a session that started in
-// <MAIN>: (1) the orchestrator never moves its cwd into a linked worktree, (2) never dispatches
-// from one, (3) no subagent writes agent memory into one. A session that STARTED in a worktree
-// (a desktop worktree session) keeps that worktree as its home and is left alone.
+// HOME CHECKOUT. An agent starts in the main session's cwd AT THE MOMENT IT IS SPAWNED (a
+// Workflow's agents too, long after the Workflow call), and its project memory
+// (.claude/agent-memory) and project settings come from that checkout. A main-session `cd` that
+// stays inside the project directory carries over to later commands. Measured in a sweep: after an
+// orchestrator Bash call `cd <MAIN>/.claude/worktrees/<x> && …` left the cwd in a PR worktree, the
+// reviewers spawned next started with none of the repo's reviewer memory and wrote their notes into
+// that worktree, to be lost with it. So, in a repo with a sapu contract and a main session whose
+// project directory is <MAIN>: (1) the main session never moves its cwd into a linked worktree
+// inside <MAIN> — unless CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR resets it after every command,
+// which closes this at the source; (2) it never dispatches from one; (3) no subagent but a sapu
+// worker (which may not write into <MAIN>) writes agent memory into one. A session whose project
+// directory is a worktree (a desktop worktree session) is left alone. Subagents never carry a cd
+// over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
 
 /** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
 const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
+const realOr = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
 
-/** The session's home is <MAIN>: its transcript lives under ~/.claude/projects/<slug(MAIN)>/. */
+/** The session's project directory is <MAIN> or inside it: the checkout of CLAUDE_PROJECT_DIR (hooks get it), else the transcript's project slug. */
 function homeIsMain(input, main) {
-  const m = /[\\/]projects[\\/]([^\\/]+)[\\/]/.exec(typeof input.transcript_path === "string" ? input.transcript_path : "");
-  if (!m) return false;
-  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
-  return m[1] === slug(main) || m[1] === slug(real(main));
+  const dir = process.env.CLAUDE_PROJECT_DIR;
+  if (dir) {
+    const top = checkoutRoot(dir);
+    return Boolean(top) && realLoose(top) === realLoose(main);
+  }
+  const all = [...(typeof input.transcript_path === "string" ? input.transcript_path : "").matchAll(/[\\/]projects[\\/]([^\\/]+)[\\/]/g)];
+  const m = all.length ? all[all.length - 1] : null;
+  return Boolean(m) && (m[1] === slug(main) || m[1] === slug(realOr(main)));
 }
 
-/** The linked worktree holding `p` (an existing or a planned path), or null: one `git worktree list` names, or any path under <MAIN>/.claude/worktrees/. */
+/** The real path of `p`, or of its nearest existing ancestor plus the rest (a planned path). */
+function realLoose(p) {
+  let head = path.resolve(p);
+  const rest = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(head), ...rest);
+    } catch {
+      const up = path.dirname(head);
+      if (up === head) return path.resolve(p);
+      rest.unshift(path.basename(head));
+      head = up;
+    }
+  }
+}
+
+const under = (r, dir) => r === dir || r.startsWith(dir + path.sep);
+
+/** The linked worktree holding `p` (an existing or a planned path, symlinks resolved), or null: any path under <MAIN>/.claude/worktrees/, or a non-main entry of `git worktree list`. */
 function linkedWorktreeOf(p, main) {
-  const r = path.resolve(p);
-  const under = (dir) => r === dir || r.startsWith(dir + path.sep);
-  const conventional = path.join(main, ".claude", "worktrees");
-  if (under(conventional) && r !== conventional) return path.join(conventional, path.relative(conventional, r).split(path.sep)[0]);
+  const r = realLoose(p);
+  const conventional = path.join(realLoose(main), ".claude", "worktrees");
+  if (under(r, conventional) && r !== conventional) return path.join(conventional, path.relative(conventional, r).split(path.sep)[0]);
   let list = "";
   try { list = execFileSync("git", ["-C", main, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; }
-  const roots = list.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9)).slice(1);
-  return roots.find((w) => under(path.resolve(w))) || null;
+  const roots = list.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => realLoose(l.slice(9))).slice(1);
+  return roots.find((w) => under(r, w)) || null;
 }
 
-/** Where the shell's cwd ends after `command` run from `dir` (top-level cd/pushd only: subshells, pipelines and background jobs do not move it); UNKNOWN when it cannot be told. */
-export function finalDir(command, dir) {
+const PREFIX_WORDS = new Set(["{", "builtin", "command", "if", "then", "else", "elif", "do", "while", "until", "!"]);
+
+/**
+ * The directories the shell's cwd is moved to at top level by `command` run from `dir` (cd/pushd
+ * outside subshells, pipelines and background jobs), in order; UNKNOWN for one that cannot be told.
+ * Every stop counts, not just the last: `cd <wt> && npm test && cd <MAIN>` stays in <wt> when the
+ * test fails.
+ */
+export function topLevelStops(command, dir) {
   let cur = dir;
   const saved = [];
+  const stops = [];
   for (const c of tokenize(stripHeredocs(command)).cmds) {
     if (c.pre === "(") saved.push(cur);
     const before = cur;
-    const a = c.toks.slice(programIndex(c.toks));
+    let a = c.toks.slice(programIndex(c.toks));
+    while (a.length && PREFIX_WORDS.has(a[0].v)) a = a.slice(1);
     const prog = a.length ? bare(a[0].v) : "";
+    const moves = prog === "cd" || prog === "pushd" || prog === "popd";
     if (prog === "cd" || prog === "pushd") {
-      const target = a[1];
-      if (!target) cur = process.env.HOME || cur;
-      else if (cur === UNKNOWN || target.dyn || expandHome(target) === null) cur = UNKNOWN;
-      else if (target.v === "-") cur = UNKNOWN;
+      let k = 1;
+      while (k < a.length && /^-[LPeq@]+$/.test(a[k].v)) k++;
+      if (a[k] && a[k].v === "--") k++;
+      const target = a[k];
+      if (!target) cur = prog === "cd" ? process.env.HOME || cur : UNKNOWN;
+      else if (cur === UNKNOWN || expandHome(target) === null || target.v === "-" || /^[+-]\d+$/.test(target.v)) cur = UNKNOWN;
       else cur = path.resolve(cur, expandHome(target));
     } else if (prog === "popd") cur = UNKNOWN;
-    if (c.pre === "|" || c.post === "|" || c.post === "&") cur = before;
+    const transient = c.pre === "|" || c.post === "|" || c.post === "&";
+    if (moves && !transient && !saved.length) stops.push(cur);
+    if (transient) cur = before;
     if (c.post === ")" && saved.length) cur = saved.pop();
   }
-  return cur;
+  return stops;
 }
 
-/** Rules (1) and (2) for the main session, and (3) for a subagent's file write; null when none applies. */
+/** PowerShell: every top-level Set-Location/Push-Location (or alias) target, resolved; UNKNOWN for a variable. */
+function topLevelStopsPowerShell(command, dir) {
+  const re = /(?:^|[;\n{]|&&|\|\|)\s*(?:Set-Location|Push-Location|sl|cd|chdir|pushd)\s+(?:-(?:Path|LiteralPath)\s+)?(?:'([^']*)'|"([^"]*)"|([^\s;|&}]+))/gi;
+  return [...command.matchAll(re)].map((m) => m[1] ?? m[2] ?? m[3]).map((t) => (/^\$|\$\(/.test(t) ? UNKNOWN : path.resolve(dir, t.replace(/^~(?=[\\/]|$)/, process.env.HOME || "~"))));
+}
+
+const resetsCwd = () => /^(1|true|yes|on)$/i.test(process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR || "");
+
+/** Rules (1) and (2) for the main session, (3) for a subagent's file write; null when none applies. */
 function checkHome(input, main) {
   if (!main || !homeIsMain(input, main) || loadContract(main).missing) return null;
   const here = input.cwd || process.cwd();
   const tool = input.tool_name;
   const ti = input.tool_input || {};
-  if (DISPATCH_TOOLS.has(tool)) {
+  const sub = Boolean(input.agent_id);
+  if (!sub && DISPATCH_TOOLS.has(tool)) {
     const wt = linkedWorktreeOf(here, main);
     return wt ? `${/^[AEIOU]/.test(tool) ? "an" : "a"} ${tool} call starts its agents in your cwd, here the linked worktree ${wt}: their project memory and settings would come from it and be lost with it. cd "${main}" first (keep worktree work in git -C or a ( cd … ) subshell), then dispatch again.` : null;
   }
-  if (!(input.agent_type || input.agent_id) && tool === "Bash" && typeof ti.command === "string") {
-    const end = finalDir(ti.command, here);
-    const wt = end !== UNKNOWN && linkedWorktreeOf(end, main);
-    return wt ? `this command leaves the session's cwd in the linked worktree ${wt}, and every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell.` : null;
+  if (!sub && (tool === "Bash" || tool === "PowerShell") && typeof ti.command === "string" && !ti.run_in_background && !resetsCwd()) {
+    const stops = tool === "Bash" ? topLevelStops(ti.command, here) : topLevelStopsPowerShell(ti.command, here);
+    const inMainTree = (d) => d !== UNKNOWN && under(realLoose(d), realLoose(main));
+    const wt = stops.filter(inMainTree).map((d) => linkedWorktreeOf(d, main)).find(Boolean);
+    if (!wt) return null;
+    const already = linkedWorktreeOf(here, main);
+    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell — or set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command.`;
   }
-  if ((input.agent_type || input.agent_id) && WRITE_TOOLS.has(tool)) {
+  if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
     const f = ti.file_path ?? ti.notebook_path;
     if (typeof f !== "string") return null;
-    const abs = path.resolve(here, f);
+    const abs = realPathOf(path.resolve(here, f));
     const wt = linkedWorktreeOf(abs, main);
     const rel = wt && path.relative(wt, abs);
     if (rel && /^\.claude[\\/]agent-memory(-local)?[\\/]/.test(rel)) return `agent memory written inside the linked worktree ${wt} is lost with it. Write this note to ${path.join(main, rel)} instead (the repo's memory, read by the next agent).`;
@@ -1603,9 +1655,9 @@ function checkHome(input, main) {
 /** Cheap pre-filter, so ordinary calls never pay for `git worktree list`. */
 function mayLeaveHome(input) {
   const ti = input.tool_input || {};
-  if (DISPATCH_TOOLS.has(input.tool_name)) return true;
-  const sub = Boolean(input.agent_type || input.agent_id);
-  if (!sub && input.tool_name === "Bash") return typeof ti.command === "string" && /\b(cd|pushd)\b/.test(ti.command);
+  const sub = Boolean(input.agent_id);
+  if (DISPATCH_TOOLS.has(input.tool_name)) return !sub;
+  if (!sub && (input.tool_name === "Bash" || input.tool_name === "PowerShell")) return typeof ti.command === "string" && /\b(cd|pushd|chdir|sl|Set-Location|Push-Location)\b/i.test(ti.command);
   return sub && WRITE_TOOLS.has(input.tool_name) && /agent-memory/.test(String(ti.file_path ?? ti.notebook_path ?? ""));
 }
 

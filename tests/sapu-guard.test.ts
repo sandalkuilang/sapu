@@ -1523,7 +1523,7 @@ describe("sapu-guard — context-mode calls are judged where each kind runs (mea
   });
 });
 
-describe("sapu-guard — a session that started in <MAIN> keeps its cwd, dispatches and agent memory there", { timeout: 30_000 }, () => {
+describe("sapu-guard — a session whose project directory is <MAIN> keeps its cwd, dispatches and agent memory there", { timeout: 30_000 }, () => {
   const repo6 = realpathSync(mkdtempSync(join(tmpdir(), "sapu-home-")));
   mkdirSync(join(repo6, ".claude"), { recursive: true });
   mkdirSync(join(repo6, "apps/api"), { recursive: true });
@@ -1543,54 +1543,79 @@ describe("sapu-guard — a session that started in <MAIN> keeps its cwd, dispatc
     for (const d of [repo6, outside, bare]) rmSync(d, { recursive: true, force: true });
   });
   const projects = (dir: string) => join(tmpdir(), "projects", dir.replace(/[^A-Za-z0-9]/g, "-"), "s1.jsonl");
-  const HOME_MAIN = projects(repo6);
-  const run = (input: Record<string, unknown>) => {
+  // The host's own values never leak in: each case sets the project directory it means.
+  const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== "CLAUDE_PROJECT_DIR" && k !== "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"));
+  const run = (input: Record<string, unknown>, env: Record<string, string> = { CLAUDE_PROJECT_DIR: repo6 }) => {
     try {
-      execFileSync("node", [GUARD], { input: JSON.stringify({ transcript_path: HOME_MAIN, ...input }), stdio: ["pipe", "pipe", "pipe"] });
+      execFileSync("node", [GUARD], { input: JSON.stringify(input), env: { ...baseEnv, ...env }, stdio: ["pipe", "pipe", "pipe"] });
       return 0;
     } catch (e) {
       return (e as { stderr: Buffer }).stderr.toString();
     }
   };
-  const bash = (command: string, cwd = repo6, extra = {}) => run({ tool_name: "Bash", tool_input: { command }, cwd, ...extra });
-  const dispatch = (tool_name: string, cwd: string, extra = {}) => run({ tool_name, tool_input: { prompt: "review PR 1" }, cwd, ...extra });
+  const bash = (command: string, cwd = repo6, extra = {}, env?: Record<string, string>) => run({ tool_name: "Bash", tool_input: { command }, cwd, ...extra }, env);
+  const dispatch = (tool_name: string, cwd: string, extra = {}, env?: Record<string, string>) => run({ tool_name, tool_input: { prompt: "review PR 1" }, cwd, ...extra }, env);
+  const sub = { agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r1" };
+  const worker = { agent_type: "sapu:sapu-opus-high", agent_id: "w1" };
 
-  it("refuses an orchestrator command that leaves the session's cwd in a linked worktree (the two seen in a sweep)", () => {
-    expect(bash(`cd ${wt6} && git fetch -q origin x; git status -sb`)).toMatch(/leaves the session's cwd in the linked worktree .*pr-1.*git -C/s);
+  it("refuses a main-session command that leaves the cwd in a linked worktree inside <MAIN> (the two seen in a sweep, and their spellings)", () => {
+    expect(bash(`cd ${wt6} && git fetch -q origin x; git status -sb`)).toMatch(/moves the session's cwd into the linked worktree .*pr-1.*git -C.*CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1/s);
     expect(bash("git worktree add -q .claude/worktrees/new -b x origin/main; cd .claude/worktrees/new && npm audit fix")).toMatch(/worktrees\/new/); // not created yet
-    expect(bash(`pushd ${wt6}`)).not.toBe(0);
-    expect(bash(`cd ${outside} && ls`)).toMatch(/linked worktree/); // a worktree outside <MAIN>, from git worktree list
-    expect(bash(`cd ${join(wt6, "apps")}`, wt6)).not.toBe(0); // already drifted: still no further cd into one
+    for (const c of [`pushd ${wt6}`, `cd -- ${wt6}`, `cd -P ${wt6}`, `builtin cd ${wt6}`, `command cd ${wt6}`, `{ cd ${wt6}; }`, `if true; then cd ${wt6}; fi`, `cd ${join(wt6, "apps")}`]) expect(bash(c), c).not.toBe(0);
+    expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path '${wt6}'; git status` }, cwd: repo6 })).toMatch(/linked worktree/);
+    expect(bash(`cd ${wt6}`, repo6, { agent_type: "reviewer" })).not.toBe(0); // a main session run with --agent has agent_type but no agent_id
+    // Every top-level stop counts: when the test fails, the cd back never runs.
+    for (const c of [`cd ${wt6} && npm test && cd ${repo6}`, `cd ${wt6} && make || cd ${repo6}`, `cd ${wt6} && ls; cd ${repo6}`]) expect(bash(c), c).not.toBe(0);
+    expect(run({ tool_name: "Bash", tool_input: { command: `cd $HOME/.claude/worktrees/pr-1 && ls` }, cwd: repo6 }, { CLAUDE_PROJECT_DIR: repo6, HOME: repo6 })).not.toBe(0);
+    expect(bash("cd apps && ls", wt6)).toMatch(/already the linked worktree .*cd ".*sapu-home-[^"]*" &&/s);
   });
 
-  it("lets worktree work that does not move the session through: subshells, pipelines, background jobs, git -C, and a cd back", () => {
-    for (const c of [`( cd ${wt6} && git status ); echo ok`, `cd ${wt6} | cat`, `cd ${wt6} &`, `git -C ${wt6} status`, `env -C ${wt6} git status`, "cd apps/api && ls", `cd ${wt6} && ls; cd ${repo6}`]) expect(bash(c), c).toBe(0);
+  it("lets through what does not move the cwd, a cd back, a worktree outside <MAIN> (Claude Code resets that itself), and a host that resets the cwd", () => {
+    for (const c of [`( cd ${wt6} && git status ); echo ok`, `cd ${wt6} | cat`, `cd ${wt6} &`, `git -C ${wt6} status`, `env -C ${wt6} git status`, `bash -c 'cd ${wt6} && ls'`, `x=$(cd ${wt6} && pwd)`, "cd apps/api && ls", "cd $SOMEWHERE && ls", `cd ${outside} && ls`]) expect(bash(c), c).toBe(0);
+    expect(run({ tool_name: "Bash", tool_input: { command: `cd ${wt6} && npm test`, run_in_background: true }, cwd: repo6 })).toBe(0); // a background command's cd never carries over
     expect(bash(`cd ${repo6} && git diff`, wt6)).toBe(0);
-    expect(bash("cd $SOMEWHERE && ls")).toBe(0); // unknowable here: the dispatch check is the net
+    expect(run({ tool_name: "PowerShell", tool_input: { command: "Set-Location $env:TEMP" }, cwd: repo6 })).toBe(0);
+    expect(bash(`cd ${wt6} && ls`, repo6, {}, { CLAUDE_PROJECT_DIR: repo6, CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: "1" })).toBe(0);
+    expect(bash(`cd ${wt6}`, repo6, sub)).toBe(0); // a subagent's cd never carries over
   });
 
-  it("refuses Agent, Task and Workflow from a linked worktree, naming the main checkout", () => {
+  it("refuses the main session's Agent, Task and Workflow from a linked worktree, and nobody else's", () => {
     for (const t of ["Agent", "Task", "Workflow"]) expect(dispatch(t, wt6), t).toMatch(/linked worktree .*cd ".*sapu-home-/s);
     expect(dispatch("Agent", join(wt6, ".claude"))).not.toBe(0);
-    expect(dispatch("Agent", wt6, { agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r1" })).not.toBe(0);
     for (const c of [repo6, join(repo6, "apps/api")]) expect(dispatch("Workflow", c), c).toBe(0);
+    // A worker in its own isolation worktree asks one specialist (brief point 7): it cannot cd, so it is never refused.
+    expect(dispatch("Agent", wt6, worker)).toBe(0);
+    expect(dispatch("Agent", wt6, sub)).toBe(0);
   });
 
-  it("sends a subagent's agent memory from a worktree to <MAIN>; <MAIN>'s own memory stays writable", () => {
-    const sub = { agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r1" };
+  it("sends a reviewer's agent memory from a worktree to <MAIN>; <MAIN>'s memory stays writable; a sapu worker is not sent anywhere", () => {
     const note = ".claude/agent-memory/senior-dev-team-senior-qa-reviewer/MEMORY.md";
-    expect(run({ tool_name: "Write", cwd: wt6, ...sub, tool_input: { file_path: join(wt6, note), content: "x" } })).toMatch(new RegExp(`Write this note to ${join(repo6, note).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    expect(run({ tool_name: "Write", cwd: wt6, ...sub, tool_input: { file_path: join(wt6, note), content: "x" } })).toContain(`Write this note to ${join(repo6, note)}`);
     expect(run({ tool_name: "Edit", cwd: wt6, ...sub, tool_input: { file_path: note, old_string: "a", new_string: "b" } })).not.toBe(0); // relative to its cwd
     expect(run({ tool_name: "Write", cwd: wt6, ...sub, tool_input: { file_path: join(repo6, note), content: "x" } })).toBe(0);
+    expect(run({ tool_name: "Write", cwd: wt6, ...worker, tool_input: { file_path: join(wt6, note), content: "x" } })).toBe(0);
   });
 
-  it("leaves alone a session that started in a worktree, a repo without a contract, and a host without transcript_path", () => {
-    const desk = { transcript_path: projects(wt6) };
-    expect(dispatch("Agent", wt6, desk)).toBe(0);
-    expect(bash(`cd ${wt6} && ls`, repo6, desk)).toBe(0);
-    expect(dispatch("Agent", bareWt, { transcript_path: projects(bare) })).toBe(0);
-    expect(bash(`cd ${bareWt}`, bare, { transcript_path: projects(bare) })).toBe(0);
-    expect(dispatch("Agent", wt6, { transcript_path: undefined })).toBe(0);
+  it("finds <MAIN> through a symlink or a project directory below it", () => {
+    const link = join(realpathSync(tmpdir()), `sapu-home-link-${process.pid}`);
+    rmSync(link, { force: true });
+    symlinkSync(repo6, link);
+    try {
+      expect(bash(`cd ${link}/.claude/worktrees/pr-1`, link, {}, { CLAUDE_PROJECT_DIR: link })).not.toBe(0);
+      expect(dispatch("Agent", wt6, {}, { CLAUDE_PROJECT_DIR: join(repo6, "apps/api") })).not.toBe(0);
+    } finally {
+      rmSync(link, { force: true });
+    }
+  });
+
+  it("leaves alone a session whose project directory is a worktree, a repo without a contract, and a host that names no project", () => {
+    const desk = { CLAUDE_PROJECT_DIR: wt6 };
+    expect(dispatch("Agent", wt6, {}, desk)).toBe(0);
+    expect(bash(`cd ${join(wt6, "apps")} && ls`, wt6, {}, desk)).toBe(0);
+    expect(dispatch("Agent", bareWt, {}, { CLAUDE_PROJECT_DIR: bare })).toBe(0);
+    expect(dispatch("Agent", wt6, {}, {})).toBe(0); // no CLAUDE_PROJECT_DIR, no transcript_path
+    expect(dispatch("Agent", wt6, { transcript_path: projects(repo6) }, {})).not.toBe(0); // the transcript's project slug is the fallback
+    expect(dispatch("Agent", wt6, { transcript_path: projects(wt6) }, {})).toBe(0);
     expect(dispatch("Agent", tmpdir())).toBe(0);
   });
 });
