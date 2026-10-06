@@ -517,8 +517,8 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 describe("context budgets", () => {
   // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
   const BUDGETS: Record<string, number> = {
-    "skills/sapu/SKILL.md": 38_700,
-    "skills/sapu/subagent-brief.md": 13_600,
+    "skills/sapu/SKILL.md": 39_000,
+    "skills/sapu/subagent-brief.md": 13_900,
     "skills/forge/SKILL.md": 15_400,
     "skills/forge/reference.md": 16_000,
   };

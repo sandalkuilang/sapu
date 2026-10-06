@@ -1268,7 +1268,7 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
       calls(m, id, STEP_SOFT - 1);
       return budget({ main: m, agentId: id, tool: "Bash", command });
     };
-    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7", "npm run teardown -- issue7", "bash scripts/teardown.sh issue7", "node scripts/sapu-teardown.mjs"]) {
+    for (const c of ["git add -A && git commit -m 'wip: handoff; tests red'", "git switch --detach", "git add -A && git commit -qm wip && git switch --detach", "cd /wt && git -C /wt status --short", "git --no-pager log -3", "scripts/sapu-worktree.sh teardown issue7", "npm run teardown -- issue7", "bash scripts/teardown.sh issue7", "node scripts/sapu-teardown.mjs"]) {
       expect(atReminder(`h-${c}`, c), c).toBeNull();
     }
     for (const c of ["npm test", "echo $(npm test)", "git log | xargs npm test", "git status && npm test", "git status & npm test"]) {

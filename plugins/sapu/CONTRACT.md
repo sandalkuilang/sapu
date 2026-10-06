@@ -94,7 +94,8 @@ subagent write to `~/.config/sapu/`.
     "fast": "npm run check -- --fast", // the worker's gate before a PR (static + fast); must differ from merge
     "merge": "scripts/sapu-hooks.sh gate", // the merge gate; sapu-merge.sh runs it IN the PR worktree
     "summaryStart": "^Gate summary",    // regex: the gate log from this line down = the summary in the merge comment
-    "redIf": "^⊘.*(migration-drift)"    // optional, null = none: a matching summary line = red even on exit 0
+    "redIf": "^⊘.*(migration-drift)",   // optional, null = none: a matching summary line = red even on exit 0
+    "infra": "pg_isready -h localhost -p 5432" // optional key: exits 0 when the test infrastructure is up; wave-args refuses a lane while it fails
   },
 
   "redAreas": "node --import tsx scripts/red-area.ts", // null = no classifier (tier from the label only)

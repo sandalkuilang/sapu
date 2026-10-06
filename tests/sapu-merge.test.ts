@@ -431,6 +431,10 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const r = h.run({ HX_GATE_RC: "1" });
     expect(r.err).toMatch(/verdict: unknown \(the log names no failing test\)/);
     expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- tree=[0-9a-f]{40} verdict=unknown$/)]);
+    // a red run of non-test steps only (a new dependency advisory) names them in the ledger
+    const h2 = harness();
+    h2.run({ HX_GATE_RC: "1", HX_GATE_SUMMARY: "✓ vitest 30.2s\n✗ verify:cyber 9.2s\n✗ npm audit 5.8s" });
+    expect(gates(h2)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- tree=[0-9a-f]{40} verdict=unknown steps=verify:cyber,npm_audit$/)]);
   });
 
   it("a gate that could not start is recorded as setup-failed", () => {

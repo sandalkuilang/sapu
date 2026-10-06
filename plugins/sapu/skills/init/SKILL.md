@@ -34,7 +34,7 @@ One `ctx_batch_execute` (or one shell command) for all of it, output trimmed:
 
 | Skill | Required |
 |---|---|
-| sapu, forge | a GitHub remote with the account the owner confirms for the contract; tier + lifecycle labels; a `gate.merge` that runs **real tests**, a `gate.fast` (may be static) + a diff-scoped test command in the `worker.md` profile §Test; CLAUDE.md |
+| sapu, forge | a GitHub remote with the account the owner confirms for the contract; tier + lifecycle labels; a `gate.merge` that runs **real tests**, a `gate.fast` (may be static) + a diff-scoped test command in the `worker.md` profile §Test; a `gate.infra` probe when the tests need running infrastructure (DB, containers); CLAUDE.md |
 | argus, momus | the above + the skill's profile + the config `.argus/config.yml` / `.momus/config.yml` |
 | nemesis | the above + its profile + a `.nemesis/authorization.yml` **signed by the owner** (gitignored; holding `scope`, `forbidden`, `expires_on`, `environments_allowed`, an attestation) as the official record of targets — init may draft its template, but **never** fills `scope`/`forbidden` or attests itself (no file with an attestation ⇒ nemesis refuses to run) |
 | inspector | the prerequisites of argus, momus and nemesis together |

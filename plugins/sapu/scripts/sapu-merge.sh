@@ -448,12 +448,14 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>]
+# steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
+# (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
 GATES_LOG="$MAIN/.git/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
-gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict]
-  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" >>"$GATES_LOG"; } 2>/dev/null \
+gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -519,7 +521,7 @@ if [ -n "$RED" ]; then
   STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
-  gate_record red "${TESTS:--}" "$VERDICT"
+  gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
   elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")"
