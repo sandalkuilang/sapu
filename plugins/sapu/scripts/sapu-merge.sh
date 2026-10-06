@@ -351,11 +351,28 @@ PR_OID="$(jget .headRefOid)"
 [ -n "$PR_OID" ] && [ "$(git -C "$MAIN" rev-parse "refs/remotes/origin/$HEAD")" = "$PR_OID" ] \
   || die "origin/$HEAD is not the head GitHub reported for PR #$PR (${PR_OID:-none}) when its trust was checked: it moved — run again"
 
+# Unpushed WIP a handoff superseded: the handing-off worker's local branch keeps its `wip` commit
+# while the next worker, starting from that SHA in another worktree, pushes its own history.
+# Dropped only when EVERY local-only commit is a `wip…` commit by the contract's identity; its tip
+# is kept under refs/sapu-trash/superseded-wip/ first (`git branch <name> <ref>` restores it).
+superseded_wip() { # <commit-ish>
+  local revs
+  revs="$(git -C "$MAIN" log --format='%ae%x09%s' "refs/remotes/origin/$HEAD..$1" 2>/dev/null)" || return 1
+  [ -n "$revs" ] || return 1
+  printf '%s\n' "$revs" | awk -F'\t' -v e="$GIT_EMAIL" 'tolower($1) != tolower(e) || tolower($2) !~ /^wip([^a-z]|$)/ { bad = 1 } END { exit bad }'
+}
+keep_superseded() { # <sha>
+  git -C "$MAIN" update-ref "refs/sapu-trash/superseded-wip/$1" "$1" || die "could not save superseded WIP $1 to refs/sapu-trash"
+  say "superseded handoff WIP $1 dropped from $HEAD (kept at refs/sapu-trash/superseded-wip/$1)"
+}
+
 if [ "$CREATED_WT" = 1 ]; then
   if git -C "$MAIN" rev-parse --verify -q "refs/heads/$HEAD" >/dev/null; then
     # A local branch exists but is checked out nowhere: reuse only if it holds nothing origin lacks.
-    git -C "$MAIN" merge-base --is-ancestor "refs/heads/$HEAD" "refs/remotes/origin/$HEAD" \
-      || die "local branch $HEAD has commits not on origin/$HEAD; read them first"
+    if ! git -C "$MAIN" merge-base --is-ancestor "refs/heads/$HEAD" "refs/remotes/origin/$HEAD"; then
+      superseded_wip "refs/heads/$HEAD" || die "local branch $HEAD has commits not on origin/$HEAD; read them first"
+      keep_superseded "$(git -C "$MAIN" rev-parse "refs/heads/$HEAD")"
+    fi
     git -C "$MAIN" worktree add --no-track -B "$HEAD" "$WT" "refs/remotes/origin/$HEAD" >/dev/null 2>&1 || die "worktree add failed"
   else
     git -C "$MAIN" worktree add --no-track -b "$HEAD" "$WT" "refs/remotes/origin/$HEAD" >/dev/null 2>&1 || die "worktree add failed"
@@ -371,6 +388,12 @@ fi
 if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD \
   && git -C "$WT" diff --quiet HEAD \
   && ! git -C "$WT" cherry "refs/remotes/origin/$HEAD" HEAD "refs/remotes/origin/$BASE" | grep -q '^+'; then
+  git -C "$WT" reset -q --hard "refs/remotes/origin/$HEAD" || die "reset of $WT to origin/$HEAD failed"
+fi
+if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD \
+  && ! git -C "$WT" merge-base --is-ancestor HEAD "refs/remotes/origin/$HEAD" \
+  && git -C "$WT" diff --quiet HEAD && superseded_wip "$(git -C "$WT" rev-parse HEAD)"; then
+  keep_superseded "$(git -C "$WT" rev-parse HEAD)"
   git -C "$WT" reset -q --hard "refs/remotes/origin/$HEAD" || die "reset of $WT to origin/$HEAD failed"
 fi
 if [ "$CREATED_WT" = 0 ] && ! git -C "$WT" merge-base --is-ancestor "refs/remotes/origin/$HEAD" HEAD; then
@@ -475,7 +498,7 @@ RED=""
 if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; }a summary line matches gate.redIf ($RED_IF)"; fi
 [ -n "$SUMMARY" ] || RED="${RED:+$RED; }no gate summary in log (gate.summaryStart: $SUMMARY_START)"
 if [ -n "$RED" ]; then
-  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed 's/ [0-9.]*s.*//' | paste -sd, - || true)"
+  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
   # The failing test FILES, from anywhere in the log, colour codes stripped: vitest/jest
   # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and

@@ -514,6 +514,9 @@ describe("loadContract and the CLI", () => {
     const down = cli(repo, ["wave-args"]);
     expect(down.status).not.toBe(0);
     expect(down.err).toMatch(/test infrastructure is down: gate\.infra .* exited 3 — connection refused on :5432\. Bring it up/);
+    withInfra("seq 300000; echo 'db down' >&2; exit 1"); // a big output keeps the real reason
+    expect(cli(repo, ["wave-args"]).err).toMatch(/exited 1 — db down\./);
+    expect(cli(repo, ["wave-args", "--no-infra"]).status).toBe(0); // the inspector runs no tests
     withInfra("true");
     expect(JSON.parse(cli(repo, ["wave-args"]).out).main).toBeTruthy();
     withInfra(null);

@@ -1344,7 +1344,7 @@ const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
 // A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
 // echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
 // a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
-const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch|switch\s+--detach)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
+const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
 const isHandoff = (command) => {
   // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
   if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
@@ -1387,7 +1387,7 @@ export function stepBudget({ main, agentId, tool, command }) {
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), git switch --detach, teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
+  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
 }
 
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook

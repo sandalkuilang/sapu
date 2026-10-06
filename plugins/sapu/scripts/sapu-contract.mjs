@@ -1141,12 +1141,15 @@ function main(argv) {
   if (cmd === "wave-args") {
     // A lane on infrastructure that is down only burns a worker (it waited 18 min on a stopped DB):
     // the repo's own probe must pass before any lane is built.
+    // `--no-infra`: a caller whose agents run no tests (the inspector) skips it.
     const infra = contract.gate && contract.gate.infra;
-    if (isStr(infra)) {
-      const r = spawnSync("bash", ["-c", infra], { cwd: mainDir, encoding: "utf8", timeout: 60_000 });
-      if (r.status !== 0) {
-        const last = `${r.stdout || ""}${r.stderr || ""}`.trim().split("\n").pop() || (r.error ? r.error.message : "");
-        fail(`test infrastructure is down: gate.infra (${infra}) ${r.status === null ? "timed out" : `exited ${r.status}`}${last ? ` — ${last}` : ""}. Bring it up as the profile's Step 0 says, then build the lane again.`);
+    if (isStr(infra) && !process.argv.includes("--no-infra")) {
+      const r = spawnSync("bash", ["-c", infra], { cwd: mainDir, encoding: "utf8", timeout: 60_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+      const code = r.error && r.error.code;
+      if (r.status !== 0 || code) {
+        const how = code === "ETIMEDOUT" ? "timed out after 60 s" : code === "ENOENT" ? "could not run (no bash)" : code ? `failed (${code})` : `exited ${r.status}`;
+        const last = (`${r.stderr || ""}`.trim() || `${r.stdout || ""}`.trim()).split("\n").pop().slice(0, 200);
+        fail(`test infrastructure is down: gate.infra (${infra}) ${how}${last ? ` — ${last}` : ""}. Bring it up as the profile's Step 0 says, then build the lane again.`);
       }
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
