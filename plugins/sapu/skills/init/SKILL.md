@@ -34,7 +34,7 @@ One `ctx_batch_execute` (or one shell command) for all of it, output trimmed:
 
 | Skill | Required |
 |---|---|
-| sapu, forge | a GitHub remote with the account the owner confirms for the contract; tier + lifecycle labels; a `gate.merge` that runs **real tests**, a `gate.fast` (may be static) + a diff-scoped test command in the `worker.md` profile §Test; CLAUDE.md |
+| sapu, forge | a GitHub remote with the account the owner confirms for the contract; tier + lifecycle labels; a `gate.merge` that runs **real tests**, a `gate.fast` (may be static) + a diff-scoped test command in the `worker.md` profile §Test; a `gate.infra` probe when the tests need running infrastructure (DB, containers); CLAUDE.md |
 | argus, momus | the above + the skill's profile + the config `.argus/config.yml` / `.momus/config.yml` |
 | nemesis | the above + its profile + a `.nemesis/authorization.yml` **signed by the owner** (gitignored; holding `scope`, `forbidden`, `expires_on`, `environments_allowed`, an attestation) as the official record of targets — init may draft its template, but **never** fills `scope`/`forbidden` or attests itself (no file with an attestation ⇒ nemesis refuses to run) |
 | inspector | the prerequisites of argus, momus and nemesis together |
@@ -71,7 +71,7 @@ Write exactly the answers into `policy` (omit a field only when the answer equal
 
 ## 5. Owner confirmation, then verification
 
-Show a summary: identity (repo, gh account, git email), `gate.fast`, `gate.merge`, the protected targets, the security epic, the status of `.nemesis/authorization.yml` (present/signed/expired — init does not confirm its content), and the prerequisites not yet met. Ask the owner to confirm the **account** explicitly. **init does not fill nemesis targets:** the owner personally fills `scope`/`forbidden` and signs `.nemesis/authorization.yml` — that file is the record, not the profile. At most, init offers an empty template; without that file with an attestation, nemesis refuses to run.
+Show a summary: identity (repo, gh account, git email), `gate.fast`, `gate.merge`, `gate.infra`, the protected targets, the security epic, the status of `.nemesis/authorization.yml` (present/signed/expired — init does not confirm its content), and the prerequisites not yet met. Ask the owner to confirm the **account** explicitly. **init does not fill nemesis targets:** the owner personally fills `scope`/`forbidden` and signs `.nemesis/authorization.yml` — that file is the record, not the profile. At most, init offers an empty template; without that file with an attestation, nemesis refuses to run.
 
 A `local` home: `sapu-contract.mjs show`, `profiles` and `home` (must print `local`) read it directly and must be green now; there is no PR. A `repo` home: from the init branch's checkout, `sapu-contract.mjs show --working-tree` (schema) and `sapu-contract.mjs profiles --working-tree` (profile sections) must be green — without `--working-tree` both read the main checkout's HEAD, which does not hold the contract yet. `sapu-contract.mjs check` (scope lock) and the other skills read the contract **committed** at the main checkout's HEAD, so they only go green after the init PR is merged; until then, `preflight` is the key evidence. Write the files on a new branch and open a PR (not a commit to the base branch), or hand the diff to the owner if they choose to review it themselves. The final report: the files written, decisions + their sources, the prerequisites still missing per skill.
 

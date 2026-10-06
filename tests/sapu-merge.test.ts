@@ -313,6 +313,49 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(r.out).toMatch(/PR #7 merged/);
   }, 30_000); // two runs
 
+  // A handoff: the first worker's local branch keeps its unpushed `wip` commit while the next
+  // worker, starting from that SHA elsewhere, pushes other history to origin.
+  const handoffWip = (h: ReturnType<typeof harness>, { inWorktree, subject = "wip: handoff", email = FIXTURE_CONTRACT.gitEmail }: { inWorktree: boolean; subject?: string; email?: string }) => {
+    const env = { ...process.env, GIT_AUTHOR_NAME: "w", GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: "w", GIT_COMMITTER_EMAIL: email };
+    const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, ...a], { env, encoding: "utf8" }).trim();
+    g(h.MAIN, "fetch", "-q", "origin");
+    const agent = join(h.MAIN, ".claude/worktrees/agent-1");
+    g(h.MAIN, "worktree", "add", "-q", "--detach", agent, "origin/main");
+    writeFileSync(join(agent, "wip.txt"), "half done\n");
+    g(agent, "add", "-A");
+    g(agent, "commit", "-q", "-m", subject);
+    const wip = g(agent, "rev-parse", "HEAD");
+    if (inWorktree) g(agent, "switch", "-q", "-C", "feat/x");
+    else {
+      g(h.MAIN, "worktree", "remove", "--force", agent);
+      g(h.MAIN, "branch", "-f", "feat/x", wip);
+    }
+    return wip;
+  };
+
+  for (const inWorktree of [true, false]) {
+    it(`drops a handoff's superseded WIP (${inWorktree ? "in the worktree that holds the branch" : "on a branch no worktree holds"}), keeping it under refs/sapu-trash`, () => {
+      const h = harness();
+      const wip = handoffWip(h, { inWorktree });
+      const r = h.run();
+      expect(r.status, r.err).toBe(0);
+      expect(r.err).toMatch(new RegExp(`superseded handoff WIP ${wip} dropped from feat/x`));
+      expect(execFileSync("git", ["-C", h.MAIN, "rev-parse", `refs/sapu-trash/superseded-wip/${wip}`], { encoding: "utf8" }).trim()).toBe(wip);
+      expect(r.out).toMatch(/PR #7 merged/);
+    }, 30_000);
+  }
+
+  it("still refuses a diverged local branch whose own commits are not all the contract identity's wip commits", () => {
+    for (const spec of [{ subject: "feat: real work" }, { email: "someone@else.example" }]) {
+      const h = harness();
+      handoffWip(h, { inWorktree: true, ...spec });
+      const r = h.run();
+      expect(r.status, JSON.stringify(spec)).toBe(1);
+      expect(r.err).toMatch(/diverged/);
+      expect(h.gh()).not.toMatch(/pr merge/);
+    }
+  }, 30_000);
+
   it("a kept worktree holding a commit origin lacks is still refused, never overwritten", () => {
     const h = harness();
     expect(h.run({ HX_GATE_RC: "1" }).status).toBe(2);
@@ -431,6 +474,10 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const r = h.run({ HX_GATE_RC: "1" });
     expect(r.err).toMatch(/verdict: unknown \(the log names no failing test\)/);
     expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- tree=[0-9a-f]{40} verdict=unknown$/)]);
+    // a red run of non-test steps only (a new dependency advisory) names them in the ledger
+    const h2 = harness();
+    h2.run({ HX_GATE_RC: "1", HX_GATE_SUMMARY: "✓ vitest 30.2s\n✗ verify:cyber 9.2s\n✗ npm audit 5.8s\n✗ security scan 2s" });
+    expect(gates(h2)).toEqual([expect.stringMatching(/ red gate=\d+s failed=- tree=[0-9a-f]{40} verdict=unknown steps=verify:cyber,npm_audit,security_scan$/)]);
   });
 
   it("a gate that could not start is recorded as setup-failed", () => {

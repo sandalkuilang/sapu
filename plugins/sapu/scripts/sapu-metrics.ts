@@ -278,7 +278,7 @@ export interface GateRuns {
 
 /**
  * Gate runs in a sapu-merge.sh gates log (`<ISO time> <PR> <SHA> <green|red|setup-failed> gate=<s>s
- * failed=<files|-> [verdict=<v>]` per line) within [from, to].
+ * failed=<files|-> tree=<t> [verdict=<v>] [steps=<steps>]` per line) within [from, to].
  */
 export function gatesInWindow(log: string, from: string | undefined, to: string | undefined): GateRuns {
   const g: GateRuns = { runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 };

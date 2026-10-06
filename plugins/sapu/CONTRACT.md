@@ -94,7 +94,8 @@ subagent write to `~/.config/sapu/`.
     "fast": "npm run check -- --fast", // the worker's gate before a PR (static + fast); must differ from merge
     "merge": "scripts/sapu-hooks.sh gate", // the merge gate; sapu-merge.sh runs it IN the PR worktree
     "summaryStart": "^Gate summary",    // regex: the gate log from this line down = the summary in the merge comment
-    "redIf": "^⊘.*(migration-drift)"    // optional, null = none: a matching summary line = red even on exit 0
+    "redIf": "^⊘.*(migration-drift)",   // optional, null = none: a matching summary line = red even on exit 0
+    "infra": "pg_isready -h localhost -p 5432" // optional key: a quick, read-only probe (no background process holding its output) that exits 0 when the test infrastructure is up; every wave-args runs it in <MAIN> and refuses a lane while it fails
   },
 
   "redAreas": "node --import tsx scripts/red-area.ts", // null = no classifier (tier from the label only)
@@ -446,15 +447,17 @@ skipping none (each failure = non-zero exit + a one-line reason):
 5. the PR is open, not a draft, based on `baseBranch`; child PRs based on its head branch are
    retargeted to `<base>` (otherwise `--delete-branch` closes them permanently) — a same-repo
    child by a trusted id only;
-6. the PR worktree: reuse the one holding that branch, else create `wt-pr-<N>`; dirty = refuse;
+6. the PR worktree: reuse the one holding that branch, else create `wt-pr-<N>`; dirty = refuse; local
+   commits origin lacks = refuse, unless every one is a `wip…` commit by `gitEmail` (a handoff's WIP the
+   next worker superseded): kept under `refs/sapu-trash/superseded-wip/`, then dropped;
 7. fetch its head, which must be the head step 4 read; rebase onto `origin/<base>` ONLY when all
    its commits belong to `gitEmail`, else `git merge origin/<base>`; conflict = abort + stop; NOT
    pushed yet (a repo pre-push hook may need what only the gate prepares);
 8. the red-area classifier from the main checkout (`redAreas --ref <SHA>`): a red area without a
    first line `Review tier: red` in the review comment = refuse; classifier failed = refuse;
 9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself); every
-   run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files
-   and a flake verdict);
+   run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files,
+   a flake verdict and its failed summary steps);
 10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
     after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
     `gh pr merge --squash --delete-branch --match-head-commit <gated SHA>` (commits landing during

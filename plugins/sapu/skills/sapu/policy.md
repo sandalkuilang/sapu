@@ -17,7 +17,7 @@ Read this only when `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" poli
 - `issue-trust` still decides every issue.
 
 ## fileIssues: false
-- Never `gh issue create`, including SKILL.md's two exceptions (a proven base flake goes into `sapu-sweep-state` and the report; a PR red only on it stays NEEDS-FIX with that reason).
+- Never `gh issue create`, including SKILL.md's two exceptions (a proven base flake or base break goes into `sapu-sweep-state` and the report; a PR red only on it stays NEEDS-FIX with that reason).
 - A gap you find goes into the PR's Notes, or into the local review record when `traces` is `"none"`.
 - argus, momus, nemesis and the inspector write their findings to `<MAIN>/.git/sapu-findings/` instead of filing them.
 
