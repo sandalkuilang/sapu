@@ -558,8 +558,8 @@ describe("manifests", () => {
     expect(hooks.PreToolUse).toHaveLength(1);
     const matcher = new RegExp(hooks.PreToolUse[0].matcher); // Claude Code tests a regex matcher anywhere in the name: it must anchor itself
     const ctx = ["execute", "execute_file", "batch_execute", "index"].map((t) => `mcp__plugin_context-mode_context-mode__ctx_${t}`);
-    for (const t of ["Bash", "Monitor", "PowerShell", "Edit", "Glob", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write", ...ctx, "mcp__terminal__run_in_terminal", "mcp__github__merge_pull_request"]) expect(t, t).toMatch(matcher);
-    for (const t of ["WebFetch", "Agent", "ReadMcpResourceTool", "BashOutput", "Skill"]) expect(t, t).not.toMatch(matcher);
+    for (const t of ["Bash", "Monitor", "PowerShell", "Edit", "Glob", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write", ...ctx, "mcp__terminal__run_in_terminal", "mcp__github__merge_pull_request", "Agent", "Task", "Workflow"]) expect(t, t).toMatch(matcher);
+    for (const t of ["WebFetch", "AgentX", "SubAgent", "ReadMcpResourceTool", "BashOutput", "Skill"]) expect(t, t).not.toMatch(matcher);
     const cmd: string = hooks.PreToolUse[0].hooks[0].command;
     const script = /\$\{CLAUDE_PLUGIN_ROOT\}\/(\S+?)"?$/.exec(cmd)![1];
     expect(statSync(join(PLUGIN, script)).isFile()).toBe(true);

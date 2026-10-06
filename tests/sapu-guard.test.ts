@@ -1404,7 +1404,8 @@ describe("sapu-guard — context-mode MCP tools are checked like the Bash/Read c
   });
 });
 
-describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", () => {
+// Each case spawns the guard CLI ~20 times: 5 s is too tight while the machine runs another repo's gate.
+describe("sapu-guard — any MCP server, Monitor and PowerShell are judged generically", { timeout: 30_000 }, () => {
   const repo4 = mkdtempSync(join(tmpdir(), "sapu-mcp-"));
   mkdirSync(join(repo4, ".claude"), { recursive: true });
   execFileSync("git", ["init", "-q", repo4]);
@@ -1519,5 +1520,45 @@ describe("sapu-guard — context-mode calls are judged where each kind runs (mea
     expect(run("execute", { language: "python", code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(2);
     expect(run("execute_file", { path: "README.md", language: "shell", code: "git checkout -b z" })).toBe(2);
     expect(run("execute", { language: "python", cwd: wt5, code: 'import subprocess\nsubprocess.run(["git", "checkout", "-b", "z"])' })).toBe(0);
+  });
+});
+
+describe("sapu-guard — every dispatch comes from the main checkout (reviewer memory lives there)", { timeout: 30_000 }, () => {
+  const repo6 = mkdtempSync(join(tmpdir(), "sapu-dispatch-"));
+  mkdirSync(join(repo6, ".claude"), { recursive: true });
+  mkdirSync(join(repo6, "apps/api"), { recursive: true });
+  execFileSync("git", ["init", "-q", repo6]);
+  commitContract(repo6, FIXTURE_CONTRACT);
+  const wt6 = join(repo6, ".claude/worktrees/pr-1");
+  execFileSync("git", ["-C", repo6, "worktree", "add", "-q", "--detach", wt6], { stdio: "ignore" });
+  const bare = mkdtempSync(join(tmpdir(), "sapu-dispatch-nocontract-"));
+  execFileSync("git", ["init", "-q", bare]);
+  execFileSync("git", ["-C", bare, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], { stdio: "ignore" });
+  const bareWt = join(bare, "wt");
+  execFileSync("git", ["-C", bare, "worktree", "add", "-q", "--detach", bareWt], { stdio: "ignore" });
+  afterAll(() => {
+    rmSync(repo6, { recursive: true, force: true });
+    rmSync(bare, { recursive: true, force: true });
+  });
+  const run = (tool_name: string, cwd: string, extra: Record<string, unknown> = {}) => {
+    try {
+      execFileSync("node", [GUARD], { input: JSON.stringify({ tool_name, tool_input: { prompt: "review PR 1" }, cwd, ...extra }), stdio: ["pipe", "pipe", "pipe"] });
+      return 0;
+    } catch (e) {
+      return (e as { status: number; stderr: Buffer }).stderr.toString();
+    }
+  };
+
+  it("refuses Agent, Task and Workflow from a linked worktree, naming the main checkout to cd to", () => {
+    for (const t of ["Agent", "Task", "Workflow"]) expect(run(t, wt6), t).toMatch(/linked worktree .*cd ".*sapu-dispatch-/s);
+    expect(run("Agent", join(wt6, ".claude"))).not.toBe(0); // a subdirectory of the worktree too
+    expect(run("Agent", wt6, { agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r1" })).not.toBe(0);
+  });
+
+  it("allows a dispatch from the main checkout or its subdirectories, and outside a sapu repo", () => {
+    expect(run("Agent", repo6)).toBe(0);
+    expect(run("Workflow", join(repo6, "apps/api"))).toBe(0);
+    expect(run("Agent", bareWt)).toBe(0); // no contract: not a sapu repo
+    expect(run("Agent", tmpdir())).toBe(0); // not a repo at all
   });
 });

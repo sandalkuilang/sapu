@@ -49,8 +49,9 @@
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
-// (a subagent, a subagent's subagent, ...) and never for the orchestrator — the main session,
-// which merges, runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh. Two tiers:
+// (a subagent, a subagent's subagent, ...); the orchestrator — the main session, which merges,
+// runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
+// agents from (Agent/Task/Workflow from a linked worktree: checkDispatch). Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
 // (a reviewer, a specialist — the senior-dev-team agents included —,
 // argus/momus/nemesis and their helpers) gets the same floor EXCEPT that it may run
@@ -93,7 +94,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1513,10 +1514,31 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
 
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
- * (no agent_type) is never policed; every subagent is.
+ * (no agent_type) is policed only where it dispatches agents from; every subagent is.
  */
+const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
+
+/**
+ * A dispatched agent starts in the dispatcher's cwd, and its project memory (.claude/agent-memory)
+ * and project settings come from that checkout. Measured: reviewers dispatched while the
+ * orchestrator's cwd was left in a PR worktree started with none of the repo's reviewer memory and
+ * wrote their notes into that worktree, to be lost with it. So in a sapu repo every dispatch comes
+ * from the main checkout.
+ */
+function checkDispatch(input) {
+  const here = input.cwd || process.cwd();
+  const main = findMain(here);
+  const root = main && checkoutRoot(here);
+  if (!root) return null;
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  if (real(root) === real(main) || loadContract(main).missing) return null;
+  return `a ${input.tool_name} call starts its agents in your cwd, here the linked worktree ${root}: their project memory and settings would come from it and be lost with it. cd "${main}" first (keep work in a worktree to git -C or a ( cd … ) subshell), then dispatch again.`;
+}
+
 export function decide(input) {
-  if (!input || !(input.agent_type || input.agent_id)) return null;
+  if (!input) return null;
+  if (DISPATCH_TOOLS.has(input.tool_name)) return checkDispatch(input);
+  if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
   const ctx = ctxCalls(tool, ti);
