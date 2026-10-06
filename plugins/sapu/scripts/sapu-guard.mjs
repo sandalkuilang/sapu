@@ -49,8 +49,9 @@
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
-// (a subagent, a subagent's subagent, ...) and never for the orchestrator — the main session,
-// which merges, runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh. Two tiers:
+// (a subagent, a subagent's subagent, ...); the orchestrator — the main session, which merges,
+// runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
+// agents from (HOME CHECKOUT below: checkHome). Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
 // (a reviewer, a specialist — the senior-dev-team agents included —,
 // argus/momus/nemesis and their helpers) gets the same floor EXCEPT that it may run
@@ -90,10 +91,11 @@
 // known one by one; an unknown option that takes a value can hide the program after it. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
 // (non-2 exit) — the canary is what catches a dead guard.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -154,18 +156,30 @@ export function tokenize(src) {
   let toks = [];
   let tok = null;
   let pre = ";";
+  let preCond = false; // the separator before this command was && or || (pre still reads ";")
   let inBacktick = false;
   const push = () => {
     if (tok !== null) toks.push(tok);
     tok = null;
   };
-  const end = (op) => {
+  const end = (op, cond = false) => {
     push();
     const kept = toks.filter((t) => t.v !== "{" && t.v !== "}");
-    if (kept.length) cmds.push({ toks: kept, pre, post: op });
-    else if (cmds.length && (op === ")" || op === "|" || op === "&")) cmds[cmds.length - 1].post = op;
+    // A line break (or comment) right after `|`, `&&` or `||` continues that list: `a |⏎ b` is a pipeline.
+    if (!kept.length && op === ";" && (pre === "|" || preCond)) {
+      toks = [];
+      return;
+    }
+    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
+    else if (cmds.length && (op === ")" || op === "|" || op === "&")) {
+      // `(…) | x` / `(…) &`: keep the subshell's ")" so its directory is restored; the pipe or job
+      // applies to the subshell as a whole, which never moves this shell anyway.
+      const last = cmds[cmds.length - 1];
+      if (!(last.post === ")" && op !== ")")) last.post = op;
+    }
     toks = [];
     pre = op;
+    preCond = cond;
   };
   const add = (c, dyn = false) => {
     if (tok === null) tok = { v: "", dyn: false };
@@ -248,7 +262,7 @@ export function tokenize(src) {
       end(c);
     } else if (c === "&" || c === "|") {
       if (src[i + 1] === c) {
-        end(";");
+        end(";", true);
         i++;
       } else end(c);
     } else if (c === "#" && tok === null) {
@@ -1102,7 +1116,7 @@ function checkCommand(t, state, depth) {
     if (sub === "branch" && flags.some((f) => ["-D", "-d", "-f", "-M", "--delete", "--force"].includes(f))) return BLOCK.refs;
     if (sub === "update-ref" || sub === "symbolic-ref") return BLOCK.refs;
     if (state.main && MUTATING_GIT.has(sub)) {
-      if (dir === UNKNOWN) return `\`git ${sub}\` on a path held in a shell variable: write the literal path of your own worktree.`;
+      if (dir === UNKNOWN) return `\`git ${sub}\` in a directory that cannot be told (a path held in a shell variable, or after a cd inside a pipeline): write the literal path of your own worktree, with git -C or a plain cd.`;
       if (realpathOrSelf(dir) === realpathOrSelf(state.main)) {
         return `\`git ${sub}\` in the main checkout (${state.main}). Other sessions share it: work only in your own worktree.`;
       }
@@ -1247,8 +1261,11 @@ function checkText(text, dir, main, rules, depth) {
     fromPr = c.post === "|" && (prSource(c.toks) || (fromPr && c.pre === "|"));
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
-    // A cd in a pipeline or a background job runs in a subshell: the parent does not move.
-    if (c.pre === "|" || c.post === "|" || c.post === "&") state.dir = before;
+    // A cd in a background job runs in a subshell: the parent does not move. In a pipeline it
+    // depends on the shell (bash: every element is a subshell; zsh: the last runs in this shell),
+    // so a cd there leaves the directory unknowable: what follows is judged fail-closed.
+    if (c.pre === "|" || c.post === "|") state.dir = state.dir === before ? before : UNKNOWN;
+    else if (c.post === "&") state.dir = before;
     if (c.post === ")" && saved.length) state.dir = saved.pop();
   }
   for (const n of nested) {
@@ -1513,10 +1530,202 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
 
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
- * (no agent_type) is never policed; every subagent is.
+ * (no agent_type) is policed only where it dispatches agents from; every subagent is.
  */
+const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
+
+// HOME CHECKOUT. An agent starts in the main session's cwd AT THE MOMENT IT IS SPAWNED (a
+// Workflow's agents too, long after the Workflow call), and its project memory
+// (.claude/agent-memory) and project settings come from that checkout. A main-session `cd` that
+// stays inside the project directory carries over to later commands. Measured in a sweep: after an
+// orchestrator Bash call `cd <MAIN>/.claude/worktrees/<x> && …` left the cwd in a PR worktree, the
+// reviewers spawned next started with none of the repo's reviewer memory and wrote their notes into
+// that worktree, to be lost with it. So, in a repo with a sapu contract and a main session whose
+// project directory is <MAIN>: (1) the main session never moves its cwd into a linked worktree
+// inside <MAIN> — unless CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR resets it after every command,
+// which closes this at the source; (2) it never dispatches from one; (3) no subagent but a sapu
+// worker (which may not write into <MAIN>) writes agent memory into one. A session whose project
+// directory is a worktree (a desktop worktree session) is left alone. Subagents never carry a cd
+// over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
+
+/** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
+const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
+const realOr = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+/** The session's project directory is <MAIN> or inside it: the checkout of CLAUDE_PROJECT_DIR (hooks get it), else the transcript's project slug. */
+function homeIsMain(input, main) {
+  const all = [...(typeof input.transcript_path === "string" ? input.transcript_path : "").matchAll(/[\\/]projects[\\/]([^\\/]+)[\\/]/g)];
+  const filed = all.length ? all[all.length - 1][1] : null;
+  // A session filed under one of <MAIN>'s worktrees started there, whatever else says so.
+  if (filed && [main, realLoose(main)].some((m) => filed.startsWith(slug(path.join(m, ".claude", "worktrees")) + "-"))) return false;
+  const dir = process.env.CLAUDE_PROJECT_DIR;
+  if (dir) {
+    const d = realLoose(dir), m = realLoose(main);
+    if (under(d, m) && !under(d, path.join(m, ".claude", "worktrees"))) return true; // no git needed
+    const top = checkoutRoot(dir);
+    return Boolean(top) && realLoose(top) === realLoose(main);
+  }
+  return Boolean(filed) && (filed === slug(main) || filed === slug(realLoose(main)));
+}
+
+/** The real path of `p` (case canonicalised), or of its nearest existing ancestor plus the rest (a planned path). */
+const realLoose = (p) => realPathOf(path.resolve(p));
+
+const under = (r, dir) => r === dir || r.startsWith(dir + path.sep);
+
+/** The linked worktree holding `p` (an existing or a planned path, symlinks resolved), or null: any path under <MAIN>/.claude/worktrees/, or a non-main entry of `git worktree list`. */
+function linkedWorktreeOf(p, main) {
+  const r = realLoose(p);
+  const conventional = path.join(realLoose(main), ".claude", "worktrees");
+  if (under(r, conventional) && r !== conventional) return path.join(conventional, path.relative(conventional, r).split(path.sep)[0]);
+  let list = "";
+  try { list = execFileSync("git", ["-C", main, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }); } catch { return null; }
+  const roots = list.split("\n").filter((l) => l.startsWith("worktree ")).map((l) => realLoose(l.slice(9))).slice(1);
+  return roots.find((w) => under(r, w)) || null;
+}
+
+const COMPOUND_OPEN = new Set(["if", "while", "until", "for", "case", "select"]);
+const COMPOUND_CLOSE = new Set(["fi", "done", "esac"]);
+const PREFIX_WORDS = new Set(["{", "builtin", "command", "if", "then", "else", "elif", "do", "while", "until", "!"]);
+
+/** `command` without any heredoc body: even one fed to a shell runs in a child, which never moves this shell. */
+function dropHeredocBodies(command) {
+  const out = [];
+  let end = null;
+  for (const line of command.split("\n")) {
+    if (end !== null) {
+      if (line.trim() === end) end = null;
+      continue;
+    }
+    out.push(line);
+    const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+    if (m) end = m[2];
+  }
+  return out.join("\n");
+}
+
+/**
+ * The directories the shell's cwd is moved to at top level by `command` run from `dir` (cd, pushd,
+ * popd, `cd -` outside subshells, pipelines and background jobs), in order, each with whether it
+ * runs unconditionally (after `;` or a newline, not `&&`/`||`); UNKNOWN for one that cannot be told.
+ */
+export function topLevelStops(command, dir) {
+  let cur = dir;
+  let prev = null;
+  const saved = [];
+  const stack = [];
+  const stops = [];
+  let compound = 0; // inside if/while/until/for/case/select: nothing there runs for sure
+  for (const c of tokenize(dropHeredocBodies(command)).cmds) {
+    if (c.pre === "(") saved.push(cur);
+    const before = cur;
+    const at = programIndex(c.toks);
+    for (const t of c.toks.slice(0, at)) if (COMPOUND_OPEN.has(t.v) && !t.dyn) compound++; // `then if …` skipped as keywords
+    let a = c.toks.slice(at);
+    const closes = a.length > 0 && COMPOUND_CLOSE.has(a[0].v);
+    while (a.length && PREFIX_WORDS.has(a[0].v)) {
+      if (COMPOUND_OPEN.has(a[0].v)) compound++;
+      a = a.slice(1);
+    }
+    if (a.length && COMPOUND_OPEN.has(a[0].v)) compound++; // for/case/select
+    const prog = a.length ? bare(a[0].v) : "";
+    const moves = prog === "cd" || prog === "pushd" || prog === "popd";
+    if (prog === "cd" || prog === "pushd") {
+      let k = 1;
+      while (k < a.length && /^-[LPeq@]+$/.test(a[k].v)) k++;
+      if (a[k] && a[k].v === "--") k++;
+      const target = a[k];
+      let next;
+      if (!target) next = prog === "cd" && c.post !== "(" ? process.env.HOME || cur : UNKNOWN; // `cd $(…)`: the target is the substitution
+      else if (target.v === "-") next = prev ?? UNKNOWN;
+      else if (cur === UNKNOWN || expandHome(target) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
+      else next = path.resolve(cur, expandHome(target));
+      if (prog === "pushd") stack.push(cur);
+      prev = cur;
+      cur = next;
+    } else if (prog === "popd") {
+      prev = cur;
+      cur = stack.length ? stack.pop() : UNKNOWN;
+    }
+    const transient = c.pre === "|" || c.post === "|" || c.post === "&";
+    if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond && !compound });
+    // zsh runs a pipeline's last element in this shell: a cd there may stay.
+    if (moves && c.pre === "|" && c.post !== "|" && !saved.length) stops.push({ dir: cur, always: false });
+    if (closes) compound = Math.max(0, compound - 1);
+    if (transient) cur = moves && c.pre === "|" && c.post !== "|" ? UNKNOWN : before;
+    if (c.post === ")" && saved.length) cur = saved.pop();
+  }
+  return stops;
+}
+
+/** PowerShell: every top-level Set-Location/Push-Location (or alias) target, resolved; UNKNOWN for a variable. */
+function topLevelStopsPowerShell(command, dir) {
+  const re = /(?:^|[;\n{]|&&|\|\|)\s*(?:Set-Location|Push-Location|sl|cd|chdir|pushd)\s+(?:-(?:Path|LiteralPath)(?::|\s+))?(?:'([^']*)'|"([^"]*)"|([^\s;|&}]+))/gi;
+  return [...command.matchAll(re)].map((m) => m[1] ?? m[2] ?? m[3]).map((t) => ({ dir: /^\$|\$\(/.test(t) ? UNKNOWN : path.resolve(dir, t.replace(/^~(?=[\\/]|$)/, process.env.HOME || "~")), always: false }));
+}
+
+const resetsCwd = () => /^(1|true|yes|on)$/i.test(process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR || "");
+
+/** Rules (1) and (2) for the main session, (3) for a subagent's file write; null when none applies. */
+function checkHome(input, main) {
+  if (!main || !homeIsMain(input, main) || loadContract(main).missing) return null;
+  const here = input.cwd || process.cwd();
+  const tool = input.tool_name;
+  const ti = input.tool_input || {};
+  const sub = Boolean(input.agent_id);
+  if (!sub && DISPATCH_TOOLS.has(tool)) {
+    const wt = linkedWorktreeOf(here, main);
+    return wt ? `${/^[AEIOU]/.test(tool) ? "an" : "a"} ${tool} call starts its agents in your cwd, here the linked worktree ${wt}: their project memory and settings would come from it and be lost with it. cd "${main}" first — or ExitWorktree, if you entered it with EnterWorktree — (keep worktree work in git -C or a ( cd … ) subshell), then dispatch again.` : null;
+  }
+  if (!sub && (tool === "Bash" || tool === "PowerShell") && typeof ti.command === "string" && !ti.run_in_background && !resetsCwd()) {
+    const stops = tool === "Bash" ? topLevelStops(ti.command, here) : topLevelStopsPowerShell(ti.command, here);
+    const inMainTree = (d) => d !== UNKNOWN && under(realLoose(d), realLoose(main));
+    // A worktree stop counts unless a later cd that always runs (after `;` or a newline) leaves for
+    // a known place outside every worktree: `cd <wt> && npm test && cd <MAIN>` stays when the test fails.
+    let wt = null;
+    for (const st of stops) {
+      const inWt = inMainTree(st.dir) && linkedWorktreeOf(st.dir, main);
+      if (inWt) wt = inWt;
+      else if (st.always && st.dir !== UNKNOWN && fs.existsSync(st.dir)) wt = null; // a cd back that cannot fail
+    }
+    if (!wt) return null;
+    const already = linkedWorktreeOf(here, main);
+    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command; never change settings yourself to get past this.`;
+  }
+  if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
+    const f = ti.file_path ?? ti.notebook_path;
+    if (typeof f !== "string") return null;
+    const abs = realLoose(path.resolve(here, f));
+    const wt = linkedWorktreeOf(abs, main);
+    const rel = wt && path.relative(wt, abs);
+    if (rel && /^\.claude[\\/]agent-memory(-local)?[\\/]/.test(rel)) return `agent memory written inside the linked worktree ${wt} is lost with it. Write this note to ${path.join(main, rel)} instead (the repo's memory, read by the next agent).`;
+  }
+  return null;
+}
+
+/** Cheap pre-filter, so ordinary calls never pay for `git worktree list`. */
+function mayLeaveHome(input) {
+  const ti = input.tool_input || {};
+  const sub = Boolean(input.agent_id);
+  if (DISPATCH_TOOLS.has(input.tool_name)) return !sub;
+  if (!sub && (input.tool_name === "Bash" || input.tool_name === "PowerShell")) return typeof ti.command === "string" && /\b(cd|pushd|chdir|sl|Set-Location|Push-Location)\b/i.test(ti.command);
+  return sub && WRITE_TOOLS.has(input.tool_name) && /agent-memory/.test(String(ti.file_path ?? ti.notebook_path ?? ""));
+}
+
+/** The home rules place memory; they never block a call because they failed to evaluate it. */
+function checkHomeSafe(input) {
+  try {
+    return checkHome(input, findMain(input.cwd || process.cwd()));
+  } catch {
+    return null;
+  }
+}
+
 export function decide(input) {
-  if (!input || !(input.agent_type || input.agent_id)) return null;
+  if (!input) return null;
+  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
+  if (home || DISPATCH_TOOLS.has(input.tool_name)) return home;
+  if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
   const ctx = ctxCalls(tool, ti);

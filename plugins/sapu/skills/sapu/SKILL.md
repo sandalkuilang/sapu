@@ -130,7 +130,7 @@ PRs come first: a dangling PR is a conflict waiting to happen.
 - no local branch `<head>` → `git -C <MAIN> worktree add <MAIN>/.claude/worktrees/wt-pr-<N> <head>`.
 - it exists → compare with `origin/<head>`: same → use it; different with no unpushed local commits → `worktree add … -B <head> origin/<head>`; local commits not on origin → read them first.
 
-Worktree setup exactly per profile `worker.md` (brief point 3); a PR that changes dependencies → the clean-install setup from the same profile (it keeps the install from crossing a symlink into `<MAIN>`). Push to the same PR branch, never a duplicate PR. Never force-push a branch holding commits that are not yours.
+Run everything there as `git -C <wt> …` or `( cd <wt> && … )`: a top-level `cd` keeps the session there (agents spawned later lose `<MAIN>`'s memory) and the guard refuses it. Worktree setup exactly per profile `worker.md` (brief point 3); a PR that changes dependencies → the clean-install setup from the same profile (it keeps the install from crossing a symlink into `<MAIN>`). Push to the same PR branch, never a duplicate PR. Never force-push a branch holding commits that are not yours.
 
 **A5. Merge — one at a time, never in parallel.** Precondition: the A3.5 review comment (with the heading `Notes (recorded, not filed)`) is written to a file and all its findings are closed. Then ONE command, run from `<MAIN>` outside the sandbox (`gh`, `git push`, and whatever the repo's gate uses), in the background, awaited via its notification (§No polling):
 

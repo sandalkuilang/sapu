@@ -73,7 +73,7 @@ export default {
     const r1 = y3 + 40, r2 = r1 + 74, r3 = r2 + 74, eh = 52;
     // guard region
     s += `<rect x="168" y="${r1 - 26}" width="452" height="${r2 + eh + 12 - (r1 - 26)}" rx="14" class="guard"/>`;
-    s += text(184, r1 - 10, "guard hook polices every subagent — never the orchestrator", "cap c-red");
+    s += text(184, r1 - 10, "guard hook polices every subagent and every dispatch", "cap c-red");
 
     const entry = (y, cmd, sub) => card(32, y, 118, eh, "card", 12) + text(46, y + 23, cmd, "tb mono") + text(46, y + 41, sub, "cap");
     const node = (x, y, w, t, sub, cls = "card", tcls = "tb", scls = "cap") => card(x, y, w, eh, cls, 12) + text(x + w / 2, y + 23, t, tcls, "middle") + text(x + w / 2, y + 41, sub, scls, "middle");
