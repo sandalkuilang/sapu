@@ -156,18 +156,20 @@ export function tokenize(src) {
   let toks = [];
   let tok = null;
   let pre = ";";
+  let preCond = false; // the separator before this command was && or || (pre still reads ";")
   let inBacktick = false;
   const push = () => {
     if (tok !== null) toks.push(tok);
     tok = null;
   };
-  const end = (op) => {
+  const end = (op, cond = false) => {
     push();
     const kept = toks.filter((t) => t.v !== "{" && t.v !== "}");
-    if (kept.length) cmds.push({ toks: kept, pre, post: op });
+    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
     else if (cmds.length && (op === ")" || op === "|" || op === "&")) cmds[cmds.length - 1].post = op;
     toks = [];
     pre = op;
+    preCond = cond;
   };
   const add = (c, dyn = false) => {
     if (tok === null) tok = { v: "", dyn: false };
@@ -250,7 +252,7 @@ export function tokenize(src) {
       end(c);
     } else if (c === "&" || c === "|") {
       if (src[i + 1] === c) {
-        end(";");
+        end(";", true);
         i++;
       } else end(c);
     } else if (c === "#" && tok === null) {
@@ -1545,6 +1547,8 @@ function homeIsMain(input, main) {
   if (filed && [main, realLoose(main)].some((m) => filed.startsWith(slug(path.join(m, ".claude", "worktrees")) + "-"))) return false;
   const dir = process.env.CLAUDE_PROJECT_DIR;
   if (dir) {
+    const d = realLoose(dir), m = realLoose(main);
+    if (under(d, m) && !under(d, path.join(m, ".claude", "worktrees"))) return true; // no git needed
     const top = checkoutRoot(dir);
     return Boolean(top) && realLoose(top) === realLoose(main);
   }
@@ -1569,17 +1573,34 @@ function linkedWorktreeOf(p, main) {
 
 const PREFIX_WORDS = new Set(["{", "builtin", "command", "if", "then", "else", "elif", "do", "while", "until", "!"]);
 
+/** `command` without any heredoc body: even one fed to a shell runs in a child, which never moves this shell. */
+function dropHeredocBodies(command) {
+  const out = [];
+  let end = null;
+  for (const line of command.split("\n")) {
+    if (end !== null) {
+      if (line.trim() === end) end = null;
+      continue;
+    }
+    out.push(line);
+    const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
+    if (m) end = m[2];
+  }
+  return out.join("\n");
+}
+
 /**
- * The directories the shell's cwd is moved to at top level by `command` run from `dir` (cd/pushd
- * outside subshells, pipelines and background jobs), in order; UNKNOWN for one that cannot be told.
- * Every stop counts, not just the last: `cd <wt> && npm test && cd <MAIN>` stays in <wt> when the
- * test fails.
+ * The directories the shell's cwd is moved to at top level by `command` run from `dir` (cd, pushd,
+ * popd, `cd -` outside subshells, pipelines and background jobs), in order, each with whether it
+ * runs unconditionally (after `;` or a newline, not `&&`/`||`); UNKNOWN for one that cannot be told.
  */
 export function topLevelStops(command, dir) {
   let cur = dir;
+  let prev = null;
   const saved = [];
+  const stack = [];
   const stops = [];
-  for (const c of tokenize(stripHeredocs(command)).cmds) {
+  for (const c of tokenize(dropHeredocBodies(command)).cmds) {
     if (c.pre === "(") saved.push(cur);
     const before = cur;
     let a = c.toks.slice(programIndex(c.toks));
@@ -1591,12 +1612,20 @@ export function topLevelStops(command, dir) {
       while (k < a.length && /^-[LPeq@]+$/.test(a[k].v)) k++;
       if (a[k] && a[k].v === "--") k++;
       const target = a[k];
-      if (!target) cur = prog === "cd" ? process.env.HOME || cur : UNKNOWN;
-      else if (cur === UNKNOWN || expandHome(target) === null || target.v === "-" || /^[+-]\d+$/.test(target.v)) cur = UNKNOWN;
-      else cur = path.resolve(cur, expandHome(target));
-    } else if (prog === "popd") cur = UNKNOWN;
+      let next;
+      if (!target) next = prog === "cd" ? process.env.HOME || cur : UNKNOWN;
+      else if (target.v === "-") next = prev ?? UNKNOWN;
+      else if (cur === UNKNOWN || expandHome(target) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
+      else next = path.resolve(cur, expandHome(target));
+      if (prog === "pushd") stack.push(cur);
+      prev = cur;
+      cur = next;
+    } else if (prog === "popd") {
+      prev = cur;
+      cur = stack.length ? stack.pop() : UNKNOWN;
+    }
     const transient = c.pre === "|" || c.post === "|" || c.post === "&";
-    if (moves && !transient && !saved.length) stops.push(cur);
+    if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond });
     if (transient) cur = before;
     if (c.post === ")" && saved.length) cur = saved.pop();
   }
@@ -1605,8 +1634,8 @@ export function topLevelStops(command, dir) {
 
 /** PowerShell: every top-level Set-Location/Push-Location (or alias) target, resolved; UNKNOWN for a variable. */
 function topLevelStopsPowerShell(command, dir) {
-  const re = /(?:^|[;\n{]|&&|\|\|)\s*(?:Set-Location|Push-Location|sl|cd|chdir|pushd)\s+(?:-(?:Path|LiteralPath)\s+)?(?:'([^']*)'|"([^"]*)"|([^\s;|&}]+))/gi;
-  return [...command.matchAll(re)].map((m) => m[1] ?? m[2] ?? m[3]).map((t) => (/^\$|\$\(/.test(t) ? UNKNOWN : path.resolve(dir, t.replace(/^~(?=[\\/]|$)/, process.env.HOME || "~"))));
+  const re = /(?:^|[;\n{]|&&|\|\|)\s*(?:Set-Location|Push-Location|sl|cd|chdir|pushd)\s+(?:-(?:Path|LiteralPath)(?::|\s+))?(?:'([^']*)'|"([^"]*)"|([^\s;|&}]+))/gi;
+  return [...command.matchAll(re)].map((m) => m[1] ?? m[2] ?? m[3]).map((t) => ({ dir: /^\$|\$\(/.test(t) ? UNKNOWN : path.resolve(dir, t.replace(/^~(?=[\\/]|$)/, process.env.HOME || "~")), always: false }));
 }
 
 const resetsCwd = () => /^(1|true|yes|on)$/i.test(process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR || "");
@@ -1625,10 +1654,17 @@ function checkHome(input, main) {
   if (!sub && (tool === "Bash" || tool === "PowerShell") && typeof ti.command === "string" && !ti.run_in_background && !resetsCwd()) {
     const stops = tool === "Bash" ? topLevelStops(ti.command, here) : topLevelStopsPowerShell(ti.command, here);
     const inMainTree = (d) => d !== UNKNOWN && under(realLoose(d), realLoose(main));
-    const wt = stops.filter(inMainTree).map((d) => linkedWorktreeOf(d, main)).find(Boolean);
+    // A worktree stop counts unless a later cd that always runs (after `;` or a newline) leaves for
+    // a known place outside every worktree: `cd <wt> && npm test && cd <MAIN>` stays when the test fails.
+    let wt = null;
+    for (const st of stops) {
+      const inWt = inMainTree(st.dir) && linkedWorktreeOf(st.dir, main);
+      if (inWt) wt = inWt;
+      else if (st.always && st.dir !== UNKNOWN) wt = null;
+    }
     if (!wt) return null;
     const already = linkedWorktreeOf(here, main);
-    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell — or set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command.`;
+    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command; never change settings yourself to get past this.`;
   }
   if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
     const f = ti.file_path ?? ti.notebook_path;
