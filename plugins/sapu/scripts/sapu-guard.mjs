@@ -1571,6 +1571,8 @@ function linkedWorktreeOf(p, main) {
   return roots.find((w) => under(r, w)) || null;
 }
 
+const COMPOUND_OPEN = new Set(["if", "while", "until", "for", "case", "select"]);
+const COMPOUND_CLOSE = new Set(["fi", "done", "esac"]);
 const PREFIX_WORDS = new Set(["{", "builtin", "command", "if", "then", "else", "elif", "do", "while", "until", "!"]);
 
 /** `command` without any heredoc body: even one fed to a shell runs in a child, which never moves this shell. */
@@ -1600,9 +1602,12 @@ export function topLevelStops(command, dir) {
   const saved = [];
   const stack = [];
   const stops = [];
+  let compound = 0; // inside if/while/until/for/case/select: nothing there runs for sure
   for (const c of tokenize(dropHeredocBodies(command)).cmds) {
     if (c.pre === "(") saved.push(cur);
     const before = cur;
+    const first = c.toks[0]?.v;
+    if (COMPOUND_OPEN.has(first)) compound++;
     let a = c.toks.slice(programIndex(c.toks));
     while (a.length && PREFIX_WORDS.has(a[0].v)) a = a.slice(1);
     const prog = a.length ? bare(a[0].v) : "";
@@ -1625,7 +1630,8 @@ export function topLevelStops(command, dir) {
       cur = stack.length ? stack.pop() : UNKNOWN;
     }
     const transient = c.pre === "|" || c.post === "|" || c.post === "&";
-    if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond });
+    if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond && !compound });
+    if (COMPOUND_CLOSE.has(first) || c.toks.some((t, k) => k > 0 && COMPOUND_CLOSE.has(t.v) && !t.dyn)) compound = Math.max(0, compound - 1);
     if (transient) cur = before;
     if (c.post === ")" && saved.length) cur = saved.pop();
   }

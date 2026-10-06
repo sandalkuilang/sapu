@@ -1565,9 +1565,9 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
     expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path '${wt6}'; git status` }, cwd: repo6 })).toMatch(/linked worktree/);
     expect(bash(`cd ${wt6}`, repo6, { agent_type: "reviewer" })).not.toBe(0); // a main session run with --agent has agent_type but no agent_id
     // Every top-level stop counts: when the test fails, the cd back never runs.
-    for (const c of [`cd ${wt6} && npm test && cd ${repo6}`, `cd ${wt6} && make || cd ${repo6}`, `cd ${wt6} && npm test && cd -`]) expect(bash(c), c).not.toBe(0);
+    for (const c of [`cd ${wt6} && npm test && cd ${repo6}`, `cd ${wt6} && make || cd ${repo6}`, `cd ${wt6} && npm test && cd -`, `if test -f x; then cd ${wt6}; else cd ${repo6}; fi`, `for d in a; do cd ${wt6}; done`, `cd ${wt6}; if false; then cd ${repo6}; fi`]) expect(bash(c), c).not.toBe(0);
     // ... unless a cd back always runs (after ; or a newline): Claude Code reads the cwd after the whole command.
-    for (const c of [`cd ${wt6} && git log -1; cd ${repo6}`, `cd ${wt6}; git status; cd -`, `pushd ${wt6} >/dev/null; npm test; popd >/dev/null`, `cd ${wt6} 2>/dev/null || true; cd ${repo6}`, `cd ${wt6}\ngit status\ncd ${repo6}`, `bash <<'EOF'\ncd ${wt6}\nnpm test\nEOF`]) expect(bash(c), c).toBe(0);
+    for (const c of [`cd ${wt6} && git log -1; cd ${repo6}`, `cd ${wt6}; git status; cd -`, `pushd ${wt6} >/dev/null; npm test; popd >/dev/null`, `cd ${wt6} 2>/dev/null || true; cd ${repo6}`, `cd ${wt6}\ngit status\ncd ${repo6}`, `bash <<'EOF'\ncd ${wt6}\nnpm test\nEOF`, `if true; then ls; fi; cd ${wt6}; cd ${repo6}`]) expect(bash(c), c).toBe(0);
     expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path:${wt6}` }, cwd: repo6 })).not.toBe(0);
     expect(run({ tool_name: "Bash", tool_input: { command: `cd $HOME/.claude/worktrees/pr-1 && ls` }, cwd: repo6 }, { CLAUDE_PROJECT_DIR: repo6, HOME: repo6 })).not.toBe(0);
     expect(bash("cd apps && ls", wt6)).toMatch(/already the linked worktree .*cd ".*sapu-home-[^"]*" &&/s);
