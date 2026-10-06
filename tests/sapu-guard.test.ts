@@ -132,9 +132,10 @@ describe("sapu-guard — blocks", () => {
     expect(blocked(`git --git-dir ${main}/.git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`GIT_DIR=${main}/.git git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`git --work-tree=${wt} status`)).toBeNull();
-    // a cd inside a subshell, a pipeline or a background job does not move the parent
+    // a cd inside a subshell or a background job does not move the parent; one inside a pipeline
+    // may (zsh runs the last element in this shell), so what follows is judged fail-closed
     expect(blocked("(cd /tmp); git pull", main)).toMatch(/main checkout/);
-    expect(blocked("cd /tmp | true; git checkout main", main)).toMatch(/main checkout/);
+    expect(blocked("cd /tmp | true; git checkout main", main)).toMatch(/cannot be told .*pipeline/);
     expect(blocked(`GIT_DIR=/x/.git GIT_WORK_TREE=${main} git reset --hard`)).toMatch(/main checkout/);
     expect(blocked(`git --git-dir= --work-tree=${main} checkout .`)).toMatch(/main checkout/);
   });
@@ -1529,6 +1530,12 @@ describe("sapu-guard — a line break after |, && or || continues the list", () 
     expect(blocked("gh pr diff 5 |\n  patch -p1")).not.toBeNull();
     expect(blocked("gh pr diff 5 | # apply it\n  patch -p1")).not.toBeNull();
   });
+
+  it("judges what follows a cd inside a pipeline fail-closed (zsh runs the last element in this shell)", () => {
+    const into = join(main, "apps");
+    for (const c of [`echo x | cd ${main} && git checkout -b z`, `echo x | { cd ${main}; git checkout -b z; }`, `echo x |\n  { cd ${main}; git checkout -b z; }`, `echo x | {\n  cd ${main}; git checkout -b z; }`]) expect(blocked(c), c).not.toBeNull();
+    expect(blocked(`cd ${into} | cat; git status`)).toBeNull(); // nothing path-sensitive follows
+  });
 });
 
 describe("sapu-guard — a session whose project directory is <MAIN> keeps its cwd, dispatches and agent memory there", { timeout: 30_000 }, () => {
@@ -1579,7 +1586,7 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
       // a cd back that may fail, or to an unknowable place
       `cd ${wt6}; npm test; cd ${repo6}/no-such-dir`, `cd ${wt6}; cd $(git rev-parse --show-toplevel)`,
       // compound keywords count only where a command starts
-      `cd ${wt6}; if [ -f nope ]; then echo done; cd ${repo6}; fi`, `cd ${wt6}; if a; then if true; then :; fi; cd ${repo6}; fi`, `cd ${wt6}; if a; then echo fi; cd ${repo6}; fi`,
+      `cd ${wt6}; if [ -f nope ]; then echo done; cd ${repo6}; fi`, `cd ${wt6}; if a; then if true; then :; fi; cd ${repo6}; fi`, `cd ${wt6}; if a; then echo fi; cd ${repo6}; fi`, `echo x | cd ${wt6}`,
     ]) expect(bash(c), c).not.toBe(0);
     // ... unless a cd back always runs (after ; or a newline): Claude Code reads the cwd after the whole command.
     for (const c of [`cd ${wt6} && git log -1; cd ${repo6}`, `cd ${wt6}; git status; cd -`, `pushd ${wt6} >/dev/null; npm test; popd >/dev/null`, `cd ${wt6} 2>/dev/null || true; cd ${repo6}`, `cd ${wt6}\ngit status\ncd ${repo6}`, `bash <<'EOF'\ncd ${wt6}\nnpm test\nEOF`, `if true; then ls; fi; cd ${wt6}; cd ${repo6}`]) expect(bash(c), c).toBe(0);

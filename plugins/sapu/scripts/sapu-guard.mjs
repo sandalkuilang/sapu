@@ -1111,7 +1111,7 @@ function checkCommand(t, state, depth) {
     if (sub === "branch" && flags.some((f) => ["-D", "-d", "-f", "-M", "--delete", "--force"].includes(f))) return BLOCK.refs;
     if (sub === "update-ref" || sub === "symbolic-ref") return BLOCK.refs;
     if (state.main && MUTATING_GIT.has(sub)) {
-      if (dir === UNKNOWN) return `\`git ${sub}\` on a path held in a shell variable: write the literal path of your own worktree.`;
+      if (dir === UNKNOWN) return `\`git ${sub}\` in a directory that cannot be told (a path held in a shell variable, or after a cd inside a pipeline): write the literal path of your own worktree, with git -C or a plain cd.`;
       if (realpathOrSelf(dir) === realpathOrSelf(state.main)) {
         return `\`git ${sub}\` in the main checkout (${state.main}). Other sessions share it: work only in your own worktree.`;
       }
@@ -1256,8 +1256,11 @@ function checkText(text, dir, main, rules, depth) {
     fromPr = c.post === "|" && (prSource(c.toks) || (fromPr && c.pre === "|"));
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
-    // A cd in a pipeline or a background job runs in a subshell: the parent does not move.
-    if (c.pre === "|" || c.post === "|" || c.post === "&") state.dir = before;
+    // A cd in a background job runs in a subshell: the parent does not move. In a pipeline it
+    // depends on the shell (bash: every element is a subshell; zsh: the last runs in this shell),
+    // so a cd there leaves the directory unknowable: what follows is judged fail-closed.
+    if (c.pre === "|" || c.post === "|") state.dir = state.dir === before ? before : UNKNOWN;
+    else if (c.post === "&") state.dir = before;
     if (c.post === ")" && saved.length) state.dir = saved.pop();
   }
   for (const n of nested) {
@@ -1641,8 +1644,10 @@ export function topLevelStops(command, dir) {
     }
     const transient = c.pre === "|" || c.post === "|" || c.post === "&";
     if (moves && !transient && !saved.length) stops.push({ dir: cur, always: c.pre === ";" && !c.cond && !compound });
+    // zsh runs a pipeline's last element in this shell: a cd there may stay.
+    if (moves && c.pre === "|" && c.post !== "|" && !saved.length) stops.push({ dir: cur, always: false });
     if (closes) compound = Math.max(0, compound - 1);
-    if (transient) cur = before;
+    if (transient) cur = moves && c.pre === "|" && c.post !== "|" ? UNKNOWN : before;
     if (c.post === ")" && saved.length) cur = saved.pop();
   }
   return stops;
