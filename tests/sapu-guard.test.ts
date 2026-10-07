@@ -547,11 +547,50 @@ describe("review fixes — env files in option values and globs (3)", () => {
     ["cat .{env,md}"],
     ["cat {README.md,.env.local}"],
     ["find . -name '.env*' -exec cat {} +"],
+    ["cat [z-!]env"], // a reversed range still covers everything between its ends, `.` included
+    // a quoted glob reaches find/fnmatch, where a backslash escapes: each of these names .env
+    ["find . -name '.e[a-\\z]v' -exec cat {} +"],
+    ["find . -name '.[d-\\f]nv'"],
+    ["find . -name '[\\].]env'"],
+    ["find . -name '[!\\]]env'"],
+    ["find . -name '[[=.=]]env'"],
+    ["find . -name '[[...]]env'"],
+    ["find . -name '\\.env' -exec cat {} +"],
+    // a grep's option value is a path glob, not its search pattern
+    ["rg -uu -g .env FAKE ."],
+    ["rg -uu -g.env FAKE ."],
+    ["rg -uug .env FAKE ."],
+    ["rg --glob .env FAKE ."],
+    ["grep -r --include .env FAKE ."],
+    // `\]` leaves the set open, yet macOS fnmatch reads `[.\]` as {.}: both name .env
+    ["find . -name '[.\\]env' -exec cat {} +"],
+    ["find . -name '.[e\\]nv'"],
+    // the pattern comes from an attached -e/-f or --regexp/--file: every operand is a file
+    ["grep -eFAKE .env"],
+    ["grep --regexp=FAKE .env"],
+    ["grep -fpats.txt .env"],
+    ["rg -ieFAKE .env"],
+    // find -name and rg -g have no shell dotfile rule: a leading * or ? matches .env
+    ["find . -name '*.env*' -exec cat {} +"],
+    ["find . -name '?env'"],
+    ["find . -iname '*ENV'"],
+    ["rg -uu -g '*env' FAKE ."],
+    ["grep -r -g .env FAKE ."], // ugrep, Claude Code's `grep`
   ])("blocks %s", (cmd) => {
     expect(blocked(cmd)).toMatch(/env files/);
   });
 
-  it.each([["ls *"], ["cat *.md"], ["rm -f *.log"], ["ls .github/*"], ["cat .env.example"], ["cat .e*.example"], ["node --import=tsx x.ts"]])("allows %s", (cmd) => {
+  it.each([["ls *"], ["cat *.md"], ["rm -f *.log"], ["ls .github/*"], ["cat .env.example"], ["cat .e*.example"], ["node --import=tsx x.ts"],
+    // a Markdown memory pointer: `[Test-health …]` holds the reversed range t-h, which once threw and read as "matches anything"
+    ["printf '%s\\n' '- [Test-health PR review](test-health-pr-review.md) — export-only diff' >> MEMORY.md"],
+    // the search pattern is text, not a file: after an option value, after `--`
+    ["rg -g '*.ts' .env src"], ["rg -n -- .env src"], ["grep -rn -A 2 .env src"],
+    // a backslash in a search regex is not a glob escape
+    ["rg -e '\\.env' src"], ["git grep '\\.env'"], ["awk '/\\.env/' .gitignore"],
+    // -path globs and !globs exclude, they never name .env
+    ["find . -not -path '*/node_modules/*' -name '*.ts'"], ["find . -path '*/node_modules' -prune -o -name '*.md' -print"], ["rg -g '!**/node_modules/**' FAKE src"],
+    // a wildcard-only glob selects everything, so it names no target
+    ["find . -maxdepth 2 -name '*'"], ["rg -g '*' foo"]])("allows %s", (cmd) => {
     expect(blocked(cmd)).toBeNull();
   });
 

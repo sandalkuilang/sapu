@@ -467,6 +467,25 @@ describe("sapu-wave — fix cycles", () => {
     expect(table).toContain("| #17 | **outcome** | | | ready (green, 1 fix) |");
   });
 
+  it("logs the issue up front and every step as it finishes: the run's card shows only the static meta", async () => {
+    const { logs } = await runWave({ main: MAIN, items: [item(17)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? finding(true) : clean) : opened(17, { head_sha: fixSha(c, n) }),
+    );
+    expect(logs[0]).toContain("#17 t17 — green, sapu:sapu-sonnet-medium");
+    expect(logs.slice(1, 5)).toEqual([
+      `#17 Implement: sapu:sapu-sonnet-medium (sonnet/medium) → pr_opened PR #${1017}`,
+      `#17 Review: ${QA} (opus/high) → 1 finding(s) · PR #${1017}`,
+      `#17 Fix 1: sapu:sapu-sonnet-high (sonnet/high) → pr_opened PR #${1017}`,
+      `#17 Review (delta): ${QA} (opus/high) → clean · PR #${1017}`,
+    ]);
+    expect(logs[5]).toBe(`#17 ready PR #${1017}`);
+  });
+
+  it("a stopped item's outcome line carries the first line of its reason", async () => {
+    const { logs } = await runWave({ main: MAIN, items: [item(18)] }, () => ({ ...opened(18), status: "blocked", blocked_reason: "infra: postgres down\nmore" }));
+    expect(logs).toContain(`#18 blocked PR #${1018}: infra: postgres down`);
+  });
+
   it("still open after 2 fix cycles → blocked, never a third", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(18)] }, (c, n) =>
       c.opts.phase === "Review" ? finding(false) : opened(18, { head_sha: fixSha(c, n) }),
