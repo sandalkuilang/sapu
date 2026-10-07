@@ -34,12 +34,13 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.7.0 — one Phase B lane: a forge worker in its own worktree, senior review by risk tier with a fail-closed red-area raise, up to 2 fix cycles (red: up to 5 while converging), one escalation step, the repo\'s pre-PR command until zero; returns a merge-ready PR without merging',
+  description: 'sapu v2.8.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Implement', detail: 'one forge worker per issue, isolated worktree' },
     { title: 'Review', detail: 'independent reviewer(s) by risk tier' },
     { title: 'Fix', detail: 'the author fixes findings in a fresh worktree, then a delta re-review' },
+    { title: 'Pre-PR', detail: "the repo's pre-PR command, fresh rounds until zero" },
   ],
 }
 
@@ -249,7 +250,13 @@ const testSlot = limiter(runners)
 
 // One row per agent call, for the wave table: [step, agent, model/effort, result]. The script has no
 // clock and sees no per-agent tokens, so time and tokens stay in the Workflow panel.
-const trailRow = (state, step, agent, result) => state.trail.push([step, agent, (MODEL[agent] || PAIR_MODEL).join('/'), result])
+// Every finished step is a row of the wave table AND a live log line: the run's card shows only
+// the static meta, so the log is where a watcher sees which issue is at which step.
+const trailRow = (state, step, agent, result) => {
+  const model = (MODEL[agent] || PAIR_MODEL).join('/')
+  state.trail.push([step, agent, model, result])
+  log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
+}
 const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}` : 'died')
 
 const idx = (w) => LADDER.indexOf(w)
@@ -425,7 +432,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
   const comments = []
   const notes = []
   const reviewComment = () => [
@@ -612,11 +619,11 @@ async function runItem(item) {
 }
 
 phase('Implement')
-log(`wave on ${REPO}: ${input.items.map((i) => `#${i.issue}${i.tracker ? `(${i.tracker})` : ''}(${i.tier},${i.worker})`).join(' ')}; max ${runners} test-running agents`)
+log(`wave on ${REPO}: ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.tracker})` : ''}${i.title ? ` ${i.title}` : ''} — ${i.tier}, ${i.worker}`).join('; ')}; max ${runners} test-running agents`)
 const results = await parallel(input.items.map((item) => () => runItem(item)))
-const out = results.map((r, i) => r || { issue: input.items[i].issue, status: 'died', reason: 'item crashed inside the workflow' })
+const out = results.map((r, i) => r || { issue: input.items[i].issue, tracker: input.items[i].tracker, status: 'died', reason: 'item crashed inside the workflow' })
 for (const r of out) for (const w of r.modelWarnings || []) log(`WARNING #${r.issue}: ${w} — requested model not applied`)
-log(out.map((r) => `#${r.issue} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}`).join(', '))
+log(out.map((r) => `#${r.issue}${r.tracker ? ` (${r.tracker})` : ''} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}${r.reason ? `: ${String(r.reason).split('\n')[0]}` : ''}`).join('; '))
 // The wave table: every agent call per issue, then the issue's outcome. `trail` is on each result too,
 // so the orchestrator can paste the same table in its report.
 const cell = (s) => String(s ?? '').replace(/\|/g, '/').replace(/\s+/g, ' ')

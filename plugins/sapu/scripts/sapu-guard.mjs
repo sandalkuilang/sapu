@@ -432,6 +432,50 @@ const MESSAGE_FLAGS = new Set(["-m", "--message", "-b", "--body", "-t", "--title
 const INSTALL_VERBS = new Set(["ci", "install", "i", "add", "update", "up", "uninstall", "remove", "rm", "un", "upgrade"]);
 const PG_TOOLS = new Set(["psql", "pg_dump", "pg_restore", "createdb", "dropdb", "pgcli", "vacuumdb"]);
 const GREPS = new Set(["grep", "egrep", "fgrep", "rg", "ag"]);
+// Options of each grep that take a value (a path glob among them: `rg -g .env`), so the word after
+// one is that value, never the search pattern the guard lets through unchecked. grep's -g/--glob
+// are ugrep's (Claude Code's Bash runs ugrep as `grep`).
+const GREP_LONG = ["--context", "--after-context", "--before-context", "--max-count", "--regexp", "--file"];
+/** Option values a grep matches as a path glob itself: no shell dotfile rule, `\\` escapes. */
+const GREP_GLOBS = new Set(["-g", "--glob", "--iglob", "--include"]);
+/**
+ * find's tests that glob-match a file NAME the same way. Not -path/-wholename: the guard checks a
+ * glob's last segment, and an excluding `-not -path` glob ending in `/*` would read as `*`.
+ */
+const FIND_GLOBS = new Set(["-name", "-iname", "-lname", "-ilname"]);
+const GREP_OPTS = {
+  grep: { short: "ABCmdDefg", long: [...GREP_LONG, "--glob", "--include", "--exclude", "--exclude-dir", "--exclude-from", "--label", "--binary-files", "--devices", "--directories", "--group-separator"] },
+  rg: { short: "ABCmjMEgtTrdef", long: [...GREP_LONG, "--glob", "--iglob", "--type", "--type-not", "--type-add", "--type-clear", "--replace", "--max-depth", "--max-filesize", "--pre", "--pre-glob", "--ignore-file", "--sort", "--sortr", "--colors", "--color", "--encoding", "--engine", "--path-separator", "--threads", "--max-columns", "--context-separator", "--field-match-separator", "--field-context-separator", "--dfa-size-limit", "--regex-size-limit"] },
+  ag: { short: "ABCmGgpef", long: [...GREP_LONG, "--file-search-regex", "--ignore", "--ignore-dir", "--path-to-ignore", "--depth", "--after", "--before", "--workers", "--pager"] },
+};
+/**
+ * A grep's argv read for its search pattern: the index of the pattern operand (-1 when none, or
+ * when `-e`/`-f`/`--regexp`/`--file` in any form gives it, then every operand is a file) and every
+ * option value as {opt, v}, attached ones (`-g.env`, `-uug.env`, `--glob=.env`) split out.
+ */
+function grepArgs(prog, a) {
+  const o = GREP_OPTS[prog] ?? GREP_OPTS.grep;
+  const values = [];
+  let first = -1;
+  for (let i = 1; i < a.length; i++) {
+    const v = a[i];
+    if (v === "--") {
+      if (first < 0 && i + 1 < a.length) first = i + 1;
+      break;
+    }
+    const eq = v.indexOf("=");
+    if (v.startsWith("--")) {
+      const name = eq > 0 ? v.slice(0, eq) : v;
+      if (eq > 0) values.push({ opt: name, v: v.slice(eq + 1) });
+      else if (o.long.includes(v)) values.push({ opt: v, v: a[++i] ?? "" });
+    } else if (v.startsWith("-") && v.length > 1) {
+      const k = [...v.slice(1)].findIndex((ch) => o.short.includes(ch));
+      if (k >= 0) values.push({ opt: `-${v[k + 1]}`, v: k + 2 < v.length ? v.slice(k + 2) : a[++i] ?? "" });
+    } else if (first < 0) first = i;
+  }
+  const fromOption = values.some((x) => ["-e", "-f", "--regexp", "--file"].includes(x.opt));
+  return { pattern: fromOption ? -1 : first, values };
+}
 const ENV_FLOOR = [".env", ".env.local"];
 const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 /** Programs whose arguments name code they execute (`source`/`.` included: sourcing runs a script). */
@@ -553,29 +597,60 @@ function expandBraces(s, out = [], budget = { n: 256 }) {
  * drops that rule (ripgrep's `-g`). Negated brackets and POSIX classes are read as "any
  * character": the guard asks whether a glob COULD match.
  */
+/**
+ * The bracket expression opening at g[i], read as fnmatch/find read it, or null when it never
+ * closes (then `[` is a literal). `\x` is the literal x, also as a range end and before `]`; a `]`
+ * first in the set is a member. Negated sets and `[:class:]`, `[.coll.]`, `[=equiv=]` read as
+ * "any character" (the guard asks whether a glob COULD match). A reversed range (`[t-h]`, as in a
+ * Markdown `[Test-health]`) gets both ends and everything between: tools disagree on it, and a
+ * regex built from it as written would throw. `escapes` = false: `\\` is a member like any other.
+ */
+function bracket(g, i, escapes = true) {
+  const e = (ch) => (/[\\\]^-]/.test(ch) ? `\\${ch}` : ch);
+  let j = i + 1;
+  let any = g[j] === "!" || g[j] === "^";
+  if (any) j++;
+  let cls = "";
+  const lit = (k) => (escapes && g[k] === "\\" && k + 1 < g.length ? [g[k + 1], k + 1] : [g[k], k]);
+  for (let first = true; j < g.length; j++, first = false) {
+    if (g[j] === "]" && !first) return { end: j, cls: any ? "[^/]" : `[${cls}]` };
+    if (g[j] === "[" && /[:.=]/.test(g[j + 1] ?? "")) {
+      const close = g.indexOf(`${g[j + 1]}]`, j + 2);
+      if (close > 0) {
+        any = true;
+        j = close + 1;
+        continue;
+      }
+    }
+    const [lo, k] = lit(j);
+    j = k;
+    if (g[j + 1] === "-" && j + 2 < g.length && g[j + 2] !== "]") {
+      const [hi, m] = lit(j + 2);
+      const [a, b] = [lo, hi].sort();
+      cls += `${e(a)}-${e(b)}`;
+      j = m;
+    } else cls += e(lo);
+  }
+  // `[.\]env` never closes when `\]` is an escape, yet macOS fnmatch reads it as the set {.} then
+  // `env`: read `\` as a member and close at the first `]`, as the guard always did.
+  return escapes ? bracket(g, i, false) : null;
+}
+
 function globRegex(g, dotfiles = false) {
   let re = "";
   for (let i = 0; i < g.length; i++) {
     const c = g[i];
     if (c === "*") re += i === 0 && !dotfiles ? "(?!\\.)[^/]*" : "[^/]*";
     else if (c === "?") re += i === 0 && !dotfiles ? "[^./]" : "[^/]";
+    else if (c === "\\" && i + 1 < g.length) re += esc(g[++i]);
     else if (c === "[") {
-      const neg = g[i + 1] === "!" || g[i + 1] === "^";
-      let j = i + (neg ? 2 : 1);
-      if (g[j] === "]") j++;
-      let posix = false;
-      while (j < g.length && g[j] !== "]") {
-        if (g.startsWith("[:", j) && g.indexOf(":]", j + 2) > 0) {
-          posix = true;
-          j = g.indexOf(":]", j + 2) + 2;
-        } else j++;
-      }
-      if (j >= g.length) {
+      const b = bracket(g, i);
+      if (!b) {
         re += "\\[";
         continue;
       }
-      re += neg || posix ? "[^/]" : `[${g.slice(i + 1, j).replace(/[\\\]^]/g, "\\$&")}]`;
-      i = j;
+      re += b.cls;
+      i = b.end;
     } else re += esc(c);
   }
   try {
@@ -585,9 +660,9 @@ function globRegex(g, dotfiles = false) {
   }
 }
 
-function isEnvName(name, rules, dotfiles) {
+function isEnvName(name, rules, dotfiles, escapes) {
   if (rules.envFiles.has(name.toLowerCase())) return true;
-  if (!/[*?[]/.test(name)) return false;
+  if (!(escapes ? /[*?[\\]/ : /[*?[]/).test(name)) return false; // `escapes`: `\.env` is `.env` to find/fnmatch
   const re = globRegex(name, dotfiles);
   return [...rules.envFiles].some((n) => re.test(n));
 }
@@ -595,12 +670,13 @@ function isEnvName(name, rules, dotfiles) {
 /**
  * Does this word name a protected env file — itself, as an option/assignment value
  * (`--env-file=.env`), a glob or a brace list? `dotfiles`: a leading wildcard may match a dotfile.
+ * `escapes`: a backslash escapes, as in a glob the program matches itself (`find -name '\\.env'`).
  */
-function isEnvFile(v, rules, { dotfiles = false } = {}) {
+function isEnvFile(v, rules, { dotfiles = false, escapes = false } = {}) {
   const eq = v.lastIndexOf("=");
   for (const c of eq >= 0 ? [v, v.slice(eq + 1)] : [v]) {
     const alts = expandBraces(c);
-    if (alts === null || alts.some((x) => isEnvName(path.basename(x.replace(/\/+$/, "")), rules, dotfiles))) return true;
+    if (alts === null || alts.some((x) => isEnvName(path.basename(x.replace(/\/+$/, "")), rules, dotfiles, escapes))) return true;
   }
   return false;
 }
@@ -952,15 +1028,24 @@ function checkCommand(t, state, depth) {
   // Values that are prose (commit messages, PR titles/bodies) are data, not targets.
   const skip = new Set();
   if (prog === "git" || prog === "gh") a.forEach((v, i) => MESSAGE_FLAGS.has(v) && skip.add(i + 1));
-  if (GREPS.has(prog) && !a.includes("-e") && !a.includes("-f")) {
-    const p = a.findIndex((v, i) => i > 0 && !v.startsWith("-"));
-    if (p > 0) skip.add(p);
+  const optValues = [];
+  // Values the program glob-matches itself (find -name, rg -g): a leading `*` matches `.env` there.
+  const globValues = prog === "find" ? a.filter((_, i) => i > 0 && FIND_GLOBS.has(a[i - 1])) : [];
+  if (GREPS.has(prog)) {
+    const g = grepArgs(prog, a);
+    if (g.pattern > 0) skip.add(g.pattern);
+    optValues.push(...g.values.map((x) => x.v));
+    // a `!glob` only excludes files: `-g '!**/node_modules/**'` never names .env
+    globValues.push(...g.values.filter((x) => GREP_GLOBS.has(x.opt) && !x.v.startsWith("!")).map((x) => x.v));
   }
+  // A glob of wildcards only (`find -name '*'`, `rg -g '*'`) selects everything: no target, and
+  // dropping it selects the same files.
+  const globTargets = globValues.filter((v) => !/^[*?]+$/.test(v));
   // Assignments before the program count (`X=.env`, `PGPORT=…`), also with no program at all.
-  const scanned = [...values.slice(0, at), ...a.filter((_, i) => i > 0 && !skip.has(i))];
+  const scanned = [...values.slice(0, at), ...a.filter((_, i) => i > 0 && !skip.has(i)), ...optValues];
   if (scanned.some((v) => GIT_CONFIG_ENV.test(v))) return BLOCK.noVerify;
   if (dbTarget(scanned, prog, rules.pg)) return BLOCK.db(rules.pg.label);
-  if (scanned.some((v) => isEnvFile(v, rules))) return BLOCK.env;
+  if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
   if (!a.length) return null;
 
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
@@ -1321,7 +1406,7 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
     if ([abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
   }
   const g = tool === "Grep" ? input.glob : input.pattern;
-  if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep" })) return BLOCK.env;
+  if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep", escapes: true })) return BLOCK.env;
   return null;
 }
 
