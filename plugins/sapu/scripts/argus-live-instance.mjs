@@ -17,8 +17,10 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
-import { MAX_CYCLE_MINUTES } from "./argus-live-config.mjs";
+import { expand, MAX_CYCLE_MINUTES } from "./argus-live-config.mjs";
+import { findMain } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
 export const RUN_ID = /^\d{14}-[0-9a-f]{8}$/;
@@ -235,7 +237,7 @@ export function appendEnd(main, runId, now = Date.now()) {
  * `argv` without a shell → {status, stdout, stderr, error} (spawnSync's).
  */
 export function run(argv, opts = {}) {
-  return spawnSync(argv[0], argv.slice(1), { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
+  return spawnSync(argv[0], argv.slice(1), { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, ...opts });
 }
 
 /** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
@@ -317,4 +319,113 @@ export async function allocatePorts(names, { range, reserved = [], fixed = {}, p
     if (!Object.hasOwn(out, name)) throw new Error(`refused: no free port in ${lo}-${hi} for ${name}`);
   }
   return out;
+}
+
+/** `p` is `root` or lies under it (both already real paths). */
+const within = (root, p) => {
+  const r = path.relative(root, p);
+  return r === "" || (r !== ".." && !r.startsWith(`..${path.sep}`) && !path.isAbsolute(r));
+};
+
+/** The real path of `p`, or, when it does not exist, its nearest existing ancestor's real path + the rest. */
+function realish(p) {
+  let rest = "";
+  for (let at = path.resolve(p); ; at = path.dirname(at)) {
+    try {
+      return path.join(fs.realpathSync.native(at), rest);
+    } catch {
+      if (path.dirname(at) === at) return path.resolve(p);
+      rest = path.join(path.basename(at), rest);
+    }
+  }
+}
+
+/**
+ * A linked worktree of HEAD at `$TMPDIR/sapu-live/<repo>-<runId>`, outside the repo, so no lookup that
+ * walks up the directory tree finds the repo's own `.env`. Returns its real path (the form the guard
+ * compares).
+ */
+export function makeWorktree(main, runId, { runner = run } = {}) {
+  runIdOk(runId);
+  const realMain = fs.realpathSync.native(main);
+  const parent = path.join(fs.realpathSync.native(os.tmpdir()), "sapu-live");
+  const wt = path.join(parent, `${path.basename(realMain).replace(/[^A-Za-z0-9._-]/g, "-")}-${runId}`);
+  if (within(realMain, wt)) throw new Error(`refused: the worktree ${wt} would lie inside the repo (TMPDIR points into it)`);
+  fs.mkdirSync(parent, { recursive: true });
+  const r = runner(["git", "-C", main, "worktree", "add", "--detach", wt, "HEAD"]);
+  if (r.error || r.status !== 0) throw new Error(`failed: git worktree add ${wt}: ${((r.error && r.error.message) || r.stderr || "").trim()}`);
+  return fs.realpathSync.native(wt);
+}
+
+/** The run's own empty HOME, `<MAIN>/.argus/live/<runId>/home` (mode 0700); refused when not empty. */
+export function makeHome(main, runId) {
+  runIdOk(runId);
+  const home = path.join(fs.realpathSync.native(main), ".argus", "live", runId, "home");
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  if (fs.readdirSync(home).length) throw new Error(`refused: ${home} is not empty`);
+  return home;
+}
+
+/** What every command inherits from the session: nothing that names an account or a credential. */
+const BASE_ENV = ["PATH", "USER", "SHELL", "TMPDIR", "LANG"];
+const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME"];
+
+/**
+ * The only environment any command of the instance gets: `PATH, USER, SHELL, TMPDIR, LANG, LC_*`
+ * (when set), the `pass_env` names (when set), every `env` entry expanded, `COMPOSE_PROJECT_NAME =
+ * argus-<runId>` and `HOME` = the run's empty home. No owner home, so no tool picks up the owner's
+ * cloud, Git or registry credentials. `env` and `pass_env` may not name HOME or COMPOSE_PROJECT_NAME.
+ */
+export function instanceEnv({ config, ports, secrets, runId, home }) {
+  runIdOk(runId);
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && (BASE_ENV.includes(k) || k.startsWith("LC_"))) env[k] = v;
+  for (const k of config.pass_env ?? []) {
+    if (RUN_ENV.includes(k)) throw new Error(`refused: pass_env may not name ${k}`);
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  for (const [k, v] of Object.entries(config.env ?? {})) {
+    if (RUN_ENV.includes(k)) throw new Error(`refused: env may not set ${k}`);
+    env[k] = expand(v, { ports, secrets });
+  }
+  env.COMPOSE_PROJECT_NAME = `argus-${runId}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  env.HOME = home;
+  return env;
+}
+
+/**
+ * Throws `refused: <link> points into the main checkout` for any symlink in the worktree (its `.git`
+ * aside) whose target lies in <MAIN>: the instance would write there (a dependency directory linked
+ * from the owner's checkout). Symlinked directories are not followed.
+ */
+export function refuseLinksIntoMain(worktree, main) {
+  const realMain = fs.realpathSync.native(main);
+  const stack = [worktree];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (dir === worktree && d.name === ".git") continue;
+      const p = path.join(dir, d.name);
+      if (d.isSymbolicLink()) {
+        if (within(realMain, realish(path.resolve(dir, fs.readlinkSync(p))))) throw new Error(`refused: ${p} points into the main checkout`);
+      } else if (d.isDirectory()) stack.push(p);
+    }
+  }
+}
+
+/** The last lines of a command's output, for an error message. */
+const tail = (text) => (text || "").trim().split("\n").slice(-5).join(" | ").slice(-500);
+
+/**
+ * Runs each `setup` argv in the worktree under `env`, without a shell; then refuses a symlink into
+ * <MAIN>. Throws `failed: setup <argv> exited <code>: <its output's last lines>`.
+ */
+export function runSetup(worktree, config, env, { main = findMain(worktree), runner = run } = {}) {
+  if (!main) throw new Error(`failed: no main checkout found for ${worktree}`);
+  for (const argv of config.setup ?? []) {
+    const r = runner(argv, { cwd: worktree, env });
+    if (r.error) throw new Error(`failed: setup ${argv.join(" ")}: ${r.error.message}`);
+    if (r.status !== 0) throw new Error(`failed: setup ${argv.join(" ")} exited ${r.status ?? r.signal}: ${tail(r.stderr || r.stdout)}`);
+  }
+  refuseLinksIntoMain(worktree, main);
 }

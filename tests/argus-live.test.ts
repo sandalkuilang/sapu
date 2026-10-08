@@ -2,16 +2,28 @@
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:net";
-import { join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
 import { expand, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { allocatePorts, appendEnd, portFree, portHolder, readLock, renew, takeLock } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import {
+  allocatePorts,
+  appendEnd,
+  instanceEnv,
+  makeHome,
+  makeWorktree,
+  portFree,
+  portHolder,
+  readLock,
+  renew,
+  runSetup,
+  takeLock,
+} from "../plugins/sapu/scripts/argus-live-instance.mjs";
 
 type Obj = Record<string, any>;
 
@@ -658,5 +670,115 @@ describe("argus-live instance — ports", () => {
     expect(portHolder(5432, { runner: ss })).toBe("redis-server (pid 77)");
     expect(portHolder(5432, { runner: () => ({ error: Object.assign(new Error("x"), { code: "ENOENT" }) }) })).toBe("unknown");
     expect(portHolder(5432, { runner: () => ({ status: 1, stdout: "" }) })).toBe("unknown");
+  });
+});
+
+describe("argus-live instance — worktree, environment, setup", () => {
+  const worktrees: string[] = [];
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const w of worktrees.splice(0)) rmSync(w, { recursive: true, force: true });
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+  });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  /** A repo with one commit, an ignored `.env` in its working tree. */
+  const committed = () => {
+    const main = tempDir();
+    git(main, "init", "-q");
+    writeFileSync(join(main, ".gitignore"), ".env\n");
+    writeFileSync(join(main, "app.txt"), "app\n");
+    git(main, "add", ".");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
+    writeFileSync(join(main, ".env"), "SECRET=owner\n");
+    return main;
+  };
+  const runId = () => `20261008093000-${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
+  const inside = (root: string, p: string) => {
+    const r = relative(realpathSync(root), p);
+    return r === "" || (!r.startsWith("..") && !r.startsWith("/"));
+  };
+  const worktree = (main: string, id = runId()) => {
+    const wt = makeWorktree(main, id);
+    worktrees.push(wt);
+    return wt;
+  };
+
+  it("makes a detached worktree at HEAD outside the repo, without the repo's ignored files", () => {
+    const main = committed();
+    const id = runId();
+    const wt = worktree(main, id);
+    expect(wt).toBe(realpathSync(wt));
+    expect(wt).toBe(join(realpathSync(tmpdir()), "sapu-live", `${basename(main)}-${id}`));
+    expect(inside(main, wt)).toBe(false);
+    expect(git(wt, "rev-parse", "HEAD")).toBe(git(main, "rev-parse", "HEAD"));
+    expect(readFileSync(join(wt, "app.txt"), "utf8")).toBe("app\n");
+    expect(existsSync(join(wt, ".env"))).toBe(false);
+    expect(() => makeWorktree(main, "../x")).toThrow(/run id/);
+  });
+
+  it("makes an empty per-run HOME under .argus/live/<run>/home", () => {
+    const main = committed();
+    const id = runId();
+    const home = makeHome(main, id);
+    expect(home).toBe(join(realpathSync(main), ".argus/live", id, "home"));
+    expect(readdirSync(home)).toEqual([]);
+    writeFileSync(join(home, ".npmrc"), "x");
+    expect(() => makeHome(main, id)).toThrow(/^refused: .*home is not empty/);
+  });
+
+  it("the environment holds only the listed variables, the expanded env, the run's Compose project and HOME", () => {
+    process.env.ARGUS_TEST_LEAK = "1";
+    process.env.ARGUS_PASS = "passed";
+    process.env.LC_ARGUS_TEST = "C";
+    const id = runId();
+    const config = { env: { DATABASE_URL: "postgres://app:${DB_PW}@localhost:{port:pg}/app_explore" }, pass_env: ["ARGUS_PASS", "ARGUS_NOT_SET"] };
+    const env = instanceEnv({ config, ports: { pg: 41001 }, secrets: { DB_PW: "pw" }, runId: id, home: "/h" });
+    const base = ["PATH", "USER", "SHELL", "TMPDIR", "LANG"].filter((k) => process.env[k] !== undefined);
+    const lc = Object.keys(process.env).filter((k) => k.startsWith("LC_"));
+    expect(Object.keys(env).sort()).toEqual([...base, ...lc, "ARGUS_PASS", "DATABASE_URL", "COMPOSE_PROJECT_NAME", "HOME"].sort());
+    expect(env).toMatchObject({ ARGUS_PASS: "passed", DATABASE_URL: "postgres://app:pw@localhost:41001/app_explore", COMPOSE_PROJECT_NAME: `argus-${id}`, HOME: "/h", LC_ARGUS_TEST: "C" });
+    expect(env.COMPOSE_PROJECT_NAME).toMatch(/^[a-z0-9_-]+$/);
+    expect(env).not.toHaveProperty("ARGUS_TEST_LEAK");
+  });
+
+  it("refuses env or pass_env naming HOME or COMPOSE_PROJECT_NAME, and an unset secret", () => {
+    const args = (config: object) => ({ config, ports: {}, secrets: {}, runId: runId(), home: "/h" });
+    for (const k of ["HOME", "COMPOSE_PROJECT_NAME"]) {
+      expect(() => instanceEnv(args({ env: { [k]: "x" } }))).toThrow(`refused: env may not set ${k}`);
+      expect(() => instanceEnv(args({ pass_env: [k] }))).toThrow(`refused: pass_env may not name ${k}`);
+    }
+    expect(() => instanceEnv(args({ env: { A: "${NOPE}" } }))).toThrow(/unset NOPE/);
+  });
+
+  it("setup runs each argv in the worktree under that environment, without a shell", () => {
+    process.env.ARGUS_TEST_LEAK = "1";
+    const main = committed();
+    const id = runId();
+    const wt = worktree(main, id);
+    const home = makeHome(main, id);
+    const env = instanceEnv({ config: {}, ports: {}, secrets: {}, runId: id, home });
+    const dump = "require('fs').writeFileSync('env.json', JSON.stringify({ cwd: process.cwd(), env: process.env }))";
+    runSetup(wt, { setup: [[process.execPath, "-e", dump], [process.execPath, "-e", "require('fs').writeFileSync('$NOT_EXPANDED', '')"]] }, env);
+    const seen = JSON.parse(readFileSync(join(wt, "env.json"), "utf8"));
+    expect(seen.cwd).toBe(wt);
+    expect(seen.env).toMatchObject({ COMPOSE_PROJECT_NAME: `argus-${id}`, HOME: home });
+    expect(seen.env).not.toHaveProperty("ARGUS_TEST_LEAK");
+    expect(existsSync(join(wt, "$NOT_EXPANDED"))).toBe(true);
+  });
+
+  it("a failing setup step is reported with its own error", () => {
+    const main = committed();
+    const wt = worktree(main);
+    expect(() => runSetup(wt, { setup: [[process.execPath, "-e", "console.error('boom'); process.exit(3)"]] }, { PATH: process.env.PATH! })).toThrow(/^failed: setup .* exited 3: boom/);
+  });
+
+  it("after setup, a symlink into the main checkout is refused; one inside the worktree is fine", () => {
+    const main = committed();
+    const wt = worktree(main);
+    const link = (target: string, at: string) => [process.execPath, "-e", `const fs = require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(at)}), { recursive: true }); fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(at)})`];
+    runSetup(wt, { setup: [link(join(wt, "app.txt"), "node_modules/.bin/app")] }, { PATH: process.env.PATH! });
+    expect(() => runSetup(wt, { setup: [link(join(main, "node_modules"), "deps/node_modules")] }, { PATH: process.env.PATH! })).toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
+    rmSync(join(wt, "deps"), { recursive: true });
+    expect(() => runSetup(wt, { setup: [link(main, "up")] }, { PATH: process.env.PATH! })).toThrow(/points into the main checkout/);
   });
 });
