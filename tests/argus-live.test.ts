@@ -4,13 +4,14 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { expand, loadLive, parseEnvFile, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { expand, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { appendEnd, readLock, renew, takeLock } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { allocatePorts, appendEnd, portFree, portHolder, readLock, renew, takeLock } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 
 type Obj = Record<string, any>;
 
@@ -572,3 +573,90 @@ describe("argus-live instance — lock, live log, renew", () => {
 });
 
 const readdirLive = (main: string) => readdirSync(join(main, ".argus/live")).sort();
+
+describe("argus-live instance — ports", () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))));
+  });
+  /** Listen on `port` (0 = any) at `host`; the port, or null when it cannot. */
+  const hold = (port: number, host = "127.0.0.1") =>
+    new Promise<number | null>((done) => {
+      const s = createServer();
+      s.once("error", () => done(null));
+      s.listen({ port, host, exclusive: true }, () => {
+        servers.push(s);
+        done((s.address() as { port: number }).port);
+      });
+    });
+  const freeNow = (port: number) =>
+    new Promise<boolean>((done) => {
+      const s = createServer();
+      s.once("error", () => done(false));
+      s.listen({ port, host: "127.0.0.1", exclusive: true }, () => s.close(() => done(true)));
+    });
+  /** `n` consecutive ports free right now, from a high range few things use. */
+  const freeRun = async (n: number) => {
+    for (let base = 47000 + Math.floor(Math.random() * 1000); base < 49000; base += n) {
+      const all = await Promise.all(Array.from({ length: n }, (_, i) => freeNow(base + i)));
+      if (all.every(Boolean)) return base;
+    }
+    throw new Error("no free run of ports");
+  };
+  const haveTool = (t: string) => spawnSync(t, ["-v"]).error === undefined || spawnSync("which", [t]).status === 0;
+
+  it("collects every {port:<name>} of the spec example, in order, and the fixed ones apart", () => {
+    expect(portNames(example())).toEqual({ names: ["api", "web", "pg", "redis", "smtp"], fixed: {} });
+    const c = example();
+    c.env.PG_PORT = "{port:pg=5433}";
+    expect(portNames(c)).toEqual({ names: ["api", "web", "redis", "smtp"], fixed: { pg: 5433 } });
+    c.env.OTHER = "{port:pg=5440}";
+    expect(() => portNames(c)).toThrow(/refused: port pg is fixed at both 5433 and 5440/);
+  });
+
+  it("a port held by a listener, or answering on ::1 only, is not free", async () => {
+    const p = (await hold(0))!;
+    expect(await portFree(p)).toBe(false);
+    const base = await freeRun(1);
+    expect(await portFree(base)).toBe(true);
+    const v6 = await hold(base, "::1");
+    if (v6) expect(await portFree(base)).toBe(false);
+  });
+
+  it("allocation skips reserved ports and taken ones, and gives each name its own port", async () => {
+    const base = await freeRun(4);
+    await hold(base);
+    const got = await allocatePorts(["web", "api"], { range: [base, base + 3], reserved: [base + 1] });
+    expect(new Set(Object.values(got))).toEqual(new Set([base + 2, base + 3]));
+    expect(Object.keys(got).sort()).toEqual(["api", "web"]);
+  });
+
+  it("a free fixed port is used as written; a reserved one is refused", async () => {
+    const base = await freeRun(2);
+    expect(await allocatePorts(["web"], { range: [base, base], fixed: { db: base + 1 } })).toEqual({ web: base, db: base + 1 });
+    await expect(allocatePorts([], { range: [base, base], reserved: [base + 1], fixed: { db: base + 1 } })).rejects.toThrow(`refused: port ${base + 1} (db) is one of reserved_ports`);
+  });
+
+  it("a taken fixed port is refused, naming the process holding it", async () => {
+    const p = (await hold(0))!;
+    const err = allocatePorts([], { range: [p, p], fixed: { db: p } });
+    if (haveTool("lsof") || haveTool("ss")) await expect(err).rejects.toThrow(new RegExp(`^refused: port ${p} \\(db\\) is taken by .*pid ${process.pid}\\b`));
+    else await expect(err).rejects.toThrow(`refused: port ${p} (db) is taken by unknown`);
+  });
+
+  it("an exhausted range is refused, naming the port that found no room", async () => {
+    const p = (await hold(0))!;
+    await expect(allocatePorts(["web"], { range: [p, p] })).rejects.toThrow(`refused: no free port in ${p}-${p} for web`);
+    await expect(allocatePorts(["web"], { range: [p + 1, p + 1], reserved: [p + 1] })).rejects.toThrow(/refused: no free port/);
+  });
+
+  it("the holder comes from lsof, else ss, else is unknown", () => {
+    const lsof = (argv: string[]) => (argv[0] === "lsof" ? { status: 0, stdout: "p4242\ncpostgres\np4343\ncpostgres\n" } : { error: Object.assign(new Error("x"), { code: "ENOENT" }) });
+    expect(portHolder(5432, { runner: lsof })).toBe("postgres (pid 4242), postgres (pid 4343)");
+    const ss = (argv: string[]) =>
+      argv[0] === "ss" ? { status: 0, stdout: 'LISTEN 0 511 127.0.0.1:5432 0.0.0.0:* users:(("redis-server",pid=77,fd=6))\n' } : { error: Object.assign(new Error("x"), { code: "ENOENT" }) };
+    expect(portHolder(5432, { runner: ss })).toBe("redis-server (pid 77)");
+    expect(portHolder(5432, { runner: () => ({ error: Object.assign(new Error("x"), { code: "ENOENT" }) }) })).toBe("unknown");
+    expect(portHolder(5432, { runner: () => ({ status: 1, stdout: "" }) })).toBe("unknown");
+  });
+});

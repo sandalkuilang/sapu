@@ -220,6 +220,30 @@ export function expand(value, { ports = {}, secrets = {} } = {}) {
   });
 }
 
+/**
+ * The ports the config asks for, before anything is expanded: `names` = every `{port:<name>}` in
+ * every string, in order of first appearance; `fixed` = `{name: n}` for each `{port:<name>=<n>}`
+ * (a fixed name is not in `names`). A name fixed at two different ports is refused.
+ */
+export function portNames(config) {
+  const seen = [];
+  const fixed = {};
+  const walk = (v) => {
+    if (typeof v === "string") {
+      for (const [, name, n] of v.matchAll(/\{port:([a-z][a-z0-9_-]*)(?:=(\d+))?\}/g)) {
+        if (n === undefined) {
+          if (!seen.includes(name)) seen.push(name);
+        } else if (Object.hasOwn(fixed, name) && fixed[name] !== Number(n)) {
+          throw new Error(`refused: port ${name} is fixed at both ${fixed[name]} and ${n}`);
+        } else fixed[name] = Number(n);
+      }
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (isObj(v)) Object.values(v).forEach(walk);
+  };
+  walk(config);
+  return { names: seen.filter((n) => !Object.hasOwn(fixed, n)), fixed };
+}
+
 /** `KEY=value` lines; `#` comments, blank lines, `export ` and matching outer quotes allowed. */
 export function parseEnvFile(text) {
   const out = {};

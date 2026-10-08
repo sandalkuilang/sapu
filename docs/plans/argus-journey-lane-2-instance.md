@@ -238,8 +238,19 @@ Interfaces:
   exists and whose `env.COMPOSE_PROJECT_NAME` is `argus-<runId>` (others journalled, never run);
   kills a recorded group only when `ps -o command= -p <pgid>` still equals the recorded `cmdline`;
   removes the old worktree; appends `end` for the old run.
+- Stale records (carried from the Task 2 review): `recover` (and `takeLock`'s return) scans every
+  `.argus/live/claim-*.json` that has a `lock` field whose run is not the current lock's run,
+  returns them all as stale records, and deletes each claim only after its recovery replayed. This
+  covers a takeover whose live-log append failed and was rolled back, and a session that died
+  before `recover` ran.
+- `claimBusy`: a claim older than N seconds by mtime (the critical section takes milliseconds)
+  counts as interrupted even when its pid is alive (pid reuse), so the owner gets the
+  "remove <path>" instruction instead of "try again" forever.
+- `down` and `reap` take `claim-<run>.json` when they remove the lock (the Task 2 claim rule: only
+  the claim holder replaces or removes a lock naming its run) and surface the same orphaned-claim
+  message instead of failing teardown silently.
 
-- [ ] Tests: `down` kills the fixture app and its `--spawn-child` grandchild (process group); replays
+- [ ] Tests: the three review carry-overs above (an orphaned rolled-back claim is returned as stale; an old claim with a live pid → "remove"; `down` under a held claim refuses with that message); `down` kills the fixture app and its `--spawn-child` grandchild (process group); replays
   a stop record with its own cwd and env (the stop writes `pwd` and `$COMPOSE_PROJECT_NAME` to a file);
   removes the worktree, run files and lock; appends `end`; recovery skips a stop record whose cwd is
   gone or whose env lacks the right `COMPOSE_PROJECT_NAME`, and does not kill a pid whose command line

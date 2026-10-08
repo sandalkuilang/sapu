@@ -13,8 +13,10 @@
 // process holds it), after re-reading the lock under the claim. A takeover replaces the stale lock with
 // rename(2), so `lock.json` never goes missing in between, and keeps its claim: that file is the stale
 // run's record for recovery, and it makes every later taker of the same stale run back off.
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { MAX_CYCLE_MINUTES } from "./argus-live-config.mjs";
 
@@ -226,4 +228,93 @@ export function renew(main, { runId, maxCycleMinutes, now = Date.now(), pause = 
 /** Append `<runId> end <now>` to the live log (a failed `up`, a `down`). */
 export function appendEnd(main, runId, now = Date.now()) {
   appendLive(main, runId, `end ${seconds(now)}`);
+}
+
+/**
+ * The one runner every external command goes through, so tests can substitute it:
+ * `argv` without a shell → {status, stdout, stderr, error} (spawnSync's).
+ */
+export function run(argv, opts = {}) {
+  return spawnSync(argv[0], argv.slice(1), { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...opts });
+}
+
+/** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
+function accepts(host, port) {
+  return new Promise((done) => {
+    const c = net.connect({ host, port });
+    const end = (v) => {
+      c.destroy();
+      done(v);
+    };
+    c.setTimeout(500, () => end(true));
+    c.once("connect", () => end(true));
+    c.once("error", () => end(false));
+  });
+}
+
+/**
+ * A port is free when nothing answers on it at 127.0.0.1 or ::1 (a listener on the wildcard or on
+ * ::1 only would not stop a bind on 127.0.0.1 everywhere) and a listen on 127.0.0.1 succeeds and is
+ * closed again.
+ */
+export async function portFree(port) {
+  if ((await accepts("127.0.0.1", port)) || (await accepts("::1", port))) return false;
+  return new Promise((done) => {
+    const s = net.createServer();
+    s.once("error", () => done(false));
+    s.listen({ port, host: "127.0.0.1", exclusive: true }, () => s.close(() => done(true)));
+  });
+}
+
+/** Who listens on `port`: `<command> (pid <n>)`, from `lsof`, else `ss`; `unknown` when neither tells. */
+export function portHolder(port, { runner = run } = {}) {
+  const fmt = (pairs) => [...new Set(pairs.map(([c, p]) => `${c} (pid ${p})`))].join(", ");
+  const l = runner(["lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fpc"]);
+  if (!l.error && l.status === 0 && l.stdout) {
+    const pairs = [];
+    let pid;
+    for (const line of l.stdout.split("\n")) {
+      if (line.startsWith("p")) pid = line.slice(1);
+      else if (line.startsWith("c") && pid) pairs.push([line.slice(1), pid]);
+    }
+    if (pairs.length) return fmt(pairs);
+  }
+  const s = runner(["ss", "-ltnpH", `sport = :${port}`]);
+  if (!s.error && s.status === 0 && s.stdout) {
+    const pairs = [...s.stdout.matchAll(/\("([^"]+)",pid=(\d+)/g)].map((m) => [m[1], m[2]]);
+    if (pairs.length) return fmt(pairs);
+  }
+  return "unknown";
+}
+
+/**
+ * `{<name>: port}` for every name and every fixed port. A name takes a free port from `range`
+ * outside `reserved` and the ports already handed out, scanning from a random point so two runs
+ * rarely race for the same port. A fixed port is used as written; one in `reserved` or taken is
+ * refused, naming its holder. `probe` (default portFree) is a test seam.
+ */
+export async function allocatePorts(names, { range, reserved = [], fixed = {}, probe = portFree, runner = run }) {
+  const [lo, hi] = range;
+  const out = {};
+  for (const [name, n] of Object.entries(fixed)) {
+    if (reserved.includes(n)) throw new Error(`refused: port ${n} (${name}) is one of reserved_ports`);
+    if (!(await probe(n))) throw new Error(`refused: port ${n} (${name}) is taken by ${portHolder(n, { runner })}`);
+    out[name] = n;
+  }
+  const size = hi - lo + 1;
+  const from = Math.floor(Math.random() * size);
+  let i = 0;
+  for (const name of names) {
+    if (Object.hasOwn(out, name)) continue;
+    const used = new Set(Object.values(out));
+    for (; i < size; i++) {
+      const port = lo + ((from + i) % size);
+      if (reserved.includes(port) || used.has(port) || !(await probe(port))) continue;
+      out[name] = port;
+      i++;
+      break;
+    }
+    if (!Object.hasOwn(out, name)) throw new Error(`refused: no free port in ${lo}-${hi} for ${name}`);
+  }
+  return out;
 }
