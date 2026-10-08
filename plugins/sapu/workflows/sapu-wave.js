@@ -34,7 +34,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.8.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.8.1 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Implement', detail: 'one forge worker per issue, isolated worktree' },
@@ -263,6 +263,12 @@ const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, LADDER.length - 1)]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
 const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}`).join('\n')
+// An agent's label is the run panel's Agent column: the issue, then the effort (the panel's Model
+// column shows the model but never the effort), then only what tells two rows of a phase apart.
+const effortOf = (agentType) => (MODEL[agentType] || PAIR_MODEL)[1]
+const tag = (item, effort, what) => `#${item.issue}${item.tracker ? ` (${item.tracker})` : ''} · ${effort[0].toUpperCase()}${effort.slice(1)}${what ? ` · ${what}` : ''}`
+const roleOf = (agentType) => ROLES.find((k) => S[k] === agentType) ?? agentType.split(':').pop()
+
 const opts = (agentType, extra) => {
   const [model, effort] = MODEL[agentType] || ['opus', 'high']
   return { agentType, model, effort, ...extra }
@@ -337,7 +343,7 @@ async function review(item, state, delta, only) {
   // `only` = just these reviewers (a domain half the first pair lacked).
   const reviewers = only || (pair ? [S.qa, state.domainReviewer] : [S.qa])
   const call = (r) => () => {
-    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: `#${item.issue} review ${r}${delta ? ' (delta)' : ''}` }
+    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: tag(item, PAIR_MODEL[1], `${roleOf(r)}${delta ? ' delta' : ''}`) }
     const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra })
     // Only the 🔴 pair counts against the test-runner limit: a lone 🟢/🟡 review never queues behind workers.
     return pair ? testSlot(run) : run()
@@ -471,7 +477,7 @@ async function runItem(item) {
         ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, task].filter(Boolean).join('\n')
         : cont ? `${continueOn(state)}\n${task}` : task
       r = await testSlot(() => agent(workerPrompt(item, state, who, extra, step.startsWith('Implement')), opts(who, {
-        isolation: 'worktree', schema: WORKER_SCHEMA, phase, label: h ? `${label} (handoff ${h})` : label,
+        isolation: 'worktree', schema: WORKER_SCHEMA, phase, label: h ? `${label} · handoff ${h}` : label,
       })))
       trailRow(state, h ? `${step} (handoff ${h})` : step, who, workerResult(r))
       if (!r || r.status !== 'handoff' || r.guard_active !== true) return r
@@ -482,7 +488,7 @@ async function runItem(item) {
   const noGuard = (who) => done('blocked', { reason: `${who} did not see the guard hook block the canary: the plugin's guard hook is not live for workflow agents — run this wave through the Agent tool fallback and report it` })
 
   // 1. implement, with at most one escalation step up the ladder
-  let r = await runWorker(state.worker, { step: 'Implement', phase: 'Implement', label: `#${item.issue} ${state.worker}` })
+  let r = await runWorker(state.worker, { step: 'Implement', phase: 'Implement', label: tag(item, effortOf(state.worker)) })
   if (!r) return done('died', { reason: 'worker returned nothing; before a retry look for its PR with `gh pr list --head <branch> --json number,isCrossRepository` — only a same-repo PR that `sapu-contract.mjs pr-trust <N>` passes is its (a fork can use any branch name)' })
   if (!absorb(r, state.worker)) return noGuard(state.worker)
   if (r.status === 'escalate') {
@@ -491,7 +497,7 @@ async function runItem(item) {
     state.escalated = true
     state.worker = stepUp(state.worker)
     r = await runWorker(state.worker, {
-      cont: true, step: 'Implement (escalated)', phase: 'Implement', label: `#${item.issue} ${state.worker} (escalated)`,
+      cont: true, step: 'Implement (escalated)', phase: 'Implement', label: tag(item, effortOf(state.worker), 'escalated'),
       task: `The previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`,
     })
     if (!r) return done('died', { reason: 'escalated worker returned nothing' })
@@ -551,7 +557,7 @@ async function runItem(item) {
       if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)
       const sinceSha = state.headSha
       r = await runWorker(fixer, {
-        cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: `#${item.issue} fix ${state.cycles} ${fixer}`,
+        cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}`),
         task: `Fix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
       })
       if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
@@ -578,7 +584,7 @@ async function runItem(item) {
   const prePrUntilZero = async () => {
     for (;;) {
       const round = ++prePrRound
-      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: `#${item.issue} ${P.prePr.run} ${round}` })
+      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: tag(item, PAIR_MODEL[1], `${P.prePr.run} ${round}`) })
       if (!pr) return done('died', { reason: `${P.prePr.run} round ${round} returned nothing` })
       const open = pr.findings.filter((f) => P.prePr.severities.includes(f.severity))
       const counted = P.prePr.severities.reduce((n, k) => n + (pr.counts[k] || 0), 0)
@@ -590,7 +596,7 @@ async function runItem(item) {
       }
       const sinceSha = state.headSha
       r = await runWorker(state.worker, {
-        cont: true, step: `${P.prePr.run} fix ${round}`, phase: 'Fix', label: `#${item.issue} ${P.prePr.run} fix ${round} ${state.worker}`,
+        cont: true, step: `${P.prePr.run} fix ${round}`, phase: 'Fix', label: tag(item, effortOf(state.worker), `${P.prePr.run} fix ${round}`),
         task: `The repo's required pre-PR review (${P.prePr.run}) reported the findings below; every ${P.prePr.severities.join('/')} one must reach zero before the PR is handed in. Fix ALL of them, with tests where behaviour changes, then verify as in brief point 6 and push. A finding that asks to undo something an earlier round fixed on purpose (listed after the findings) is a contradiction: do not flip-flop — return status "blocked" with blocked_reason starting "CONTRADICTION:" naming both findings.\n${open.map((f, i) => `${i + 1}. [${f.severity}] ${f.where} — ${f.what}`).join('\n')}${fixedByPrePr.length ? `\nFixed in earlier rounds:\n${fixedByPrePr.map((f) => `- [${f.severity}] ${f.where} — ${f.what}`).join('\n')}` : ''}`,
       })
       if (!r) return done('died', { reason: `fixer returned nothing in ${P.prePr.run} round ${round}` })
