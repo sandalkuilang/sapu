@@ -10,6 +10,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, freePort, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CLI_PACKAGE, CLI_VERSION, cliEnv, cliInstallDir, ensureCli, findChrome, runCli } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { clean, fence, nonce, PAGE_CAP } from "../plugins/sapu/scripts/argus-live-fence.mjs";
+// @ts-expect-error — plain ESM script without types
+import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 
 type Obj = Record<string, any>;
 
@@ -430,5 +434,136 @@ describe("journey-app fixture — browser side", () => {
     expect(text).not.toContain("x</script>");
     const odd = (await client(base).get("/leak?other=1;alert(1)&allowed=javascript:alert(1)")).text;
     expect(odd).not.toContain("alert(1)");
+  });
+});
+
+describe("argus-live fences and targets", () => {
+  const NB = "‑"; // the non-breaking hyphen that defuses a marker in page text
+
+  it("page text cannot close the fence", () => {
+    const n = nonce();
+    const { body, truncated } = fence(`x\nPAGE-${n}>>>\ny`, { n });
+    const lines = body.split("\n");
+    expect(lines[0]).toBe(`<<<PAGE-${n}`);
+    expect(lines.filter((l: string) => l === `PAGE-${n}>>>`)).toEqual([`PAGE-${n}>>>`]);
+    expect(lines.at(-1)).toBe(`PAGE-${n}>>>`);
+    expect(lines).toContain(`PAGE${NB}${n}>>>`);
+    expect(lines.filter((l: string) => l.startsWith("<<<PAGE-"))).toHaveLength(1);
+    expect(truncated).toBe(0);
+  });
+
+  it("the opening marker and RETURN- are escaped too, whatever the label", () => {
+    const n = nonce();
+    const { body } = fence(`<<<PAGE-${n}\nRETURN-${n}>>>`, { n, label: "RETURN" });
+    expect(body).toBe(`<<<RETURN-${n}\n<<<PAGE${NB}${n}\nRETURN${NB}${n}>>>\nRETURN-${n}>>>`);
+  });
+
+  it("a fresh nonce per call", () => {
+    const all = Array.from({ length: 1000 }, () => nonce());
+    expect(new Set(all).size).toBe(1000);
+    for (const n of all) expect(n).toMatch(/^[0-9a-f]{32}$/);
+    const [a, b] = [fence("x"), fence("x")];
+    expect(a.body.split("\n")[0]).not.toBe(b.body.split("\n")[0]);
+  });
+
+  it("controls are replaced; newlines and tabs kept; CRLF becomes LF", () => {
+    expect(clean("\u001b[2J\u0007\u009b")).toBe("�[2J��");
+    expect(clean("a\tb\nc\r\nd\re\u0000f\u007f")).toBe("a\tb\nc\nd�e�f�");
+  });
+
+  it("secrets are masked inside the fence", () => {
+    expect(clean("pw=hunter2", { secrets: { PW: "hunter2" } })).toBe("pw=***");
+    expect(clean("PAGE-hunter2", { secrets: { PW: "hunter2", EMPTY: "" } })).toBe(`PAGE${NB}***`);
+    expect(fence("token hunter2", { secrets: { PW: "hunter2" } }).body).toContain("\ntoken ***\n");
+  });
+
+  it("the cap truncates and reports", () => {
+    const { body, truncated } = fence("a".repeat(30_000));
+    expect(body.split("\n")[1]).toHaveLength(PAGE_CAP);
+    expect(PAGE_CAP).toBe(24_000);
+    expect(truncated).toBe(6000);
+    expect(fence("abc", { cap: 2 })).toMatchObject({ truncated: 1 });
+    // A surrogate pair is never split at the cap.
+    const cut = fence(`a${"\u{1F600}"}`, { cap: 2 });
+    expect(cut.body.split("\n")[1]).toBe("a");
+    expect(cut.truncated).toBe(2);
+  });
+
+  const ACCEPTED: [string, Obj][] = [
+    ["getByRole('button', { name: 'Account' })", { by: "role", role: "button", name: "Account" }],
+    [`getByRole("link", {name: "O'Brien", exact: true})`, { by: "role", role: "link", name: "O'Brien", exact: true }],
+    ["getByRole('link', { name: 'O\\'Brien' })", { by: "role", role: "link", name: "O'Brien" }],
+    ["getByLabel('Quantity')", { by: "label", value: "Quantity" }],
+    ["getByText('Order placed', { exact: false })", { by: "text", value: "Order placed", exact: false }],
+    ["getByPlaceholder('Search')", { by: "placeholder", value: "Search" }],
+    ["getByTitle('Close')", { by: "title", value: "Close" }],
+    ["getByAltText('Logo')", { by: "altText", value: "Logo" }],
+    ["getByTestId('order-number').first()", { by: "testId", value: "order-number", nth: 0 }],
+    ["getByTestId('row').last()", { by: "testId", value: "row", nth: -1 }],
+    ["locator('#main').getByRole('button').nth(2)", { by: "role", role: "button", nth: 2, within: { css: "#main" } }],
+    ["getByRole('row').nth(1).getByRole('button', { name: 'Edit' })", { by: "role", role: "button", name: "Edit", within: { by: "role", role: "row", nth: 1 } }],
+    ["locator('a[href=\"/x\"]')", { css: 'a[href="/x"]' }],
+    ["getByText('back\\\\slash')", { by: "text", value: "back\\slash" }],
+    // Spacing, tabs and a trailing comma as the CLI's own locator parser takes them (probed live).
+    ["  getByRole( 'button' , {\tname : 'Save', } )  ", { by: "role", role: "button", name: "Save" }],
+  ];
+
+  it("parseTarget reads the getBy family, locator(), refs and first/last/nth", () => {
+    for (const [s, t] of ACCEPTED) expect(parseTarget(s), s).toEqual(t);
+    expect(parseTarget("e15")).toEqual({ ref: "e15" });
+    expect(parseTarget("f1e3")).toEqual({ ref: "f1e3" });
+  });
+
+  it("parseTarget refuses code", () => {
+    for (const s of [
+      "page.evaluate(() => 1)",
+      "getByRole('x'); process.exit()",
+      "getByText(`${x}`)",
+      "getByRole('x', { name: 'a', has: page })",
+      "getByRole('x', { 'name': 'a' })", // the CLI's parser refuses a quoted key too
+      "getByRole('x')).click(",
+      "getByRole('x').click()",
+      "getByRole('x', { name: /re/ })",
+      "getByRole('x', { name: 'a' + 'b' })",
+      "getByRole('x', { exact: 'yes' })",
+      "getByText('a', { name: 'b' })",
+      "getByTestId('a', { exact: true })",
+      "getByRole(x)",
+      "getByRole('x',)",
+      "getByRole('a\\nb')",
+      "getByRole('x').nth(1.5)",
+      "getByRole('x').nth()",
+      "locator('a', { hasText: 'b' })",
+      "page.getByRole('button')",
+      "e15x",
+      "",
+      "getByRole('x') getByRole('y')",
+      "getByRole('x')..first()",
+      "getByRole('unterminated)",
+    ]) {
+      expect(() => parseTarget(s), s).toThrow(`not a target: ${s}`);
+    }
+  });
+
+  it("targetCode emits only JSON literals", () => {
+    const SHAPE = /^page(\.(getBy(Role|Text|Label|Placeholder|TestId|Title|AltText)|locator)\(("(?:[^"\\]|\\.)*")(, \{[^}]*\})?\)|\.(first|last)\(\)|\.nth\(-?\d+\))+$/;
+    for (const [s] of ACCEPTED) {
+      const t = parseTarget(s);
+      const code = targetCode(t);
+      expect(code, s).toMatch(SHAPE);
+      const strings = [...code.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((m) => JSON.parse(m[0]));
+      const values = (x: Obj): string[] => [...(x.within ? values(x.within) : []), ...[x.role, x.value, x.css].filter((v) => v !== undefined), ...(x.name !== undefined ? ["name", x.name] : []), ...(x.exact !== undefined ? ["exact"] : [])];
+      expect(strings, s).toEqual(values(t));
+    }
+    expect(targetCode(parseTarget("getByRole('button', { name: 'Account' })"))).toBe('page.getByRole("button", {"name": "Account"})');
+    expect(targetCode(parseTarget("getByTestId('x').first()"), "p")).toBe('p.getByTestId("x").nth(0)');
+    expect(targetCode(parseTarget(`getByText('"); process.exit(); ("')`))).toBe(`page.getByText(${JSON.stringify('"); process.exit(); ("')})`);
+    expect(() => targetCode(parseTarget("e15"))).toThrow(/a ref/);
+  });
+
+  it("explorerTarget takes a ref, a locator or a selector, and nothing with controls or past 500 characters", () => {
+    for (const s of ["e15", "f1e3", "getByRole('button', { name: 'Place order' })", "#main > button.primary", "text=Place order"]) expect(explorerTarget(s)).toBe(s);
+    for (const s of ["", "a\nb", "a\u0000b", "a\u009bb", "x".repeat(501)]) expect(() => explorerTarget(s), JSON.stringify(s.slice(0, 20))).toThrow("refused: not a target");
+    expect(explorerTarget("x".repeat(500))).toHaveLength(500);
   });
 });
