@@ -481,6 +481,13 @@ describe("sapu-wave — fix cycles", () => {
     expect(logs[5]).toBe(`#17 ready PR #${1017}`);
   });
 
+  it("labels each agent with the issue and its effort, plus only what tells rows of a phase apart", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(17, { tracker: "F2" })] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? finding(true) : clean) : opened(17, { head_sha: fixSha(c, n) }),
+    );
+    expect(calls.map((c) => c.opts.label)).toEqual(["#17 (F2) · Medium", "#17 (F2) · High · qa", "#17 (F2) · High · fix 1", "#17 (F2) · High · qa delta"]);
+  });
+
   it("a stopped item's outcome line carries the first line of its reason", async () => {
     const { logs } = await runWave({ main: MAIN, items: [item(18)] }, () => ({ ...opened(18), status: "blocked", blocked_reason: "infra: postgres down\nmore" }));
     expect(logs).toContain(`#18 blocked PR #${1018}: infra: postgres down`);
