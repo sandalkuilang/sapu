@@ -180,7 +180,8 @@ export function checkExplorerRead({ input, worktree, cwd }) {
   const low = rel.toLowerCase();
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel) || low === ".argus" || low.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
   try {
-    execFileSync("git", ["-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
+    if (!fs.statSync(real).isFile()) return BLOCK.explorerRead;
+    execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
   } catch {
     return BLOCK.explorerRead;
   }
@@ -1909,7 +1910,7 @@ export function decide(input) {
       tool === "Bash"
         ? checkExplorerBash(ti.command)
         : tool === "Read"
-          ? checkExplorerRead({ tool, input: ti, worktree: m ? liveWorktree(m) : null, cwd: input.cwd || process.cwd() })
+          ? checkExplorerRead({ input: ti, worktree: m ? liveWorktree(m) : null, cwd: input.cwd || process.cwd() })
           : BLOCK.explorerTool;
     if (why) return why;
   }

@@ -1786,9 +1786,13 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
   mkdirSync(join(w, ".argus"), { recursive: true });
   writeFileSync(join(w, "src/orders/route.ts"), "export const x = 1;\n");
   writeFileSync(join(w, ".argus/config.yml"), "test_accounts: {}\n");
+  mkdirSync(join(w, "g"), { recursive: true });
+  writeFileSync(join(w, "g/a.js"), "a\n");
+  writeFileSync(join(w, "g/[id].ts"), "id\n");
   g("add", "-A");
   g("commit", "-qm", "init");
   writeFileSync(join(w, "src/orders/untracked.ts"), "secret\n");
+  writeFileSync(join(w, "g/[ab].js"), "secret\n"); // untracked; as a pathspec it would match tracked g/a.js
   const outside = join(tmpdir(), "explorer-outside.txt");
   writeFileSync(outside, "x\n");
   symlinkSync(outside, join(w, "src/link.txt"));
@@ -1806,6 +1810,7 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
   it("allows a tracked file, by absolute or relative path", () => {
     expect(read("Read", { file_path: join(w, "src/orders/route.ts") })).toBeNull();
     expect(read("Read", { file_path: "src/orders/route.ts" })).toBeNull();
+    expect(read("Read", { file_path: join(w, "g/[id].ts") })).toBeNull();
   });
 
   it.each([
@@ -1817,6 +1822,8 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
     ["a symlink leaving the worktree", join(w, "src/link.txt")],
     ["a missing file", join(w, "src/none.ts")],
     ["the worktree root", w],
+    ["an untracked file whose name is a glob matching a tracked one", join(w, "g/[ab].js")],
+    ["a tracked directory", join(w, "src")],
   ])("refuses %s", (_what, file_path) => {
     expect(read("Read", { file_path })).toMatch(/journey explorer reads only files tracked/);
   });
