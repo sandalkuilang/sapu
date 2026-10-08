@@ -15,7 +15,10 @@
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import { loadLive } from "./argus-live-config.mjs";
-import { down, readLock, reap, recordedSecrets, redact, renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
+import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
+import { readLock } from "./argus-live-lock.mjs";
+import { redact } from "./argus-live-proc.mjs";
+import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);

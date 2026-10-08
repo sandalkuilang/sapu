@@ -21,11 +21,6 @@ import { iso, readLock, renew, runIdOk, takeLock } from "./argus-live-lock.mjs";
 import { killGroup, MAX_HOPS, membersOf, msLeft, processTable, readFrom, redact, resolveLink, run, runAsync, runPids, sameGroup, sameStart, sleep, startTime, stopRecordedGroups, tail, within } from "./argus-live-proc.mjs";
 import { down, guarded, logsDir, readRun, recover, replayStop, repoName, startReaper, writeRunFiles } from "./argus-live-run.mjs";
 import { findMain, loadContract } from "./sapu-contract.mjs";
-export { killGroup, procStartTicks, redact, run, runAsync } from "./argus-live-proc.mjs";
-export { appendEnd, readLock, renew, RUN_ID, staleRecords, takeLock } from "./argus-live-lock.mjs";
-export { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, startEventsFollower } from "./argus-live-docker.mjs";
-export { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs";
-export { down, logsDir, reap, recordedSecrets, recover, startReaper, TEARDOWN_STEPS, updateRun, writeRunFiles } from "./argus-live-run.mjs";
 
 /** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
 function accepts(host, port) {

@@ -36,7 +36,13 @@ never from the session's cwd.
 | File | Responsibility |
 |---|---|
 | `plugins/sapu/scripts/argus-live-config.mjs` | `loadLive(main)`: read `.argus/live.json` and `env_file`; `validateLive(obj)` → errors (unknown keys, types, role names, reserved roles, required keys, `confirmed`, local `base_url`); `expand(value, {ports, secrets})` for `{port:<name>}`, `{port:<name>=<n>}`, `${NAME}` |
-| `plugins/sapu/scripts/argus-live-instance.mjs` | `run(cmd, opts)` injectable runner; lock and live log; `allocatePorts`; `makeWorktree`; `instanceEnv`; `startEntry`/`waitHealth`; `checkStore`; `checkCompose`; `checkEgress`; `writeRunFiles`; `startReaper`; `down`; `recover`; `up`; `upFresh`; `renew`; `status` |
+| `plugins/sapu/scripts/argus-live-instance.mjs` | `allocatePorts`; `makeWorktree`; `makeHome`; `instanceEnv`; `runSetup`; `startEntry`/`waitHealth`; `checkStore`; `bringUpStore`/`bringUpRest`; `up`; `upFresh`; `renewRun`; `status`/`statusJson` |
+| `plugins/sapu/scripts/argus-live-proc.mjs` | `run(cmd, opts)` injectable runner; `runAsync`; `killGroup`; process identity (`startTime`, `processTable`, `sameStart`, `sameGroup`); stopping recorded groups; shared helpers (`redact`, `tail`, `within`, `resolveLink`) |
+| `plugins/sapu/scripts/argus-live-lock.mjs` | lock and live log: `takeLock`, `readLock`, `staleRecords`, `renew`, `appendEnd`, `releaseLock` |
+| `plugins/sapu/scripts/argus-live-endpoints.mjs` | endpoint parsing and comparison (`normHost`, `splitEndpoints`, `scopeChecker`, `readOwner`), `resolvesToLoopback` |
+| `plugins/sapu/scripts/argus-live-docker.mjs` | `dockerEnv`; `checkCompose`; `daemonNow`; `startEventsFollower`; `checkDockerRuntime` |
+| `plugins/sapu/scripts/argus-live-egress.mjs` | `egressAllowed`; `checkEgress`; `portHolder` |
+| `plugins/sapu/scripts/argus-live-run.mjs` | `updateRun`; `readRun`; `writeRunFiles`; `logsDir`; `startReaper`; `TEARDOWN`; `down`; `recover`; `reap` |
 | `plugins/sapu/scripts/argus-live.mjs` | CLI: parses `up [--fresh]`, `down`, `renew`, `status`; prints one line per step; exit codes 0 ok, 1 refused (reason printed), 2 failed (step and quoted error printed) |
 | `tests/fixtures/journey-app/server.mjs` | the fixture app's server: `PORT`, `DATA_DIR` (its "store"), `CACHE_URL` (else connects to a fixed loopback port 46379), `/health`, `--which-store`, `--reset` |
 | `tests/argus-live.test.ts` | all phase 2 tests |
@@ -493,6 +499,10 @@ As built (phase-end review):
   `runStep` mark a record `exited` only then.
 - The CLI and the reaper mask output with the env_file's values as `up` read them, recovered from
   run.json (`recordedSecrets`, `secretsIn`), as well as with its values now.
+- `argus-live-instance.mjs` is split into the DAG proc → lock → endpoints → docker / egress → run →
+  instance (the File structure table above); each module imports only the ones before it, and the
+  CLI and the tests import each symbol from its owning module. `repoName` lives in the run module,
+  beside its user there (the removal of the run's directories); `makeWorktree` imports it.
 
 ## Self-review
 

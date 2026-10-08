@@ -12,46 +12,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import {
-  allocatePorts,
-  appendEnd,
-  bringUpRest,
-  bringUpStore,
-  checkCompose,
-  checkDockerRuntime,
-  checkEgress,
-  checkStore,
-  daemonNow,
-  dockerEnv,
-  down,
-  egressAllowed,
-  instanceEnv,
-  logsDir,
-  makeHome,
-  makeWorktree,
-  portFree,
-  portHolder,
-  procStartTicks,
-  readLock,
-  recover,
-  renew,
-  renewRun,
-  run,
-  runAsync,
-  runSetup,
-  staleRecords,
-  startEntry,
-  startEventsFollower,
-  startReaper,
-  status,
-  statusJson,
-  takeLock,
-  TEARDOWN_STEPS,
-  up,
-  updateRun,
-  waitHealth,
-  writeRunFiles,
-} from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, startEventsFollower } from "../plugins/sapu/scripts/argus-live-docker.mjs";
+// @ts-expect-error — plain ESM script without types
+import { checkEgress, egressAllowed, portHolder } from "../plugins/sapu/scripts/argus-live-egress.mjs";
+// @ts-expect-error — plain ESM script without types
+import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, renewRun, runSetup, startEntry, status, statusJson, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
+// @ts-expect-error — plain ESM script without types
+import { procStartTicks, run, runAsync } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+// @ts-expect-error — plain ESM script without types
+import { down, logsDir, recover, startReaper, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 
 type Obj = Record<string, any>;
 
@@ -588,7 +559,7 @@ describe("argus-live instance — lock, live log, renew", () => {
   });
 
   it("concurrent takers: exactly one wins, it alone gets the stale record, and no fresh lock is removed", async () => {
-    const mod = join(__dirname, "../plugins/sapu/scripts/argus-live-instance.mjs");
+    const mod = join(__dirname, "../plugins/sapu/scripts/argus-live-lock.mjs");
     const code = `
       import { takeLock } from ${JSON.stringify(pathToFileURL(mod).href)};
       const [main, at] = process.argv.slice(1);
