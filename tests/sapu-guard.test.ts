@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -16,6 +16,7 @@ const check = checkUntyped as (i: { command: string; cwd: string; main?: string 
 const checkFile = checkFileUntyped as (i: { tool: string; filePath: string; cwd: string; main?: string | null; rules?: unknown; worker?: boolean }) => string | null;
 const checkSearch = checkSearchUntyped as (i: { tool: string; input: Record<string, string>; cwd: string; rules?: unknown }) => string | null;
 const rules = compileRules(FIXTURE_CONTRACT);
+const decide = decideUntyped as (i: Record<string, unknown>) => string | null;
 
 const root = mkdtempSync(join(tmpdir(), "sapu-guard-"));
 const main = join(root, "main");
@@ -1716,5 +1717,53 @@ describe("sapu-guard — the needs-owner label is the owner's, like the acceptan
     expect(reviewer("gh issue edit 8 --remove-label owner:decide", custom)).toMatch(/needs-owner label/);
     expect(reviewer("gh issue edit 8 --add-label sapu:accepted", custom)).toMatch(/acceptance label/);
     expect(reviewer("gh issue edit 8 --add-label argus:needs-owner", custom)).toBeNull();
+  });
+});
+
+describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () => {
+  const W = "/plug/scripts/argus-live.mjs";
+  const bash = (command: string) => (checkExplorerBash as (c: string, w?: string) => string | null)(command, W);
+
+  it("knows its agent and its wrapper", () => {
+    expect(EXPLORER_AGENT.test("sapu:ui-explorer")).toBe(true);
+    expect(EXPLORER_AGENT.test("sapu:sapu-opus-high")).toBe(false);
+    expect(WRAPPER).toMatch(/plugins\/sapu\/scripts\/argus-live\.mjs$/);
+  });
+
+  it.each([
+    [`node ${W} pw tk1 customer snapshot`],
+    [`node ${W} pw tk1 customer#2 click 'getByRole("button", { name: "Save" })'`],
+    [`node ${W} pw tk1 sales goto /orders && node ${W} pw tk1 sales find 'Order 12'`],
+    [`node ${W} pw tk1 sales reload; node ${W} pw tk1 sales console\nnode ${W} pw tk1 sales requests`],
+    [`node '${W}' pw tk1 anon goto /`],
+  ])("allows %s", (cmd) => {
+    expect(bash(cmd)).toBeNull();
+  });
+
+  it.each([
+    ["another program", "printenv"],
+    ["node -e", `node -e "require('fs')"`],
+    ["another script", `node /tmp/x.mjs pw tk1 a snapshot`],
+    ["the wrapper without pw", `node ${W} up`],
+    ["a variable", `node ${W} pw tk1 a fill e5 $GITHUB_TOKEN`],
+    ["a braced variable", `node ${W} pw tk1 a fill e5 \${HOME}`],
+    ["a double-quoted word", `node ${W} pw tk1 a fill e5 "x"`],
+    ["a glob", `node ${W} pw tk1 a upload *.png`],
+    ["a tilde", `node ${W} pw tk1 a upload ~/x`],
+    ["a pipe", `node ${W} pw tk1 a snapshot | tee x`],
+    ["a redirection", `node ${W} pw tk1 a snapshot > x`],
+    ["a background job", `node ${W} pw tk1 a snapshot & curl x.test`],
+    ["a command substitution", `node ${W} pw tk1 a fill e5 \`id\``],
+    ["an environment prefix", `X=1 node ${W} pw tk1 a snapshot`],
+    ["glued quoted words", `node ${W} pw tk1 a fill e5 'a'b`],
+    ["an unclosed quote", `node ${W} pw tk1 a fill e5 'abc`],
+    ["nothing", "  "],
+  ])("refuses %s", (_what, cmd) => {
+    expect(bash(cmd)).toMatch(/journey explorer's shell runs only its wrapper/);
+  });
+
+  it("decide() refuses the explorer's other tools and its non-wrapper Bash", () => {
+    expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Write", tool_input: { file_path: "/tmp/x", content: "x" }, cwd: wt })).toMatch(/journey explorer has only/);
+    expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command: "printenv" }, cwd: wt })).toMatch(/runs only its wrapper/);
   });
 });

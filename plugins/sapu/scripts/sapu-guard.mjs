@@ -104,6 +104,51 @@ const MAX_DEPTH = 6;
 /** The plugin's own worker ladder: the only subagents that never run without a contract. */
 export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 
+/** The argus journey lane's explorer (docs/specs/argus-journey-lane.md §11). */
+export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
+/** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
+export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
+const EXPLORER_WORD = /^[A-Za-z0-9._:/=@,+#-]+$/;
+
+/**
+ * The explorer's Bash: one or more `node <wrapper> pw …` runs joined by `;`, `&&` or newlines, every
+ * argument a single-quoted literal or a plain word — so no expansion, glob, pipe, redirection,
+ * substitution or environment prefix can reach a shell. A reason, or null.
+ */
+export function checkExplorerBash(command, wrapper = WRAPPER) {
+  if (typeof command !== "string" || !command.trim()) return BLOCK.explorerBash;
+  const runs = [[]];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === " " || ch === "\t") {
+      i++;
+    } else if (ch === "\n" || ch === ";") {
+      runs.push([]);
+      i++;
+    } else if (command.startsWith("&&", i)) {
+      runs.push([]);
+      i += 2;
+    } else if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end < 0) return BLOCK.explorerBash;
+      if (end + 1 < command.length && !/[\s;&]/.test(command[end + 1])) return BLOCK.explorerBash;
+      runs.at(-1).push(command.slice(i + 1, end));
+      i = end + 1;
+    } else {
+      let j = i;
+      while (j < command.length && !/[\s;'&]/.test(command[j])) j++;
+      const word = command.slice(i, j);
+      if (!EXPLORER_WORD.test(word) || command[j] === "'" || (command[j] === "&" && !command.startsWith("&&", j))) return BLOCK.explorerBash;
+      runs.at(-1).push(word);
+      i = j;
+    }
+  }
+  const real = runs.filter((r) => r.length);
+  if (!real.length || real.some((r) => r[0] !== "node" || r[1] !== wrapper || r[2] !== "pw")) return BLOCK.explorerBash;
+  return null;
+}
+
 /**
  * Drop heredoc bodies (PR bodies, review files) — unless the heredoc feeds a shell, or its
  * terminator never comes (then the "body" is really more commands).
@@ -777,6 +822,9 @@ function denied(a, prog, deny, dir) {
 }
 
 const BLOCK = {
+  explorerBash:
+    "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
+  explorerTool: "the journey explorer has only Bash (its wrapper), Read, Grep and Glob.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
@@ -1815,6 +1863,10 @@ export function decide(input) {
   if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
+  if (EXPLORER_AGENT.test(input.agent_type || "")) {
+    const why = tool === "Bash" ? checkExplorerBash(ti.command) : BLOCK.explorerTool;
+    if (why) return why;
+  }
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
