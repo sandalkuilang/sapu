@@ -10,6 +10,56 @@ import { makeHome, makeWorktree } from "../../plugins/sapu/scripts/argus-live-in
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../../plugins/sapu/scripts/argus-live-lock.mjs";
 
+/** The example of spec §8, verbatim. */
+export const example = (): Record<string, any> => ({
+  setup: [["npm", "ci"]],
+  services: { db: { env: "DATABASE_URL" }, cache: { env: "REDIS_URL" }, mail: { env: "SMTP_URL" } },
+  start: [
+    { name: "backing", phase: "store", cmd: "docker compose up postgres redis mailpit", stop: "docker compose down -v", health: { cmd: "docker compose exec -T postgres pg_isready" } },
+    { name: "api", cmd: "npm run dev -- --port {port:api}", health: { url: "http://localhost:{port:api}/health" } },
+    { name: "web", cmd: "npm run dev:web -- --port {port:web}", env: { API_URL: "http://localhost:{port:api}" }, health: { url: "http://localhost:{port:web}/" } },
+    { name: "worker", cmd: "npm run worker" },
+  ],
+  base_url: "http://localhost:{port:web}",
+  login_url: "/login",
+  logged_in: "getByRole('button', { name: 'Account' })",
+  env_file: ".argus/live.env",
+  env: {
+    DATABASE_URL: "postgres://app:${DB_PW}@localhost:{port:pg}/app_explore",
+    REDIS_URL: "redis://localhost:{port:redis}",
+    SMTP_URL: "smtp://localhost:{port:smtp}",
+    PG_PORT: "{port:pg}",
+    REDIS_PORT: "{port:redis}",
+    SMTP_PORT: "{port:smtp}",
+  },
+  pass_env: [],
+  store: "app_explore",
+  store_check: "npm run -s explore:which-db",
+  reset: "npm run -s db:reset:explore",
+  facts: { argv: ["npm", "run", "-s", "explore:facts", "--", "{1}"], args: ["^[A-Za-z0-9._:-]{1,128}$"] },
+  mail: { argv: ["npm", "run", "-s", "explore:mail"] },
+  triggers: { "payment-settles": { argv: ["npm", "run", "-s", "explore:settle", "--", "{1}"], args: ["^[A-Za-z0-9-]{1,64}$"] } },
+  confirmed: { mocks: true, data: true },
+  allow_origins: [],
+  port_range: [41000, 41999],
+  reserved_ports: [3000, 4000, 5432, 6379],
+  login_spacing_ms: 0,
+  timezone: "UTC",
+  locale: "en-US",
+  fixtures: "test/fixtures/explore",
+  roles: {
+    anon: {},
+    customer: { code_role: "partner", users: [{ user: "buyer1@example.test", password: "${PW}" }, { user: "buyer2@example.test", password: "${PW}" }] },
+    sales: { code_role: "sales", users: [{ user: "sales1@example.test", password: "${PW}", totp_secret: "${SALES_TOTP}" }] },
+    admin: { code_role: "admin", login: { command: "npm run -s explore:login -- admin" } },
+  },
+  viewports: [1440, 390],
+  locales: [],
+  settle_ms: 10000,
+  prohibited: [],
+  limits: { max_cycle_minutes: 45, max_parallel_journeys: 2, live_health_timeout_s: 120, explorer_pw_calls: 120, minimize_runs: 12 },
+});
+
 const temps: string[] = [];
 
 /** A fresh directory under the OS temp dir; removed by cleanTemps (each test file calls it afterEach). */

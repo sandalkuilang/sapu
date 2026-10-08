@@ -7,9 +7,11 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { createServer as createNetServer, type Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, freePort, tempDir } from "./helpers/argus-live";
+import { cleanTemps, example, freePort, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CLI_PACKAGE, CLI_VERSION, cliEnv, cliInstallDir, ensureCli, findChrome, runCli } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { ROLE_FREE, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { clean, fence, nonce, PAGE_CAP } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -565,5 +567,58 @@ describe("argus-live fences and targets", () => {
     for (const s of ["e15", "f1e3", "getByRole('button', { name: 'Place order' })", "#main > button.primary", "text=Place order"]) expect(explorerTarget(s)).toBe(s);
     for (const s of ["", "a\nb", "a\u0000b", "a\u009bb", "x".repeat(501)]) expect(() => explorerTarget(s), JSON.stringify(s.slice(0, 20))).toThrow("refused: not a target");
     expect(explorerTarget("x".repeat(500))).toHaveLength(500);
+  });
+});
+
+describe("argus-live config — the browser keys", () => {
+  const errorsOf = (mutate: (c: Obj) => void): string[] => {
+    const c = example();
+    mutate(c);
+    return validateLive(c);
+  };
+
+  it("the spec §8 example stays valid", () => {
+    expect(validateLive(example())).toEqual([]);
+  });
+
+  it("role names the wrapper takes as commands are reserved", () => {
+    expect(ROLE_FREE).toEqual(["submit", "code", "trigger", "facts", "mail"]);
+    for (const name of ROLE_FREE) {
+      expect(errorsOf((c) => (c.roles[name] = { users: [{ user: "u@example.test", password: "x" }] }))).toEqual([`roles.${name}: ${name} is reserved (a wrapper command)`]);
+    }
+  });
+
+  it("logged_in and login_open, top level and per role, must be locators parseTarget reads, never a ref", () => {
+    const MSG = "logged_in must be a Playwright locator such as getByRole('button', { name: 'Account' })";
+    expect(errorsOf((c) => (c.logged_in = "page.evaluate(() => 1)"))).toEqual([MSG]);
+    expect(errorsOf((c) => (c.logged_in = "e15"))).toEqual([MSG]);
+    expect(errorsOf((c) => (c.logged_in = "#account"))).toEqual([MSG]);
+    expect(errorsOf((c) => (c.roles.sales.logged_in = "getByText(`${x}`)"))).toEqual([`roles.sales.${MSG}`]);
+    expect(errorsOf((c) => (c.roles.sales.login_open = "getByRole('button', { name: 'Sign in' })"))).toEqual([]);
+    expect(errorsOf((c) => (c.roles.sales.login_open = "document.querySelector('x').click()"))).toEqual(["roles.sales.login_open must be a Playwright locator such as getByRole('button', { name: 'Sign in' })"]);
+    expect(errorsOf((c) => (c.login_open = "getByRole('button', { name: 'Sign in' })"))).toEqual([]);
+    expect(errorsOf((c) => (c.login_open = "f1e2"))).toEqual(["login_open must be a Playwright locator such as getByRole('button', { name: 'Sign in' })"]);
+    expect(errorsOf((c) => (c.roles.sales.logged_in = "getByTestId('me').first()"))).toEqual([]);
+  });
+
+  it("each range is checked once", () => {
+    expect(errorsOf((c) => (c.settle_ms = 500000))).toEqual(["settle_ms must be an integer from 0 to 120000"]);
+    expect(errorsOf((c) => (c.settle_ms = 120000))).toEqual([]);
+    expect(errorsOf((c) => (c.login_spacing_ms = 60001))).toEqual(["login_spacing_ms must be an integer from 0 to 60000"]);
+    expect(errorsOf((c) => (c.login_spacing_ms = -1))).toEqual(["login_spacing_ms must be an integer from 0 to 60000"]);
+    expect(errorsOf((c) => (c.viewports = [100]))).toEqual(["viewports must be an array of widths from 200 to 4000"]);
+    expect(errorsOf((c) => (c.viewports = [200, 4000]))).toEqual([]);
+    expect(errorsOf((c) => (c.viewports = [4001]))).toEqual(["viewports must be an array of widths from 200 to 4000"]);
+    expect(errorsOf((c) => (c.limits.explorer_pw_calls = 0))).toEqual(["limits.explorer_pw_calls must be an integer from 1 to 10000"]);
+    expect(errorsOf((c) => (c.limits.explorer_pw_calls = 10001))).toEqual(["limits.explorer_pw_calls must be an integer from 1 to 10000"]);
+    expect(errorsOf((c) => (c.limits.explorer_pw_calls = 10000))).toEqual([]);
+    expect(errorsOf((c) => (c.locale = " "))).toEqual(["locale must be a non-empty string"]);
+    expect(errorsOf((c) => (c.timezone = ""))).toEqual(["timezone must be a non-empty string"]);
+  });
+
+  it("fixtures is a repo-relative directory", () => {
+    const MSG = "fixtures must be a repo-relative directory (no absolute path, no ..)";
+    for (const bad of ["../x", "/srv/files", "a/../../b", "a\\b", ""]) expect(errorsOf((c) => (c.fixtures = bad)), bad).toEqual([bad === "" ? "fixtures must be a non-empty string" : MSG]);
+    expect(errorsOf((c) => (c.fixtures = "test/fixtures/explore"))).toEqual([]);
   });
 });

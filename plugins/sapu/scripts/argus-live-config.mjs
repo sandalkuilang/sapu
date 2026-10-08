@@ -8,11 +8,14 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { parseTarget } from "./argus-live-targets.mjs";
 
 export const LIVE_FILE = ".argus/live.json";
 /** Role names: no `.` (`<role>.<n>` names an account). */
 export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ROLES = ["anon", "system"];
+/** The wrapper's commands that take no role (`pw <token> submit <json>`): never a role name. */
+export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail"];
 const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
 const START_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
@@ -20,7 +23,7 @@ const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 export const MAX_CYCLE_MINUTES = 1440;
 
 const TOP_KEYS = [
-  "setup", "services", "start", "base_url", "login_url", "logged_in", "env_file", "env", "pass_env", "store", "store_check", "reset",
+  "setup", "services", "start", "base_url", "login_url", "logged_in", "login_open", "env_file", "env", "pass_env", "store", "store_check", "reset",
   "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
   "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
 ];
@@ -35,6 +38,27 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const strArray = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
 const isInt = (v, min = 0, max = Number.MAX_SAFE_INTEGER) => Number.isInteger(v) && v >= min && v <= max;
 const isPort = (v) => isInt(v, 1, 65535);
+/** Inclusive ranges of the integer keys that have one (limits.<key> named with its prefix). */
+const RANGES = { settle_ms: [0, 120_000], login_spacing_ms: [0, 60_000], "limits.explorer_pw_calls": [1, 10_000] };
+const outOfRange = (k, v) => (isInt(v, RANGES[k][0], RANGES[k][1]) ? null : `${k} must be an integer from ${RANGES[k][0]} to ${RANGES[k][1]}`);
+
+/**
+ * `logged_in` and `login_open` (top level and per role) must be locators parseTarget reads — never a ref
+ * or a CSS string — because the wrapper builds its login code from the parsed form (targetCode), so no
+ * config string ever becomes code.
+ */
+const LOCATOR_EXAMPLE = { logged_in: "getByRole('button', { name: 'Account' })", login_open: "getByRole('button', { name: 'Sign in' })" };
+function locatorKey(v, key, where, errs) {
+  if (!isStr(v)) return errs.push(`${where} must be a non-empty string`);
+  let t;
+  try {
+    t = parseTarget(v);
+  } catch {
+    t = null;
+  }
+  if (!t || t.ref !== undefined) errs.push(`${where} must be a Playwright locator such as ${LOCATOR_EXAMPLE[key]}`);
+}
+
 const isRegex = (s) => {
   try {
     new RegExp(s);
@@ -89,7 +113,8 @@ export function validateLive(c) {
       });
     }
   }
-  for (const k of ["base_url", "login_url", "logged_in", "store", "store_check", "reset"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  for (const k of ["base_url", "login_url", "store", "store_check", "reset"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  for (const k of ["logged_in", "login_open"]) if (has(k)) locatorKey(c[k], k, k, errs);
   if (isStr(c.base_url)) localUrl(c.base_url, "base_url", errs);
   if (has("env_file")) need(isStr(c.env_file), "env_file must be a path inside the repo");
   if (has("env")) need(isObj(c.env) && Object.values(c.env).every((v) => typeof v === "string"), "env must map names to strings");
@@ -104,20 +129,26 @@ export function validateLive(c) {
   if (has("allow_origins")) need(strArray(c.allow_origins) && c.allow_origins.every(isOrigin), "allow_origins must be an array of full origins (scheme://host[:port])");
   if (has("port_range")) need(Array.isArray(c.port_range) && c.port_range.length === 2 && c.port_range.every(isPort) && c.port_range[0] <= c.port_range[1], "port_range must be [low, high], ports 1-65535, low <= high");
   if (has("reserved_ports")) need(Array.isArray(c.reserved_ports) && c.reserved_ports.every(isPort), "reserved_ports must be an array of ports");
-  for (const k of ["login_spacing_ms", "settle_ms"]) if (has(k)) need(isInt(c[k]), `${k} must be a non-negative integer`);
+  for (const k of ["login_spacing_ms", "settle_ms"]) if (has(k)) need(!outOfRange(k, c[k]), outOfRange(k, c[k]));
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  // The files `upload` may use: copied from the worktree's HEAD tree, so a path inside the repo.
+  if (isStr(c.fixtures)) need(!path.isAbsolute(c.fixtures) && !c.fixtures.includes("\\") && !c.fixtures.split("/").includes(".."), "fixtures must be a repo-relative directory (no absolute path, no ..)");
   if (has("compose_files")) {
     const v = c.compose_files;
     // No ":": the run joins the files into COMPOSE_FILE with it as the separator.
     const repoRelative = (p) => isStr(p) && !path.isAbsolute(p) && !p.includes("\\") && !p.includes(":") && !p.split("/").includes("..");
     need(Array.isArray(v) && v.length > 0 && v.every(repoRelative) && new Set(v).size === v.length, "compose_files must list one or more distinct repo-relative files (no absolute path, no .., no :)");
   }
-  if (has("viewports")) need(Array.isArray(c.viewports) && c.viewports.every((v) => isInt(v, 1)), "viewports must be an array of positive widths");
+  if (has("viewports")) need(Array.isArray(c.viewports) && c.viewports.every((v) => isInt(v, 200, 4000)), "viewports must be an array of widths from 200 to 4000");
   if (has("roles") && object(c.roles, "roles")) for (const [name, r] of Object.entries(c.roles)) role(name, r, errs);
   if (has("limits") && object(c.limits, "limits")) {
     unknown(c.limits, "limits", LIMIT_KEYS);
     need("max_cycle_minutes" in c.limits, 'limits: missing "max_cycle_minutes"');
-    for (const k of LIMIT_KEYS) if (k in c.limits) need(isInt(c.limits[k], 1), `limits.${k} must be a positive integer`);
+    for (const k of LIMIT_KEYS) {
+      if (!(k in c.limits)) continue;
+      if (RANGES[`limits.${k}`]) need(!outOfRange(`limits.${k}`, c.limits[k]), outOfRange(`limits.${k}`, c.limits[k]));
+      else need(isInt(c.limits[k], 1), `limits.${k} must be a positive integer`);
+    }
     if (isInt(c.limits.max_cycle_minutes, 1)) need(c.limits.max_cycle_minutes <= MAX_CYCLE_MINUTES, `limits.max_cycle_minutes must be at most ${MAX_CYCLE_MINUTES}`);
   }
   placeholders(c, "", errs);
@@ -141,6 +172,7 @@ function role(name, r, errs) {
   const where = `roles.${name}`;
   if (!ROLE_NAME.test(name)) return errs.push(`${where}: a role name must match ${ROLE_NAME} (no ".": <role>.<n> names an account)`);
   if (name === "system") return errs.push(`${where}: "system" is reserved`);
+  if (ROLE_FREE.includes(name)) return errs.push(`${where}: ${name} is reserved (a wrapper command)`);
   if (!isObj(r)) return errs.push(`${where} must be an object`);
   if (name === "anon") {
     if (Object.keys(r).length) errs.push(`${where}: "anon" is reserved for the signed-out visitor and must be {}`);
@@ -161,7 +193,8 @@ function role(name, r, errs) {
       });
   }
   if ("login" in r && !(isObj(r.login) && Object.keys(r.login).join() === "command" && isStr(r.login.command))) errs.push(`${where}.login must be {"command": <command>}`);
-  for (const k of ["code_role", "login_url", "logged_in", "login_open"]) if (k in r && !isStr(r[k])) errs.push(`${where}.${k} must be a non-empty string`);
+  for (const k of ["code_role", "login_url"]) if (k in r && !isStr(r[k])) errs.push(`${where}.${k} must be a non-empty string`);
+  for (const k of ["logged_in", "login_open"]) if (k in r) locatorKey(r[k], k, `${where}.${k}`, errs);
   if ("base_url" in r) {
     if (!isStr(r.base_url)) errs.push(`${where}.base_url must be a non-empty string`);
     else localUrl(r.base_url, `${where}.base_url`, errs);

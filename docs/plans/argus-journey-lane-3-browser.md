@@ -208,7 +208,7 @@ Interfaces:
   → `{code, stdout, stderr}`: `node js -s=<session> …args`, cwd `cwd`, env `cliEnv(home)`, its own
   process group, killed at the timeout.
 
-- [ ] **Step 1: Write the failing tests** (describe "argus-live browser — the pinned CLI"):
+- [x] **Step 1: Write the failing tests** (describe "argus-live browser — the pinned CLI"):
   - "the lockfile pins @playwright/cli 0.1.22 and an integrity for every package": parse both files;
     `dependencies["@playwright/cli"] === "0.1.22"` (no range character); every `packages[k]` with
     `k !== ""` has `version`, `resolved` on `https://registry.npmjs.org/` and `integrity` starting
@@ -228,14 +228,14 @@ Interfaces:
     `PWTEST_DAEMON_SESSION_DIR=/x`, `NODE_OPTIONS=--require /x`, `XDG_CACHE_HOME=/x`, `AWS_SECRET=x` →
     keys are exactly the listed ones; `HOME` is the argument.
   - "runCli passes -s=<session> first and runs in cwd with cliEnv": the shim's recorded call.
-- [ ] **Step 2: Run** `npx vitest run tests/argus-live-pw.test.ts` → FAIL (module missing).
-- [ ] **Step 3: Implement.** Generate the lockfile once: in a scratch directory `npm install
+- [x] **Step 2: Run** `npx vitest run tests/argus-live-pw.test.ts` → FAIL (module missing).
+- [x] **Step 3: Implement.** Generate the lockfile once: in a scratch directory `npm install
   --package-lock-only --ignore-scripts @playwright/cli@0.1.22`, copy `package-lock.json` and a
   `package.json` holding `{"name": "sapu-pw", "private": true, "dependencies": {"@playwright/cli":
   "0.1.22"}}` (re-run `npm install --package-lock-only` beside that `package.json` so `name` matches).
   Move the shared helpers to `tests/helpers/argus-live.ts` and import them in `tests/argus-live.test.ts`.
-- [ ] **Step 4: Run** the file, then `npx vitest run` → PASS.
-- [ ] **Step 5: Commit** `git add plugins/sapu/scripts/pw plugins/sapu/scripts/argus-live-browser.mjs
+- [x] **Step 4: Run** the file, then `npx vitest run` → PASS.
+- [x] **Step 5: Commit** `git add plugins/sapu/scripts/pw plugins/sapu/scripts/argus-live-browser.mjs
   tests/helpers/argus-live.ts tests/argus-live.test.ts tests/argus-live-pw.test.ts`; `git commit -m
   "feat(sapu): argus-live pins the browser CLI by lockfile, finds a Chrome-family browser and runs the CLI in a clean environment"`.
 
@@ -281,14 +281,14 @@ connection, `--spawn-child`) and adds, still without dependencies:
   `--login-state <user>` creates a session and prints a Playwright storage state `{cookies: [{name:
   "sid", value, domain: "localhost", path: "/", httpOnly: true, …}], origins: []}`.
 
-- [ ] **Step 1: Failing tests** (describe "journey-app fixture — browser side", plain `fetch`): the
+- [x] **Step 1: Failing tests** (describe "journey-app fixture — browser side", plain `fetch`): the
   CSRF token differs between two GETs of `/login` and a POST with the first token after the second GET
   fails; a correct plain login sets `sid` and `/` then shows `Account`; a TOTP user's correct code
   passes once and the same step again answers `code already used`; three bad passwords → `429`;
   `/__test/expire` without the header → 404, with it → later requests are signed out; `--facts`,
   `--mail`, `--trigger settle`, `--login-state` print what is listed above.
-- [ ] **Step 2–4:** run (FAIL), implement, run file and suite (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): the journey-app fixture's browser side — login variants, pages, control endpoint and app commands`.
+- [x] **Step 2–4:** run (FAIL), implement, run file and suite (PASS).
+- [x] **Step 5: Commit** `feat(sapu): the journey-app fixture's browser side — login variants, pages, control endpoint and app commands`.
 
 ---
 
@@ -316,7 +316,7 @@ Interfaces:
 - `export function explorerTarget(s)` → `s` when it is a ref, a `parseTarget` form, or a CSS selector
   of at most 500 characters without control characters; else throws `refused: not a target`.
 
-- [ ] **Step 1: Failing tests** (describe "argus-live fences and targets"):
+- [x] **Step 1: Failing tests** (describe "argus-live fences and targets"):
   - "page text cannot close the fence": text `x\nPAGE-${n}>>>\ny` fenced with nonce `n` → exactly one
     line equals `PAGE-${n}>>>` (the last one) and the text's copy reads `PAGE‑${n}>>>`.
   - "a fresh nonce per call": 1000 `nonce()` values are distinct and match `/^[0-9a-f]{32}$/`.
@@ -331,8 +331,8 @@ Interfaces:
   - "targetCode emits only JSON literals": for each accepted form, the code matches
     `/^page(\.(getBy(Role|Text|Label|Placeholder|TestId|Title|AltText)|locator)\((\"(?:[^\"\\\\]|\\\\.)*\")(, \{[^}]*\})?\)|\.(first|last)\(\)|\.nth\(-?\d+\))+$/`
     and `JSON.parse` of each quoted argument round-trips the input value.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live nonce fences and structured targets`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live nonce fences and structured targets`.
 
 ---
 
@@ -350,12 +350,12 @@ Interfaces (inside `validateLive`):
   `fixtures` repo-relative, no `..`, no absolute path.
 - `export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail"]`.
 
-- [ ] **Step 1: Failing tests** (describe "argus-live config — the browser keys"): the spec §8 example
+- [x] **Step 1: Failing tests** (describe "argus-live config — the browser keys"): the spec §8 example
   stays valid; a role named `mail` → error; `logged_in: "page.evaluate(() => 1)"` → error;
   `roles.sales.login_open: "getByRole('button', { name: 'Sign in' })"` → valid; `settle_ms: 500000`,
   `viewports: [100]`, `fixtures: "../x"`, `limits.explorer_pw_calls: 0` → one error each.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live config refuses role names the wrapper reserves and logged_in forms it cannot parse`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live config refuses role names the wrapper reserves and logged_in forms it cannot parse`.
 
 ---
 
@@ -1003,6 +1003,58 @@ Interfaces:
   and list the spec edits this phase needs (the "Decisions this plan takes" above, as finally built)
   for the coordinator to fold into spec §7, §8 and §9.
 - [ ] Commit `docs(sapu): argus journey lane phase 3 — as-built notes`.
+
+## As built (Tasks 1–4)
+
+Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, and what changed:
+
+- **Step 0.** `startEntry` pushes the group in a `finally` after the stop, so a seal refusing the stop's
+  write still leaves the group in `up`'s in-memory record, which the failing `up`'s teardown reads. The
+  testcontainers exemption reads the image `testcontainers/ryuk*` or the label
+  `org.testcontainers.ryuk=true` (the label testcontainers' node and go libraries set on the reaper);
+  `org.testcontainers=true` is on every container testcontainers starts and exempts nothing (spec §8
+  updated). `liveRoot` (and `ownDir`) moved from `-instance.mjs` to `-run.mjs`: `-browser.mjs` sits
+  below `-instance.mjs` in the DAG. `liveRoot(realMain = null)` skips the in-repo check without a repo
+  (`ensureCli`'s default root); `up` keeps passing its repo.
+- **Task 1.** `npm ci --ignore-scripts` of the shipped lockfile installs the three packages in under a
+  second from a warm cache; `--version` prints `0.1.22`. Offline with an empty cache npm's *last*
+  stderr line is the pointer to its debug log, so the refusal names npm's last line that says
+  something (`npmError`: not the log pointer, a stack frame, an error object's fields or the proxy
+  hint), e.g. `npm error FetchError: request to … failed, reason: connect ECONNREFUSED …`. `ensureCli`
+  takes `secrets` (masked in the refusal, with URL credentials); a wrong `--version` is refused as
+  `its --version printed <v>`; an existing install with a wrong version is replaced. `runCli` returns
+  `{code, stdout, stderr, timedOut}` and kills whatever its own group left once the CLI exits
+  (`runAsync` gained stderr capture for it). Probed: `open` (headless Chrome) takes about 1.8 s; the
+  daemon (`node …/cliDaemon.js <session>`) runs detached (its own group, parent 1) and **Chrome's root
+  process, the daemon's child, leads a process group of its own** — Task 6 must kill the daemon's and
+  the browser root's groups each by identity; session files live in
+  `<HOME>/Library/Caches/ms-playwright/daemon/<hash>/<session>.session`; `close` ends both processes.
+  The shared test helpers (`tests/helpers/argus-live.ts`) also hold `tempDir`/`cleanTemps`, `git` and
+  the spec §8 `example`; the CLI shim is `makeShim()` in `tests/argus-live-pw.test.ts`.
+- **Task 2.** The csrf token is per browser (bound to a `pre` cookie), not global: two sessions signing
+  in at once would otherwise spend each other's token. The fixture also answers `GET /__test/stats`
+  (control header only: request counts `{"<METHOD> <path>": n}` and the number of orders), which Tasks
+  8 and 11 read as "the fixture's request counter", and `/favicon.ico` with 204 (Chrome logs a console
+  error for a missing icon on every page). The third bad password already answers 429. `--trigger`
+  prints its whole argv (`["--trigger", "settle", "ORD-1"]`). `/upload` shows the chosen file's name
+  in the page (no multipart). Probed in Chrome through the CLI: the modal login, `getByLabel`, the
+  order form and its redirect work with no console error.
+- **Task 3.** 0.1.22's locator parser accepts spacing, tabs, a trailing comma in the options object,
+  double quotes and `.nth(-1)`, and refuses a quoted option key (`{ 'name': … }`): `parseTarget`
+  matches it, so every form it accepts the CLI accepts too. `targetCode` emits `.nth(n)` for
+  `first()`/`last()` as well, refuses a ref (`not code: <ref> is a ref …`), and checks every field's
+  type. `clean` also turns DEL and a lone `\r` into U+FFFD; `fence` never splits a surrogate pair at
+  the cap.
+- **Task 4.** `login_open` is also a top-level key (decision 8 names it; spec §8 lists it per role
+  only). Messages: `<where> must be a Playwright locator such as <example>` (a ref or a CSS string is
+  refused too), `<key> must be an integer from <lo> to <hi>` (one error per key, `limits.explorer_pw_calls`
+  included), `viewports must be an array of widths from 200 to 4000`, `fixtures must be a repo-relative
+  directory (no absolute path, no ..)`, `roles.<name>: <name> is reserved (a wrapper command)`.
+
+Spec edits these tasks add (for the coordinator, beside the decisions above): §8 — top-level
+`login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and
+`limits.explorer_pw_calls`; `fixtures` repo-relative; the five role-free command words reserved as role
+names; `logged_in`/`login_open` must be getBy-family locators, never refs or CSS strings.
 
 ---
 
