@@ -574,7 +574,10 @@ it stops every `start` entry (running its `stop`), starts the `phase: store` ent
 `store_check` and `reset`, starts the rest, runs `store_check` and the egress check again, and takes a
 new instance id. It makes no proving logins.
 
-**`down`** replays each stop record, sends SIGTERM to each process group that still runs what was
+**`down`** first seals `run.json` (every write of it is a read-modify-write under the run's lock
+claim, refused once the lock no longer names the run, once `down` sealed it, or once `down` removed
+it: so an `up` racing a `down` cannot add a process group the teardown did not read, and fails into
+its own teardown instead), then replays each stop record, sends SIGTERM to each process group that still runs what was
 recorded and SIGKILL after 10 s, stops the proxy, closes the run's CLI sessions by name (never
 `close-all`: other projects share the CLI), removes its own worktree (`--force` on that worktree only)
 and its HOME (read-only trees made writable first), kills the reaper last, removes `run.json` and the

@@ -42,7 +42,9 @@ import {
   startReaper,
   status,
   takeLock,
+  TEARDOWN_STEPS,
   up,
+  updateRun,
   waitHealth,
   writeRunFiles,
 } from "../plugins/sapu/scripts/argus-live-instance.mjs";
@@ -2512,6 +2514,58 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(JSON.stringify(res)).not.toContain(SECRETS.PW);
   });
 
+  describe("one writer path for run.json (updateRun)", () => {
+    const claimOf = (main: string, runId: string) => join(main, ".argus/live", `claim-${runId}.json`);
+    const record = (r: Obj) => ({ runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups: [], stops: [], env: r.env });
+
+    it("reads, changes and writes run.json under the run's claim; refuses once the lock no longer names the run, and writes nothing then", async () => {
+      const r = liveRun();
+      expect(updateRun(r.main, r.runId, () => ({ runId: r.runId, n: 1 }))).toEqual({ runId: r.runId, n: 1 });
+      updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, n: prev.n + 1 }));
+      expect(runJson(r.main).n).toBe(2);
+      expect(existsSync(claimOf(r.main, r.runId))).toBe(false); // released after each write
+      // A claim a live process holds is waited on, then refused.
+      writeFileSync(claimOf(r.main, r.runId), JSON.stringify({ pid: process.pid }));
+      expect(() => updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, n: 9 }), { waitMs: 200 })).toThrow(`refused: cycle ${r.runId}'s lock is being changed by process ${process.pid}; try again`);
+      rmSync(claimOf(r.main, r.runId));
+      expect(runJson(r.main).n).toBe(2);
+      const other = { runId: "20261008093000-0ddba11a", start: now() - 10, deadline: now() + 600 };
+      setLock(r.main, other);
+      expect(() => updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, n: 3 }))).toThrow(`refused: the lock no longer names cycle ${r.runId}; run.json not written`);
+      rmSync(join(r.main, ".argus/live/lock.json"));
+      expect(() => writeRunFiles(r.main, record(r))).toThrow(`refused: the lock no longer names cycle ${r.runId}; run.json not written`);
+      expect(runJson(r.main).n).toBe(2);
+      rmSync(join(r.main, ".argus/live/run.json"));
+      expect(() => writeRunFiles(r.main, record(r))).toThrow(/^refused: the lock no longer names cycle/);
+      expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
+    });
+
+    it("a run being torn down takes no more writes, and a later write never recreates a run.json a down removed", async () => {
+      const r = liveRun();
+      writeRunFiles(r.main, record(r));
+      updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, closing: true }));
+      expect(() => writeRunFiles(r.main, record(r))).toThrow(`refused: cycle ${r.runId} is being torn down; run.json not written`);
+      rmSync(join(r.main, ".argus/live/run.json"));
+      expect(() => writeRunFiles(r.main, record(r), { create: false })).toThrow(`refused: run.json of cycle ${r.runId} is gone (a down removed it); not written again`);
+      expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
+      await down(r.main, { runId: r.runId, graceMs: 200 });
+    });
+
+    it("startReaper records its pid through the same path", async () => {
+      const r = liveRun();
+      writeRunFiles(r.main, record(r));
+      const reaper = startReaper(r.main, r.runId);
+      started.push(reaper);
+      expect(runJson(r.main).reaper).toBe(reaper);
+      await down(r.main, { runId: r.runId, graceMs: 200 });
+      expect(await until(() => !alive(reaper), 3000)).toBe(true);
+    });
+  });
+
+  it("down and recovery run one teardown, in spec order (a phase 3 step is one entry of it)", () => {
+    expect(TEARDOWN_STEPS).toEqual(["docker runtime gate", "stops", "process groups", "the run's directories", "the reaper", "run.json"]);
+  });
+
   it("down removes only the run's own worktree: a run.json naming another path (the main checkout) leaves it, and says so", async () => {
     const r = liveRun();
     writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: realpathSync(r.main), ports: {}, origins: [], groups: [], stops: [], env: r.env });
@@ -2816,7 +2870,10 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups: [], stops: [], env: r.env });
       const other = { runId: "20261008093000-0ddba11a", start: now() - 10, deadline: now() + 600 };
       setLock(r.main, other);
-      const reaper = startReaper(r.main, r.runId);
+      // startReaper itself refuses to record a pid once the lock names another run: the reaper is started as it would run.
+      expect(() => startReaper(r.main, r.runId)).toThrow(`refused: the lock no longer names cycle ${r.runId}`);
+      const p = spawn(process.execPath, [join(__dirname, "../plugins/sapu/scripts/argus-live.mjs"), "reap", r.runId], { cwd: r.main, detached: true, stdio: "ignore" });
+      const reaper = p.pid!;
       started.push(reaper);
       expect(await until(() => !alive(reaper), 5000)).toBe(true);
       expect(readLock(r.main)).toEqual(other);
@@ -3130,6 +3187,48 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     await down(main, { runId: r.runId });
     expect(balanced(main)).toBe(true);
   }, 60000);
+
+  describe("a down racing up or up --fresh", () => {
+    /** Calls `down` once, from inside the step line `at` (so it runs while that `up` goes on). */
+    const raceAt = (main: string, at: RegExp) => {
+      const race: { done: Promise<unknown> | null; reaper: number | null } = { done: null, reaper: null };
+      const say = (l: string) => {
+        if (race.done || !at.test(l)) return;
+        race.reaper = runJson(main).reaper;
+        race.done = down(main, { runId: readLock(main).runId, runner: noDocker, graceMs: 2000 });
+      };
+      return { race, say };
+    };
+    const nothingLeft = async (main: string, reaper: number | null) => {
+      expect(existsSync(join(main, ".argus/live/run.json"))).toBe(false);
+      expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+      expect(await until(() => fixtureProcesses().length === 0 && !(reaper && alive(reaper)), 5000)).toBe(true);
+      expect(readdirSync(join(realpathSync(tmp), "sapu-live"))).toEqual([]);
+      expect(balanced(main)).toBe(true);
+    };
+
+    it("up: its next write is refused, so it fails and tears down what it started; no run.json, no process, one end line", async () => {
+      const { main } = repo();
+      const { race, say } = raceAt(main, /^step 7 start/);
+      const e = await message(up(main, opts({ say })));
+      await race.done;
+      expect(race.done).not.toBeNull();
+      expect(e).not.toBe("ok");
+      await nothingLeft(main, race.reaper);
+    }, 60000);
+
+    it("up --fresh: the same", async () => {
+      const { main } = repo();
+      await up(main, opts());
+      reapers.push(runJson(main).reaper);
+      const { race, say } = raceAt(main, /^fresh: every start entry stopped/);
+      const e = await message(up(main, opts({ fresh: true, say })));
+      await race.done;
+      expect(race.done).not.toBeNull();
+      expect(e).not.toBe("ok");
+      await nothingLeft(main, race.reaper);
+    }, 60000);
+  });
 
   describe("egress fails closed, kills stay careful: a run recorded by hand around one fixture process", () => {
     const freePort = () =>

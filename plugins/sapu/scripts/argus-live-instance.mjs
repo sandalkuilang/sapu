@@ -2163,11 +2163,62 @@ function readRun(main) {
   return rec;
 }
 
-/** Writes run.json whole (beside, then renamed into place), mode 0600: its stop records carry the run's env. */
+/** Writes run.json whole (beside, then renamed into place), mode 0600: its stop records carry the run's env. Only updateRun calls it. */
 function putRun(main, rec) {
   const file = runPath(main);
   fs.mkdirSync(liveDir(main), { recursive: true });
   fs.renameSync(tempBeside(file, `${JSON.stringify(rec, null, 2)}\n`, 0o600), file);
+}
+
+/** Blocks this thread for `ms` (updateRun is synchronous: its callers push records from synchronous code). */
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+const noLock = (runId) => new Error(`refused: the lock no longer names cycle ${runId}; run.json not written`);
+
+/**
+ * The one writer path for run.json: under `claim-<runId>.json` (the lock rule's claim, so a write never
+ * interleaves with a `down` removing the lock), re-reads the lock and run.json, runs `fn(prev)` (prev =
+ * run.json when it names the run, else null) and writes what it returns: an object is written whole,
+ * `null` removes run.json, `undefined` leaves it. Returns the record as it stands after. Throws, writing
+ * nothing, when the lock no longer names `runId` (a `down` finished: a write now would leave an orphan
+ * run.json), when the record is `closing` (a `down` sealed it: what it did not read it would not kill)
+ * unless `sealed` (the teardown's own writes), when run.json is gone and `create` is false (a `down`
+ * removed it), and when another process holds the claim past `waitMs` (claimBusy).
+ */
+export function updateRun(main, runId, fn, { waitMs = 2000, sealed = false, create = true } = {}) {
+  runIdOk(runId);
+  const end = Date.now() + waitMs;
+  for (;;) {
+    const l = readLock(main);
+    if (!l || l.runId !== runId) throw noLock(runId);
+    if (claim(main, runId, { run: runId })) break;
+    const busy = claimBusy(main, runId);
+    if (!busy.retry || Date.now() >= end) throw busy;
+    sleepSync(50);
+  }
+  try {
+    const cur = readLock(main);
+    if (!cur || cur.runId !== runId) throw noLock(runId);
+    let prev;
+    try {
+      prev = readRun(main);
+    } catch {
+      prev = null; // an unreadable record is replaced whole
+    }
+    if (prev && prev.runId !== runId) prev = null;
+    if (prev && prev.closing && !sealed) throw new Error(`refused: cycle ${runId} is being torn down; run.json not written`);
+    if (!prev && !create && !sealed) throw new Error(`refused: run.json of cycle ${runId} is gone (a down removed it); not written again`);
+    const next = fn(prev);
+    if (next === undefined) return prev;
+    if (next === null) {
+      fs.rmSync(runPath(main), { force: true });
+      return null;
+    }
+    putRun(main, next);
+    return next;
+  } finally {
+    fs.rmSync(claimPath(main, runId), { force: true });
+  }
 }
 
 /**
@@ -2200,15 +2251,14 @@ function sameGroup(g, now) {
 }
 
 /**
- * Writes `<MAIN>/.argus/live/run.json` (mode 0600; atomic, so `up` may rewrite it as the run grows):
- * {runId, instanceId, worktree, ports, origins, groups: [{name, pgid, cmdline, members, exited}], stops:
- * [{name, cmd, cwd, env}], sessions: []} plus whatever else `state` holds (`env`, the instance env, and
- * `since`, the daemon's clock at `up`, for the runtime gate at `down`). The `reaper` pid of an earlier
- * write is kept unless `state` names one. `worktree` is the absolute path the guard reads (null until it
- * exists). Groups go through refreshGroups — `/bin/sh -c <one command>` execs that command, so what ps
- * shows is what `down` and recovery can match; without ps they stay as recorded.
+ * Writes `<MAIN>/.argus/live/run.json` whole from `state` (its keys and their writers: spec §8 step 11),
+ * through updateRun. The `reaper` pid of an earlier write is kept unless `state` names one. `worktree` is
+ * the absolute path the guard reads (null until it exists). Groups go through refreshGroups —
+ * `/bin/sh -c <one command>` execs that command, so what ps shows is what `down` and recovery can match;
+ * without ps they stay as recorded. `create: false` (every write of `up` after its first) refuses to
+ * write a run.json a `down` removed.
  */
-export function writeRunFiles(main, state, { runner = run, secrets = {} } = {}) {
+export function writeRunFiles(main, state, { runner = run, secrets = {}, create = true } = {}) {
   runIdOk(state.runId);
   const wt = state.worktree ?? null;
   if (wt !== null && (typeof wt !== "string" || !path.isAbsolute(wt))) throw new Error("failed: run.json needs the worktree's absolute path");
@@ -2218,17 +2268,16 @@ export function writeRunFiles(main, state, { runner = run, secrets = {} } = {}) 
   } catch {
     table = null; // the command lines stay as recorded: `down` and recovery then kill fewer groups, never more
   }
-  let reaper = state.reaper;
-  if (reaper === undefined) {
-    try {
-      const prev = readRun(main);
-      if (prev && prev.runId === state.runId) reaper = prev.reaper;
-    } catch {
-      // an unreadable record is replaced whole
-    }
-  }
   const groups = refreshGroups(state.groups ?? [], table, secrets);
-  putRun(main, { ...state, worktree: wt, ports: state.ports ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [], ...(reaper === undefined ? {} : { reaper }) });
+  updateRun(
+    main,
+    state.runId,
+    (prev) => {
+      const reaper = state.reaper !== undefined ? state.reaper : prev ? prev.reaper : undefined;
+      return { ...state, worktree: wt, ports: state.ports ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [], ...(reaper === undefined ? {} : { reaper }) };
+    },
+    { create },
+  );
 }
 
 /**
@@ -2237,12 +2286,22 @@ export function writeRunFiles(main, state, { runner = run, secrets = {} } = {}) 
  */
 export function startReaper(main, runId, { script = CLI } = {}) {
   runIdOk(runId);
-  const rec = readRun(main); // an unreadable run.json is refused before anything starts
+  readRun(main); // an unreadable run.json is refused before anything starts
   const child = spawn(process.execPath, [script, "reap", runId], { cwd: main, detached: true, stdio: "ignore" });
   child.on("error", () => {});
   if (!child.pid) throw new Error("failed: the reaper could not start");
   child.unref();
-  if (rec && rec.runId === runId) putRun(main, { ...rec, reaper: child.pid });
+  try {
+    updateRun(main, runId, (prev) => (prev ? { ...prev, reaper: child.pid } : undefined));
+  } catch (e) {
+    // Unrecorded, no `down` would stop it: it goes now (it is still asleep, so SIGTERM ends it).
+    try {
+      process.kill(child.pid, "SIGTERM");
+    } catch {
+      // gone already
+    }
+    throw e;
+  }
   return child.pid;
 }
 
@@ -2504,26 +2563,94 @@ async function guarded(what, note, fn) {
 }
 
 /**
+ * Seals run.json (`closing`) under the run's claim before a `down` reads it: from then on no writer adds
+ * a group or stop record the teardown would not read (updateRun refuses them). Nothing to seal when the
+ * lock no longer names the run (no writer can succeed then either) or run.json does not name it; a claim
+ * still busy after `waitMs` is noted.
+ */
+function sealRun(main, runId, waitMs, note) {
+  try {
+    updateRun(main, runId, (prev) => (prev ? { ...prev, closing: true } : undefined), { waitMs, sealed: true });
+  } catch (e) {
+    if (!e.message.startsWith("refused: the lock no longer names")) note(`sealing run.json: ${e.message}`);
+  }
+}
+
+/**
+ * Removes run.json while it names `runId`: under the run's claim while the lock names the run; directly
+ * once it does not (no writer can succeed then), or when the claim stays busy (the record is sealed, so
+ * its holder cannot write it).
+ */
+function removeRun(main, runId, waitMs) {
+  try {
+    updateRun(main, runId, (prev) => (prev ? null : undefined), { waitMs, sealed: true });
+    return;
+  } catch {
+    // the lock no longer names the run, or its claim stayed busy
+  }
+  const onDisk = readRun(main);
+  if (onDisk && onDisk.runId === runId) fs.rmSync(runPath(main), { force: true });
+}
+
+/**
+ * One recorded stop, as the teardown's mode allows: `down` replays it unless its cwd is gone; recovery
+ * (a stale run, so a record this process did not keep) also journals, never runs, one whose env does not
+ * name COMPOSE_PROJECT_NAME=argus-<run>.
+ */
+async function replayRecorded(s, t) {
+  if (t.mode === "recover") {
+    if (!s || typeof s.cwd !== "string" || !fs.existsSync(s.cwd)) return t.note(`stop ${s && s.name}: its cwd ${s && s.cwd} is gone; journalled, not run`);
+    if (!s.env || s.env.COMPOSE_PROJECT_NAME !== `argus-${t.runId}`) return t.note(`stop ${s.name}: its env does not name COMPOSE_PROJECT_NAME=argus-${t.runId}; journalled, not run`);
+  } else if (s && typeof s.cwd === "string" && !fs.existsSync(s.cwd)) return t.note(`stop ${s.name}: its cwd ${s.cwd} is gone; not run`);
+  await replayStop(s, { secrets: t.secrets, asyncRunner: t.asyncRunner, timeoutMs: t.stopTimeoutMs, logs: logsDir(t.main, t.runId), note: t.note });
+}
+
+/**
+ * The teardown's steps in spec §8's order, shared by `down` and recovery: one list, so a step added
+ * (phase 3: the proxy, then the CLI sessions by name, after the process groups) is one entry. Each runs
+ * guarded: a failure is noted and the next step runs. `t` = {main, runId, rec, mode: "down" | "recover",
+ * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh, note}.
+ */
+const TEARDOWN = [
+  // `down` only: a finding is reported, never stops the teardown.
+  ["docker runtime gate", (t) => (t.mode === "down" && t.rec && Number.isFinite(t.rec.since) && t.rec.env && typeof t.rec.worktree === "string" ? checkDockerRuntime({ since: t.rec.since, env: t.rec.env, main: t.main, worktree: t.rec.worktree, ports: t.rec.ports ?? {}, runner: t.runner }) : undefined)],
+  // Last started first, each bounded by stopTimeoutMs.
+  ["stops", async (t) => {
+    for (const s of [...(t.rec?.stops ?? [])].reverse()) await guarded(`stop ${s && s.name}`, t.note, () => replayRecorded(s, t));
+  }],
+  // Only groups that still run what was recorded (sameGroup); setup groups included.
+  ["process groups", (t) => stopRecordedGroups(t.rec?.groups, { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
+  ["the run's directories", (t) => removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note })],
+  // Last of the processes: the reaper, unless it is this process (its own `down`).
+  ["the reaper", (t) => (t.rec ? stopReaper(t.rec.reaper, t.runId, t.runner, t.note) : undefined)],
+  ["run.json", (t) => (t.mode === "down" ? removeRun(t.main, t.runId, t.claimWaitMs) : t.rec ? fs.rmSync(runPath(t.main), { force: true }) : undefined)],
+];
+
+/** The names of the teardown's steps, in order. */
+export const TEARDOWN_STEPS = TEARDOWN.map(([name]) => name);
+
+/** Runs every TEARDOWN step for `t`, each guarded. */
+async function teardown(t) {
+  for (const [what, step] of TEARDOWN) await guarded(what, t.note, () => step(t));
+}
+
+/**
  * Tears run `runId` down (spec §8 `down`), from `record` (the in-memory run of this process, e.g. an `up`
- * that failed before writing its run files) or else run.json (when it names the run):
- * 1. the Docker runtime gate since the run's `since` (a finding is reported, the teardown goes on);
- * 2. each stop record replayed exactly — `/bin/sh -c <cmd>`, its recorded cwd and env, plus the secrets
- *    its cmd references (secretEnv) — last started first, each bounded by `stopTimeoutMs`;
- * 3. SIGTERM to every recorded process group that still runs what was recorded (sameGroup; setup groups
- *    included, so a daemon a setup left behind dies too), SIGKILL after `graceMs`;
- * 4. its own worktree (`git worktree remove --force` on that one only), HOME and setup log;
- * 5. the reaper, last (unless it is this process: the reaper's own `down`);
- * 6. run.json, then the lock and `<runId> end <now>` in the live log, both under the lock's claim (only
- *    the `down` that removes the lock writes the end line).
- * A step that fails is reported and the next one runs: steps 6 always run. Returns {report: [lines]}
- * (secret values masked). Throws only when the lock still names the run and another process holds its
- * claim (claimBusy, after waiting `claimWaitMs` for a live holder): the teardown is done by then, and the
- * lock and its end line wait for the owner.
+ * that failed before writing its run files) or else run.json (when it names the run), sealed first so no
+ * writer adds to it meanwhile: the TEARDOWN steps (the Docker runtime gate, the stops replayed exactly —
+ * `/bin/sh -c <cmd>`, recorded cwd and env, plus the secrets the cmd references —, SIGTERM then SIGKILL
+ * after `graceMs` to every recorded group that still runs what was recorded, its own worktree, HOME and
+ * setup log, the reaper, run.json), then the lock and `<runId> end <now>` in the live log, both under the
+ * lock's claim (only the `down` that removes the lock writes the end line). A step that fails is reported
+ * and the next one runs. Returns {report: [lines]} (secret values masked). Throws only when the lock still
+ * names the run and another process holds its claim (claimBusy, after waiting `claimWaitMs` for a live
+ * holder): the teardown is done by then, and the lock and its end line wait for the owner.
  */
 export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000 } = {}) {
   runIdOk(runId);
   const report = [];
   const note = (line) => report.push(redact(line, secrets));
+  sealRun(main, runId, claimWaitMs, note);
   let rec = record ?? null;
   if (!rec) {
     try {
@@ -2536,23 +2663,7 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     note(`run.json names cycle ${rec.runId}, not ${runId}: left as it is`);
     rec = null;
   }
-  if (rec && Number.isFinite(rec.since) && rec.env && typeof rec.worktree === "string") {
-    await guarded("docker runtime gate", note, () => checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports ?? {}, runner }));
-  }
-  const logs = logsDir(main, runId);
-  for (const s of [...(rec?.stops ?? [])].reverse()) {
-    await guarded(`stop ${s && s.name}`, note, async () => {
-      if (s && typeof s.cwd === "string" && !fs.existsSync(s.cwd)) note(`stop ${s.name}: its cwd ${s.cwd} is gone; not run`);
-      else await replayStop(s, { secrets, asyncRunner, timeoutMs: stopTimeoutMs, logs, note });
-    });
-  }
-  await guarded("process groups", note, () => stopRecordedGroups(rec?.groups, { runner, secrets, graceMs, refresh: Boolean(record), note }));
-  await guarded("the run's directories", note, () => removeRunDirs(main, runId, rec?.worktree, { runner, note }));
-  if (rec) await guarded("the reaper", note, () => stopReaper(rec.reaper, runId, runner, note));
-  await guarded("run.json", note, () => {
-    const onDisk = readRun(main);
-    if (onDisk && onDisk.runId === runId) fs.rmSync(runPath(main), { force: true });
-  });
+  await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh: Boolean(record), note });
   await releaseLock(main, runId, claimWaitMs, () => {
     // Synchronous: the end line is written before the claim is released.
     try {
@@ -2567,11 +2678,10 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
 /**
  * Recovers every stale run (staleRecords: a lock taken over past its deadline, or a takeover rolled
  * back) before a new `up` writes its own run files (spec §8 step 1), from run.json when it names that
- * run (else noted: what its stops and groups started may be left): replays only the stop records whose
- * cwd exists and whose env names COMPOSE_PROJECT_NAME = `argus-<run>` (the others are journalled, never
- * run); kills a recorded group only while it still runs what was recorded (sameGroup); removes the old
- * worktree and its HOME; signals the old reaper; then always removes run.json, appends `<run> end <now>`
- * and deletes the run's claim, whatever failed before (each failure noted). Returns {recovered, report}.
+ * run (else noted: what its stops and groups started may be left), through the same TEARDOWN steps as
+ * `down` (no runtime gate; only the stops whose cwd exists and whose env names the run's project are
+ * replayed, the others journalled); then always appends `<run> end <now>` and deletes the run's claim,
+ * whatever failed before (each failure noted). Returns {recovered, report}.
  */
 export async function recover(main, { secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000 } = {}) {
   const report = [];
@@ -2586,19 +2696,7 @@ export async function recover(main, { secrets = {}, runner = run, asyncRunner = 
     }
     if (rec && rec.runId !== stale.runId) rec = null;
     if (!rec) note("run.json does not name this run: its stop records and process groups are unknown, so what they started may be left running");
-    const project = `argus-${stale.runId}`;
-    const logs = logsDir(main, stale.runId);
-    for (const s of [...(rec?.stops ?? [])].reverse()) {
-      await guarded(`stop ${s && s.name}`, note, async () => {
-        if (!s || typeof s.cwd !== "string" || !fs.existsSync(s.cwd)) note(`stop ${s && s.name}: its cwd ${s && s.cwd} is gone; journalled, not run`);
-        else if (!s.env || s.env.COMPOSE_PROJECT_NAME !== project) note(`stop ${s.name}: its env does not name COMPOSE_PROJECT_NAME=${project}; journalled, not run`);
-        else await replayStop(s, { secrets, asyncRunner, timeoutMs: stopTimeoutMs, logs, note });
-      });
-    }
-    await guarded("process groups", note, () => stopRecordedGroups(rec?.groups, { runner, secrets, graceMs, note }));
-    await guarded("the run's directories", note, () => removeRunDirs(main, stale.runId, rec?.worktree, { runner, note }));
-    if (rec) await guarded("the reaper", note, () => stopReaper(rec.reaper, stale.runId, runner, note));
-    if (rec) await guarded("run.json", note, () => fs.rmSync(runPath(main), { force: true }));
+    await teardown({ main, runId: stale.runId, rec, mode: "recover", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, refresh: false, note });
     await guarded("the live log", note, () => appendEnd(main, stale.runId));
     await guarded("its claim", note, () => fs.rmSync(claimPath(main, stale.runId), { force: true }));
     recovered.push(stale.runId);
@@ -2836,7 +2934,12 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
   const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, composeServices: [], composePorts: [] };
-  const save = () => writeRunFiles(main, state, { runner, secrets });
+  // Only the first write creates run.json: a later one finding it gone means a `down` removed it.
+  let created = false;
+  const save = () => {
+    writeRunFiles(main, state, { runner, secrets, create: !created });
+    created = true;
+  };
   state.groups = recordingArray(save);
   state.stops = recordingArray(save);
   let step = "1 lock";
@@ -2931,6 +3034,7 @@ function current(main) {
   if (!lock) throw new Error("refused: no journey cycle is running");
   const rec = readRun(main);
   if (!rec || rec.runId !== lock.runId || typeof rec.worktree !== "string" || !rec.env) throw new Error(`refused: run.json does not hold the instance of cycle ${lock.runId} (it is still starting, or it failed)`);
+  if (rec.closing) throw new Error(`refused: cycle ${lock.runId} is being torn down`);
   // An instance id is set only once `up` (or `up --fresh`) finished every step: anything less was never checked whole.
   if (!rec.instanceId) throw new Error(`refused: cycle ${lock.runId}'s up did not finish; run down`);
   const { config, errors, secrets } = loadLive(main);
@@ -2949,7 +3053,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
   const state = { ...rec };
-  const save = () => writeRunFiles(main, state, { runner, secrets });
+  const save = () => writeRunFiles(main, state, { runner, secrets, create: false });
   const setupGroups = (rec.groups ?? []).filter((g) => g && /^setup\[\d+\]$/.test(g.name));
   state.groups = recordingArray(save, rec.groups ?? []);
   state.stops = recordingArray(save, rec.stops ?? []);
