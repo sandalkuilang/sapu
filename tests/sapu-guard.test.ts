@@ -4,7 +4,7 @@
 // so every case the guard enforced before it became generic is still enforced through the contract.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -1182,6 +1182,99 @@ describe("sapu's machine config (~/.config/sapu/) is written by the person at th
       if (saved.XDG === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = saved.XDG;
     }
+  });
+});
+
+describe("the remaining write paths to the machine config and git's files: braces, ~user, cd -, where a copy lands, glob segments", () => {
+  const MC = /sapu's machine config/;
+  const GF = /git's own files/;
+  const me = userInfo().username;
+  const passwdHome = userInfo().homedir === process.env.HOME;
+
+  it.each([
+    // brace expansion, before ~ expansion as the shell does it
+    ["rm -rf ~/.config/{sapu,x}"],
+    ["rm -rf ~/.config/{x,sap}u"],
+    ["rm -rf ~/{.config,Downloads}"],
+    ["echo x > ~/.config/sapu/{a,config}.json"],
+    ["rm -rf ~/.config/s{a,b}{p,q}u"],
+    ["rm -rf ~/.config/{q..t}apu"],
+    ["cp x.json ~/.config/{a,sapu}"],
+    // ~+ and ~- are the cwd and the previous one; cd - goes back; an absolute cd is known from anywhere
+    ["cd ~/.config && rm -rf ~+/sapu"],
+    ["cd ~/.config && cd /tmp && rm -rf ~-/sapu"],
+    ["cd ~/.config && cd /tmp && cd - && rm -rf sapu"],
+    ['cd "$X" && cd ~/.config && rm -rf sapu'],
+    ["cd -P ~/.config && rm -rf sapu"],
+    // a copy lands at <dest>/<name>, or in <dest> itself for a source's contents
+    ["cp -r x/ ~/.config"],
+    ["cp -R x/ ~/.config/"],
+    ["cp -a x/. ~/.config"],
+    ["cp -r . ~/.config"],
+    ["cp -r sapu ~/.config"],
+    ["cp -R ./sapu ~/.config/"],
+    ["cp -rT x ~/.config"],
+    ["cp -r x/ ~"],
+    ["cp -r .config ~"],
+    ["cp -r -t ~/.config sapu"],
+    ["cp --parents .config/sapu/config.json ~"],
+    ['cp -r "$X" ~/.config/'],
+    ["cp -r ./* ~/.config/"],
+    ["mv sapu ~/.config/"],
+    ["ln -sfn /tmp/x/sapu ~/.config/"],
+    // install -d sets the mode of an existing directory: an ancestor counts
+    ["install -d ~/.config"],
+    ["install -d -m 700 ~"],
+    // removing any ancestor takes the config along
+    ["rm -rf ~/.."],
+  ])("blocks %s", (cmd) => {
+    expect(blocked(cmd)).toMatch(MC);
+    expect(check({ command: cmd, cwd: wt, main, rules, worker: false })).toMatch(MC);
+  });
+
+  it.skipIf(!passwdHome).each([[`rm -rf ~${me}/.config/sapu`], [`echo x > ~${me}/.config/sapu/config.json`], [`cp -r x/ ~${me}/.config`]])("reads ~<user> as that user's home: blocks %s", (cmd) => {
+    expect(blocked(cmd)).toMatch(MC);
+  });
+
+  it.each([
+    ["rm -f ~/{.gitconfig,x}"],
+    ["cp dotfiles/.gitconfig ~"],
+    ["cp -r dotfiles/ ~"],
+    ["rm -rf .g*"],
+    ["rm -rf ./.[g]*"],
+    ["rm -rf .gi?"],
+  ])("blocks %s as git's own files", (cmd) => {
+    expect(blocked(cmd)).toMatch(cmd === "cp -r dotfiles/ ~" ? MC : GF);
+  });
+
+  it.skipIf(!passwdHome)("reads ~<user> for git's files too", () => {
+    expect(blocked(`echo x >> ~${me}/.gitconfig`)).toMatch(GF);
+  });
+
+  it.each([
+    // a glob is matched segment by segment, with the shell's dotfile rule: no trailing-slash false blocks
+    ["rm -rf ~/.conf/*"],
+    ["cd ~ && rm -f *.log"],
+    ["rm -f ~/*.log"],
+    ["rm -rf ~/.cache/*"],
+    ["rm -rf ./*"],
+    ["rm -rf dist/*"],
+    ["rm -f ./.*.swp"],
+    // a named source lands under its own name
+    ["cp -r x ~/.config"],
+    ["cp -r nvim ~/.config/"],
+    ["cp notes.txt ~/.config/"],
+    ["mv x ~/.config/"],
+    ["install -d ~/.config/x"],
+    ["install -m 644 x.conf ~/.config/"],
+    // braces elsewhere, a user that does not exist (the word stays literal), ~+ and ~- that stay put
+    ["cp a{,.bak}"],
+    ["rm -rf build/{a,b}"],
+    ["rm -rf ~nosuchuser-sapu-test/.config/sapu"],
+    ["echo x > ~+/out.txt"],
+    ["cd /tmp && rm -rf ~-/x"],
+  ])("allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
   });
 });
 

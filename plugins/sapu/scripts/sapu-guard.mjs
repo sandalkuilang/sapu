@@ -32,8 +32,11 @@
 // (~/.config/sapu/, whose loss lifts the scope lock) is written by any subagent, and a worker writes
 // nothing into the main checkout outside its `.claude/worktrees/` (symlinks resolved, so a
 // worktree's linked node_modules counts as <MAIN>). The same holds for the common Bash write
-// forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), where a glob target
-// is judged by what its literal prefix can expand into. Grep/Glob calls are
+// forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), with brace lists
+// expanded, `~`, `~user`, `~+`, `~-` and `cd -` read as the shell reads them, a copy, move or link
+// judged also where it lands (`<dest>/<name>`, or `<dest>` itself for a recursive copy of a
+// source's contents, where a directory above a protected path counts), and a glob target judged
+// by what it can expand into, segment by segment. Grep/Glob calls are
 // checked by their path and path glob: none may name or be able to match an env file.
 //
 // RULES. The engine rules (git/gh/stash/force/refs/base branch/main checkout, .env/.env.local,
@@ -68,9 +71,12 @@
 // `$HOME`/`${HOME}`, read like `~`) — a mutating git command whose target is a variable is
 // BLOCKED, but a Bash write whose target is another variable (`> "$M/x"`) or comes from stdin
 // (`xargs rm`), or whose cwd is such a variable while the path is relative, is allowed. A write
-// target with a glob (`*`, `?`, `[`) is judged by its literal prefix: blocked when what it can
-// expand into reaches git's own files under HOME or sapu's machine config (or an ancestor of
-// them); elsewhere only the literal word is checked. A symlink whose target does not exist yet
+// target with a glob (`*`, `?`, `[`) is matched segment by segment with the shell's dotfile rule
+// (`**` reaches any depth): blocked when it can expand into git's own files under HOME, a `.git`,
+// or sapu's machine config (or an ancestor of them, or something inside); elsewhere only the
+// literal word is checked. A quoted `{a,b}` is expanded like an unquoted one (a false block, never
+// a miss); a brace sequence (`{a..z}`) reads as `*`; a zsh named directory (`~name` set by `hash
+// -d`) and the directory stack (`~1`, `cd +1`) are not known. A symlink whose target does not exist yet
 // is judged by the link's own path (a dangling link inside a state dir can point a later write
 // elsewhere: tampering-grade, two deliberate steps). Bash writes are recognised only in the forms above: not `dd of=`,
 // `rsync`, `tar -C`, `unzip -d`, `curl -o`, `touch`, `truncate`, `mkdir`, `chmod`,
@@ -96,6 +102,7 @@
 // (non-2 exit) — the canary is what catches a dead guard.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acceptedLabel, checkoutRoot, findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
@@ -1034,16 +1041,63 @@ function inMain(real, main) {
   return inside(real, m) && !inside(real, path.join(m, ".claude", "worktrees"));
 }
 
+const USER_HOMES = new Map();
+/** The home directory the shell gives `~name` (the passwd entry, not $HOME), or null for no such user. */
+function userHome(name) {
+  if (!USER_HOMES.has(name)) {
+    let home = null;
+    try {
+      const me = os.userInfo();
+      if (name === me.username) home = me.homedir;
+      else {
+        // `name` is [A-Za-z0-9._-] only: nothing in it reaches the shell as syntax.
+        const out = execFileSync("/bin/sh", ["-c", `printf %s ~${name}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 });
+        home = out && !out.startsWith("~") ? out : null;
+      }
+    } catch {
+      home = null;
+    }
+    USER_HOMES.set(name, home);
+  }
+  return USER_HOMES.get(name);
+}
+
 /**
- * The word `tok` with a leading `~`, `$HOME` or `${HOME}` read as HOME (those spellings only, and
- * only at the start); null while another variable, `$( )` or backtick is left in it: unknown.
+ * The word `tok` with a leading `~`, `$HOME` or `${HOME}` read as HOME, `~name` as that user's home,
+ * `~+` as the cwd `dir` and `~-` as the previous one `prev` (only at the start); null while another
+ * variable, `$( )` or backtick is left in it, or for a `~+`/`~-` whose directory is unknown. `~name`
+ * of no such user stays a literal word, as in the shell.
  */
-function expandHome(tok) {
+function expandHome(tok, dir = UNKNOWN, prev = UNKNOWN) {
   const home = process.env.HOME;
-  const m = home ? /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/.exec(tok.v) : null;
+  let m = home ? /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/.exec(tok.v) : null;
+  let base = home;
+  if (!m) {
+    const u = /^~([+-]|[A-Za-z0-9_][A-Za-z0-9._-]*)(?=\/|$)/.exec(tok.v);
+    if (u && (u[1] === "+" || u[1] === "-")) {
+      base = u[1] === "+" ? dir : prev;
+      if (typeof base !== "string") return null;
+      m = u;
+    } else if (u && (base = userHome(u[1])) !== null) m = u;
+  }
   const rest = m ? tok.v.slice(m[0].length) : tok.v;
   if (tok.dyn && /[$`]/.test(rest)) return null;
-  return m ? home + rest : tok.v;
+  return m ? base + rest : tok.v;
+}
+
+/**
+ * The words the shell's brace expansion makes of `tok` (`a{,.bak}` → `a a.bak`). A sequence
+ * (`{a..z}`), or a list too long to expand, reads as `*`: judged as a glob.
+ */
+function braceWords(tok) {
+  if (!/\{[^{}]*(,|\.\.)[^{}]*\}/.test(tok.v)) return [tok];
+  let ws = expandBraces(tok.v);
+  if (ws === null) {
+    let v = tok.v;
+    while (/\{[^{}]*\}/.test(v)) v = v.replace(/\{[^{}]*\}/g, "*");
+    ws = [v];
+  }
+  return ws.map((v) => ({ v: v.replace(/\{[^{}]*\.\.[^{}]*\}/g, "*"), dyn: tok.dyn }));
 }
 
 /**
@@ -1051,18 +1105,20 @@ function expandHome(tok) {
  * it cannot be known (a variable other than a leading $HOME, or a relative path from an unknown
  * cwd). `follow` = the write goes through a final symlink (`>`, cp); removing or replacing a link
  * (`rm link`, `ln`, `mv`) does not, unless the word ends in `/`. `glob` = for a word with `*`, `?`
- * or `[`, the absolute literal prefix before the first of them (what it can expand into starts
- * with it); null otherwise.
+ * or `[`, the absolute pattern, spelled as written and through the real path of its literal
+ * directories; null otherwise. `prev` is the previous cwd (`~-`).
  */
-function writeTarget(tok, follow, dir) {
+function writeTarget(tok, follow, dir, prev = UNKNOWN) {
   if (!tok || tok.v === "") return null;
-  const t = expandHome(tok);
+  const t = expandHome(tok, dir, prev);
   if (t === null || (!path.isAbsolute(t) && dir === UNKNOWN)) return null;
   const base = dir === UNKNOWN ? "/" : dir;
   const abs = path.resolve(base, t);
   const real = follow || t.endsWith("/") ? realPathOf(abs) : path.join(realPathOf(path.dirname(abs)), path.basename(abs));
-  const g = t.search(/[*?[]/);
-  return { abs, real, glob: g < 0 ? null : path.resolve(base, t.slice(0, g)) };
+  if (!/[*?[]/.test(t)) return { abs, real, glob: null };
+  const segs = abs.split(path.sep);
+  const g = segs.findIndex((s) => /[*?[]/.test(s));
+  return { abs, real, glob: [abs, path.join(realPathOf(segs.slice(0, g).join(path.sep) || path.sep), ...segs.slice(g))] };
 }
 
 /** Is `x` inside `dir` or `dir` itself? */
@@ -1094,31 +1150,47 @@ function machineConfigDirs() {
 /**
  * Does writing `p` touch sapu's machine config, whose absence or loosening lifts the scope lock its
  * owner set? Anything inside machineConfigDirs(). With `replaces` (the write removes or replaces
- * the entry itself: rm, mv's source, ln) also `~/.config` and `~`, which take the config with them.
+ * the entry itself, or writes a whole tree there: rm, mv, ln, a recursive copy, install -d) also
+ * every directory above it (`~/.config`, `~`, …), which takes the config with it.
  */
 function isMachineConfigFile(p, replaces = false) {
-  if (machineConfigDirs().some((d) => inside(p, d))) return true;
-  const home = process.env.HOME;
-  if (!replaces || !home) return false;
-  return [home, realPathOf(home)].some((h) => p === h || p === path.join(h, ".config") || p === realPathOf(path.join(h, ".config")));
+  return machineConfigDirs().some((d) => inside(p, d) || (replaces && inside(d, p)));
+}
+
+const isGlob = (s) => /[*?[]/.test(s);
+
+/**
+ * Can the absolute glob `pattern` expand into one of `paths`, an ancestor of one (removing it takes
+ * the path along), or anything inside one? Matched segment by segment as the shell expands it (a
+ * leading `*`/`?` never matches a leading `.`; `**` reaches any depth), case-insensitively, so
+ * `~/.conf/*` and `*.log` in HOME reach nothing of `~/.config/sapu`.
+ */
+function globReaches(pattern, paths) {
+  const ps = pattern.split(path.sep).filter(Boolean);
+  return paths.some((x) => {
+    const xs = x.split(path.sep).filter(Boolean);
+    for (let k = 0; k < Math.min(ps.length, xs.length); k++) {
+      if (ps[k] === "**") return true;
+      if (isGlob(ps[k]) ? !globRegex(ps[k]).test(xs[k]) : ps[k].toLowerCase() !== xs[k].toLowerCase()) return false;
+    }
+    return true;
+  });
 }
 
 /**
- * Can a glob whose literal prefix is `prefix` expand into one of `paths`, an ancestor of one
- * (removing it takes the path along), or anything inside one? Its matches all start with the
- * prefix, so a path that starts with it, or that the prefix already lies inside, is in reach.
+ * The block reason when write target `w` is, or as a glob may expand into, git's own files (a
+ * `.git` anywhere included) or sapu's machine config; else null. `tree`: the write lands a whole
+ * tree there (a recursive copy, install -d), so a directory above a protected path counts.
  */
-const globMayTouch = (prefix, paths) => paths.some((x) => x.startsWith(prefix) || prefix.startsWith(x + path.sep));
-
-/** The block reason when write target `w` is, or as a glob may expand into, git's own files or sapu's machine config; else null. */
-function protectedTarget(w, follow) {
+function protectedTarget(w, follow, tree = false) {
   if (w.glob) {
-    const reach = [w.glob, realPathOf(w.glob)];
-    if (reach.some((g) => globMayTouch(g, machineConfigDirs()))) return BLOCK.machineConfig;
-    if (reach.some((g) => globMayTouch(g, gitHomePaths()))) return BLOCK.gitFiles;
+    if (w.glob.some((g) => globReaches(g, machineConfigDirs()))) return BLOCK.machineConfig;
+    if (w.glob.some((g) => globReaches(g, gitHomePaths()) || g.split(path.sep).some((s) => isGlob(s) && globRegex(s).test(".git")))) return BLOCK.gitFiles;
   }
+  const replaces = !follow || tree;
   if (isGitFile(w.abs) || isGitFile(w.real)) return BLOCK.gitFiles;
-  if (isMachineConfigFile(w.abs, !follow) || isMachineConfigFile(w.real, !follow)) return BLOCK.machineConfig;
+  if (isMachineConfigFile(w.abs, replaces) || isMachineConfigFile(w.real, replaces)) return BLOCK.machineConfig;
+  if (replaces && gitHomePaths().some((x) => inside(x, w.abs) || inside(x, w.real))) return BLOCK.gitFiles;
   return null;
 }
 
@@ -1149,9 +1221,15 @@ function nonOptions(argv, takesValue = () => false) {
   return out;
 }
 
-/** The files a write command writes or removes: tee, cp/mv/install/ln destinations, sed -i/perl -i files, rm, patch. */
+/**
+ * The files a write command writes or removes: tee, cp/mv/install/ln destinations, sed -i/perl -i
+ * files, rm, patch; brace lists expanded. A copy, move or link into a directory also lands at
+ * `<dest>/<name>` (with --parents, `<dest>/<source path>`), and a recursive copy of a source's
+ * contents (`x/`, `x/.`, `.`, -T, or a source the shell builds) in `<dest>` itself; `tree` marks a
+ * target written as a whole tree (recursive copy, mv, install -d), where an ancestor counts.
+ */
 function writeTargets(prog, words) {
-  const argv = withoutRedirects(words);
+  const argv = withoutRedirects(words).flatMap(braceWords);
   const a = argv.map((x) => x.v);
   const each = (toks, follow) => toks.map((tok) => ({ tok, follow }));
   // The value of an option (`-t DIR`, `--target-directory=DIR`, `-tDIR`), or null.
@@ -1176,11 +1254,23 @@ function writeTargets(prog, words) {
     const args = nonOptions(argv, (v) => /^(-t|--target-directory|-S|--suffix)$/.test(v) || (prog === "install" && /^-[mog]$/.test(v)));
     const dir = targetDir();
     const last = args[args.length - 1];
-    if (prog === "mv") return [...each(args, false), ...each([dir ?? last].filter(Boolean), true)];
-    if (dir) return each([dir], true);
-    if (prog === "install" && a.some((v) => /^-[a-zA-Z]*d/.test(v))) return each(args, true);
-    if (prog === "ln") return args.length === 1 ? each([{ v: path.basename(args[0].v), dyn: args[0].dyn }], false) : each([last].filter(Boolean), false);
-    return each([last].filter(Boolean), true);
+    if (prog === "install" && a.some((v) => /^-[a-zA-Z]*d/.test(v))) return args.map((tok) => ({ tok, follow: true, tree: true }));
+    const sources = dir ? args : args.slice(0, -1);
+    const dest = dir ?? (args.length > 1 ? last : null);
+    const tree = prog === "mv" || (prog === "cp" && a.some((v) => /^-[a-zA-Z]*[rRa]/.test(v) || /^--(recursive|archive)$/.test(v)));
+    const noTargetDir = a.some((v) => v === "--no-target-directory" || /^-[a-zA-Z]*T/.test(v));
+    const follow = prog === "cp" || prog === "install";
+    const landings = !dest
+      ? []
+      : sources.map((s) => {
+          const contents = s.dyn || noTargetDir || /(^|\/)\.\.?\/?$/.test(s.v) || (tree && s.v.endsWith("/"));
+          const name = a.includes("--parents") ? s.v.replace(/^\/+/, "") : path.basename(s.v);
+          return { tok: contents ? dest : { v: `${dest.v.replace(/\/+$/, "")}/${name}`, dyn: dest.dyn }, follow, tree };
+        });
+    if (prog === "mv") return [...each(sources, false), ...each([dest].filter(Boolean), true), ...landings];
+    if (dir) return [...each([dir], true), ...landings];
+    if (prog === "ln") return args.length === 1 ? each([{ v: path.basename(args[0].v), dyn: args[0].dyn }], false) : [...each([last].filter(Boolean), false), ...landings];
+    return [...each([last].filter(Boolean), true), ...landings];
   }
   if (prog === "sed" || prog === "perl") {
     if (!a.slice(1).some((v) => (prog === "sed" ? /^(-[a-zA-Z]*i|--in-place)/ : /^-[a-zA-Z]*i/).test(v))) return [];
@@ -1243,10 +1333,12 @@ function checkCommand(t, state, depth) {
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
   // <MAIN> outside its worktrees is off limits, except the STATE_DIRS for non-worker subagents.
   const scan = [...t.slice(0, at), ...argv.filter((_, i) => !skip.has(i))];
-  for (const { tok, follow } of [...redirectTargets(scan), ...writeTargets(prog, argv)]) {
-    const w = writeTarget(tok, follow, here);
+  // zsh writes a redirection to every word its braces make (MULTIOS); bash refuses it: judge them all.
+  const redirects = redirectTargets(scan).flatMap((r) => braceWords(r.tok).map((tok) => ({ ...r, tok })));
+  for (const { tok, follow, tree } of [...redirects, ...writeTargets(prog, argv)]) {
+    const w = writeTarget(tok, follow, here, state.prev);
     if (!w) continue;
-    const own = protectedTarget(w, follow);
+    const own = protectedTarget(w, follow, tree);
     if (own) return own;
     if (state.main && inMain(w.real, state.main) && !(rules.worker === false && inStateDir(w.real, state.main))) return BLOCK.mainWrite(state.main);
   }
@@ -1274,10 +1366,19 @@ function checkCommand(t, state, depth) {
     return null;
   }
   if (prog === "cd" || prog === "pushd") {
-    const target = argv[1];
-    if (!target) state.dir = process.env.HOME || state.dir;
-    else if (state.dir === UNKNOWN || expandHome(target) === null) state.dir = UNKNOWN;
-    else if (target.v !== "-") state.dir = path.resolve(state.dir, expandHome(target));
+    let k = 1;
+    while (k < argv.length && /^-[LPe@]+$/.test(argv[k].v)) k++;
+    if (argv[k]?.v === "--") k++;
+    const target = argv[k];
+    const from = state.dir;
+    // `cd -` returns to the previous directory (unknown before the first cd); an absolute or `~`
+    // target is known from anywhere, a relative one only from a known cwd.
+    const e = target && target.v !== "-" ? expandHome(target, from, state.prev) : null;
+    if (!target) state.dir = process.env.HOME || from;
+    else if (target.v === "-") state.dir = state.prev ?? UNKNOWN;
+    else if (e === null || /^[+-]\d+$/.test(target.v) || (from === UNKNOWN && !path.isAbsolute(e))) state.dir = UNKNOWN;
+    else state.dir = path.resolve(from === UNKNOWN ? "/" : from, e);
+    state.prev = from;
     return null;
   }
   if (prog === "pkill" || prog === "killall") return BLOCK.kill;
@@ -1986,8 +2087,8 @@ export function topLevelStops(command, dir) {
       let next;
       if (!target) next = prog === "cd" && c.post !== "(" ? process.env.HOME || cur : UNKNOWN; // `cd $(…)`: the target is the substitution
       else if (target.v === "-") next = prev ?? UNKNOWN;
-      else if (cur === UNKNOWN || expandHome(target) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
-      else next = path.resolve(cur, expandHome(target));
+      else if (cur === UNKNOWN || expandHome(target, cur, prev ?? UNKNOWN) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
+      else next = path.resolve(cur, expandHome(target, cur, prev ?? UNKNOWN));
       if (prog === "pushd") stack.push(cur);
       prev = cur;
       cur = next;

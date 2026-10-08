@@ -544,7 +544,13 @@ could use them.
   `cp`/`mv`/`install`/`ln` (and the source of `mv`), `sed -i`/`perl -i` files, `rm`, and `patch` (the `-d`
   directory, or its cwd). Paths are judged by their real path: writing through a symlink in the worktree
   that points into the main checkout counts as the main checkout, while removing the link
-  itself (`rm node_modules`, without a trailing `/`) does not. Relative paths from an unknown cwd,
+  itself (`rm node_modules`, without a trailing `/`) does not. Brace lists are expanded
+  (`rm -rf ~/.config/{sapu,x}`), `~user`, `~+`, `~-` and `cd -` are read as the shell reads them,
+  and a copy, move or link into a directory is judged also where it lands: `<dest>/<name>`, or
+  `<dest>` itself for a recursive copy of a source's contents (`cp -r x/ ~/.config`, `x/.`, `-T`),
+  where a directory above a protected path counts, as it does for `install -d`. A glob is matched
+  segment by segment with the shell's dotfile rule, so `rm -f *.log` in HOME reaches nothing it
+  protects while `rm -rf .g*` reaches `.git`. Relative paths from an unknown cwd,
   and targets that are shell variables, cannot be judged and are let through; other write forms (`dd`,
   `rsync`, `tar -C`, `curl -o`, `touch`, `find -delete`, programs that write on their own) are not
   covered yet — the list is in `sapu-guard.mjs`'s LIMITS.
