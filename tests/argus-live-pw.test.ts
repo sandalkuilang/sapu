@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive, cleanTemps, example, freePort, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_ROOT, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -25,6 +25,8 @@ import { blockedSince, canonicalOrigin, createProxy, proxyAllows, startProxy } f
 import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
 import { base32Decode, loginCode, loginPlan, reserveStep, runCode, totp } from "../plugins/sapu/scripts/argus-live-login.mjs";
+// @ts-expect-error — plain ESM script without types
+import { waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -548,6 +550,26 @@ describe("argus-live fences and targets", () => {
     expect(clean("a-b-c", { secrets: { A: "b", B: "a-b-c" } })).toBe("***");
   });
 
+  it("a secret is masked HTML-escaped (decimal, hex, named) and as a browser serialises it in a URL's query or path", () => {
+    const PW = 'Pa"ss\\wo:rd &+1';
+    const out = [
+      "Pa&#34;ss\\wo:rd &#38;+1",
+      "Pa&#x22;ss\\wo:rd &#x26;+1",
+      "Pa&#X22;ss\\wo:rd &#X26;+1",
+      "Pa&quot;ss\\wo:rd &amp;+1",
+      "Pa\"ss\\wo:rd &amp;+1",
+      `GET http://localhost:41001/echo?${new URL(`http://x/?${PW}`).search.slice(1)}`,
+      `GET http://localhost:41001/${new URL(`http://x/${PW}`).pathname.slice(1)}`,
+    ];
+    expect(out[5]).toBe("GET http://localhost:41001/echo?Pa%22ss\\wo:rd%20&+1");
+    expect(out[6]).toBe("GET http://localhost:41001/Pa%22ss/wo:rd%20&+1");
+    expect(clean(out.join("\n"), { secrets: { PW } })).toBe(["***", "***", "***", "***", "***", "GET http://localhost:41001/echo?***", "GET http://localhost:41001/***"].join("\n"));
+    const quote = "it's <b>";
+    expect(clean("it&#39;s &lt;b&gt; | it&#x27;s &lt;b&gt; | it&apos;s &lt;b&gt;", { secrets: { Q: quote } })).toBe("*** | *** | ***");
+    // A form shorter than the value (a # cuts a query) is never a mask: it would hide unrelated text.
+    expect(clean("ab and ab#cd", { secrets: { S: "ab#cd" } })).toBe("ab and ***");
+  });
+
   it("only real marker shapes are defused: business ids starting PAGE- or RETURN- stay as they are", () => {
     const n = nonce();
     expect(clean("PAGE-1 RETURN-42 RETURN-POLICY page-x")).toBe("PAGE-1 RETURN-42 RETURN-POLICY page-x");
@@ -774,10 +796,17 @@ describe("argus-live proxy", () => {
     });
   const status = (answer: string) => Number(answer.split(" ")[1]);
 
-  it("proxyAllows compares canonical origins; a CONNECT host:port is allowed when either scheme's origin is", () => {
-    const allowed = new Set([canonicalOrigin("http://localhost:41001"), canonicalOrigin("https://fonts.example.test")]);
-    expect(proxyAllows({ scheme: "http", host: "127.0.0.1", port: 41001 }, { allowed })).toBe(true);
-    expect(proxyAllows({ scheme: "http", host: "[::1]", port: 41001 }, { allowed })).toBe(true);
+  it("proxyAllows takes a host only as a run origin spells it (no loopback alias); a CONNECT host:port is allowed when either scheme's origin is", () => {
+    const allowed = new Set([canonicalOrigin("http://localhost:41001"), canonicalOrigin("https://fonts.example.test"), canonicalOrigin("http://127.0.0.1:41003")]);
+    expect(proxyAllows({ scheme: "http", host: "localhost", port: 41001 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "http", host: "LOCALHOST.", port: 41001 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "http", host: "127.0.0.1", port: 41001 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "http", host: "[::1]", port: 41001 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "http", host: "::1", port: 41001 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "http", host: "app.localhost", port: 41001 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "http", host: "127.0.0.1", port: 41003 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "http", host: "127.1", port: 41003 }, { allowed })).toBe(true); // the same IPv4 address, as WHATWG URL reads it
+    expect(proxyAllows({ scheme: "http", host: "localhost", port: 41003 }, { allowed })).toBe(false);
     expect(proxyAllows({ scheme: "http", host: "localhost", port: 41002 }, { allowed })).toBe(false);
     expect(proxyAllows({ scheme: "connect", host: "fonts.example.test", port: 443 }, { allowed })).toBe(true);
     expect(proxyAllows({ scheme: "connect", host: "localhost", port: 41001 }, { allowed })).toBe(true);
@@ -787,8 +816,8 @@ describe("argus-live proxy", () => {
 
   it("forwards a request to an allowed origin, without its Proxy-* headers", async () => {
     const app = await target();
-    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
-    const answer = await raw(p.port, `GET http://127.0.0.1:${app.port}/x?y=1 HTTP/1.1\r\nHost: 127.0.0.1:${app.port}\r\nProxy-Authorization: Basic eA==\r\nConnection: close\r\n\r\n`);
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => "127.0.0.1" });
+    const answer = await raw(p.port, `GET http://localhost:${app.port}/x?y=1 HTTP/1.1\r\nHost: localhost:${app.port}\r\nProxy-Authorization: Basic eA==\r\nConnection: close\r\n\r\n`);
     expect(status(answer)).toBe(200);
     expect(answer).toContain("app /x?y=1");
     expect(app.hits).toEqual(["GET /x?y=1"]);
@@ -814,7 +843,7 @@ describe("argus-live proxy", () => {
 
   it("tunnels CONNECT only to an allowed host:port", async () => {
     const app = await target();
-    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    const p = await proxyOn({ allowed: [`http://127.0.0.1:${app.port}`] });
     const answer = await raw(p.port, `CONNECT 127.0.0.1:${app.port} HTTP/1.1\r\nHost: 127.0.0.1:${app.port}\r\n\r\nGET /through HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`);
     expect(answer.startsWith("HTTP/1.1 200 Connection Established\r\n\r\n")).toBe(true);
     expect(answer).toContain("app /through");
@@ -827,7 +856,7 @@ describe("argus-live proxy", () => {
   it("passes a WebSocket upgrade to an allowed origin and refuses one to another port", async () => {
     const app = await target();
     const other = await counter();
-    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    const p = await proxyOn({ allowed: [`http://127.0.0.1:${app.port}`] });
     const hello = (port: number) => `GET http://127.0.0.1:${port}/ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`;
     const ok = await raw(p.port, hello(app.port), 800);
     expect(status(ok)).toBe(101);
@@ -857,6 +886,32 @@ describe("argus-live proxy", () => {
     expect(app.hits).toEqual(["GET /r"]);
   });
 
+  it("a loopback name is connected to at the address its run listener passed health on, never by resolving it", async () => {
+    const app = await target();
+    // Another program on the same port of the other loopback family: a name lookup could reach it.
+    let owner = 0;
+    const theirs = createNetServer((c) => (owner++, c.destroy()));
+    const v6 = await new Promise<boolean>((ok) => (theirs.once("error", () => ok(false)), theirs.listen(app.port, "::1", () => ok(true))));
+    if (v6) closers.push(() => new Promise((done) => theirs.close(done)));
+    const asked: number[] = [];
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: (port: number) => (asked.push(port), "127.0.0.1") });
+    const req = `GET http://localhost:${app.port}/u HTTP/1.1\r\nHost: localhost:${app.port}\r\nConnection: close\r\n\r\n`;
+    expect(await raw(p.port, req)).toContain("app /u");
+    expect(asked).toEqual([app.port]);
+    expect(owner).toBe(0);
+    // No address recorded for the port: refused, never guessed.
+    const none = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    expect(status(await raw(none.port, req))).toBe(502);
+    expect(app.hits).toEqual(["GET /u"]);
+  });
+
+  it("waitHealth records the address a loopback health URL answered on", async () => {
+    const app = await target();
+    const upstream: Record<string, string> = {};
+    await waitHealth({ name: "web", cmd: "x", health: { url: `http://localhost:${app.port}/health` } }, { t0: Date.now(), log: "/dev/null" }, { timeoutS: 5, worktree: tempDir(), env: {}, upstream });
+    expect(upstream).toEqual({ [String(app.port)]: "127.0.0.1" });
+  });
+
   it("listens on loopback only", async () => {
     const p = await proxyOn({ allowed: [] });
     expect(p.address).toBe("127.0.0.1");
@@ -868,7 +923,7 @@ describe("argus-live proxy", () => {
     closers.push(() => down(r.main, { runId: r.runId, graceMs: 1000 }));
     const app = await target();
     const other = await counter();
-    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [`http://localhost:${app.port}`], allowOrigins: [], groups: [], env: r.env });
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [`http://localhost:${app.port}`], allowOrigins: [], upstream: { [String(app.port)]: "127.0.0.1" }, groups: [], env: r.env });
     const groups: Obj[] = [];
     const { pid, port } = await startProxy(r.main, r.runId, { groups });
     closers.push(() => killGroup(pid));
@@ -1050,7 +1105,7 @@ describe("argus-live per-slot config", () => {
           channel: "chrome",
           headless: true,
           proxy: { server: "http://127.0.0.1:45123" },
-          args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost, EXCLUDE fonts.example.test", "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy"],
+          args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost, EXCLUDE fonts.example.test", "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy", ...CHROME_QUIET],
         },
         contextOptions: { locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", viewport: { width: 390, height: 900 } },
         initScript: ["/w/.argus/live/r1/1/.playwright/signals.js"],
@@ -1068,6 +1123,14 @@ describe("argus-live per-slot config", () => {
     expect(c.browser.launchOptions.args[0]).toBe("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost, EXCLUDE app.test");
     expect(c.browser.contextOptions).toEqual({ locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
     expect(slotConfig({ ...fixture(), chrome: { channel: "msedge", path: "/x" } }).browser.launchOptions.channel).toBe("msedge");
+  });
+
+  it("Chrome's own background services are switched off by its flags", () => {
+    expect(CHROME_QUIET).toEqual(expect.arrayContaining(["--disable-background-networking", "--disable-component-update", "--disable-sync", "--no-pings", "--disable-domain-reliability", "--disable-client-side-phishing-detection"]));
+    const features = CHROME_QUIET.filter((a: string) => a.startsWith("--disable-features="));
+    expect(features).toHaveLength(1); // Chrome keeps the last one: it repeats Playwright's own list
+    for (const f of ["AutofillServerCommunication", "OptimizationHints", "MediaRouter", "Translate", "HttpsUpgrades", "NetworkTimeServiceQuerying"]) expect(features[0].slice("--disable-features=".length).split(",")).toContain(f);
+    expect(CHROME_QUIET.filter((a: string) => /^--(gaia-url|google-base-url|gcm-checkin-url|gcm-registration-url|gcm-mcs-endpoint)=/.test(a)).every((a: string) => a.endsWith("=http://127.0.0.1:9"))).toBe(true);
   });
 
   it("no proxy.bypass is written (Playwright then sends loopback through the proxy too)", () => {

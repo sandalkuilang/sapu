@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { run, runAsync, sameStart, sleep, startTime } from "./argus-live-proc.mjs";
+import { processTable, run, runAsync, sameStart, sleep, startTime } from "./argus-live-proc.mjs";
 
 /**
  * The CLI's whole environment: PATH, USER, SHELL, LANG and the LC_* variables the owner set, HOME =
@@ -136,6 +136,53 @@ export function removeSockets(home) {
   } catch {
     // none
   }
+}
+
+/** True while a session record's daemon or browser still runs what was recorded (or its pid could not be signalled: it may). */
+export function sessionAlive(record, runner = run) {
+  return Boolean(record && (stillThere(record.daemon, runner) || stillThere(record.browser, runner)));
+}
+
+/** The process is this user's to signal (another user's answers EPERM). */
+const ours = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * What CLI sessions left running that no record holds (an `open` that failed or timed out after its
+ * daemon started; a record never written), killed by identity as `ps` shows it now: every daemon of this
+ * user whose command runs `cliDaemon.js <name>` with `match(name)` true, the daemon's children (Chrome's
+ * root), and every process of this user orphaned to pid 1 whose command names one of `homes` (a Chrome
+ * whose daemon died: its profile lies under the session's HOME) → SIGTERM to each (its group when it
+ * leads one), SIGKILL after `graceMs`. Never `close-all` or `kill-all`: other projects share the CLI.
+ */
+export async function sweepSessions({ match, homes = [], runner = run, graceMs = 10_000, note = () => {} }) {
+  let table;
+  try {
+    table = processTable(runner);
+  } catch (e) {
+    note(`CLI sessions: ${e.message}; nothing swept`);
+    return;
+  }
+  const targets = [];
+  const take = (p, name, which) => {
+    if (p.pid <= 1 || p.pid === process.pid || targets.some((t) => t.p.pid === p.pid) || !ours(p.pid)) return;
+    targets.push({ s: { name }, which, p: { pid: p.pid, pgid: p.pgid, started: p.started } });
+  };
+  for (const p of table) {
+    const m = /\/cliDaemon\.js (\S+)/.exec(p.command);
+    if (!m || !match(m[1])) continue;
+    take(p, m[1], "daemon");
+    for (const c of table.filter((x) => x.ppid === p.pid)) take(c, m[1], "browser");
+  }
+  const dirs = homes.filter((h) => typeof h === "string" && h).map((h) => `${h}/`);
+  for (const p of table) if (p.ppid === 1 && dirs.some((d) => p.command.includes(d))) take(p, "(orphaned)", "browser");
+  if (targets.length) await stop(targets, runner, graceMs, note);
 }
 
 /** SIGTERM to each target's group, SIGKILL after `graceMs` to those still running as recorded. */

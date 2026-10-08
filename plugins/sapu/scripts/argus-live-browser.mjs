@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cliEnv, closeSessions, runCli, sessionName } from "./argus-live-cli.mjs";
+import { cliEnv, closeSessions, runCli, sessionName, sweepSessions } from "./argus-live-cli.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { processTable, redact, run, runAsync, within } from "./argus-live-proc.mjs";
 import { ownDir, updateRun } from "./argus-live-run.mjs";
@@ -266,10 +266,39 @@ export const SIGNAL_SCRIPT = `(() => {
 `;
 
 /**
+ * Chrome switches that keep its own background services off the network (probed with 0.1.22's Chrome:
+ * without them a fresh profile reaches accounts.google.com, android.clients.google.com,
+ * update.googleapis.com, www.google.com and www.gstatic.com through the run's proxy, which blocks and logs
+ * them). The service URLs Chrome still asks for (sign-in, push messaging, component updates) point at the
+ * discard port on loopback, which the proxy refuses. Chrome keeps the last `--disable-features`, so this
+ * one repeats the list Playwright (1.64) passes and adds the services found. One www.gstatic.com
+ * connection at start-up remains: the login and blocked-origin judgements read the page's own requests.
+ */
+const OFF = "http://127.0.0.1:9";
+const PLAYWRIGHT_DISABLED = ["AvoidUnnecessaryBeforeUnloadCheckSync", "DestroyProfileOnBrowserClose", "DialMediaRouteProvider", "GlobalMediaControls", "HttpsUpgrades", "LensOverlay", "MediaRouter", "PaintHolding", "ThirdPartyStoragePartitioning", "BlockOriginHeaderModificationOnRedirect", "Translate", "AutoDeElevate", "OptimizationHints", "NetworkTimeServiceQuerying", "AimEnabled", "msForceBrowserSignIn", "msEdgeUpdateLaunchServicesPreferredVersion"];
+const QUIET_DISABLED = ["AutofillServerCommunication", "OptimizationGuideModelDownloading", "OptimizationHintsFetching", "OptimizationGuideOnDeviceModel", "OnDeviceModelPerformanceParams", "CertificateTransparencyComponentUpdater", "InterestFeedContentSuggestions", "SearchPrefetchServicePrefetching", "PrefetchProxy", "PreconnectToSearch", "NavigationPredictor", "PrivacySandboxSettings4", "ChromeWhatsNewUI", "SafeBrowsingRealTimeUrlLookup"];
+export const CHROME_QUIET = [
+  "--disable-background-networking",
+  "--disable-component-update",
+  "--disable-sync",
+  "--no-pings",
+  "--disable-domain-reliability",
+  "--disable-client-side-phishing-detection",
+  `--gaia-url=${OFF}`,
+  `--google-base-url=${OFF}`,
+  `--gcm-checkin-url=${OFF}`,
+  `--gcm-registration-url=${OFF}`,
+  `--gcm-mcs-endpoint=${OFF}`,
+  `--component-updater=url-source=${OFF}`,
+  `--disable-features=${[...PLAYWRIGHT_DISABLED, ...QUIET_DISABLED].join(",")}`,
+];
+
+/**
  * The CLI config of the slot in `dir` (spec §9 per-slot config; key paths as 0.1.22 reads them): Chrome
  * (`chrome.channel`) headless and isolated, every request through the run's proxy (no `proxy.bypass`:
  * Playwright then adds `<-loopback>`, so loopback goes through it too), host names other than the run's
- * and `allow_origins`' resolving to nothing, WebRTC kept off non-proxied UDP, the run's locale, time zone
+ * and `allow_origins`' resolving to nothing, WebRTC kept off non-proxied UDP, Chrome's own background
+ * services off (CHROME_QUIET), the run's locale, time zone
  * and first viewport width (else en-US, UTC, 1440), service workers blocked, the signal script in every
  * page, `network.allowedOrigins` = the run's origins and `allow_origins`, output under `<dir>/out`.
  */
@@ -284,7 +313,7 @@ export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = 
         channel: chrome.channel,
         headless: true,
         proxy: { server: `http://127.0.0.1:${proxyPort}` },
-        args: [`--host-resolver-rules=MAP * ~NOTFOUND, ${hosts.map((h) => `EXCLUDE ${h}`).join(", ")}`, "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy"],
+        args: [`--host-resolver-rules=MAP * ~NOTFOUND, ${hosts.map((h) => `EXCLUDE ${h}`).join(", ")}`, "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy", ...CHROME_QUIET],
       },
       contextOptions: { locale: live.locale || "en-US", timezoneId: live.timezone || "UTC", serviceWorkers: "block", viewport: { width: (live.viewports ?? [])[0] || 1440, height: 900 } },
       initScript: [path.join(dir, ".playwright", "signals.js")],
@@ -316,20 +345,44 @@ export function writeSlotConfig(dir, cfg) {
 /** `{pid, pgid, started}` of a process-table row. */
 const identity = (p) => (p ? { pid: p.pid, pgid: p.pgid, started: p.started } : null);
 
+/** run.json `sessions` with `record` in place of the one of its name (appended when there is none); null drops that name. */
+function putSession(main, runId, name, record) {
+  return updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: [...(prev.sessions ?? []).filter((x) => !x || x.name !== name), ...(record ? [record] : [])] } : undefined), { create: false });
+}
+
 /**
  * Opens account `account`'s CLI session in slot `slot` (`open`, in the slot's directory, under the
- * run's browser HOME) and records it in run.json `sessions` through updateRun → the record `{name, slot,
- * account, cwd, home, daemon, browser}`. With `storageState` (a file: a login command's state), the slot
- * config plus `browser.contextOptions.storageState` goes into `.playwright/<session>.config.json`, passed
- * as `open --config=<file>`; both files are removed once `open` returned. The daemon is the process whose
+ * run's browser HOME) → the record `{name, slot, account, cwd, home, daemon, browser}`, kept in run.json
+ * `sessions` (through updateRun) from before `open` runs: a session that starts and is never recorded
+ * would outlive every teardown. With `storageState` (a file: a login command's state), the slot config
+ * plus `browser.contextOptions.storageState` goes into `.playwright/<session>.config.json`, passed as
+ * `open --config=<file>`; both files are removed once `open` returned. The daemon is the process whose
  * command runs playwright-core's `cliDaemon.js <session>`, the browser its child (Chrome's root, which
  * leads a process group of its own); each recorded by {pid, pgid, started}, which the teardown's kills
- * ask first. A session that cannot be recorded (no daemon in ps, run.json gone or sealed) is closed again
- * and the error thrown.
+ * ask first. An `open` that fails or times out, or a daemon not in ps, closes the session by name and
+ * sweeps what it left (sweepSessions), drops the record, and throws; run.json gone or sealed before
+ * `open` throws with nothing started.
  */
 export async function openSession({ main, runId, slot, account, js, home, storageState = null, runner = run, cliRunner = runAsync, timeoutMs = 60_000 }) {
   const dir = slotDir(main, runId, slot);
   const name = sessionName(runId, slot, account);
+  const pending = { name, slot, account, cwd: dir, home, daemon: null, browser: null };
+  try {
+    if (!putSession(main, runId, name, pending)) throw new Error(`failed: run.json of cycle ${runId} is gone; the session ${name} was not opened`);
+  } catch (e) {
+    for (const f of [storageState]) if (f) fs.rmSync(f, { force: true });
+    throw e;
+  }
+  const undo = async (failure) => {
+    await closeSessions([pending], { js, runner, cliRunner, graceMs: 3000 });
+    await sweepSessions({ match: (n) => n === name, runner, graceMs: 3000 });
+    try {
+      putSession(main, runId, name, null);
+    } catch {
+      // sealed or gone: the teardown closes what the record names
+    }
+    return failure;
+  };
   let args = ["open"];
   let config = null;
   try {
@@ -345,6 +398,8 @@ export async function openSession({ main, runId, slot, account, js, home, storag
       const why = `${r.stdout}\n${r.stderr}`.split("\n").map((l) => l.trim()).filter((l) => /error/i.test(l)).pop() || (r.timedOut ? "timed out" : `exit ${r.code}`);
       throw new Error(`failed: the browser session ${name} could not open: ${why.slice(0, 300)}`);
     }
+  } catch (e) {
+    throw await undo(e);
   } finally {
     for (const f of [config, storageState]) if (f) fs.rmSync(f, { force: true });
   }
@@ -353,20 +408,13 @@ export async function openSession({ main, runId, slot, account, js, home, storag
   const daemon = table.find((p) => daemonOf.test(p.command));
   const children = daemon ? table.filter((p) => p.ppid === daemon.pid) : [];
   const browser = children.find((p) => p.pgid === p.pid) || children[0] || null;
-  const record = { name, slot, account, cwd: dir, home, daemon: identity(daemon), browser: identity(browser) };
-  let written = null;
-  let failure = daemon ? null : new Error(`failed: the browser session ${name} opened but its daemon is not in ps; closed again`);
-  if (!failure) {
-    try {
-      written = updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: [...(prev.sessions ?? []), record] } : undefined), { create: false });
-      if (!written) failure = new Error(`failed: run.json of cycle ${runId} is gone; the session ${name} was closed again`);
-    } catch (e) {
-      failure = e;
-    }
-  }
-  if (failure) {
+  const record = { ...pending, daemon: identity(daemon), browser: identity(browser) };
+  if (!daemon) throw await undo(new Error(`failed: the browser session ${name} opened but its daemon is not in ps; closed again`));
+  try {
+    putSession(main, runId, name, record);
+  } catch (e) {
     await closeSessions([record], { js, runner, cliRunner, graceMs: 3000 });
-    throw failure;
+    throw e;
   }
   return record;
 }

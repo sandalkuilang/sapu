@@ -11,17 +11,19 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { closeSessions } from "./argus-live-cli.mjs";
+import { closeSessions, sessionAlive } from "./argus-live-cli.mjs";
 import { expand, expandConfig, LIVE_FILE, loadLive, portNames, secretEnv } from "./argus-live-config.mjs";
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs";
-import { hostOf, loopbackAliases, ownerEnvFiles, readOwner, resolvesToLoopback, scopeChecker } from "./argus-live-endpoints.mjs";
+import { hostOf, loopbackAliases, normHost, ownerEnvFiles, readOwner, resolvesToLoopback, scopeChecker } from "./argus-live-endpoints.mjs";
 import { iso, readLock, renew, runIdOk, takeLock } from "./argus-live-lock.mjs";
 import { killGroup, MAX_HOPS, membersOf, msLeft, processTable, readFrom, redact, resolveLink, run, runAsync, runPids, sameGroup, sameStart, sleep, startTime, stopRecordedGroups, tail, within } from "./argus-live-proc.mjs";
-import { down, guarded, liveRoot, logsDir, ownDir, readRun, recover, replayStop, repoName, startReaper, writeRunFiles } from "./argus-live-run.mjs";
+import { down, guarded, liveRoot, logsDir, ownDir, readRun, recover, replayStop, repoName, startReaper, updateRun, writeRunFiles } from "./argus-live-run.mjs";
 import { findMain, loadContract } from "./sapu-contract.mjs";
 
 /** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
@@ -263,6 +265,31 @@ async function answers(url) {
   }
 }
 
+/**
+ * One GET of a health `url` (no redirect followed) → `{status, address}` (`address`: the peer it
+ * answered from, an IPv4-mapped IPv6 address as IPv4), or null when nothing answered within `timeoutMs`.
+ */
+function healthAnswer(url, timeoutMs) {
+  return new Promise((done) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return done(null);
+    }
+    const req = (u.protocol === "https:" ? https : http).get(u, { agent: false, timeout: timeoutMs }, (res) => {
+      const address = String(res.socket.remoteAddress || "").replace(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/, "$1") || null;
+      res.resume();
+      done({ status: res.statusCode, address });
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      done(null);
+    });
+    req.on("error", () => done(null));
+  });
+}
+
 /** A shell field's command run once: `/bin/sh -c`, its own group killed afterwards, bounded by `timeoutMs`. */
 function shellOnce(cmd, { cwd, env, secrets = {}, timeoutMs, capture = false, runner = runAsync }) {
   return runner(["/bin/sh", "-c", cmd], { cwd, env: { ...env, ...secretEnv(cmd, secrets) }, timeoutMs, capture, killAfter: true });
@@ -329,7 +356,7 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
  * and the entry has `stop` (a detached starter). `timeoutS` bounds the wait. `egress` (a one-sample
  * checkEgress, from `up`) runs between tries, so a connection made while the app starts is seen too.
  */
-export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync, egress = async () => {} }) {
+export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync, egress = async () => {}, upstream = null }) {
   const until = Date.now() + timeoutS * 1000;
   const exited = () => {
     const x = started.exit;
@@ -357,11 +384,12 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
     if (left <= 0) throw timeout();
     let ok = false;
     if (entry.health.url) {
-      try {
-        const res = await fetch(entry.health.url, { signal: AbortSignal.timeout(Math.min(2000, left)), redirect: "manual" });
-        ok = res.status >= 200 && res.status < 300;
-      } catch {
-        ok = false;
+      const res = await healthAnswer(entry.health.url, Math.min(2000, left));
+      ok = Boolean(res && res.status >= 200 && res.status < 300);
+      // The address the run's listener answered on: the proxy connects a loopback name there, never by a lookup.
+      if (ok && upstream && res.address) {
+        const u = new URL(entry.health.url);
+        if (normHost(u.hostname) === "loopback") upstream[u.port || (u.protocol === "https:" ? "443" : "80")] = res.address;
       }
     } else {
       const r = await shellOnce(entry.health.cmd, { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, secrets, timeoutMs: Math.min(30_000, left), runner });
@@ -527,7 +555,7 @@ function contractOf(main) {
  * check waitHealth runs between tries, `fullEgress` step 8's five samples, which also expect a listener
  * on base_url's port when it is one of the run's and no Compose service publishes it (`composePorts`).
  */
-function runContext({ main, runId, x, env, worktree, home, ports, secrets, contract, groups, stops, deadline, composeServices, composePorts = [], runner, lookup }) {
+function runContext({ main, runId, x, env, worktree, home, ports, secrets, contract, groups, stops, deadline, composeServices, composePorts = [], runner, lookup, upstream = null }) {
   const allowed = egressAllowed({ config: x, env, ports });
   let port = NaN;
   try {
@@ -552,6 +580,7 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
     deadline,
     composeServices,
     lookup,
+    upstream,
     egress: () => egress(1),
     fullEgress: () => egress(5, expectListen),
   };
@@ -607,7 +636,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, internal: {}, origins: [], baseUrl: null, env: null, since: null, events: null, digest, composeServices: [], composePorts: [] };
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, internal: {}, upstream: {}, origins: [], baseUrl: null, env: null, since: null, events: null, digest, composeServices: [], composePorts: [] };
   // Only the first write creates run.json: a later one finding it gone means a `down` removed it.
   let created = false;
   const save = () => {
@@ -698,7 +727,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     save();
     log(`step 5 Compose: ${state.composeServices.length ? `services ${state.composeServices.join(", ")}` : "no Compose file"}`);
 
-    const ctx = runContext({ main, runId, x, env: state.env, worktree: state.worktree, home: state.home, ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: state.composeServices, composePorts: state.composePorts, runner, lookup });
+    const ctx = runContext({ main, runId, x, env: state.env, worktree: state.worktree, home: state.home, ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: state.composeServices, composePorts: state.composePorts, runner, lookup, upstream: state.upstream });
     step = "6 store";
     await bringUpStore(ctx);
     log(`step 6 store: ${x.start.filter((e) => e.phase === "store").map((e) => e.name).join(", ") || "no store entry"} healthy; store_check printed ${x.store}; reset done`);
@@ -790,14 +819,19 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     // proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
     const explorers = (rec.sessions ?? []).filter((x) => x && typeof x.slot === "number");
     await closeSessions(explorers, { js: rec.browser?.js ?? null, runner, note });
-    state.sessions = (rec.sessions ?? []).filter((x) => !explorers.includes(x));
+    // Only those now gone leave the record (one still running stays for down); re-read under the
+    // run's claim, so a session recorded meanwhile is kept, and never written back from this snapshot.
+    const closed = new Set(explorers.filter((x) => !sessionAlive(x, runner)).map((x) => x.name));
+    for (const x of explorers.filter((y) => !closed.has(y.name))) note(`CLI session ${x.name} still runs after its close; kept in the record for down`);
+    updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: (prev.sessions ?? []).filter((x) => !x || !closed.has(x.name)) } : undefined), { create: false });
+    delete state.sessions;
     state.slots = retireTokens(rec.slots);
     state.instanceId = null;
     save();
     log("fresh: every start entry stopped");
     const contract = contractOf(main);
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
-    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
+    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup, upstream: (state.upstream = { ...(rec.upstream ?? {}) }) });
     step = "fresh: store";
     await bringUpStore(ctx);
     step = "fresh: start";

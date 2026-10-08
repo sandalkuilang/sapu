@@ -9,11 +9,10 @@ import path from "node:path";
 import { openSession, slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
 import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
-import { normHost } from "./argus-live-endpoints.mjs";
 import { nonce } from "./argus-live-fence.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { redact, run, runAsync, sleep, tail, tempBeside, withFileLock } from "./argus-live-proc.mjs";
-import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
+import { canonicalOrigin, exactHost } from "./argus-live-proxy.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
@@ -392,10 +391,10 @@ export async function login({ main, runId, session, account, user, password, tot
   return { ok: true, origins: [...origins] };
 }
 
-/** True when `host` (a cookie's domain, a leading dot dropped) is the host of one of `origins`. */
+/** True when `host` (a cookie's domain, a leading dot dropped) is the host of one of `origins`, spelled as it spells it. */
 const runHost = (host, origins) => {
-  const h = normHost(String(host).replace(/^\./, ""));
-  return Boolean(h) && origins.some((o) => normHost(new URL(o).hostname) === h);
+  const h = exactHost(String(host).replace(/^\./, ""));
+  return Boolean(h) && origins.some((o) => exactHost(new URL(o).hostname) === h);
 };
 
 /**
@@ -442,29 +441,14 @@ export async function commandLogin({ role, live, env, worktree, secrets = {}, or
 }
 
 /**
- * Chrome's own background services (probed: www.gstatic.com, update.googleapis.com, accounts.google.com,
- * www.google.com, android.clients.google.com reach the run's proxy whatever the page does). The proxy
- * blocks and logs them; they are not the login's: a page's own request to one of them is in the stage's
- * `origins` (its request events) all the same.
- */
-const BROWSER_OWN = /(^|\.)(google\.com|googleapis\.com|gstatic\.com|gvt1\.com)$/;
-const browserOwn = (origin) => {
-  try {
-    return BROWSER_OWN.test(new URL(origin).hostname);
-  } catch {
-    return false;
-  }
-};
-
-/**
  * `up` step 10: one proving login per configured account — every user of every role with `users`
  * (`<role>.<k>`, k from 1 in order), once per role with a login command (`<role>.1`) — sequential,
  * `login_spacing_ms` apart, in slot directory `up` (its CLI config written here, from `origins`,
  * `allowOrigins`, `proxyPort` and `chrome`). Each: the session opened (with the command's storage state,
  * then logged_in checked at the role's base_url by a probe), signed in (login), and every origin its pages
- * requested, plus every origin the proxy blocked meanwhile (blockedSince; Chrome's own background services
- * aside), must be a run origin or an `allow_origins` one, else `refused: the login of <role>.<k> reached
- * <origin>, outside the run's origins`; a failure is `refused: <role>.<k> could not sign in (<reason>)`.
+ * requested (their own requests and WebSockets, redirects and blocked ones included: the proxy's log also
+ * holds Chrome's own background traffic, which is not the login's) must be a run origin or an
+ * `allow_origins` one, else `refused: the login of <role>.<k> reached <origin>, outside the run's origins`; a failure is `refused: <role>.<k> could not sign in (<reason>)`.
  * The session is closed and its record dropped from run.json either way → the number of accounts proven.
  */
 export async function proveLogins(main, runId, { live, secrets = {}, origins, allowOrigins = [], js, home, proxyPort, chrome, env, worktree, runner = run, cliRunner = runAsync, say = () => {}, sleep: wait = sleep }) {
@@ -480,7 +464,6 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
   let proven = 0;
   for (const a of accounts) {
     if (proven > 0 && live.login_spacing_ms) await wait(live.login_spacing_ms);
-    const offset = blockedSince(main, runId, 0).offset;
     const plan = loginPlan(live, a.role);
     let record = null;
     try {
@@ -494,8 +477,7 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
         record = await openSession({ main, runId, slot: "up", account: a.account, js, home, runner, cliRunner });
         res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner });
       }
-      const blocked = blockedSince(main, runId, offset).origins.filter((o) => !browserOwn(o));
-      const outside = [...res.origins, ...blocked].find((o) => {
+      const outside = res.origins.find((o) => {
         try {
           return !allowed.has(canonicalOrigin(o));
         } catch {

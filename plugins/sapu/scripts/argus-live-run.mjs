@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { closeSessions } from "./argus-live-cli.mjs";
+import { closeSessions, removeSockets, sweepSessions } from "./argus-live-cli.mjs";
 import { LIVE_FILE, loadLive, secretEnv, secretsIn } from "./argus-live-config.mjs";
 import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
@@ -502,7 +502,13 @@ const TEARDOWN = [
   ["process groups", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => !(g && g.internal)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
   ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && g.name === "proxy"), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) })],
   // Each session closed by name, then its daemon and browser killed by identity (closeSessions).
-  ["CLI sessions", (t) => closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note, sockets: true })],
+  // Then whatever a session of the run left that no record holds (sweepSessions: its daemons by name, orphaned browsers by HOME).
+  ["CLI sessions", async (t) => {
+    await closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note });
+    const homes = [...new Set([...(t.rec?.sessions ?? []).map((x) => x && x.home), t.rec?.home ? path.join(t.rec.home, "browser") : null].filter((h) => typeof h === "string"))];
+    await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });
+    for (const h of homes) removeSockets(h);
+  }],
   ["the run's directories", (t) => {
     removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
     removeRunSecrets(t.main, t.runId, t.note);

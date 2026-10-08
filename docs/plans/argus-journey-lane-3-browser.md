@@ -1157,6 +1157,42 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     fixture, which the browser tests now run at the same time: its fixture commands carry a marker
     argument and only those are killed and counted.
 
+- **Review of Tasks 5–7 (fixed after Task 8).**
+  - Masking: `secretForms` also gives each secret HTML-escaped (all decimal, all hex in either case,
+    named with `&#39;`, `&#x27;` or `&apos;`, attribute style without `'`, text style `&<>` only) and as
+    a browser serialises it in a URL's query and path (WHATWG `URL`; a form shorter than the value, cut
+    by `#` or a dot segment, is left out so it never masks unrelated text). Proven on a `response-body`
+    of `/inject?echo=1` in Chrome.
+  - Sessions: `openSession` records the session (`daemon`/`browser` null) in run.json before `open`;
+    an `open` that fails or times out closes it by name, sweeps what it left and drops the record. The
+    new `sweepSessions({match, homes})` in `-cli.mjs` kills, by identity as `ps` shows them, this user's
+    `cliDaemon.js <name>` processes whose name `match` accepts, their children, and processes orphaned to
+    pid 1 whose command names a session HOME. The teardown's "CLI sessions" step closes the records,
+    sweeps every daemon named `<runId>-…` and the orphans under the recorded HOMEs and `<run HOME>/browser`,
+    then removes those HOMEs' sockets directories.
+  - Chrome's own traffic: `CHROME_QUIET` (in every slot config) points Chrome's sign-in, push-messaging
+    and component-update URLs at `http://127.0.0.1:9` (refused by the proxy) and repeats Playwright's
+    `--disable-features` list (Chrome keeps the last one) with the search prefetch, optimization-guide,
+    autofill-server and similar services added. Probed: without it a fresh profile reached
+    accounts.google.com, android.clients.google.com, update.googleapis.com, www.google.com and
+    www.gstatic.com within 25 s; with it one www.gstatic.com connection at start-up remains (no flag
+    found for it). `proveLogins` therefore judges only the origins its pages requested (their requests
+    and WebSockets, redirects and blocked ones included) and no longer reads the proxy's log; Task 11's
+    `blocked:` lines must do the same.
+  - The proxy compares a host only as a run origin spells it (`exactHost`/`canonicalOrigin`: lower
+    case, WHATWG's one form of an IP, no trailing dot; `localhost`, `127.0.0.1` and `::1` stay apart).
+    A loopback name is connected to at the address its listener passed health on: `waitHealth` records
+    `{<port>: <address>}` for a loopback health URL (`up` keeps it as run.json `upstream`; `up --fresh`
+    rewrites it), `serveProxy` reads it (and again with every lock check); a port with no address
+    recorded answers 502. A loopback address target is connected to as written. Task 10's `checkUrl`
+    follows the same rule (`http://127.0.0.1:<p>` is not `http://localhost:<p>`).
+  - `up --fresh` drops from run.json only the explorer sessions that are gone after the close (one still
+    running is kept and noted) and removes them under the run's claim, never rewriting `sessions` from
+    its snapshot.
+  - Tests: the browser tests fail when a run's `down` leaves the fixture app running; the CLI describe's
+    Compose test marks the fixture it starts outside the run's groups (it relied on that describe's
+    kill-every-fixture cleanup, which now kills only its marked processes).
+
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
 `login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and

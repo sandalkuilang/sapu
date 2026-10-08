@@ -3174,6 +3174,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(Object.keys(rec.ports).sort()).toEqual(["cache", "web"]);
     expect(rec.groups.map((g: Obj) => g.name)).toEqual(["cache", "reset", "web"]);
     expect(rec.origins).toContain(`http://localhost:${rec.ports.web}`);
+    // Where each loopback health URL answered: the proxy connects a loopback name there (never by a lookup).
+    expect(rec.upstream).toEqual({ [String(rec.ports.cache)]: "127.0.0.1", [String(rec.ports.web)]: "127.0.0.1" });
     expect(rec.env.COMPOSE_PROJECT_NAME).toBe(`argus-${r.runId}`);
     expect(alive(rec.reaper)).toBe(true);
     expect(readFileSync(join(data, "seed.json"), "utf8")).toContain("seeded");
@@ -3344,7 +3346,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     });
     // fg.cjs stands in for `docker compose up web`: it stays in the foreground, while what serves the
     // published port runs outside the run's process groups (as the Docker daemon's proxy does).
-    writeFileSync(join(main, "fg.cjs"), `require("node:child_process").spawn(process.execPath, [${JSON.stringify(SERVER)}], { detached: true, stdio: "ignore" }).unref();\nsetInterval(() => {}, 1 << 30);\n`);
+    writeFileSync(join(main, "fg.cjs"), `require("node:child_process").spawn(process.execPath, [${JSON.stringify(SERVER)}, ${JSON.stringify(MARK)}], { detached: true, stdio: "ignore" }).unref();\nsetInterval(() => {}, 1 << 30);\n`);
     writeFileSync(join(main, "compose.yaml"), "services:\n  web:\n    image: nginx\n");
     git(main, "add", "fg.cjs", "compose.yaml");
     git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "compose");
@@ -3446,16 +3448,20 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     };
     const explorer = record(1, "buyer.1");
     const proving = record("up", "buyer.1");
-    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, ...groups], sessions: [explorer, proving], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    // A session whose processes the teardown cannot end (they are root's: SIGTERM and SIGKILL fail): its record stays for down.
+    if (process.getuid!() === 0) throw new Error("run the suite as a user, not root: this test signals a process of root's that must survive it");
+    const rootPid = Number(execFileSync("ps", ["-U", "0", "-o", "pid="], { encoding: "utf8" }).split("\n").map((l) => l.trim()).find((l) => Number(l) > 1));
+    const stuck = { ...record(2, "clerk.1"), daemon: { pid: rootPid, pgid: rootPid, started: startTime(rootPid) }, browser: null };
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, ...groups], sessions: [explorer, proving, stuck], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
     await up(main, opts({ fresh: true }));
     const fresh = runJson(main);
     expect(alive(proxy.pid)).toBe(true);
     expect(fresh.groups.filter((g: Obj) => g.internal).map((g: Obj) => g.pgid)).toEqual([proxy.pid]);
     expect(fresh.internal).toEqual({ proxy: proxy.port });
-    expect(calls().map((c) => c.argv)).toEqual([[`-s=${explorer.name}`, "close"]]);
+    expect(calls().map((c) => c.argv)).toEqual([[`-s=${explorer.name}`, "close"], [`-s=${stuck.name}`, "close"]]);
     for (const p of [explorer.daemon.pid, explorer.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
     expect(alive(proving.daemon.pid)).toBe(true);
-    expect(fresh.sessions.map((s: Obj) => s.name)).toEqual([proving.name]);
+    expect(fresh.sessions.map((s: Obj) => s.name)).toEqual([proving.name, stuck.name]);
     expect(fresh.slots["1"]).toMatchObject({ tokenHash: null, retired: ["a".repeat(64)] });
     await down(main, { runId: r.runId });
     expect(await until(() => !alive(proxy.pid) && !alive(proving.daemon.pid), 5000)).toBe(true);

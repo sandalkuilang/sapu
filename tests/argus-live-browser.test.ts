@@ -4,7 +4,7 @@
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ import { alive, cleanTemps, freePort, liveRun, tempDir, until } from "./helpers/
 import { ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { closeSessions, runCli, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+// @ts-expect-error — plain ESM script without types
+import { clean } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
 import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -42,17 +44,31 @@ beforeAll(() => {
 const saved = { ...process.env };
 const runIds = new Set<string>();
 const cleanups: (() => unknown)[] = [];
+/** The fixture app's process groups the tests started: each must be gone once its run's `down` ran. */
+const apps: number[] = [];
 afterEach(async () => {
+  const errors: string[] = [];
   for (const c of cleanups.splice(0).reverse()) {
     try {
       await c();
-    } catch {
-      // the next cleanup still runs
+    } catch (e) {
+      errors.push((e as Error).message); // the next cleanup still runs
     }
   }
+  const groupAlive = (g: number) => {
+    try {
+      process.kill(-g, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const left = apps.splice(0).filter(groupAlive);
+  for (const g of left) process.kill(-g, "SIGKILL");
   for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
   for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   cleanTemps();
+  if (left.length || errors.length) throw new Error(`the run's down left the fixture app running (groups ${left.join(", ")}): ${errors.join("; ") || "no cleanup failed"}`);
 }, 60_000);
 
 /** Listens on loopback; after the test every connection it holds is destroyed (a net.Server's close would wait for them) and it closes. */
@@ -83,10 +99,14 @@ const browserRun = async ({ allowOrigins = [] as string[], app = {} as Record<st
   const appEnv = { PATH: process.env.PATH!, PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", CONTROL_TOKEN: "control-7", CACHE_URL: `tcp://127.0.0.1:${cache}`, ...app };
   expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: appEnv }).status).toBe(0);
   const groups: Obj[] = [];
-  const entry = { name: "web", cmd: `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}`, env: appEnv, health: { url: `http://127.0.0.1:${web}/health` } };
-  await waitHealth(entry, await startEntry(entry, { worktree: r.wt, env: { PATH: process.env.PATH! }, logs: logsDir(r.main, r.runId), groups }), { timeoutS: 20, worktree: r.wt, env: {} });
+  const upstream: Record<string, string> = {};
+  const entry = { name: "web", cmd: `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}`, env: appEnv, health: { url: `http://localhost:${web}/health` } };
+  const started = await startEntry(entry, { worktree: r.wt, env: { PATH: process.env.PATH! }, logs: logsDir(r.main, r.runId), groups });
+  apps.push(groups[0].pgid);
+  await waitHealth(entry, started, { timeoutS: 20, worktree: r.wt, env: {}, upstream });
+  expect(upstream).toEqual({ [String(web)]: "127.0.0.1" });
   const origins = [`http://localhost:${web}`];
-  writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins, allowOrigins, groups, env: r.env, browser: { js: cli.js, channel: chrome.channel } });
+  writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, home: r.home, origins, allowOrigins, upstream, groups, env: r.env, browser: { js: cli.js, channel: chrome.channel } });
   // As up's recording array: each group in run.json as soon as it is pushed.
   const recorded: Obj[] = [];
   recorded.push = (g: Obj) => (updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, g] })), Array.prototype.push.call(recorded, g));
@@ -205,6 +225,45 @@ describe("argus-live browser — sessions and network layers", () => {
     expect([r.otherHits, r.udpPackets]).toEqual([0, 0]);
     expect([r.once("http://outside.test"), r.once(`http://127.0.0.1:${r.other}`)]).toEqual([1, 1]);
     expect(r.blocked).not.toContain(r.allowed);
+  }, 120_000);
+
+  it("a session whose open fails (timed out) leaves neither its daemon nor its browser, nor a record", async () => {
+    const b = await browserRun();
+    const name = `${b.runId}-1-buyer.1`;
+    await expect(openSession({ main: b.main, runId: b.runId, slot: 1, account: "buyer.1", js: cli.js, home: b.home, timeoutMs: 700 })).rejects.toThrow(/could not open/);
+    const left = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(`cliDaemon.js ${name}`) || l.includes(`${b.home}/`));
+    expect(await until(() => left().length === 0, 15_000)).toBe(true);
+    expect(readRun(b.main).sessions).toEqual([]);
+    await down(b.main, { runId: b.runId, graceMs: 2000 });
+    expect(existsSync(socketsDir(b.home))).toBe(false); // no record names that HOME any more: the run's own browser HOME does
+  }, 120_000);
+
+  it("down sweeps a daemon of the run that no record names, and its browser", async () => {
+    const b = await browserRun();
+    const name = `${b.runId}-1-clerk.1`;
+    expect((await b.call(name, "open")).code).toBe(0);
+    const ps = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n");
+    expect(ps().some((l) => l.includes(`cliDaemon.js ${name}`))).toBe(true);
+    const { report } = await down(b.main, { runId: b.runId, graceMs: 2000 });
+    expect(await until(() => !ps().some((l) => l.includes(`cliDaemon.js ${name}`) || l.includes(`${b.home}/`)), 15_000)).toBe(true);
+    expect(report.join("\n")).not.toMatch(/failed/);
+    expect(existsSync(socketsDir(b.home))).toBe(false);
+  }, 120_000);
+
+  it("a role password is masked in a response body, HTML-escaped as the page serves it", async () => {
+    const b = await browserRun();
+    const state = JSON.parse(spawnSync(process.execPath, [SERVER, "--login-state", "buyer1@example.test"], { env: b.appEnv, encoding: "utf8" }).stdout);
+    const file = join(b.dir, ".playwright", "buyer.1.state.json");
+    writeFileSync(file, JSON.stringify(state), { mode: 0o600 });
+    const s = await b.open("buyer.1", file);
+    await b.call(s.name, "goto", "--", `${b.base}/inject?echo=1`);
+    const list = (await b.call(s.name, "requests", "--static")).stdout;
+    const n = /^(\d+)\. \[GET\] \S*\/inject\?echo=1/m.exec(list)![1];
+    const raw = (await b.call(s.name, "response-body", "--", n)).stdout;
+    expect(raw).toContain("Pa&#34;ss\\wo:rd &#38;+1"); // the fixture's own escaping, as Chrome received it
+    const shown = clean(raw, { secrets: { APP_PW: PW } });
+    expect(shown).not.toContain("Pa&#34;ss");
+    expect(shown).not.toContain("wo:rd");
   }, 120_000);
 
   it("the signal script records a toast that is gone before anyone looks", async () => {
@@ -361,6 +420,18 @@ process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
     const left = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" });
     expect(left).not.toContain(`cliDaemon.js ${b.runId}-up-`);
   }, 240_000);
+
+  it("proveLogins judges the page's own requests: what the proxy blocks for Chrome itself meanwhile is not the login's", async () => {
+    const b = await browserRun();
+    const log = join(logsDir(b.main, b.runId), "proxy-blocked.jsonl");
+    const noise = setInterval(() => appendFileSync(log, `${JSON.stringify({ t: Date.now(), origin: "https://www.gstatic.com", kind: "connect" })}\n${JSON.stringify({ t: Date.now(), origin: "http://127.0.0.1:9", kind: "http" })}\n`), 100);
+    try {
+      const live = { ...config(b), roles: { buyer: { users: [{ user: "buyer1@example.test", password: PW }] } } };
+      expect(await proveLogins(b.main, b.runId, { live, origins: [b.base], js: cli.js, home: b.home, proxyPort: b.proxy.port, chrome, env: b.appEnv, worktree: b.wt })).toBe(1);
+    } finally {
+      clearInterval(noise);
+    }
+  }, 120_000);
 
   it("proveLogins refuses a login that redirects to another origin", async () => {
     let hits = 0;

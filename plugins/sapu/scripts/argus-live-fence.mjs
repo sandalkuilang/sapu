@@ -14,11 +14,43 @@ export function nonce() {
 const NB_HYPHEN = "‑";
 
 /**
+ * The ways a page escapes `"`, `&`, `<`, `>` and `'` in HTML (a response body's markup): all decimal, all
+ * hex (either case), named with `&#39;`, `&#x27;` or `&apos;`, attribute-style (no `'`), and text-node
+ * style (`&`, `<`, `>` only: how a browser serialises text).
+ */
+const HTML_ESCAPES = [
+  { '"': "&#34;", "&": "&#38;", "<": "&#60;", ">": "&#62;", "'": "&#39;" },
+  { '"': "&#x22;", "&": "&#x26;", "<": "&#x3c;", ">": "&#x3e;", "'": "&#x27;" },
+  { '"': "&#X22;", "&": "&#X26;", "<": "&#X3C;", ">": "&#X3E;", "'": "&#X27;" },
+  { '"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;" },
+  { '"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#x27;" },
+  { '"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&apos;" },
+  { '"': "&quot;", "&": "&amp;", "<": "&lt;", ">": "&gt;" },
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;" },
+];
+
+/** `v` as a browser serialises it in a URL's query and in its path (WHATWG URL); a form shorter than `v` (a `#` or a dot segment cut it) is left out. */
+function urlForms(v) {
+  const out = [];
+  for (const f of [() => new URL(`http://x/?${v}`).search.slice(1), () => new URL(`http://x/${v}`).pathname.slice(1)]) {
+    try {
+      const form = f();
+      if (form.length >= v.length) out.push(form);
+    } catch {
+      // not a URL part
+    }
+  }
+  return out;
+}
+
+/**
  * Every form a secret value takes in what the CLI prints: as is, JSON/YAML-escaped (a snapshot's or a
- * body's string), URL-encoded (a request URL) and form-encoded (a form body: space as `+`).
+ * body's string), URL-encoded (a request URL), form-encoded (a form body: space as `+`), HTML-escaped
+ * (HTML_ESCAPES: a response body), and as a browser serialises it in a URL's query or path.
  */
 export function secretForms(v) {
-  return [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v), new URLSearchParams({ v }).toString().slice(2)];
+  const html = HTML_ESCAPES.map((map) => v.replace(/["&<>']/g, (c) => map[c] ?? c));
+  return [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v), new URLSearchParams({ v }).toString().slice(2), ...html, ...urlForms(v)];
 }
 
 /** A fence marker's shape: `PAGE-`/`RETURN-` before a 32-hex nonce, or an opening `<<<PAGE-`/`<<<RETURN-`. */
