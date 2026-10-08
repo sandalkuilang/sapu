@@ -141,7 +141,9 @@ export const makeShim = (dir = tempDir()) => {
     `import fs from "node:fs";
 const self = new URL(import.meta.url).pathname;
 const argv = process.argv.slice(2);
-fs.appendFileSync(self + ".calls", JSON.stringify({ argv, cwd: process.cwd(), env: process.env }) + "\\n");
+const file = (argv.find((a) => a.startsWith("--filename=")) ?? "").slice(11);
+const code = file && fs.existsSync(file) ? fs.readFileSync(file, "utf8") : undefined;
+fs.appendFileSync(self + ".calls", JSON.stringify({ argv, cwd: process.cwd(), env: process.env, code }) + "\\n");
 const cmd = argv.find((a) => !a.startsWith("-"));
 const answers = fs.existsSync(self + ".answers") ? JSON.parse(fs.readFileSync(self + ".answers", "utf8")) : {};
 if (Object.hasOwn(answers, cmd)) {

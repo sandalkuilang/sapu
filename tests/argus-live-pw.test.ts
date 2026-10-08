@@ -1496,7 +1496,8 @@ describe("argus-live pw — refusals and limits", () => {
     updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions }));
     writeSlotState(dir, { ...readSlotState(dir), sessions: { "buyer.1": { signedIn: true }, "anon.1": {} } });
     const call = (...args: string[]) => pw(main, [m.token, ...args], { cli: shim });
-    const commands = () => calls().filter((c) => !c.argv.includes("run-code")).map((c) => c.argv.slice(1));
+    // The explorer's commands: not the wrapper's own (run-code, and the console read after every command).
+    const commands = () => calls().filter((c) => !c.argv.includes("run-code") && !(c.argv[1] === "console" && c.argv[2] === "warning")).map((c) => c.argv.slice(1));
     return { ...r, main, token: m.token, dir, shim, calls, commands, answer, queue, call };
   };
   const lines = (o: { out: string[] }) => o.out.join("\n").split("\n");
@@ -1718,6 +1719,84 @@ describe("argus-live pw — refusals and limits", () => {
     expect((await t.call("buyer.1", "goto", "/")).out[0]).toBe("HARNESS: buyer.1 cannot sign in this cycle; submit status aborted");
     expect((await t.call("anon", "goto", "/")).code).toBe(0);
     expect(t.commands()).toEqual([["goto", "--", `${BASE}/`]]);
+  });
+
+  it("re-login only when a probe tab also lacks logged_in; the command is not repeated; a failed re-login is a harness event", async () => {
+    const t = pwRun();
+    const page = (loggedIn: boolean) => ({ signals: [], loggedIn, url: `${BASE}/`, aria: "x", tabs: 1 });
+    const stages = () => t.calls().filter((c) => c.argv.includes("run-code")).length;
+    // A page without the header, the session still signed in: no login.
+    t.queue(page(false), { in: true, origins: [] });
+    const plain = await t.call("buyer.1", "goto", "/no-header");
+    expect(plain.code).toBe(0);
+    expect(lines(plain).filter((l) => /re-logged-in|harness/.test(l))).toEqual([]);
+    expect(stages()).toBe(2);
+    // The probe lacks it too: signed in once more, reported outside the fence, the click not run again.
+    t.queue(page(false), { in: false, origins: [] }, { state: "in", status429: false, lockout: false, origins: [] });
+    const lost = await t.call("buyer.1", "click", "e5");
+    expect(lines(lost).slice(-2)).toEqual(["calls 2/120", "re-logged-in: buyer.1"]);
+    expect(t.commands().filter((c) => c[0] === "click")).toHaveLength(1);
+    expect(t.commands().slice(-2)).toEqual([["requests", "--clear"], ["console", "--clear"]]);
+    // The login fails: a harness event now, HARNESS from the next call on.
+    t.queue(page(false), { in: false, origins: [] }, { state: "failed", status429: false, lockout: false, origins: [] });
+    expect(lines(await t.call("buyer.1", "click", "e6")).slice(-2)).toEqual(["calls 3/120", "harness: login failed"]);
+    expect((await t.call("buyer.1", "goto", "/")).out[0]).toBe("HARNESS: buyer.1 cannot sign in this cycle; submit status aborted");
+    // anon is never probed.
+    const before = stages();
+    t.queue(page(false));
+    await t.call("anon", "goto", "/");
+    expect(stages()).toBe(before + 1);
+  });
+
+  it("find with no match is asked again every 500 ms up to settle_ms", async () => {
+    const t = pwRun((c) => (c.settle_ms = 1200));
+    t.answer("find", '### Result\nNo matches found for "Ready".\n');
+    const r = await t.call("buyer.1", "find", "Ready");
+    const m = /^not found after (\d+) ms$/.exec(lines(r).at(-1)!);
+    expect(m).not.toBeNull();
+    expect(Number(m![1])).toBeGreaterThanOrEqual(1200);
+    expect(t.commands().filter((c) => c[0] === "find").length).toBeGreaterThanOrEqual(3);
+    // A match at once: no wait reported.
+    t.answer("find", '### Result\nFound 1 match for "Ready now":\n- paragraph: Ready now\n');
+    expect(lines(await t.call("buyer.1", "find", "Ready now")).at(-1)).toBe("calls 2/120");
+  });
+
+  it("console errors are reported once each; blocked requests become one blocked line per origin, never console errors", async () => {
+    const t = pwRun();
+    t.answer(
+      "console",
+      "### Result\nTotal messages: 3 (Errors: 3, Warnings: 0)\n\n[ERROR] Failed to load resource: net::ERR_BLOCKED_BY_CLIENT.Inspector @ http://outside.test/x:0\n[ERROR] WebSocket connection to 'ws://127.0.0.1:47001/ws' failed: Establishing a tunnel via proxy server failed. @ http://localhost:41002/leak:4\n[ERROR] boom @ http://localhost:41002/app.js:3\n",
+    );
+    const first = (await t.call("buyer.1", "goto", "/leak")).out[0];
+    expect(first).toContain("console error: boom @ http://localhost:41002/app.js:3");
+    expect(first).toContain("blocked: http://outside.test\n");
+    expect(first).toContain("blocked: http://127.0.0.1:47001\n");
+    expect(first).not.toMatch(/console error: .*(outside\.test|47001)/);
+    const second = (await t.call("buyer.1", "goto", "/leak?again")).out[0];
+    expect(second).not.toMatch(/console error|blocked:/);
+    // The explorer's own console read leaves the blocked requests out too.
+    const own = (await t.call("buyer.1", "console")).out[0];
+    expect(own).toContain("[ERROR] boom");
+    expect(own).not.toMatch(/outside\.test|47001/);
+  });
+
+  it("login for an account the journey created: its values never shown, kept for re-logins only once it worked", async () => {
+    const t = pwRun();
+    t.queue({ state: "failed", status429: false, lockout: false, origins: [] });
+    const bad = await t.call("buyer.1", "login", "buyer9@example.test", "Pw-9-secret");
+    expect(bad).toEqual({ code: 0, out: ["calls 1/120", "login: failed (rejected)"] });
+    expect(readSlotState(t.dir).created).toEqual({});
+    t.queue({ state: "in", status429: false, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "login", "buyer8@example.test", "Pw-8-secret")).out).toEqual(["calls 2/120", "login: ok"]);
+    expect(readSlotState(t.dir).created).toEqual({ "buyer.1": { user: "buyer8@example.test", password: "Pw-8-secret" } });
+    // A page echoing it: masked. A re-login signs the created account in.
+    t.answer("goto", "### Page\n- Page URL: x\nPw-8-secret\n");
+    t.queue({ signals: [], loggedIn: false, url: "x", aria: "y", tabs: 1 }, { in: false, origins: [] }, { state: "in", status429: false, lockout: false, origins: [] });
+    const r = await t.call("buyer.1", "goto", "/");
+    expect(r.out[0]).not.toContain("Pw-8-secret");
+    expect(r.out.at(-1)).toBe("re-logged-in: buyer.1");
+    expect(t.calls().filter((c) => c.argv.includes("run-code")).at(-1)!.code).toContain('"user":"buyer8@example.test"');
+    expect(await t.call("anon", "login", "a@example.test", "x")).toEqual({ code: 1, out: ["refused: anon is never signed in", "calls 4/120"] });
   });
 
   it("concurrent calls of one slot are counted, not lost", async () => {

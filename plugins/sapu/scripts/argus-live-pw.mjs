@@ -8,12 +8,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { openSession, slotDir } from "./argus-live-browser.mjs";
-import { runCli, sessionName } from "./argus-live-cli.mjs";
+import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
-import { redact, run, runAsync } from "./argus-live-proc.mjs";
-import { canonicalOrigin } from "./argus-live-proxy.mjs";
+import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
+import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
 import { readRun, recordedSecrets } from "./argus-live-run.mjs";
 import { accountOf, readSlotState, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
@@ -22,6 +22,26 @@ import { explorerTarget } from "./argus-live-targets.mjs";
 const DEFAULT_CALLS = 120;
 /** The same command on the same state this many times is a loop. */
 const LOOP_AT = 3;
+/** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
+const NOT_OPEN = /is not open, please run open first/;
+/** `find`'s answer when nothing matched (0.1.22: "No matches found for …"). */
+const NO_MATCH = /^### Result\nNo matches found for /m;
+/** A URL in a console line (Chrome names the request it failed, and where). */
+const URL_IN_TEXT = /\b(?:https?|wss?):\/\/[^\s'"<>()\]]+/g;
+/** Chrome's errors for a request the run's layers stopped: Playwright's allowedOrigins, the proxy, the host rules. */
+const BLOCKED_ERROR = /ERR_BLOCKED_BY_CLIENT|ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_NAME_NOT_RESOLVED|tunnel via proxy server failed/i;
+
+/** A URL's origin in the form origins are compared in (canonicalOrigin; ws: as http:, wss: as https:), or null. */
+function originOf(u) {
+  try {
+    const x = new URL(u);
+    const scheme = x.protocol === "ws:" ? "http:" : x.protocol === "wss:" ? "https:" : x.protocol;
+    if (scheme !== "http:" && scheme !== "https:") return null;
+    return canonicalOrigin(`${scheme}//${x.host}`);
+  } catch {
+    return null;
+  }
+}
 
 const bool = { bool: true };
 const valued = (re, shape) => ({ value: re, shape });
@@ -164,11 +184,21 @@ export function maskHeaders(text) {
   return String(text).replace(/^(\s*)(cookie|set-cookie|authorization|proxy-authorization|[A-Za-z0-9-]*-token)(\s*:[ \t]*)(.*)$/gim, (_m, lead, name, sep) => `${lead}${name}${sep}<masked>`);
 }
 
-/** The CLI's links to files it wrote (`out/page-….yml`, the slot's absolute paths) shown by their basename only. */
+/**
+ * The CLI's links to files it wrote shown by their basename only: `out/page-….yml`, and the slot's paths
+ * as given or real, absolute or relative to the CLI's real cwd (0.1.22 prints `../../…/var/folders/…/out/x.png`).
+ */
 function baseNames(text, dir) {
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  let real = dir;
+  try {
+    real = fs.realpathSync(dir);
+  } catch {
+    // gone: the path as given
+  }
+  const dirs = [...new Set([dir, real])].map((d) => esc(d.replace(/^\//, ""))).join("|");
   return String(text)
-    .replace(new RegExp(`${esc(dir)}/(?:[^\\s'")\\]]*/)?([^\\s'")\\]/]+)`, "g"), (_m, name) => name)
+    .replace(new RegExp(`(?:\\.\\./)*(?:\\.\\.)?/?(?:${dirs})/(?:[^\\s'")\\]]*/)?([^\\s'")\\]/]+)`, "g"), (_m, name) => name)
     .replace(/(^|[\s('"[])out\/(?:[^\s'")\]]*\/)?([^\s'")\]/]+)/g, (_m, lead, name) => `${lead}${name}`);
 }
 
@@ -240,9 +270,16 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * call is counted, refusals included); the grammar and every argument (parsePw, accountOf, checkUrl, …);
  * an account whose login failed this run (`HARNESS: …`); the loop rule (the same command on the same
  * state a third time → `LOOP: submit status handoff`, not run); the session, opened and signed in on
- * first use (invisibly); the command, its positionals after `--`; the observation (the state hash the loop
- * rule reads, the page's signals); and the output: the CLI's answer and the signals in one nonce fence,
- * then `calls <c>/<max>`, `loop <n>/3` and the wrapper's own events. Exit codes: 0 the command ran (a CLI
+ * first use (invisibly); the command, its positionals after `--` (a browser gone → the session opened
+ * again and signed in, `session-reopened: <role.k>`, the command not run; a `find` with no match asked
+ * again every 500 ms up to settle_ms, `found|not found after <ms> ms`); the observation (the state hash
+ * the loop rule reads, the signals of every page, the console's new errors and warnings, the origins the
+ * run blocked that a page named, once per slot as `blocked: <origin>`; logged_in gone from the page and
+ * from a probe tab at the role's base_url → signed in again once, `re-logged-in: <role.k>`, the command not
+ * repeated); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
+ * <c>/<max>`, `loop <n>/3` and the wrapper's own events. `login <user> <password>` signs the session in as
+ * an account the journey created (`login: ok` or `login: failed (<reason>)`; kept in state.json
+ * `created` for its re-logins once it worked). Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
  * `cli` (a test seam) stands in for the installed CLI (run.json `browser.js`).
  */
@@ -304,16 +341,24 @@ async function call({ main, argv, word, runId, slot, lock, dir, cli, now, runner
   let positionals;
   try {
     positionals = p.positionals.map((v, i) => checkArg(COMMANDS[p.cmd].args[Math.min(i, COMMANDS[p.cmd].args.length - 1)], v, { origins: rec.origins ?? [], base: plan.base, files: path.join(dir, "files") }));
+    if (p.cmd === "login" && role === "anon") throw new Error("refused: anon is never signed in");
   } catch (e) {
     return refused(e);
   }
-  if (p.cmd === "login") return { code: 2, out: ["failed: login is not available in this build of the wrapper", counter] };
 
-  const user = slotRec.accounts[account];
-  if (user && rec.loginFailed && Object.hasOwn(rec.loginFailed, `${role}/${user}`)) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
+  // The account's credentials: those of an account the journey created and signed in with `login`, else its allocated user's.
+  const r = live.roles && live.roles[role];
+  const credentials = () => {
+    const c = (readSlotState(dir).created ?? {})[account];
+    if (c && typeof c.user === "string" && typeof c.password === "string") return { user: c.user, password: c.password, totpSecret: null };
+    const u = ((r && r.users) || []).find((x) => x && x.user === slotRec.accounts[account]);
+    return u ? { user: u.user, password: u.password, totpSecret: u.totp_secret ?? null } : null;
+  };
+  const user = (credentials() ?? {}).user ?? slotRec.accounts[account];
+  if (p.cmd !== "login" && user && rec.loginFailed && Object.hasOwn(rec.loginFailed, `${role}/${user}`)) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
   // The loop rule: the same command on the same state (the last observation's hash) a third time.
-  const st = { ...((state.sessions ?? {})[account] ?? {}) };
+  let st = { ...((state.sessions ?? {})[account] ?? {}) };
   const key = sha256(JSON.stringify([account, p.cmd, p.flags, p.positionals, st.lastState ?? null]));
   const seen = (state.loops[key] ?? 0) + 1;
   state.loops = { ...state.loops, [key]: seen };
@@ -324,39 +369,139 @@ async function call({ main, argv, word, runId, slot, lock, dir, cli, now, runner
   if (typeof js !== "string" || !fs.existsSync(js)) throw new Error("failed: the browser CLI is not installed (run.json names none, or it is gone)");
   const home = path.join(rec.home, "browser");
   const name = sessionName(runId, slot, account);
-  // The session: opened on first use and signed in, invisibly (anon never is).
-  let session = (rec.sessions ?? []).find((s) => s && s.name === name && s.daemon);
-  if (!session) {
-    const r = live.roles && live.roles[role];
+  const cliCall = (args, timeoutMs = plan.settleMs + 60_000) => runCli({ js, session: name, args, cwd: dir, home, timeoutMs, runner: cliRunner });
+  const stage = (which, payload) => runCode({ js, session: name, cwd: dir, home, code: loginCode(which, payload), timeoutMs: 4 * plan.settleMs + 60_000, runner: cliRunner });
+  /** Opens the session (a login-command role's with a fresh storage state, which signs it in) → its record. */
+  const open = async () => {
     let storageState = null;
     if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
-    session = await openSession({ main, runId, slot, account, js, home, storageState, runner, cliRunner });
-    st.signedIn = Boolean(storageState);
+    const s = await openSession({ main, runId, slot, account, js, home, storageState, runner, cliRunner });
+    st = { signedIn: Boolean(storageState) };
+    return s;
+  };
+  /** Signs the open session in with the account's credentials (login, which never retries a failed account) → its answer. */
+  const signIn = async (c = credentials()) => {
+    const res = c ? await login({ main, runId, session: name, account, user: c.user, password: c.password, totpSecret: c.totpSecret, plan, js, home, cwd: dir, runner: cliRunner }) : { ok: false, reason: "rejected" };
+    if (res.ok) st.signedIn = true;
+    return res;
+  };
+  const save = (extra = {}) => {
+    const after = readSlotState(dir);
+    writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: st } });
+  };
+
+  // The session: opened on first use and signed in, invisibly (anon never is).
+  let session = (rec.sessions ?? []).find((x) => x && x.name === name && x.daemon);
+  if (!session) session = await open();
+  if (p.cmd === "login") {
+    // An account the journey created: signed in on this session; kept for its re-logins only once it worked.
+    const [u, password] = positionals;
+    setSecrets({ ...secrets, "login:password": password });
+    const done = await signIn({ user: u, password, totpSecret: null });
+    save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
+    return { code: 0, out: [counter, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
   }
   if (role !== "anon" && !st.signedIn) {
-    const u = ((live.roles[role] && live.roles[role].users) || []).find((x) => x && x.user === user) || null;
-    const res = u ? await login({ main, runId, session: name, account, user, password: u.password, totpSecret: u.totp_secret ?? null, plan, js, home, cwd: dir, runner: cliRunner }) : { ok: false };
-    if (!res.ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
-    st.signedIn = true;
+    if (!(r && r.login) && !(await signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
   }
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
-  const r = await runCli({ js, session: name, args, cwd: dir, home, timeoutMs: plan.settleMs + 60_000, runner: cliRunner });
-  let text = baseNames(`${r.stdout}${r.code !== 0 && r.stderr ? `\n${r.stderr}` : ""}`, dir).trimEnd();
-  if (p.cmd === "request") text = maskHeaders(text);
+  let res = await cliCall(args);
   const events = [];
+  // The browser is gone (it crashed, or was closed): the session opens again and signs in; the command is not run.
+  if (res.code !== 0 && (NOT_OPEN.test(`${res.stdout}\n${res.stderr}`) || !sessionAlive(session, runner))) {
+    await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
+    await open();
+    events.push(`session-reopened: ${account}`);
+    if (role !== "anon" && !st.signedIn && !(r && r.login) && !(await signIn()).ok) events.push("harness: login failed");
+    save();
+    return { code: 0, out: [counter, ...events] };
+  }
+  // Absence is never instant: a find with no match is asked again every 500 ms up to settle_ms.
+  if (p.cmd === "find" && res.code === 0 && NO_MATCH.test(res.stdout)) {
+    const start = Date.now();
+    while (res.code === 0 && NO_MATCH.test(res.stdout) && Date.now() - start < plan.settleMs) {
+      await sleep(Math.min(500, Math.max(0, plan.settleMs - (Date.now() - start))));
+      res = await cliCall(args);
+    }
+    events.push(`${res.code === 0 && NO_MATCH.test(res.stdout) ? "not found" : "found"} after ${Date.now() - start} ms`);
+  }
+  let text = baseNames(`${res.stdout}${res.code !== 0 && res.stderr ? `\n${res.stderr}` : ""}`, dir).trimEnd();
+  if (p.cmd === "request") text = maskHeaders(text);
+
+  // Observation: the signals of every page (popups included), the state hash, logged_in; then the console's new errors and warnings.
   const pageLines = [];
+  let o = null;
   try {
-    const o = await runCode({ js, session: name, cwd: dir, home, code: loginCode("observe", { loggedIn: role === "anon" ? null : plan.loggedIn }), timeoutMs: 60_000, runner: cliRunner });
-    if (o && typeof o === "object") {
-      st.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
-      for (const s of Array.isArray(o.signals) ? o.signals : []) if (s && typeof s.text === "string") pageLines.push(`signal ${String(s.kind ?? "")}: ${s.text}`);
+    o = await stage("observe", { loggedIn: role === "anon" ? null : plan.loggedIn });
+  } catch {
+    events.push("harness: observation failed");
+  }
+  if (o && typeof o === "object") {
+    st.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
+    for (const x of Array.isArray(o.signals) ? o.signals : []) if (x && typeof x.text === "string") pageLines.push(`signal ${String(x.kind ?? "")}: ${x.text}`);
+  }
+  // Requests the run blocked: reported once per slot as `blocked: <origin>`, never as console errors. The
+  // proxy's log also holds Chrome's own traffic, so an origin it blocked is reported only once a page names it.
+  const slotState = readSlotState(dir);
+  const fromProxy = blockedSince(main, runId, slotState.blockedOffset ?? 0);
+  const proxyBlocked = new Set([...(slotState.proxyBlocked ?? []), ...fromProxy.origins.map(originOf).filter(Boolean)]);
+  const runOrigins = new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map(originOf).filter(Boolean));
+  const reported = new Set(slotState.blockedReported ?? []);
+  const blockedNow = [];
+  /** The run-outside origins a console line names as blocked (empty: the line is the page's own error). */
+  const blockedIn = (line) => {
+    const outside = [...line.matchAll(URL_IN_TEXT)].map((m) => originOf(m[0])).filter((x) => x && !runOrigins.has(x));
+    return outside.filter((x) => BLOCKED_ERROR.test(line) || proxyBlocked.has(x));
+  };
+  const consoleLine = (line) => {
+    const hit = blockedIn(line);
+    for (const x of hit) if (!reported.has(x) && !blockedNow.includes(x)) blockedNow.push(x);
+    return hit.length === 0;
+  };
+  if (p.cmd === "console") text = text.split("\n").filter((l) => !/^\[[A-Z]+\] /.test(l) || consoleLine(l)).join("\n");
+  const consoleSeen = new Set(st.consoleSeen ?? []);
+  try {
+    const c = await cliCall(["console", "warning"], 30_000);
+    for (const l of String(c.stdout).split("\n")) {
+      const m = /^\[(ERROR|WARNING)\] (.*)$/.exec(l);
+      if (!m || !consoleLine(l)) continue;
+      const h = sha256(l).slice(0, 16);
+      if (consoleSeen.has(h)) continue;
+      consoleSeen.add(h);
+      pageLines.push(`console ${m[1].toLowerCase()}: ${m[2]}`);
     }
   } catch {
     events.push("harness: observation failed");
   }
-  const after = readSlotState(dir);
-  writeSlotState(dir, { ...after, sessions: { ...(after.sessions ?? {}), [account]: st } });
+  st.consoleSeen = [...consoleSeen].slice(-1000);
+  for (const x of blockedNow) pageLines.push(`blocked: ${new URL(x).origin}`);
+
+  // Re-login: logged_in gone from the page while the account was signed in, and gone from a probe tab at
+  // its base_url too (a page without the header is not a lost session). The command is not repeated.
+  if (o && o.loggedIn === false && role !== "anon" && st.signedIn) {
+    let gone = false;
+    try {
+      gone = !(await stage("probe", { url: plan.base, loggedIn: plan.loggedIn, settleMs: plan.settleMs })).in;
+    } catch {
+      events.push("harness: probe failed");
+    }
+    if (gone) {
+      st.signedIn = false;
+      let ok = false;
+      try {
+        if (r && r.login) {
+          await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
+          await open();
+          ok = st.signedIn;
+        } else ok = (await signIn()).ok;
+      } catch {
+        ok = false;
+      }
+      events.push(ok ? `re-logged-in: ${account}` : "harness: login failed");
+    }
+  }
+  save({ blockedOffset: fromProxy.offset, proxyBlocked: [...proxyBlocked].slice(-500), blockedReported: [...reported, ...blockedNow].slice(-500) });
   const { body, truncated } = fence([text, ...pageLines].filter((x) => x !== "").join("\n"), { secrets });
   return { code: 0, out: [body, counter, ...(seen > 1 ? [`loop ${seen}/${LOOP_AT}`] : []), ...events, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
 }

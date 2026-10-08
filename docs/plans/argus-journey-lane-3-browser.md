@@ -815,7 +815,7 @@ Behaviour (inside `pw`, step 9 of Task 10):
   credentials kept in `state.json` `created[<account>]` for its re-logins; output `login: ok` or
   `login: failed (<reason>)` outside the fence, never the values.
 
-- [ ] **Step 1: Failing tests** (`tests/argus-live-browser.test.ts`, describe "argus-live pw in Chrome";
+- [x] **Step 1: Failing tests** (`tests/argus-live-browser.test.ts`, describe "argus-live pw in Chrome";
   `browserRun()` plus `mintSlot` with `buyer.1`, `clerk.1`, `anon.1`):
   - "first use signs the session in, invisibly": `pw <t> buyer.1 goto /` → the fence shows `Account`;
     the output holds neither `buyer1@example.test`, `password`, `Sign in` nor the password; `pw <t>
@@ -846,8 +846,8 @@ Behaviour (inside `pw`, step 9 of Task 10):
     `receipt.txt`.
   - "login for a created account": `pw <t> buyer.1 login buyer9@example.test 'Pw-9'` against an
     unknown user → `login: failed (rejected)`; the values absent from the output.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live pw observes signals and sessions — toasts in pages and popups, re-login, reopen, settle waits`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live pw observes signals and sessions — toasts in pages and popups, re-login, reopen, settle waits`.
 
 ---
 
@@ -1253,6 +1253,46 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   - Live: a test in Chrome drives `pw` and the spawned `argus-live.mjs pw` — first use signs buyer.1 in
     with no login trace in the output or in `requests`, anon stays signed out, a flag-shaped value is
     typed as text.
+
+- **Task 11.** Probed with 0.1.22 in Chrome:
+  - A popup opened by `window.open` keeps the window of its first document (about:blank), and Chrome
+    runs the init script there but **not** in the page the popup then navigates to (nor do the old
+    window's DOMContentLoaded listeners fire): the signal script now also wraps `window.open` and watches
+    the popup's document from the opener (polling every 5 ms until it leaves about:blank, same origin
+    only), its signals going to the popup's own `__argusSignals`. Elements are watched once per document.
+  - When the browser root dies, its daemon exits too and every command answers `The browser '<name>' is
+    not open, please run open first` (exit 1): that text, or a recorded daemon no longer running, is the
+    "browser gone" test; the old record is closed and swept, the session opened again under its name.
+  - `find` prints `No matches found for "<text>".` when nothing matched; `console warning` lists every
+    error and warning since the last clear each time (`[ERROR] <text> @ <url>:<line>`), so the wrapper
+    reports a line once per account (`consoleSeen`, hashes, at most 1000). Blocked requests read
+    `net::ERR_BLOCKED_BY_CLIENT.Inspector @ <url>` (Playwright's allowedOrigins stops the loopback fetch
+    too) or `WebSocket connection to '<url>' failed: Establishing a tunnel via proxy server failed`.
+  - The CLI prints the files it wrote relative to its real cwd (`../../…/var/folders/…/out/x.png`): the
+    basename rewrite also takes that form and the slot's real path.
+  - Clicking a file input leaves a `[File chooser]` modal state; `upload <abs path>` fills it.
+  Changes against the plan:
+  - Blocked origins: a console line naming an origin outside the run's origins and `allow_origins` is
+    dropped when it carries one of Chrome's blocked-request errors, or when the proxy blocked that origin
+    (`blockedSince`, its offset and the origins it reported kept in state.json `blockedOffset`,
+    `proxyBlocked`); each such origin is reported once per slot (`blockedReported`) as `blocked: <origin>`
+    inside the fence. An origin only the proxy's log holds (Chrome's own traffic) is never reported. The
+    explorer's own `console` output drops the same lines.
+  - Console lines go inside the fence as `console error|warning: <text>`; signals as `signal <kind>:
+    <text>`.
+  - The re-login of a login-command role closes the session and opens it again with a fresh storage state
+    (no `state-load`, which the explorer is refused anyway). A probe that fails is `harness: probe failed`
+    and signs nothing in.
+  - `find` measures its wait with the wall clock (not the `now` seam, which only the deadline reads) and
+    prints `found after` only when it waited; a match at once adds nothing.
+  - A browser gone answers `session-reopened: <role.k>` (and `harness: login failed` when the new
+    session cannot sign in), exit 0, no fence: the command did not run.
+  - `login <user> <password>`: exit 0 either way, `login: ok` | `login: failed (<reason>)` with reason
+    `rejected`, `rate-limited`, `no-login-form` or `error` (never the error's text); refused for `anon`;
+    not subject to the account's HARNESS state (it may replace a failed account). Once it worked, the
+    account's re-logins and the HARNESS check use the created user.
+  - The fixture's `/orders/<id>` takes `?late=<ms>` (at most 20 000) for the `find` test; the CLI shim
+    records the text of each `--filename` file it is given (the wrapper removes it after the call).
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

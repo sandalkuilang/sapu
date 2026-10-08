@@ -31,7 +31,8 @@
 //   /             signed out: a "Sign in" button opening a <dialog> with the login form
 //   /orders/new   Quantity + "Place order" → ORD-<n>, /orders/<id> (data-testid=order-number, its
 //                 JSON from /api/orders/<id>, a role=status toast "Order placed" removed after
-//                 1000 ms, #late added after 2000 ms); each order appends a message to mail.json
+//                 1000 ms, #late "Ready for dispatch" added after 2000 ms, or ?late=<ms>, at most
+//                 20000); each order appends a message to mail.json
 //   /popup        "Open details" opens /popup/child, whose toast "Details ready" goes after 1000 ms
 //   /inject       text that imitates fence markers, terminal controls and an instruction to the
 //                 agent; with ?echo=1 also $APP_PW
@@ -431,7 +432,8 @@ async function handle(req, res) {
   if (m && req.method === "GET") {
     const id = m[1];
     return signedIn(() => {
-      const late = `<script>setTimeout(() => { const d = document.createElement("p"); d.id = "late"; d.textContent = "Ready for dispatch"; document.querySelector("main").append(d); }, 2000);</script>`;
+      const delay = Math.min(Number(url.searchParams.get("late")) || 2000, 20_000);
+      const late = `<script>setTimeout(() => { const d = document.createElement("p"); d.id = "late"; d.textContent = "Ready for dispatch"; document.querySelector("main").append(d); }, ${delay});</script>`;
       const load = `<p id="facts"></p><script>fetch("/api/orders/" + ${js(id)}).then((r) => r.json()).then((o) => { document.getElementById("facts").textContent = "Status " + o.status + ", quantity " + o.quantity; });</script>`;
       const content = `<p>Order <span data-testid="order-number">${esc(id)}</span></p>${load}${url.searchParams.has("placed") ? toast("Order placed") : ""}${late}`;
       return send(res, 200, page(`Order ${id}`, content, { user }));

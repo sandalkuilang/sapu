@@ -197,23 +197,16 @@ export function slotDir(main, runId, slot) {
 /**
  * The init script every page and popup of a slot's sessions runs (spec §7, short-lived signals): it
  * watches elements with role=status, role=alert or aria-live (polite or assertive) for their text and
- * wraps window.Notification; each signal {kind, text (at most 200 characters), t} is pushed onto
- * `window.__argusSignals` (at most 200) and logged as `console.info("[argus-signal]", <json>)`, so a toast
- * gone before the next snapshot is still seen.
+ * wraps window.Notification; each signal {kind, text (at most 200 characters), t} is pushed onto the
+ * page's `window.__argusSignals` (at most 200) and logged as `console.info("[argus-signal]", <json>)`, so
+ * a toast gone before the next snapshot is still seen. Probed: Chrome runs init scripts in a popup's first
+ * document (about:blank) but not in the page it then navigates to, which keeps that window; so the script
+ * also wraps window.open and watches the popup's document from the opener once it is no longer about:blank
+ * (same origin only: a cross-origin popup is outside the run anyway).
  */
 export const SIGNAL_SCRIPT = `(() => {
   if (window.__argusSignalsInstalled) return;
   window.__argusSignalsInstalled = true;
-  const buffer = (window.__argusSignals = window.__argusSignals || []);
-  const push = (kind, text) => {
-    const t = String(text == null ? "" : text).replace(/\\s+/g, " ").trim().slice(0, 200);
-    if (!t) return;
-    const signal = { kind, text: t, t: Date.now() };
-    if (buffer.length < 200) buffer.push(signal);
-    try {
-      console.info("[argus-signal]", JSON.stringify(signal));
-    } catch (e) {}
-  };
   const kindOf = (el) => {
     if (!el || el.nodeType !== 1) return null;
     const role = el.getAttribute("role");
@@ -221,40 +214,80 @@ export const SIGNAL_SCRIPT = `(() => {
     const live = el.getAttribute("aria-live");
     return live === "polite" || live === "assertive" ? "live" : null;
   };
-  const last = new WeakMap();
-  const report = (el) => {
-    const kind = kindOf(el);
-    if (!kind) return;
-    const text = el.textContent;
-    if (last.get(el) === text) return;
-    last.set(el, text);
-    push(kind, text);
-  };
-  const region = (node) => {
-    for (let p = node && node.nodeType === 1 ? node : node && node.parentElement; p; p = p.parentElement) if (kindOf(p)) return p;
-    return null;
-  };
-  const scan = (node) => {
-    if (!node || node.nodeType !== 1) return;
-    report(node);
-    node.querySelectorAll("[role=status],[role=alert],[aria-live]").forEach(report);
-  };
-  const start = () => {
-    scan(document.documentElement);
+  // Watches win's current document once; the signals go to win's own buffer.
+  const watch = (win) => {
+    let doc;
+    try {
+      doc = win.document;
+    } catch (e) {
+      return true;
+    }
+    if (!doc || !doc.documentElement) return false;
+    if (doc.__argusSignalsWatched) return true;
+    doc.__argusSignalsWatched = true;
+    const buffer = (win.__argusSignals = win.__argusSignals || []);
+    const push = (kind, text) => {
+      const t = String(text == null ? "" : text).replace(/\\s+/g, " ").trim().slice(0, 200);
+      if (!t) return;
+      const signal = { kind, text: t, t: Date.now() };
+      if (buffer.length < 200) buffer.push(signal);
+      try {
+        win.console.info("[argus-signal]", JSON.stringify(signal));
+      } catch (e) {}
+    };
+    win.__argusSignalPush = push;
+    const last = new WeakMap();
+    const report = (el) => {
+      const kind = kindOf(el);
+      if (!kind) return;
+      const text = el.textContent;
+      if (last.get(el) === text) return;
+      last.set(el, text);
+      push(kind, text);
+    };
+    const region = (node) => {
+      for (let p = node && node.nodeType === 1 ? node : node && node.parentElement; p; p = p.parentElement) if (kindOf(p)) return p;
+      return null;
+    };
+    const scan = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      report(node);
+      node.querySelectorAll("[role=status],[role=alert],[aria-live]").forEach(report);
+    };
+    scan(doc.documentElement);
     new MutationObserver((records) => {
       for (const m of records) {
         if (m.type === "childList") m.addedNodes.forEach(scan);
         const r = region(m.target);
         if (r) report(r);
       }
-    }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["role", "aria-live"] });
+    }).observe(doc.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["role", "aria-live"] });
+    return true;
   };
-  if (document.documentElement) start();
-  else document.addEventListener("DOMContentLoaded", start);
+  if (!watch(window)) document.addEventListener("DOMContentLoaded", () => watch(window));
+  const nativeOpen = window.open;
+  if (typeof nativeOpen === "function") {
+    window.open = function (...args) {
+      const w = nativeOpen.apply(this, args);
+      const since = Date.now();
+      const poll = () => {
+        try {
+          if (!w || w.closed) return;
+          if (w.document.URL !== "about:blank" && watch(w)) return;
+        } catch (e) {
+          return;
+        }
+        if (Date.now() - since < 60000) setTimeout(poll, 5);
+      };
+      poll();
+      return w;
+    };
+  }
   const Native = window.Notification;
   if (typeof Native === "function") {
     const Wrapped = function (title, options) {
-      push("notification", String(title) + (options && options.body ? ": " + options.body : ""));
+      const push = window.__argusSignalPush;
+      if (push) push("notification", String(title) + (options && options.body ? ": " + options.body : ""));
       return new Native(title, options);
     };
     Wrapped.prototype = Native.prototype;
