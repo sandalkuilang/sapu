@@ -34,7 +34,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.8.1 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.9.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Implement', detail: 'one forge worker per issue, isolated worktree' },
