@@ -1,12 +1,15 @@
 // tests/argus-live.test.ts — the journey lane's live instance (argus-live*.mjs): its config
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
 import { expand, loadLive, parseEnvFile, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+// @ts-expect-error — plain ESM script without types
+import { appendEnd, readLock, renew, takeLock } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 
 type Obj = Record<string, any>;
 
@@ -246,3 +249,132 @@ describe("argus-live config — loadLive", () => {
     expect(r.secrets).toEqual({});
   });
 });
+
+describe("argus-live instance — lock, live log, renew", () => {
+  const MAX = 45;
+  const T0 = Date.UTC(2026, 9, 8, 9, 30, 0); // ms
+  const S0 = T0 / 1000;
+  const repo = () => {
+    const main = tempDir();
+    execFileSync("git", ["init", "-q", main]);
+    return main;
+  };
+  const logOf = (main: string) => readFileSync(join(main, ".git/sapu-live.log"), "utf8");
+  const lockOf = (main: string) => JSON.parse(readFileSync(join(main, ".argus/live/lock.json"), "utf8"));
+
+  /** The awk program of sapu-merge.sh's live_overlap, read out of the script itself. */
+  const overlapAwk = () => {
+    const lines = readFileSync(join(__dirname, "../plugins/sapu/scripts/sapu-merge.sh"), "utf8").split("\n");
+    const open = `awk -v s="$1" -v e="$2" '`;
+    const at = lines.findIndex((l) => l.trim() === open);
+    expect(at, "live_overlap's awk line").toBeGreaterThan(-1);
+    const body: string[] = [];
+    for (const l of lines.slice(at + 1)) {
+      const q = l.indexOf("'");
+      if (q >= 0) {
+        body.push(l.slice(0, q));
+        break;
+      }
+      body.push(l);
+    }
+    return body.join("\n");
+  };
+  const overlaps = (main: string, s: number, e: number) => {
+    const awk = existsSync("/usr/bin/awk") ? "/usr/bin/awk" : "awk";
+    const r = spawnSync(awk, ["-v", `s=${s}`, "-v", `e=${e}`, overlapAwk(), join(main, ".git/sapu-live.log")], { encoding: "utf8" });
+    expect(r.error).toBeUndefined();
+    return r.status === 0;
+  };
+
+  it("takes the lock and appends one start line before anything else", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    expect(l.runId).toMatch(/^20261008093000-[0-9a-f]{8}$/);
+    expect(l.start).toBe(S0);
+    expect(l.deadline).toBe(S0 + MAX * 60 + 900);
+    expect(l.stale).toBeUndefined();
+    expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: l.deadline });
+    expect(readLock(main)).toEqual({ runId: l.runId, start: l.start, deadline: l.deadline });
+    const lines = logOf(main).split("\n").filter(Boolean);
+    expect(lines).toEqual([`${l.runId} start ${S0} deadline ${S0 + MAX * 60 + 900}`]);
+    expect(lines[0]).toMatch(/^\d{14}-[0-9a-f]{8} start \d{9,10} deadline \d{9,10}$/);
+  });
+
+  it("run ids are unique", () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      const main = repo();
+      ids.add(takeLock(main, { maxCycleMinutes: MAX, now: T0 }).runId);
+    }
+    expect(ids.size).toBe(20);
+  });
+
+  it("refuses while another cycle's deadline has not passed, naming its run and deadline", () => {
+    const main = repo();
+    const first = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const until = new Date(first.deadline * 1000).toISOString();
+    expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 + 60_000 })).toThrow(`refused: cycle ${first.runId} holds the lock until ${until}`);
+    expect(lockOf(main).runId).toBe(first.runId);
+    expect(logOf(main).trim().split("\n")).toHaveLength(1);
+  });
+
+  it("a lock past its deadline is returned as stale, and the new run takes over", () => {
+    const main = repo();
+    const old = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const later = T0 + (MAX * 60 + 900 + 1) * 1000;
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: later });
+    expect(l.stale).toEqual({ runId: old.runId, start: old.start, deadline: old.deadline });
+    expect(l.runId).not.toBe(old.runId);
+    expect(lockOf(main).runId).toBe(l.runId);
+    expect(readdirLive(main)).toEqual(["lock.json"]);
+  });
+
+  it("refuses an unreadable lock instead of recovering it", () => {
+    const main = repo();
+    mkdirSync(join(main, ".argus/live"), { recursive: true });
+    writeFileSync(join(main, ".argus/live/lock.json"), "{half");
+    expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(/refused: .*lock\.json/);
+    expect(existsSync(join(main, ".git/sapu-live.log"))).toBe(false);
+  });
+
+  it("renew moves the deadline by max_cycle_minutes, appends it, and stops at start + 3 x max", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const d1 = renew(main, { maxCycleMinutes: MAX, now: T0 + 60_000 });
+    expect(d1).toBe(l.deadline + MAX * 60);
+    expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: d1 });
+    const d2 = renew(main, { maxCycleMinutes: MAX, now: T0 + 120_000 });
+    expect(d2).toBe(S0 + 3 * MAX * 60);
+    expect(() => renew(main, { maxCycleMinutes: MAX, now: T0 + 180_000 })).toThrow(/cap reached/);
+    expect(logOf(main).trim().split("\n").slice(1)).toEqual([`${l.runId} deadline ${d1}`, `${l.runId} deadline ${d2}`]);
+  });
+
+  it("renew refuses with no lock, and once the deadline has passed", () => {
+    expect(() => renew(repo(), { maxCycleMinutes: MAX, now: T0 })).toThrow(/no lock/);
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    expect(() => renew(main, { maxCycleMinutes: MAX, now: l.deadline * 1000 })).toThrow(/deadline .* passed/);
+  });
+
+  it("appendEnd appends an end line, and refuses a malformed run id", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    appendEnd(main, l.runId, T0 + 5_000);
+    expect(logOf(main).trim().split("\n")[1]).toBe(`${l.runId} end ${S0 + 5}`);
+    expect(() => appendEnd(main, "x end 1\nother", T0)).toThrow(/run id/);
+  });
+
+  it("seam: live_overlap sees a renewed run up to its latest deadline, and a run up to its end", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const d2 = renew(main, { maxCycleMinutes: MAX, now: T0 + 60_000 });
+    expect(overlaps(main, l.deadline + 10, l.deadline + 20)).toBe(true);
+    expect(overlaps(main, d2 + 10, d2 + 20)).toBe(false);
+    expect(overlaps(main, S0 - 20, S0 - 10)).toBe(false);
+    appendEnd(main, l.runId, T0 + 120_000);
+    expect(overlaps(main, S0 + 60, S0 + 70)).toBe(true);
+    expect(overlaps(main, S0 + 130, S0 + 140)).toBe(false);
+  });
+});
+
+const readdirLive = (main: string) => readdirSync(join(main, ".argus/live")).sort();
