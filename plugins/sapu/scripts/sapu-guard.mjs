@@ -45,7 +45,8 @@
 // installs through symlinked node_modules, destructive prisma) hold in every repo. The repo adds
 // its own through `guard` in its contract .claude/sapu.json (CONTRACT.md): protected Postgres
 // ports/databases, more env files, and `deny` rules; its `gate.merge` command is denied
-// automatically. The contract is read from <MAIN>'s COMMITTED HEAD, never from a working tree.
+// automatically. The contract is read from <MAIN>'s COMMITTED HEAD, never from a working tree,
+// and <MAIN> is the repo a call touches, not the session's folder (TOUCHED REPO, before decide()).
 // A contract that exists but is broken blocks every call except the canary; a repo with no
 // contract yet keeps the engine floor, except for a sapu worker, which never works without one.
 //
@@ -95,6 +96,9 @@
 // `git apply` (except --check/--stat), and `patch` (bare, via busybox/toybox or a shell's -c) fed by a
 // pipe from `gh pr diff`/`gh api`/`curl`/`wget`. NOT traced: a diff saved to a file and applied later
 // (`patch < file`, `git merge-file`), a SHA piped into `xargs git fetch`, files an interpreter writes.
+// The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
+// a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
+// session's contract; a place an interpreter reaches on its own is not resolved (see above).
 // gh: -R/--repo/--hostname are dropped wherever they stand before the subcommand; a first word outside gh's own command
 // set (an alias, an extension) is BLOCKED. The acceptance label (contract labels.accepted): BLOCKED
 // when named by `gh issue|pr edit --add/--remove-label`, `gh label create|edit|delete`, a non-GET `gh
@@ -1014,7 +1018,13 @@ const BLOCK = {
   db: (label) => `protected database (${label}; .claude/sapu.json guard.postgres): other sessions use it. Use your own throwaway test DB (.claude/sapu/worker.md).`,
   refs: "branch deletion/force-moves (local or remote), worktree removal and ref rewrites touch refs every worktree shares; they are the orchestrator's.",
   mainWrite: (main) => `a write into the main checkout (${main}) outside its .claude/worktrees/ (and, for a subagent that is not a sapu worker, outside ${STATE_DIRS.map((d) => `${d}/`).join(", ")}): other sessions share it. Write only inside your own worktree.`,
+  brokenContract: (main, error) => `the sapu contract of ${main}, which this call touches, is unreadable, so nothing there is allowed: ${error}`,
 };
+
+/** The main checkout among `mains` that `real` is written into (outside its worktrees and, for a non-worker, its state dirs), or null. */
+function mainWrittenOf(real, mains, worker) {
+  return mains.find((m) => m && inMain(real, m) && !(!worker && inStateDir(real, m))) || null;
+}
 
 /** The text a wrapper runs as a command of its own — `env -S '<cmd>'`, `npx -c`/`npm exec -c '<cmd>'` — or null. */
 function innerCommand(t, at) {
@@ -1364,11 +1374,15 @@ function checkCommand(t, state, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   const values = t.map((x) => x.v);
   if (values.includes("sapu-guard-canary")) return BLOCK.canary;
-  const rules = state.rules;
   const at = programIndex(t);
   const here = envChdir(t, at, state.dir) ?? state.dir;
+  // The repo this command runs in, and its contract (TOUCHED REPO in decide()); without a resolver,
+  // or where the place cannot be told, the scope the caller gave.
+  const scope = (state.resolve && state.resolve(here)) || state;
+  if (scope.error) return BLOCK.brokenContract(scope.main, scope.error);
+  const { rules, main } = scope;
   const inner = innerCommand(t, at);
-  if (inner !== null) return checkText(inner, here, state.main, rules, depth + 1);
+  if (inner !== null) return checkText(inner, here, state, depth + 1);
   const argv = t.slice(at);
   const a = argv.map((x) => x.v);
   const prog = a.length ? bare(a[0]) : "";
@@ -1406,20 +1420,24 @@ function checkCommand(t, state, depth) {
     if (!w) continue;
     const own = protectedTarget(w, follow, tree);
     if (own) return own;
-    if (state.main && inMain(w.real, state.main) && !(rules.worker === false && inStateDir(w.real, state.main))) return BLOCK.mainWrite(state.main);
+    // The target's own repo decides; the main checkouts already in scope stay closed whatever it resolves to.
+    const ts = (state.resolve && state.resolve(w.real)) || scope;
+    if (ts.error) return BLOCK.brokenContract(ts.main, ts.error);
+    const into = mainWrittenOf(w.real, [ts.main, main, state.main], rules.worker !== false);
+    if (into) return BLOCK.mainWrite(into);
   }
-  if (prog === "bun" && a[1] === "exec") return checkText(a.slice(2).join(" "), here, state.main, rules, depth + 1);
+  if (prog === "bun" && a[1] === "exec") return checkText(a.slice(2).join(" "), here, state, depth + 1);
 
   const repoRule = denied(a, prog, rules.deny, here);
   if (repoRule) return repoRule;
 
   if (SHELLS.has(prog)) {
     const c = a.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
-    if (c > 0 && a[c + 1] !== undefined) return checkText(a[c + 1], here, state.main, rules, depth + 1);
+    if (c > 0 && a[c + 1] !== undefined) return checkText(a[c + 1], here, state, depth + 1);
     const script = a.findIndex((v, i) => i > 0 && !v.startsWith("-") && !/^[-+]o$/.test(a[i - 1]));
     return script > 0 ? checkCommand(argv.slice(script), { ...state, dir: here }, depth + 1) : null;
   }
-  if (prog === "eval") return checkText(a.slice(1).join(" "), here, state.main, rules, depth + 1);
+  if (prog === "eval") return checkText(a.slice(1).join(" "), here, state, depth + 1);
   if (prog === "find") {
     for (let i = 1; i < argv.length; i++) {
       if (!/^-(exec|execdir|ok|okdir)$/.test(a[i])) continue;
@@ -1499,6 +1517,9 @@ function checkCommand(t, state, depth) {
     }
     const sub = a[i];
     const rest = a.slice(i + 1);
+    // The repository git acts on (-C, --git-dir, …) is the touched repo: its base branch and main checkout.
+    const gs = (dir !== here && state.resolve && state.resolve(dir)) || scope;
+    if (gs.error) return BLOCK.brokenContract(gs.main, gs.error);
     if (sub === "config") {
       if (rest.some((v) => /^core\.hookspath$/i.test(v))) return BLOCK.noVerify;
       // A read: an explicit read option or subcommand, or a lone key (`git config user.name`).
@@ -1524,7 +1545,7 @@ function checkCommand(t, state, depth) {
       if (!reads && rest.some((v) => gitConfigRuns(v, undefined))) return BLOCK.gitProgram;
     }
     for (const c of gitOptionCommands(sub, argv.slice(i + 1))) {
-      const r = c.argv ? checkCommand(c.argv, { ...state, dir: here }, depth + 1) : checkText(c.text, here, state.main, rules, depth + 1);
+      const r = c.argv ? checkCommand(c.argv, { ...state, dir: here }, depth + 1) : checkText(c.text, here, state, depth + 1);
       if (r) return r;
     }
     if (sub === "remote" && ["add", "set-url", "set-branches", "set-head", "rename", "remove", "rm", "prune", "update"].includes(rest[0])) return BLOCK.remote;
@@ -1562,26 +1583,25 @@ function checkCommand(t, state, depth) {
     if (sub === "push") {
       if (flags.some((f) => f === "--force" || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(f)) || rest.some((v) => v.startsWith("+"))) return BLOCK.force;
       if (flags.some((f) => f === "--delete" || f === "-d") || rest.some((v) => v.startsWith(":"))) return BLOCK.refs;
-      if (flags.some((f) => f === "--all" || f === "--mirror" || f === "--branches")) return BLOCK.pushBase(rules.base);
+      if (flags.some((f) => f === "--all" || f === "--mirror" || f === "--branches")) return BLOCK.pushBase(gs.rules.base);
       // Destination of each refspec: after the last `:`, else the refspec itself; the first word is the remote.
       const pos = [];
       for (let k = 0; k < rest.length; k++) {
         if (/^(-o|--push-option|--receive-pack|--exec|--repo)$/.test(rest[k])) k++;
         else if (!rest[k].startsWith("-")) pos.push(rest[k]);
       }
-      const bases = new Set(["main", "master", rules.base].filter(Boolean));
+      const bases = new Set(["main", "master", gs.rules.base].filter(Boolean));
       // as git resolves a destination: `main`, `heads/main`, `refs/heads/main`
       const dest = (spec) => spec.slice(spec.lastIndexOf(":") + 1).replace(/^refs\/heads\//, "").replace(/^heads\//, "");
-      if (pos.slice(1).some((spec) => bases.has(dest(spec)))) return BLOCK.pushBase(rules.base);
+      if (pos.slice(1).some((spec) => bases.has(dest(spec)))) return BLOCK.pushBase(gs.rules.base);
     }
     if (sub === "worktree" && ["remove", "prune", "move"].includes(rest[0])) return BLOCK.refs;
     if (sub === "branch" && flags.some((f) => ["-D", "-d", "-f", "-M", "--delete", "--force"].includes(f))) return BLOCK.refs;
     if (sub === "update-ref" || sub === "symbolic-ref") return BLOCK.refs;
-    if (state.main && MUTATING_GIT.has(sub)) {
+    if ((gs.main || state.main) && MUTATING_GIT.has(sub)) {
       if (dir === UNKNOWN) return `\`git ${sub}\` in a directory that cannot be told (a path held in a shell variable, or after a cd inside a pipeline): write the literal path of your own worktree, with git -C or a plain cd.`;
-      if (realpathOrSelf(dir) === realpathOrSelf(state.main)) {
-        return `\`git ${sub}\` in the main checkout (${state.main}). Other sessions share it: work only in your own worktree.`;
-      }
+      const m = [gs.main, main, state.main].find((x) => x && realpathOrSelf(dir) === realpathOrSelf(x));
+      if (m) return `\`git ${sub}\` in the main checkout (${m}). Other sessions share it: work only in your own worktree.`;
     }
     return null;
   }
@@ -1756,9 +1776,10 @@ function prSource(toks) {
   return (prog === "curl" || prog === "wget") && a.some((v) => /\/pull\/\d+|\/pulls\/\d+|\.(diff|patch)(\?|$)/.test(v));
 }
 
-function checkText(text, dir, main, rules, depth) {
+/** `base` = the caller's scope: {main, rules, resolve}; each command of `text` re-resolves its own place. */
+function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
-  const state = { dir, main, rules };
+  const state = { dir, main: base.main, rules: base.rules, resolve: base.resolve };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
@@ -1784,19 +1805,20 @@ function checkText(text, dir, main, rules, depth) {
     if (c.post === ")" && saved.length) state.dir = saved.pop();
   }
   for (const n of nested) {
-    const reason = checkText(n, dir, main, rules, depth + 1);
+    const reason = checkText(n, dir, base, depth + 1);
     if (reason) return reason;
   }
   return null;
 }
 
 /**
- * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>}} input
+ * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>, worker?: boolean, resolve?: Function}} input
+ * `resolve` (scopeResolver) makes each command judged by the repo it touches; without it, `main`/`rules` judge all.
  * @returns {string|null} the reason to block, or null to allow
  */
-export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true }) {
+export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null }) {
   if (typeof command !== "string" || !command.trim()) return null;
-  return checkText(command, cwd, main, worker ? rules : { ...rules, worker: false }, 0);
+  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve }, 0);
 }
 
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -1808,16 +1830,19 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
  * the real path, so a worktree's symlink into <MAIN> (a linked node_modules) is <MAIN>.
  * @returns {string|null} the reason to block, or null to allow
  */
-export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONLY, worker = true }) {
+export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null }) {
   if (!FILE_TOOLS.has(tool) || typeof filePath !== "string" || !filePath) return null;
   const abs = path.resolve(cwd || process.cwd(), filePath.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
   const real = realPathOf(abs);
-  if ([abs, real].some((p) => rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
+  // The file's own repo and contract decide (TOUCHED REPO in decide()); `main` stays closed whatever it resolves to.
+  const s = (resolve && resolve(real)) || { main, rules };
+  if (s.error) return BLOCK.brokenContract(s.main, s.error);
+  if ([abs, real].some((p) => s.rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
   if (WRITE_TOOLS.has(tool) && (isGitFile(abs) || isGitFile(real))) return BLOCK.gitFiles;
   if (WRITE_TOOLS.has(tool) && (isMachineConfigFile(abs) || isMachineConfigFile(real))) return BLOCK.machineConfig;
   if (WRITE_TOOLS.has(tool) && (isPluginFile(abs) || isPluginFile(real))) return BLOCK.pluginFiles;
-  if (WRITE_TOOLS.has(tool) && main && inMain(real, main) && !(!worker && inStateDir(real, main))) return BLOCK.mainWrite(main);
-  return null;
+  const into = WRITE_TOOLS.has(tool) && mainWrittenOf(real, [s.main, main], worker);
+  return into ? BLOCK.mainWrite(into) : null;
 }
 
 const SEARCH_TOOLS = new Set(["Grep", "Glob"]);
@@ -1829,13 +1854,15 @@ const SEARCH_TOOLS = new Set(["Grep", "Glob"]);
  * names and keeps the shell's rule. Grep's `pattern` is a content regex, not a path.
  * @returns {string|null} the reason to block, or null to allow
  */
-export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
+export function checkSearch({ tool, input = {}, cwd, rules: given = ENGINE_ONLY, resolve = null }) {
   if (!SEARCH_TOOLS.has(tool)) return null;
   const p = input.path;
-  if (typeof p === "string" && p) {
-    const abs = path.resolve(cwd || process.cwd(), p.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
-    if ([abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
-  }
+  const abs = typeof p === "string" && p ? path.resolve(cwd || process.cwd(), p.replace(/^~(?=\/|$)/, process.env.HOME || "~")) : null;
+  // The searched place's repo decides: the path's, else the cwd's.
+  const s = (resolve && resolve(abs ? realPathOf(abs) : cwd || process.cwd())) || { rules: given };
+  if (s.error) return BLOCK.brokenContract(s.main, s.error);
+  const rules = s.rules;
+  if (abs && [abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
   const g = tool === "Grep" ? input.glob : input.pattern;
   if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep", escapes: true })) return BLOCK.env;
   return null;
@@ -1990,8 +2017,8 @@ function fieldsOf(v, key = "", out = []) {
 }
 
 /** The reason to refuse an MCP (non-context-mode), Monitor or PowerShell call, or null. */
-export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker = true }) {
-  if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker }) : null;
+export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker = true, resolve = null }) {
+  if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker, resolve }) : null;
   const server = tool.slice(5, Math.max(5, tool.lastIndexOf("__")));
   const words = tool.slice(tool.lastIndexOf("__") + 2).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_\-.]+/).filter(Boolean);
   const writes = words.some((w) => WRITE_VERB.test(w)); // a write verb wins over a read verb (get_or_create, search_and_replace)
@@ -2027,14 +2054,14 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     const on = (v) => v === true || v === "true";
     const flags = Object.entries(ti).flatMap(([k, v]) => (/^force_?with_?lease$/i.test(k) && on(v) ? ["--force-with-lease"] : /^force$/i.test(k) && on(v) ? ["--force"] : /^(options|flags|extra_?args)$/i.test(k) && Array.isArray(v) ? v.filter((x) => typeof x === "string") : []));
     const force = flags.length ? ` ${flags.join(" ")}` : "";
-    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
+    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   // typed text is a command only on a shell-like server's terminal/process tool (not a chat message or a browser field)
   const typed = LOCAL_SERVER.test(server) && words.some((w) => /^(terminal|process|keys|interact|send|write|input|run|exec|execute)$/.test(w));
   for (const [k, x] of f) {
     if (!(CMD_FIELD.test(k) || (typed && TYPED_FIELD.test(k))) || !x.trim()) continue;
-    const reason = check({ command: x, cwd, main, rules, worker });
+    const reason = check({ command: x, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   if (f.some(([k]) => REMOTE_FIELD.test(k))) return null; // paths of a remote (a repo, a bucket, a page), not of this disk
@@ -2043,10 +2070,50 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     const home = x === "~" || x.startsWith("~/");
     if (!home && !path.isAbsolute(x) && !cwdF && !LOCAL_SERVER.test(server)) continue;
     const filePath = home ? path.join(process.env.HOME || "/", x.slice(1)) : path.resolve(cwd, x);
-    const reason = checkFile({ tool: writes ? "Write" : "Read", filePath, cwd, main, rules, worker });
+    const reason = checkFile({ tool: writes ? "Write" : "Read", filePath, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   return null;
+}
+
+// TOUCHED REPO. The rules come from the repo a call touches, not from the session's folder: each
+// command is judged by the repo of the directory it runs in (after cd, pushd, env -C), a git
+// command by the repository it acts on (-C, --git-dir, --work-tree, GIT_DIR), a write by its
+// target's repo, a file or search tool by its path's — that repo's main checkout (<MAIN>) and its
+// COMMITTED contract. A repo with no contract gets the engine floor; one whose contract is broken
+// refuses every call that touches it. The session's own <MAIN> stays closed to writes whatever a
+// path resolves to. A place outside every repo, or one that cannot be told (a variable), keeps the
+// session's own contract (the floor when the session has none): a protected database or a denied
+// gate of the session's repo is not reached by first leaving the repo.
+const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+/**
+ * The scope a place belongs to, per TOUCHED REPO: `resolve(p)` → {main, rules, error} for the repo
+ * holding `p` (its nearest existing directory), or null for a place that cannot be told (UNKNOWN).
+ * `main`/`rules` are the session's own (the repo of `cwd`). Cached per directory and per repo.
+ */
+export function scopeResolver({ cwd = null, main = null, rules = ENGINE_ONLY, worker = true }) {
+  const tier = (r) => (worker ? r : { ...r, worker: false });
+  const own = { main, rules: tier(rules), error: null };
+  const outsideAny = { main: null, rules: own.rules, error: null };
+  const ownKey = main ? realpathOrSelf(main) : null;
+  const mains = new Map(cwd ? [[path.resolve(cwd), main]] : []);
+  const scopes = new Map();
+  return (p) => {
+    if (typeof p !== "string" || !p) return null;
+    let d = path.resolve(p);
+    while (!mains.has(d) && !isDir(d) && path.dirname(d) !== d) d = path.dirname(d);
+    if (!mains.has(d)) mains.set(d, findMain(d));
+    const m = mains.get(d);
+    if (!m) return outsideAny;
+    const key = realpathOrSelf(m);
+    if (key === ownKey) return own;
+    if (!scopes.has(key)) {
+      const c = loadContract(m);
+      scopes.set(key, { main: m, rules: tier(c.contract ? compileRules(c.contract) : ENGINE_ONLY), error: c.error && !c.missing ? c.error : null });
+    }
+    return scopes.get(key);
+  };
 }
 
 /**
@@ -2289,19 +2356,20 @@ export function decide(input) {
   // Two tiers: a sapu worker keeps the whole floor; any other subagent (reviewers, specialists,
   // argus/momus/nemesis) may also file issues and write its state into <MAIN>.
   const worker = SAPU_AGENT.test(input.agent_type || "");
+  const resolve = scopeResolver({ cwd: here, main, rules, worker });
   if (ctx) {
     for (const c of ctx) {
-      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker }) : null;
+      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker, resolve }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker, resolve }) : null;
       if (reason) return `${reason} (inside ${tool.replace(/^.*__/, "")}, checked like Bash/Read)`;
     }
   } else if (other) {
-    const reason = checkOther({ tool, ti, here, main, rules, worker });
+    const reason = checkOther({ tool, ti, here, main, rules, worker, resolve });
     if (reason) return `${reason} (${tool}, judged by its name and fields like Bash/Read/Write)`;
   } else if (tool === "Bash") {
-    const reason = check({ command: ti.command, cwd, main, rules, worker });
+    const reason = check({ command: ti.command, cwd, main, rules, worker, resolve });
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;
   } else {
-    const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker });
+    const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules, resolve }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu

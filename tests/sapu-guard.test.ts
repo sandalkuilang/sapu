@@ -2369,3 +2369,103 @@ describe("sapu-guard — closing an issue as not planned is the owner's ruling",
     expect(other("mcp__github__list_issues", { owner: "o", repo: "r", state: "closed", state_reason: "not_planned" })).toBeNull();
   });
 });
+
+describe("sapu-guard — the repo a call touches decides its rules, not the session's folder", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-cross-")));
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const git = (repo: string, ...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  const repoWith = (name: string, contract: unknown) => {
+    const r = join(box, name);
+    mkdirSync(join(r, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    if (contract === null) git(r, "commit", "-q", "--allow-empty", "-m", "x");
+    else if (typeof contract === "string") {
+      writeFileSync(join(r, ".claude/sapu.json"), contract);
+      git(r, "add", ".claude/sapu.json");
+      git(r, "commit", "-q", "-m", "broken");
+    } else commitContract(r, contract);
+    const w = join(r, ".claude/worktrees/w");
+    git(r, "worktree", "add", "-q", "--detach", w);
+    return { r, w };
+  };
+  // A: the session's repo (the fixture's deny rules, Postgres 6543, base main, env file creds-a.ini).
+  const A = repoWith("a", { ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["creds-a.ini"] } });
+  // B: another repo with rules of its own (Postgres 7777, `make nuke` denied, base trunk, env file creds-b.ini).
+  const B = repoWith("b", {
+    ...FIXTURE_CONTRACT,
+    repo: "owner/b",
+    baseBranch: "trunk",
+    gate: { ...FIXTURE_CONTRACT.gate, fast: "make gate FAST=1", merge: "make gate" },
+    guard: { envFiles: ["creds-b.ini"], postgres: { ports: [7777], databases: ["b_dev"] }, deny: [{ argv: ["make", "nuke"], reason: "nuke is B's owner's." }] },
+  });
+  const C = repoWith("c", null); // a repo with no contract: the engine floor
+  const D = repoWith("d", "{ not json"); // a repo whose contract is broken
+  const outside = join(box, "plain");
+  mkdirSync(outside, { recursive: true });
+  let ids = 0;
+  const as = (agent_type: string) => ({ agent_type, agent_id: `x${++ids}` });
+  const W = "sapu:sapu-sonnet-high";
+  const R = "senior-dev-team:senior-qa-reviewer";
+  const bash = (command: string, who = R, cwd = A.w) => decide({ tool_name: "Bash", ...as(who), tool_input: { command }, cwd });
+  const file = (tool_name: string, file_path: string, who = R, cwd = A.w) => decide({ tool_name, ...as(who), tool_input: { file_path }, cwd });
+  const inMainOf = (r: string) => new RegExp(`main checkout \\(${r}\\)`);
+
+  it("fail-open closed: B's own Postgres, deny rules, base branch, env files and main checkout hold for a subagent of a session in A", () => {
+    for (const who of [R, W]) {
+      expect(bash(`cd ${B.w} && psql -p 7777`, who), who).toMatch(/protected database/);
+      expect(bash(`cd ${B.r} && pg_dump b_dev`, who), who).toMatch(/protected database/);
+      expect(bash(`cd ${B.w} && make nuke`, who), who).toMatch(/nuke is B's owner's/);
+      expect(bash(`cd ${B.w} && make gate`, who), who).toMatch(/merge gate/);
+      expect(bash(`git -C ${B.w} push origin HEAD:trunk`, who), who).toMatch(/base branch \(trunk\)/);
+      expect(bash(`cd ${B.w} && cat creds-b.ini`, who), who).toMatch(/env files/);
+      expect(file("Read", join(B.w, "creds-b.ini"), who), who).toMatch(/env files/);
+      expect(decide({ tool_name: "Grep", ...as(who), tool_input: { pattern: "k", path: join(B.w, "creds-b.ini") }, cwd: A.w }), who).toMatch(/env files/);
+      expect(file("Write", join(B.r, "src/x.ts"), who), who).toMatch(inMainOf(B.r));
+      expect(bash(`echo x > ${join(B.r, "src.txt")}`, who), who).toMatch(inMainOf(B.r));
+      expect(bash(`git -C ${B.r} commit -m x`, who), who).toMatch(inMainOf(B.r));
+      // B's own worktree is open, as A's is
+      expect(file("Write", join(B.w, "src/x.ts"), who), who).toBeNull();
+    }
+    // the same through a nested shell, env -C, a context-mode batch and Monitor
+    expect(bash(`bash -c 'cd ${B.w} && make nuke'`)).toMatch(/nuke is B's owner's/);
+    expect(bash(`env -C ${B.w} make nuke`)).toMatch(/nuke is B's owner's/);
+    expect(decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", ...as(R), tool_input: { commands: [{ label: "x", command: `cd ${B.w} && psql -p 7777` }] }, cwd: A.w })).toMatch(/protected database/);
+    expect(decide({ tool_name: "Monitor", ...as(R), tool_input: { command: `cd ${B.w} && make nuke` }, cwd: A.w })).toMatch(/nuke is B's owner's/);
+  });
+
+  it("no false refusal: A's deny rules, Postgres, base and env files do not reach B's legitimate work", () => {
+    expect(bash(`cd ${B.w} && npm run check`)).toBeNull();
+    expect(bash(`cd ${B.w} && psql -p 6543 -d x`)).toBeNull();
+    expect(bash(`cd ${B.w} && cat creds-a.ini`)).toBeNull();
+    expect(file("Read", join(B.w, "creds-a.ini"))).toBeNull();
+    expect(bash(`git -C ${B.w} push origin HEAD:feat/x`)).toBeNull();
+    // ... while they still hold in A, also after a visit to B in the same command
+    expect(bash("npm run check")).toMatch(/full gate is orchestrator-only/);
+    expect(bash(`cd ${B.w} && ls; cd ${A.w} && npm run check`)).toMatch(/full gate is orchestrator-only/);
+    expect(bash(`cd ${B.w} && psql -p 7777; cd ${A.w}`)).toMatch(/protected database/);
+    expect(file("Read", join(A.w, "creds-a.ini"))).toMatch(/env files/);
+    expect(file("Write", join(A.r, "src/x.ts"))).toMatch(inMainOf(A.r));
+    // a write from B's cwd into A's main checkout is A's
+    expect(bash(`cd ${B.w} && echo x > ${join(A.r, "y.txt")}`)).toMatch(inMainOf(A.r));
+  });
+
+  it("a repo with no contract gets the engine floor; a broken one refuses the calls that touch it", () => {
+    expect(bash(`cd ${C.w} && npm run check`)).toBeNull();
+    expect(bash(`cd ${C.w} && git stash`)).toMatch(/stash/);
+    expect(file("Write", join(C.r, "x.ts"))).toMatch(inMainOf(C.r));
+    expect(bash(`cd ${D.w} && ls`)).toMatch(/contract of .*\/d.* is unreadable/);
+    expect(file("Read", join(D.w, "x.ts"))).toMatch(/contract of .*\/d.* is unreadable/);
+    expect(bash("ls")).toBeNull(); // A's own calls are not touched by D
+  });
+
+  it("a place outside every repo, or one that cannot be told, keeps the session's own contract (at least the floor)", () => {
+    expect(bash(`cd ${outside} && psql -p 6543`)).toMatch(/protected database/);
+    expect(bash(`cd ${outside} && npm run check`)).toMatch(/full gate is orchestrator-only/);
+    expect(bash(`cd ${outside} && git stash`)).toMatch(/stash/);
+    expect(bash('cd "$X" && psql -p 6543')).toMatch(/protected database/);
+    expect(file("Write", join(outside, "x.txt"))).toBeNull();
+    // a session outside every repo: the floor, and B's rules where it touches B
+    expect(bash("npm run check", R, outside)).toBeNull();
+    expect(bash(`cd ${B.w} && make nuke`, R, outside)).toMatch(/nuke is B's owner's/);
+  });
+});

@@ -530,6 +530,17 @@ could use them.
   a server's own configuration (its database connection, a browser click) is not traced.
   A contract that exists but is broken blocks every subagent call; a repo that has no committed contract
   yet blocks `sapu:sapu-*` workers and leaves this floor for other subagents.
+- **The repo a call touches decides, not the session's folder.** Each command is judged by the repo of the
+  directory it runs in (after `cd`, `pushd`, `env -C`), a git command by the repository it acts on (`-C`,
+  `--git-dir`, `--work-tree`, `GIT_DIR`), a write by its target's repo, a file or search tool by its path's:
+  that repo's main checkout and its committed contract (`guard.postgres`, `guard.envFiles`, `guard.deny`,
+  the denied merge gate, `baseBranch`). So a subagent of a session in repo A that works in repo B meets B's
+  rules there and not A's. B without a contract = this floor; B with a broken contract = every call that
+  touches B is refused. The session's own main checkout stays closed to writes whatever a path resolves
+  to. A place outside every repo, or one the guard cannot tell (a path in a variable), keeps the session's
+  own contract (the floor when it has none), so a protected database is not reached by first leaving the
+  repo. Only local paths are resolved: `gh -R` and an MCP tool's remote fields name a remote, judged by
+  the cwd's repo (an MCP tool's branch and label fields by the session's contract).
   (Worker = the `sapu:sapu-<sonnet|opus>-<effort>` ladder; the specialists, senior-dev-team's or a
   repo's own, are not workers.)
 - **Two tiers.** `sapu:sapu-*` workers get the whole floor. Other subagents (reviewers,
