@@ -3,12 +3,12 @@
 // sapu-merge.sh's live_overlap reads.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { alive, cleanTemps, committed, freePort, git, liveRun, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -82,15 +82,7 @@ const errorsOf = (mutate: (c: Obj) => void) => {
   return validateLive(c) as string[];
 };
 
-const temps: string[] = [];
-const tempDir = () => {
-  const d = mkdtempSync(join(tmpdir(), "argus-live-"));
-  temps.push(d);
-  return d;
-};
-afterEach(() => {
-  while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
-});
+afterEach(cleanTemps);
 /** A process's identity as argus-live records it: boot ticks from /proc on Linux, else `ps -o lstart` (spaces collapsed). */
 const identityOf = (pid: number) =>
   process.platform === "linux"
@@ -2660,56 +2652,14 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   });
-  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
-  const committed = () => {
-    const main = tempDir();
-    git(main, "init", "-q");
-    writeFileSync(join(main, "app.txt"), "app\n");
-    git(main, "add", ".");
-    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
-    return main;
-  };
-  const freePort = () =>
-    new Promise<number>((done) => {
-      const s = createServer();
-      s.listen(0, "127.0.0.1", () => {
-        const p = (s.address() as { port: number }).port;
-        s.close(() => done(p));
-      });
-    });
-  const alive = (pid: number) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === "EPERM";
-    }
-  };
-  const until = async (ok: () => boolean, ms: number) => {
-    const end = Date.now() + ms;
-    while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
-    return ok();
-  };
-  const now = () => Math.floor(Date.now() / 1000);
   const liveFiles = (main: string) => readdirSync(join(main, ".argus/live")).sort();
   const logOf = (main: string) => readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
-  const setLock = (main: string, lock: { runId: string; start: number; deadline: number }) => writeFileSync(join(main, ".argus/live/lock.json"), `${JSON.stringify(lock)}\n`);
   const runJson = (main: string) => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
   /** A detached process group, as startEntry or runSetup leave one: `/bin/sh -c <cmd>`. */
   const group = (cmd: string) => {
     const p = spawn("/bin/sh", ["-c", cmd], { detached: true, stdio: "ignore" });
     started.push(p.pid!);
     return p.pid!;
-  };
-  /** A run as `up` leaves it before its run files: the lock, a worktree, a HOME, a setup log. */
-  const liveRun = () => {
-    const main = committed();
-    const l = takeLock(main, { maxCycleMinutes: 45 });
-    const wt = makeWorktree(main, l.runId);
-    const home = makeHome(main, l.runId);
-    writeFileSync(`${wt}.setup.log`, "setup output\n");
-    const env = { PATH: process.env.PATH!, HOME: home, COMPOSE_PROJECT_NAME: `argus-${l.runId}` };
-    return { main, runId: l.runId as string, wt, home, env, lock: l };
   };
   const SECRETS = { PW: "s3cr3t-value-9q" };
 
@@ -3204,20 +3154,6 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   });
-  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
-  const alive = (pid: number) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (e) {
-      return (e as NodeJS.ErrnoException).code === "EPERM";
-    }
-  };
-  const until = async (ok: () => boolean, ms: number) => {
-    const end = Date.now() + ms;
-    while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
-    return ok();
-  };
   const fixtureProcesses = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(SERVER));
   /** docker absent: the Docker client, the daemon's clock and the runtime gate have nothing to look at. */
   const noDocker = (argv: string[], opts: Obj = {}) => (argv[0] === "docker" ? { error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) } : run(argv, opts));

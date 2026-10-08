@@ -227,6 +227,41 @@ export async function replayStop(s, { secrets, asyncRunner, timeoutMs, logs, not
   else if (r.status !== 0) note(`${where} exited ${r.status ?? r.signal}: ${tail(readFrom(log, from))}`);
 }
 
+/** Refuses a path that is a symlink, not a directory, or not the current user's. */
+export function ownDir(dir) {
+  const st = fs.lstatSync(dir);
+  if (st.isSymbolicLink()) throw new Error(`refused: ${dir} is a symlink; remove it`);
+  if (!st.isDirectory()) throw new Error(`refused: ${dir} is not a directory`);
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`refused: ${dir} belongs to another user`);
+  if ((st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700);
+}
+
+/**
+ * `$TMPDIR/sapu-live`, private to this user (0700, never a symlink), holding every run's worktree and
+ * HOME outside the repo, and the pinned browser CLI. Created when missing. With `realMain`, refused
+ * when it would lie inside the repo, before and after it exists.
+ */
+export function liveRoot(realMain = null) {
+  let tmp;
+  try {
+    tmp = fs.realpathSync.native(os.tmpdir());
+  } catch (e) {
+    throw new Error(`refused: TMPDIR ${os.tmpdir()} does not exist or cannot be read (${e.code || e.message})`);
+  }
+  const root = path.join(tmp, "sapu-live");
+  const inRepo = (p) => new Error(`refused: ${p} would lie inside the repo (TMPDIR points into it)`);
+  if (realMain && within(realMain, root)) throw inRepo(root);
+  try {
+    fs.mkdirSync(root, { mode: 0o700 });
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") throw e;
+  }
+  ownDir(root);
+  const real = fs.realpathSync.native(root);
+  if (realMain && within(realMain, real)) throw inRepo(real);
+  return real;
+}
+
 /** `$TMPDIR/sapu-live` (real path) when it exists as this user's own directory, else null; never creates it. */
 function existingLiveRoot(note) {
   let root;

@@ -19,7 +19,7 @@ import { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs"
 import { hostOf, loopbackAliases, ownerEnvFiles, readOwner, resolvesToLoopback, scopeChecker } from "./argus-live-endpoints.mjs";
 import { iso, readLock, renew, runIdOk, takeLock } from "./argus-live-lock.mjs";
 import { killGroup, MAX_HOPS, membersOf, msLeft, processTable, readFrom, redact, resolveLink, run, runAsync, runPids, sameGroup, sameStart, sleep, startTime, stopRecordedGroups, tail, within } from "./argus-live-proc.mjs";
-import { down, guarded, logsDir, readRun, recover, replayStop, repoName, startReaper, writeRunFiles } from "./argus-live-run.mjs";
+import { down, guarded, liveRoot, logsDir, ownDir, readRun, recover, replayStop, repoName, startReaper, writeRunFiles } from "./argus-live-run.mjs";
 import { findMain, loadContract } from "./sapu-contract.mjs";
 
 /** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
@@ -87,40 +87,6 @@ export async function allocatePorts(names, { range, reserved = [], fixed = {}, p
     if (!Object.hasOwn(out, name)) throw new Error(`refused: no free port in ${lo}-${hi} for ${name}`);
   }
   return out;
-}
-
-/** Refuses a path that is a symlink, not a directory, or not the current user's. */
-function ownDir(dir) {
-  const st = fs.lstatSync(dir);
-  if (st.isSymbolicLink()) throw new Error(`refused: ${dir} is a symlink; remove it`);
-  if (!st.isDirectory()) throw new Error(`refused: ${dir} is not a directory`);
-  if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`refused: ${dir} belongs to another user`);
-  if ((st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700);
-}
-
-/**
- * `$TMPDIR/sapu-live`, private to this user (0700, never a symlink), holding every run's worktree and
- * HOME outside the repo. Refused when it would lie inside the repo, before and after it exists.
- */
-function liveRoot(realMain) {
-  let tmp;
-  try {
-    tmp = fs.realpathSync.native(os.tmpdir());
-  } catch (e) {
-    throw new Error(`refused: TMPDIR ${os.tmpdir()} does not exist or cannot be read (${e.code || e.message})`);
-  }
-  const root = path.join(tmp, "sapu-live");
-  const inRepo = (p) => new Error(`refused: ${p} would lie inside the repo (TMPDIR points into it)`);
-  if (within(realMain, root)) throw inRepo(root);
-  try {
-    fs.mkdirSync(root, { mode: 0o700 });
-  } catch (e) {
-    if (!e || e.code !== "EEXIST") throw e;
-  }
-  ownDir(root);
-  const real = fs.realpathSync.native(root);
-  if (within(realMain, real)) throw inRepo(real);
-  return real;
 }
 
 /**

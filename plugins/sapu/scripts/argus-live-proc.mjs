@@ -114,7 +114,8 @@ const DRAIN_MS = 200;
  * running that no record names. On `timeoutMs` the whole group gets SIGKILL; with `killAfter`, so does
  * whatever the group left running once it exits. With `capture`, stdout is collected (up to 1 MiB) until
  * it closes or `DRAIN_MS` after the exit → {status, signal, timedOut, error, stdout, exited}, `exited`
- * true only when the process exited (so a caller marks its record exited only then).
+ * true only when the process exited (so a caller marks its record exited only then); with `capture` and
+ * `stdio[2]` "pipe", stderr is collected the same way (`stderr`).
  */
 export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore", "ignore"], capture = false, killAfter = false, onStart = () => {} } = {}) {
   return new Promise((done) => {
@@ -122,13 +123,14 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
     let timedOut = false;
     let timer;
     let stdout = "";
+    let stderr = "";
     let child;
     const finish = (r) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       if (killAfter && child && child.pid) killGroup(child.pid);
-      done({ timedOut, stdout, ...r });
+      done({ timedOut, stdout, ...(capture && child && child.stderr ? { stderr } : {}), ...r });
     };
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: capture ? [stdio[0], "pipe", stdio[2]] : stdio });
@@ -138,6 +140,7 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
     }
     child.once("error", (e) => finish({ error: e }));
     if (capture) child.stdout.on("data", (d) => stdout.length < 1 << 20 && (stdout += d));
+    if (capture && child.stderr) child.stderr.on("data", (d) => stderr.length < 1 << 20 && (stderr += d));
     if (!child.pid) return;
     try {
       onStart(child.pid);
@@ -155,8 +158,10 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
     child.once("exit", (status, signal) => {
       if (!capture) return finish({ status, signal, exited: true });
       const drained = () => finish({ status, signal, exited: true });
-      if (child.stdout.closed || child.stdout.readableEnded) return drained();
-      child.stdout.once("close", drained);
+      const open = [child.stdout, child.stderr].filter((s) => s && !s.closed && !s.readableEnded);
+      if (!open.length) return drained();
+      let left = open.length;
+      for (const s of open) s.once("close", () => --left === 0 && drained());
       setTimeout(drained, DRAIN_MS);
     });
   });
