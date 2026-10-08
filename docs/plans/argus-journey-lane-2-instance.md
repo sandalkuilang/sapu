@@ -196,18 +196,21 @@ Interfaces:
 - `export async function waitHealth(entry, started, {timeoutS, aliveAfterMs, worktree, env})`: `{url}`
   → GET until 2xx; `{cmd}` → run until exit 0; omitted → alive after `aliveAfterMs` (5 s). A process
   that exits before health passes → throws unless it exited 0 and the entry has `stop`.
-- `export async function checkStore({config, env, worktree, main, contract, deadline, timeoutS})`:
-  refuses a `store` that `guard.postgres` protects; runs `store_check` (shell, cwd worktree, bounded
-  by `timeoutS`, its group killed after, stdout read until the process exits plus a short drain)
-  under `env` and again under each start entry's own env → each trimmed stdout must equal `store`;
-  every value in `env` and in every `start[].env` is read as a service (URL, `jdbc:` URL, libpq DSN,
-  `X_HOST` + `X_PORT`) and must not reach a service MAIN's env files name (`.env`, `.env.local`, the
-  contract's `guard.envFiles`): a non-http scheme on the same host:port whatever its database; an
-  http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
-  `allow_origins`. Nor may it name a port or database `guard.postgres` protects (bare port numbers;
-  bare database names only under `PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`) → else
-  throws `refused: …` naming the key only. Hosts are compared by name (loopback aliases merged);
-  resolving a host name to loopback is `up`'s job (Task 8).
+- `export async function checkStore({config, env, worktree, main, contract, deadline, timeoutS,
+  composeServices})`: refuses a `store` that `guard.postgres` protects; runs `store_check` (shell,
+  cwd worktree, bounded by `timeoutS`, its group killed after, stdout read until the process exits
+  plus a short drain) under `env` and again under each start entry's own env → each trimmed stdout
+  must equal `store`. Then (defence in depth) every value in `env` and in every `start[].env` is
+  read and must not reach what MAIN's env files name (`.env`, `.env.local`, the contract's
+  `guard.envFiles`): a non-http service on the same host:port whatever its database (no opt-in; an
+  endpoint without host or port never matches; a single-label host in `composeServices` is exempt);
+  an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
+  `allow_origins`; a file or socket path equal to one they name, or any path inside MAIN. `X_HOST` +
+  `X_PORT` are one endpoint, a bare instance `*PORT` a loopback one. Nor may it name a port or
+  database `guard.postgres` protects (bare port numbers; bare database names only under
+  `PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`) → else throws `refused: …` naming the
+  key only. Hosts are compared by name (canonical, loopback merged); resolving a host name to
+  loopback is `up`'s job (Task 8).
 - `export async function bringUpStore(ctx)` / `bringUpRest(ctx)`: the order inside `up` — store-phase
   entries (started and healthy one by one) → `checkStore` → `reset` (its group recorded too); then
   the remaining entries → health → `checkStore` again. Every group lands in `ctx.groups` as it starts.
@@ -227,6 +230,11 @@ Interfaces:
 ---
 
 ### Task 6: Compose and egress checks
+
+Carried from the Task 5 review: the Compose check passes the worktree's Compose service names
+(`docker compose config --format json` → `services` keys) to `checkStore` as `composeServices`,
+whose single-label hosts are then the instance's own; and it refuses a Compose project that joins an
+`external` network (its services could reach, or be reached as, the owner's).
 
 Interfaces:
 - `export function checkCompose({worktree, env, ports, run})`: when the worktree has `compose.yaml`,

@@ -247,21 +247,61 @@ function isShellField(at) {
 }
 
 /** Why `${NAME}` cannot stand where it stands in a shell field, and what to write instead. */
-const misplaced = (name, context) =>
-  `\${${name}} ${context === "'" ? "inside single quotes" : "in a heredoc"} is not expanded by the shell that runs this field; write "$${secretVar(name)}" where the inner shell reads it (and pass it into a container by name: -e ${secretVar(name)})`;
+function misplaced(name, context) {
+  const v = secretVar(name);
+  if (context === "'") return `\${${name}} inside single quotes is not expanded by the shell that runs this field; write "$${v}" where the inner shell reads it (and pass it into a container by name: -e ${v})`;
+  if (context === "<<") return `\${${name}} in a heredoc is not quoted the way the field's other uses are; write $${v} there yourself (no quotes: they are literal in a heredoc body)`;
+  return `\${${name}} in a quoted heredoc is never expanded; unquote the heredoc's delimiter and write $${v} there yourself`;
+}
 
 /**
- * Walks a shell field, tracking quotes and heredocs, and hands each `${NAME}` to `onSecret(name,
- * context)` (context: null outside quotes, '"' inside double quotes, "'" inside single quotes, "<<"
- * after a heredoc operator), which returns its replacement. `{port:…}` is expanded from `ports` (copied
- * as it is when `ports` is null); everything else is copied.
+ * Walks a shell field, tracking quotes, `$(( ))` arithmetic (where `<<` is a shift) and heredocs (from
+ * the line after `<<[-]WORD` to the line holding WORD), and hands each `${NAME}` to `onSecret(name,
+ * context)` — context: null outside quotes, '"' inside double quotes, "'" inside single quotes, "<<" in
+ * an unquoted heredoc body, "<<'" in a quoted one — which returns its replacement. `{port:…}` is
+ * expanded from `ports` (copied as it is when `ports` is null); everything else is copied.
  */
 function scanShell(value, { ports = null, onSecret }) {
+  const sub = (i, context) => {
+    const secret = value.slice(i).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    if (secret) return [onSecret(secret[1], context), secret[0].length];
+    const port = value.slice(i).match(/^\{port:[a-z][a-z0-9_-]*(?:=\d+)?\}/);
+    if (port) return [ports === null ? port[0] : expand(port[0], { ports }), port[0].length];
+    return null;
+  };
   let out = "";
   let quote = null;
-  let heredoc = false;
-  for (let i = 0; i < value.length; ) {
+  let arith = 0;
+  const heredocs = [];
+  let i = 0;
+  while (i < value.length) {
     const c = value[i];
+    if (c === "\n" && quote === null && heredocs.length) {
+      out += c;
+      i++;
+      for (const h of heredocs.splice(0)) {
+        while (i < value.length) {
+          const nl = value.indexOf("\n", i);
+          const end = nl < 0 ? value.length : nl;
+          const line = value.slice(i, end);
+          if ((h.dash ? line.replace(/^\t+/, "") : line) === h.word) {
+            out += value.slice(i, nl < 0 ? end : nl + 1);
+            i = nl < 0 ? end : nl + 1;
+            break;
+          }
+          for (let j = i; j < end; ) {
+            const r = sub(j, h.quoted ? "<<'" : "<<");
+            if (r) {
+              out += r[0];
+              j += r[1];
+            } else out += value[j++];
+          }
+          out += nl < 0 ? "" : "\n";
+          i = nl < 0 ? end : nl + 1;
+        }
+      }
+      continue;
+    }
     if (c === "\\" && quote !== "'") {
       out += value.slice(i, i + 2);
       i += 2;
@@ -273,23 +313,36 @@ function scanShell(value, { ports = null, onSecret }) {
       i++;
       continue;
     }
-    if (quote === null && value.startsWith("<<", i)) {
-      const n = value.startsWith("<<<", i) ? 3 : 2;
-      if (n === 2) heredoc = true;
-      out += value.slice(i, i + n);
-      i += n;
+    if (quote === null && value.startsWith("$((", i)) {
+      arith++;
+      out += "$((";
+      i += 3;
       continue;
     }
-    const secret = value.slice(i).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
-    if (secret) {
-      out += onSecret(secret[1], heredoc ? "<<" : quote);
-      i += secret[0].length;
+    if (quote === null && arith && value.startsWith("))", i)) {
+      arith--;
+      out += "))";
+      i += 2;
       continue;
     }
-    const port = value.slice(i).match(/^\{port:[a-z][a-z0-9_-]*(?:=\d+)?\}/);
-    if (port) {
-      out += ports === null ? port[0] : expand(port[0], { ports });
-      i += port[0].length;
+    if (quote === null && !arith && value.startsWith("<<", i)) {
+      if (value.startsWith("<<<", i)) {
+        out += "<<<";
+        i += 3;
+        continue;
+      }
+      const m = value.slice(i + 2).match(/^(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+      if (m) {
+        heredocs.push({ dash: m[1] === "-", quoted: m[2] !== "", word: m[3] });
+        out += value.slice(i, i + 2 + m[0].length);
+        i += 2 + m[0].length;
+        continue;
+      }
+    }
+    const r = sub(i, quote);
+    if (r) {
+      out += r[0];
+      i += r[1];
       continue;
     }
     out += c;
@@ -303,7 +356,7 @@ export function shellSecretProblems(value) {
   const problems = [];
   scanShell(value, {
     onSecret: (name, context) => {
-      if (context === "'" || context === "<<") problems.push(misplaced(name, context));
+      if (context !== null && context !== '"') problems.push(misplaced(name, context));
       return "";
     },
   });
@@ -326,7 +379,7 @@ export function expandShell(value, { ports = {}, secrets = {} } = {}) {
   return scanShell(value, {
     ports,
     onSecret: (name, context) => {
-      if (context === "'" || context === "<<") throw new Error(`refused: ${misplaced(name, context)}`);
+      if (context !== null && context !== '"') throw new Error(`refused: ${misplaced(name, context)}`);
       need(name);
       const ref = `\${${secretVar(name)}}`;
       return context === '"' ? ref : `"${ref}"`;

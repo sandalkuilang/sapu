@@ -750,7 +750,6 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
 /** Default ports, so `redis://localhost` and `redis://127.0.0.1:6379` name the same service. */
 const DEFAULT_PORTS = { postgresql: 5432, mysql: 3306, mariadb: 3306, redis: 6379, rediss: 6379, mongodb: 27017, amqp: 5672, amqps: 5671, http: 80, https: 443, smtp: 25, smtps: 465, memcached: 11211, nats: 4222 };
 const HTTP = new Set(["http", "https"]);
-const isLoopback = (h) => h === "" || h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1" || h === "0.0.0.0" || h === "::";
 const decodeSafe = (x) => {
   try {
     return decodeURIComponent(x);
@@ -758,17 +757,42 @@ const decodeSafe = (x) => {
     return x;
   }
 };
-/** A host as compared: lower case, no trailing dot, every loopback alias one name. */
-const normHost = (h) => {
-  const x = decodeSafe(String(h)).trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
-  return isLoopback(x) ? "loopback" : x;
-};
+/**
+ * A host as compared: canonical (WHATWG URL: lower case, IPv4 and IPv6 in one form), no trailing dot,
+ * every loopback address one name (`127.0.0.0/8`, `::1`, `::ffff:127.x`, `localhost`, unspecified).
+ * An empty host stays empty: it names no endpoint.
+ */
+function normHost(h) {
+  let x = decodeSafe(String(h)).trim().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+  if (!x) return "";
+  try {
+    x = new URL(`http://${net.isIP(x) === 6 ? `[${x}]` : x}/`).hostname.replace(/^\[(.*)\]$/, "$1");
+  } catch {
+    x = x.toLowerCase();
+  }
+  const loop = x === "localhost" || x.endsWith(".localhost") || /^127\./.test(x) || x === "0.0.0.0" || x === "::" || x === "::1" || /^::ffff:(7f[0-9a-f]{2}:|127\.)/.test(x);
+  return loop ? "loopback" : x;
+}
 
 /**
- * A connection string as a service: {scheme, endpoints: ["host:port"], loopback, full, ports,
- * databases}, or null. Understands URLs (`jdbc:` stripped; `postgres` = `postgresql`, `mongodb+srv`
- * = `mongodb`) and libpq DSNs (`host=… port=… dbname=…`). Hosts are normalised (`normHost`), default
- * ports filled in, the path percent-decoded; user, password and query are not part of the service.
+ * The path a file or socket value names (`sqlite:…`, `file:…`, `unix:…`, `<scheme>+unix:…`, or a bare
+ * `/…`, `./…`, `../…` path), or null.
+ */
+function filePath(v) {
+  const m = v.match(/^([a-z][a-z0-9+.-]*):(.*)$/i);
+  if (m && (/^sqlite/i.test(m[1]) || /\+unix$/i.test(m[1]) || /^(file|unix)$/i.test(m[1]))) {
+    let rest = m[2].replace(/[?#].*$/, "");
+    if (rest.startsWith("//")) rest = rest.slice(2);
+    return decodeSafe(rest) || null;
+  }
+  return /^(\/|\.\.?\/)/.test(v) && !v.includes(":") ? v : null;
+}
+
+/**
+ * A connection string as a service: {scheme, hosts: [{host, port}], full, ports, databases}, or null.
+ * Understands URLs (`jdbc:` stripped; `postgres` = `postgresql`, `mongodb+srv` = `mongodb`) and libpq
+ * DSNs (`host=… port=… dbname=…`). Hosts are normalised (`normHost`), default ports filled in, the
+ * path percent-decoded; user, password and query are not part of the service.
  */
 function service(raw) {
   const v = String(raw).trim().replace(/^jdbc:/i, "");
@@ -779,7 +803,6 @@ function service(raw) {
   let extraPorts = [];
   if (url) {
     scheme = url[1].toLowerCase().replace(/^postgres$/, "postgresql").replace(/^mongodb\+srv$/, "mongodb");
-    if (scheme === "file") return null;
     hosts = url[2].slice(url[2].lastIndexOf("@") + 1).split(",").map((h) => {
       const m = h.match(/^\[([^\]]*)\](?::(\d+))?$/) || h.match(/^([^:]*)(?::(\d+))?$/) || [null, h, undefined];
       return { host: m[1], port: m[2] ? Number(m[2]) : undefined };
@@ -799,33 +822,44 @@ function service(raw) {
     if (kv.dbname) databases = [kv.dbname];
   } else return null;
   hosts = hosts.map((h) => ({ host: normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
-  const endpoints = hosts.map((h) => `${h.host}:${h.port ?? ""}`);
   const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
   return {
     scheme,
-    endpoints,
-    loopback: hosts.every((h) => h.host === "loopback"),
-    full: `${scheme}://${[...endpoints].sort().join(",")}${path}`,
+    hosts,
+    full: `${scheme}://${hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",")}${path}`,
     ports: [...hosts.map((h) => h.port).filter((p) => p !== undefined), ...extraPorts],
     databases,
   };
 }
 
+/** `host:port` for each host that has both (an endpoint without either never matches), minus `exempt`. */
+const endpointsOf = (hosts, exempt = () => false) => hosts.filter((h) => h.host && h.port !== undefined && !exempt(h.host)).map((h) => `${h.host}:${h.port}`);
+
 /**
  * Endpoints given as separate variables sharing a prefix: `X_HOST` + `X_PORT`, `PGHOST` + `PGPORT`
- * (libpq's default 5432 when PGPORT is unset) → [{key, endpoint, port}].
+ * (libpq's default 5432 when PGPORT is unset); with `barePorts`, also a `*PORT` with no host beside it
+ * (a loopback endpoint) → [{key, host, port}].
  */
-function splitEndpoints(vars) {
+function splitEndpoints(vars, { barePorts = false } = {}) {
   const out = [];
+  const portOf = (raw) => (/^\d+$/.test(String(raw ?? "").trim()) ? Number(String(raw).trim()) : undefined);
   for (const [key, raw] of Object.entries(vars)) {
     const m = key.match(/^(.*?)(_?)HOST$/i);
     if (!m || !m[1]) continue;
     const host = String(raw).trim();
     if (!host || /[/=\s]/.test(host.replace(/,/g, ""))) continue;
-    const portRaw = vars[`${m[1]}${m[2]}PORT`] ?? vars[`${m[1]}${m[2] ? "" : "_"}PORT`];
-    const port = /^\d+$/.test(String(portRaw ?? "").trim()) ? Number(String(portRaw).trim()) : /^PG$/i.test(m[1]) ? 5432 : undefined;
+    const port = portOf(vars[`${m[1]}${m[2]}PORT`] ?? vars[`${m[1]}${m[2] ? "" : "_"}PORT`]) ?? (/^PG$/i.test(m[1]) ? 5432 : undefined);
     if (port === undefined) continue;
-    for (const h of host.split(",")) out.push({ key, endpoint: `${normHost(h)}:${port}`, port });
+    for (const h of host.split(",")) out.push({ key, host: normHost(h), port });
+  }
+  if (barePorts) {
+    for (const [key, raw] of Object.entries(vars)) {
+      const m = key.match(/^(.*?)(_?)PORT$/i);
+      const port = portOf(raw);
+      if (!m || port === undefined) continue;
+      const hasHost = [`${m[1]}${m[2]}HOST`, `${m[1]}HOST`, `${m[1]}_HOST`].some((k) => k !== key && k in vars);
+      if (!hasHost) out.push({ key, host: "loopback", port });
+    }
   }
   return out;
 }
@@ -834,17 +868,23 @@ function splitEndpoints(vars) {
 const NAMES_DATABASE = /(^PGDATABASE$|DATABASE|_DB$|_DB_NAME$|_DBNAME$)/i;
 
 /**
- * The store checks of `up` steps 6 and 7. The store must not be a database `guard.postgres` protects.
- * `store_check` (shell, worktree, bounded by `timeoutS`) must print `store` under the instance env
- * and under the env of every `start` entry that sets its own. No value in those envs may reach a
- * service the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here,
- * never printed): a datastore (any non-http scheme) on the same host:port whatever its database, an
- * http(s) URL equal up to its query (or on the same loopback endpoint) unless its origin is in
- * `allow_origins`; host and port given apart count as one endpoint. Nor may a value name a port or
- * database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number, or a bare
- * name under a variable that names a database). Refusals name the key, never a value.
+ * The store checks of `up` steps 6 and 7 (defence in depth: `store_check` and the egress check are the
+ * primary guards). The store must not be a database `guard.postgres` protects. `store_check` (shell,
+ * worktree, bounded by `timeoutS`) must print `store` under the instance env and under the env of
+ * every `start` entry that sets its own. No value in those envs may reach what the repo's env files
+ * name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here, never printed):
+ * - a non-http service on the same host:port, whatever its database (no opt-in: the instance reaches
+ *   such services only through its own); an endpoint with no host or no port never matches, and a
+ *   single-label host among `composeServices` (the worktree's own Compose project) is exempt;
+ * - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
+ *   `allow_origins`;
+ * - a file or socket path equal to one they name, or any path inside <MAIN> (the instance's relative
+ *   paths resolve in the worktree, the owner's in <MAIN>).
+ * `X_HOST` + `X_PORT` count as one endpoint, and a bare `*PORT` as a loopback one. Nor may a value name
+ * a port or database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number,
+ * or a bare name under a variable that names a database). Refusals name the key, never a value.
  */
-export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, runner = runAsync }) {
+export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, composeServices = [], runner = runAsync }) {
   const guard = (contract && contract.guard) || {};
   const pg = guard.postgres || { ports: [], databases: [] };
   if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres protects`);
@@ -858,9 +898,11 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     const got = r.stdout.trim();
     if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}"${scope.where}, not the store "${config.store}"`);
   }
+  const realMain = fs.realpathSync.native(main);
   const files = [".env", ".env.local", ...(guard.envFiles ?? [])];
   const ownerEndpoints = new Set();
   const ownerFull = new Set();
+  const ownerPaths = new Set();
   for (const f of files) {
     let text;
     try {
@@ -870,12 +912,17 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     }
     const vars = parseEnvFile(text);
     for (const v of Object.values(vars)) {
+      const file = filePath(v.trim());
+      if (file) {
+        ownerPaths.add(resolveLink(path.resolve(realMain, file)));
+        continue;
+      }
       const svc = service(v);
       if (!svc) continue;
-      svc.endpoints.forEach((e) => ownerEndpoints.add(e));
+      endpointsOf(svc.hosts).forEach((e) => ownerEndpoints.add(e));
       ownerFull.add(svc.full);
     }
-    for (const s of splitEndpoints(vars)) ownerEndpoints.add(s.endpoint);
+    for (const s of splitEndpoints(vars)) ownerEndpoints.add(`${s.host}:${s.port}`);
   }
   const allowed = new Set();
   for (const o of config.allow_origins ?? []) {
@@ -885,12 +932,14 @@ export async function checkStore({ config, env, worktree, main, contract, secret
       // validateLive refuses a bad origin
     }
   }
+  const own = new Set(composeServices.map((x) => String(x).toLowerCase()));
+  const exempt = (host) => !host.includes(".") && !host.includes(":") && host !== "loopback" && own.has(host);
   const reaches = `points at a service the repo's env files name (${files.join(", ")}); it would reach the owner's service`;
   for (const scope of scopes) {
-    for (const s of splitEndpoints(scope.env)) {
-      if (scope !== scopes[0] && !(s.key in scope.own) && !Object.keys(scope.own).some((k) => /PORT$/i.test(k))) continue;
-      const key = `${s.key in scope.own ? scope.label : "env"}.${s.key}`;
-      if (ownerEndpoints.has(s.endpoint)) throw new Error(`refused: ${key} ${reaches}`);
+    for (const s of splitEndpoints(scope.env, { barePorts: true })) {
+      if (scope !== scopes[0] && !(s.key in scope.own)) continue;
+      const key = `${scope.label}.${s.key}`;
+      if (endpointsOf([s], exempt).some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
       if (pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres protects`);
     }
     for (const [k, raw] of Object.entries(scope.own)) {
@@ -901,6 +950,13 @@ export async function checkStore({ config, env, worktree, main, contract, secret
         continue;
       }
       if (NAMES_DATABASE.test(k) && pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
+      const file = filePath(v);
+      if (file) {
+        const real = resolveLink(path.resolve(worktree, file));
+        if (real === null || within(realMain, real)) throw new Error(`refused: ${key} points into the main checkout`);
+        if (ownerPaths.has(real)) throw new Error(`refused: ${key} points at a file or socket the repo's env files name (${files.join(", ")})`);
+        continue;
+      }
       const svc = service(v);
       if (!svc) continue;
       if (HTTP.has(svc.scheme)) {
@@ -910,9 +966,10 @@ export async function checkStore({ config, env, worktree, main, contract, secret
         } catch {
           origin = null;
         }
-        const same = ownerFull.has(svc.full) || (svc.loopback && svc.endpoints.some((e) => ownerEndpoints.has(e)));
+        const loopback = svc.hosts.length > 0 && svc.hosts.every((h) => h.host === "loopback");
+        const same = ownerFull.has(svc.full) || (loopback && endpointsOf(svc.hosts).some((e) => ownerEndpoints.has(e)));
         if (same && !allowed.has(origin)) throw new Error(`refused: ${key} ${reaches} (list its origin in allow_origins if it is meant to)`);
-      } else if (svc.endpoints.some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
+      } else if (endpointsOf(svc.hosts, exempt).some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
       const port = svc.ports.find((p) => pg.ports.includes(p));
       if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
       const db = svc.databases.find((d) => pg.databases.includes(d));

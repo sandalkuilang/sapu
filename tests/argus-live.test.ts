@@ -204,6 +204,17 @@ describe("argus-live config — validateLive", () => {
     expect(errorsOf((c) => (c.setup = [["sh", "-c", "'${PW}'"]]))).toEqual([]);
   });
 
+  it("a heredoc ends at its delimiter line; << inside $(( )) is a shift; the advice fits the heredoc", () => {
+    expect(errorsOf((c) => (c.reset = "cat <<EOF > f\nhello\nEOF\necho ${PW}"))).toEqual([]);
+    expect(errorsOf((c) => (c.reset = "cat <<-EOF > f\n\thello\n\tEOF\necho ${PW}"))).toEqual([]);
+    expect(errorsOf((c) => (c.reset = "echo $((1 << 2)) ${PW}"))).toEqual([]);
+    const unquoted = errorsOf((c) => (c.reset = "cat <<EOF > f\n${PW}\nEOF"));
+    expect(unquoted.some((e) => e.includes("heredoc") && e.includes("write $ARGUS_SECRET_PW ") && !e.includes('"$ARGUS_SECRET_PW"'))).toBe(true);
+    const quoted = errorsOf((c) => (c.reset = "cat <<'EOF' > f\n${PW}\nEOF"));
+    expect(quoted.some((e) => e.includes("quoted heredoc"))).toBe(true);
+    expect(errorsOf((c) => (c.reset = "cat <<A <<B\na\nA\n${PW}\nB\necho ${PW}")).length).toBe(1);
+  });
+
   it("requires port_range whenever a {port:<name>} is used (a fixed port alone needs none)", () => {
     expect(errorsOf((c) => delete c.port_range).some((e) => e.includes("port_range is required"))).toBe(true);
     const c = example();
@@ -1327,10 +1338,15 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
 
   describe("4. env values are compared as services", () => {
     const owner = "DATABASE_URL=postgres://owner:x@localhost:5432/app_dev?sslmode=disable\nREDIS_URL=redis://localhost:6379/0\n";
-    const check = async (v: string | Record<string, string>, { contract = null as unknown, files = owner, allow = [] as string[] } = {}) => {
+    const check = async (
+      v: string | Record<string, string>,
+      { contract = null as unknown, files = owner, allow = [] as string[], compose = [] as string[], at = (_main: string, _wt: string) => {} } = {},
+    ) => {
       const ctx = await ctxFor({ store_check: "echo app_explore", allow_origins: allow });
-      writeFileSync(join(ctx.main, ".env"), files);
-      return message(checkStore({ ...ctx, contract, env: { ...ctx.env, ...(typeof v === "string" ? { X: v } : v) } }));
+      writeFileSync(join(ctx.main, ".env"), typeof files === "function" ? (files as (m: string) => string)(ctx.main) : files);
+      at(ctx.main, ctx.worktree);
+      const vars = typeof v === "function" ? (v as (m: string) => Record<string, string>)(ctx.main) : typeof v === "string" ? { X: v } : v;
+      return message(checkStore({ ...ctx, contract, composeServices: compose, env: { ...ctx.env, ...vars } }));
     };
     it.each([
       "postgresql://app:y@127.0.0.1/other",
@@ -1397,6 +1413,45 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       });
     });
 
+    describe("endpoints with no host or port, and file or socket paths", () => {
+      it.each(["postgres:///app_explore", "dbname=x user=app", "postgresql://app@/x?host=", "custom://localhost/x"])("%s has no host:port to match", async (v) => {
+        expect(await check(v, { files: "A=postgres:///app_dev\nB=dbname=app_dev\nC=custom://localhost/y\n" })).toBe("ok");
+      });
+      it("a file or socket inside the repo is refused; one in the worktree is not", async () => {
+        expect(await check((m: string) => ({ X: `sqlite:///${m}/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
+        expect(await check((m: string) => ({ X: `file:${m}/prisma/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
+        expect(await check((m: string) => ({ DATA: `${m}/data` }) as never)).toMatch(/^refused: env\.DATA points into the main checkout/);
+        expect(await check("file:./dev.db", { files: "DATABASE_URL=file:./dev.db\n" })).toBe("ok");
+        expect(await check("sqlite:./data/app.db")).toBe("ok");
+      });
+      it("a socket or file the owner's env files name is refused, whatever the scheme spelling", async () => {
+        const dir = realpathSync(tempDir());
+        const files = `REDIS_SOCKET=unix://${dir}/redis.sock\nPGHOST=${dir}/pg\n`;
+        expect(await check(`redis+unix://${dir}/redis.sock`, { files })).toMatch(/^refused: env\.X points at a file or socket the repo's env files name/);
+        expect(await check({ PGHOST: `${dir}/pg` }, { files })).toMatch(/^refused: env\.PGHOST points at a file or socket/);
+        expect(await check(`unix://${dir}/other.sock`, { files })).toBe("ok");
+      });
+    });
+
+    describe("the instance's own Compose services", () => {
+      const files = "DATABASE_URL=postgres://owner@db:5432/app_dev\nAPI_DB=postgres://owner@db.internal:5432/a\n";
+      it("a single-label host that is a service of the worktree's Compose project is exempt", async () => {
+        expect(await check("postgres://app@db:5432/app_explore", { files, compose: ["db", "cache"] })).toBe("ok");
+        expect(await check("postgres://app@db:5432/app_explore", { files })).toMatch(/^refused: env\.X points at a service/);
+        expect(await check("postgres://app@db.internal:5432/x", { files, compose: ["db.internal"] })).toMatch(/^refused/);
+      });
+    });
+
+    describe("IPv6 forms and a port with no host", () => {
+      it.each(["postgres://app@[0:0:0:0:0:0:0:1]:5432/x", "redis://[::ffff:127.0.0.1]:6379", "redis://127.1:6379"])("%s is loopback", async (v) => {
+        expect(await check(v)).toMatch(/^refused: env\.X points at a service/);
+      });
+      it("a bare *PORT with no host is a loopback endpoint", async () => {
+        expect(await check({ REDIS_PORT: "6379" })).toMatch(/^refused: env\.REDIS_PORT points at a service/);
+        expect(await check({ REDIS_PORT: "41005" })).toBe("ok");
+      });
+    });
+
     const guard = { guard: { envFiles: [], postgres: { ports: [6543], databases: ["app_dev"] } } };
     it.each(["PGDATABASE", "MAIN_DB", "APP_DATABASE", "APP_DB_NAME", "X_DBNAME"])("a bare protected database name under %s is refused", async (key) => {
       expect(await check({ [key]: "app_dev" }, { contract: guard })).toMatch(new RegExp(`^refused: env\\.${key} names database app_dev`));
@@ -1409,6 +1464,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       ["host=localhost port=41001 dbname=app_dev", /names database app_dev/],
       ["host=localhost port=6543 dbname=x", /names port 6543/],
       ["jdbc:postgresql://localhost:6543/x", /names port 6543/],
+      [{ PGHOST: "localhost", PGPORT: "6543" }, /names port 6543/],
     ])("%s is a protected database or port", async (v, why) => {
       expect(await check(v as string, { contract: guard })).toMatch(why as RegExp);
     });

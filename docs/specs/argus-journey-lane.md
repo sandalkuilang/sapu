@@ -410,16 +410,26 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
 6. **Store.** Starts the `phase: store` entries (each in its own process group) and waits for their
    health. `store` must not be a database the contract's `guard.postgres` protects. Runs
    `store_check` under the instance environment and again under the environment of every `start`
-   entry that sets its own: each output must equal `store`. No value in those environments may reach
-   a service the repo's env files name (read by the script, never printed): a datastore (any scheme
-   but http(s): postgres, mysql, redis, mongodb, amqp, …) on the same host and port whatever its
-   database, remote or local; an http(s) URL equal up to its query, or on the same loopback endpoint,
-   unless its origin is listed in `allow_origins`. Hosts are compared lower-cased, without a trailing
-   dot, with loopback aliases merged and default ports filled in; `X_HOST` + `X_PORT` (and `PGHOST` +
-   `PGPORT`) count as one endpoint, on both sides. Nor may a value name a port or database
-   `guard.postgres` protects: URLs, `jdbc:` URLs, libpq `key=value` strings and bare port numbers are
-   read, and a bare database name under a variable that names a database (`PGDATABASE`, `*_DB`,
-   `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). Only then `reset`.
+   entry that sets its own: each output must equal `store`. Then, as defence in depth (`store_check`
+   and the egress check are the primary guards), no value in those environments may reach what the
+   repo's env files name (read by the script, never printed):
+   - a non-http service (postgres, mysql, redis, mongodb, amqp, …) on the same host and port,
+     whatever its database, remote or local. There is no opt-in: the instance reaches such services
+     only through its own local ones. An endpoint with no host or no port never matches, and a
+     single-label host that is a service of the worktree's own Compose project is exempt;
+   - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is
+     listed in `allow_origins`;
+   - a file or socket (`sqlite:`, `file:`, `unix:`, `<scheme>+unix:`, a bare path) equal to one they
+     name, or any path inside the repo's main checkout (the instance's relative paths resolve in its
+     worktree, the owner's in the main checkout).
+
+   Hosts are compared canonically (lower case, one form per IP address, no trailing dot, every
+   loopback address one name) with default ports filled in; `X_HOST` + `X_PORT` (and `PGHOST` +
+   `PGPORT`) count as one endpoint on both sides, and an instance `*PORT` with no host beside it as a
+   loopback endpoint. Nor may a value name a port or database `guard.postgres` protects: URLs, `jdbc:`
+   URLs, libpq `key=value` strings and bare port numbers are read, and a bare database name under a
+   variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). Only
+   then `reset`.
 7. **Start.** Each remaining entry in its own process group. Refuse when an entry's health already
    answers before its command ran (a `url` that responds, a `cmd` that exits 0: something else serves
    there). Health = `{url}` answering, `{cmd}` exiting 0, or, when omitted, the process alive after
