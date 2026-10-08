@@ -1312,4 +1312,27 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     c.labels.needsOwner = "Sapu:Accepted";
     expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label/);
   });
+
+  it("`allowed journey` passes when the policy allows it", () => {
+    const repo = join(root, "policy-journey-ok");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["argus", "journey"] } }) });
+    expect(cli(repo, ["allowed", "journey"]).status).toBe(0);
+  });
+
+  it("refuses an acceptance label equal to the default needs-owner label when needsOwner is absent", () => {
+    const c = clone();
+    c.labels.accepted = "argus:needs-owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label: both are "argus:needs-owner"/);
+  });
+
+  it("an invalid needsOwner reports only the name error, not a clash", () => {
+    const c = clone();
+    c.labels.accepted = "argus:needs-owner";
+    c.labels.needsOwner = 3;
+    const e = validate(c).join("\n");
+    expect(e).toMatch(/labels\.needsOwner must be a non-empty label name/);
+    expect(e).not.toMatch(/must differ/);
+  });
 });
