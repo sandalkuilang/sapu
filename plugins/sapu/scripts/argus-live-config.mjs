@@ -21,7 +21,7 @@ export const MAX_CYCLE_MINUTES = 1440;
 const TOP_KEYS = [
   "setup", "services", "start", "base_url", "login_url", "logged_in", "env_file", "env", "pass_env", "store", "store_check", "reset",
   "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
-  "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits",
+  "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
 ];
 const REQUIRED = ["start", "base_url", "login_url", "logged_in", "store", "store_check", "reset", "confirmed", "roles", "limits"];
 const LIMIT_KEYS = ["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"];
@@ -105,6 +105,11 @@ export function validateLive(c) {
   if (has("reserved_ports")) need(Array.isArray(c.reserved_ports) && c.reserved_ports.every(isPort), "reserved_ports must be an array of ports");
   for (const k of ["login_spacing_ms", "settle_ms"]) if (has(k)) need(isInt(c[k]), `${k} must be a non-negative integer`);
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  if (has("compose_files")) {
+    const v = c.compose_files;
+    const repoRelative = (p) => isStr(p) && !path.isAbsolute(p) && !p.includes("\\") && !p.split("/").includes("..");
+    need(Array.isArray(v) && v.length > 0 && v.every(repoRelative) && new Set(v).size === v.length, "compose_files must list one or more distinct repo-relative files (no absolute path, no ..)");
+  }
   if (has("viewports")) need(Array.isArray(c.viewports) && c.viewports.every((v) => isInt(v, 1)), "viewports must be an array of positive widths");
   if (has("roles") && object(c.roles, "roles")) for (const [name, r] of Object.entries(c.roles)) role(name, r, errs);
   if (has("limits") && object(c.limits, "limits")) {

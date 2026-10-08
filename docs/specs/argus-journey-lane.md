@@ -352,7 +352,8 @@ datastore `reset` may touch, and `store_check` prints the store the app's own co
 to; `mail` prints `[{to, subject, text}]` as JSON; `allow_origins` are full origins pages may load
 from (a font CDN); `reserved_ports` are the repo's dev and E2E ports, never allocated; `fixtures` holds
 the files `upload` may use; each role may also set `base_url`, `login_url`, `logged_in`,
-`login_open`.
+`login_open`. An optional `compose_files` lists the Compose files the instance uses (paths from the
+repo's root, tracked, no `..`), in Compose's `-f` order: only those are checked (step 5).
 
 `confirmed` is the owner's statement, asked by `/sapu:init` in these words: `mocks` — every outbound
 integration (payments, email, messaging, identity checks) runs in test or mock mode under `env`,
@@ -388,7 +389,11 @@ defence in depth and not enforcement:
 - A container reaches the Docker host by names and addresses the checks know (`host.docker.internal`,
   `host-gateway`, `172.16-31.0.1`, `192.168.65.0/24`); a custom bridge subnet escapes them.
 - The Docker runtime gate sees every container, volume and network created or started during the
-  cycle, the owner's included: one the owner starts meanwhile ends the cycle.
+  cycle, and every exec, stop, kill or removal of one, the owner's included: what the owner does on the
+  same daemon meanwhile (other than a container's own healthcheck) ends the cycle.
+- Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
+  sockets of servers other users run; its addresses are the ones lsof prints), or by `ss -xp` on Linux;
+  with only Linux's `lsof`, a client's peer is not named.
 - Nothing is enforced by the operating system. A sandbox that denies the instance every other
   connection (`sandbox-exec` on macOS, a network namespace on Linux) is future work.
 
@@ -438,21 +443,26 @@ defence in depth and not enforcement:
    (no `docker run`, `exec`, `rm`, `volume …`, `--context`), or pass Compose `-p`, `-f`,
    `--project-directory`, `--env-file` or a variable where its flags go (quotes and backslashes read
    as the shell reads them): the check would not see what it runs (the env's `COMPOSE_FILE` and
-   `COMPOSE_PROFILES` do that). Every Compose file of the worktree — tracked at any depth
-   (`compose*.y*ml`, `docker-compose*.y*ml`), or a default name at its root — must name no path
-   inside the main checkout (an `env_file`, `extends` or `include` read from the owner's checkout).
-   Then `docker compose -f <each such file of a directory> --profile '*' config --format json` runs
-   once per directory (and once at the root, with no `-f`, when the env or a tracked `.env` names
-   `COMPOSE_FILE`), in that directory under step 3's environment and with every profile, and each
-   project must share nothing with the owner's stack, otherwise refuse: it is named
+   `COMPOSE_PROFILES` do that). The Compose files checked are `live.compose_files` when set (merged
+   in its order from the worktree's root); else the `COMPOSE_FILE` the instance env (or a tracked
+   `.env`) sets, read as Compose reads it; else every Compose file of the worktree — tracked at any
+   depth (`compose*.y*ml`, `docker-compose*.y*ml`), or a default name at its root — one run per
+   directory, and a refusal then tells the owner to list `compose_files` (fail closed; files only a
+   command or a script uses are left to the runtime gate, step 8). None may name a path inside the
+   main checkout, spelled anywhere in it (a `${VAR:-<path>}` default too) or reached by a relative
+   path (an `env_file`, `extends` or `include` read from the owner's checkout). Then `docker compose
+   [-f <file>…] --profile '*' config --format json` runs under step 3's environment with every
+   profile, and each project must share nothing with the owner's stack, otherwise refuse: it is named
    `COMPOSE_PROJECT_NAME`; it publishes only this run's ports (no random host port either) and names
    no `container_name`; no service sets `network_mode` `host`, `bridge` or `container:…`, `pid`,
    `ipc` or `cgroup` `host` or `container:…`, `uts` or `userns_mode` `host`, or `volumes_from` a
-   container; none is `privileged`, maps `devices`, or adds a capability other than
+   container; none is `privileged`, sets `security_opt` `seccomp`/`apparmor` `unconfined`,
+   `label` `disable` or `systempaths=unconfined`, maps `devices`, or adds a capability other than
    `NET_BIND_SERVICE`, `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`; no bind mount or local
    volume `device` (`o: bind`, `type: none`) lies inside the main checkout or holds it, or is a
    container runtime or datastore socket (Docker, containerd, Podman, PostgreSQL, MySQL, Redis) or a
-   directory holding one (`/var/run`, `/run`, `~/.docker/run`, …), unless it lies in the worktree;
+   directory holding one (`/var/run`, `/run`, `~/.docker/run`, …), or any `*.sock` under a Docker
+   run directory (`~/.docker/run`, Docker Desktop's data directory, …), unless it lies in the worktree;
    no secret or config `file` or build context is read from the main checkout; no `extra_hosts`
    entry maps a name to the Docker host (`host-gateway`, a bridge gateway); no network or volume is
    `external` or named outside the project. Each service's resolved `environment`, `command` and
@@ -489,7 +499,9 @@ defence in depth and not enforcement:
    variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). And
    an instance value of the libpq or MySQL family must name its host and its port: one that leaves
    either to the client's default (`postgres:///app`, `postgres://u@localhost/app`, `dbname=app`) would
-   reach whatever local server answers there, and is refused. Only then `reset`.
+   reach whatever local server answers there, and is refused; so is a client variable that takes
+   its host from another one left unset (`PGDATABASE`, `PGUSER`, `PGPASSWORD` or `PGPORT` without
+   `PGHOST`; `MYSQL_PWD` or `MYSQL_TCP_PORT` without `MYSQL_HOST`). Only then `reset`.
 
    The same comparison runs at step 5 over each Compose service's `environment`, `command` and
    `entrypoint` (each word, and what follows its first `=`), as a container sees them: its loopback
@@ -523,10 +535,15 @@ defence in depth and not enforcement:
    in the first sample. Repeated at every `renew`.
    Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
    docker:up`): every container created or started, and every volume and network created, since `up`
-   began (a few seconds earlier, for the daemon's clock) must carry the label
+   began (read from the daemon's own clock, `docker info`, so a second's tolerance is enough) must
+   carry the label
    `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); such
    a container may mount only the run's volumes, join only the run's networks (or none), and bind-mount
-   nothing step 5 refuses. Otherwise `down` and refuse, naming the object. Repeated at every `renew`,
+   nothing step 5 refuses. And the daemon's events from then to its now (`docker events`) may hold no
+   action on an object the run does not own: an exec (other than the container's own healthcheck),
+   kill, stop, die, removal or other change of a container without the run's label, or the removal of
+   a volume or network neither named `<project>_…` nor created during the cycle. Otherwise `down` and
+   refuse, naming the object. Repeated at every `renew`,
    and at `down`, where a finding is reported but never stops the teardown. No docker, or no daemon
    running, means nothing was created through it.
 9. **Proxy.** Starts the run's filtering proxy (§9).
@@ -817,7 +834,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Another cycle holds the lock | refuse, naming its run and deadline |
 | The owner's Docker context is not a local unix socket (tcp, ssh) | refuse before step 5, naming the context and its scheme only; `down` runs |
 | A Compose project, Compose file or config command would share something with the owner's stack, or run Docker past the check | refuse, naming the service, file or field and the rule; `down` runs |
-| The Docker runtime gate finds a container, volume or network created or started during the cycle outside the run's project (or a run container on another's volume or network) | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
+| The Docker runtime gate finds a container, volume or network created or started during the cycle outside the run's project, a run container on another's volume or network, or an exec, stop, kill or removal of an object that is not the run's | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
 | The egress check finds a foreign endpoint or a datastore socket, or its listing cannot be trusted | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |
 | Session lost mid-journey | the wrapper signs in once; failing again → a harness event (H2), not a candidate |

@@ -20,6 +20,7 @@ import {
   checkDockerRuntime,
   checkEgress,
   checkStore,
+  daemonNow,
   dockerEnv,
   egressAllowed,
   groupPids,
@@ -106,6 +107,13 @@ afterEach(() => {
 });
 
 describe("argus-live config — validateLive", () => {
+  it("compose_files, when present, lists repo-relative files: no absolute path, no .., at least one", () => {
+    expect(errorsOf((c) => (c.compose_files = ["compose.yaml", "deploy/stack.yml"]))).toEqual([]);
+    for (const bad of [[], ["/srv/compose.yaml"], ["../x.yml"], ["a/../b.yml"], [""], "compose.yaml", ["a.yml", "a.yml"]]) {
+      expect(errorsOf((c) => (c.compose_files = bad)).some((e) => e.startsWith("compose_files"))).toBe(true);
+    }
+  });
+
   it("accepts the spec §8 example", () => {
     expect(validateLive(example())).toEqual([]);
   });
@@ -1444,15 +1452,22 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
         it.each(["postgres://app@localhost:41001/x", "postgresql:///x?host=/tmp/argus-pg&port=41001", "postgresql://%2Ftmp%2Fargus-pg:41001/x", "mysql://app@localhost:41002/x"])("%s is not", async (v) => {
           expect(await check(v, { files })).toBe("ok");
         });
+        it.each(["postgresql://app@/x?port=41001", "mysql://app@:41002/x", "dbname=x port=41001", "postgres:///x"])("in the instance env, %s leaves its host to the client's default and is refused", async (v) => {
+          expect(await check(v, { files: "" })).toBe("refused: env.X leaves its host to the client's default (the local server); name its host and port");
+        });
+        it.each(["postgres://app@localhost/app_explore", "mysql://app@127.0.0.1/other", "host=localhost dbname=x"])("in the instance env, %s leaves its port to the client's default and is refused", async (v) => {
+          expect(await check(v, { files: "" })).toBe("refused: env.X leaves its port to the client's default; name it");
+        });
         it.each([
-          "postgresql://app@/x?port=41001",
-          "mysql://app@:41002/x",
-          "dbname=x port=41001",
-          "postgres://app@localhost/app_explore",
-          "mysql://app@127.0.0.1/other",
-          "host=localhost dbname=x",
-        ])("in the instance env, %s leaves its host or port to the client's default and is refused", async (v) => {
-          expect(await check(v, { files: "" })).toBe("refused: env.X leaves its host or port to the client's default (the local server's); name both");
+          [{ PGDATABASE: "app_explore" }, "PGDATABASE", "PGHOST"],
+          [{ PGUSER: "app", PGPORT: "41001" }, "PGUSER", "PGHOST"],
+          [{ MYSQL_PWD: "x" }, "MYSQL_PWD", "MYSQL_HOST"],
+          [{ MYSQL_TCP_PORT: "41002" }, "MYSQL_TCP_PORT", "MYSQL_HOST"],
+        ])("in the instance env, %j leaves the client's host to its default and is refused", async (vars, key, host) => {
+          expect(await check(vars as Record<string, string>, { files: "" })).toBe(`refused: env.${key} leaves its host to the client's default (the local server); set ${host} too`);
+        });
+        it.each([{ PGDATABASE: "app_explore", PGHOST: "localhost", PGPORT: "41001" }, { PGUSER: "app", PGHOSTADDR: "127.0.0.1", PGPORT: "41001" }, { MYSQL_DATABASE: "app_explore", MYSQL_USER: "app" }, { PGDATA: "./pg" }])("%j is fine", async (vars) => {
+          expect(await check(vars as Record<string, string>, { files: "" })).toBe("ok");
         });
       });
       it("a file or socket inside the repo is refused; one in the worktree is not", async () => {
@@ -1514,7 +1529,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       expect(await check({ [key]: "app_dev" }, { contract: guard })).toMatch(new RegExp(`^refused: env\\.${key} names database app_dev`));
     });
     it.each(["PGUSER", "APP_NAME", "X"])("a bare app_dev under %s is not a database name", async (key) => {
-      expect(await check({ [key]: "app_dev" }, { contract: guard })).toBe("ok");
+      expect(await check({ [key]: "app_dev", PGHOST: "db.example.test" }, { contract: guard })).toBe("ok");
     });
     it.each([
       ["jdbc:postgresql://localhost:41001/app%5Fdev", /names database app_dev/],
@@ -1600,7 +1615,7 @@ describe("argus-live instance — Compose and egress checks", () => {
      * A git worktree stand-in holding Compose files (tracked unless `untracked`), and a fake `docker` on
      * PATH that appends how it ran (cwd, project, args) to `ran` and prints `json`.
      */
-    const world = (json: unknown, { files = ["compose.yaml"] as string[], untracked = [] as string[], status = 0, stderr = "" } = {}) => {
+    const world = (json: unknown, { files = ["compose.yaml"] as string[], untracked = [] as string[], status = 0, stderr = "", bad = null as null | { when: string; json: unknown } } = {}) => {
       const wt = realpathSync(tempDir());
       const main = realpathSync(tempDir());
       const bin = tempDir();
@@ -1612,7 +1627,9 @@ describe("argus-live instance — Compose and egress checks", () => {
       if (files.length) execFileSync("git", ["-C", wt, "add", ...files]);
       writeFileSync(join(bin, "out.json"), JSON.stringify(json));
       const docker = join(bin, "docker");
-      writeFileSync(docker, `#!/bin/sh\nprintf '%s|%s|%s\\n' "$PWD" "$COMPOSE_PROJECT_NAME" "$*" >> ${JSON.stringify(join(bin, "ran"))}\nprintf '%s' ${JSON.stringify(stderr)} >&2\ncat ${JSON.stringify(join(bin, "out.json"))}\nexit ${status}\n`);
+      if (bad) writeFileSync(join(bin, "bad.json"), JSON.stringify(bad.json));
+      const out = bad ? `case "$*" in *${bad.when}*) cat ${JSON.stringify(join(bin, "bad.json"))} ;; *) cat ${JSON.stringify(join(bin, "out.json"))} ;; esac` : `cat ${JSON.stringify(join(bin, "out.json"))}`;
+      writeFileSync(docker, `#!/bin/sh\nprintf '%s|%s|%s\\n' "$PWD" "$COMPOSE_PROJECT_NAME" "$*" >> ${JSON.stringify(join(bin, "ran"))}\nprintf '%s' ${JSON.stringify(stderr)} >&2\n${out}\nexit ${status}\n`);
       chmodSync(docker, 0o755);
       const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, COMPOSE_PROJECT_NAME: PROJECT };
       const set = (c: unknown) => writeFileSync(join(bin, "out.json"), JSON.stringify(c));
@@ -1670,6 +1687,45 @@ describe("argus-live instance — Compose and egress checks", () => {
       );
     });
 
+    describe("compose_files names the files the instance uses", () => {
+      const bad = () => {
+        const c = good();
+        c.services.db.container_name = "fixed";
+        c.networks.ext = { name: "owner_net", external: true };
+        return c;
+      };
+      const three = ["compose.yaml", "docker-compose.prod.yml", "examples/minimal/docker-compose.yml"];
+      it("listed, only those files are merged and checked (the repro: a production file with container_name and an external network beside them)", () => {
+        const w = world(good(), { files: three, bad: { when: "prod", json: bad() } });
+        writeFileSync(join(w.wt, "docker-compose.prod.yml"), `services:\n  db:\n    container_name: fixed\n    env_file: [${w.main}/.env]\n`);
+        expect(compose(w, { config: { compose_files: ["compose.yaml"] } })).toBe("ok");
+        expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f compose.yaml --profile * config --format json`]);
+      });
+      it("unlisted, every tracked file is checked (fail closed), and the refusal says to list compose_files", () => {
+        const w = world(good(), { files: three, bad: { when: "prod", json: bad() } });
+        expect(compose(w)).toMatch(/^refused: Compose service db sets container_name .*; list the files the instance uses in compose_files to check only those$/);
+        writeFileSync(join(w.wt, "docker-compose.prod.yml"), `services:\n  db:\n    env_file: [${w.main}/.env]\n`);
+        expect(compose(w)).toMatch(/^refused: docker-compose\.prod\.yml names a path inside the main checkout .*; list the files the instance uses in compose_files to check only those$/);
+      });
+      it("keeps the listed order (Compose's -f order) and runs from the worktree's root", () => {
+        const w = world(good(), { files: ["compose.yaml", "compose.override.yaml", "deploy/stack.yml"] });
+        expect(compose(w, { config: { compose_files: ["deploy/stack.yml", "compose.yaml"] } })).toBe("ok");
+        expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f deploy/stack.yml -f compose.yaml --profile * config --format json`]);
+      });
+      it("a listed file that git does not track is refused", () => {
+        const w = world(good(), { files: ["compose.yaml"], untracked: ["local.yml"] });
+        expect(compose(w, { config: { compose_files: ["compose.yaml", "local.yml"] } })).toBe("refused: compose_files names local.yml, which the worktree does not track");
+      });
+      it("without compose_files, a COMPOSE_FILE the instance env sets is authoritative: read as Compose reads it, at the root", () => {
+        const w = world(good(), { files: three, bad: { when: "prod", json: bad() } });
+        writeFileSync(join(w.wt, "docker-compose.prod.yml"), `services:\n  db:\n    env_file: [${w.main}/.env]\n`);
+        expect(compose({ ...w, env: { ...w.env, COMPOSE_FILE: "compose.yaml" } })).toBe("ok");
+        expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose --profile * config --format json`]);
+        writeFileSync(join(w.wt, "compose.yaml"), `services:\n  db:\n    env_file: [${w.main}/.env]\n`);
+        expect(compose({ ...w, env: { ...w.env, COMPOSE_FILE: "compose.yaml" } })).toMatch(/^refused: compose\.yaml names a path inside the main checkout/);
+      });
+    });
+
     it("no Compose file: nothing to check, docker never runs", () => {
       const w = world(good(), { files: ["README.md"] });
       expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual([]);
@@ -1689,14 +1745,18 @@ describe("argus-live instance — Compose and egress checks", () => {
     it("a tracked Compose file that names a path inside the main checkout (env_file, extends, include, ...) is refused", () => {
       const w = world(good());
       writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    image: x\n    env_file: [${w.main}/.env]\n`);
-      expect(compose(w)).toBe("refused: compose.yaml names a path inside the main checkout (Compose would read the owner's file)");
+      expect(compose(w)).toBe("refused: compose.yaml names a path inside the main checkout (Compose would read the owner's file); list the files the instance uses in compose_files to check only those");
       writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    extends: { file: "${w.main}/base.yaml", service: base }\n`);
       expect(compose(w)).toMatch(/^refused: compose\.yaml names a path inside the main checkout/);
-      writeFileSync(join(w.wt, "compose.yaml"), "services:\n  web:\n    image: x\n    volumes: [./data:/data, /var/lib/x:/y]\n    command: http://example.test/a\n");
+      for (const text of [`env_file: ${"$"}{ENV_FILE:-${w.main}/.env}`, `env_file: ${"$"}{ENV_FILE-${w.main}/.env}`, `image: x${w.main}/y`, `env_file: "${"$"}{X:=${w.main}}"`]) {
+        writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    ${text}\n`);
+        expect(compose(w)).toMatch(/^refused: compose\.yaml names a path inside the main checkout/);
+      }
+      writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    image: x\n    volumes: [./data:/data, /var/lib/x:/y, "${"$"}{DATA:-./data}:/d"]\n    command: http://example.test/a\n    working_dir: ${w.main}-other/x\n`);
       expect(compose(w)).toBe("ok");
     });
 
-    const SOCKETS = (home: string) => ["/var/run/docker.sock", "/var/run", "/run", "/", `${home}/.docker/run`, "/run/containerd/containerd.sock", "/srv/podman.sock", "/tmp/.s.PGSQL.5432", "/var/run/postgresql"];
+    const SOCKETS = (home: string) => [`${home}/Library/Containers/com.docker.docker/Data/docker.raw.sock`, `${home}/.docker/run/user-analytics.otlp.grpc.sock`, `${home}/Library/Containers/com.docker.docker/Data`, "/var/run/docker.sock", "/var/run", "/run", "/", `${home}/.docker/run`, "/run/containerd/containerd.sock", "/srv/podman.sock", "/tmp/.s.PGSQL.5432", "/var/run/postgresql"];
     const refusals: [string, (c: Obj, main: string) => void, RegExp][] = [
       ["a host port outside the run", (c) => (c.services.db.ports[0].published = "5432"), /^refused: Compose service db publishes host port 5432, which is not one of this run's ports/],
       ["a published range reaching outside the run", (c) => (c.services.db.ports[0].published = "41001-41003"), /^refused: Compose service db publishes host port 41003/],
@@ -1722,6 +1782,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       ["a secret file from the main checkout", (c, main) => (c.secrets.s1.file = `${main}/.env`), /^refused: Compose secret s1 reads a file inside the main checkout/],
       ["a config file from the main checkout", (c, main) => (c.configs.c1.file = `${main}/conf`), /^refused: Compose config c1 reads a file inside the main checkout/],
       ["a build context in the main checkout", (c, main) => (c.services.web.build = { context: main, dockerfile: "Dockerfile" }), /^refused: Compose service web builds from a path inside the main checkout/],
+      ...(["seccomp:unconfined", "seccomp=unconfined", "apparmor:unconfined", "label:disable", "label=disable", "systempaths=unconfined"].map((o) => [`security_opt ${o}`, (c: Obj) => (c.services.web.security_opt = ["no-new-privileges:true", o]), new RegExp(`^refused: Compose service web sets security_opt ${o}`)]) as [string, (c: Obj) => void, RegExp][]),
       ["extra_hosts to the Docker host", (c) => (c.services.web.extra_hosts = ["host.docker.internal=host-gateway"]), /^refused: Compose service web maps host\.docker\.internal to the Docker host/],
       ["extra_hosts to a bridge gateway", (c) => (c.services.web.extra_hosts = ["api:172.17.0.1"]), /^refused: Compose service web maps api to the Docker host/],
     ];
@@ -1887,9 +1948,22 @@ describe("argus-live instance — Compose and egress checks", () => {
     const T0 = Date.now();
     const at = (s: number) => new Date(T0 + s * 1000).toISOString();
     const NEVER = new Date(Date.UTC(1, 0, 1)).toISOString();
-    type State = { containers: Obj[]; volumes: Obj[]; networks: Obj[] };
+    type State = { containers: Obj[]; volumes: Obj[]; networks: Obj[]; events: Obj[] };
+    /** A daemon event `s` seconds after T0, as `docker events --format json` prints it. */
+    const ev = (Type: string, Action: string, ID: string, Attributes: Obj = {}, s = 20) => ({ Type, Action, Actor: { ID, Attributes }, time: Math.floor(T0 / 1000) + s, timeNano: (T0 + s * 1000) * 1e6 });
     const state = (): State => ({
-      containers: [{ Id: "c1", Name: `/${P}-db-1`, Created: at(10), State: { StartedAt: at(11) }, Config: { Labels: { [LABEL]: P } }, Mounts: [{ Type: "volume", Name: `${P}_pgdata` }, { Type: "volume", Name: "anon1" }], NetworkSettings: { Networks: { [`${P}_default`]: {} } } }, { Id: "c0", Name: "/owner-db", Created: at(-3600), State: { StartedAt: at(-3600) }, Config: { Labels: { [LABEL]: "owner" } }, Mounts: [], NetworkSettings: { Networks: { owner_default: {} } } }],
+      containers: [{ Id: "c1", Name: `/${P}-db-1`, Created: at(10), State: { StartedAt: at(11) }, Config: { Labels: { [LABEL]: P } }, Mounts: [{ Type: "volume", Name: `${P}_pgdata` }, { Type: "volume", Name: "anon1" }], NetworkSettings: { Networks: { [`${P}_default`]: {} } } }, { Id: "c0", Name: "/owner-db", Created: at(-3600), State: { StartedAt: at(-3600) }, Config: { Labels: { [LABEL]: "owner" }, Healthcheck: { Test: ["CMD-SHELL", "pg_isready -U owner"] } }, Mounts: [], NetworkSettings: { Networks: { owner_default: {} } } }],
+      events: [
+        ev("container", "create", "c1", { [LABEL]: P, name: `${P}-db-1` }, 10),
+        ev("container", "exec_start: pg_isready", "c1", { [LABEL]: P, name: `${P}-db-1`, execID: "e1" }, 12),
+        ev("container", "exec_create: /bin/sh -c pg_isready -U owner", "c0", { [LABEL]: "owner", name: "owner-db", execID: "e2" }, 13),
+        ev("container", "exec_start: /bin/sh -c pg_isready -U owner", "c0", { [LABEL]: "owner", name: "owner-db", execID: "e2" }, 13),
+        ev("container", "health_status: healthy", "c0", { [LABEL]: "owner", name: "owner-db" }, 13),
+        ev("volume", "create", "f".repeat(64), { driver: "local" }, 10),
+        ev("volume", "destroy", "f".repeat(64), { driver: "local" }, 50),
+        ev("volume", "destroy", `${P}_pgdata`, { driver: "local" }, 50),
+        ev("network", "destroy", "n1", { name: `${P}_default`, type: "bridge" }, 50),
+      ],
       volumes: [{ Name: `${P}_pgdata`, CreatedAt: at(10), Labels: { [LABEL]: P } }, { Name: "anon1", CreatedAt: at(10), Labels: { "com.docker.volume.anonymous": "" } }, { Name: "owner_pgdata", CreatedAt: at(-3600), Labels: { [LABEL]: "owner" } }, { Name: "old_anon", CreatedAt: at(-3600), Labels: { "com.docker.volume.anonymous": "" } }],
       networks: [{ Id: "n1", Name: `${P}_default`, Created: at(10), Labels: { [LABEL]: P } }, { Id: "n0", Name: "bridge", Created: at(-86400), Labels: {} }, { Id: "n2", Name: "none", Created: at(-86400), Labels: {} }, { Id: "n3", Name: "owner_default", Created: at(-3600), Labels: { [LABEL]: "owner" } }],
     });
@@ -1905,6 +1979,8 @@ describe("argus-live instance — Compose and egress checks", () => {
       if (a.startsWith("volume inspect")) return ok(pick(s.volumes, "Name"));
       if (a === "network ls -q --no-trunc") return ok(s.networks.map((n) => n.Id).join("\n"));
       if (a.startsWith("network inspect")) return ok(pick(s.networks, "Id"));
+      if (a === "info --format {{json .SystemTime}}") return ok(JSON.stringify(at(60)));
+      if (a.startsWith("events ")) return ok(s.events.map((e) => JSON.stringify(e)).join("\n"));
       return { status: 1, stdout: "", stderr: `unexpected ${a}` };
     };
     const gate = (s: State, over: Obj = {}) => {
@@ -1945,6 +2021,41 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(run()).toBe("ok");
       s.containers[0].Mounts.push({ Type: "bind", Source: `${main}/data` });
       expect(run()).toMatch(/^refused: container argus-run1-db-1 bind-mounts a path inside the main checkout/);
+    });
+
+    it("reads the daemon's events between since and the daemon's now, for the three object types", () => {
+      const calls: Obj[] = [];
+      expect(message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main: tempDir(), worktree: tempDir(), runner: fake(state(), calls) }))).toBe("ok");
+      const events = calls.find((c) => c.argv[1] === "events")!.argv;
+      expect(events).toEqual(["docker", "events", "--since", ((T0 - 1000) / 1000).toFixed(3), "--until", ((T0 + 60000) / 1000).toFixed(3), "--format", "{{json .}}", "--filter", "type=container", "--filter", "type=volume", "--filter", "type=network"]);
+    });
+
+    it.each([
+      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which is not of the run's Compose project argus-run1$/],
+      ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
+      ...(["kill", "stop", "die", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
+      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which is not the run's$/],
+      ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
+      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which is not the run's$/],
+    ])("refuses %s", (_what, event, why) => {
+      const s = state();
+      s.events.push(event as Obj);
+      expect(gate(s)).toMatch(why as RegExp);
+    });
+
+    it("an exec that is the container's own healthcheck is not an action on it (CMD and CMD-SHELL forms)", () => {
+      const s = state();
+      s.containers[1].Config.Healthcheck = { Test: ["CMD", "pg_isready", "-U", "owner"] };
+      s.events = [ev("container", "exec_start: pg_isready -U owner", "c0", { [LABEL]: "owner", name: "owner-db" })];
+      expect(gate(s)).toBe("ok");
+      s.events.push(ev("container", "exec_start: pg_isready -U owner; rm -rf /", "c0", { [LABEL]: "owner", name: "owner-db" }));
+      expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
+    });
+
+    it("daemonNow reads the daemon's clock; no docker or no daemon gives null", () => {
+      expect(daemonNow({ env: {}, runner: fake(state()) })).toBe(T0 + 60000);
+      expect(daemonNow({ env: {}, runner: () => ({ error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) }) })).toBeNull();
+      expect(daemonNow({ env: {}, runner: () => ({ status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }) })).toBeNull();
     });
 
     it("no docker, or no daemon running: nothing was created through it; any other failure is refused", () => {
@@ -2065,6 +2176,34 @@ describe("argus-live instance — Compose and egress checks", () => {
         await listen(inMain);
         const d = await startNode(`require("net").connect(${JSON.stringify(inMain)})`);
         expect(await message(checkEgress({ pids: d.pids, allowed: [], samples: 1, main }))).toMatch(/connects to the socket .*app\.sock$/);
+      });
+
+      it("a server lsof cannot see (another user's) is named through netstat -an -f unix, whose addresses are lsof's", async () => {
+        const lsofU = "p700\ncnode\nf21\nd0x1111\nn->0xaaaa\nf22\nd0x2222\nn->0xbbbb\n";
+        const netstat = [
+          "Active LOCAL (UNIX) domain sockets",
+          "Address          Type   Recv-Q Send-Q            Inode             Conn             Refs          Nextref Addr",
+          "aaaa stream      0      0                0 1111                0                0 /var/run/postgresql/.s.PGSQL.5432",
+          "bbbb stream      0      0                0 2222                0                0",
+        ].join("\n");
+        const runner = (argv: string[]) =>
+          argv[0] === "netstat" ? { status: 0, stdout: netstat, stderr: "" } : argv[0] === "lsof" ? { status: 0, stdout: argv.includes("-U") ? lsofU : "", stderr: "" } : { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) };
+        expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner }))).toBe("refused: node (700) connects to the socket /var/run/postgresql/.s.PGSQL.5432");
+      });
+
+      it("live: with the server's own lsof records hidden, netstat still names the socket", async () => {
+        const dir = realpathSync(tempDir());
+        const pg = join(dir, ".s.PGSQL.41998");
+        await listen(pg);
+        const c = await startNode(`require("net").connect(${JSON.stringify(pg)})`);
+        const hide = (out: string) => out.split(/(?=^p\d+$)/m).filter((b) => !b.startsWith(`p${process.pid}\n`)).join("");
+        const runner = (argv: string[], o: Obj = {}) => {
+          const r = run(argv, o);
+          return argv[0] === "lsof" && argv.includes("-U") ? { ...r, stdout: hide(r.stdout) } : r;
+        };
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner }))).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
+        const blind = (argv: string[], o: Obj = {}) => (argv[0] === "netstat" ? { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : runner(argv, o));
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }))).toBe("ok");
       });
 
       it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {

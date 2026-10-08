@@ -900,7 +900,8 @@ function service(raw) {
   const bare = (h) => decodeSafe(String(h ?? "")).trim();
   const localByDefault = LOCAL_BY_DEFAULT.has(scheme);
   // A client left to its defaults: no host (the local server), or no port (the default one).
-  const implicit = localByDefault && hosts.some((h) => !bare(h.host) || h.port === undefined);
+  const hostless = localByDefault && hosts.some((h) => !bare(h.host));
+  const portless = localByDefault && hosts.some((h) => h.port === undefined);
   hosts = hosts.map((h) => ({ host: localByDefault && (!bare(h.host) || bare(h.host).startsWith("/")) ? "loopback" : normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
   const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
   return {
@@ -909,7 +910,8 @@ function service(raw) {
     full: `${scheme}://${hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",")}${path}`,
     ports: [...hosts.map((h) => h.port).filter((p) => p !== undefined), ...extraPorts],
     databases,
-    implicit,
+    hostless,
+    portless,
   };
 }
 
@@ -944,6 +946,12 @@ function splitEndpoints(vars, { barePorts = false } = {}) {
   }
   return out;
 }
+
+/** Client variables of libpq and MySQL that take their host from another variable, or else from the local server. */
+const CLIENT_DEFAULTS = [
+  { host: ["PGHOST", "PGHOSTADDR"], keys: ["PGDATABASE", "PGUSER", "PGPASSWORD", "PGPORT"] },
+  { host: ["MYSQL_HOST"], keys: ["MYSQL_PWD", "MYSQL_TCP_PORT"] },
+];
 
 /** Variable names that hold a database name (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). */
 const NAMES_DATABASE = /(^PGDATABASE$|DATABASE|_DB$|_DB_NAME$|_DBNAME$)/i;
@@ -1062,7 +1070,16 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
       if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
       const db = svc.databases.find((d) => o.pg.databases.includes(d));
       if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
-      if (svc.implicit) throw new Error(`refused: ${key} leaves its host or port to the client's default (the local server's); name both`);
+      if (svc.hostless) throw new Error(`refused: ${key} leaves its host to the client's default (the local server); name its host and port`);
+      if (svc.portless) throw new Error(`refused: ${key} leaves its port to the client's default; name it`);
+    }
+    // 3: a libpq or MySQL client variable with no host beside it (`PGDATABASE` without `PGHOST`).
+    if (!container) {
+      for (const g of CLIENT_DEFAULTS) {
+        if (g.host.some((h) => String(vars[h] ?? "").trim())) continue;
+        const k = g.keys.find((x) => x in mine);
+        if (k) throw new Error(`refused: ${label}.${k} leaves its host to the client's default (the local server); set ${g.host[0]} too`);
+      }
     }
   };
 }
@@ -1183,6 +1200,13 @@ function knownSockets(env = {}) {
   return [...new Set(list.flatMap((s) => [s, resolveLink(s)]).filter(Boolean))];
 }
 
+/** Where Docker Desktop and other runtimes keep their sockets: any `*.sock` under one is the runtime's. */
+function dockerRunDirs() {
+  const home = process.env.HOME || os.homedir();
+  const dirs = [`${home}/.docker/run`, `${home}/.docker/desktop`, `${home}/Library/Containers/com.docker.docker/Data`, `${home}/.colima`, `${home}/.rd`, `${home}/.orbstack/run`, "/var/run/docker", "/run/docker", "/var/run/containerd", "/run/containerd", "/var/run/podman", "/run/podman"];
+  return [...new Set(dirs.flatMap((d) => [d, resolveLink(d)]).filter(Boolean))];
+}
+
 /**
  * Why a host path a container would get (a bind mount, a local volume's device) is refused, or null:
  * it lies inside <MAIN> or holds it, or (outside the worktree `root`) it is a container runtime or
@@ -1193,7 +1217,9 @@ function hostPathRefusal(source, { worktree, root, realMain, sockets }) {
   const real = resolveLink(raw);
   if (real === null || within(realMain, real) || within(real, realMain)) return "a path inside the main checkout (or one holding it)";
   if (within(root, real)) return null; // the run's own
-  if ([raw, real].some((p) => SOCKET_NAME.test(path.basename(p)) || sockets.some((s) => within(p, s)))) return "a container runtime or datastore socket, or a directory holding one";
+  const runDirs = dockerRunDirs();
+  const runtime = (p) => SOCKET_NAME.test(path.basename(p)) || sockets.some((s) => within(p, s)) || runDirs.some((d) => within(p, d) || (within(d, p) && p.endsWith(".sock")));
+  if ([raw, real].some(runtime)) return "a container runtime or datastore socket, or a directory holding one";
   return null;
 }
 
@@ -1252,11 +1278,16 @@ function dockerEscape(raw) {
   return null;
 }
 
-/** Every Compose file in the worktree: tracked at any depth (`git ls-files`), and the default names at its root. */
-function composeFiles(worktree, runner) {
+/** Every file the worktree tracks (`git ls-files`), as paths from its root. */
+function gitFiles(worktree, runner) {
   const r = runner(["git", "-C", worktree, "ls-files", "-z"]);
   if (r.error || r.status !== 0) throw new Error(`failed: git ls-files in ${worktree}: ${tail((r.error && r.error.message) || r.stderr)}`);
-  const tracked = r.stdout.split("\0").filter((f) => f && COMPOSE_NAME.test(path.posix.basename(f)));
+  return r.stdout.split("\0").filter(Boolean);
+}
+
+/** Every Compose file in the worktree: tracked at any depth, and the default names at its root. */
+function composeFiles(worktree, runner) {
+  const tracked = gitFiles(worktree, runner).filter((f) => COMPOSE_NAME.test(path.posix.basename(f)));
   const root = COMPOSE_FILES.filter((f) => fs.existsSync(path.join(worktree, f)));
   return [...new Set([...tracked, ...root])];
 }
@@ -1272,11 +1303,14 @@ const composeOrder = (a, b) => {
  * 1. No command of `config` may set or unset a COMPOSE_* or DOCKER_* variable, run `docker` other than
  *    `docker compose`, or pass Compose a project, file, project directory or env file of its own (or a
  *    variable where its flags go): the check would not see what it runs.
- * 2. Every Compose file — tracked at any depth, or a default name at the root — must name no path
- *    inside <MAIN> (an `env_file`, `extends` or `include` Compose would read from the owner's checkout).
- * 3. `docker compose -f <each file of a directory> --profile * config --format json` runs per
- *    directory (and at the root with no `-f` when COMPOSE_FILE is set in `env` or a tracked `.env`), in
- *    that directory under the instance env, and every project must share nothing with the owner's
+ * 2. The Compose files checked: `config.compose_files` when set (each tracked; merged in their order
+ *    from the worktree's root), else the COMPOSE_FILE the instance env (or a tracked `.env`) sets (read
+ *    as Compose reads it, at the root), else every Compose file — tracked at any depth, or a default
+ *    name at the root — one `config` per directory, a refusal then saying to list `compose_files`
+ *    (fail closed; files used only by commands or scripts are left to the runtime gate). None may name
+ *    a path inside <MAIN> (an `env_file`, `extends` or `include` read from the owner's checkout).
+ * 3. `docker compose [-f <file>…] --profile * config --format json` runs in each such directory under
+ *    the instance env, and every project must share nothing with the owner's
  *    stack: named COMPOSE_PROJECT_NAME; no `container_name`; only this run's ports published (never a
  *    random one); no `network_mode` host, bridge or `container:`; no `pid`/`ipc`/`cgroup` host or
  *    `container:`, no `uts`/`userns_mode` host; no `volumes_from` a container; not privileged, no
@@ -1297,33 +1331,78 @@ export function checkCompose({ worktree, env, ports = {}, main, config = {}, con
     }
   }
   const realMain = fs.realpathSync.native(main);
-  const files = composeFiles(worktree, runner);
-  for (const f of files) {
-    const dir = path.dirname(path.join(worktree, f));
-    const text = fs.readFileSync(path.join(worktree, f), "utf8");
-    for (const m of text.matchAll(/(?:^|[\s:[,{"'=])((?:\/|\.\.?\/)[^\s"',\]}#]*)/gm)) {
-      if (/^\/\//.test(m[1])) continue; // the rest of a URL
-      const real = resolveLink(path.resolve(dir, m[1]));
-      if (real === null || within(realMain, real)) throw new Error(`refused: ${f} names a path inside the main checkout (Compose would read the owner's file)`);
-    }
-  }
-  const byDir = new Map();
-  for (const f of files) {
-    const d = path.posix.dirname(f);
-    byDir.set(d, [...(byDir.get(d) ?? []), path.posix.basename(f)]);
-  }
-  const runs = [...byDir].map(([d, names]) => {
-    const sorted = [...names].sort(composeOrder);
-    return { what: `${path.posix.join(d, sorted[0])} is in the worktree`, cwd: path.join(worktree, d), args: sorted.flatMap((n) => ["-f", n]) };
-  });
   let dotenv = {};
   try {
     dotenv = parseEnvFile(fs.readFileSync(path.join(worktree, ".env"), "utf8"));
   } catch {
     // no .env tracked
   }
-  if (env.COMPOSE_FILE || dotenv.COMPOSE_FILE) runs.push({ what: env.COMPOSE_FILE ? "env names COMPOSE_FILE" : "the worktree's .env names COMPOSE_FILE", cwd: worktree, args: [] });
+  let scan;
+  let runs;
+  let hint = "";
+  const listed = Array.isArray(config.compose_files) && config.compose_files.length ? config.compose_files : null;
+  const composeFile = env.COMPOSE_FILE || dotenv.COMPOSE_FILE;
+  if (listed) {
+    const tracked = new Set(gitFiles(worktree, runner));
+    for (const f of listed) if (!tracked.has(f)) throw new Error(`refused: compose_files names ${f}, which the worktree does not track`);
+    scan = listed;
+    runs = [{ what: `${listed[0]} (compose_files) is in the worktree`, cwd: worktree, args: listed.flatMap((f) => ["-f", f]) }];
+  } else if (composeFile) {
+    scan = String(composeFile).split(env.COMPOSE_PATH_SEPARATOR || dotenv.COMPOSE_PATH_SEPARATOR || ":").filter(Boolean);
+    for (const f of scan) {
+      const real = resolveLink(path.resolve(worktree, f));
+      if (real === null || within(realMain, real)) throw new Error(`refused: COMPOSE_FILE names ${f}, inside the main checkout`);
+    }
+    runs = [{ what: env.COMPOSE_FILE ? "env names COMPOSE_FILE" : "the worktree's .env names COMPOSE_FILE", cwd: worktree, args: [] }];
+  } else {
+    scan = composeFiles(worktree, runner);
+    const byDir = new Map();
+    for (const f of scan) {
+      const d = path.posix.dirname(f);
+      byDir.set(d, [...(byDir.get(d) ?? []), path.posix.basename(f)]);
+    }
+    runs = [...byDir].map(([d, names]) => {
+      const sorted = [...names].sort(composeOrder);
+      return { what: `${path.posix.join(d, sorted[0])} is in the worktree`, cwd: path.join(worktree, d), args: sorted.flatMap((n) => ["-f", n]) };
+    });
+    hint = "; list the files the instance uses in compose_files to check only those";
+  }
   if (!runs.length) return [];
+  try {
+    return composeProjects({ worktree, env, ports, main, realMain, config, contract, secrets, runner, scan, runs });
+  } catch (e) {
+    throw hint && /^refused: /.test(e.message) ? new Error(e.message + hint) : e;
+  }
+}
+
+/** The forms of <MAIN> a file may spell, and the characters that may follow one where a path ends. */
+const MAIN_END = /^($|[/\s"'`,\]}):#)])/;
+
+/** True when `text` (a Compose file in `dir`) names a path inside <MAIN>: spelled out anywhere (a `${VAR:-<path>}` default too), or reached by a path. */
+function namesMain(text, dir, main, realMain) {
+  for (const m of new Set([path.resolve(main), realMain])) {
+    for (let i = text.indexOf(m); i >= 0; i = text.indexOf(m, i + 1)) if (MAIN_END.test(text.slice(i + m.length, i + m.length + 1))) return true;
+  }
+  for (const m of text.matchAll(/(?<![A-Za-z0-9_.~/])((?:\/|\.\.?\/)[^\s"',\]}#]*)/g)) {
+    if (/^\/\//.test(m[1])) continue; // the rest of a URL
+    const real = resolveLink(path.resolve(dir, m[1]));
+    if (real === null || within(realMain, real)) return true;
+  }
+  return false;
+}
+
+/** checkCompose's steps 2 and 3 over the chosen files: `scan` (paths from the root) and `runs` ({what, cwd, args}). */
+function composeProjects({ worktree, env, ports, main, realMain, config, contract, secrets, runner, scan, runs }) {
+  for (const f of scan) {
+    const file = path.resolve(worktree, f);
+    let text;
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue; // Compose reports a missing file itself
+    }
+    if (namesMain(text, path.dirname(file), main, realMain)) throw new Error(`refused: ${f} names a path inside the main checkout (Compose would read the owner's file)`);
+  }
   const project = env.COMPOSE_PROJECT_NAME;
   const runPorts = new Set(Object.values(ports).map(Number));
   const sockets = knownSockets(env);
@@ -1357,6 +1436,9 @@ export function checkCompose({ worktree, env, ports = {}, main, config = {}, con
       }
       for (const v of s.volumes_from ?? []) if (String(v).startsWith("container:")) throw new Error(`${svc} sets volumes_from ${v} (another container's data)`);
       if (s.privileged) throw new Error(`${svc} is privileged (it could reach the host)`);
+      for (const o of s.security_opt ?? []) {
+        if (/^(seccomp|apparmor)[:=]unconfined$|^label[:=]disable$|^systempaths=unconfined$/i.test(String(o).replace(/\s+/g, ""))) throw new Error(`${svc} sets security_opt ${o} (it would lift the container's confinement)`);
+      }
       if (Array.isArray(s.devices) && s.devices.length) throw new Error(`${svc} maps host devices`);
       for (const cap of s.cap_add ?? []) {
         const n = String(cap).toUpperCase().replace(/^CAP_/, "");
@@ -1412,6 +1494,33 @@ export function checkCompose({ worktree, env, ports = {}, main, config = {}, con
   return services;
 }
 
+/**
+ * The daemon's clock now, epoch ms (`docker info`), or null without docker or a running daemon. `up`
+ * records it when it starts, as the runtime gate's `since`, so the two clocks never differ.
+ */
+export function daemonNow({ env, runner = run }) {
+  const r = runner(["docker", "info", "--format", "{{json .SystemTime}}"], { env, timeout: 30_000 });
+  if (r.error || r.status !== 0) return null;
+  let t;
+  try {
+    t = Date.parse(JSON.parse(r.stdout));
+  } catch {
+    t = NaN;
+  }
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Container actions on an object the run does not own that the gate refuses (an exec, a stop, a removal…). */
+const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop", "die", "destroy", "pause", "unpause", "update", "rename", "exec_create", "exec_start"]);
+
+/** The command line a container's healthcheck execs, as `docker events` spells it, or null. */
+function healthcheckCmd(c) {
+  const t = c && c.Config && c.Config.Healthcheck && c.Config.Healthcheck.Test;
+  if (!Array.isArray(t) || t.length < 2) return null;
+  if (t[0] === "CMD-SHELL") return `/bin/sh -c ${t.slice(1).join(" ")}`;
+  return t[0] === "CMD" ? t.slice(1).join(" ") : null;
+}
+
 /** The label Compose puts on every container, volume and network of a project. */
 const PROJECT_LABEL = "com.docker.compose.project";
 
@@ -1422,11 +1531,15 @@ const PROJECT_LABEL = "com.docker.compose.project";
  * start of `up`; `skewMs` earlier, for the daemon's clock and its whole-second volume times) must
  * carry `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, a volume may instead be a new anonymous
  * one; and such a container may mount only the run's volumes (or new anonymous ones), join only the
- * run's networks (or none), and bind-mount nothing hostPathRefusal refuses. Runs docker under `env`
- * (the instance's: its DOCKER_HOST). No docker, or no daemon running, means nothing was created
- * through it. Throws `refused: …` naming the object.
+ * run's networks (or none), and bind-mount nothing hostPathRefusal refuses. And the daemon's events
+ * from `since` to its own now: a container action (CONTAINER_ACTIONS: an exec, kill, stop, die,
+ * destroy…) on a container without the run's label, other than that container's own healthcheck exec,
+ * or the removal of a volume or network neither named `<project>_…` nor created in the window, is
+ * refused too (the owner's own activity in the window is a documented false positive). `since` comes
+ * from daemonNow. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no daemon
+ * running, means nothing was created through it. Throws `refused: …` naming the object.
  */
-export function checkDockerRuntime({ since, env, main, worktree, runner = run, skewMs = 5000 }) {
+export function checkDockerRuntime({ since, env, main, worktree, runner = run, skewMs = 1000 }) {
   const project = env.COMPOSE_PROJECT_NAME;
   const docker = (args) => runner(["docker", ...args], { env, timeout: 60_000 });
   const failed = (args, r) => new Error(`refused: docker ${args.join(" ")} failed: ${tail((r.error && r.error.message) || r.stderr || `exit ${r.status}`)}`);
@@ -1463,7 +1576,8 @@ export function checkDockerRuntime({ since, env, main, worktree, runner = run, s
   const runVolumes = new Set(volumes.filter(volumeOk).map((v) => v.Name));
   const runNetworks = new Set(networks.filter((n) => ours(n.Labels)).map((n) => n.Name));
   const at = { worktree, root: fs.realpathSync.native(worktree), realMain: fs.realpathSync.native(main), sockets: knownSockets(env) };
-  for (const c of inspect(["inspect", "--type", "container"], first.stdout.split("\n").map((s) => s.trim()).filter(Boolean))) {
+  const containers = inspect(["inspect", "--type", "container"], first.stdout.split("\n").map((s) => s.trim()).filter(Boolean));
+  for (const c of containers) {
     if (!recent(c.Created) && !recent(c.State && c.State.StartedAt)) continue;
     const name = String(c.Name || c.Id).replace(/^\//, "");
     if (!ours(c.Config && c.Config.Labels)) throw new Error(`refused: container ${name} was created or started during the cycle and is not of the run's Compose project ${project}`);
@@ -1478,6 +1592,35 @@ export function checkDockerRuntime({ since, env, main, worktree, runner = run, s
   }
   for (const v of volumes) if (recent(v.CreatedAt) && !volumeOk(v)) throw new Error(`refused: volume ${v.Name} was created during the cycle and is not the run's`);
   for (const n of networks) if (recent(n.Created) && !ours(n.Labels)) throw new Error(`refused: network ${n.Name} was created during the cycle and is not the run's`);
+  const now = daemonNow({ env, runner }) ?? Date.now();
+  const evArgs = ["events", "--since", ((since - skewMs) / 1000).toFixed(3), "--until", (now / 1000).toFixed(3), "--format", "{{json .}}", "--filter", "type=container", "--filter", "type=volume", "--filter", "type=network"];
+  const er = docker(evArgs);
+  if (er.error || er.status !== 0) throw failed(evArgs, er);
+  const events = [];
+  for (const line of er.stdout.split("\n")) {
+    try {
+      if (line.trim()) events.push(JSON.parse(line));
+    } catch {
+      // not an event
+    }
+  }
+  const byId = new Map(containers.map((c) => [c.Id, c]));
+  const createdNow = new Set(events.filter((e) => e.Action === "create").map((e) => e.Actor && e.Actor.ID));
+  for (const e of events) {
+    const id = (e.Actor && e.Actor.ID) || "";
+    const a = (e.Actor && e.Actor.Attributes) || {};
+    const action = String(e.Action || "");
+    const verb = action.split(":")[0].trim();
+    if (e.Type === "container") {
+      if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project) continue;
+      if (verb.startsWith("exec_") && action.slice(action.indexOf(":") + 1).trim() === healthcheckCmd(byId.get(id))) continue;
+      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which is not of the run's Compose project ${project}`);
+    }
+    if (verb !== "destroy") continue;
+    const name = e.Type === "network" ? a.name || id : id;
+    if (String(name).startsWith(`${project}_`) || createdNow.has(id)) continue;
+    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which is not the run's`);
+  }
 }
 
 /** Every pid in the process groups `pgids` (`ps -A -o pid= -o pgid=`, the same on macOS and Linux). */
@@ -1610,7 +1753,7 @@ function tcpSockets(pids, runner) {
  * path}]. macOS's lsof names a connected client only by its peer's address (`->0x…`), so the path comes
  * from the socket whose own address (`d`) that is.
  */
-function parseLsofUnix(out, want) {
+function parseLsofUnix(out, want, extra = new Map()) {
   const recs = [];
   let pid;
   let command;
@@ -1623,14 +1766,34 @@ function parseLsofUnix(out, want) {
     else if (tag === "d" && cur) cur.addr = val;
     else if (tag === "n" && cur) cur.name = val.replace(/ type=\S+$/, "");
   }
-  const byAddr = new Map(recs.filter((r) => r.addr && r.name && r.name.startsWith("/")).map((r) => [r.addr, r.name]));
+  const byAddr = new Map(extra);
+  for (const r of recs) if (r.addr && r.name && r.name.startsWith("/")) byAddr.set(sockAddr(r.addr), r.name);
   const out2 = [];
   for (const r of recs) {
     if (!want.has(r.pid) || !r.name || !r.name.startsWith("->")) continue;
-    const p = byAddr.get(r.name.slice(2));
+    const p = byAddr.get(sockAddr(r.name.slice(2)));
     if (p) out2.push({ pid: r.pid, command: r.command, path: p });
   }
   return out2;
+}
+
+/** A kernel socket address as lsof (`0x…`) and netstat (bare hex) print it, in one form. */
+const sockAddr = (a) => String(a).toLowerCase().replace(/^0x/, "").replace(/^0+(?=.)/, "");
+
+/**
+ * `netstat -an -f unix` (macOS, BSD) → {address: path} for every bound socket, every user's: lsof sees
+ * only the sockets of processes it may inspect, so a server another user runs is named here. Its
+ * Address column is the address lsof prints (checked against lsof on macOS). Empty when netstat fails.
+ */
+function netstatUnix(runner) {
+  const r = runner(["netstat", "-an", "-f", "unix"]);
+  const map = new Map();
+  if (r.error || r.status !== 0) return map;
+  for (const line of String(r.stdout || "").split("\n")) {
+    const m = line.trim().match(/^([0-9a-f]+)\s+\S+\s+\d+\s+\d+\s+[0-9a-f]+\s+[0-9a-f]+\s+[0-9a-f]+\s+[0-9a-f]+\s+(\/.*)$/i);
+    if (m) map.set(sockAddr(m[1]), m[2]);
+  }
+  return map;
 }
 
 /**
@@ -1662,7 +1825,7 @@ function unixPeers(pids, runner) {
     if (r.error) throw new Error(`failed: ${tool}: ${r.error.message}`);
     if (tool === "lsof") {
       if (!lsofOk(r)) throw new Error(`failed: lsof exited ${r.status ?? r.signal}: ${tail(r.stderr)}`);
-      return parseLsofUnix(r.stdout || "", want);
+      return parseLsofUnix(r.stdout || "", want, netstatUnix(runner));
     }
     if (r.status !== 0) throw new Error(`failed: ss exited ${r.status}: ${tail(r.stderr)}`);
     return parseSsUnix(r.stdout || "", want);

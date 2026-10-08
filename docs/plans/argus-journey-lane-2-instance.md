@@ -252,26 +252,37 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   `config` (setup, facts, mail, triggers, store_check, reset, start cmd/stop/health.cmd, role login
   commands) may not set or unset COMPOSE_*/DOCKER_*, run `docker` other than `docker compose`, or pass
   Compose `-p`/`-f`/`--project-directory`/`--env-file` or a variable before its subcommand (quotes
-  and backslashes dropped first); (2) every Compose file (`git ls-files` matching
-  `(docker-)?compose[._-]*.y(a)ml` at any depth, plus default names at the root) may name no path
-  inside MAIN; (3) per directory, `docker compose -f <its files, Compose's order> --profile * config
-  --format json` (and at the root without `-f` when COMPOSE_FILE is set in env or a tracked .env),
-  refusing: another project name; `container_name`; a host port not the run's, or random;
+  and backslashes dropped first); (2) the files: `config.compose_files` when set (validated by
+  `validateLive`: repo-relative, no `..`; each tracked, else refused), merged in its order from the
+  root; else the COMPOSE_FILE the instance env or a tracked .env sets (read at the root, no `-f`;
+  one inside MAIN refused); else every Compose file (`git ls-files` matching
+  `(docker-)?compose[._-]*.y(a)ml` at any depth, plus default names at the root), per directory,
+  with "list the files the instance uses in compose_files" appended to a refusal. None may spell a
+  path inside MAIN anywhere (a `${VAR:-<path>}` default too) or reach one by a relative path;
+  (3) `docker compose [-f …] --profile * config --format json`, refusing: another project name; `container_name`; a host port not the run's, or random;
   `network_mode` host/bridge/container:; `pid`/`ipc`/`cgroup` host or container:, `uts`/`userns_mode`
-  host; `volumes_from` container:; `privileged`; `devices`; `cap_add` outside NET_BIND_SERVICE, CHOWN,
+  host; `volumes_from` container:; `privileged`; `security_opt` seccomp/apparmor unconfined, label
+  disable, systempaths=unconfined; `devices`; `cap_add` outside NET_BIND_SERVICE, CHOWN,
   SETUID, SETGID, DAC_OVERRIDE, FOWNER; a bind mount or local-volume device inside MAIN (or holding
-  it), or a runtime/datastore socket or a directory holding one (outside the worktree); a secret or
+  it), or a runtime/datastore socket or a directory holding one, or any `*.sock` under a Docker run
+  directory (outside the worktree); a secret or
   config file or build context in MAIN; `extra_hosts` to the Docker host; an external network or
   volume, or one named outside `<project>_`; and each service's environment, command and entrypoint
   through checkStore's comparison as a container (loopback and paths its own; the Docker host
   refused off the run's ports). Docker missing or failing → refused, secrets masked.
+- `export function daemonNow({env, runner})` → the daemon's clock, epoch ms (`docker info --format
+  {{json .SystemTime}}`), or null without docker or a daemon.
 - `export function checkDockerRuntime({since, env, main, worktree, runner, skewMs})`: the runtime gate
   for what static scans cannot see. Lists every container (`docker ps -aq` + `inspect`), volume and
-  network; one created or started since `since` (epoch ms, minus `skewMs` = 5 s) must carry
+  network; one created or started since `since` (epoch ms from daemonNow, minus `skewMs` = 1 s) must carry
   `com.docker.compose.project=<COMPOSE_PROJECT_NAME>` (a volume may be a new anonymous one); such a
   container may mount only the run's volumes, join only its networks (or none), and bind-mount nothing
-  the Compose check refuses. No docker or no daemon → nothing to check; any other docker failure →
-  refused.
+  the Compose check refuses. Then `docker events --since <since - skew> --until <daemonNow>` (container,
+  volume, network): a container action (create, start, restart, kill, stop, die, destroy, pause,
+  unpause, update, rename, exec_create, exec_start) on a container without the run's label, unless it
+  is that container's own healthcheck exec (`Config.Healthcheck.Test`, CMD or CMD-SHELL), or a
+  volume/network destroy whose name is not `<project>_…` and which was not created in the window →
+  refused. No docker or no daemon → nothing to check; any other docker failure → refused.
 - `export function groupPids(pgids, {runner})` → every pid in those groups (`ps -A -o pid= -o pgid=`,
   one command on macOS and Linux, instead of `pgrep -g` / `ps -g`).
 - `export function egressAllowed({config, env, ports})` → `host:port` strings: the run's ports on
@@ -287,7 +298,8 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   host name in `allowed` stands for every address `lookup` gives it; a loopback connection to
   another listener of the same processes is allowed; anything else → `refused: <process> (<pid>)
   connects to <host:port>`. Unix: a peer path outside `runDirs` that is a datastore socket (name,
-  default directory, a directory the owner's env files name for a socket, or inside MAIN) →
+  default directory, a directory the owner's env files name for a socket, or inside MAIN; on macOS a
+  peer lsof cannot see is named by `netstat -an -f unix`, whose addresses are lsof's) →
   `refused: … connects to the socket <path>`. `lsof` exiting 1 with anything but warnings on stderr,
   or (first sample) none of `expectListen` listening → `failed: …`. Missing both tools → `refused:
   neither lsof nor ss is available`. `waitHealth({..., egress})` runs a one-sample check between
@@ -295,8 +307,10 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
 - Store comparison (Task 5's, carried here from the Task 6 review): `sqlite:///x` is read both ways
   (relative and absolute) on both sides and refused when either hits; `jdbc:sqlite:` and
   `file://<host>/p` are file values; a percent-encoded libpq socket directory is decoded first; an
-  instance libpq or MySQL-family value that leaves its host or port to the client's default is
-  refused.
+  instance libpq or MySQL-family value that leaves its host ("leaves its host…") or only its port
+  ("leaves its port…") to the client's default is refused, and so is a client variable without its
+  host variable (PGDATABASE/PGUSER/PGPASSWORD/PGPORT without PGHOST or PGHOSTADDR; MYSQL_PWD or
+  MYSQL_TCP_PORT without MYSQL_HOST).
 
 - [ ] Tests: a fake `docker` on `PATH` (a shell script in a temp dir printing JSON) — a published host
   port outside the run → refused; a `container_name` → refused; a compliant config → passes;
@@ -373,8 +387,9 @@ Interfaces:
   recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports}), runDirs:
   [worktree, home], main, contract, expectListen: [<base_url's port, when a start entry serves it>]})`;
   a refusal → `down`. Every `waitHealth` of steps 6 and 7 gets `egress: () => checkEgress({...same,
-  pids: groupPids(<the groups so far>), samples: 1})`. After each egress check (step 8, `upFresh`, `renew`), `checkDockerRuntime({since: <up's start,
-  epoch ms, recorded in run.json>, env, main, worktree})`; a refusal → `down`. `up` step 2's "no
+  pids: groupPids(<the groups so far>), samples: 1})`. `up` records `daemonNow({env})` (else
+  `Date.now()`) as it starts, in run.json. After each egress check (step 8, `upFresh`, `renew`),
+  `checkDockerRuntime({since: <that recorded start>, env, main, worktree})`; a refusal → `down`. `up` step 2's "no
   `lsof`/`ss`" refusal can reuse that message.
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
   1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role
