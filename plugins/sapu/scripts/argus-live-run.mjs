@@ -23,8 +23,8 @@ export function logsDir(main, runId) {
   return path.join(liveDir(main), runId, "logs");
 }
 
-/** The CLI the reaper runs (`argus-live.mjs reap <runId>`). */
-const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
+/** The CLI the run starts its own helpers with (`argus-live.mjs reap <runId>`, `proxy <runId>`). */
+export const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
 
 /** run.json, or null when there is none. Throws `refused: …` on one that cannot be read: it is never guessed at. */
 export function readRun(main) {

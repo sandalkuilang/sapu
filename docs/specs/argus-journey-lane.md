@@ -347,12 +347,17 @@ errors, as in the sapu contract).
 Field notes: `setup` holds argv lists run in the worktree without a shell; `services` lists every
 backing service the app reads; a `start` entry with `"phase": "store"` starts before `store_check`
 and `reset`, and one without `health` counts as healthy when alive after 5 s; `logged_in` is visible
-only when signed in; `env_file` is the only source of `${NAME}` and is gitignored; `store` is the one
+only when signed in, and it and `login_open` (a control to click before the login form shows, top
+level or per role) are Playwright locators of the getBy family or `locator('<css>')`, optionally
+chained and with `.first()`, `.last()` or `.nth(<n>)` — never a snapshot ref or a bare CSS string —
+because the wrapper parses them and builds its own login code from the parsed form (§9); `env_file` is the only source of `${NAME}` and is gitignored; `store` is the one
 datastore `reset` may touch, and `store_check` prints the store the app's own configuration resolves
 to; `mail` prints `[{to, subject, text}]` as JSON; `allow_origins` are full origins pages may load
 from (a font CDN); `reserved_ports` are the repo's dev and E2E ports, never allocated; `fixtures` holds
-the files `upload` may use; each role may also set `base_url`, `login_url`, `logged_in`,
-`login_open`. An optional `compose_files` lists the Compose files the instance uses (paths from the
+the files `upload` may use (a repo-relative directory: no absolute path, no `..`); each role may also
+set `base_url`, `login_url`, `logged_in`, `login_open`. Ranges: `settle_ms` 0–120 000,
+`login_spacing_ms` 0–60 000, each `viewports` width 200–4000, `limits.explorer_pw_calls` 1–10 000;
+`locale` and `timezone` non-empty. An optional `compose_files` lists the Compose files the instance uses (paths from the
 repo's root, tracked, no `..` and no `:`), in Compose's `-f` order: only those are checked (step 5), and the run
 sets `COMPOSE_FILE` from them (step 3), so its own Compose commands read only those too.
 
@@ -364,7 +369,8 @@ also lists the tracked config files and code defaults that name a local service 
 object store, search engine, mail server) and asks for each one's isolated address under `services`.
 
 **Role names** match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<n>` names an account); `anon` and
-`system` are reserved. Tools outside the guard's hook matcher (WebFetch, WebSearch, Skill and the
+`system` are reserved, and so are the wrapper's role-free commands `submit`, `code`, `trigger`,
+`facts` and `mail` (§9: `pw <token> submit <json>` takes no role). Tools outside the guard's hook matcher (WebFetch, WebSearch, Skill and the
 like) are kept from the explorer by its frontmatter alone, which an engine test pins.
 
 **The run's origins** = the origins of `base_url`, of each `roles.<r>.base_url`, and of every

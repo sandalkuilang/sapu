@@ -4,16 +4,23 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { createServer as createNetServer, type Server } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { connect as netConnect, createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, example, freePort, tempDir } from "./helpers/argus-live";
+import { alive, cleanTemps, example, freePort, liveRun, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CLI_PACKAGE, CLI_VERSION, cliEnv, cliInstallDir, ensureCli, findChrome, runCli } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ROLE_FREE, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { clean, fence, nonce, PAGE_CAP } from "../plugins/sapu/scripts/argus-live-fence.mjs";
+// @ts-expect-error — plain ESM script without types
+import { killGroup } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+// @ts-expect-error — plain ESM script without types
+import { blockedSince, canonicalOrigin, createProxy, proxyAllows, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
+// @ts-expect-error — plain ESM script without types
+import { down, logsDir, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 
@@ -620,5 +627,203 @@ describe("argus-live config — the browser keys", () => {
     const MSG = "fixtures must be a repo-relative directory (no absolute path, no ..)";
     for (const bad of ["../x", "/srv/files", "a/../../b", "a\\b", ""]) expect(errorsOf((c) => (c.fixtures = bad)), bad).toEqual([bad === "" ? "fixtures must be a non-empty string" : MSG]);
     expect(errorsOf((c) => (c.fixtures = "test/fixtures/explore"))).toEqual([]);
+  });
+});
+
+describe("argus-live proxy", () => {
+  const closers: (() => unknown)[] = [];
+  const saved = { ...process.env };
+  afterEach(async () => {
+    for (const c of closers.splice(0).reverse()) await c();
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+
+  /** An HTTP server that counts its hits, answers `app <path>`, and accepts a WebSocket upgrade (101, then echoes). */
+  const target = async () => {
+    const hits: string[] = [];
+    const s = createHttpServer((req, res) => {
+      hits.push(`${req.method} ${req.url}`);
+      res.end(`app ${req.url}`);
+    });
+    const upgraded: Socket[] = [];
+    s.on("upgrade", (req, socket) => {
+      hits.push(`UPGRADE ${req.url}`);
+      upgraded.push(socket as Socket);
+      socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n");
+      socket.on("data", (d) => socket.write(d));
+    });
+    s.on("connection", (c) => c.on("error", () => {}));
+    await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+    // An upgraded socket is no longer the server's: closeAllConnections does not reach it.
+    closers.push(() => new Promise((done) => (upgraded.forEach((c) => c.destroy()), s.closeAllConnections(), s.close(done))));
+    return { port: (s.address() as { port: number }).port, hits };
+  };
+  /** A loopback server counting raw connections. */
+  const counter = async () => {
+    let n = 0;
+    const s = createNetServer((c) => {
+      n += 1;
+      c.on("error", () => {});
+      c.destroy();
+    });
+    await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+    closers.push(() => new Promise((done) => s.close(done)));
+    return { port: (s.address() as { port: number }).port, count: () => n };
+  };
+  const proxyOn = async (opts: Obj) => {
+    const blocked: [string, string][] = [];
+    const server = createProxy({ runHosts: [], lookup: async () => [{ address: "127.0.0.1", family: 4 }], onBlocked: (o: string, k: string) => blocked.push([o, k]), ...opts });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    closers.push(() => server.closeAll());
+    return { port: (server.address() as { port: number }).port, address: (server.address() as { address: string }).address, blocked };
+  };
+  /** Sends `text` raw to the proxy; resolves with everything it answered once it closes or `ms` passed. */
+  const raw = (port: number, text: string, ms = 1500) =>
+    new Promise<string>((done) => {
+      let out = "";
+      const c = netConnect(port, "127.0.0.1", () => c.write(text));
+      c.on("data", (d) => (out += d));
+      c.on("error", () => {});
+      const t = setTimeout(() => (c.destroy(), done(out)), ms);
+      c.on("close", () => (clearTimeout(t), done(out)));
+    });
+  const status = (answer: string) => Number(answer.split(" ")[1]);
+
+  it("proxyAllows compares canonical origins; a CONNECT host:port is allowed when either scheme's origin is", () => {
+    const allowed = new Set([canonicalOrigin("http://localhost:41001"), canonicalOrigin("https://fonts.example.test")]);
+    expect(proxyAllows({ scheme: "http", host: "127.0.0.1", port: 41001 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "http", host: "[::1]", port: 41001 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "http", host: "localhost", port: 41002 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "connect", host: "fonts.example.test", port: 443 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "connect", host: "localhost", port: 41001 }, { allowed })).toBe(true);
+    expect(proxyAllows({ scheme: "connect", host: "fonts.example.test", port: 80 }, { allowed })).toBe(false);
+    expect(proxyAllows({ scheme: "https", host: "FONTS.example.test.", port: 443 }, { allowed })).toBe(true);
+  });
+
+  it("forwards a request to an allowed origin, without its Proxy-* headers", async () => {
+    const app = await target();
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    const answer = await raw(p.port, `GET http://127.0.0.1:${app.port}/x?y=1 HTTP/1.1\r\nHost: 127.0.0.1:${app.port}\r\nProxy-Authorization: Basic eA==\r\nConnection: close\r\n\r\n`);
+    expect(status(answer)).toBe(200);
+    expect(answer).toContain("app /x?y=1");
+    expect(app.hits).toEqual(["GET /x?y=1"]);
+    expect(p.blocked).toEqual([]);
+  });
+
+  it("refuses another loopback port and reports the origin once", async () => {
+    const app = await target();
+    const other = await counter();
+    const p = await proxyOn({ allowed: [`http://127.0.0.1:${app.port}`] });
+    for (let i = 0; i < 3; i++) expect(status(await raw(p.port, `GET http://127.0.0.1:${other.port}/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`))).toBe(403);
+    expect(other.count()).toBe(0);
+    expect(p.blocked).toEqual([[`http://127.0.0.1:${other.port}`, "http"]]);
+  });
+
+  it("refuses userinfo tricks", async () => {
+    const app = await target();
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    expect(status(await raw(p.port, `GET http://localhost:${app.port}@outside.test/ HTTP/1.1\r\nHost: outside.test\r\nConnection: close\r\n\r\n`))).toBe(403);
+    expect(p.blocked).toEqual([["http://outside.test", "http"]]);
+    expect(app.hits).toEqual([]);
+  });
+
+  it("tunnels CONNECT only to an allowed host:port", async () => {
+    const app = await target();
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    const answer = await raw(p.port, `CONNECT 127.0.0.1:${app.port} HTTP/1.1\r\nHost: 127.0.0.1:${app.port}\r\n\r\nGET /through HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`);
+    expect(answer.startsWith("HTTP/1.1 200 Connection Established\r\n\r\n")).toBe(true);
+    expect(answer).toContain("app /through");
+    expect(app.hits).toEqual(["GET /through"]);
+    expect(status(await raw(p.port, "CONNECT outside.test:443 HTTP/1.1\r\nHost: outside.test:443\r\n\r\n"))).toBe(403);
+    expect(status(await raw(p.port, "CONNECT outside.test HTTP/1.1\r\n\r\n"))).toBe(400);
+    expect(p.blocked).toEqual([["https://outside.test", "connect"]]);
+  });
+
+  it("passes a WebSocket upgrade to an allowed origin and refuses one to another port", async () => {
+    const app = await target();
+    const other = await counter();
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`] });
+    const hello = (port: number) => `GET http://127.0.0.1:${port}/ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`;
+    const ok = await raw(p.port, hello(app.port), 800);
+    expect(status(ok)).toBe(101);
+    expect(app.hits).toEqual(["UPGRADE /ws"]);
+    expect(status(await raw(p.port, hello(other.port)))).toBe(403);
+    expect(other.count()).toBe(0);
+    expect(p.blocked).toEqual([[`http://127.0.0.1:${other.port}`, "websocket"]]);
+  });
+
+  it("refuses origin-form requests and https in absolute form", async () => {
+    const p = await proxyOn({ allowed: [] });
+    expect(status(await raw(p.port, "GET /x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))).toBe(400);
+    expect(status(await raw(p.port, "GET https://outside.test/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))).toBe(400);
+  });
+
+  it("a run host that no longer resolves to loopback is blocked; one that does is reached at the address checked", async () => {
+    const app = await target();
+    let answer = [{ address: "203.0.113.5", family: 4 }];
+    const p = await proxyOn({ allowed: [`http://app.test:${app.port}`], runHosts: ["app.test"], lookup: async () => answer });
+    const req = `GET http://app.test:${app.port}/r HTTP/1.1\r\nHost: app.test:${app.port}\r\nConnection: close\r\n\r\n`;
+    expect(status(await raw(p.port, req))).toBe(403);
+    expect(p.blocked).toEqual([[`http://app.test:${app.port}`, "http"]]);
+    answer = [{ address: "127.0.0.1", family: 4 }, { address: "203.0.113.5", family: 4 }];
+    expect(status(await raw(p.port, req))).toBe(403);
+    answer = [{ address: "127.0.0.1", family: 4 }];
+    expect(await raw(p.port, req)).toContain("app /r");
+    expect(app.hits).toEqual(["GET /r"]);
+  });
+
+  it("listens on loopback only", async () => {
+    const p = await proxyOn({ allowed: [] });
+    expect(p.address).toBe("127.0.0.1");
+  });
+
+  it("serveProxy (through startProxy) records its group as internal, its port in run.json, logs each blocked origin once, and exits once the lock names another run", async () => {
+    process.env.TMPDIR = tempDir();
+    const r = liveRun();
+    closers.push(() => down(r.main, { runId: r.runId, graceMs: 1000 }));
+    const app = await target();
+    const other = await counter();
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [`http://localhost:${app.port}`], allowOrigins: [], groups: [], env: r.env });
+    const groups: Obj[] = [];
+    const { pid, port } = await startProxy(r.main, r.runId, { groups });
+    closers.push(() => killGroup(pid));
+    expect(groups).toEqual([{ name: "proxy", internal: true, pgid: pid, started: expect.any(String), cmdline: expect.stringContaining(` proxy ${r.runId}`) }]);
+    expect(JSON.parse(readFileSync(join(logsDir(r.main, r.runId), "proxy.json"), "utf8"))).toEqual({ port, pid });
+    expect(readRun(r.main).internal).toEqual({ proxy: port });
+    expect(await raw(port, `GET http://localhost:${app.port}/ok HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`)).toContain("app /ok");
+    for (let i = 0; i < 2; i++) expect(status(await raw(port, `GET http://127.0.0.1:${other.port}/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`))).toBe(403);
+    expect(status(await raw(port, "CONNECT outside.test:443 HTTP/1.1\r\n\r\n"))).toBe(403);
+    const first = blockedSince(r.main, r.runId, 0);
+    expect(first.origins).toEqual([`http://127.0.0.1:${other.port}`, "https://outside.test"]);
+    expect(blockedSince(r.main, r.runId, first.offset)).toEqual({ origins: [], offset: first.offset });
+    const lines = readFileSync(join(logsDir(r.main, r.runId), "proxy-blocked.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.origin, l.kind])).toEqual([[`http://127.0.0.1:${other.port}`, "http"], ["https://outside.test", "connect"]]);
+    expect(other.count()).toBe(0);
+    const lock = JSON.parse(readFileSync(join(r.main, ".argus/live/lock.json"), "utf8"));
+    writeFileSync(join(r.main, ".argus/live/lock.json"), `${JSON.stringify({ ...lock, runId: "20990101000000-0000beef" })}\n`);
+    let gone = false;
+    for (let i = 0; i < 100 && !gone; i++) {
+      gone = !alive(pid);
+      if (!gone) await new Promise((ok) => setTimeout(ok, 100));
+    }
+    expect(gone).toBe(true);
+    writeFileSync(join(r.main, ".argus/live/lock.json"), `${JSON.stringify(lock)}\n`);
+  });
+
+  it("startProxy kills the proxy it started when its group cannot be recorded", async () => {
+    process.env.TMPDIR = tempDir();
+    const r = liveRun();
+    closers.push(() => down(r.main, { runId: r.runId, graceMs: 1000 }));
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env });
+    const sealed: Obj[] = [];
+    let pgid = 0;
+    sealed.push = (g: Obj) => {
+      pgid = g.pgid;
+      throw new Error("refused: cycle x is being torn down; run.json not written");
+    };
+    await expect(startProxy(r.main, r.runId, { groups: sealed })).rejects.toThrow(/being torn down/);
+    expect(pgid).toBeGreaterThan(1);
+    expect(await until(() => !alive(pgid), 3000)).toBe(true);
   });
 });

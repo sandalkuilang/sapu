@@ -12,12 +12,15 @@
 //   argus-live.mjs reap <runId>  internal: the reaper `up` starts; runs `down` at the lock's deadline
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run
+//   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
+//                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import { loadLive } from "./argus-live-config.mjs";
 import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
+import { serveProxy } from "./argus-live-proxy.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
@@ -35,6 +38,7 @@ const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--jso
 
 try {
   if (cmd === "reap" && args.length === 1) await reap(main, args[0]);
+  else if (cmd === "proxy" && args.length === 1) await serveProxy(main, args[0]);
   else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });

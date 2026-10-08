@@ -390,7 +390,7 @@ Interfaces:
 - `export function blockedSince(main, runId, offset)` → `{origins, offset}` (the lines after byte
   `offset`).
 
-- [ ] **Step 1: Failing tests** (describe "argus-live proxy"; a target `http.Server` that counts hits,
+- [x] **Step 1: Failing tests** (describe "argus-live proxy"; a target `http.Server` that counts hits,
   a raw `net` client speaking proxy requests):
   - "forwards a request to an allowed origin": `GET http://127.0.0.1:<app>/x` → the app's body.
   - "refuses another loopback port and logs the origin once": three requests to
@@ -409,8 +409,8 @@ Interfaces:
   - "serveProxy exits once the lock names another run": start it through `startProxy` in a
     `liveRun()`, rewrite the lock to another run id → the process is gone within 5 s; its group record
     has `internal: true`; run.json `internal.proxy` equals the port in `proxy.json`.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live filtering proxy — run origins and allow_origins only, loopback included`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live filtering proxy — run origins and allow_origins only, loopback included`.
 
 ---
 
@@ -1051,7 +1051,20 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   included), `viewports must be an array of widths from 200 to 4000`, `fixtures must be a repo-relative
   directory (no absolute path, no ..)`, `roles.<name>: <name> is reserved (a wrapper command)`.
 
-Spec edits these tasks add (for the coordinator, beside the decisions above): §8 — top-level
+- **Task 5.** `createProxy` takes `allowed` as origins in any form (it canonicalizes them with the
+  exported `canonicalOrigin`) and calls `onBlocked` once per origin per server, so serveProxy's log
+  holds each blocked origin once whatever the kind. A blocked CONNECT is logged as `https://<host>` for
+  port 443 and `http://<host>:<port>` otherwise (Chrome tunnels https and WebSockets through CONNECT),
+  so a loopback fetch and WebSocket to one port log one origin. An absolute-form `https://` request
+  answers 400, like an origin-form one. A loopback target is connected to at its literal address
+  (`localhost` kept, other `*.localhost` names → 127.0.0.1); a run host that is a name, at the loopback
+  address the check just resolved. serveProxy reads `allowOrigins` (the expanded `allow_origins`) from
+  run.json: `up` records it at step 9 (Task 14). The server's `closeAll()` also destroys tunnelled and
+  upgraded sockets, which `http.Server` stops tracking (its `close` would wait for them forever).
+  `CLI` is exported from `-run.mjs`.
+
+Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
+in with Task 5): §8 — top-level
 `login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and
 `limits.explorer_pw_calls`; `fixtures` repo-relative; the five role-free command words reserved as role
 names; `logged_in`/`login_open` must be getBy-family locators, never refs or CSS strings.
