@@ -414,13 +414,13 @@ const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop",
 
 /**
  * True for the testcontainers reaper (Ryuk: image `testcontainers/ryuk*`, or the label
- * `org.testcontainers=true`): it bind-mounts the Docker socket to remove its own session's containers,
- * so a sweep whose tests use testcontainers can run beside a cycle. It is exempt from the socket rule
- * alone.
+ * `org.testcontainers.ryuk=true`): it bind-mounts the Docker socket to remove its own session's
+ * containers, so a sweep whose tests use testcontainers can run beside a cycle. It is exempt from the
+ * socket rule alone. Not `org.testcontainers=true`: every container testcontainers starts carries it.
  */
 function testcontainersReaper(c) {
   const config = (c && c.Config) || {};
-  return /^([^/]+\/)*testcontainers\/ryuk[^/]*$/.test(String(config.Image ?? "")) || (config.Labels || {})["org.testcontainers"] === "true";
+  return /^([^/]+\/)*testcontainers\/ryuk[^/]*$/.test(String(config.Image ?? "")) || (config.Labels || {})["org.testcontainers.ryuk"] === "true";
 }
 
 /** The command line a container's healthcheck execs, as `docker events` spells it, or null. */

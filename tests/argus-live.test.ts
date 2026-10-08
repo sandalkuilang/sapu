@@ -1196,6 +1196,25 @@ describe("argus-live instance — processes, health, store", () => {
     expect(sealed.map((g) => g.name)).toEqual(["svc"]);
   });
 
+  it("a seal refusing the stop's write still records the group in memory, so the failing up's teardown stops the process", async () => {
+    const w = await world();
+    const recorded: Obj[] = [];
+    const sealedStops: Obj[] = [];
+    // As up's recording array behaves once a down sealed run.json: the push lands in memory, the write is refused.
+    sealedStops.push = (...xs: Obj[]) => {
+      Array.prototype.push.apply(sealedStops, xs);
+      throw new Error("refused: cycle x is being torn down; run.json not written");
+    };
+    // A stop that does not end the process: only its recorded group can.
+    const entry = { name: "svc", cmd: `exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"`, stop: "true" };
+    const failed = startEntry(entry, { ...w.ctx, groups: recorded, stops: sealedStops });
+    await expect(failed).rejects.toThrow(/being torn down/);
+    for (const g of recorded) groups.push(g as { name: string; pgid: number });
+    expect(sealedStops.map((s) => s.name)).toEqual(["svc"]);
+    expect(recorded.map((g) => g.name)).toEqual(["svc"]);
+    expect(() => process.kill(-(recorded[0].pgid as number), 0)).not.toThrow(); // still running: only the teardown of that group stops it
+  });
+
   it("runAsync: an onStart that throws kills the group at once and resolves with its error; the step's record is not marked exited before the process exits", async () => {
     const t0 = Date.now();
     let pgid = 0;
@@ -2202,7 +2221,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(mounted("old_anon")).toMatch(/^refused: during the cycle, container gate-tmp, .* mounted volume old_anon, which existed before it/);
         expect(mounted(`${P}_pgdata`)).toBe("ok");
       });
-      it("the testcontainers reaper (image testcontainers/ryuk*, or label org.testcontainers=true) may bind-mount the Docker socket, and nothing more", () => {
+      it("the testcontainers reaper (image testcontainers/ryuk*, or label org.testcontainers.ryuk=true) may bind-mount the Docker socket, and nothing more", () => {
         const sock = [{ Type: "bind", Source: "/var/run/docker.sock" }];
         const reaper = (Image: string, Labels: Obj, over: Obj = {}) => {
           const s = state();
@@ -2210,8 +2229,10 @@ describe("argus-live instance — Compose and egress checks", () => {
           return gate(s);
         };
         for (const image of ["testcontainers/ryuk:0.11.0", "docker.io/testcontainers/ryuk:0.5.1", "testcontainers/ryuk@sha256:0123"]) expect(reaper(image, {})).toBe("ok");
-        expect(reaper("example/agent:1", { "org.testcontainers": "true" })).toBe("ok");
-        expect(reaper("example/agent:1", { "org.testcontainers": "false" })).toMatch(/^refused: container testcontainers-ryuk-1, .* bind-mounts a container runtime or datastore socket/);
+        expect(reaper("example/agent:1", { "org.testcontainers.ryuk": "true" })).toBe("ok");
+        expect(reaper("example/agent:1", { "org.testcontainers.ryuk": "false" })).toMatch(/^refused: container testcontainers-ryuk-1, .* bind-mounts a container runtime or datastore socket/);
+        // Every container testcontainers starts carries org.testcontainers=true: that label alone exempts nothing.
+        expect(reaper("example/agent:1", { "org.testcontainers": "true" })).toMatch(/^refused: container testcontainers-ryuk-1, .* bind-mounts a container runtime or datastore socket/);
         expect(reaper("testcontainers/ryuk:0.11.0", {}, { HostConfig: { Privileged: true } })).toMatch(/^refused: container testcontainers-ryuk-1, .* is privileged$/);
         expect(reaper("testcontainers/ryuk:0.11.0", {}, { Mounts: [...sock, { Type: "volume", Name: "owner_pgdata" }] })).toMatch(/^refused: container testcontainers-ryuk-1, .* mounts volume owner_pgdata, which existed before the cycle$/);
       });

@@ -30,13 +30,15 @@ reuse (`runCli`, `openSession`, `login`, `runHook`, `parseTarget`/`targetCode`, 
 
 **Precondition.** Phase 2 is merged on `feat/argus-journey-lane` with the suite green, including the
 split of `argus-live-instance.mjs` into the DAG proc → lock → endpoints → docker/egress → run →
-instance (`run`, `runAsync`, `killGroup`, process identity in `argus-live-proc.mjs`; `readLock`,
-`takeLock` in `-lock.mjs`; `normHost` and origin comparison in `-endpoints.mjs`; `updateRun`,
-`readRun`, `writeRunFiles`, `logsDir` in `-run.mjs`; `up`, `down`, `TEARDOWN` in `-instance.mjs`).
-Phase 3 code imports each symbol from its owning module. Where a helper this plan needs is still
-module-private after the split (`processTable`, `startTime`, `sameStart`, `sameGroup`,
-`stopRecordedGroups`, the `$TMPDIR/sapu-live` root check, `CLI`), export it from its owner in the
-same commit that first imports it — never copy it.
+instance (`run`, `runAsync`, `killGroup` and process identity — `processTable`, `startTime`,
+`sameStart`, `sameGroup`, `stopRecordedGroups` — in `argus-live-proc.mjs`; `readLock`, `takeLock` in
+`-lock.mjs`; `normHost` and origin comparison in `-endpoints.mjs`; `updateRun`, `readRun`,
+`writeRunFiles`, `logsDir`, `down`, `recover`, the teardown step list `TEARDOWN` (exported as
+`TEARDOWN_STEPS`) and `CLI` in `-run.mjs`; `up`, `upFresh`, `startEntry`, the `$TMPDIR/sapu-live`
+root check `liveRoot` in `-instance.mjs`). Phase 3 code imports each symbol from its owning module.
+Where a helper this plan needs is still module-private after the split (`CLI`, `TEARDOWN`), export it
+from its owner in the same commit that first imports it — never copy it; one that lives above its new
+user in the DAG (`liveRoot`, needed by `-browser.mjs`) moves down to `-run.mjs` in that commit.
 
 Every path under `.argus/live/` is resolved from `<MAIN>` (`findMain`), never from the cwd.
 
@@ -156,7 +158,8 @@ Facts this plan builds on, read from the published package (not assumed):
 | `plugins/sapu/scripts/argus-live-pw.mjs` | `COMMANDS`, `parsePw`, `checkUrl`, `maskHeaders`, `pw` |
 | `plugins/sapu/scripts/argus-live-return.mjs` | `ORACLES`, `validateReturn`, `submit`, `intake` |
 | `plugins/sapu/scripts/argus-live-config.mjs` | modified: reserved role words, parseable `logged_in`/`login_open`, ranges |
-| `plugins/sapu/scripts/argus-live-instance.mjs` | modified: `up` steps 2, 9, 10; `TEARDOWN` gains "the proxy" and "CLI sessions"; `upFresh` closes sessions; `status` |
+| `plugins/sapu/scripts/argus-live-run.mjs` | modified: `TEARDOWN` gains "the proxy" and "CLI sessions"; `liveRoot` moves here |
+| `plugins/sapu/scripts/argus-live-instance.mjs` | modified: `up` steps 2, 9, 10; `upFresh` closes sessions; `status` |
 | `plugins/sapu/scripts/argus-live.mjs` | modified: `slot`, `pw`, `intake`, `proxy` (internal) |
 | `tests/fixtures/journey-app/server.mjs`, `tests/fixtures/journey-app/files/receipt.txt` | modified: the browser side (pages, forms, login variants, control endpoint, `--facts`, `--mail`, `--trigger`, `--login-state`) |
 | `tests/helpers/argus-live.ts` | the shared helpers moved out of `tests/argus-live.test.ts` (`committed`, `liveRun`, `until`, `alive`, `freePort`, `setLock`, `now`) |
@@ -413,8 +416,9 @@ Interfaces:
 
 ### Task 6: teardown — the proxy and the CLI sessions
 
-**Files:** Modify `plugins/sapu/scripts/argus-live-instance.mjs` (`TEARDOWN`, `stopRecordedGroups`,
-`upFresh`), `plugins/sapu/scripts/argus-live-browser.mjs` (`closeSessions`, `sessionName`);
+**Files:** Modify `plugins/sapu/scripts/argus-live-run.mjs` (`TEARDOWN`), `plugins/sapu/scripts/argus-live-proc.mjs`
+(`stopRecordedGroups`), `plugins/sapu/scripts/argus-live-instance.mjs` (`upFresh`),
+`plugins/sapu/scripts/argus-live-browser.mjs` (`closeSessions`, `sessionName`);
 Test `tests/argus-live-pw.test.ts`.
 
 run.json gains (spec §8 step 11, "sessions, tokens"):

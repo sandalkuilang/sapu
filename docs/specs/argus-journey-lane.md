@@ -402,8 +402,9 @@ defence in depth and not enforcement:
   its volume mounts are there (`volume mount` names the container), its bind mounts are not, so a
   transient container that bind-mounts the owner's checkout or a socket is not seen.
 - The testcontainers reaper (image `testcontainers/ryuk*`, or any container labelled
-  `org.testcontainers=true`) may bind-mount the Docker socket: a container carrying that label is
-  exempt from the socket rule whatever it runs (every other rule still applies to it).
+  `org.testcontainers.ryuk=true`) may bind-mount the Docker socket: a container carrying that label is
+  exempt from the socket rule whatever it runs (every other rule still applies to it). The label
+  `org.testcontainers=true`, which every testcontainers container carries, exempts nothing.
 - Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
   sockets of servers other users run; its addresses are the ones lsof prints; a netstat that fails
   there fails the check), or by `ss -xp` on Linux; a Linux without `ss` is blind to unix-socket peers
@@ -678,7 +679,7 @@ beside a journey cycle)`. `limits.max_parallel_journeys` bounds the load. On a s
 the runtime gate's owner-state rule (step 8) lets a sweep's gates create, use and remove their own
 containers, volumes and networks during the cycle; only what touches objects older than the cycle, or
 the owner's volumes, networks, checkout or sockets, ends it. A sweep whose tests use testcontainers
-runs its reaper (Ryuk: image `testcontainers/ryuk*`, label `org.testcontainers=true`), which
+runs its reaper (Ryuk: image `testcontainers/ryuk*`, label `org.testcontainers.ryuk=true`), which
 bind-mounts the Docker socket to remove its own session's containers: the gate exempts it from the
 socket rule alone.
 

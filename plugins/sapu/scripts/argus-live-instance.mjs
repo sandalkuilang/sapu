@@ -343,9 +343,14 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
   started.pid = started.pgid = child.pid;
   record = { name: entry.name, pgid: child.pid, started: startTime(child.pid), cmdline: started.cmdline };
   if (started.exit) record.exited = true;
-  // The stop first: a `down` sealing run.json between the two writes then still replays it.
-  if (entry.stop) stops.push({ name: entry.name, cmd: entry.stop, cwd: worktree, env: { ...env, ...(entry.env ?? {}) } });
-  groups.push(record);
+  // The stop first: a `down` sealing run.json between the two writes then still replays it. The group
+  // is pushed even when the stop's write is refused (the push lands in memory before the save throws),
+  // so the failing `up`'s teardown, which reads the in-memory record, still stops the process.
+  try {
+    if (entry.stop) stops.push({ name: entry.name, cmd: entry.stop, cwd: worktree, env: { ...env, ...(entry.env ?? {}) } });
+  } finally {
+    groups.push(record);
+  }
   return started;
 }
 
