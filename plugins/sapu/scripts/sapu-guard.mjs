@@ -95,7 +95,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -549,8 +549,9 @@ export function compileRules(contract) {
     envFiles: new Set([...ENV_FLOOR, ...g.envFiles].map((f) => f.toLowerCase())),
     pg: pg && pg.ports.length + pg.databases.length > 0 ? { ports: new Set(pg.ports.map(Number)), dbs: new Set(pg.databases), label: [...pg.ports.map((p) => `:${p}`), ...pg.databases].join(", ") } : null,
     deny,
-    // The label whose application accepts an outsider's issue (compared without case, as GitHub does).
-    acceptLabel: acceptedLabel(contract).toLowerCase(),
+    // The labels only the owner applies (compared without case, as GitHub does): the one accepting an
+    // outsider's issue, and the one marking a finding only the owner can rule on.
+    ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract)].map((l) => l.toLowerCase()),
   };
 }
 
@@ -564,15 +565,16 @@ const GH_COMMANDS = new Set([
 ]);
 // Options of `git fetch`/`git pull` that take their value as the next word.
 const FETCH_VALUE_OPTS = new Set(["--depth", "--deepen", "--shallow-since", "--shallow-exclude", "-j", "--jobs", "--upload-pack", "-o", "--server-option", "--negotiation-tip", "--refmap", "--filter", "-s", "--strategy", "-X", "--strategy-option"]);
-/** The words of `v` a label name could be (URL-decoded, lower case): does one of them name `label`? */
-const namesLabel = (v, label) => {
+/** The words of `v` a label name could be (URL-decoded, lower case): does one of them name one of `labels`? */
+const namesLabel = (v, labels) => {
   let s = v;
   try {
     s = decodeURIComponent(v);
   } catch {
     /* not URL-encoded */
   }
-  return s.toLowerCase().split(/[\s,="'/[\]{}()]+/).includes(label);
+  const words = s.toLowerCase().split(/[\s,="'/[\]{}()]+/);
+  return [].concat(labels).some((l) => words.includes(l));
 };
 
 const ENGINE_ONLY = compileRules(null);
@@ -787,7 +789,7 @@ const BLOCK = {
   ghUnknown:
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
-    "the acceptance label is the owner's own act: no agent applies, removes, creates, renames, deletes or clones it — every agent works under the owner's token, so GitHub would record the change as the owner's acceptance of an outsider's issue. Report the issue instead.",
+    "the acceptance label and the needs-owner label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
@@ -1220,7 +1222,7 @@ function checkCommand(t, state, depth) {
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
     if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade"))) return BLOCK.foreignCode;
     // The acceptance label, in every spelling gh offers.
-    const L = rules.acceptLabel;
+    const L = rules.ownerLabels;
     const tail = i2 < 0 ? [] : w.slice(i2 + 1);
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {
       for (let j = 0; j < tail.length; j++) {
@@ -1580,7 +1582,7 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     if (!targetsBase && f.some(([k, x]) => BRANCH_FIELD.test(k) && bases.has(x.replace(/^refs\/heads\//, "").trim()))) return BLOCK.pushBase(rules.base);
     // only a label field, or any field of a label tool: a file's content may contain the word
     const labelTool = words.some((w) => /^labels?$/.test(w));
-    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.acceptLabel))) return BLOCK.acceptLabel;
+    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.ownerLabels))) return BLOCK.acceptLabel;
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;

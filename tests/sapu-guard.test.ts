@@ -1689,3 +1689,31 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
     expect(dispatch("Agent", tmpdir())).toBe(0);
   });
 });
+
+describe("sapu-guard — the needs-owner label is the owner's, like the acceptance label", () => {
+  const reviewer = (command: string, r = rules) => check({ command, cwd: wt, main, rules: r, worker: false });
+  it.each([
+    ["gh issue edit 8 --add-label argus:needs-owner"],
+    ["gh issue edit 8 --remove-label=argus:needs-owner"],
+    ['gh issue edit 8 --remove-label "bug,Argus:Needs-Owner"'],
+    ["gh pr edit 8 --add-label argus:needs-owner"],
+    ["gh label create argus:needs-owner"],
+    ["gh label delete argus:needs-owner --yes"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels/argus%3Aneeds-owner"],
+    ['gh api -X POST repos/o/r/issues/8/labels -f "labels[]=argus:needs-owner"'],
+  ])("refuses %s for every subagent", (cmd) => {
+    expect(reviewer(cmd)).toMatch(/needs-owner label/);
+    expect(blocked(cmd)).toMatch(/needs-owner label/);
+  });
+
+  it("lets a non-worker subagent file an issue carrying it", () => {
+    expect(reviewer("gh issue create --title t --body b --label argus:needs-owner")).toBeNull();
+  });
+
+  it("follows labels.needsOwner, and still protects the acceptance label", () => {
+    const custom = compileRules({ ...FIXTURE_CONTRACT, labels: { ...FIXTURE_CONTRACT.labels, needsOwner: "owner:decide" } });
+    expect(reviewer("gh issue edit 8 --remove-label owner:decide", custom)).toMatch(/needs-owner label/);
+    expect(reviewer("gh issue edit 8 --add-label sapu:accepted", custom)).toMatch(/acceptance label/);
+    expect(reviewer("gh issue edit 8 --add-label argus:needs-owner", custom)).toBeNull();
+  });
+});
