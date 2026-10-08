@@ -578,11 +578,15 @@ recorded and SIGKILL after 10 s, stops the proxy, closes the run's CLI sessions 
 and its HOME (read-only trees made writable first), kills the reaper last, removes `run.json` and the
 lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset. A step
 that fails is reported and the next one runs: `run.json`, the lock and the end line are always
-finished, and what could not be removed is named for the owner. A group "still runs what was
-recorded" when its leader shows the command line `run.json` recorded for it, or one of its members the
-recorded pid and command line (a daemon a setup left behind, its leader gone); a group whose own
-leader has exited while a process holds its pid is someone else's (a pid is not reused while its group
-lives), so it is neither recorded nor killed. `down` and recovery kill by this rule alone.
+finished, and what could not be removed is named for the owner; the end line is written under the
+lock's claim by the `down` that removes the lock, so a second `down` adds none. A worktree whose
+directory is already gone loses its record in `.git/worktrees` (that one only, never a repo-wide
+prune). A group "still runs what was recorded" when its leader has the pid and start time `run.json`
+recorded for it (captured when the group started), or one of its members a recorded pid and start
+time (a daemon a setup left behind, its leader gone): unlike a command line, that survives an exec and
+a changed process title, and a reused pid has another start time. A group whose own leader has exited
+while a process holds its pid is someone else's, so it is neither recorded nor killed. `down` and
+recovery kill by this rule alone; command lines are recorded for reports.
 Known limit: process groups are the unit of every kill, so a process that leaves its group (one that
 calls `setsid`, a daemon that double-forks) escapes them. It is then outside the run's groups, so the
 egress check does not see it either; it surfaces only when the next `up` finds its port taken.

@@ -741,7 +741,7 @@ export async function runSetup(worktree, config, env, { main = findMain(worktree
         timeoutMs: left,
         onStart: (p) => {
           pgid = p;
-          record = { name: `setup[${i}]`, pgid: p, cmdline: shown };
+          record = { name: `setup[${i}]`, pgid: p, started: startTime(p), cmdline: shown };
           groups.push(record);
         },
       });
@@ -821,7 +821,7 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
     child.once("error", (e) => fail(new Error(`failed: ${entry.name} could not start: ${e.message}`)));
   });
   started.pid = started.pgid = child.pid;
-  record = { name: entry.name, pgid: child.pid, cmdline: started.cmdline };
+  record = { name: entry.name, pgid: child.pid, started: startTime(child.pid), cmdline: started.cmdline };
   if (started.exit) record.exited = true;
   groups.push(record);
   if (entry.stop) stops.push({ name: entry.name, cmd: entry.stop, cwd: worktree, env: { ...env, ...(entry.env ?? {}) } });
@@ -1219,7 +1219,7 @@ async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {},
       stdio: ["ignore", fd, fd],
       timeoutMs: left,
       onStart: (p) => {
-        record = { name, pgid: p, cmdline: `/bin/sh -c ${cmd}` };
+        record = { name, pgid: p, started: startTime(p), cmdline: `/bin/sh -c ${cmd}` };
         groups.push(record);
       },
     });
@@ -2044,17 +2044,35 @@ export function logsDir(main, runId) {
 /** The CLI the reaper runs (`argus-live.mjs reap <runId>`). */
 const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
 
-/** Every process as {pid, pgid, command} (`ps -A -ww -o pid= -o pgid= -o command=`, the same on macOS and Linux). */
+/** `ps -o lstart` as macOS and Linux print it under LC_ALL=C (`Thu Oct  8 22:35:29 2026`), spaces collapsed. */
+const LSTART = /^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4})/;
+const C_LOCALE = () => ({ ...process.env, LC_ALL: "C" });
+
+/**
+ * When process `pid` started (`ps -o lstart=`), or undefined when it is gone or ps fails. With its pid,
+ * a process's identity: it survives exec and a changed title, and a reused pid has another start time.
+ */
+function startTime(pid, runner = run) {
+  const r = runner(["ps", "-o", "lstart=", "-p", String(pid)], { env: C_LOCALE() });
+  const m = !r.error && r.status === 0 && String(r.stdout).trim().match(LSTART);
+  return m ? m[1].replace(/\s+/g, " ") : undefined;
+}
+
+/** Every process as {pid, pgid, started, command} (`ps -A -ww -o pid= -o pgid= -o lstart= -o command=`, the same on macOS and Linux). */
 function processTable(runner) {
-  const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "command="]);
+  const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="], { env: C_LOCALE() });
   if (r.error || r.status !== 0) throw new Error(`failed: ps could not list processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
   const out = [];
   for (const line of r.stdout.split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s?(.*)$/);
-    if (m) out.push({ pid: Number(m[1]), pgid: Number(m[2]), command: m[3].trim() });
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+    const t = m && m[3].match(LSTART);
+    if (t) out.push({ pid: Number(m[1]), pgid: Number(m[2]), started: t[1].replace(/\s+/g, " "), command: m[3].slice(t[0].length).trim() });
   }
   return out;
 }
+
+/** The processes of group `pgid` in `table`, as recorded: {pid, started, cmdline} (secret values masked). */
+const membersOf = (table, pgid, secrets) => table.filter((p) => p.pgid === pgid).map((p) => ({ pid: p.pid, started: p.started, cmdline: redact(p.command, secrets) }));
 
 /** run.json, or null when there is none. Throws `refused: …` on one that cannot be read: it is never guessed at. */
 function readRun(main) {
@@ -2083,31 +2101,32 @@ function putRun(main, rec) {
 }
 
 /**
- * Each recorded group as `ps` shows it now (`table`, from processTable), secret values masked: `cmdline`
- * = its leader's command line, `members` = [{pid, cmdline}] of every process in it. A group whose own
- * leader has exited (`exited`, set by startEntry, runSetup and runStep) while a process holds its pid is
- * left as recorded: a pid is not reused while its group lives, so that process is someone else's.
+ * Each recorded group as `ps` shows it now (`table`, from processTable): `members` = [{pid, started,
+ * cmdline}] of every process in it, `cmdline` = its leader's (a field for reports: identity is the pid
+ * and start time). A group whose leader is not the process recorded — it exited (`exited`, set by
+ * startEntry, runSetup and runStep) or started at another time — while a process holds its pid is left
+ * as recorded: that process is someone else's.
  */
 function refreshGroups(groups, table, secrets) {
   return groups.map((g) => {
     if (!table || !g) return { ...g };
-    const now = table.filter((p) => p.pgid === g.pgid).map((p) => ({ pid: p.pid, cmdline: redact(p.command, secrets) }));
+    const now = membersOf(table, g.pgid, secrets);
     const leader = now.find((p) => p.pid === g.pgid);
-    if (!now.length || (g.exited && leader)) return { ...g };
-    return { ...g, cmdline: leader ? leader.cmdline : g.cmdline, members: now };
+    if (!now.length || (leader && (g.exited || (g.started && leader.started !== g.started)))) return { ...g };
+    return { ...g, started: g.started ?? (leader && leader.started), cmdline: leader ? leader.cmdline : g.cmdline, members: now };
   });
 }
 
 /**
- * True when group `g` still runs what was recorded (`now`: its processes as {pid, cmdline}): its own
- * leader with the recorded command line, or a member with a recorded pid and command line (a setup's
- * daemon, its leader gone). Every kill of `down` and `recover` asks this first.
+ * True when group `g` still runs what was recorded (`now`: its processes, membersOf): its own leader,
+ * same pid and start time, or a member with a recorded pid and start time (a setup's daemon, its leader
+ * gone). Command lines do not count: they change on exec and with a process title. Every kill of
+ * `down` and `recover` asks this first.
  */
 function sameGroup(g, now) {
   const leader = now.find((p) => p.pid === g.pgid);
-  if (leader && g.exited) return false;
-  if (leader && leader.cmdline === g.cmdline) return true;
-  return now.some((p) => (g.members ?? []).some((m) => m && m.pid === p.pid && m.cmdline === p.cmdline));
+  if (leader && !g.exited && g.started && leader.started === g.started) return true;
+  return now.some((p) => (g.members ?? []).some((m) => m && m.pid === p.pid && m.started && m.started === p.started));
 }
 
 /**
@@ -2233,7 +2252,7 @@ async function stopRecordedGroups(groups, { runner, secrets, graceMs, refresh = 
   if (refresh) list = refreshGroups(list, table, secrets);
   const kill = [];
   for (const g of list) {
-    const now = table.filter((p) => p.pgid === g.pgid).map((p) => ({ pid: p.pid, cmdline: redact(p.command, secrets) }));
+    const now = membersOf(table, g.pgid, secrets);
     if (!now.length) continue;
     if (sameGroup(g, now)) kill.push(g.pgid);
     else note(`process group ${g.pgid} (${g.name}): what runs in it is not what was recorded; not killed`);
@@ -2298,6 +2317,34 @@ function removeTree(p, note) {
 }
 
 /**
+ * Removes git's record (`.git/worktrees/<id>`) of the worktree `wt` whose directory is already gone,
+ * that record alone: `git worktree prune` would also drop every other missing worktree of the repo.
+ */
+function forgetWorktree(main, wt, note) {
+  const admin = path.join(main, ".git", "worktrees");
+  let ids;
+  try {
+    ids = fs.readdirSync(admin);
+  } catch {
+    return;
+  }
+  for (const id of ids) {
+    let gitdir;
+    try {
+      gitdir = fs.readFileSync(path.join(admin, id, "gitdir"), "utf8").trim();
+    } catch {
+      continue;
+    }
+    if (gitdir !== path.join(wt, ".git")) continue;
+    try {
+      fs.rmSync(path.join(admin, id), { recursive: true, force: true });
+    } catch (e) {
+      note(`git's record of ${wt} (${path.join(admin, id)}) could not be removed (${e.code || e.message})`);
+    }
+  }
+}
+
+/**
  * Removes run `runId`'s worktree, HOME and setup log — only its own: `<sapu-live>/<repo>-<runId>` (and
  * `.home`, `.setup.log` beside it), where <sapu-live> is `$TMPDIR/sapu-live` or the one run.json's
  * `worktree` lies in, each this user's own directory. Any other recorded worktree is left as it is.
@@ -2337,6 +2384,7 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
         if (removeTree(wt, note)) runner(["git", "-C", main, "worktree", "prune"]);
       }
     } else if (st) note(`refused: ${wt} is not a directory; left as it is`);
+    else forgetWorktree(main, wt, note);
     for (const p of [`${wt}.home`, `${wt}.setup.log`]) {
       let there = true;
       try {
@@ -2349,8 +2397,12 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
   }
 }
 
-/** Removes the lock while it names `runId`, under `claim-<runId>.json` (the lock rule); a busy claim is waited on up to `waitMs`, then refused. Returns true when it removed it. */
-async function releaseLock(main, runId, waitMs) {
+/**
+ * Removes the lock while it names `runId`, under `claim-<runId>.json` (the lock rule), and runs
+ * `removed` (the end line) under that same claim, so a second `down` finds the lock gone and adds no
+ * second end. A busy claim is waited on up to `waitMs`, then refused. Returns true when it removed it.
+ */
+async function releaseLock(main, runId, waitMs, removed = () => {}) {
   const end = Date.now() + waitMs;
   for (;;) {
     const l = readLock(main);
@@ -2360,6 +2412,7 @@ async function releaseLock(main, runId, waitMs) {
         const cur = readLock(main);
         if (!cur || cur.runId !== runId) return false;
         fs.rmSync(lockPath(main), { force: true });
+        removed();
         return true;
       } finally {
         fs.rmSync(claimPath(main, runId), { force: true });
@@ -2390,7 +2443,8 @@ async function guarded(what, note, fn) {
  *    included, so a daemon a setup left behind dies too), SIGKILL after `graceMs`;
  * 4. its own worktree (`git worktree remove --force` on that one only), HOME and setup log;
  * 5. the reaper, last (unless it is this process: the reaper's own `down`);
- * 6. run.json, then the lock under its claim, then `<runId> end <now>` in the live log.
+ * 6. run.json, then the lock and `<runId> end <now>` in the live log, both under the lock's claim (only
+ *    the `down` that removes the lock writes the end line).
  * A step that fails is reported and the next one runs: steps 6 always run. Returns {report: [lines]}
  * (secret values masked). Throws only when the lock still names the run and another process holds its
  * claim (claimBusy, after waiting `claimWaitMs` for a live holder): the teardown is done by then, and the
@@ -2429,8 +2483,7 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     const onDisk = readRun(main);
     if (onDisk && onDisk.runId === runId) fs.rmSync(runPath(main), { force: true });
   });
-  const held = await releaseLock(main, runId, claimWaitMs);
-  if (held || rec) await guarded("the live log", note, () => appendEnd(main, runId));
+  await releaseLock(main, runId, claimWaitMs, () => guarded("the live log", note, () => appendEnd(main, runId)));
   return { report };
 }
 

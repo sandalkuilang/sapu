@@ -336,9 +336,11 @@ As built (where it differs from, or adds to, the interfaces below):
   `up`, both for `down`'s runtime gate); the `reaper` pid of an earlier write is kept unless `state`
   names one. Each group's `cmdline` and its `members` ({pid, cmdline}) are read from `ps -A -ww` as
   they stand, secret values masked: `/bin/sh -c <one command>` execs that command, so `/bin/sh -c …`
-  as recorded at spawn would never match. `startEntry`, `runSetup` and `runStep` set `exited` on a
-  group record when its leader exits; a group with `exited` whose pid a process holds is not
-  refreshed (pid reuse: that process is someone else's).
+  as recorded at spawn would never match. Identity, though, is pid + start time (`ps -o lstart=`,
+  LC_ALL=C): `startEntry`, `runSetup` and `runStep` record `started` with the group, and members are
+  {pid, started, cmdline}; command lines are for reports. They also set `exited` on a group record
+  when its leader exits; a group whose leader exited, or started at another time, while a process
+  holds its pid is not refreshed (pid reuse: that process is someone else's).
 - `startEntry(entry, {…, stops})` pushes the entry's stop record `{name, cmd, cwd, env}` as soon as it
   started (before its health), so a failed health still gets its stop replayed.
 - `logsDir(main, runId)` = `.argus/live/<runId>/logs` (kept by `down`); stop replays log to
@@ -350,9 +352,11 @@ As built (where it differs from, or adds to, the interfaces below):
   `{report}`: runtime gate (a finding reported) → stops replayed last-started first (cwd must exist)
   → groups that still run what was recorded SIGTERM, SIGKILL after `graceMs` → its own worktree,
   HOME, setup log (made writable first; a recorded worktree that is not `<sapu-live>/<repo>-<runId>`
-  is left and reported; `git worktree prune` only after the directory had to be removed by hand) →
+  is left and reported; `git worktree prune` only after the directory had to be removed by hand; a
+  worktree directory already gone loses only its own `.git/worktrees/<id>` record) →
   the reaper, last (only while its pid still runs `argus-live.mjs reap <runId>`, never itself; once
-  the reaper is in its own `down` it ignores SIGTERM) → run.json → the lock, under its claim → `end`.
+  the reaper is in its own `down` it ignores SIGTERM) → run.json → the lock and `end`, both under its
+  claim (a second concurrent `down` writes no second end).
   Each step's failure is reported and the next runs; run.json, the lock and `end` always finish.
   `record` (the in-memory run of this process) replaces run.json, for an `up` that fails before its
   run files are written; its groups are refreshed from ps first. It throws only when another process
@@ -363,8 +367,8 @@ As built (where it differs from, or adds to, the interfaces below):
   `stale` is kept); a run.json that does not name the stale run is reported (its stops and groups
   are unknown). Recovery always finishes run.json, `end` and the claim's removal, each failure
   reported. `down` and `recover` kill by one rule (spec §8 `down`): a group still runs what was
-  recorded when its leader shows the recorded command line, or a member a recorded pid and command
-  line (a setup's daemon, its leader gone) — never a group whose own leader exited while a process
+  recorded when its leader has the recorded pid and start time, or a member a recorded pid and start
+  time (a setup's daemon, its leader gone) — never a group whose own leader exited while a process
   holds its pid.
 - `claimBusy`: a claim older than 30 s (mtime) counts as interrupted even when its pid is alive.
 
@@ -431,8 +435,8 @@ Carried from Task 7:
   leaders exit, and `writeRunFiles`/`down({record})` rely on it.
 - `writeRunFiles` keeps the `reaper` pid from the run.json it replaces; pass `reaper` only to change it.
 - run.json gets `env` (the instance env) and `since` (`daemonNow` or `Date.now()`), and every
-  `writeRunFiles` call gets `{secrets}` (members' command lines are masked with them). The last write
-  (step 11) comes after every health check, so the recorded command lines are the exec'd ones.
+  `writeRunFiles` call gets `{secrets}` (members' command lines are masked with them). Identity is
+  pid + start time, captured as each group starts, so a write right after a start is already enough.
 - `upFresh` stops the entries the way `down` does (replay their stops, SIGTERM/SIGKILL their groups):
   `replayStop` and `stopGroups` are module-private today; export a small helper rather than copy them.
 - The CLI: `down` prints `report` line by line; a claimBusy refusal → exit 1.

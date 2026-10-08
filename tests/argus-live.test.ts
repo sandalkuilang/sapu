@@ -2433,7 +2433,9 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(rec).toMatchObject({ runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: { app: port }, origins: [`http://localhost:${port}`], stops, sessions: [], since: 1 });
     expect(rec.worktree).toBe(realpathSync(r.wt));
     // `/bin/sh -c <one command>` execs it: the record holds what ps shows, so recovery can match it.
-    expect(rec.groups).toEqual([{ name: "app", pgid: s.pgid, cmdline: `${process.execPath} ${SERVER}`, members: [{ pid: s.pgid, cmdline: `${process.execPath} ${SERVER}` }] }]);
+    const STARTED = expect.stringMatching(/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d\d:\d\d:\d\d \d{4}$/);
+    expect(rec.groups).toEqual([{ name: "app", pgid: s.pgid, started: STARTED, cmdline: `${process.execPath} ${SERVER}`, members: [{ pid: s.pgid, started: STARTED, cmdline: `${process.execPath} ${SERVER}` }] }]);
+    expect(rec.groups[0].members[0].started).toBe(rec.groups[0].started); // captured when startEntry recorded it
     expect(logsDir(r.main, r.runId)).toBe(join(r.main, ".argus/live", r.runId, "logs"));
     await down(r.main, { runId: r.runId, graceMs: 2000 });
   });
@@ -2608,8 +2610,8 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(rec.groups[1].cmdline).toBe("sleep 601");
     expect(rec.groups[2].members.map((m: Obj) => m.cmdline)).toEqual(["sleep 602"]);
     // Group a's leader now runs something else than what was recorded (pid reuse, as recovery sees it).
-    rec.groups[0].cmdline = "node something-else.mjs";
-    rec.groups[0].members = [{ pid: changed, cmdline: "node something-else.mjs" }];
+    rec.groups[0].started = "Mon Jan 1 00:00:00 2001";
+    rec.groups[0].members = [{ pid: changed, started: "Mon Jan 1 00:00:00 2001", cmdline: "sleep 600" }];
     writeFileSync(join(r.main, ".argus/live/run.json"), JSON.stringify(rec));
     setLock(r.main, { runId: r.runId, start: now() - 7200, deadline: now() - 60 });
     const l = takeLock(r.main, { maxCycleMinutes: 45 });
@@ -2628,6 +2630,42 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
     expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
     expect(readLock(r.main).runId).toBe(l.runId);
+  });
+
+  it("a leader that changes its title after the last write is still the run's (pid and start time): down from run.json kills it", async () => {
+    const r = liveRun();
+    const groups: Obj[] = [];
+    const entry = { name: "worker", cmd: `${JSON.stringify(process.execPath)} -e "setTimeout(() => { process.title = 'worker-renamed' }, 800); setInterval(() => {}, 1 << 30)"` };
+    const s = await startEntry(entry, { worktree: r.wt, env: r.env, logs: logsDir(r.main, r.runId), groups });
+    started.push(s.pgid);
+    expect(await until(() => execFileSync("ps", ["-ww", "-o", "command=", "-p", String(s.pid)], { encoding: "utf8" }).includes(" -e "), 3000)).toBe(true);
+    writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups, stops: [], env: r.env });
+    expect(await until(() => execFileSync("ps", ["-ww", "-o", "command=", "-p", String(s.pid)], { encoding: "utf8" }).trim() === "worker-renamed", 3000)).toBe(true);
+    const res = await down(r.main, { runId: r.runId, graceMs: 2000 });
+    expect(await until(() => !alive(s.pid), 3000)).toBe(true);
+    expect(res.report.join("\n")).not.toContain("not killed");
+  });
+
+  it("a worktree whose directory is already gone: down removes git's record of it, and nothing repo-wide", async () => {
+    const r = liveRun();
+    writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups: [], stops: [], env: r.env });
+    git(r.main, "worktree", "add", "--detach", join(tmp, "unrelated"), "HEAD");
+    rmSync(join(tmp, "unrelated"), { recursive: true }); // another worktree gone missing: not the run's business
+    rmSync(r.wt, { recursive: true, force: true });
+    expect(git(r.main, "worktree", "list")).toContain(r.wt);
+    const calls: string[][] = [];
+    await down(r.main, { runId: r.runId, graceMs: 200, runner: (argv: string[], o: Obj) => (calls.push(argv), run(argv, o)) });
+    expect(git(r.main, "worktree", "list")).not.toContain(r.wt);
+    expect(git(r.main, "worktree", "list")).toContain(join(tmp, "unrelated"));
+    expect(calls.some((a) => a.includes("prune"))).toBe(false);
+  });
+
+  it("two downs at once: one end line", async () => {
+    const r = liveRun();
+    writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups: [], stops: [{ name: "slow", cmd: "sleep 0.3", cwd: r.wt, env: r.env }], env: r.env });
+    await Promise.all([down(r.main, { runId: r.runId, graceMs: 200 }), down(r.main, { runId: r.runId, graceMs: 200 })]);
+    expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
+    expect(existsSync(join(r.main, ".argus/live/lock.json"))).toBe(false);
   });
 
   describe("pid reuse: a process of the owner's on a recorded pgid", () => {
