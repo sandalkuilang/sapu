@@ -216,15 +216,15 @@ export function startTime(pid, runner = run) {
   return m ? m[1].replace(/\s+/g, " ") : undefined;
 }
 
-/** Every process as {pid, pgid, started, command} (`ps -A -ww -o pid= -o pgid= -o lstart= -o command=`, the same on macOS and Linux; on Linux `started` is the boot ticks from /proc where it can be read, as startTime gives them). */
+/** Every process as {pid, ppid, pgid, started, command} (`ps -A -ww -o pid= -o ppid= -o pgid= -o lstart= -o command=`, the same on macOS and Linux; on Linux `started` is the boot ticks from /proc where it can be read, as startTime gives them). */
 export function processTable(runner) {
-  const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="], { env: C_LOCALE() });
+  const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="], { env: C_LOCALE() });
   if (r.error || r.status !== 0) throw new Error(`failed: ps could not list processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
   const out = [];
   for (const line of r.stdout.split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    const t = m && m[3].match(LSTART);
-    if (t) out.push({ pid: Number(m[1]), pgid: Number(m[2]), started: procStart(Number(m[1])) ?? t[1].replace(/\s+/g, " "), command: m[3].slice(t[0].length).trim() });
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
+    const t = m && m[4].match(LSTART);
+    if (t) out.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), started: procStart(Number(m[1])) ?? t[1].replace(/\s+/g, " "), command: m[4].slice(t[0].length).trim() });
   }
   return out;
 }

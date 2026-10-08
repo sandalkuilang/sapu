@@ -510,7 +510,7 @@ Interfaces:
   start times, and appends the record to run.json `sessions` through `updateRun`. (`processTable`
   gains `ppid` if it lacks it.)
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   `tests/argus-live-pw.test.ts`, describe "argus-live per-slot config": "the slot config has exactly the
   verified keys" (deep-equal on a fixture run: two origins, one allow origin, proxy 45123, locale
   `en-US`, timezone `UTC`, viewports `[390, 1440]` → width 390); "host-resolver rules exclude only the
@@ -530,8 +530,8 @@ Interfaces:
     port, a `dgram` socket on `<udp>`, and an allow server → the counting server and the UDP socket saw
     0 packets; the allow server saw `GET /font.css`; `proxy-blocked.jsonl` holds `http://outside.test`
     and `http://127.0.0.1:<other>` exactly once each.
-- [ ] **Step 2–4:** run (FAIL), implement, run both files and the suite (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live per-slot CLI config, recorded sessions, and the proxy, host rules and WebRTC flag proven in Chrome`.
+- [x] **Step 2–4:** run (FAIL), implement, run both files and the suite (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live per-slot CLI config, recorded sessions, and the proxy, host rules and WebRTC flag proven in Chrome`.
 
 ---
 
@@ -1103,6 +1103,25 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   state it writes holds none (openSession appends them through updateRun while `up` holds its own
   state). `up --fresh` retires the tokens with a local `retireTokens` until Task 9's `retireAll`. The
   CLI shim moved to `tests/helpers/argus-live.ts` (`makeShim`).
+- **Task 7.** Probed in Chrome through the CLI:
+  - `--host-resolver-rules=MAP * ~NOTFOUND` also maps the proxy's own `127.0.0.1` (every connection
+    failed with `ERR_PROXY_CONNECTION_FAILED`): the rules always `EXCLUDE 127.0.0.1` first.
+  - With `network.allowedOrigins` set, Playwright stops the outside host's fetch **and** WebSocket before
+    they reach the proxy, so the proxy log does not hold `http://outside.test` then; it does hold the
+    other loopback port (fetch and WebSocket, one line). With `allowedOrigins` and the host rules both
+    removed, the proxy alone blocks and logs the outside host and the loopback port once each. Both are
+    tests now (the plan's single test assumed the proxy saw the outside host).
+  - Chrome's own background requests (`www.gstatic.com`, `update.googleapis.com`, `accounts.google.com`,
+    `www.google.com`, `android.clients.google.com`) reach the proxy despite Playwright's flags and are
+    blocked and logged: Task 11's `blocked:` lines must not report Chrome's own origins as the page's
+    (filter them, or only report origins the page's console or requests name).
+  - WebRTC to a loopback STUN port sends no UDP packet; ICE gathering still completes.
+  - `slotDir` is a pure path (a positive integer or `up`); `writeSlotConfig` creates it 0700.
+    `openSession` takes `cliRunner` (the CLI's runner) beside `runner` (ps), refuses an `open` that
+    exits non-zero (`failed: the browser session <name> could not open: <error line>`), and closes a
+    session again when its daemon is not in ps or run.json cannot take the record. `processTable` rows
+    carry `ppid`.
+  - The signal script records a toast removed after 1 s (read through the wrapper's own `eval`).
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

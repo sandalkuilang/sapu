@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive, cleanTemps, example, freePort, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_DIR } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1015,5 +1015,65 @@ describe("argus-live teardown — proxy and CLI sessions", () => {
     const left = (execFileSync("find", [dir, "-type", "f"], { encoding: "utf8" }) as string).trim().split("\n").map((f) => f.slice(dir.length + 1)).sort();
     expect(left.filter((f) => !f.startsWith("logs/"))).toEqual(["1/files/receipt.txt", "1/out/page.yml", "returns/1.1.json", "up/out/page.yml"]);
     expect(left).toContain("logs/up.log");
+  });
+});
+
+describe("argus-live per-slot config", () => {
+  const fixture = () => ({
+    dir: "/w/.argus/live/r1/1",
+    origins: ["http://localhost:41001", "http://localhost:41002"],
+    allowOrigins: ["https://fonts.example.test"],
+    proxyPort: 45123,
+    live: { locale: "en-US", timezone: "UTC", viewports: [390, 1440] },
+    chrome: { channel: "chrome", path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" },
+  });
+
+  it("the slot config has exactly the verified keys", () => {
+    expect(slotConfig(fixture())).toEqual({
+      browser: {
+        browserName: "chromium",
+        isolated: true,
+        launchOptions: {
+          channel: "chrome",
+          headless: true,
+          proxy: { server: "http://127.0.0.1:45123" },
+          args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost, EXCLUDE fonts.example.test", "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy"],
+        },
+        contextOptions: { locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", viewport: { width: 390, height: 900 } },
+        initScript: ["/w/.argus/live/r1/1/.playwright/signals.js"],
+      },
+      outputDir: "/w/.argus/live/r1/1/out",
+      network: { allowedOrigins: ["http://localhost:41001", "http://localhost:41002", "https://fonts.example.test"] },
+      timeouts: { idle: 1_800_000 },
+      allowUnrestrictedFileAccess: false,
+      console: { level: "info" },
+    });
+  });
+
+  it("host-resolver rules exclude only the proxy's address and the run's and allow_origins hosts, each once; defaults fill locale, timezone and width", () => {
+    const c = slotConfig({ ...fixture(), origins: ["http://localhost:1", "http://127.0.0.1:1", "http://app.test:1"], allowOrigins: [], live: {} });
+    expect(c.browser.launchOptions.args[0]).toBe("--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost, EXCLUDE app.test");
+    expect(c.browser.contextOptions).toEqual({ locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
+    expect(slotConfig({ ...fixture(), chrome: { channel: "msedge", path: "/x" } }).browser.launchOptions.channel).toBe("msedge");
+  });
+
+  it("no proxy.bypass is written (Playwright then sends loopback through the proxy too)", () => {
+    expect(slotConfig(fixture()).browser.launchOptions.proxy).toEqual({ server: "http://127.0.0.1:45123" });
+  });
+
+  it("writeSlotConfig writes the config and the signal script 0600 and creates out/ and files/", () => {
+    const dir = join(tempDir(), "1");
+    writeSlotConfig(dir, slotConfig({ ...fixture(), dir }));
+    expect(JSON.parse(readFileSync(join(dir, ".playwright/cli.config.json"), "utf8")).outputDir).toBe(join(dir, "out"));
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(SIGNAL_SCRIPT);
+    for (const f of [".playwright/cli.config.json", ".playwright/signals.js"]) expect(statSync(join(dir, f)).mode & 0o777).toBe(0o600);
+    for (const d of ["", ".playwright", "out", "files"]) expect(statSync(join(dir, d)).mode & 0o777).toBe(0o700);
+  });
+
+  it("slotDir is under the run's directory, a number or up", () => {
+    const main = tempDir();
+    expect(slotDir(main, "20261009000000-0000abcd", 2)).toBe(join(main, ".argus/live/20261009000000-0000abcd/2"));
+    expect(slotDir(main, "20261009000000-0000abcd", "up")).toBe(join(main, ".argus/live/20261009000000-0000abcd/up"));
+    for (const bad of ["../x", "0", "x", -1, 1.5]) expect(() => slotDir(main, "20261009000000-0000abcd", bad), String(bad)).toThrow(/slot/);
   });
 });

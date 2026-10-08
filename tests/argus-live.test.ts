@@ -3588,7 +3588,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     // ps keeps showing the old leader, as for a process that would not die.
     const ghost = (argv: string[], o: Obj = {}) => {
       const res = noDocker(argv, o) as Obj;
-      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${old.pgid} ${old.pgid} ${old.started} ${old.cmdline}\n` };
+      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${old.pgid} 1 ${old.pgid} ${old.started} ${old.cmdline}\n` };
       return res;
     };
     await up(main, { ...opts({ fresh: true }), runner: ghost });

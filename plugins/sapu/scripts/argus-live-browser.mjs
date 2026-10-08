@@ -8,9 +8,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cliEnv } from "./argus-live-cli.mjs";
-import { redact, run, within } from "./argus-live-proc.mjs";
-import { ownDir } from "./argus-live-run.mjs";
+import { cliEnv, closeSessions, runCli, sessionName } from "./argus-live-cli.mjs";
+import { liveDir, runIdOk } from "./argus-live-lock.mjs";
+import { processTable, redact, run, runAsync, within } from "./argus-live-proc.mjs";
+import { ownDir, updateRun } from "./argus-live-run.mjs";
 
 export const CLI_PACKAGE = "@playwright/cli";
 export const CLI_VERSION = "0.1.22";
@@ -181,4 +182,191 @@ const BROWSERS = {
 /** The installed Chrome-family browser → {channel, path} (Google Chrome first, then Microsoft Edge), or null. */
 export function findChrome({ platform = process.platform, exists = fs.existsSync } = {}) {
   return (BROWSERS[platform] || []).find((b) => exists(b.path)) || null;
+}
+
+/** A slot: a positive integer (an explorer's), or `up` (the proving logins of `up`). */
+const SLOT = (slot) => (Number.isInteger(slot) && slot > 0) || slot === "up";
+
+/** A slot's directory, `<MAIN>/.argus/live/<runId>/<slot>`: the CLI's cwd, so its workspace and session namespace. */
+export function slotDir(main, runId, slot) {
+  runIdOk(runId);
+  if (!SLOT(slot)) throw new Error(`failed: ${slot} is not a slot (a positive integer, or up)`);
+  return path.join(liveDir(main), runId, String(slot));
+}
+
+/**
+ * The init script every page and popup of a slot's sessions runs (spec §7, short-lived signals): it
+ * watches elements with role=status, role=alert or aria-live (polite or assertive) for their text and
+ * wraps window.Notification; each signal {kind, text (at most 200 characters), t} is pushed onto
+ * `window.__argusSignals` (at most 200) and logged as `console.info("[argus-signal]", <json>)`, so a toast
+ * gone before the next snapshot is still seen.
+ */
+export const SIGNAL_SCRIPT = `(() => {
+  if (window.__argusSignalsInstalled) return;
+  window.__argusSignalsInstalled = true;
+  const buffer = (window.__argusSignals = window.__argusSignals || []);
+  const push = (kind, text) => {
+    const t = String(text == null ? "" : text).replace(/\\s+/g, " ").trim().slice(0, 200);
+    if (!t) return;
+    const signal = { kind, text: t, t: Date.now() };
+    if (buffer.length < 200) buffer.push(signal);
+    try {
+      console.info("[argus-signal]", JSON.stringify(signal));
+    } catch (e) {}
+  };
+  const kindOf = (el) => {
+    if (!el || el.nodeType !== 1) return null;
+    const role = el.getAttribute("role");
+    if (role === "status" || role === "alert") return role;
+    const live = el.getAttribute("aria-live");
+    return live === "polite" || live === "assertive" ? "live" : null;
+  };
+  const last = new WeakMap();
+  const report = (el) => {
+    const kind = kindOf(el);
+    if (!kind) return;
+    const text = el.textContent;
+    if (last.get(el) === text) return;
+    last.set(el, text);
+    push(kind, text);
+  };
+  const region = (node) => {
+    for (let p = node && node.nodeType === 1 ? node : node && node.parentElement; p; p = p.parentElement) if (kindOf(p)) return p;
+    return null;
+  };
+  const scan = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    report(node);
+    node.querySelectorAll("[role=status],[role=alert],[aria-live]").forEach(report);
+  };
+  const start = () => {
+    scan(document.documentElement);
+    new MutationObserver((records) => {
+      for (const m of records) {
+        if (m.type === "childList") m.addedNodes.forEach(scan);
+        const r = region(m.target);
+        if (r) report(r);
+      }
+    }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["role", "aria-live"] });
+  };
+  if (document.documentElement) start();
+  else document.addEventListener("DOMContentLoaded", start);
+  const Native = window.Notification;
+  if (typeof Native === "function") {
+    const Wrapped = function (title, options) {
+      push("notification", String(title) + (options && options.body ? ": " + options.body : ""));
+      return new Native(title, options);
+    };
+    Wrapped.prototype = Native.prototype;
+    Wrapped.requestPermission = (...a) => Native.requestPermission(...a);
+    Object.defineProperty(Wrapped, "permission", { get: () => Native.permission });
+    window.Notification = Wrapped;
+  }
+})();
+`;
+
+/**
+ * The CLI config of the slot in `dir` (spec §9 per-slot config; key paths as 0.1.22 reads them): Chrome
+ * (`chrome.channel`) headless and isolated, every request through the run's proxy (no `proxy.bypass`:
+ * Playwright then adds `<-loopback>`, so loopback goes through it too), host names other than the run's
+ * and `allow_origins`' resolving to nothing, WebRTC kept off non-proxied UDP, the run's locale, time zone
+ * and first viewport width (else en-US, UTC, 1440), service workers blocked, the signal script in every
+ * page, `network.allowedOrigins` = the run's origins and `allow_origins`, output under `<dir>/out`.
+ */
+export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = {}, chrome }) {
+  // The proxy's own address too: the rules apply to every host Chrome connects to, its proxy included.
+  const hosts = [...new Set(["127.0.0.1", ...[...origins, ...allowOrigins].map((o) => new URL(o).hostname)])];
+  return {
+    browser: {
+      browserName: "chromium",
+      isolated: true,
+      launchOptions: {
+        channel: chrome.channel,
+        headless: true,
+        proxy: { server: `http://127.0.0.1:${proxyPort}` },
+        args: [`--host-resolver-rules=MAP * ~NOTFOUND, ${hosts.map((h) => `EXCLUDE ${h}`).join(", ")}`, "--webrtc-ip-handling-policy=disable_non_proxied_udp", "--force-webrtc-ip-handling-policy"],
+      },
+      contextOptions: { locale: live.locale || "en-US", timezoneId: live.timezone || "UTC", serviceWorkers: "block", viewport: { width: (live.viewports ?? [])[0] || 1440, height: 900 } },
+      initScript: [path.join(dir, ".playwright", "signals.js")],
+    },
+    outputDir: path.join(dir, "out"),
+    network: { allowedOrigins: [...origins, ...allowOrigins] },
+    timeouts: { idle: 1_800_000 },
+    allowUnrestrictedFileAccess: false,
+    console: { level: "info" },
+  };
+}
+
+/** Writes a slot's CLI config and signal script (0600) under `<dir>/.playwright/`, and creates `out/` and `files/` (all 0700). */
+export function writeSlotConfig(dir, cfg) {
+  for (const d of [dir, path.join(dir, ".playwright"), path.join(dir, "out"), path.join(dir, "files")]) {
+    fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+    fs.chmodSync(d, 0o700);
+  }
+  const put = (name, text) => {
+    const file = path.join(dir, ".playwright", name);
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  };
+  put("cli.config.json", `${JSON.stringify(cfg, null, 2)}\n`);
+  put("signals.js", SIGNAL_SCRIPT);
+}
+
+/** `{pid, pgid, started}` of a process-table row. */
+const identity = (p) => (p ? { pid: p.pid, pgid: p.pgid, started: p.started } : null);
+
+/**
+ * Opens account `account`'s CLI session in slot `slot` (`open`, in the slot's directory, under the
+ * run's browser HOME) and records it in run.json `sessions` through updateRun → the record `{name, slot,
+ * account, cwd, home, daemon, browser}`. With `storageState` (a file: a login command's state), the slot
+ * config plus `browser.contextOptions.storageState` goes into `.playwright/<session>.config.json`, passed
+ * as `open --config=<file>`; both files are removed once `open` returned. The daemon is the process whose
+ * command runs playwright-core's `cliDaemon.js <session>`, the browser its child (Chrome's root, which
+ * leads a process group of its own); each recorded by {pid, pgid, started}, which the teardown's kills
+ * ask first. A session that cannot be recorded (no daemon in ps, run.json gone or sealed) is closed again
+ * and the error thrown.
+ */
+export async function openSession({ main, runId, slot, account, js, home, storageState = null, runner = run, cliRunner = runAsync, timeoutMs = 60_000 }) {
+  const dir = slotDir(main, runId, slot);
+  const name = sessionName(runId, slot, account);
+  let args = ["open"];
+  let config = null;
+  try {
+    if (storageState) {
+      const cfg = JSON.parse(fs.readFileSync(path.join(dir, ".playwright", "cli.config.json"), "utf8"));
+      cfg.browser.contextOptions = { ...cfg.browser.contextOptions, storageState };
+      config = path.join(dir, ".playwright", `${name}.config.json`);
+      fs.writeFileSync(config, JSON.stringify(cfg), { mode: 0o600 });
+      args = ["open", `--config=${config}`];
+    }
+    const r = await runCli({ js, session: name, args, cwd: dir, home, timeoutMs, runner: cliRunner });
+    if (r.code !== 0) {
+      const why = `${r.stdout}\n${r.stderr}`.split("\n").map((l) => l.trim()).filter((l) => /error/i.test(l)).pop() || (r.timedOut ? "timed out" : `exit ${r.code}`);
+      throw new Error(`failed: the browser session ${name} could not open: ${why.slice(0, 300)}`);
+    }
+  } finally {
+    for (const f of [config, storageState]) if (f) fs.rmSync(f, { force: true });
+  }
+  const table = processTable(runner);
+  const daemonOf = new RegExp(`/cliDaemon\\.js ${name.replace(/[^A-Za-z0-9]/g, "\\$&")}(\\s|$)`);
+  const daemon = table.find((p) => daemonOf.test(p.command));
+  const children = daemon ? table.filter((p) => p.ppid === daemon.pid) : [];
+  const browser = children.find((p) => p.pgid === p.pid) || children[0] || null;
+  const record = { name, slot, account, cwd: dir, home, daemon: identity(daemon), browser: identity(browser) };
+  let written = null;
+  let failure = daemon ? null : new Error(`failed: the browser session ${name} opened but its daemon is not in ps; closed again`);
+  if (!failure) {
+    try {
+      written = updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: [...(prev.sessions ?? []), record] } : undefined), { create: false });
+      if (!written) failure = new Error(`failed: run.json of cycle ${runId} is gone; the session ${name} was closed again`);
+    } catch (e) {
+      failure = e;
+    }
+  }
+  if (failure) {
+    await closeSessions([record], { js, runner, cliRunner, graceMs: 3000 });
+    throw failure;
+  }
+  return record;
 }
