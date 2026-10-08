@@ -169,6 +169,7 @@ const WORKER_SCHEMA = {
   properties: {
     status: { type: 'string', enum: ['pr_opened', 'escalate', 'blocked', 'handoff'] },
     guard_active: { type: 'boolean', description: 'true only if `echo sapu-guard-canary` was BLOCKED by the hook' },
+    step_budget: { type: 'string', description: 'the step_budget the canary\'s block message told you to report ("counting" or "off: …"); "off: canary not blocked" when it was not' },
     pr_number: { type: 'integer', description: '0 when no PR was opened' },
     pr_url: { type: 'string' },
     branch: { type: 'string', description: 'your branch (pushed or not); "" when you committed nothing' },
@@ -189,7 +190,7 @@ const WORKER_SCHEMA = {
     model: { type: 'string', description: 'the model ID your system prompt says you run on' },
     red_areas: { type: 'array', items: { type: 'string' }, description: C.redAreas ? `the redAreas \`${C.redAreas} --ref HEAD\` printed for your last commit, verbatim; [] when none` : 'always []: this repo has no red-area classifier' },
   },
-  required: ['status', 'guard_active', 'pr_number', 'branch', 'head_sha', 'summary', 'verification', 'security_gaps', 'outside_writes', 'pr_trust'],
+  required: ['status', 'guard_active', 'step_budget', 'pr_number', 'branch', 'head_sha', 'summary', 'verification', 'security_gaps', 'outside_writes', 'pr_trust'],
 }
 
 const PREPR_SCHEMA = {
@@ -438,7 +439,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], trail: [] }
   const comments = []
   const notes = []
   const reviewComment = () => [
@@ -452,7 +453,7 @@ async function runItem(item) {
     issue: state.issue, tracker: item.tracker, status, tier: state.tier, redAreas: state.redAreas, worker: state.worker,
     escalated: state.escalated, cycles: state.cycles, pr: state.pr, branch: state.branch,
     securityGaps: state.securityGaps, outsideWrites: state.outsideWrites, ranCleanInstall: state.ranCleanInstall,
-    modelWarnings: state.modelWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
+    modelWarnings: state.modelWarnings, budgetWarnings: state.budgetWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
   })
   const absorb = (r, who) => {
     state.securityGaps.push(...(r.security_gaps || []))
@@ -460,6 +461,9 @@ async function runItem(item) {
     state.ranCleanInstall = state.ranCleanInstall || !!r.ran_clean_install
     const family = MODEL[who][0]
     if (r.model && !r.model.toLowerCase().includes(family)) state.modelWarnings.push(`${who} ran on ${r.model}`)
+    // The canary proves the guard; its step_budget answer proves the budget counts this worker (agent_id in the hook input).
+    const off = r.step_budget && !/^counting\b/.test(r.step_budget) && `${who}: ${r.step_budget}`
+    if (off && !state.budgetWarnings.includes(off)) state.budgetWarnings.push(off)
     if (r.branch) state.branch = r.branch
     if (r.pr_number) { state.pr = r.pr_number; state.prUrl = r.pr_url }
     if (r.head_sha) state.headSha = r.head_sha
@@ -629,6 +633,7 @@ log(`wave on ${REPO}: ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.
 const results = await parallel(input.items.map((item) => () => runItem(item)))
 const out = results.map((r, i) => r || { issue: input.items[i].issue, tracker: input.items[i].tracker, status: 'died', reason: 'item crashed inside the workflow' })
 for (const r of out) for (const w of r.modelWarnings || []) log(`WARNING #${r.issue}: ${w} — requested model not applied`)
+for (const r of out) for (const w of r.budgetWarnings || []) log(`WARNING #${r.issue}: step budget off — ${w}`)
 log(out.map((r) => `#${r.issue}${r.tracker ? ` (${r.tracker})` : ''} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}${r.reason ? `: ${String(r.reason).split('\n')[0]}` : ''}`).join('; '))
 // The wave table: every agent call per issue, then the issue's outcome. `trail` is on each result too,
 // so the orchestrator can paste the same table in its report.

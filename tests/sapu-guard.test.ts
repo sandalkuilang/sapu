@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -2467,5 +2467,43 @@ describe("sapu-guard — the repo a call touches decides its rules, not the sess
     // a session outside every repo: the floor, and B's rules where it touches B
     expect(bash("npm run check", R, outside)).toBeNull();
     expect(bash(`cd ${B.w} && make nuke`, R, outside)).toMatch(/nuke is B's owner's/);
+  });
+});
+
+describe("sapu-guard — the worker canary also proves the step budget counts (agent_id in the hook input)", { timeout: 30_000 }, () => {
+  const r = realpathSync(mkdtempSync(join(tmpdir(), "sapu-canary-")));
+  afterAll(() => rmSync(r, { recursive: true, force: true }));
+  mkdirSync(join(r, ".claude"), { recursive: true });
+  execFileSync("git", ["init", "-q", r]);
+  commitContract(r, FIXTURE_CONTRACT);
+  const w = join(r, ".claude/worktrees/w");
+  execFileSync("git", ["-C", r, "worktree", "add", "-q", "--detach", w], { stdio: "ignore" });
+  const canary = (extra: Record<string, unknown>) => decide({ tool_name: "Bash", tool_input: { command: "echo sapu-guard-canary" }, cwd: w, ...extra });
+
+  it("a ladder worker with agent_id: the canary is blocked, says the budget counts, and its counter file exists", () => {
+    const why = canary({ agent_type: "sapu:sapu-sonnet-medium", agent_id: "canary-1" });
+    expect(why).toMatch(/guard_active: true/);
+    expect(why).toMatch(/step_budget: "counting"/);
+    expect(existsSync(join(r, ".git/sapu-steps/canary-1"))).toBe(true);
+  });
+
+  it("a ladder worker whose hook input has no agent_id: still blocked, and the budget is reported off", () => {
+    const why = canary({ agent_type: "sapu:sapu-sonnet-medium" });
+    expect(why).toMatch(/guard_active: true/);
+    expect(why).toMatch(/step_budget: "off: this hook input carries no agent_id/);
+  });
+
+  it("a counter that cannot be written is reported off, not counting", () => {
+    const ro = realpathSync(mkdtempSync(join(tmpdir(), "sapu-canary-ro-")));
+    mkdirSync(join(ro, ".git"));
+    writeFileSync(join(ro, ".git/sapu-steps"), "a file, not a directory");
+    const probe = stepProbeUntyped as (i: { main: string | null; agentId?: string }) => string;
+    expect(probe({ main: ro, agentId: "x" })).toMatch(/^off: .*sapu-steps.* cannot be written/);
+    expect(probe({ main: null, agentId: "x" })).toMatch(/^off: no main checkout/);
+    rmSync(ro, { recursive: true, force: true });
+  });
+
+  it("other subagents get the plain canary answer", () => {
+    expect(canary({ agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r-1" })).not.toMatch(/step_budget/);
   });
 });

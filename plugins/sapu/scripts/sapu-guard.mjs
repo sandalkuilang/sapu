@@ -52,6 +52,8 @@
 //
 // STEP BUDGET. A ladder worker's tool calls are counted per agent id (stepBudget below): a reminder
 // block at STEP_SOFT, every STEP_EVERY after and every STEP_EVERY_LATE past STEP_HARD; never a hard stop.
+// It is off without an agent_id or a writable counter, so the worker canary's answer also carries
+// whether it counts (stepProbe), and the wave logs a WARNING when it does not.
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
 // tool call in the session; the CLI acts for every call whose hook input carries an `agent_id`
@@ -1900,19 +1902,43 @@ const isHandoff = (command) => {
  * The step budget's verdict for one call of a ladder worker: the reminder to block it with, or null.
  * @param {{ main: string|null, agentId?: string, tool: string, command?: string }} i
  */
-export function stepBudget({ main, agentId, tool, command }) {
-  if (!main || typeof agentId !== "string" || !agentId) return null;
+/** Count one call of `agentId` in <MAIN>/.git/sapu-steps/ and return the count so far; throws when the counter cannot be written. */
+function countStep(main, agentId) {
   const dir = path.join(main, ".git", "sapu-steps");
   const file = path.join(dir, agentId.replace(/[^\w.-]/g, "_"));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(file, ".");
+  const n = fs.statSync(file).size;
+  if (n === 1) for (const f of fs.readdirSync(dir)) {
+    const p = path.join(dir, f);
+    if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
+  }
+  return n;
+}
+
+/**
+ * Whether the step budget counts this worker, as the worker canary reports it: "counting" (the canary
+ * call is counted), or "off: <why>". The budget switches itself off silently (no agent_id in the hook
+ * input, an unwritable counter), so the canary is what proves it on first use in a host.
+ * @param {{ main: string|null, agentId?: string }} i
+ */
+export function stepProbe({ main, agentId }) {
+  if (!main) return "off: no main checkout (this call is outside a repo), so there is nowhere to count";
+  if (typeof agentId !== "string" || !agentId) return "off: this hook input carries no agent_id, so no call of this worker is counted";
+  try {
+    countStep(main, agentId);
+    return "counting";
+  } catch (e) {
+    return `off: ${path.join(main, ".git", "sapu-steps")} cannot be written (${e && e.code ? e.code : "error"})`;
+  }
+}
+
+export function stepBudget({ main, agentId, tool, command }) {
+  if (!main || typeof agentId !== "string" || !agentId) return null;
+  const file = path.join(main, ".git", "sapu-steps", agentId.replace(/[^\w.-]/g, "_"));
   let n;
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(file, ".");
-    n = fs.statSync(file).size;
-    if (n === 1) for (const f of fs.readdirSync(dir)) {
-      const p = path.join(dir, f);
-      if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
-    }
+    n = countStep(main, agentId);
   } catch {
     return null;
   }
@@ -2367,6 +2393,8 @@ export function decide(input) {
     if (reason) return `${reason} (${tool}, judged by its name and fields like Bash/Read/Write)`;
   } else if (tool === "Bash") {
     const reason = check({ command: ti.command, cwd, main, rules, worker, resolve });
+    // A ladder worker's canary also proves the step budget counts it (agent_id present, counter writable).
+    if (reason === BLOCK.canary && worker) return `${reason} Step budget: report step_budget: "${stepProbe({ main, agentId: input.agent_id })}".`;
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;
   } else {
     const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules, resolve }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker, resolve });

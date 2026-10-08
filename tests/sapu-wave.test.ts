@@ -421,6 +421,34 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(String(out[0].reason)).toContain("guard hook");
     expect(calls).toHaveLength(1);
   });
+
+  it("the canary's step budget answer is required, and an `off` one is a WARNING in the log and the result, not a stop", async () => {
+    const off = 'off: this hook input carries no agent_id, so no call of this worker is counted';
+    const { out, calls, logs } = await runWave({ main: MAIN, items: [item(17)] }, (c) => (c.opts.phase === "Review" ? clean : opened(17, { step_budget: off })));
+    const schema = calls[0].opts.schema as { required: string[]; properties: Record<string, unknown> };
+    expect(schema.required).toContain("step_budget");
+    expect(out[0]).toMatchObject({ status: "ready" });
+    expect(out[0].budgetWarnings).toEqual([`sapu:sapu-sonnet-medium: ${off}`]);
+    expect(logs.join("\n")).toMatch(/WARNING #17: step budget off — sapu:sapu-sonnet-medium: off: this hook input carries no agent_id/);
+    const ok = await runWave({ main: MAIN, items: [item(18)] }, (c) => (c.opts.phase === "Review" ? clean : opened(18, { step_budget: "counting" })));
+    expect(ok.out[0].budgetWarnings).toEqual([]);
+    expect(ok.logs.join("\n")).not.toMatch(/step budget off/);
+  });
+
+  it("without the Workflow (Phase A fixers, the Agent fallback) a handoff continues as continueOn does: the brief and the skill say so", () => {
+    const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
+    const p11 = /^11\. \*\*Step budget\*\*.*$/m.exec(brief)?.[0] ?? "";
+    expect(p11).toMatch(/\*\*Continuing\*\*/);
+    expect(p11).toContain("git reset --hard <head_sha>");
+    expect(p11).toContain("git push origin HEAD:<branch>");
+    expect(p11).toMatch(/never forced/);
+    expect(p11).toMatch(/never open another/);
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    const a3 = /^- \*\*NEEDS-FIX\*\*.*$/m.exec(skill)?.[0] ?? "";
+    expect(a3).toMatch(/a handoff → a fresh one of its tier, its prompt = the note, `head_sha`, branch and PR \(brief point 11, continuing\)/);
+    expect(skill).toMatch(/Workflow unavailable → [^\n]*a handoff as in A3/);
+    expect(skill).toMatch(/`WARNING … step budget off`/);
+  });
 });
 
 describe("sapu-wave — fix cycles", () => {

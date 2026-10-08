@@ -518,7 +518,12 @@ could use them.
   `agent_type` alone and is still the orchestrator, while a ladder worker's or the explorer's
   `agent_type` alone keeps the floor). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
-  hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes.
+  hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes. The count
+  needs the hook input's `agent_id` and a writable counter, and switches itself off without them, so
+  the worker canary's block message also tells the worker to report `step_budget`: `counting` (the
+  canary call was counted) or `off: <why>`. `sapu-wave.js` requires it and logs anything but `counting`
+  as `WARNING #<N>: step budget off — …`: on first use in a host this proves `agent_id` reaches the
+  hook of a Workflow agent.
 - **MCP tools** reach agents without a `tools:` allowlist (general-purpose, a repo's specialists,
   agents a worker spawns). context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`
   are checked as the Bash/Read calls they amount to (commands in every shape, shell code, the command a
