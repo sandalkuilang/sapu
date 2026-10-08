@@ -8,7 +8,7 @@ import { createServer as createHttpServer } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, example, freePort, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -26,7 +26,9 @@ import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFil
 // @ts-expect-error — plain ESM script without types
 import { base32Decode, loginCode, loginPlan, reserveStep, runCode, totp } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
-import { waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { makeHome, makeWorktree, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1250,5 +1252,203 @@ process.stdout.write(String(s));`;
     writeFileSync(failing, 'process.stdout.write("### Error\\nError: boom\\n"); process.exit(1);\n');
     await expect(runCode({ js: failing, session: "s-1-buyer.1", cwd, home, code: "async page => 1" })).rejects.toThrow(/^failed: run-code: Error: boom$/);
     rmSync(socketsDir(home), { recursive: true, force: true });
+  });
+});
+
+describe("argus-live slots and tokens", () => {
+  const saved = { ...process.env };
+  const runs: { main: string; runId: string }[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+  const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
+  /** A repo whose live.json has buyer (two users), clerk (one), admin (a login command) and anon, and fixtures at HEAD. */
+  const repo = () => {
+    process.env.TMPDIR = tempDir();
+    const main = committed();
+    const c = example();
+    c.roles = {
+      anon: {},
+      buyer: { users: [{ user: "buyer1@example.test", password: "${PW}" }, { user: "buyer2@example.test", password: "${PW}" }] },
+      clerk: { users: [{ user: "clerk1@example.test", password: "${PW}", totp_secret: "${SALES_TOTP}" }] },
+      admin: { login: { command: "true" } },
+    };
+    c.fixtures = "fixtures";
+    mkdirSync(join(main, ".argus"));
+    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
+    writeFileSync(join(main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db\n");
+    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
+    mkdirSync(join(main, "fixtures/sub"), { recursive: true });
+    writeFileSync(join(main, "fixtures/receipt.txt"), "receipt\n");
+    writeFileSync(join(main, "fixtures/bad name.txt"), "x\n");
+    writeFileSync(join(main, "fixtures/sub/deep.txt"), "x\n");
+    execFileSync("ln", ["-s", "receipt.txt", join(main, "fixtures/link.txt")]);
+    git(main, "add", ".");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "live");
+    writeFileSync(join(main, "fixtures/untracked.txt"), "x\n");
+    return main;
+  };
+  /** A cycle on `main` as `up` leaves it after step 11 (no process of its own). */
+  const cycle = (main: string, over: Obj = {}) => {
+    const l = takeLock(main, { maxCycleMinutes: 45 });
+    const wt = makeWorktree(main, l.runId);
+    const home = makeHome(main, l.runId);
+    writeRunFiles(main, { runId: l.runId, worktree: wt, home, origins: ["http://localhost:41001"], allowOrigins: [], groups: [], env: { PATH: process.env.PATH }, ports: { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 }, instanceId: "0123456789abcdef", internal: { proxy: 45123 }, browser: { js: join(tempDir(), "none.js"), channel: "chrome" }, ...over });
+    runs.push({ main, runId: l.runId });
+    return { main, runId: l.runId as string, wt };
+  };
+  const buyer = { "buyer.1": "buyer1@example.test", "anon.1": null };
+  const message = (f: () => unknown) => {
+    try {
+      f();
+      return "ok";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const filesUnder = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(join(dir, e.name)) : e.isFile() ? [join(dir, e.name)] : []));
+
+  it("a slot is minted with a token run.json does not hold; its directory gets the CLI config, HEAD's fixtures and a fresh state", () => {
+    const r = cycle(repo());
+    const m = mintSlot(r.main, { slot: 1, journey: "order-to-cash", accounts: buyer });
+    expect(m).toEqual({ slot: 1, token: expect.stringMatching(/^[0-9a-f]{32}$/), generation: 1, journey: "order-to-cash", accounts: buyer });
+    expect(readRun(r.main).slots).toEqual({ 1: { journey: "order-to-cash", generation: 1, tokenHash: sha(m.token), accounts: buyer, retired: [], submitted: false } });
+    for (const f of filesUnder(join(r.main, ".argus/live"))) expect(readFileSync(f, "utf8"), f).not.toContain(m.token);
+    const dir = slotDir(r.main, r.runId, 1);
+    expect(JSON.parse(readFileSync(join(dir, ".playwright/cli.config.json"), "utf8")).browser.launchOptions.proxy).toEqual({ server: "http://127.0.0.1:45123" });
+    expect(readdirSync(join(dir, "files"))).toEqual(["receipt.txt"]);
+    expect(statSync(join(dir, "files/receipt.txt")).mode & 0o777).toBe(0o600);
+    expect(readSlotState(dir)).toEqual({ calls: 0, loops: {}, sessions: {}, blockedOffset: 0, created: {} });
+    expect(statSync(join(dir, "state.json")).mode & 0o777).toBe(0o600);
+    expect(tokenSlot(r.main, m.token)).toMatchObject({ runId: r.runId, slot: 1, rec: { journey: "order-to-cash" } });
+  });
+
+  it("an unknown token, one with other case, and one from an earlier run are refused", async () => {
+    const main = repo();
+    const a = cycle(main);
+    const m = mintSlot(main, { slot: 1, journey: "j", accounts: buyer });
+    expect(message(() => tokenSlot(main, "0".repeat(32)))).toBe("refused: unknown token");
+    expect(message(() => tokenSlot(main, m.token.toUpperCase()))).toBe("refused: unknown token");
+    expect(message(() => tokenSlot(main, `${m.token} `))).toBe("refused: unknown token");
+    await down(main, { runId: a.runId, graceMs: 1000 });
+    expect(message(() => tokenSlot(main, m.token))).toBe("refused: unknown token");
+    cycle(main);
+    expect(message(() => tokenSlot(main, m.token))).toBe("refused: unknown token");
+  });
+
+  it("a handoff retires the old token and gives a fresh budget; a third handoff is refused", async () => {
+    const r = cycle(repo());
+    const one = mintSlot(r.main, { slot: 1, journey: "j", accounts: buyer });
+    const dir = slotDir(r.main, r.runId, 1);
+    writeSlotState(dir, { calls: 7, loops: { k: 2 }, sessions: { "buyer.1": { signedIn: true } }, blockedOffset: 10, created: { "buyer.1": { user: "u", password: "p" } } });
+    const two = await handoffSlot(r.main, 1);
+    expect(two).toMatchObject({ slot: 1, generation: 2, journey: "j", accounts: buyer });
+    expect(two.token).not.toBe(one.token);
+    expect(message(() => tokenSlot(r.main, one.token))).toBe("refused: retired token");
+    expect(tokenSlot(r.main, two.token).slot).toBe(1);
+    expect(readSlotState(dir)).toEqual({ calls: 0, loops: {}, sessions: { "buyer.1": { signedIn: true } }, blockedOffset: 10, created: { "buyer.1": { user: "u", password: "p" } } });
+    const three = await handoffSlot(r.main, 1);
+    expect(three.generation).toBe(3);
+    await expect(handoffSlot(r.main, 1)).rejects.toThrow("refused: slot 1 already had two handoffs");
+    expect(readRun(r.main).slots["1"].retired).toEqual([sha(one.token), sha(two.token)]);
+    await expect(handoffSlot(r.main, 2)).rejects.toThrow("refused: slot 2 was never minted");
+  });
+
+  it("an account serves one slot", () => {
+    const r = cycle(repo());
+    mintSlot(r.main, { slot: 1, journey: "j", accounts: { "buyer.1": "buyer1@example.test", "admin.1": null, "anon.1": null } });
+    expect(message(() => mintSlot(r.main, { slot: 2, journey: "k", accounts: { "buyer.1": "buyer1@example.test" } }))).toBe("refused: buyer1@example.test already serves slot 1");
+    expect(message(() => mintSlot(r.main, { slot: 2, journey: "k", accounts: { "admin.1": null } }))).toBe("refused: admin.1 already serves slot 1");
+    expect(message(() => mintSlot(r.main, { slot: 2, journey: "k", accounts: { "buyer.1": "buyer2@example.test", "buyer.2": "buyer2@example.test" } }))).toBe("refused: buyer2@example.test is allocated twice (buyer.1 and buyer.2)");
+    // anon is no account: any slot may have it; another user of the role is free.
+    expect(mintSlot(r.main, { slot: 2, journey: "k", accounts: { "buyer.1": "buyer2@example.test", "anon.1": null } }).generation).toBe(1);
+    expect(Object.keys(readRun(r.main).slots)).toEqual(["1", "2"]);
+    expect(message(() => mintSlot(r.main, { slot: 1, journey: "j", accounts: { "clerk.1": "clerk1@example.test" } }))).toBe("refused: slot 1 is minted already; hand it off (slot 1 --handoff)");
+  });
+
+  it("an account outside the allocation is refused", () => {
+    const rec = { accounts: { "buyer.1": "buyer1@example.test", "anon.1": null } };
+    expect(accountOf(rec, "buyer")).toBe("buyer.1");
+    expect(accountOf(rec, "buyer.1")).toBe("buyer.1");
+    expect(accountOf(rec, "anon")).toBe("anon.1");
+    for (const w of ["clerk.1", "buyer.2", "clerk"]) expect(message(() => accountOf(rec, w))).toBe(`refused: ${w} is not allocated to this slot`);
+    for (const w of ["buyer.1;id", "buyer.0", "Buyer", "buyer.1.1", "", "buyer.100"]) expect(message(() => accountOf(rec, w))).toBe("refused: not an account word (<role> or <role>.<k>)");
+  });
+
+  it("allocation errors", () => {
+    const r = cycle(repo());
+    const mint = (accounts: Obj, journey = "j") => message(() => mintSlot(r.main, { slot: 3, journey, accounts }));
+    expect(mint({ "seller.1": "x" })).toBe("refused: seller.1: the config has no role seller");
+    expect(mint({ "buyer.1": "nobody@example.test" })).toBe("refused: buyer.1: nobody@example.test is not one of buyer's users");
+    expect(mint({ "buyer.2": "buyer2@example.test" })).toBe("refused: buyer.2 without buyer.1: a role's accounts are numbered 1, 2, …");
+    expect(mint({ "system.1": null })).toBe("refused: system is not an account: its steps are triggers");
+    expect(mint({ "anon.1": "x" })).toBe("refused: anon.1: anon is never signed in, so it takes no user");
+    expect(mint({ "admin.1": null, "admin.2": null })).toBe("refused: admin.2: admin signs in by its login command, so it has only admin.1");
+    expect(mint({ "buyer.1": null })).toBe("refused: buyer.1 needs its user (buyer.1=<user>)");
+    expect(mint(buyer, "Order_To_Cash")).toBe('refused: "Order_To_Cash" is not a journey id (kebab-case)');
+    expect(message(() => parseAccounts("buyer=buyer1@example.test"))).toBe('refused: "buyer" is not an account (<role>.<k>)');
+    expect(message(() => parseAccounts("buyer.1=a,buyer.1=b"))).toBe("refused: buyer.1 is listed twice");
+    expect(parseAccounts("buyer.1=buyer1@example.test,anon.1,admin.1")).toEqual({ "buyer.1": "buyer1@example.test", "anon.1": null, "admin.1": null });
+    expect(readRun(r.main).slots).toBeUndefined();
+    expect(existsSync(slotDir(r.main, r.runId, 3))).toBe(false);
+  });
+
+  it("a slot is minted only in a running cycle whose up finished", () => {
+    const main = repo();
+    expect(message(() => mintSlot(main, { slot: 1, journey: "j", accounts: buyer }))).toBe("refused: no journey cycle is running");
+    const r = cycle(main, { instanceId: null });
+    expect(message(() => mintSlot(main, { slot: 1, journey: "j", accounts: buyer }))).toBe(`refused: cycle ${r.runId} has no instance (its up did not finish)`);
+  });
+
+  it("withSlotLock serializes two callers and takes over a dead holder", async () => {
+    const r = cycle(repo());
+    const order: string[] = [];
+    const call = (name: string) =>
+      withSlotLock(r.main, r.runId, 1, async () => {
+        order.push(`${name} in`);
+        await new Promise((ok) => setTimeout(ok, 200));
+        order.push(`${name} out`);
+      });
+    await Promise.all([call("a"), call("b")]);
+    expect(order).toEqual(["a in", "a out", "b in", "b out"]);
+    const lock = join(slotDir(r.main, r.runId, 1), "lock");
+    expect(existsSync(lock)).toBe(false);
+    writeFileSync(lock, JSON.stringify({ pid: 999_999, started: "Mon Jan 1 00:00:00 2001", nonce: "x" }));
+    expect(await withSlotLock(r.main, r.runId, 1, async () => "taken", { waitMs: 1000 })).toBe("taken");
+    // A live holder is waited for, then refused.
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, started: startTime(process.pid), nonce: "y" }));
+    await expect(withSlotLock(r.main, r.runId, 1, async () => "x", { waitMs: 300 })).rejects.toThrow(/is held by process/);
+    rmSync(lock);
+  });
+
+  it("retireAll retires every slot's token", () => {
+    const r = cycle(repo());
+    const a = mintSlot(r.main, { slot: 1, journey: "j", accounts: buyer });
+    const b = mintSlot(r.main, { slot: 2, journey: "k", accounts: { "clerk.1": "clerk1@example.test" } });
+    retireAll(r.main, r.runId);
+    for (const t of [a.token, b.token]) expect(message(() => tokenSlot(r.main, t))).toBe("refused: retired token");
+    expect(Object.values(readRun(r.main).slots).map((s: any) => s.tokenHash)).toEqual([null, null]);
+  });
+
+  it("the CLI mints and hands off a slot, printing one JSON line, and refuses a malformed call", () => {
+    const r = cycle(repo());
+    const cli = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { cwd: r.main, encoding: "utf8" });
+    const minted = cli("slot", "1", "--journey", "order-to-cash", "--accounts", "buyer.1=buyer1@example.test,anon.1");
+    expect(minted.status).toBe(0);
+    expect(minted.stdout.trim().split("\n")).toHaveLength(1);
+    const m = JSON.parse(minted.stdout);
+    expect(m).toEqual({ slot: 1, token: expect.stringMatching(/^[0-9a-f]{32}$/), generation: 1, journey: "order-to-cash", accounts: buyer });
+    const h = cli("slot", "1", "--handoff");
+    expect(h.status).toBe(0);
+    expect(JSON.parse(h.stdout)).toMatchObject({ slot: 1, generation: 2 });
+    for (const bad of [["slot", "x", "--handoff"], ["slot", "1", "--handoff", "--journey", "j"], ["slot", "1", "--journey", "j"], ["slot", "1", "--accounts", "buyer.1=x", "--journey"]]) {
+      const res = cli(...bad);
+      expect(res.status, bad.join(" ")).toBe(1);
+      expect(res.stderr).toMatch(/^refused: /);
+    }
   });
 });

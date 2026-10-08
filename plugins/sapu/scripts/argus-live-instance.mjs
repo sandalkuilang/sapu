@@ -17,6 +17,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { closeSessions, sessionAlive } from "./argus-live-cli.mjs";
+import { retireAll } from "./argus-live-slots.mjs";
 import { expand, expandConfig, LIVE_FILE, loadLive, portNames, secretEnv } from "./argus-live-config.mjs";
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs";
@@ -770,16 +771,6 @@ function current(main) {
   return { lock, rec, config, secrets };
 }
 
-/** Every slot's live token retired (its hash moved to `retired`), so no explorer outlives `up --fresh`. */
-function retireTokens(slots) {
-  if (!slots || typeof slots !== "object") return slots;
-  const out = {};
-  for (const [n, sl] of Object.entries(slots)) {
-    out[n] = sl && sl.tokenHash ? { ...sl, retired: [...(sl.retired ?? []), sl.tokenHash], tokenHash: null } : sl;
-  }
-  return out;
-}
-
 /**
  * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; stops
  * every `start` entry (its stop replayed, its group stopped; setup groups, the events follower and the
@@ -825,7 +816,8 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const x of explorers.filter((y) => !closed.has(y.name))) note(`CLI session ${x.name} still runs after its close; kept in the record for down`);
     updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: (prev.sessions ?? []).filter((x) => !x || !closed.has(x.name)) } : undefined), { create: false });
     delete state.sessions;
-    state.slots = retireTokens(rec.slots);
+    retireAll(main, runId);
+    delete state.slots;
     state.instanceId = null;
     save();
     log("fresh: every start entry stopped");

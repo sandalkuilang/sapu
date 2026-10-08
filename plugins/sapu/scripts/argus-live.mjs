@@ -12,6 +12,11 @@
 //   argus-live.mjs reap <runId>  internal: the reaper `up` starts; runs `down` at the lock's deadline
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run
+//   argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>,…
+//                                mint slot <n>'s token for an explorer: one line of JSON {slot, token,
+//                                generation, journey, accounts} (the only place a token is printed)
+//   argus-live.mjs slot <n> --handoff
+//                                retire slot <n>'s token and mint the next generation (fresh budget)
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -22,6 +27,7 @@ import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -34,11 +40,24 @@ if (!main) {
 const live = loadLive(main);
 const secrets = { ...recordedSecrets(main, live.config), ...live.secrets };
 const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json]";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff";
 
 try {
   if (cmd === "reap" && args.length === 1) await reap(main, args[0]);
   else if (cmd === "proxy" && args.length === 1) await serveProxy(main, args[0]);
+  else if (cmd === "slot" && args.length >= 2) {
+    const n = /^[1-9][0-9]?$/.test(args[0]) ? Number(args[0]) : NaN;
+    const opts = {};
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--handoff") opts.handoff = true;
+      else if ((args[i] === "--journey" || args[i] === "--accounts") && i + 1 < args.length && !Object.hasOwn(opts, args[i])) opts[args[i]] = args[++i];
+      else throw new Error(`refused: ${usage}`);
+    }
+    if (Number.isNaN(n)) throw new Error("refused: a slot is a number from 1 to 99");
+    if (opts.handoff && Object.keys(opts).length === 1) print(JSON.stringify(await handoffSlot(main, n)));
+    else if (!opts.handoff && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) print(JSON.stringify(mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
+    else throw new Error(`refused: ${usage}`);
+  }
   else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });

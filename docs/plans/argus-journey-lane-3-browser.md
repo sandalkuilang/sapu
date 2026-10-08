@@ -651,7 +651,7 @@ Interfaces:
 - CLI `slot <n> --journey <id> --accounts <list>` and `slot <n> --handoff` print one JSON line
   `{slot, token, generation, journey, accounts}` (the only place a token is printed).
 
-- [ ] **Step 1: Failing tests** (describe "argus-live slots and tokens"; a `liveRun()` with an instance
+- [x] **Step 1: Failing tests** (describe "argus-live slots and tokens"; a `liveRun()` with an instance
   id):
   - "a slot is minted with a token run.json does not hold": the token matches `/^[0-9a-f]{32}$/`; the
     string occurs in no file under `.argus/live/`; `tokenHash` is its sha256.
@@ -666,8 +666,8 @@ Interfaces:
   - "allocation errors": unknown role, unknown user, `buyer.2` without `buyer.1`, `system.1`, `anon.1=x`.
   - "withSlotLock serializes two callers and takes over a dead holder".
   - "retireAll retires every slot's token".
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live slots — tokens kept as hashes, allocations, handoffs`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live slots — tokens kept as hashes, allocations, handoffs`.
 
 ---
 
@@ -1192,6 +1192,31 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   - Tests: the browser tests fail when a run's `down` leaves the fixture app running; the CLI describe's
     Compose test marks the fixture it starts outside the run's groups (it relied on that describe's
     kill-every-fixture cleanup, which now kills only its marked processes).
+
+- **Task 9.**
+  - `parseAccounts(list)` (exported, the CLI's `--accounts`) → `{"<role>.<k>": user | null}`. An
+    account is allocated by `<role>/<user>`, or `<role>/command` for a login-command role (its one
+    account, `.1`); `anon.<k>` is no account and any slot may hold it. One mint naming a user twice is
+    refused (`refused: <user> is allocated twice (<a> and <b>)`). Other messages: `<role>.<k>: the config
+    has no role <role>`, `<role>.<k>: <user> is not one of <role>'s users`, `<role>.<k> needs its user
+    (<role>.<k>=<user>)`, `<role>.<k> without <role>.<j>: a role's accounts are numbered 1, 2, …`,
+    `system is not an account: its steps are triggers`, `anon.<k>: anon is never signed in, so it takes
+    no user`, `<role>.<k>: <role> signs in by its login command, so it has only <role>.1`, `slot <n> is
+    minted already; hand it off (slot <n> --handoff)`, `<user> already serves slot <m>`.
+  - `mintSlot` needs run.json's `internal.proxy` and `browser.channel` (step 9) for the slot's CLI
+    config; it copies, from the worktree's HEAD tree (`git --literal-pathspecs ls-tree` and `cat-file`),
+    the regular files directly in `live.fixtures` whose names `upload` accepts (no symlink, no
+    subdirectory, nothing untracked), 0600. A slot whose directory cannot be prepared is unminted again.
+  - `handoffSlot` is async: under the slot's lock it writes the next generation and a state with
+    `calls` and `loops` reset; the sessions' state, `created` and `blockedOffset` carry over (the
+    browsers stay open). `refused: slot <n> was never minted` for an unknown slot.
+  - `tokenSlot` refuses anything but 32 lower-case hex as `unknown token`; `accountOf` refuses a word
+    of another shape as `refused: not an account word (<role> or <role>.<k>)`, never echoing it.
+  - `withSlotLock` is `withFileLock` on `<slot>/lock` with no age limit (a call may wait for a page).
+  - `up --fresh` calls `retireAll`; `writeRunFiles` keeps run.json's `slots` and `loginFailed` when the
+    state it writes lacks them (their owners write them through updateRun).
+  - CLI: `slot <n>` takes `--journey`/`--accounts` in either order; anything else is `refused: <usage>`
+    (exit 1).
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

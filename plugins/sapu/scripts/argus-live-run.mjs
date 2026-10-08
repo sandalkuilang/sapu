@@ -158,9 +158,12 @@ export function writeRunFiles(main, state, { runner = run, secrets = {}, create 
     state.runId,
     (prev) => {
       const reaper = state.reaper !== undefined ? state.reaper : prev ? prev.reaper : undefined;
-      // Sessions are appended by openSession through updateRun: a state that does not hold them keeps them.
+      // Sessions, slots and failed logins are written through updateRun by their own owners (openSession,
+      // mintSlot, login): a state that does not hold them keeps them.
       const sessions = state.sessions ?? (prev && prev.sessions) ?? [];
-      return { ...state, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions, ...(reaper === undefined ? {} : { reaper }) };
+      const kept = {};
+      for (const k of ["slots", "loginFailed"]) if (state[k] === undefined && prev && prev[k] !== undefined) kept[k] = prev[k];
+      return { ...state, ...kept, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions, ...(reaper === undefined ? {} : { reaper }) };
     },
     { create },
   );
