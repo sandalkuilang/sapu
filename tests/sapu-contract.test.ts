@@ -1371,6 +1371,25 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     expect(validate(t).join("\n")).toMatch(/labels\.needsOwner must not start with labels\.tierPrefix/);
   });
 
+  it.each([
+    ["the in-progress label", "Agent:In-Progress", /labels\.accepted must differ from labels\.inProgress/],
+    ["the done label", "AGENT:DONE", /labels\.accepted must differ from labels\.done/],
+    ["a tier label", "Risk:ok", /labels\.accepted must not start with labels\.tierPrefix \("risk:"\)/],
+  ])("refuses an acceptance label clashing with %s, whatever the case", (_what, v, msg) => {
+    const c = clone();
+    c.labels.accepted = v;
+    expect(validate(c).join("\n")).toMatch(msg);
+  });
+
+  it("checks the default acceptance label against the other labels when accepted is absent", () => {
+    const c = clone();
+    c.labels.inProgress = "sapu:accepted";
+    expect(validate(c).join("\n")).toMatch(/labels\.accepted must differ from labels\.inProgress/);
+    const t = clone();
+    t.labels.tierPrefix = "sapu:";
+    expect(validate(t).join("\n")).toMatch(/labels\.accepted must not start with labels\.tierPrefix/);
+  });
+
   it("an invalid needsOwner reports only the name error, not a clash", () => {
     const c = clone();
     c.labels.accepted = "argus:needs-owner";
