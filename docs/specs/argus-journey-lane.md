@@ -1,4 +1,4 @@
-# Argus journey lane — design spec
+# Argus journey lane (`/sapu:journey`) — design spec
 
 Status: draft for owner review. Target release: sapu 2.9.0.
 
@@ -29,8 +29,9 @@ The gaps, with evidence:
 ## 3. Goals and non-goals
 
 Goals:
-- A new argus lane, `journey`: one charter = one business journey across roles, walked through the
-  real UI by a dedicated agent that is given goals, not steps.
+- A new argus lane, `journey`, with its own command `/sapu:journey`: one charter = one business
+  journey across roles, walked through the real UI by a dedicated agent that is given goals, not
+  steps. The journeys themselves are generated from the code, not listed by the owner.
 - Every journey cycle runs live, on an isolated instance argus starts itself — never the owner's
   servers or data.
 - Parallel explorers, one isolated browser per role per journey.
@@ -56,6 +57,26 @@ repo's own E2E suite.
 
 The relationship to sapu does not change: argus files issues, `/sapu:sapu` works them.
 
+### Commands
+
+`/sapu:journey` is the lane's own entry point: a thin skill that runs one argus cycle with the lane
+fixed to `journey`. It shares argus's profile, `config.yml`, state, fingerprints and gates — one
+engine, two doors. `/sapu:argus` can still select the lane itself.
+
+| Command | Does |
+|---|---|
+| `/sapu:journey list` | builds or refreshes the catalog (§6) and prints it; explores nothing, starts no app |
+| `/sapu:journey` | the catalog as above, then one cycle: SELECT picks the highest-scoring journeys, up to `limits.max_parallel_journeys`, within `limits.max_cycle_minutes`; ends with the report and the next picks |
+| `/sapu:journey <id> [<id>…]` | one cycle on the named journeys (argus prints what they displaced) |
+
+One invocation = one bounded cycle, as for argus; a whole-catalog pass is that many invocations.
+Each run prints the command that opens the CLI's live session dashboard, for an owner who wants to
+watch the explorers.
+
+Policy: `journey` joins `SKILLS` in `sapu-contract.mjs`, so `allowed journey` and `/sapu:init`'s
+"which skills may run" cover it. Its prerequisites are argus's plus `app_under_test.live`; `list`
+needs neither the live block nor a running app.
+
 ## 5. Sources of truth
 
 - **What exists now** = the running system and its code: routes, permission checks, status enums
@@ -77,6 +98,8 @@ The relationship to sapu does not change: argus files issues, `/sapu:sapu` works
 { "head": "<commit the map was built at>",
   "journeys": [{
     "id": "order-to-cash",
+    "domain": "sales",
+    "title": "Order to cash",
     "goal": "a partner's order is paid for, approved, shipped and visible as delivered",
     "steps": [{ "role": "partner", "goal": "place an order for two products" },
               { "role": "sales", "goal": "confirm the order" }],
@@ -94,6 +117,17 @@ The relationship to sapu does not change: argus files issues, `/sapu:sapu` works
   tax rates, role permissions). Global journeys run alone, after the others.
 - Coverage cells in `coverage.json`: `journey:<id> × <oracle>` for the oracles in §7, so SELECT
   ranks journeys with the existing `cycles_since_visit × exposure × commits since last visit` score.
+- **Ids** are kebab-case English, named after the process in the code. Once written an id is stable:
+  a rebuild adds and updates journeys, never renames one, so coverage history stays attached. Only
+  the owner renames (by editing the file), which starts that journey's coverage fresh.
+- **Titles and domains** are written in the language CLAUDE.md sets for people (sapu's rule for
+  human-facing text); domains come from the code's own module names.
+- **Validation, no LLM** (`argus-live.mjs map-check`): every `sources` entry resolves to an existing
+  file and line at HEAD, every step's role exists in `test_accounts`, ids are unique. A journey that
+  fails is dropped from the catalog with its reason printed — a journey the map agent invented
+  cannot survive it.
+- **Catalog output** (`/sapu:journey list`): journeys grouped by domain; per journey the id, title,
+  role chain, `global` flag and coverage (last cycle, findings filed).
 
 ## 7. The explorer: `sapu:ui-explorer`
 
@@ -272,6 +306,9 @@ Estimates from the probe and `sapu-metrics` prices, to be replaced by pilot meas
   `repro` exits 1 on the seeded defect and 0 on the fixed variant; `down` kills only its own pids;
   a temporary repo's `git status` is clean after a full run (nothing outside `.argus/`). Runs in
   CI with a browser; no LLM.
+- `map-check`: a fixture map with a missing file, a line past the end, an unknown role and a
+  duplicate id — each dropped with its reason; a valid map passes unchanged.
+- `tests/sapu-contract.test.ts`: `journey` in `SKILLS`; `allowed journey` honours the policy.
 - `tests/sapu-guard.test.ts`: the §11 rules, blocked and allowed.
 - `tests/engine.test.ts`: the new files are English and name no repo; a size budget for
   `journeys.md`; argus SKILL.md grows only by its pointer to the lane.
@@ -302,12 +339,14 @@ Estimates from the probe and `sapu-metrics` prices, to be replaced by pilot meas
 | `plugins/sapu/skills/argus/reference.md` | §4.1 note: UI journeys complement the HTTP rule; §9 state: `.argus/live/`, `journeys.json` |
 | `plugins/sapu/skills/argus/standards.md` | Nielsen's 10 usability heuristics |
 | `plugins/sapu/agents/ui-explorer.md` | new agent |
-| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `down`, `status`, `pw`, `repro` |
+| `plugins/sapu/skills/journey/SKILL.md` | new: the `/sapu:journey` entry (`list`, no argument, ids) |
+| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `down`, `status`, `pw`, `repro`, `map-check` |
+| `plugins/sapu/scripts/sapu-contract.mjs` | `journey` in `SKILLS` |
 | `plugins/sapu/scripts/sapu-guard.mjs` | §11 rules |
-| `plugins/sapu/skills/init/SKILL.md` | asks for the `live` block, the login method per account, `mocks_confirmed` |
+| `plugins/sapu/skills/init/SKILL.md` | `journey` in the skills question; asks for the `live` block, the login method per account, `mocks_confirmed` |
 | `plugins/sapu/skills/sapu/SKILL.md` | `question` in B2's SKIP list (§10) |
 | `tests/…` | §14 |
-| `docs/usage.md`, `docs/agents.md` | the lane, the new agent, the requirements |
+| `docs/usage.md`, `docs/agents.md`, `README.md` | `/sapu:journey`, the new agent, the requirements |
 
 ## 17. Owner decisions
 
