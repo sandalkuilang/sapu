@@ -66,10 +66,12 @@ engine, two doors. `/sapu:argus` can still select the lane itself.
 | Command | Does |
 |---|---|
 | `/sapu:journey list` | builds or refreshes the catalog (§6) and prints it; explores nothing, starts no app |
-| `/sapu:journey` | the catalog as above, then one cycle: SELECT picks the highest-scoring journeys, up to `limits.max_parallel_journeys`, within `limits.max_cycle_minutes`; ends with the report and the next picks |
+| `/sapu:journey` | explores on its own, never stopping to ask: refreshes the catalog in the background (no catalog printout, one summary line such as `catalog: 14 journeys, 2 new`) while `up` starts the app, then one cycle — SELECT picks the highest-scoring journeys, up to `limits.max_parallel_journeys`, within `limits.max_cycle_minutes`; ends with the report and the next picks |
 | `/sapu:journey <id> [<id>…]` | one cycle on the named journeys (argus prints what they displaced) |
 
-One invocation = one bounded cycle, as for argus; a whole-catalog pass is that many invocations.
+The map refresh (one agent, only when stale) and `up` (no LLM) run at the same time, so the catalog
+costs no extra wall-clock. One invocation = one bounded cycle, as for argus; a whole-catalog pass is
+that many invocations.
 Each run prints the command that opens the CLI's live session dashboard, for an owner who wants to
 watch the explorers.
 
