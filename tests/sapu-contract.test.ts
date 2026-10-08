@@ -1059,6 +1059,8 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   };
   const L = "sapu:accepted";
   const ACCEPTED: IssueSpec = { author: "stranger", labels: [L], events: [{ event: "labeled", label: L, actor: "owner", minute: 5 }] };
+  /** Accepted at minute 30: past the quiet window after edits in the first minutes. */
+  const LATE: IssueSpec = { author: "stranger", labels: [L], events: [{ event: "labeled", label: L, actor: "owner", minute: 30 }] };
 
   it("`trusted` prints the resolved set — the active owner's id first — and --ref reads the contract at that commit", () => {
     expect(JSON.parse(run(["trusted"]).out)).toEqual([{ login: "owner", id: 1 }, ALICE]);
@@ -1142,7 +1144,7 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   });
 
   it("acceptance covers the text as it stood: ANY outsider edit after it refuses, even with a trusted edit later", () => {
-    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 3 }] }).status).toBe(0);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 3 }] }).status).toBe(0);
     expect(judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 9 }] }).status).toBe(0);
     const masked = judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 9 }, { by: "stranger", minute: 7 }] });
     expect(masked.status).toBe(1);
@@ -1153,10 +1155,33 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
     expect(renamed.v.reason).toMatch(/retitled by stranger \(id 666\) after sapu:accepted was applied/);
   });
 
-  it("the verdict shows the last edit, so an edit made just before the label is visible to whoever applied it", () => {
-    const r = judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 4 }] });
+  it("the verdict shows the last edit, so an edit made before the label is visible to whoever applied it", () => {
+    const r = judge({ ...LATE, edits: [{ by: "stranger", minute: 4 }] });
     expect(r.status).toBe(0);
     expect(r.v).toMatchObject({ lastEditedAt: at(4), editor: { login: "stranger", id: 666 } });
+  });
+
+  it("an outsider's edit or retitle shortly before the label refuses: the acceptor may have read the text before it", () => {
+    const r = judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 4 }] });
+    expect(r.status).toBe(1);
+    expect(r.v.reason).toMatch(/body was edited by stranger \(id 666\) at .* less than 10 minutes before sapu:accepted was applied.*re-apply sapu:accepted after/);
+    expect(judge({ ...ACCEPTED, events: [{ event: "renamed", actor: "stranger", minute: 2 }, ...ACCEPTED.events!] }).v.reason).toMatch(/retitled by stranger \(id 666\) .* less than 10 minutes before/);
+    // the original revision (GitHub lists it at the issue's creation time) is not an edit
+    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 0 }, { by: "owner", minute: 1 }] }).status).toBe(0);
+    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 1 }] }).status).toBe(1);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 25 }] }).status).toBe(1);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 19 }] }).status).toBe(0);
+    // a trusted edit just before the label is the acceptor's side: no race
+    expect(judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 4 }] }).status).toBe(0);
+  });
+
+  it("self-check: an edit history that does not hold the last edit (lastEditedAt) refuses — a deleted revision may be missing", () => {
+    const r = judge({ ...LATE, edits: [{ by: "stranger", minute: 2 }], edited: { by: "stranger", minute: 3 } });
+    expect(r.status).toBe(1);
+    expect(r.v.reason).toMatch(/edit history GitHub returned does not hold its last edit/);
+    expect(judge({ ...LATE, edits: [], edited: { by: "owner", minute: 3 } }).status).toBe(1);
+    // a deleted revision that GitHub keeps as a node still counts, as before
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 2, deleted: true }, { by: "owner", minute: 3 }] }).status).toBe(0);
   });
 
   it("an agent-filed issue says so in the verdict, and stays trusted by its author unless the contract asks for acceptance", () => {

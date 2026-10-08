@@ -1043,8 +1043,13 @@ const named = (p) => (p ? `${p.login ?? "?"} (id ${p.id ?? "?"})` : "a deleted a
 const TIMELINE =
   "timelineItems(first:100,after:$after,itemTypes:[LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT]){pageInfo{hasNextPage endCursor} " +
   `nodes{__typename ... on LabeledEvent{createdAt actor{${WHO}} label{name updatedAt}} ... on UnlabeledEvent{createdAt actor{${WHO}} label{name updatedAt}} ... on RenamedTitleEvent{createdAt actor{${WHO}}}}}`;
+/**
+ * How long before the acceptance label an outsider's edit or retitle still refuses: the acceptor
+ * reads the text, then applies the label, and an edit landing in between would ride on it.
+ */
+export const ACCEPT_QUIET_MS = 10 * 60_000;
 const snapshotOf = (type) =>
-  `... on ${type}{title body lastEditedAt author{${WHO}} editor{${WHO}} labels(first:100){totalCount nodes{name}} ` +
+  `... on ${type}{title body createdAt lastEditedAt author{${WHO}} editor{${WHO}} labels(first:100){totalCount nodes{name}} ` +
   `userContentEdits(first:100){totalCount nodes{editedAt deletedAt editor{${WHO}}}} ${TIMELINE}}`;
 const ISSUE_QUERY =
   "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){" +
@@ -1093,7 +1098,8 @@ function issueSnapshot(c, n) {
  * applies labels as the issue's author), the label was not renamed or edited since (GraphQL names a
  * label as it is now), and since then NO id outside the set retitled it or edited its body — any
  * such edit refuses, even one a trusted edit followed, deleted revisions included: the acceptance
- * covers the text as it stood. Throws when GitHub cannot be read.
+ * covers the text as it stood — nor in the ACCEPT_QUIET_MS before it, and the edit history must hold
+ * its latest revision (a self-check of the deleted-revision rule). Throws when GitHub cannot be read.
  */
 export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   const ids = new Set(trusted.map((t) => t.id));
@@ -1133,12 +1139,28 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   }
   const since = Date.parse(last.at);
   const later = (t) => typeof t === "string" && Date.parse(t) >= since;
+  // An outsider's change made shortly before the label: the acceptor may have read the text before it.
+  const racing = (t) => typeof t === "string" && Date.parse(t) < since && Date.parse(t) >= since - ACCEPT_QUIET_MS;
+  const reapply = (t) => `: the acceptor may have read the text before it — re-apply ${label} after ${new Date(Date.parse(t) + ACCEPT_QUIET_MS).toISOString()}, once its current text is read`;
+  const quietMin = ACCEPT_QUIET_MS / 60_000;
   const retitle = events.find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !editOk(e.actor));
   if (retitle) return verdict(false, `${author}, and it was retitled by ${named(retitle.actor)} after ${label} was applied`);
+  const raceTitle = events.find((e) => e.type === "RenamedTitleEvent" && racing(e.at) && !editOk(e.actor));
+  if (raceTitle) return verdict(false, `${author}, and it was retitled by ${named(raceTitle.actor)} at ${raceTitle.at}, less than ${quietMin} minutes before ${label} was applied${reapply(raceTitle.at)}`);
   const edits = first.userContentEdits;
   if (edits.totalCount > edits.nodes.length) return verdict(false, `${author}, and it has more body edits than can be checked (${edits.totalCount})`);
-  const edit = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].find((e) => later(e.at) && !editOk(e.by));
+  // Self-check of the deleted-revision rule: GitHub lists every revision, a deleted one with
+  // deletedAt, the latest at exactly lastEditedAt. A history without that node is not the whole
+  // history (a revision dropped), so an edit made after the label could be missing from it.
+  if (snapshot.lastEditedAt && !edits.nodes.some((e) => e && e.editedAt === snapshot.lastEditedAt)) {
+    return verdict(false, `${author}, and the edit history GitHub returned does not hold its last edit (lastEditedAt ${snapshot.lastEditedAt}): a deleted revision may be missing from it, so the acceptance cannot be checked`);
+  }
+  // The original revision (listed once the body is edited, at the issue's creation time) is not an edit.
+  const changes = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].filter((e) => e.at !== first.createdAt);
+  const edit = changes.find((e) => later(e.at) && !editOk(e.by));
   if (edit) return verdict(false, `${author}, and its body was edited by ${named(edit.by)} after ${label} was applied`);
+  const raceEdit = changes.find((e) => racing(e.at) && !editOk(e.by));
+  if (raceEdit) return verdict(false, `${author}, and its body was edited by ${named(raceEdit.by)} at ${raceEdit.at}, less than ${quietMin} minutes before ${label} was applied${reapply(raceEdit.at)}`);
   return verdict(true, `${author}, but ${named(last.actor)} applied ${label} at ${last.at}`, { login: last.actor.login, id: last.actor.id, at: last.at });
 }
 
