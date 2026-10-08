@@ -438,7 +438,8 @@ defence in depth and not enforcement:
    secret value masked in the error quoted; afterwards `up` refuses when any symlink in the worktree, followed through every link
    (broken ones too), resolves into the repo's main checkout or to a directory holding it (a
    dependency directory linked from there would be written by the instance).
-5. **Ports.** `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which
+5. **Ports.** (Allocated as step 3 builds the environment, which names them.) `{port:<name>}` takes a
+   free port from `port_range` outside `reserved_ports` (which
    `/sapu:init` fills with the repo's dev and E2E ports; `port_range` is required whenever a
    `{port:<name>}` is used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming
    the process holding it; one port fixed for two names, or one name fixed at two ports → refuse.

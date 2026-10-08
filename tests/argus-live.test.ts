@@ -34,12 +34,15 @@ import {
   readLock,
   recover,
   renew,
+  renewRun,
   run,
   runSetup,
   staleRecords,
   startEntry,
   startReaper,
+  status,
   takeLock,
+  up,
   waitHealth,
   writeRunFiles,
 } from "../plugins/sapu/scripts/argus-live-instance.mjs";
@@ -1509,6 +1512,26 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       });
     });
 
+    describe("a host name that resolves only to loopback is loopback (up passes its dns lookup)", () => {
+      const lookup = async (h: string) => (h === "db.localtest.test" ? [{ address: "127.0.0.1", family: 4 }, { address: "::1", family: 6 }] : h === "split.example.test" ? [{ address: "127.0.0.1", family: 4 }, { address: "203.0.113.7", family: 4 }] : Promise.reject(new Error("ENOTFOUND")));
+      const run = async (instance: Record<string, string>, ownerFile: string) => {
+        const ctx = await ctxFor({ store_check: "echo app_explore" });
+        writeFileSync(join(ctx.main, ".env"), ownerFile);
+        return message(checkStore({ ...ctx, env: { ...ctx.env, ...instance }, lookup }));
+      };
+      it("an instance alias of the owner's local service is refused", async () => {
+        expect(await run({ REDIS_URL: "redis://db.localtest.test:6379" }, "REDIS_URL=redis://localhost:6379\n")).toBe("refused: env.REDIS_URL points at a service the repo's env files name (.env, .env.local); it would reach the owner's service");
+        expect(await run({ DB_HOST: "db.localtest.test", DB_PORT: "5432" }, "DATABASE_URL=postgres://u@127.0.0.1:5432/app_dev\n")).toMatch(/^refused: env\.DB_HOST points at a service the repo's env files name/);
+      });
+      it("so is an instance value on loopback when the owner's file names the alias", async () => {
+        expect(await run({ REDIS_URL: "redis://127.0.0.1:6379" }, "REDIS_URL=redis://db.localtest.test:6379\n")).toMatch(/^refused: env\.REDIS_URL points at a service/);
+      });
+      it("a name with any other address, or none, stays a name", async () => {
+        expect(await run({ REDIS_URL: "redis://split.example.test:6379" }, "REDIS_URL=redis://localhost:6379\n")).toBe("ok");
+        expect(await run({ REDIS_URL: "redis://nowhere.example.test:6379" }, "REDIS_URL=redis://localhost:6379\n")).toBe("ok");
+      });
+    });
+
     describe("the instance's own Compose services", () => {
       const files = "DATABASE_URL=postgres://owner@db:5432/app_dev\nAPI_DB=postgres://owner@db.internal:5432/a\n";
       it("a single-label host that is a service of the worktree's Compose project is exempt", async () => {
@@ -2816,5 +2839,305 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       await down(r.main, { runId: r.runId, graceMs: 200 });
       expect(await until(() => !alive(reaper), 3000)).toBe(true);
     }, 20000);
+  });
+});
+
+describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
+  const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
+  const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
+  const NODE = process.execPath;
+  const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
+  const PW = "pw-v4lue-7Kq2";
+  const saved = { ...process.env };
+  const servers: Server[] = [];
+  let tmp = "";
+  beforeEach(() => {
+    tmp = tempDir();
+    process.env.TMPDIR = tmp;
+  });
+  /** Reapers the tests started (killed after each test, whatever it asserted). */
+  const reapers: number[] = [];
+  afterEach(async () => {
+    // Whatever a failed assertion left: the fixture app's processes (only this file runs it) and the reapers.
+    for (const line of execFileSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "command="], { encoding: "utf8" }).split("\n")) {
+      const m = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (m && m[2].includes(SERVER)) reapers.push(Number(m[1]));
+    }
+    for (const pid of reapers.splice(0)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
+    await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))));
+    spawnSync("chmod", ["-R", "u+w", tmp]);
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
+  const until = async (ok: () => boolean, ms: number) => {
+    const end = Date.now() + ms;
+    while (!ok() && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+    return ok();
+  };
+  const fixtureProcesses = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(SERVER));
+  /** docker absent: the Docker client, the daemon's clock and the runtime gate have nothing to look at. */
+  const noDocker = (argv: string[], opts: Obj = {}) => (argv[0] === "docker" ? { error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) } : run(argv, opts));
+  const config = (data: string, over: (c: Obj) => void = () => {}) => {
+    const c: Obj = {
+      start: [
+        { name: "cache", phase: "store", cmd: app(), env: { PORT: "{port:cache}" }, health: { url: "http://127.0.0.1:{port:cache}/health" } },
+        { name: "web", cmd: app(), env: { PORT: "{port:web}" }, health: { url: "http://127.0.0.1:{port:web}/health" } },
+      ],
+      base_url: "http://localhost:{port:web}",
+      login_url: "/login",
+      logged_in: "getByRole('button', { name: 'Account' })",
+      env_file: ".argus/live.env",
+      env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_SECRET: "${PW}" },
+      pass_env: [],
+      store: "app_explore",
+      store_check: app("--which-store"),
+      reset: app("--reset"),
+      confirmed: { mocks: true, data: true },
+      allow_origins: [],
+      port_range: [41000, 41999],
+      reserved_ports: [],
+      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${PW}" }] } },
+      limits: { max_cycle_minutes: 30, live_health_timeout_s: 20 },
+    };
+    over(c);
+    return c;
+  };
+  /** A repo whose .argus/live.json is tracked and whose env file is not. */
+  const repo = (over: (c: Obj) => void = () => {}, env = `PW=${PW}\n`) => {
+    const main = tempDir();
+    const data = join(tempDir(), "app_explore");
+    git(main, "init", "-q");
+    mkdirSync(join(main, ".argus"));
+    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
+    writeFileSync(join(main, "app.txt"), "app\n");
+    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(config(data, over), null, 2)}\n`);
+    git(main, "add", ".");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
+    writeFileSync(join(main, ".argus/live.env"), env);
+    return { main, data };
+  };
+  const runJson = (main: string) => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
+  const logOf = (main: string) => readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
+  const balanced = (main: string) => {
+    const lines = logOf(main);
+    const starts = lines.filter((l) => / start /.test(l)).map((l) => l.split(" ")[0]);
+    return starts.length > 0 && starts.every((r) => lines.filter((l) => l.startsWith(`${r} end `)).length === 1);
+  };
+  const message = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
+  const opts = (over: Obj = {}) => ({ runner: noDocker, ownerHome: tempDir(), ...over });
+
+  it("up starts the instance in spec order and writes run.json; status, renew and up --fresh work on it; down leaves nothing", async () => {
+    const { main, data } = repo();
+    const lines: string[] = [];
+    const r = await up(main, opts({ say: (l: string) => lines.push(l) }));
+    const rec = runJson(main);
+    reapers.push(rec.reaper);
+    expect(rec).toMatchObject({ runId: r.runId, worktree: r.worktree, instanceId: expect.stringMatching(/^[0-9a-f]{16}$/) });
+    expect(Object.keys(rec.ports).sort()).toEqual(["cache", "web"]);
+    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["cache", "reset", "web"]);
+    expect(rec.origins).toContain(`http://localhost:${rec.ports.web}`);
+    expect(rec.env.COMPOSE_PROJECT_NAME).toBe(`argus-${r.runId}`);
+    expect(alive(rec.reaper)).toBe(true);
+    expect(readFileSync(join(data, "seed.json"), "utf8")).toContain("seeded");
+    expect((await fetch(`http://127.0.0.1:${rec.ports.web}/health`)).status).toBe(200);
+    expect(lines.map((l) => l.split(":")[0])).toEqual(["step 1 lock", "step 2 refusals", "step 3 environment", "step 4 worktree", "step 5 Compose", "step 6 store", "step 7 start", "step 8 egress", "step 11 run files"]);
+    // Every step is logged to the run's logs, no secret value among them.
+    const upLog = readFileSync(join(main, ".argus/live", r.runId, "logs", "up.log"), "utf8");
+    expect(upLog.trim().split("\n")).toHaveLength(lines.length);
+    expect(upLog).not.toContain(PW);
+
+    // The guard seam: the explorer may Read a tracked file of the run's worktree, never its .argus/.
+    const guard = await import(pathToFileURL(join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs")).href);
+    const read = (file: string) => guard.decide({ agent_type: "sapu:ui-explorer", tool_name: "Read", tool_input: { file_path: file }, cwd: main });
+    expect(read(join(r.worktree, "app.txt"))).toBeNull();
+    expect(read(join(r.worktree, ".argus/live.json"))).not.toBeNull();
+
+    const st = (await status(main, { runner: noDocker })).join("\n");
+    expect(st).toContain(r.runId);
+    expect(st).toContain(r.worktree);
+    expect(st).toMatch(/web \(pgid \d+\): running/);
+
+    const before = readLock(main);
+    const renewed = await renewRun(main, { runner: noDocker });
+    expect(renewed.deadline).toBe(readLock(main).deadline);
+    expect(renewed.deadline).toBeGreaterThan(before.deadline);
+    expect(logOf(main).at(-1)).toBe(`${r.runId} deadline ${renewed.deadline}`);
+
+    writeFileSync(join(data, "sentinel"), "x");
+    const webPid = rec.groups.find((g: Obj) => g.name === "web").pgid;
+    await up(main, opts({ fresh: true }));
+    const fresh = runJson(main);
+    expect(fresh.worktree).toBe(rec.worktree);
+    expect(fresh.ports).toEqual(rec.ports);
+    expect(fresh.reaper).toBe(rec.reaper);
+    expect(fresh.instanceId).not.toBe(rec.instanceId);
+    expect(readLock(main).runId).toBe(r.runId);
+    expect(existsSync(join(data, "sentinel"))).toBe(false);
+    expect(existsSync(join(data, "seed.json"))).toBe(true);
+    expect(await until(() => !alive(webPid), 3000)).toBe(true);
+    expect((await fetch(`http://127.0.0.1:${fresh.ports.web}/health`)).status).toBe(200);
+
+    await down(main, { runId: r.runId });
+    expect(await until(() => fixtureProcesses().length === 0 && !alive(rec.reaper), 5000)).toBe(true);
+    expect(existsSync(r.worktree)).toBe(false);
+    expect(existsSync(join(main, ".argus/live/run.json"))).toBe(false);
+    expect(balanced(main)).toBe(true);
+  }, 90000);
+
+  it("a failing step after the lock (store_check names another store) tears down: an end line, no worktree, no process, reset never ran", async () => {
+    const { main, data } = repo((c) => (c.store_check = "echo app_dev"));
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, "sentinel"), "x");
+    const e = await up(main, opts()).then(() => null, (x: Error & { step?: string }) => x);
+    expect(e!.message).toBe('refused: store_check printed "app_dev", not the store "app_explore"');
+    expect(e!.step).toBe("6 store");
+    expect(existsSync(join(data, "sentinel"))).toBe(true);
+    expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+    expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+    expect(existsSync(join(main, ".argus/live/run.json"))).toBe(false);
+    expect(readdirSync(join(realpathSync(tmp), "sapu-live"))).toEqual([]);
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
+  it.each([
+    ["config errors", (c: Obj) => (c.confirmed.data = false), {}, /^refused: \.argus\/live\.json: confirmed\.data must be true/],
+    ["an unset secret", () => {}, { env: "" }, /^refused: \$\{PW\} is unset \(\.argus\/live\.env gives it no value\)$/],
+    ["a base_url host that does not resolve to loopback only", (c: Obj) => (c.base_url = "http://shop.example.test:{port:web}"), { lookup: async () => [{ address: "127.0.0.1", family: 4 }, { address: "203.0.113.9", family: 4 }] }, /^refused: base_url names shop\.example\.test, which does not resolve to loopback only/],
+    ["a role base_url that does not resolve", (c: Obj) => (c.roles.buyer.base_url = "http://admin.example.test:{port:web}"), { lookup: async () => Promise.reject(new Error("ENOTFOUND")) }, /^refused: roles\.buyer\.base_url names admin\.example\.test/],
+    ["~/.playwright/cli.config.json", () => {}, { playwright: true }, /^refused: .*\.playwright\/cli\.config\.json exists/],
+    ["neither lsof nor ss", () => {}, { noTools: true }, /^refused: neither lsof nor ss is available$/],
+  ])("step 2 refuses %s after taking the lock, then tears down (an end line)", async (_what, over, how, why) => {
+    const h = how as Obj;
+    const { main } = repo(over as (c: Obj) => void, h.env ?? `PW=${PW}\n`);
+    const ownerHome = tempDir();
+    if (h.playwright) {
+      mkdirSync(join(ownerHome, ".playwright"));
+      writeFileSync(join(ownerHome, ".playwright/cli.config.json"), "{}");
+    }
+    const runner = h.noTools ? (argv: string[], o: Obj) => (argv[0] === "lsof" || argv[0] === "ss" ? { error: Object.assign(new Error(`spawn ${argv[0]} ENOENT`), { code: "ENOENT" }) } : noDocker(argv, o)) : noDocker;
+    const e = await up(main, { runner, ownerHome, ...(h.lookup ? { lookup: h.lookup } : {}) }).then(() => null, (x: Error & { step?: string }) => x);
+    expect(e!.message).toMatch(why as RegExp);
+    expect(e!.message).not.toContain(PW);
+    expect(e!.step).toBe("2 refusals");
+    expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+    expect(balanced(main)).toBe(true);
+  });
+
+  it("the fixture's cache fallback to a fixed local port is caught at up: refused, torn down", async () => {
+    const { main } = repo((c) => delete c.env.CACHE_URL);
+    const s = createServer((c) => c.on("error", () => {}));
+    servers.push(s);
+    await new Promise<void>((done) => s.listen(46379, "127.0.0.1", () => done()));
+    const e = await up(main, opts()).then(() => null, (x: Error & { step?: string }) => x);
+    expect(e!.message).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+    expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
+  it("renew repeats the egress check and the Docker runtime gate: a later connection, or a foreign container, ends the cycle", async () => {
+    const { main } = repo((c) => delete c.env.CACHE_URL);
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    const accepted: number[] = [];
+    const s = createServer((c) => {
+      accepted.push(1);
+      c.on("error", () => {});
+    });
+    servers.push(s);
+    await new Promise<void>((done) => s.listen(46379, "127.0.0.1", () => done()));
+    expect(await until(() => accepted.length > 0, 5000)).toBe(true); // the app (re)connected to the "owner's cache"
+    expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+    expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+    expect(existsSync(r.worktree)).toBe(false);
+    expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+    expect(balanced(main)).toBe(true);
+
+    // The runtime gate at renew: a container created during the cycle outside the run's project.
+    const b = repo();
+    const rb = await up(b.main, opts());
+    reapers.push(runJson(b.main).reaper);
+    const foreign = (argv: string[], o: Obj = {}) => {
+      if (argv[0] !== "docker") return run(argv, o);
+      const a = argv.slice(1).join(" ");
+      const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
+      if (a === "ps -aq --no-trunc") return ok("cX");
+      if (a === "volume ls -q" || a === "network ls -q --no-trunc") return ok("");
+      if (a.startsWith("inspect --type container")) return ok(JSON.stringify([{ Id: "cX", Name: "/scratch", Created: new Date().toISOString(), State: {}, Config: { Labels: {} }, Mounts: [], NetworkSettings: {} }]));
+      return { status: 1, stdout: "", stderr: `unexpected ${a}` };
+    };
+    expect(await message(renewRun(b.main, { runner: foreign }))).toBe(`refused: container scratch was created or started during the cycle and is not of the run's Compose project argus-${rb.runId}`);
+    expect(existsSync(join(b.main, ".argus/live/lock.json"))).toBe(false);
+    expect(balanced(b.main)).toBe(true);
+  }, 90000);
+
+  describe("the CLI", () => {
+    /** A docker whose context is a local socket and whose daemon is not running. */
+    const fakeDocker = () => {
+      const bin = tempDir();
+      writeFileSync(
+        join(bin, "docker"),
+        `#!/bin/sh\nif [ "$1" = context ]; then echo '[{"Name":"default","Endpoints":{"docker":{"Host":"unix:///nonexistent/docker.sock"}}}]'; exit 0; fi\necho "Cannot connect to the Docker daemon at unix:///nonexistent/docker.sock. Is the docker daemon running?" >&2\nexit 1\n`,
+      );
+      chmodSync(join(bin, "docker"), 0o755);
+      return bin;
+    };
+    const cli = (main: string, args: string[], env: Obj) => {
+      const r = spawnSync(NODE, [CLI, ...args], { cwd: main, env, encoding: "utf8", timeout: 60000 });
+      return { code: r.status, out: `${r.stdout}${r.stderr}` };
+    };
+    it("up, status, a second up (refused: exit 1), renew, down; a failing up exits 2; no output or log holds a secret value", async () => {
+      const { main } = repo();
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      const outs: string[] = [];
+      const go = (args: string[]) => {
+        const r = cli(main, args, env);
+        outs.push(r.out);
+        return r;
+      };
+      const u = go(["up"]);
+      expect(u.code).toBe(0);
+      expect(u.out).toMatch(/^step 11 run files: /m);
+      reapers.push(runJson(main).reaper);
+      const runId = runJson(main).runId;
+      const st = go(["status"]);
+      expect(st.code).toBe(0);
+      expect(st.out).toContain(runId);
+      const again = go(["up"]);
+      expect(again.code).toBe(1);
+      expect(again.out).toMatch(new RegExp(`^refused: cycle ${runId} holds the lock until `, "m"));
+      expect(go(["renew"]).code).toBe(0);
+      expect(go(["down"]).code).toBe(0);
+      expect(balanced(main)).toBe(true);
+      expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+
+      // A setup step that prints the secret and fails: exit 2, the step named, the value masked.
+      const live = JSON.parse(readFileSync(join(main, ".argus/live.json"), "utf8"));
+      live.setup = [["/bin/sh", "-c", 'echo "token $0"; exit 3', "${PW}"]];
+      writeFileSync(join(main, ".argus/live.json"), JSON.stringify(live));
+      git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qam", "setup");
+      const bad = go(["up"]);
+      expect(bad.code).toBe(2);
+      expect(bad.out).toMatch(/^failed: setup \/bin\/sh -c .* \*\*\* exited 3: token \*\*\* \(up step 4 worktree\)$/m);
+      expect(balanced(main)).toBe(true);
+      expect(go(["bogus"]).code).toBe(2);
+      for (const o of outs) expect(o).not.toContain(PW);
+      const grep = spawnSync("grep", ["-rl", PW, join(main, ".argus/live")], { encoding: "utf8" });
+      expect(grep.stdout).toBe(""); // no log, report or record left under .argus/live names it
+    }, 120000);
   });
 });

@@ -423,6 +423,24 @@ Interfaces:
 
 ### Task 8: `up`, `up --fresh`, `status`, the CLI, and the guard seam
 
+As built:
+- `up(main, {fresh, runner, lookup, ownerHome, say})`, `upFresh(main, …)`, `renewRun(main, …)` (the
+  CLI's `renew`: the lock's `renew`, then the egress check and the runtime gate; a refusal → `down`;
+  `cap reached` is rethrown without one) and `status(main)` → lines. An `up` error carries `step`.
+- A config without a valid `limits.max_cycle_minutes` is refused before the lock (there is no
+  deadline to lock with); every other refusal comes after it, as spec §8 orders.
+- Ports are allocated at step 3: the environment every command gets (setup included) names them. The
+  spec's step 5 says so now.
+- run.json is written right after recovery and on every push of a group or stop record (`up`'s
+  `groups`/`stops` are arrays whose `push` saves), the reaper started right after the first write.
+- The egress checks take their pids from the recorded groups by identity (a group whose pid is
+  another process's is left out) instead of `groupPids`.
+- `checkStore({lookup})` resolves every host name both sides name; one that resolves only to loopback
+  is compared as loopback (instance and owner side alike).
+- The fixture app retries its cache connection every 500 ms, as a cache client does, so a connection
+  made after `up` is what `renew` catches.
+- CLI: `cap reached` exits 1 like a refusal.
+
 Carried from Task 7:
 - Step 1: `recover(main, {secrets})` right after `takeLock` (when `staleRuns` is not empty) and
   before `up` writes its own run.json: run.json is one file, and recovery reads the stale run's.

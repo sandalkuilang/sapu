@@ -4,7 +4,8 @@
 //   node server.mjs                 listens on 127.0.0.1:$PORT; GET /health → 200; keeps its state
 //                                   under $DATA_DIR; connects (and holds the socket) to $CACHE_URL
 //                                   (tcp://127.0.0.1:<p>) or, when unset, to 127.0.0.1:46379, the
-//                                   "standard local port" an egress check must catch
+//                                   "standard local port" an egress check must catch; like a cache
+//                                   client, it tries again every 500 ms until it is connected
 //   node server.mjs --spawn-child   also starts a sleeping grandchild (its pid in $CHILD_PID_FILE)
 //   node server.mjs --which-store   prints basename($DATA_DIR): the store its configuration names
 //   node server.mjs --reset         empties $DATA_DIR and writes seed.json; refuses a store whose
@@ -43,8 +44,18 @@ if (args.includes("--spawn-child")) {
 }
 
 const cache = process.env.CACHE_URL ? new URL(process.env.CACHE_URL) : { hostname: "127.0.0.1", port: "46379" };
-const socket = net.connect({ host: cache.hostname, port: Number(cache.port) });
-socket.on("error", () => {});
+const connect = () => {
+  const socket = net.connect({ host: cache.hostname, port: Number(cache.port) });
+  let retried = false;
+  const again = () => {
+    if (retried) return;
+    retried = true;
+    setTimeout(connect, 500);
+  };
+  socket.on("error", again);
+  socket.on("close", again);
+};
+connect();
 
 http
   .createServer((req, res) => {

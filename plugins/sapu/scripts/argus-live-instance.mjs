@@ -21,8 +21,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expand, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, secretEnv } from "./argus-live-config.mjs";
-import { findMain } from "./sapu-contract.mjs";
+import { expand, expandConfig, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, portNames, secretEnv } from "./argus-live-config.mjs";
+import { findMain, loadContract } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
 export const RUN_ID = /^\d{14}-[0-9a-f]{8}$/;
@@ -992,7 +992,43 @@ function service(raw) {
     databases,
     hostless,
     portless,
+    dbPath: path,
   };
+}
+
+/**
+ * `svc` (from service) with each host passed through `alias` (a name that resolves only to loopback
+ * becomes `loopback`), its `full` form rebuilt to match; `svc` itself when nothing changed.
+ */
+function aliased(svc, alias) {
+  if (!svc || !svc.hosts.some((h) => alias(h.host) !== h.host)) return svc;
+  const hosts = svc.hosts.map((h) => ({ ...h, host: alias(h.host) }));
+  return { ...svc, hosts, full: `${svc.scheme}://${hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",")}${svc.dbPath}` };
+}
+
+/** Every host name (not an address, not loopback) the values of `vars` name, as normHost writes it. */
+function hostNames(vars) {
+  const out = new Set(splitEndpoints(vars).map((s) => s.host));
+  for (const v of Object.values(vars)) {
+    if (v === null || v === undefined || filePaths(v)) continue;
+    const svc = service(v);
+    if (svc) svc.hosts.forEach((h) => out.add(h.host));
+  }
+  return [...out].filter((h) => h && h !== "loopback" && !net.isIP(h) && /[a-z]/i.test(h));
+}
+
+/** The variables of each env file of the owner's (`.env`, `.env.local`, `guard.envFiles`) that exists: [{file, vars}]. */
+function ownerEnvFiles(main, contract) {
+  const guard = (contract && contract.guard) || {};
+  const out = [];
+  for (const f of [".env", ".env.local", ...(guard.envFiles ?? [])]) {
+    try {
+      out.push({ file: f, vars: parseEnvFile(fs.readFileSync(path.join(main, f), "utf8")) });
+    } catch {
+      // not there
+    }
+  }
+  return out;
 }
 
 /** `host:port` for each host that has both (an endpoint without either never matches), minus `exempt`. */
@@ -1051,29 +1087,22 @@ function dockerHost(h) {
  * What the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here,
  * never printed): service endpoints, full http(s) URLs, and the real paths of files and sockets.
  */
-function readOwner(main, contract) {
+function readOwner(main, contract, alias = (h) => h) {
   const guard = (contract && contract.guard) || {};
   const o = { realMain: fs.realpathSync.native(main), files: [".env", ".env.local", ...(guard.envFiles ?? [])], endpoints: new Set(), full: new Set(), paths: new Set(), pg: guard.postgres || { ports: [], databases: [] } };
-  for (const f of o.files) {
-    let text;
-    try {
-      text = fs.readFileSync(path.join(main, f), "utf8");
-    } catch {
-      continue;
-    }
-    const vars = parseEnvFile(text);
+  for (const { vars } of ownerEnvFiles(main, contract)) {
     for (const v of Object.values(vars)) {
       const files = filePaths(v);
       if (files) {
         for (const file of files) o.paths.add(resolveLink(path.resolve(o.realMain, file)));
         continue;
       }
-      const svc = service(v);
+      const svc = aliased(service(v), alias);
       if (!svc) continue;
       endpointsOf(svc.hosts).forEach((e) => o.endpoints.add(e));
       o.full.add(svc.full);
     }
-    for (const s of splitEndpoints(vars)) o.endpoints.add(`${s.host}:${s.port}`);
+    for (const s of splitEndpoints(vars)) o.endpoints.add(`${alias(s.host)}:${s.port}`);
   }
   return o;
 }
@@ -1085,7 +1114,7 @@ function readOwner(main, contract) {
  * container's own and paths are the container's, so neither is compared; a host that is the Docker
  * host (dockerHost) is refused unless on one of `runPorts`.
  */
-function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], runPorts = [] }) {
+function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], runPorts = [], alias = (h) => h }) {
   const allowed = new Set();
   for (const x of allowOrigins) {
     try {
@@ -1100,8 +1129,9 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
   const ports = new Set(runPorts.map(Number));
   const toHost = (key, h) => new Error(`refused: ${key} reaches the Docker host (${h}) on a port that is not the run's; the container would reach the owner's services`);
   return (label, vars, { own: mine = vars, container = false } = {}) => {
-    for (const s of splitEndpoints(vars, { barePorts: !container })) {
-      if (!(s.key in mine)) continue;
+    for (const s0 of splitEndpoints(vars, { barePorts: !container })) {
+      if (!(s0.key in mine)) continue;
+      const s = { ...s0, host: alias(s0.host) };
       const key = `${label}.${s.key}`;
       if (container) {
         if (s.host === "loopback") continue;
@@ -1130,7 +1160,7 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
         }
         continue;
       }
-      const svc = service(v);
+      const svc = aliased(service(v), alias);
       if (!svc) continue;
       const hosts = container ? svc.hosts.filter((h) => h.host !== "loopback") : svc.hosts;
       if (container) for (const h of hosts) if (dockerHost(h.host) && !ports.has(h.port)) throw toHost(key, h.host);
@@ -1178,13 +1208,15 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
  *   `allow_origins`;
  * - a file or socket path equal to one they name, or any path inside <MAIN> (the instance's relative
  *   paths resolve in the worktree, the owner's in <MAIN>; `sqlite:///x` is read both ways, filePaths).
- * `X_HOST` + `X_PORT` count as one endpoint, and a bare `*PORT` as a loopback one. Nor may a value name
+ * `X_HOST` + `X_PORT` count as one endpoint, and a bare `*PORT` as a loopback one; with `lookup` (up's
+ * dns lookup), a host name that resolves only to loopback counts as loopback on both sides (loopbackAliases).
+ * Nor may a value name
  * a port or database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number,
  * or a bare name under a variable that names a database), nor may a libpq or MySQL-family value leave
  * its host or port to the client's default (the instance names both). Refusals name the key, never a
  * value.
  */
-export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, composeServices = [], runner = runAsync }) {
+export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, composeServices = [], runner = runAsync, lookup = null }) {
   const guard = (contract && contract.guard) || {};
   const pg = guard.postgres || { ports: [], databases: [] };
   if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres protects`);
@@ -1198,8 +1230,30 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     const got = r.stdout.trim();
     if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}"${scope.where}, not the store "${config.store}"`);
   }
-  const check = scopeChecker(readOwner(main, contract), { worktree, allowOrigins: config.allow_origins, composeServices });
+  const alias = lookup ? await loopbackAliases([...scopes.map((x) => x.env), ...ownerEnvFiles(main, contract).map((f) => f.vars)], lookup) : (h) => h;
+  const check = scopeChecker(readOwner(main, contract, alias), { worktree, allowOrigins: config.allow_origins, composeServices, alias });
   for (const scope of scopes) check(scope.label, scope.env, { own: scope.own });
+}
+
+/**
+ * Host names in `varsList` that `lookup` (all addresses) resolves to loopback only, as an alias
+ * function (name → `loopback`): `db.localtest.me` must not slip past the loopback comparison. A name
+ * that does not resolve, or reaches any other address, stays a name.
+ */
+async function loopbackAliases(varsList, lookup) {
+  const names = [...new Set(varsList.flatMap(hostNames))];
+  const loop = new Set();
+  await Promise.all(
+    names.map(async (h) => {
+      try {
+        const addrs = await lookup(h);
+        if (Array.isArray(addrs) && addrs.length && addrs.every((a) => normHost(a.address) === "loopback")) loop.add(h);
+      } catch {
+        // unresolved: a name compared as a name
+      }
+    }),
+  );
+  return (h) => (loop.has(h) ? "loopback" : h);
 }
 
 /** Runs one config command (`reset`) through the shell in the worktree, logged, bounded by `deadline`. */
@@ -2573,4 +2627,371 @@ export async function reap(main, runId, { pollMs = 60_000 } = {}) {
     say(redact(e.message, secrets));
     return "failed";
   }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// up, up --fresh, renew, status (spec §8 `up` steps 1-8 and 11, `up --fresh`, `renew`). Steps 9 (the
+// filtering proxy) and 10 (proving logins) arrive with the browser driver.
+
+const defaultLookup = (h) => dns.promises.lookup(h, { all: true });
+
+/** `e` (an Error) tagged with the `up` step it failed in, for the CLI's report. */
+const atStep = (e, step) => Object.assign(e instanceof Error ? e : new Error(String(e)), { step });
+
+/** The host of a URL that may still hold `{port:<name>}` placeholders, or null. */
+function hostOf(raw) {
+  try {
+    return new URL(String(raw).replace(/\{port:[^}]*\}/g, "1")).hostname.replace(/^\[(.*)\]$/, "$1");
+  } catch {
+    return null;
+  }
+}
+
+/** True when `host` is loopback by itself (`localhost`, `127.x`, `::1`) or every address `lookup` gives it is. */
+async function resolvesToLoopback(host, lookup) {
+  if (normHost(host) === "loopback") return true;
+  if (net.isIP(host)) return false;
+  try {
+    const addrs = await lookup(host);
+    return Array.isArray(addrs) && addrs.length > 0 && addrs.every((a) => normHost(a.address) === "loopback");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An array whose `push` also runs `save`: `up` hands its groups and stop records to startEntry, runSetup
+ * and runStep, which push each one as it starts, so run.json holds it at once (a session that dies
+ * mid-`up` leaves a record for the reaper and for recovery). The records are the objects those
+ * functions keep (`exited` is set on them later), never copies.
+ */
+function recordingArray(save, items = []) {
+  const a = [...items];
+  a.push = (...xs) => {
+    const n = Array.prototype.push.apply(a, xs);
+    save();
+    return n;
+  };
+  return a;
+}
+
+/** The pids of the run's processes: every member of each recorded group that is still the run's (pid reuse aside). */
+function runPids(groups, runner) {
+  const table = processTable(runner);
+  const out = [];
+  for (const g of groups) {
+    if (!g || !Number.isInteger(g.pgid) || g.pgid <= 1) continue;
+    const now = membersOf(table, g.pgid, {});
+    const leader = now.find((p) => p.pid === g.pgid);
+    if (leader && (g.exited || (g.started && leader.started !== g.started))) continue;
+    out.push(...now.map((p) => p.pid));
+  }
+  return out;
+}
+
+/** The run's origins (spec §8): those of `base_url` and each role's, and of every port of the run on their hosts. */
+function originsOf(x, ports) {
+  const out = new Set();
+  for (const u of [x.base_url, ...Object.values(x.roles ?? {}).map((r) => r && r.base_url)]) {
+    let url;
+    try {
+      url = new URL(u);
+    } catch {
+      continue;
+    }
+    out.add(url.origin);
+    for (const p of Object.values(ports)) {
+      const v = new URL(url.origin);
+      v.port = String(p);
+      out.add(v.origin);
+    }
+  }
+  return [...out];
+}
+
+/** The repo's sapu contract, or null without one; an invalid one is refused. */
+function contractOf(main) {
+  const c = loadContract(main);
+  if (c.contract) return c.contract;
+  if (c.missing) return null;
+  throw new Error(`refused: ${c.error}`);
+}
+
+/**
+ * The context steps 6-8 share (bringUpStore, bringUpRest, the egress checks): `egress` is the one-sample
+ * check waitHealth runs between tries, `fullEgress` step 8's five samples, which also expect a listener
+ * on base_url's port when it is one of the run's.
+ */
+function runContext({ main, runId, x, env, worktree, home, ports, secrets, contract, groups, stops, deadline, composeServices, runner, lookup }) {
+  const allowed = egressAllowed({ config: x, env, ports });
+  let port = NaN;
+  try {
+    port = Number(new URL(x.base_url).port);
+  } catch {
+    port = NaN;
+  }
+  const expectListen = Object.values(ports).includes(port) ? [port] : [];
+  const egress = (samples, listen = []) => checkEgress({ pids: runPids(groups, runner), allowed, runner, lookup, samples, expectListen: listen, runDirs: [worktree, home], main, contract });
+  return {
+    config: x,
+    env,
+    worktree,
+    main,
+    contract,
+    secrets,
+    logs: logsDir(main, runId),
+    groups,
+    stops,
+    timeoutS: (x.limits && x.limits.live_health_timeout_s) || 120,
+    deadline,
+    composeServices,
+    lookup,
+    egress: () => egress(1),
+    fullEgress: () => egress(5, expectListen),
+  };
+}
+
+/** A logger for one run: each line (secret values masked) to `say` and to `<logs>/<file>`. */
+function runLog(main, runId, file, secrets, say) {
+  return (line) => {
+    const l = redact(line, secrets);
+    say(l);
+    try {
+      const logs = logsDir(main, runId);
+      fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(path.join(logs, file), `${l}\n`, { mode: 0o600 });
+    } catch {
+      // the line still went to `say`
+    }
+  };
+}
+
+/** After a refusal or failure: `down` from the in-memory run, its report logged; the original error is what counts. */
+async function tearDown(main, state, { secrets, runner, log }) {
+  try {
+    const { report } = await down(main, { runId: state.runId, record: state, secrets, runner });
+    for (const l of report) log(`down: ${l}`);
+  } catch (e) {
+    log(`down: ${e.message}`);
+  }
+}
+
+/**
+ * `argus-live.mjs up` (spec §8, steps 1-8 and 11): 1 the lock (and recovery of stale runs, then run.json
+ * and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
+ * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss);
+ * 3 the environment (ports, HOME, the run's Docker client); 4 the worktree and setup; 5 the Compose
+ * check; 6 the store phase, checkStore and reset; 7 the other entries and checkStore again; 8 the egress
+ * check and the Docker runtime gate; 11 the instance id. Any refusal or failure after the lock → `down`
+ * (an end line) and the error rethrown, tagged with its `step`. Ports are allocated at step 3: every
+ * command's environment names them. `say` gets one line per step; `runner`, `lookup` and `ownerHome`
+ * are test seams. Returns {runId, instanceId, worktree, ports, baseUrl}.
+ */
+export async function up(main, { fresh = false, runner = run, lookup = defaultLookup, ownerHome = os.homedir(), say = () => {} } = {}) {
+  if (fresh) return upFresh(main, { runner, lookup, say });
+  const { config, errors, secrets } = loadLive(main);
+  const max = config && config.limits && config.limits.max_cycle_minutes;
+  if (!Number.isInteger(max)) throw atStep(new Error(`refused: .argus/live.json: ${errors.join("; ") || "limits.max_cycle_minutes is missing"}`), "1 lock");
+  let lock;
+  try {
+    lock = takeLock(main, { maxCycleMinutes: max });
+  } catch (e) {
+    throw atStep(e, "1 lock");
+  }
+  const runId = lock.runId;
+  const log = runLog(main, runId, "up.log", secrets, say);
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, composeServices: [] };
+  const save = () => writeRunFiles(main, state, { runner, secrets });
+  state.groups = recordingArray(save);
+  state.stops = recordingArray(save);
+  let step = "1 lock";
+  try {
+    if (lock.staleRuns.length) {
+      const r = await recover(main, { secrets, runner });
+      for (const l of r.report) log(`recovery: ${l}`);
+    }
+    state.since = daemonNow({ env: process.env, runner }) ?? Date.now();
+    save();
+    state.reaper = startReaper(main, runId);
+    log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
+
+    step = "2 refusals";
+    if (errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
+    const contract = contractOf(main);
+    const { names, fixed } = portNames(config);
+    try {
+      expandConfig(config, { ports: Object.fromEntries(names.map((n) => [n, 1])), secrets });
+    } catch (e) {
+      const m = /^unset (\S+)$/.exec(e.message);
+      if (m) throw new Error(`refused: \${${m[1]}} is unset (${config.env_file ?? "no env_file"} gives it no value)`);
+      throw e;
+    }
+    const urls = [["base_url", config.base_url], ...Object.entries(config.roles ?? {}).filter(([, r]) => r && r.base_url).map(([n, r]) => [`roles.${n}.base_url`, r.base_url])];
+    for (const [where, url] of urls) {
+      const host = hostOf(url);
+      if (!host || !(await resolvesToLoopback(host, lookup))) throw new Error(`refused: ${where} names ${host ?? "no host"}, which does not resolve to loopback only (the instance serves this machine alone)`);
+    }
+    const pw = path.join(ownerHome, ".playwright", "cli.config.json");
+    if (fs.existsSync(pw)) throw new Error(`refused: ${pw} exists; the browser CLI would merge it underneath the run's own config (move it aside)`);
+    const missing = (argv) => {
+      const r = runner(argv);
+      return Boolean(r.error && r.error.code === "ENOENT");
+    };
+    if (missing(["lsof", "-v"]) && missing(["ss", "-V"])) throw new Error("refused: neither lsof nor ss is available");
+    log("step 2 refusals: none");
+
+    step = "3 environment";
+    const ports = await allocatePorts(names, { range: config.port_range, reserved: config.reserved_ports ?? [], fixed, runner });
+    state.ports = ports;
+    const x = expandConfig(config, { ports: { ...ports }, secrets });
+    state.origins = originsOf(x, ports);
+    state.home = makeHome(main, runId);
+    const docker = dockerEnv({ home: state.home, runner });
+    state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
+    save();
+    log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}`);
+
+    step = "4 worktree";
+    state.worktree = makeWorktree(main, runId, { runner });
+    save();
+    await runSetup(state.worktree, x, state.env, { main, secrets, deadline: lock.deadline, groups: state.groups });
+    log(`step 4 worktree: ${state.worktree}; setup ${(x.setup ?? []).length} command(s)`);
+
+    step = "5 Compose";
+    state.composeServices = checkCompose({ worktree: state.worktree, env: state.env, ports, main, config: x, contract, secrets, runner });
+    save();
+    log(`step 5 Compose: ${state.composeServices.length ? `services ${state.composeServices.join(", ")}` : "no Compose file"}`);
+
+    const ctx = runContext({ main, runId, x, env: state.env, worktree: state.worktree, home: state.home, ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: state.composeServices, runner, lookup });
+    step = "6 store";
+    await bringUpStore(ctx);
+    log(`step 6 store: ${x.start.filter((e) => e.phase === "store").map((e) => e.name).join(", ") || "no store entry"} healthy; store_check printed ${x.store}; reset done`);
+    step = "7 start";
+    await bringUpRest(ctx);
+    log(`step 7 start: ${x.start.filter((e) => e.phase !== "store").map((e) => e.name).join(", ") || "no other entry"} healthy; store_check printed ${x.store}`);
+    step = "8 egress";
+    await ctx.fullEgress();
+    checkDockerRuntime({ since: state.since, env: state.env, main, worktree: state.worktree, ports, runner });
+    log("step 8 egress: the run's processes reach only what the run allows; the Docker runtime gate passed");
+
+    step = "11 run files";
+    state.instanceId = randomBytes(8).toString("hex");
+    save();
+    log(`step 11 run files: instance ${state.instanceId}; base_url ${x.base_url}; reaper ${state.reaper}`);
+    return { runId, instanceId: state.instanceId, worktree: state.worktree, ports, baseUrl: x.base_url };
+  } catch (e) {
+    log(`step ${step}: ${e.message}`);
+    await tearDown(main, state, { secrets, runner, log });
+    throw atStep(e, step);
+  }
+}
+
+/** The running cycle's lock and run.json (they must name the same run), its config and secrets; refused otherwise. */
+function current(main) {
+  const lock = readLock(main);
+  if (!lock) throw new Error("refused: no journey cycle is running");
+  const rec = readRun(main);
+  if (!rec || rec.runId !== lock.runId || typeof rec.worktree !== "string" || !rec.env) throw new Error(`refused: run.json does not hold the instance of cycle ${lock.runId} (it is still starting, or it failed)`);
+  const { config, errors, secrets } = loadLive(main);
+  if (errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
+  return { lock, rec, config, secrets };
+}
+
+/**
+ * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; stops
+ * every `start` entry (its stop replayed, its group stopped; setup groups stay), then the store phase,
+ * checkStore, reset, the other entries, checkStore, the egress check and the runtime gate again, and a
+ * new instance id. Any refusal or failure → `down`, and the error rethrown.
+ */
+export async function upFresh(main, { runner = run, lookup = defaultLookup, say = () => {} } = {}) {
+  const { lock, rec, config, secrets } = current(main);
+  const runId = lock.runId;
+  const log = runLog(main, runId, "up.log", secrets, say);
+  const state = { ...rec };
+  const save = () => writeRunFiles(main, state, { runner, secrets });
+  const setupGroups = (rec.groups ?? []).filter((g) => g && /^setup\[\d+\]$/.test(g.name));
+  state.groups = recordingArray(save, rec.groups ?? []);
+  state.stops = recordingArray(save, rec.stops ?? []);
+  let step = "fresh: stop";
+  try {
+    const note = (l) => log(`fresh: ${l}`);
+    for (const s of [...(rec.stops ?? [])].reverse()) {
+      await guarded(`stop ${s && s.name}`, note, () => replayStop(s, { secrets, asyncRunner: runAsync, timeoutMs: 120_000, logs: logsDir(main, runId), note }));
+    }
+    await stopRecordedGroups((rec.groups ?? []).filter((g) => !setupGroups.includes(g)), { runner, secrets, graceMs: 10_000, note });
+    state.groups = recordingArray(save, setupGroups);
+    state.stops = recordingArray(save);
+    state.instanceId = null;
+    save();
+    log("fresh: every start entry stopped");
+    const contract = contractOf(main);
+    const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
+    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: rec.composeServices ?? [], runner, lookup });
+    step = "fresh: store";
+    await bringUpStore(ctx);
+    step = "fresh: start";
+    await bringUpRest(ctx);
+    step = "fresh: egress";
+    await ctx.fullEgress();
+    checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports, runner });
+    state.instanceId = randomBytes(8).toString("hex");
+    save();
+    log(`fresh: instance ${state.instanceId}; store reset, every entry healthy, egress and the Docker runtime gate passed`);
+    return { runId, instanceId: state.instanceId, worktree: rec.worktree, ports: rec.ports, baseUrl: x.base_url };
+  } catch (e) {
+    log(`${step}: ${e.message}`);
+    await tearDown(main, state, { secrets, runner, log });
+    throw atStep(e, step);
+  }
+}
+
+/**
+ * The CLI's `renew` (spec §8 `renew`): moves the lock's deadline (renew; `cap reached` ends the cycle
+ * and is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run as
+ * run.json records it; a refusal → `down`, and the error rethrown. Returns {runId, deadline}.
+ */
+export async function renewRun(main, { runner = run, lookup = defaultLookup, say = () => {} } = {}) {
+  const { lock, rec, config, secrets } = current(main);
+  const runId = lock.runId;
+  const log = runLog(main, runId, "renew.log", secrets, say);
+  const deadline = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
+  try {
+    const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
+    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], runner, lookup });
+    await ctx.fullEgress();
+    checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports, runner });
+    log(`renew: cycle ${runId} until ${iso(deadline)}; egress and the Docker runtime gate passed`);
+    return { runId, deadline };
+  } catch (e) {
+    log(`renew: ${e.message}`);
+    try {
+      const { report } = await down(main, { runId, secrets, runner });
+      for (const l of report) log(`down: ${l}`);
+    } catch (d) {
+      log(`down: ${d.message}`);
+    }
+    throw e;
+  }
+}
+
+/** `status`: the run id, deadline, instance, worktree, ports and each recorded group's state, as lines. */
+export async function status(main, { runner = run } = {}) {
+  const lock = readLock(main);
+  if (!lock) return ["no journey cycle is running"];
+  const out = [`cycle ${lock.runId} until ${iso(lock.deadline)}`];
+  const rec = readRun(main);
+  if (!rec || rec.runId !== lock.runId) return [...out, "run.json does not name this cycle (it is starting, or it failed)"];
+  out.push(`instance ${rec.instanceId ?? "(not ready)"}`, `worktree ${rec.worktree ?? "(not made yet)"}`, `ports ${Object.entries(rec.ports ?? {}).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}`);
+  let table = null;
+  try {
+    table = processTable(runner);
+  } catch (e) {
+    out.push(e.message);
+  }
+  for (const g of rec.groups ?? []) {
+    const now = table ? membersOf(table, g.pgid, {}) : [];
+    const state = !table ? "unknown" : !now.length ? "gone" : sameGroup(g, now) ? "running" : "gone (its pid is another process's)";
+    out.push(`${g.name} (pgid ${g.pgid}): ${state}`);
+  }
+  return out;
 }
