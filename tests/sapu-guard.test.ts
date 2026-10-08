@@ -356,11 +356,24 @@ describe("sapu-guard CLI", { timeout: 30_000 }, () => {
   const bare = join(root, "bare");
   execFileSync("git", ["init", "-q", bare]);
   const agent = "sapu:sapu-sonnet-high";
-  // agent_type null = the orchestrator (the main session: its hook input has no agent_type)
-  const bash = (command: string, agent_type: string | null = agent, cwd = repo) =>
-    run({ tool_name: "Bash", ...(agent_type ? { agent_type } : {}), tool_input: { command }, cwd });
+  // A subagent's hook input carries agent_type and agent_id (a fresh id per call: no step budget
+  // builds up across cases); agent_type null = the orchestrator (the main session).
+  let ids = 0;
+  const as = (agent_type: string | null) => (agent_type ? { agent_type, agent_id: `t${++ids}` } : {});
+  const bash = (command: string, agent_type: string | null = agent, cwd = repo) => run({ tool_name: "Bash", ...as(agent_type), tool_input: { command }, cwd });
   const file = (tool_name: string, file_path: string, agent_type = agent) =>
-    run({ tool_name, agent_type, tool_input: tool_name === "NotebookEdit" ? { notebook_path: file_path } : { file_path }, cwd: repo });
+    run({ tool_name, ...as(agent_type), tool_input: tool_name === "NotebookEdit" ? { notebook_path: file_path } : { file_path }, cwd: repo });
+
+  it("a main session started with --agent (agent_type, no agent_id) is the orchestrator; a ladder worker's or the explorer's type alone keeps the floor", () => {
+    commitContract(repo, FIXTURE_CONTRACT);
+    for (const agent_type of ["senior-dev-team:senior-fullstack-developer", "general-purpose", "reviewer"]) {
+      expect(run({ tool_name: "Bash", agent_type, tool_input: { command: "gh pr merge 1" }, cwd: repo }), agent_type).toBe(0);
+      expect(run({ tool_name: "Write", agent_type, tool_input: { file_path: join(repo, "src/x.ts") }, cwd: repo }), agent_type).toBe(0);
+    }
+    // a host that ever dropped agent_id must not unguard the ladder or the explorer
+    expect(run({ tool_name: "Bash", agent_type: agent, tool_input: { command: "gh pr merge 1" }, cwd: repo })).toBe(2);
+    expect(run({ tool_name: "Bash", agent_type: "sapu:ui-explorer", tool_input: { command: "gh pr merge 1" }, cwd: repo })).toBe(2);
+  });
 
   it("exits 2 on a blocked Bash call of a sapu agent, 0 otherwise", () => {
     commitContract(repo, FIXTURE_CONTRACT);
@@ -369,7 +382,7 @@ describe("sapu-guard CLI", { timeout: 30_000 }, () => {
     expect(bash("ls")).toBe(0);
   });
 
-  it("polices every subagent, nested ones included; never the orchestrator (no agent_type)", () => {
+  it("polices every subagent, nested ones included; never the orchestrator (no agent_id)", () => {
     commitContract(repo, FIXTURE_CONTRACT);
     expect(bash("gh pr merge 1", null)).toBe(0);
     for (const t of ["senior-qa-analyst", "general-purpose", "other:sapu-sonnet-high-x"]) {

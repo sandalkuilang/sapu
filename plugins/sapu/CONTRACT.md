@@ -514,7 +514,9 @@ could use them.
 - The guard hook (`PreToolUse` for `Bash`, `Monitor`, `PowerShell`, `Read`, `Write`, `Edit`, `MultiEdit`,
   `NotebookEdit`, `Grep`, `Glob` and every MCP tool) applies to **every subagent** in a repo that enables this plugin, including
   subagents spawned by other subagents (`Agent` is not a way around it), and never to the
-  orchestrator (the main session, without `agent_type`). A canary in every worker proves it is live.
+  orchestrator (the main session: its hook input has no `agent_id`; one started with `--agent` carries
+  `agent_type` alone and is still the orchestrator, while a ladder worker's or the explorer's
+  `agent_type` alone keeps the floor). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
   hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes.
 - **MCP tools** reach agents without a `tools:` allowlist (general-purpose, a repo's specialists,

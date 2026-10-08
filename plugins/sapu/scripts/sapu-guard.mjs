@@ -53,8 +53,9 @@
 // block at STEP_SOFT, every STEP_EVERY after and every STEP_EVERY_LATE past STEP_HARD; never a hard stop.
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
-// tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
-// (a subagent, a subagent's subagent, ...); the orchestrator — the main session, which merges,
+// tool call in the session; the CLI acts for every call whose hook input carries an `agent_id`
+// (a subagent, a subagent's subagent, ...; a ladder worker or the explorer by its `agent_type`
+// alone too); the orchestrator — the main session, also one started with `--agent`, which merges,
 // runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
 // agents from (HOME CHECKOUT below: checkHome). Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
@@ -2050,7 +2051,7 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
 
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
- * (no agent_type) is policed only where it dispatches agents from; every subagent is.
+ * (no agent_id) is policed only where it dispatches agents from; every subagent is.
  */
 const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 
@@ -2063,10 +2064,19 @@ const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 // that worktree, to be lost with it. So, in a repo with a sapu contract and a main session whose
 // project directory is <MAIN>: (1) the main session never moves its cwd into a linked worktree
 // inside <MAIN> — unless CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR resets it after every command,
-// which closes this at the source; (2) it never dispatches from one; (3) no subagent but a sapu
-// worker (which may not write into <MAIN>) writes agent memory into one. A session whose project
-// directory is a worktree (a desktop worktree session) is left alone. Subagents never carry a cd
-// over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
+// which closes this at the source (/sapu:init writes it into .claude/settings.local.json); (2) it
+// never dispatches from one; (3) no subagent but a sapu worker (which may not write into <MAIN>)
+// writes agent memory into one (init also links .claude/agent-memory into new worktrees through
+// worktree.symlinkDirectories, when that directory is untracked and ignored as a link). A session
+// whose project directory is a worktree (a desktop worktree session) is left alone. Subagents never
+// carry a cd over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
+// From the hooks and tools references, not probed live: agent_id marks a subagent and agent_type
+// alone a `--agent` main session; a main-session cd carries over inside the project directory, a
+// subagent's never. Still to probe live: CLAUDE_PROJECT_DIR in a `claude --worktree` session and
+// after EnterWorktree (homeIsMain also trusts a transcript filed under a worktree slug); whether a
+// run_in_background command's cd carries over (rule (1) skips those); whether a Workflow's
+// `agent({isolation: 'worktree'})` worktree honours worktree.symlinkDirectories (rule (3) keeps
+// memory writes in <MAIN> either way).
 
 /** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
 const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
@@ -2210,7 +2220,7 @@ function checkHome(input, main) {
     }
     if (!wt) return null;
     const already = linkedWorktreeOf(here, main);
-    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command; never change settings yourself to get past this.`;
+    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 (/sapu:init writes it into .claude/settings.local.json), which resets the cwd after every command; never change settings yourself to get past this.`;
   }
   if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
     const f = ti.file_path ?? ti.notebook_path;
@@ -2259,7 +2269,11 @@ export function decide(input) {
   }
   const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
   if (home || DISPATCH_TOOLS.has(tool)) return home;
-  if (!(input.agent_type || input.agent_id)) return null;
+  // A subagent's hook input carries agent_id ("present only when the hook fires inside a subagent
+  // call", hooks reference); a main session started with --agent carries agent_type alone and is the
+  // orchestrator. A ladder worker or the explorer is never a main session: their type alone keeps the
+  // floor, so a host that dropped agent_id would not unguard them (and the worker canary still fires).
+  if (!(input.agent_id || SAPU_AGENT.test(input.agent_type || "") || EXPLORER_AGENT.test(input.agent_type || ""))) return null;
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
