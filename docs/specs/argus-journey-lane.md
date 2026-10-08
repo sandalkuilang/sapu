@@ -766,10 +766,9 @@ Elsewhere:
   Repo-side prep, through that repo's normal PR flow: an explore datastore with its `store_check`
   and `reset`, `facts`, `mail` and `triggers` commands where the journeys need them, the `live` block,
   `env_file`.
-- **Pilot 2**, a repo on a different stack (proposed: Firstop, Next.js and Prisma; the owner decides,
-  and it needs `/sapu:init`). Pass = no engine change beyond config. An engine change found there is
-  made in the engine, and pilot 1 is re-run.
-- **Scorecard per pilot:** $ and minutes per journey; per oracle: raw candidates → reproduced 2 of 2
+- **Genericity** is held by the fixture app (§14), which shares no stack with pilot 1, and by
+  `engine.test.ts` refusing repo names in the engine; there is no second pilot (owner's decision).
+- **Scorecard:** $ and minutes per journey; per oracle: raw candidates → reproduced 2 of 2
   → filed; repro harness-failure rate; harness events; duplicates; the owner's verdict on each filed
   issue; false positives later recorded by argus's fix-PR loop.
 - **Continue** when at least 90% of filed issues are judged real and the cost per real finding is
@@ -838,5 +837,5 @@ and the nonce fences carry the safety).
 
 ## 18. Owner decisions
 
-1. Pilot 2 repo: Firstop, or another repo on a different stack.
-2. Pilot budget: about $20–35 for pilot 1's three journeys, measured and reported before pilot 2.
+1. Pilot: one repo (the repo argus has run on longest); no second pilot.
+2. Pilot budget: about $20–35 for its three journeys, measured and reported.
