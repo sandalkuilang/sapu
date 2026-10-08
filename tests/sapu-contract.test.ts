@@ -37,6 +37,7 @@ import {
   SWEEP_TTL_MS,
   sweepHold,
   sweepRelease,
+  protectedCommand,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -1484,5 +1485,105 @@ describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", (
     expect(skill).toMatch(/never clear it yourself/);
     expect(skill).toMatch(/heartbeat[^\n]*every merge command and every `lanes` check/);
     expect(skill).toMatch(/sweep release <marker>/);
+  });
+});
+
+describe("protectedCommand: the repo file a contract command pins, for any runner", () => {
+  type P = { words: string[]; index: number | null; file: string | null; why: string | null };
+  const prot = protectedCommand as (words: string[], hasFile?: (f: string) => boolean) => P;
+  const has = (...files: string[]) => (f: string) => files.includes(f);
+  const pinned = (cmd: string, files: string[] = []) => {
+    const p = prot(cmd.split(" "), has(...files));
+    return p.index === null ? null : [p.words.join(" "), p.file];
+  };
+
+  it.each([
+    ["scripts/gate.sh", "scripts/gate.sh", "scripts/gate.sh"],
+    ["/bin/bash scripts/gate.sh", "/bin/bash scripts/gate.sh", "scripts/gate.sh"],
+    ["node --import ./x.mjs scripts/gate.mjs", "node --import ./x.mjs scripts/gate.mjs", "scripts/gate.mjs"],
+    ["deno run -A scripts/gate.ts", "deno run -A scripts/gate.ts", "scripts/gate.ts"],
+    ["python3.12 -u scripts/gate.py", "python3.12 -u scripts/gate.py", "scripts/gate.py"],
+    ["uv run python scripts/gate.py", "uv run python scripts/gate.py", "scripts/gate.py"],
+    ["uv run --with pytest-xdist scripts/gate.sh", "uv run --with pytest-xdist scripts/gate.sh", "scripts/gate.sh"],
+    ["poetry run bash scripts/gate.sh", "poetry run bash scripts/gate.sh", "scripts/gate.sh"],
+    ["pipenv run scripts/gate.sh", "pipenv run scripts/gate.sh", "scripts/gate.sh"],
+    ["npx --yes tsx scripts/gate.ts", "npx --yes tsx scripts/gate.ts", "scripts/gate.ts"],
+    ["pnpm exec tsx scripts/gate.ts", "pnpm exec tsx scripts/gate.ts", "scripts/gate.ts"],
+    ["env CI=1 -u HOME bash scripts/gate.sh", "env CI=1 -u HOME bash scripts/gate.sh", "scripts/gate.sh"],
+  ])("`%s` pins its script", (cmd, words, file) => {
+    expect(pinned(cmd)).toEqual([words, file]);
+  });
+
+  it("make reads the pinned makefile: -f as written, else the default the base holds written out; recipes still run in the cwd", () => {
+    expect(pinned("make gate", ["Makefile"])).toEqual(["make -f Makefile gate", "Makefile"]);
+    expect(pinned("make gate", ["Makefile", "GNUmakefile"])).toEqual(["make -f GNUmakefile gate", "GNUmakefile"]);
+    expect(pinned("make -f ci/gate.mk gate")).toEqual(["make -f ci/gate.mk gate", "ci/gate.mk"]);
+    expect(pinned("make --file=ci/gate.mk gate")).toEqual(["make -f ci/gate.mk gate", "ci/gate.mk"]);
+    expect(pinned("/usr/bin/make -fci/gate.mk -j4 gate")).toEqual(["/usr/bin/make -f ci/gate.mk -j4 gate", "ci/gate.mk"]);
+    expect(pinned("uv run make gate", ["Makefile"])).toEqual(["uv run make -f Makefile gate", "Makefile"]);
+  });
+
+  it("just reads the pinned justfile and keeps running recipes where it did", () => {
+    expect(pinned("just gate", ["justfile"])).toEqual(["just --justfile justfile --working-directory . gate", "justfile"]);
+    expect(pinned("just -f ci/justfile gate")).toEqual(["just -f ci/justfile --working-directory ci gate", "ci/justfile"]);
+    expect(pinned("just --justfile=justfile -d . gate")).toEqual(["just --justfile justfile -d . gate", "justfile"]);
+    expect(pinned("just --set mode ci gate", ["Justfile"])).toEqual(["just --justfile Justfile --working-directory . --set mode ci gate", "Justfile"]);
+  });
+
+  it.each([
+    ["npm test", /npm/],
+    ["npm run gate", /npm/],
+    ["go test ./...", /go/],
+    ["cargo test", /cargo/],
+    ["uv run pytest", /pytest/],
+    ["gate.sh", /gate\.sh/],
+    ["bash /opt/gate.sh", /not a relative path/],
+    ["make gate", /none of GNUmakefile, makefile, Makefile/],
+    ["make -C sub gate", /another directory/],
+    ["make -kf x.mk gate", /bundles -f/],
+    ["make -f a.mk -f b.mk gate", /several makefiles/],
+    ["just gate", /none of justfile/],
+    ["uv run --directory sub scripts/gate.sh", /moves the working directory/],
+    ["poetry -C sub run scripts/gate.sh", /moves the working directory/],
+    ["poetry install", /only `poetry run` does/],
+    ["npx -c scripts/gate.sh", /shell string/],
+    ["pnpm exec --filter web tsx scripts/gate.ts", /moves the working directory/],
+    ["env -S bash scripts/gate.sh", /shell string/],
+  ])("`%s` pins nothing and says why", (cmd, why) => {
+    const p = prot(cmd.split(" "));
+    expect(p.index).toBeNull();
+    expect(p.words).toEqual(cmd.split(" "));
+    expect(p.why).toMatch(why);
+  });
+
+  it("`protect --ref <rev> -- <words>` answers from the files that rev holds, a gate's own options included", () => {
+    const repo = join(root, "protect-repo");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { Makefile: "gate:\n\techo ok\n" });
+    const sha = git(repo, "rev-parse", "HEAD").trim();
+    commit(repo, { GNUmakefile: "gate:\n\techo ok\n" });
+    expect(JSON.parse(cli(repo, ["protect", "--ref", sha, "--", "make", "gate"]).out)).toEqual({ words: ["make", "-f", "Makefile", "gate"], index: 2, file: "Makefile", why: null });
+    expect(JSON.parse(cli(repo, ["protect", "--", "make", "gate"]).out).file).toBe("GNUmakefile");
+    expect(JSON.parse(cli(repo, ["protect", "--", "node", "--text", "scripts/g.mjs"]).out).index).toBe(2);
+    expect(cli(repo, ["protect", "make"]).status).toBe(1);
+  });
+
+  it("`show` and `check` warn when gate.merge pins no repo file, and only then", () => {
+    const repo = join(root, "protect-warn");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    const withMerge = (merge: string, files: Record<string, string> = {}) => commit(repo, { ...files, ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge } }) });
+    withMerge("npm test");
+    const r = cli(repo, ["show"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/WARNING gate\.merge \(`npm test`\) pins no repo file .*a PR can change the gate that judges it/);
+    expect(cli(repo, ["check"]).err).toMatch(/WARNING gate\.merge/);
+    withMerge("make gate");
+    expect(cli(repo, ["show"]).err).toMatch(/WARNING gate\.merge \(`make gate`\)/);
+    withMerge("make gate", { Makefile: "gate:\n\techo ok\n" });
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+    withMerge("uv run bash scripts/gate.sh");
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
   });
 });

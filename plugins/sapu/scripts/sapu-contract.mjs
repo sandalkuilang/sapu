@@ -1116,8 +1116,172 @@ export function sweepRelease(main, owner) {
   return { released: true };
 }
 
+// WHICH FILE A CONTRACT COMMAND RUNS. sapu-merge.sh runs gate.merge in the PR's worktree, so a word
+// naming repo code runs the PR's copy unless it is pinned: the merge runs <MAIN>'s copy instead,
+// proven identical to origin/<base>'s blob. The one implementation of "which word" is
+// protectedCommand; sapu-merge.sh calls it through `protect`, and `show`/`check` warn when gate.merge
+// has none.
+/** Interpreters whose first non-option word is the script they run. */
+const SCRIPT_INTERPRETER = /^(?:bash|sh|zsh|dash|ksh|node|tsx|ts-node|python(?:\d+(?:\.\d+)?)?|ruby|perl|php|deno|bun)$/;
+/** Interpreter options whose value is the next word (node's preloads), never the script. */
+const PRELOAD_OPTS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+/**
+ * Runners that run the command after them (`uv run pytest`): the subcommand that does (null = the
+ * runner itself), options whose value is the next word, options that move the working directory or
+ * run a shell string (the rest is then no longer a command sapu can pin).
+ */
+const COMMAND_RUNNERS = {
+  uv: { sub: "run", values: ["--with", "--with-editable", "--with-requirements", "--extra", "--group", "--only-group", "--no-group", "--package", "-p", "--python", "--env-file", "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--cache-dir", "--config-file", "--color"], moves: ["--directory", "--project"] },
+  poetry: { sub: "run", values: [], moves: ["-C", "--directory", "-P", "--project"] },
+  pipenv: { sub: "run", values: [], moves: [] },
+  npx: { sub: null, values: ["-p", "--package"], moves: ["-c", "--call"] },
+  pnpm: { sub: "exec", values: [], moves: ["-C", "--dir", "-c", "--shell-mode", "-r", "--recursive", "-F", "--filter"] },
+  env: { sub: null, values: ["-u", "--unset"], moves: ["-C", "--chdir", "-S", "--split-string"], assignments: true },
+};
+/** The default makefiles GNU make reads, in its order; the default justfiles just reads. */
+const MAKEFILES = ["GNUmakefile", "makefile", "Makefile"];
+const JUSTFILES = ["justfile", ".justfile", "Justfile", "JUSTFILE"];
+/** just's options whose value is the next word (besides --justfile and --working-directory). */
+const JUST_VALUES = ["--shell", "--shell-arg", "--dotenv-filename", "--dotenv-path", "-E", "--color", "--command-color", "--chooser"];
+const repoPath = (w) => typeof w === "string" && !w.startsWith("/") && w.includes("/");
+const optName = (w) => (w.startsWith("--") && w.includes("=") ? w.slice(0, w.indexOf("=")) : w);
+/** Does option word `w` name one of `opts` (`--dir=x`, `-Cx` included)? */
+const isOpt = (w, opts) => opts.includes(optName(w)) || opts.some((o) => /^-[A-Za-z]$/.test(o) && w.length > 2 && !w.startsWith("--") && w.startsWith(o));
+
+/**
+ * `words` (a contract command split on whitespace) as sapu-merge.sh runs it, and the index of the
+ * word naming the repo file it pins: {words, index, file, why}. index null = nothing pinned (`why`
+ * says so); the PR's own copy of the gate logic then runs. `hasFile(path)` answers whether the base
+ * holds a file (it picks make's or just's default file). Pinned: a relative word with a `/` as the
+ * program; an interpreter's script (its first non-option word, node's preload values and deno/bun
+ * `run` skipped) when that is relative with a `/`; make's makefile and just's justfile (`-f`, else
+ * the default the base holds, written out so the pinned copy is the one read, recipes still run in
+ * the cwd). Runners that run a command (`uv run`, `poetry run`, `pipenv run`, `npx`, `pnpm exec`,
+ * `env`) are peeled first. An absolute program runs as is.
+ */
+export function protectedCommand(words, hasFile = () => false) {
+  const none = (why) => ({ words: [...words], index: null, file: null, why });
+  const at = (ws, index) => ({ words: ws, index, file: ws[index], why: null });
+  if (!words.length) return none("an empty command");
+  if (repoPath(words[0])) return at([...words], 0);
+  const prog = words[0].slice(words[0].lastIndexOf("/") + 1);
+  const n = words.length;
+  if (SCRIPT_INTERPRETER.test(prog)) {
+    let j = 1;
+    while (j < n && (words[j].startsWith("-") || (words[j] === "run" && (prog === "deno" || prog === "bun")))) j += PRELOAD_OPTS.has(words[j]) ? 2 : 1;
+    return j < n && repoPath(words[j]) ? at([...words], j) : none(`${prog}'s script word is ${j < n ? `\`${words[j]}\`, not a relative path with a /` : "missing"}`);
+  }
+  const runner = COMMAND_RUNNERS[prog];
+  if (runner) {
+    let j = 1;
+    let inSub = !runner.sub;
+    while (j < n) {
+      const w = words[j];
+      if (isOpt(w, runner.moves)) return none(`\`${prog} ${optName(w)}\` moves the working directory or runs a shell string`);
+      if (!inSub) {
+        if (w === runner.sub) inSub = true;
+        else if (!w.startsWith("-")) return none(`\`${prog} ${w}\` runs no command sapu can pin (only \`${prog} ${runner.sub}\` does)`);
+        j++;
+        continue;
+      }
+      if (w === "--") {
+        j++;
+        break;
+      }
+      if (runner.assignments && /^[A-Za-z_]\w*=/.test(w)) j++;
+      else if (w.startsWith("-")) j += runner.values.includes(w) ? 2 : 1;
+      else break;
+    }
+    if (!inSub || j >= n) return none(`\`${words.join(" ")}\` names no command`);
+    const inner = protectedCommand(words.slice(j), hasFile);
+    return inner.index === null ? { ...inner, words: [...words.slice(0, j), ...inner.words] } : at([...words.slice(0, j), ...inner.words], j + inner.index);
+  }
+  if (prog === "make" || prog === "gmake") {
+    const ws = [words[0]];
+    const files = [];
+    for (let j = 1; j < n; j++) {
+      const w = words[j];
+      if (isOpt(w, ["-C", "--directory"])) return none(`\`make ${optName(w)}\` reads its makefile from another directory`);
+      if (["-f", "--file", "--makefile"].includes(w)) {
+        files.push(ws.length + 1);
+        ws.push(w, words[++j] ?? "");
+      } else if (/^--(?:file|makefile)=/.test(w) || /^-f./.test(w)) {
+        files.push(ws.length + 1);
+        ws.push("-f", w.startsWith("--") ? w.slice(w.indexOf("=") + 1) : w.slice(2));
+      } else if (/^-[^-]*f/.test(w)) return none(`\`${w}\` bundles -f with other options: write -f on its own`);
+      else ws.push(w);
+    }
+    if (files.length > 1) return none("make reads several makefiles; sapu pins one");
+    if (files.length === 1) return ws[files[0]] && !ws[files[0]].startsWith("/") ? at(ws, files[0]) : none("make's -f names an absolute path");
+    const def = MAKEFILES.find((f) => hasFile(f));
+    return def ? at([words[0], "-f", def, ...words.slice(1)], 2) : none(`the base has none of ${MAKEFILES.join(", ")}`);
+  }
+  if (prog === "just") {
+    const ws = [words[0]];
+    let file = -1;
+    let dir = false;
+    let j = 1;
+    for (; j < n && words[j].startsWith("-"); j++) {
+      const w = words[j];
+      const name = optName(w);
+      if (name === "-f" || name === "--justfile") {
+        file = ws.length + 1;
+        ws.push(name, w.includes("=") ? w.slice(w.indexOf("=") + 1) : (words[++j] ?? ""));
+      } else if (name === "-d" || name === "--working-directory") {
+        dir = true;
+        ws.push(w);
+        if (!w.includes("=")) ws.push(words[++j] ?? "");
+      } else {
+        // an option's value is no recipe: --set takes two
+        const take = w.includes("=") ? 0 : name === "--set" ? 2 : JUST_VALUES.includes(name) ? 1 : 0;
+        ws.push(w, ...words.slice(j + 1, j + 1 + take));
+        j += take;
+      }
+    }
+    ws.push(...words.slice(j));
+    if (file < 0) {
+      if (dir) return none("just's --working-directory without --justfile");
+      const def = JUSTFILES.find((f) => hasFile(f));
+      return def ? at([words[0], "--justfile", def, "--working-directory", ".", ...words.slice(1)], 2) : none(`the base has none of ${JUSTFILES.join(", ")}`);
+    }
+    if (ws[file].startsWith("/")) return none("just's --justfile names an absolute path");
+    // just runs recipes in the justfile's directory unless told otherwise: keep that directory.
+    if (!dir) ws.splice(file + 1, 0, "--working-directory", path.posix.dirname(ws[file]));
+    return at(ws, file);
+  }
+  return none(`\`${prog}\` reads the PR's own files; no word names a repo file sapu can pin`);
+}
+
+/** Does the repo at `root` hold `file` at `ref` (null = in its working tree)? */
+function fileAt(root, ref, file) {
+  if (ref === null) return fs.existsSync(path.join(root, file));
+  return spawnSync("git", ["-C", root, "cat-file", "-e", `${ref}:${file}`], { stdio: "ignore" }).status === 0;
+}
+
+/** The warning `show`/`check` print when gate.merge pins no repo file, or null. */
+export function gateProtectionWarning(contract, hasFile) {
+  const merge = contract && contract.gate && contract.gate.merge;
+  if (!isStr(merge)) return null;
+  const p = protectedCommand(merge.trim().split(/\s+/), hasFile);
+  if (p.index !== null) return null;
+  return `gate.merge (\`${merge}\`) pins no repo file (${p.why}): sapu-merge.sh runs the PR's own copy of the gate's logic, so a PR can change the gate that judges it. Write it as a repo script run by path or by an interpreter (\`scripts/gate.sh\`, \`bash scripts/gate.sh\`, \`node scripts/gate.mjs\`, \`uv run python scripts/gate.py\`), or as \`make <target>\`/\`just <recipe>\` with the makefile or justfile on the base branch.`;
+}
+
 function main(argv) {
   const [cmd, ...args] = argv;
+  if (cmd === "protect") {
+    // protect [--ref <rev>] -- <word>...: before the option parsing below, which would eat a gate's own `--text`.
+    const sep = args.indexOf("--");
+    const opts = sep < 0 ? args : args.slice(0, sep);
+    const ref = opts[0] === "--ref" && opts.length === 2 ? opts[1] : opts.length === 0 ? "HEAD" : null;
+    const root = findMain(process.cwd());
+    if (sep < 0 || ref === null || !/^[\w./@^~][\w./@^~-]*$/.test(ref) || !root) {
+      process.stderr.write("sapu-contract: usage (inside the repo): sapu-contract.mjs protect [--ref <rev>] -- <word>...\n");
+      process.exit(1);
+    }
+    process.stdout.write(`${JSON.stringify(protectedCommand(args.slice(sep + 1), (f) => fileAt(root, ref, f)))}\n`);
+    return;
+  }
   const workingTree = args.includes("--working-tree");
   const withComments = args.includes("--comments");
   const withText = args.includes("--text");
@@ -1227,6 +1391,10 @@ function main(argv) {
   }
   const { contract, error } = loadContract(here, { workingTree, ref: ref ?? "HEAD" });
   if (error) fail(error);
+  if (cmd === "show" || cmd === "check") {
+    const warning = gateProtectionWarning(contract, (f) => fileAt(here, workingTree ? null : (ref ?? "HEAD"), f));
+    if (warning) process.stderr.write(`sapu-contract: WARNING ${warning}\n`);
+  }
   if (cmd === "check") {
     const problems = lockProblems(mainDir, contract, machineOrFail());
     if (problems.length) fail(`refusing to run here:\n  - ${problems.join("\n  - ")}`);

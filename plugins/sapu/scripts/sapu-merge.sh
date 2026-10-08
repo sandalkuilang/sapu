@@ -41,8 +41,7 @@
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
 # credentials. This script is the backstop against tampering (the guard hook only catches honest
 # mistakes): it trusts nothing local. The contract is read from a FRESHLY FETCHED origin/<base>,
-# and the repo file a contract command runs (a relative first word with a `/`, or an interpreter's
-# script word) must be byte-identical in <MAIN> to origin/<base>'s blob (git hash-object --no-filters, so
+# and the repo file a contract command runs (its protected word: see protect() below) must be byte-identical in <MAIN> to origin/<base>'s blob (git hash-object --no-filters, so
 # skip-worktree, assume-unchanged or a local commit cannot hide a change) — or, when origin has no
 # such file yet, the PR's copy runs. So neither a PR nor another session can relax the hooks that
 # judge it; <MAIN>'s own refs and index are never consulted for that.
@@ -105,47 +104,39 @@ P_REVIEWERS="$(printf '%s' "$CONTRACT" | jq -r '(.policy.reviewers // []) | join
 
 CONTRACT_FILE=".claude/sapu.json"
 
-# The index of the word of a contract command that names repo code, or nothing: a relative first
-# word with a `/` (`scripts/gate.sh`), or an interpreter's script — its first non-option word
-# (node's --import/--require/-r/--loader values skipped, deno/bun `run` skipped) when that is
-# relative with a `/`. An absolute first word (`/bin/bash`) runs as-is.
-protected_index() { # <words...>
-  [ "$#" -gt 0 ] || return 0
-  case "$1" in /*) ;; */*) echo 0; return 0 ;; esac
-  local prog="${1##*/}" j=1 n=$#
-  local -a w=("$@")
-  case "$prog" in bash|sh|zsh|dash|node|tsx|python|python3|ruby|perl|deno|bun) ;; *) return 0 ;; esac
-  while [ "$j" -lt "$n" ]; do
-    case "${w[$j]}" in
-      -r|--require|--import|--loader|--experimental-loader) j=$((j+2)); continue ;;
-      -*) j=$((j+1)); continue ;;
-      run) case "$prog" in deno|bun) j=$((j+1)); continue ;; esac ;;
-    esac
-    case "${w[$j]}" in /*) ;; */*) echo "$j" ;; esac
-    return 0
-  done
-}
-
-# The repo path a contract command protects (see protected_index), or nothing.
-protected_path() { # <command>
-  local -a w; local k
+# A contract command as it is run, and the word of it that names repo code (its protected word):
+# `sapu-contract.mjs protect`, the one implementation (protectedCommand), answering from the files
+# origin/<base> holds. A relative program with a `/` (`scripts/gate.sh`); an interpreter's script
+# (`bash`/`node`/`python`/… its first non-option word, when relative with a `/`); make's makefile
+# and just's justfile (written out with -f/--justfile when the command relies on the default);
+# behind `uv run`, `poetry run`, `pipenv run`, `npx`, `pnpm exec` or `env`. An absolute program
+# runs as-is. Printed as JSON {words, index, file, why}: index null = nothing protected (why says so).
+protect() { # <command>
+  local -a w
   read -r -a w <<<"$1"
-  [ "${#w[@]}" -gt 0 ] || return 0
-  k="$(protected_index "${w[@]}")"
-  [ -z "$k" ] || printf '%s\n' "${w[$k]}"
+  (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
+}
+P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
+P_AFTER=""; P_RED=""
+if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
+if [ -n "$RED_AREAS" ]; then P_RED="$(protect "$RED_AREAS")" || die "cannot read which file redAreas runs (see above)"; fi
+
+# The repo path a protected command pins, or nothing.
+protected_path() { # <protect JSON>
+  [ -z "$1" ] || jq -r '.file // empty' <<<"$1"
 }
 
 blob_at() { git -C "$MAIN" rev-parse -q --verify "$1:$2" 2>/dev/null; } # <commit> <path>: its blob id
 on_origin() { local r; for r in "${TRUSTED[@]}"; do blob_at "$r" "$1" >/dev/null && return 0; done; return 1; }
 
-# Run a contract command (split on whitespace, no shell syntax) with cwd <dir>. Its protected word
-# runs <MAIN>'s copy when origin/<base> has that file (main_mismatch proved the copy identical),
-# else <fallback>'s copy; with no fallback it does not run (see SAFETY).
-run_contract() { # <dir> <fallback-dir or ""> <command> [extra args...]
-  local dir="$1" fb="$2" cmd="$3" k; shift 3
-  local -a w
-  read -r -a w <<<"$cmd"
-  k="$(protected_index "${w[@]}")"
+# Run a contract command (its protect JSON: words split on whitespace, no shell syntax) with cwd
+# <dir>. Its protected word runs <MAIN>'s copy when origin/<base> has that file (main_mismatch proved
+# the copy identical), else <fallback>'s copy; with no fallback it does not run (see SAFETY).
+run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
+  local dir="$1" fb="$2" pj="$3" k x; shift 3
+  local -a w=()
+  while IFS= read -r x; do w+=("$x"); done < <(jq -r '.words[]' <<<"$pj")
+  k="$(jq -r '.index // empty' <<<"$pj")"
   if [ -n "$k" ]; then
     if on_origin "${w[$k]}"; then w[$k]="$MAIN/${w[$k]}"
     elif [ -n "$fb" ]; then say "warning: origin/$BASE has no ${w[$k]} yet; using $fb's copy"; w[$k]="$fb/${w[$k]}"
@@ -162,8 +153,7 @@ run_contract() { # <dir> <fallback-dir or ""> <command> [extra args...]
 main_mismatch() {
   local -a p=("$CONTRACT_FILE") bad=()
   local c x r have ok
-  for c in "$GATE_MERGE" "$MERGE_AFTER" "$RED_AREAS"; do
-    [ -n "$c" ] || continue
+  for c in "$P_GATE" "$P_AFTER" "$P_RED"; do
     x="$(protected_path "$c")"
     [ -z "$x" ] || p+=("$x")
   done
@@ -206,7 +196,7 @@ run_after() { # <merged|not-merged>
   # cwd <MAIN>; a hook <MAIN> does not have yet runs from the PR worktree, which exists on every path here.
   SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
     SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" \
-    run_contract "$MAIN" "$WT" "$MERGE_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
+    run_contract "$MAIN" "$WT" "$P_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
 }
 
 on_exit() {
@@ -327,7 +317,9 @@ if [ "$DRY" = 1 ]; then
   plan "git fetch origin $BASE $HEAD; rebase onto origin/$BASE only if every commit origin/$BASE..HEAD is by $GIT_EMAIL, else merge; push only after a green gate (--force-with-lease only after rebase)"
   if [ -n "$RED_AREAS" ]; then plan "red-area check (<MAIN>: $RED_AREAS --ref <sha>): red areas without a 'Review tier: red' first line in the comment = refuse"
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
-  plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $MAIN/.git/sapu-gates.log)"
+  if [ -n "$(protected_path "$P_GATE")" ]; then plan "gate.merge pins <MAIN>'s $(protected_path "$P_GATE") (origin/$BASE's blob; the PR's copy only while origin has none)"
+  else plan "gate.merge pins no repo file ($(jq -r '.why' <<<"$P_GATE")): the PR's own copy of the gate's logic runs"; fi
+  plan "gate in $WT: $(jq -r '.words | join(" ")' <<<"$P_GATE")  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $MAIN/.git/sapu-gates.log)"
   plan "(real runs hold a lock dir $MAIN/.git/sapu-merge.lock; a second run dies)"
   if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
   else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"; fi
@@ -448,7 +440,7 @@ MISMATCH="$(main_mismatch)"
 [ -z "$MISMATCH" ] || die "$(mismatch_msg "$MISMATCH")"
 if [ -n "$RED_AREAS" ]; then
   # No fallback to the PR's copy: a classifier origin/<base> lacks means the red areas are unknown.
-  RED="$(run_contract "$MAIN" "" "$RED_AREAS" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
+  RED="$(run_contract "$MAIN" "" "$P_RED" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
     || die "red-area check failed: a PR whose red areas are unknown is not merged"
   # Line 1 only: sapu-wave.js writes it there, and reviewer text further down must not satisfy it.
   # Here-strings, not pipes into `grep -q`: an early-exiting reader SIGPIPEs the writer under pipefail.
@@ -465,7 +457,7 @@ AFTER_PENDING=1
 GATE_START=$SECONDS
 GATE_T0="$(date +%s)"
 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
-  run_contract "$WT" "$WT" "$GATE_MERGE" >"$LOG" 2>&1 || GATE_RC=$?
+  run_contract "$WT" "$WT" "$P_GATE" >"$LOG" 2>&1 || GATE_RC=$?
 # Gate wall-clock goes into the merges log: SKILL.md B3 drops an overlapping wave to one test runner
 # when the gate measures more than 50% slower.
 GATE_SECS=$((SECONDS - GATE_START))

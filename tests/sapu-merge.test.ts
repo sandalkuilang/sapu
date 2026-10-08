@@ -597,6 +597,38 @@ describe("sapu-merge.sh — which copy of a contract command runs (B)", () => {
     expect(h.gateLog()).toContain("gate ran: main copy");
   });
 
+  it("`make gate`: <MAIN>'s makefile is read, the PR's is not, and the recipe runs in the PR worktree", () => {
+    const mk = (who: string) => `gate:\n\t@echo "gate ran: ${who} in $(CURDIR)"; echo "Gate summary"; echo "✓ 3 passed"\n`;
+    const gate = { fast: "make fast", merge: "make gate", summaryStart: "^Gate summary", redIf: "^⊘" };
+    const h = harness({ contract: { gate }, main: { Makefile: mk("main makefile") }, pr: { Makefile: mk("PR makefile") } });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gateLog()).toContain(`gate ran: main makefile in ${h.WT}`);
+    expect(h.gateLog()).not.toContain("PR makefile");
+    // …and <MAIN>'s makefile must be origin's, like any pinned file
+    const h2 = harness({ contract: { gate }, main: { Makefile: mk("main makefile") } });
+    h2.write({ Makefile: mk("tampered") });
+    const r2 = h2.run();
+    expect(r2.status).toBe(1);
+    expect(r2.err).toMatch(/Makefile differs from origin\/main/);
+  });
+
+  it("`uv run bash <script>`: the runner is peeled and the script is still <MAIN>'s copy", () => {
+    const gate = { fast: "uv run bash scripts/gate.sh --fast", merge: "uv run bash scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+    const h = harness({ contract: { gate }, pr: { "scripts/gate.sh": PR_GATE } });
+    writeFileSync(join(h.dir, "bin/uv"), '#!/bin/sh\n[ "$1" = run ] && shift\nexec "$@"\n', { mode: 0o755 });
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(h.gateLog()).toContain(`gate ran: ${h.MAIN}/scripts/gate.sh`);
+    expect(h.gateLog()).not.toContain("PR copy");
+  });
+
+  it("a gate.merge that pins nothing is warned about, and the dry-run plan names what is pinned", () => {
+    const h = harness({ contract: { gate: { fast: "npm run fast", merge: "npm test", summaryStart: "^Gate summary", redIf: "^⊘" } } });
+    expect(h.run({}, ["--dry-run"]).err).toMatch(/WARNING gate\.merge \(`npm test`\) pins no repo file/);
+    expect(harness().run({}, ["--dry-run"]).err).toMatch(/gate\.merge pins <MAIN>'s scripts\/gate\.sh/);
+  });
+
   it("a working-tree change to an interpreter's script word is caught by the HEAD check (B4 + 1b)", () => {
     const gate = { fast: "bash scripts/gate.sh --fast", merge: "bash scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
     const h = harness({ contract: { gate } });

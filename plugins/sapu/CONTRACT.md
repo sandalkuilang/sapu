@@ -414,9 +414,18 @@ base. The main checkout's local refs, index and working tree are never trusted f
 
 **Which file is run.** A contract command is split on spaces (no shell syntax). Words that
 point at repo code are protected: the first word when it is relative and contains `/` (`scripts/gate.sh`), or
-an interpreter's script (`bash`/`sh`/`zsh`/`dash`/`node`/`tsx`/`python`/`python3`/`ruby`/`perl`/
+an interpreter's script (`bash`/`sh`/`zsh`/`dash`/`ksh`/`node`/`tsx`/`ts-node`/`python`/`python3[.N]`/`ruby`/`perl`/`php`/
 `deno`/`bun`) — its first non-option word when it is relative and contains `/` (node's `--import`/`--require`/
-`-r`/`--loader` values are skipped; deno/bun's `run` is skipped). When `origin/<base>` has that file,
+`-r`/`--loader` values are skipped; deno/bun's `run` is skipped). `make`'s makefile and `just`'s justfile
+are protected too: the `-f`/`--justfile` value, else the default file `origin/<base>` holds, written out
+(`make gate` runs as `make -f Makefile gate`, `just gate` as `just --justfile justfile --working-directory . gate`),
+so recipes still run in the cwd. Runners that run a command are peeled first: `uv run`, `poetry run`,
+`pipenv run`, `npx`, `pnpm exec`, `env` (`uv run python scripts/gate.py` protects `scripts/gate.py`); one
+that moves the working directory or runs a shell string (`--directory`, `-C`, `npx -c`, `env -S`) protects
+nothing. `sapu-contract.mjs protect [--ref <rev>] -- <words>` prints the answer, and `show`/`check` warn when
+`gate.merge` protects no word: a gate such as `npm test`, `go test ./...`, `cargo test` or `uv run pytest`
+runs the PR's own copy of its logic (package scripts, test config), so a PR can change the gate that judges
+it — write it as a protected script or make/just target instead. When `origin/<base>` has that file,
 what is run is **the main checkout's copy**, and that copy must be identical to the blob on
 `origin/<base>` (below); an absolute first word (`/bin/bash`) is run as is. When
 `origin/<base>` does not have that file yet: `gate.merge` (cwd = the PR worktree) and `mergeAfter` (cwd =
