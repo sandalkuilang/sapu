@@ -280,7 +280,12 @@ because the plugin has no dependencies to parse YAML; argus's `config.yml` and i
 `test_accounts` block stay as they are, and `roles` here is the explicit per-role map this lane
 needs. Below, `live.<key>` names a key of this file and `limits.<key>` a key of its `limits` object
 (`max_cycle_minutes` included: the lane does not read `config.yml`). `{port:<name>}` and `${NAME}`
-expand in every string of the file. Its schema is validated by `argus-live.mjs` (unknown keys are
+expand in every string of the file, with one exception: in a field run by the shell (`store_check`,
+`reset`, `start[].cmd`, `start[].stop`, `start[].health.cmd`, `roles.<r>.login.command`), `${NAME}`
+becomes a reference to a variable the shell expands, quoted for where it stands, and the value
+travels in that command's environment only — never in its command line, a recorded command line or
+`run.json`, and never parsed as shell. Argv lists (`setup`, `facts`, `mail`, `triggers`) and env
+values get the value itself. Its schema is validated by `argus-live.mjs` (unknown keys are
 errors, as in the sapu contract).
 
 ```json
@@ -397,14 +402,21 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    `container_name`; otherwise refuse (a fixed host port or container name would collide with, or
    take over, the owner's stack).
 6. **Store.** Starts the `phase: store` entries (each in its own process group) and waits for their
-   health. Runs `store_check`: its output must equal `store`, and no URL in `env` may equal one in the
-   repo's env files (read by the script, never printed) or name the database the contract's
-   `guard.postgres` protects. Only then `reset`.
+   health. `store` must not be a database the contract's `guard.postgres` protects. Runs
+   `store_check` under the instance environment and again under the environment of every `start`
+   entry that sets its own: each output must equal `store`. No value in those environments may point
+   at a service the repo's env files name (read by the script, never printed) — the same local
+   endpoint (loopback aliases and default ports merged), or the same service and database anywhere —
+   nor name a port or database `guard.postgres` protects; URLs, `jdbc:` URLs, libpq `key=value`
+   strings, bare port numbers and bare database names are all read. Only then `reset`.
 7. **Start.** Each remaining entry in its own process group. Refuse when an entry's health already
-   answers before its command ran (something else serves there). Health = `{url}` answering, `{cmd}`
-   exiting 0, or, when omitted, the process alive after 5 s; an entry whose process exits before its
-   health passes fails `up` unless it has `stop` (a detached starter such as `docker compose up -d`).
-   Timeout `limits.live_health_timeout_s`. Then `store_check` again.
+   answers before its command ran (a `url` that responds, a `cmd` that exits 0: something else serves
+   there). Health = `{url}` answering, `{cmd}` exiting 0, or, when omitted, the process alive after
+   5 s; an entry whose process exits before its health passes — checked again after a health that
+   answered — fails `up` unless it exited 0 and has `stop` (a detached starter such as `docker compose
+   up -d`). Timeout `limits.live_health_timeout_s`, which also bounds each `store_check`; every health
+   `cmd` and `store_check` runs in its own process group, killed once it returns. Then `store_check`
+   again.
 8. **Egress check.** Lists the TCP connections of every process in the run's process groups (`lsof
    -nP -a -i -p <pids>`, or `ss`). A connection to an endpoint other than the run's ports, the
    endpoints named in `env`, and `allow_origins` → `down` and refuse, naming the process and the
@@ -434,6 +446,9 @@ new instance id. It makes no proving logins.
 stops the proxy, closes the run's CLI sessions by name (never `close-all`: other projects share the
 CLI), kills the reaper, removes its own worktree (`--force` on that worktree only) and its HOME,
 `run.json` and the lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset.
+Known limit: process groups are the unit of every kill, so a process that leaves its group (one that
+calls `setsid`, a daemon that double-forks) escapes them; the egress check still sees its connections
+while the run lives, and the next `up` finds its port taken.
 
 **Beside a sapu sweep.** Separate ports, worktree, services and data let a journey cycle run while a
 sweep gates PRs, but browsers and dev servers take CPU from its gates. `sapu-merge.sh` appends

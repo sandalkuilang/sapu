@@ -865,6 +865,10 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(msg).not.toContain("hunter2");
     expect(msg).not.toContain("s3cr3t-value");
     expect(msg).toContain("token *** and ***");
+    const groups: { cmdline: string }[] = [];
+    await setup(wt, [node("process.exit(0) // hunter2")], { secrets: { PW: "hunter2" }, groups });
+    expect(groups[0].cmdline).not.toContain("hunter2");
+    expect(groups[0].cmdline).toContain("// ***");
   });
 
   it("a setup step is bounded by the lock's deadline", async () => {
@@ -1065,10 +1069,11 @@ describe("argus-live instance — processes, health, store", () => {
     mkdirSync(w.data, { recursive: true });
     writeFileSync(join(w.data, "sentinel"), "");
     await bringUpStore(w.ctx);
-    expect(w.events()).toEqual(["backing", "check", "reset"]);
+    // store_check runs under the instance env, then under each entry's own env (backing, web).
+    expect(w.events()).toEqual(["backing", "check", "check", "check", "reset"]);
     expect(readdirSync(w.data)).toEqual(["seed.json"]);
     await bringUpRest(w.ctx);
-    expect(w.events()).toEqual(["backing", "check", "reset", "web", "check"]);
+    expect(w.events()).toEqual(["backing", "check", "check", "check", "reset", "web", "check", "check", "check"]);
     expect(groups.map((g) => g.name)).toEqual(["backing", "reset", "web"]);
     expect(readFileSync(join(w.ctx.logs, "web.log"), "utf8")).toMatch(/listening on/);
   });
@@ -1088,15 +1093,16 @@ describe("argus-live instance — processes, health, store", () => {
     writeFileSync(join(w.main, ".env"), "REDIS_URL=redis://localhost:6379/0\n");
     const env = { ...w.ctx.env, CACHE: "redis://localhost:6379/0" };
     const err = checkStore({ ...w.ctx, env }).catch((e: Error) => e.message);
-    expect(await err).toBe("refused: env.CACHE equals a value in the repo's env files (.env, .env.local); it would reach the owner's service");
+    expect(await err).toBe("refused: env.CACHE points at a service the repo's env files name (.env, .env.local); it would reach the owner's service");
     writeFileSync(join(w.main, ".env.production"), "X=redis://localhost:7000\n");
     const prod = await checkStore({ ...w.ctx, env: { ...w.ctx.env, C: "redis://localhost:7000" }, contract: { guard: { envFiles: [".env.production"], postgres: null } } }).catch((e: Error) => e.message);
-    expect(prod).toMatch(/^refused: env\.C equals a value in the repo's env files/);
+    expect(prod).toMatch(/^refused: env\.C points at a service the repo's env files name/);
     await expect(checkStore(w.ctx)).resolves.toBeUndefined();
   });
 
   it("an env URL naming a database or port guard.postgres protects is refused", async () => {
     const w = await world();
+    w.ctx.config.store_check = "echo app_explore"; // this test is about the guard, not the store
     const contract = { guard: { envFiles: [], postgres: { ports: [6543, 5432], databases: ["app_dev"] } } };
     const refused = (v: string) => checkStore({ ...w.ctx, contract, env: { ...w.ctx.env, DATABASE_URL: v } }).then(() => "ok", (e: Error) => e.message);
     expect(await refused("postgres://app:pw@localhost:6543/app_explore")).toMatch(/^refused: env\.DATABASE_URL names port 6543/);
@@ -1168,5 +1174,216 @@ describe("argus-live instance — processes, health, store", () => {
     }
     expect(() => process.kill(child, 0)).toThrow();
     await expect(startEntry({ name: "x", cmd: "true", env: { HOME: "/" } }, { ...w.ctx, groups })).rejects.toThrow("refused: start entry x may not set HOME");
+  });
+});
+
+describe("argus-live instance — review: env of every entry, secrets in shell fields, health and store_check hygiene", () => {
+  const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
+  const NODE = JSON.stringify(process.execPath);
+  const app = (args = "") => `${NODE} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
+  const SLEEP = `${NODE} -e "setInterval(() => {}, 1 << 30)"`;
+  const groups: { name: string; pgid: number; cmdline: string }[] = [];
+  const pids: number[] = [];
+  const servers: Server[] = [];
+  afterEach(async () => {
+    for (const g of groups.splice(0)) {
+      try {
+        process.kill(-g.pgid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    for (const p of pids.splice(0)) {
+      try {
+        process.kill(p, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))));
+  });
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const goneSoon = async (pid: number) => {
+    for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+    return !alive(pid);
+  };
+  const freePort = () =>
+    new Promise<number>((done) => {
+      const s = createServer();
+      s.listen(0, "127.0.0.1", () => {
+        const p = (s.address() as { port: number }).port;
+        s.close(() => done(p));
+      });
+    });
+  const ctxFor = async (over: Record<string, unknown> = {}) => {
+    const wt = tempDir();
+    const main = tempDir();
+    const data = join(tempDir(), "app_explore");
+    const web = await freePort();
+    const config = {
+      store: "app_explore",
+      store_check: app("--which-store"),
+      reset: app("--reset"),
+      start: [{ name: "web", cmd: `exec ${app()}`, env: { PORT: String(web) }, health: { url: `http://127.0.0.1:${web}/health` } }],
+      ...over,
+    };
+    return { config, env: { PATH: process.env.PATH!, DATA_DIR: data }, worktree: wt, main, contract: null as unknown, secrets: {}, logs: join(wt, "logs"), groups, timeoutS: 10, deadline: Math.floor(Date.now() / 1000) + 600 };
+  };
+  const message = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
+
+  describe("1. checkStore reads every start entry's env", () => {
+    it("an entry env pointing at the owner's database is refused, naming the entry and key", async () => {
+      const ctx = await ctxFor();
+      writeFileSync(join(ctx.main, ".env"), "DATABASE_URL=postgres://owner:x@localhost:5432/app_dev\n");
+      (ctx.config.start[0].env as Record<string, string>).DATABASE_URL = "postgres://app@127.0.0.1/app_explore";
+      expect(await message(checkStore(ctx))).toBe("refused: start.web.env.DATABASE_URL points at a service the repo's env files name (.env, .env.local); it would reach the owner's service");
+    });
+
+    it("store_check runs under each entry's own env too, and must print the store there as well", async () => {
+      const ctx = await ctxFor();
+      (ctx.config.start[0].env as Record<string, string>).DATA_DIR = join(tempDir(), "app_dev");
+      expect(await message(checkStore(ctx))).toBe('refused: store_check printed "app_dev" under the env of start entry web, not the store "app_explore"');
+    });
+
+    it("a store that guard.postgres protects is refused", async () => {
+      const ctx = await ctxFor({ store: "app_dev" });
+      ctx.contract = { guard: { envFiles: [], postgres: { ports: [], databases: ["app_dev"] } } };
+      expect(await message(checkStore(ctx))).toBe('refused: the store "app_dev" is a database guard.postgres protects');
+    });
+  });
+
+  describe("2. secrets in shell fields travel in the environment, never in the command line", () => {
+    const VALUE = `a b;touch pwned $(touch pwned2) 'q\\" `;
+    it("expandConfig turns ${NAME} in a shell field into a quoted variable reference, and leaves argv and env literal", () => {
+      const raw = {
+        store: "s",
+        store_check: "echo ${PW}",
+        reset: `x "${"${PW}"}" '${"${PW}"}'`,
+        setup: [["tool", "--pw", "${PW}"]],
+        env: { DB: "postgres://u:${PW}@localhost/x" },
+        start: [{ name: "w", cmd: "run ${PW}", stop: "stop ${PW}", env: { K: "${PW}" }, health: { cmd: "check ${PW}" } }],
+        roles: { admin: { login: { command: "login ${PW}" } } },
+        facts: { argv: ["facts", "${PW}"] },
+      };
+      const c = expandConfig(raw, { ports: {}, secrets: { PW: VALUE } });
+      expect(c.store_check).toBe('echo "${ARGUS_SECRET_PW}"');
+      expect(c.reset).toBe(`x "\${ARGUS_SECRET_PW}" ''"\${ARGUS_SECRET_PW}"''`);
+      expect(c.start[0]).toMatchObject({ cmd: 'run "${ARGUS_SECRET_PW}"', stop: 'stop "${ARGUS_SECRET_PW}"', env: { K: VALUE }, health: { cmd: 'check "${ARGUS_SECRET_PW}"' } });
+      expect(c.roles.admin.login.command).toBe('login "${ARGUS_SECRET_PW}"');
+      expect(c.setup[0][2]).toBe(VALUE);
+      expect(c.facts.argv[1]).toBe(VALUE);
+      expect(c.env.DB).toBe(`postgres://u:${VALUE}@localhost/x`);
+      expect(() => expandConfig({ reset: "x ${NOPE}" }, { secrets: {} })).toThrow(/unset NOPE/);
+    });
+
+    it("the shell receives the value as data: no injection, every quoting context, and no value in the recorded cmdline", async () => {
+      const ctx = await ctxFor();
+      const raw = { name: "w", cmd: `printf '%s' \${PW} > out1; printf '%s' "<\${PW}>" > out2; printf '%s' 'x\${PW}y' > out3` };
+      const entry = expandConfig({ start: [raw] }, { secrets: { PW: VALUE } }).start[0];
+      const s = await startEntry(entry, { ...ctx, secrets: { PW: VALUE } });
+      for (let i = 0; i < 100 && !s.exit; i++) await new Promise((r) => setTimeout(r, 20));
+      expect(s.exit).toEqual({ code: 0, signal: null });
+      expect(readFileSync(join(ctx.worktree, "out1"), "utf8")).toBe(VALUE);
+      expect(readFileSync(join(ctx.worktree, "out2"), "utf8")).toBe(`<${VALUE}>`);
+      expect(readFileSync(join(ctx.worktree, "out3"), "utf8")).toBe(`x${VALUE}y`);
+      expect(existsSync(join(ctx.worktree, "pwned"))).toBe(false);
+      expect(existsSync(join(ctx.worktree, "pwned2"))).toBe(false);
+      expect(groups.at(-1)!.cmdline).not.toContain("pwned");
+    });
+
+    it("reset and store_check get their secrets the same way", async () => {
+      const raw = { store: "app_explore", store_check: `test "\${PW}" = '${VALUE.replace(/'/g, `'\\''`)}' && ${app("--which-store")}`, reset: `printf '%s' \${PW} > reset.out && ${app("--reset")}`, start: [] };
+      const ctx = await ctxFor();
+      const config = expandConfig(raw, { secrets: { PW: VALUE } });
+      await bringUpStore({ ...ctx, config, secrets: { PW: VALUE } });
+      expect(readFileSync(join(ctx.worktree, "reset.out"), "utf8")).toBe(VALUE);
+      expect(groups.map((g) => g.cmdline).join("\n")).not.toContain("pwned");
+    });
+  });
+
+  it("3. a health cmd that already succeeds before start is refused, and the command never runs", async () => {
+    const ctx = await ctxFor();
+    await expect(startEntry({ name: "db", cmd: "touch ran", health: { cmd: "true" } }, ctx)).rejects.toThrow("refused: the health cmd of db already succeeds before it started (something else serves there)");
+    expect(existsSync(join(ctx.worktree, "ran"))).toBe(false);
+  });
+
+  describe("4. env values are compared as services", () => {
+    const owner = "DATABASE_URL=postgres://owner:x@localhost:5432/app_dev?sslmode=disable\nREDIS_URL=redis://localhost:6379/0\n";
+    const check = async (v: string, contract: unknown = null) => {
+      const ctx = await ctxFor();
+      writeFileSync(join(ctx.main, ".env"), owner);
+      return message(checkStore({ ...ctx, contract, env: { ...ctx.env, X: v } }));
+    };
+    it.each([
+      "postgresql://app:y@127.0.0.1/other",
+      "postgres://app@[::1]:5432/app_explore",
+      "jdbc:postgresql://localhost:5432/x",
+      "host=localhost port=5432 dbname=x user=app",
+      "host='127.0.0.1' dbname=x",
+      "redis://127.0.0.1:6379/3",
+      "redis://LOCALHOST",
+    ])("%s reaches the owner's local service", async (v) => {
+      expect(await check(v)).toMatch(/^refused: env\.X points at a service the repo's env files name/);
+    });
+    it.each(["postgres://app@localhost:41001/app_explore", "redis://127.0.0.1:41002", "https://fonts.example.com/css", "plain words"])("%s does not", async (v) => {
+      expect(await check(v)).toBe("ok");
+    });
+    const guard = { guard: { envFiles: [], postgres: { ports: [6543], databases: ["app_dev"] } } };
+    it.each([
+      ["app_dev", /names database app_dev/],
+      ["jdbc:postgresql://localhost:41001/app%5Fdev", /names database app_dev/],
+      ["host=localhost port=41001 dbname=app_dev", /names database app_dev/],
+      ["host=localhost port=6543 dbname=x", /names port 6543/],
+      ["jdbc:postgresql://localhost:6543/x", /names port 6543/],
+    ])("%s is a protected database or port", async (v, why) => {
+      const ctx = await ctxFor();
+      expect(await message(checkStore({ ...ctx, contract: guard, env: { ...ctx.env, X: v as string } }))).toMatch(why as RegExp);
+    });
+  });
+
+  describe("5 and 6. store_check and health cmds are bounded and leave no process behind", () => {
+    it("store_check with a background child holding stdout returns at once, and the child is killed", async () => {
+      const ctx = await ctxFor({ store_check: `(${SLEEP} & echo $! > bg.pid); ${app("--which-store")}` });
+      const t0 = Date.now();
+      await expect(checkStore(ctx)).resolves.toBeUndefined();
+      expect(Date.now() - t0).toBeLessThan(5000);
+      const bg = Number(readFileSync(join(ctx.worktree, "bg.pid"), "utf8"));
+      pids.push(bg);
+      expect(await goneSoon(bg)).toBe(true);
+    });
+
+    it("store_check has its own timeout (the health timeout), not the whole time to the deadline", async () => {
+      const ctx = await ctxFor({ store_check: "sleep 30" });
+      const t0 = Date.now();
+      expect(await message(checkStore({ ...ctx, timeoutS: 1 }))).toMatch(/^failed: store_check timed out/);
+      expect(Date.now() - t0).toBeLessThan(5000);
+    });
+
+    it("a health cmd's background child is killed after each try", async () => {
+      const ctx = await ctxFor();
+      const entry = { name: "w", cmd: `sleep 1; touch ready; exec ${SLEEP}`, health: { cmd: `(${SLEEP} & echo $! >> hc.pids); test -f ready` } };
+      await waitHealth(entry, await startEntry(entry, ctx), ctx);
+      const left = readFileSync(join(ctx.worktree, "hc.pids"), "utf8").trim().split("\n").map(Number);
+      pids.push(...left);
+      for (const p of left) expect(await goneSoon(p)).toBe(true);
+    });
+  });
+
+  it("8. a process that exits while its health URL answers fails, even though the URL answered", async () => {
+    const ctx = await ctxFor();
+    const port = await freePort();
+    const entry = { name: "w", cmd: "sleep 0.2; exit 1", health: { url: `http://127.0.0.1:${port}/health` } };
+    const s = await startEntry(entry, ctx);
+    const slow = createServer((c) => setTimeout(() => c.end("HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => c.destroy()), 600));
+    await new Promise<void>((r) => slow.listen(port, "127.0.0.1", () => r()));
+    servers.push(slow);
+    expect(await message(waitHealth(entry, s, ctx))).toMatch(/^failed: w exited \(code 1\) before its health passed/);
   });
 });

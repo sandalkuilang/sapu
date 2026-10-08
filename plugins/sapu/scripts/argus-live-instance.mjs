@@ -19,7 +19,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { expand, MAX_CYCLE_MINUTES, parseEnvFile } from "./argus-live-config.mjs";
+import { expand, MAX_CYCLE_MINUTES, parseEnvFile, secretEnv } from "./argus-live-config.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
@@ -534,24 +534,30 @@ export function killGroup(pgid, signal = "SIGKILL") {
   }
 }
 
+/** How long `capture` waits for stdout to close after the process exited (a background child may hold it). */
+const DRAIN_MS = 200;
+
 /**
  * The async runner: `argv` without a shell, detached into its own process group (pgid = pid, handed
- * to `onStart` before anything is awaited). On `timeoutMs` the whole group gets SIGKILL. With
- * `capture`, stdout is collected (up to 1 MiB) → {status, signal, timedOut, error, stdout}.
+ * to `onStart` before anything is awaited). On `timeoutMs` the whole group gets SIGKILL; with
+ * `killAfter`, so does whatever the group left running once it exits. With `capture`, stdout is
+ * collected (up to 1 MiB) until it closes or `DRAIN_MS` after the exit → {status, signal, timedOut,
+ * error, stdout}.
  */
-export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore", "ignore"], capture = false, onStart = () => {} } = {}) {
+export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore", "ignore"], capture = false, killAfter = false, onStart = () => {} } = {}) {
   return new Promise((done) => {
     let finished = false;
     let timedOut = false;
     let timer;
     let stdout = "";
+    let child;
     const finish = (r) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      if (killAfter && child && child.pid) killGroup(child.pid);
       done({ timedOut, stdout, ...r });
     };
-    let child;
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: capture ? [stdio[0], "pipe", stdio[2]] : stdio });
     } catch (e) {
@@ -568,7 +574,13 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
         killGroup(child.pid);
       }, Math.max(0, timeoutMs));
     }
-    child.once(capture ? "close" : "exit", (status, signal) => finish({ status, signal }));
+    child.once("exit", (status, signal) => {
+      if (!capture) return finish({ status, signal });
+      const drained = () => finish({ status, signal });
+      if (child.stdout.closed || child.stdout.readableEnded) return drained();
+      child.stdout.once("close", drained);
+      setTimeout(drained, DRAIN_MS);
+    });
   });
 }
 
@@ -580,11 +592,11 @@ function msLeft(deadline, what) {
 
 /**
  * Runs each `setup` argv in the worktree under `env`, without a shell, each in its own process group
- * (recorded in `groups` as `setup[<i>]` before it is awaited, so `down` kills a daemon it leaves
- * behind), its output appended to `log`; each step is bounded by the time left before `deadline` (the
- * lock's, epoch seconds), and a timed-out or failed step's whole group is killed. Then refuses a
- * symlink into <MAIN>. Throws `failed: setup <argv> exited <code>: <its output's last lines>` or
- * `failed: setup <argv> timed out`, every non-empty `secrets` value masked.
+ * (recorded in `groups` as `setup[<i>]` before it is awaited, with its secrets masked, so `down` kills
+ * a daemon it leaves behind), its output appended to `log`; each step is bounded by the time left
+ * before `deadline` (the lock's, epoch seconds), and a timed-out or failed step's whole group is
+ * killed. Then refuses a symlink into <MAIN>. Throws `failed: setup <argv> exited <code>: <its
+ * output's last lines>` or `failed: setup <argv> timed out`, every non-empty `secrets` value masked.
  */
 export async function runSetup(worktree, config, env, { main = findMain(worktree), runner = runAsync, secrets = {}, deadline, log = `${worktree}.setup.log`, groups = [] } = {}) {
   msLeft(deadline, "runSetup");
@@ -605,7 +617,7 @@ export async function runSetup(worktree, config, env, { main = findMain(worktree
         timeoutMs: left,
         onStart: (p) => {
           pgid = p;
-          groups.push({ name: `setup[${i}]`, pgid: p, cmdline: argv.join(" ") });
+          groups.push({ name: `setup[${i}]`, pgid: p, cmdline: shown });
         },
       });
     } finally {
@@ -637,23 +649,36 @@ async function answers(url) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** A shell field's command run once: `/bin/sh -c`, its own group killed afterwards, bounded by `timeoutMs`. */
+function shellOnce(cmd, { cwd, env, secrets = {}, timeoutMs, capture = false, runner = runAsync }) {
+  return runner(["/bin/sh", "-c", cmd], { cwd, env: { ...env, ...secretEnv(cmd, secrets) }, timeoutMs, capture, killAfter: true });
+}
+
+/** How long a health `cmd` may take before start (it must fail fast: nothing runs yet). */
+const PRECHECK_MS = 5000;
+
 /**
  * Starts one expanded `start` entry: `/bin/sh -c <cmd>` in the worktree, detached into its own process
- * group (recorded in `groups`), under `env` plus the entry's own env, logged to `<logs>/<name>.log`.
- * Refused when its health `url` already answers (something else serves there) and when its env names
+ * group (recorded in `groups`), under `env` plus the entry's own env and the secrets its command
+ * references, logged to `<logs>/<name>.log`. Refused when its health already answers before it runs
+ * (a `url` that responds, a `cmd` that exits 0: something else serves there) and when its env names
  * HOME or COMPOSE_PROJECT_NAME. Returns {name, pid, pgid, log, cmdline, t0, exit} (`exit` = {code,
  * signal} once it exits).
  */
-export async function startEntry(entry, { worktree, env, logs, groups = [] }) {
+export async function startEntry(entry, { worktree, env, logs, secrets = {}, groups = [], runner = runAsync }) {
   for (const k of Object.keys(entry.env ?? {})) if (RUN_ENV.includes(k)) throw new Error(`refused: start entry ${entry.name} may not set ${k}`);
-  const url = entry.health && entry.health.url;
-  if (url && (await answers(url))) throw new Error(`refused: something already serves ${url} (${entry.name})`);
+  const health = entry.health || {};
+  if (health.url && (await answers(health.url))) throw new Error(`refused: something already serves ${health.url} (${entry.name})`);
+  if (health.cmd) {
+    const r = await shellOnce(health.cmd, { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, secrets, timeoutMs: PRECHECK_MS, runner });
+    if (!r.error && !r.timedOut && r.status === 0) throw new Error(`refused: the health cmd of ${entry.name} already succeeds before it started (something else serves there)`);
+  }
   fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
   const log = path.join(logs, `${entry.name}.log`);
   const fd = fs.openSync(log, "a", 0o600);
   let child;
   try {
-    child = spawn("/bin/sh", ["-c", entry.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, detached: true, stdio: ["ignore", fd, fd] });
+    child = spawn("/bin/sh", ["-c", entry.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}), ...secretEnv(entry.cmd, secrets) }, detached: true, stdio: ["ignore", fd, fd] });
   } finally {
     fs.closeSync(fd);
   }
@@ -671,9 +696,10 @@ export async function startEntry(entry, { worktree, env, logs, groups = [] }) {
 }
 
 /**
- * Waits until `entry` is healthy: `{url}` answering 2xx, `{cmd}` exiting 0 (run like the entry), or,
- * without health, the process alive after `aliveAfterMs`. A process that exits before then fails it,
- * unless it exited 0 and the entry has `stop` (a detached starter). `timeoutS` bounds the wait.
+ * Waits until `entry` is healthy: `{url}` answering 2xx, `{cmd}` exiting 0 (run like the entry, its
+ * group killed after each try), or, without health, the process alive after `aliveAfterMs`. A process
+ * that exits before then fails it (checked again after a health that answered), unless it exited 0
+ * and the entry has `stop` (a detached starter). `timeoutS` bounds the wait.
  */
 export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync }) {
   const until = Date.now() + timeoutS * 1000;
@@ -709,60 +735,99 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
         ok = false;
       }
     } else {
-      const r = await runner(["/bin/sh", "-c", entry.health.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, timeoutMs: Math.min(30_000, left) });
+      const r = await shellOnce(entry.health.cmd, { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, secrets, timeoutMs: Math.min(30_000, left), runner });
       ok = !r.error && !r.timedOut && r.status === 0;
     }
-    if (ok) return;
+    // A health that answered says nothing when our own process is gone: something else answered.
     x = exited();
     if (x) throw x;
+    if (ok) return;
     if (Date.now() >= until) throw timeout();
     await sleep(250);
   }
 }
 
-const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\//i;
+/** Default ports, so `redis://localhost` and `redis://127.0.0.1:6379` name the same service. */
+const DEFAULT_PORTS = { postgresql: 5432, mysql: 3306, mariadb: 3306, redis: 6379, rediss: 6379, mongodb: 27017, amqp: 5672, amqps: 5671, http: 80, https: 443, smtp: 25, smtps: 465, memcached: 11211, nats: 4222 };
+const isLoopback = (h) => h === "" || h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1" || h === "0.0.0.0" || h === "::";
+const decodeSafe = (x) => {
+  try {
+    return decodeURIComponent(x);
+  } catch {
+    return x;
+  }
+};
 
-/** The ports and database names a connection URL names, a scheme's default port included. */
-function urlParts(v) {
-  const m = v.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)(\?[^#]*)?/i);
-  if (!m) return { ports: [], databases: [] };
-  const pg = /^postgres(ql)?$/i.test(m[1]);
-  const hosts = m[2].slice(m[2].lastIndexOf("@") + 1).split(",");
-  const ports = hosts.map((h) => {
-    const p = h.match(/:(\d+)$/);
-    return p ? Number(p[1]) : pg ? 5432 : null;
-  });
-  const decode = (x) => {
-    try {
-      return decodeURIComponent(x);
-    } catch {
-      return x;
-    }
+/**
+ * A connection string as a service: {loopback, endpoint, full, ports, databases} or null.
+ * Understands URLs (`jdbc:` stripped, `postgres` = `postgresql`), and libpq DSNs (`host=… port=…
+ * dbname=…`). Hosts are lower-cased and loopback aliases merged, default ports filled in, the path
+ * percent-decoded; user, password and query are not part of the service.
+ */
+function service(raw) {
+  const v = String(raw).trim().replace(/^jdbc:/i, "");
+  const url = v.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)(\?[^#]*)?/i);
+  let scheme;
+  let hosts;
+  let databases = [];
+  let extraPorts = [];
+  if (url) {
+    scheme = url[1].toLowerCase().replace(/^postgres$/, "postgresql");
+    hosts = url[2].slice(url[2].lastIndexOf("@") + 1).split(",").map((h) => {
+      const m = h.match(/^\[([^\]]*)\](?::(\d+))?$/) || h.match(/^([^:]*)(?::(\d+))?$/) || [null, h, undefined];
+      return { host: decodeSafe(m[1]).toLowerCase(), port: m[2] ? Number(m[2]) : undefined };
+    });
+    const segment = url[3].split("/").filter(Boolean)[0];
+    if (segment) databases.push(decodeSafe(segment));
+    const q = new URLSearchParams((url[4] || "").slice(1));
+    for (const k of ["dbname", "database"]) if (q.get(k)) databases.push(q.get(k));
+    if (q.get("port")) extraPorts = q.get("port").split(",").map(Number);
+    if (q.get("host")) hosts.push(...q.get("host").split(",").map((h) => ({ host: h.toLowerCase(), port: undefined })));
+  } else if (/^[a-z_]+\s*=/i.test(v) && /\b(host|hostaddr|port|dbname)\s*=/i.test(v)) {
+    const kv = {};
+    for (const [, k, q1, bare] of v.matchAll(/([a-z_]+)\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S*))/gi)) kv[k.toLowerCase()] = q1 !== undefined ? q1.replace(/\\(.)/g, "$1") : bare;
+    scheme = "postgresql";
+    const ports = String(kv.port ?? "").split(",");
+    hosts = String(kv.host ?? kv.hostaddr ?? "").split(",").map((h, i) => ({ host: h.toLowerCase(), port: ports[i] ? Number(ports[i]) : ports[0] ? Number(ports[0]) : undefined }));
+    if (kv.dbname) databases = [kv.dbname];
+  } else return null;
+  hosts = hosts.map((h) => ({ host: isLoopback(h.host) ? "loopback" : h.host, port: h.port ?? DEFAULT_PORTS[scheme] }));
+  const where = hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",");
+  const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
+  return {
+    loopback: hosts.every((h) => h.host === "loopback"),
+    endpoint: where,
+    full: `${scheme}://${where}${path}`,
+    ports: [...hosts.map((h) => h.port).filter((p) => p !== undefined), ...extraPorts],
+    databases,
   };
-  const db = m[3].split("/").filter(Boolean)[0];
-  const databases = db ? [decode(db)] : [];
-  const q = new URLSearchParams((m[4] || "").slice(1));
-  for (const k of ["dbname", "database"]) if (q.get(k)) databases.push(q.get(k));
-  if (q.get("port")) ports.push(...q.get("port").split(",").map(Number));
-  return { ports: ports.filter((p) => p !== null), databases };
 }
 
 /**
- * Runs `store_check` (shell, worktree, env, bounded by `deadline`): its output must be `store`. No URL
- * in `env` may equal a value in the repo's env files (`.env`, `.env.local`, the contract's
- * `guard.envFiles`; read here, never printed) or name a port or database the contract's
- * `guard.postgres` protects. Refusals name the key, never a value.
+ * The store checks of `up` steps 6 and 7. The store must not be a database `guard.postgres` protects.
+ * `store_check` (shell, worktree, bounded by `timeoutS`) must print `store` under the instance env
+ * and under the env of every `start` entry that sets its own. No value in those envs may point at a
+ * service the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read
+ * here, never printed) — the same local endpoint, or the same service and database anywhere — nor
+ * name a port or database `guard.postgres` protects (a URL, `jdbc:` URL, libpq DSN, a bare port
+ * number or a bare database name). Refusals name the key, never a value.
  */
-export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, runner = runAsync }) {
-  const left = msLeft(deadline, "checkStore");
-  const r = await runner(["/bin/sh", "-c", config.store_check], { cwd: worktree, env, capture: true, timeoutMs: Math.max(0, left) });
-  if (r.timedOut) throw new Error("failed: store_check timed out (the cycle's deadline)");
-  if (r.error || r.status !== 0) throw new Error(`failed: store_check ${r.error ? redact(r.error.message, secrets) : `exited ${r.status ?? r.signal}`}`);
-  const got = r.stdout.trim();
-  if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}", not the store "${config.store}"`);
+export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, runner = runAsync }) {
   const guard = (contract && contract.guard) || {};
+  const pg = guard.postgres || { ports: [], databases: [] };
+  if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres protects`);
+  const scopes = [{ label: "env", where: "", env }];
+  for (const e of config.start ?? []) if (e.env && Object.keys(e.env).length) scopes.push({ label: `start.${e.name}.env`, where: ` under the env of start entry ${e.name}`, env: { ...env, ...e.env } });
+  for (const scope of scopes) {
+    const left = Math.min(timeoutS * 1000, msLeft(deadline, "checkStore"));
+    const r = await shellOnce(config.store_check, { cwd: worktree, env: scope.env, secrets, timeoutMs: Math.max(0, left), capture: true, runner });
+    if (r.timedOut) throw new Error(`failed: store_check timed out${scope.where}`);
+    if (r.error || r.status !== 0) throw new Error(`failed: store_check${scope.where} ${r.error ? redact(r.error.message, secrets) : `exited ${r.status ?? r.signal}`}`);
+    const got = r.stdout.trim();
+    if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}"${scope.where}, not the store "${config.store}"`);
+  }
   const files = [".env", ".env.local", ...(guard.envFiles ?? [])];
-  const repo = new Set();
+  const owners = [];
   for (const f of files) {
     let text;
     try {
@@ -770,22 +835,30 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     } catch {
       continue;
     }
-    for (const v of Object.values(parseEnvFile(text))) if (v.trim()) repo.add(v.trim());
+    for (const v of Object.values(parseEnvFile(text))) {
+      const svc = service(v);
+      if (svc) owners.push(svc);
+    }
   }
-  const pg = guard.postgres || { ports: [], databases: [] };
-  for (const [k, raw] of Object.entries(env)) {
+  const values = [];
+  for (const [k, v] of Object.entries(env)) values.push([`env.${k}`, v]);
+  for (const e of config.start ?? []) for (const [k, v] of Object.entries(e.env ?? {})) values.push([`start.${e.name}.env.${k}`, v]);
+  for (const [key, raw] of values) {
     const v = String(raw).trim();
     if (/^\d+$/.test(v)) {
-      if (pg.ports.includes(Number(v))) throw new Error(`refused: env.${k} names port ${v}, which guard.postgres protects`);
+      if (pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
       continue;
     }
-    if (!URL_LIKE.test(v)) continue;
-    if (repo.has(v)) throw new Error(`refused: env.${k} equals a value in the repo's env files (${files.join(", ")}); it would reach the owner's service`);
-    const { ports, databases } = urlParts(v);
-    const port = ports.find((p) => pg.ports.includes(p));
-    if (port !== undefined) throw new Error(`refused: env.${k} names port ${port}, which guard.postgres protects`);
-    const db = databases.find((d) => pg.databases.includes(d));
-    if (db !== undefined) throw new Error(`refused: env.${k} names database ${db}, which guard.postgres protects`);
+    if (pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
+    const svc = service(v);
+    if (!svc) continue;
+    if (owners.some((o) => (svc.loopback && o.loopback && o.endpoint === svc.endpoint) || o.full === svc.full)) {
+      throw new Error(`refused: ${key} points at a service the repo's env files name (${files.join(", ")}); it would reach the owner's service`);
+    }
+    const port = svc.ports.find((p) => pg.ports.includes(p));
+    if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
+    const db = svc.databases.find((d) => pg.databases.includes(d));
+    if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
   }
 }
 
@@ -799,7 +872,13 @@ async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {},
   const from = fs.fstatSync(fd).size;
   let r;
   try {
-    r = await runner(["/bin/sh", "-c", cmd], { cwd: worktree, env, stdio: ["ignore", fd, fd], timeoutMs: left, onStart: (p) => groups.push({ name, pgid: p, cmdline: `/bin/sh -c ${cmd}` }) });
+    r = await runner(["/bin/sh", "-c", cmd], {
+      cwd: worktree,
+      env: { ...env, ...secretEnv(cmd, secrets) },
+      stdio: ["ignore", fd, fd],
+      timeoutMs: left,
+      onStart: (p) => groups.push({ name, pgid: p, cmdline: `/bin/sh -c ${cmd}` }),
+    });
   } finally {
     fs.closeSync(fd);
   }
@@ -813,7 +892,7 @@ async function startHealthy(entry, ctx) {
 }
 
 /**
- * `up` steps 6: the `phase: "store"` entries (started and healthy, one by one), `checkStore`, and only
+ * `up` step 6: the `phase: "store"` entries (started and healthy, one by one), `checkStore`, and only
  * then `reset`. `ctx` = {config (expanded), env, worktree, main, contract, secrets, logs, groups,
  * timeoutS, deadline}; every started group lands in `ctx.groups` as it starts.
  */

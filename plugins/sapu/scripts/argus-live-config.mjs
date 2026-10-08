@@ -225,15 +225,80 @@ export function expand(value, { ports = {}, secrets = {} } = {}) {
   });
 }
 
-/** A deep copy of `config` with every string expanded (`expand`); `config` itself is left as it is. */
+/** The variable a shell field reads secret `NAME` from. */
+const secretVar = (name) => `ARGUS_SECRET_${name}`;
+
+/** `["start", 0, "cmd"]`-style paths of the fields run by `/bin/sh -c`. */
+function isShellField(at) {
+  const k = at.join(".");
+  return /^(store_check|reset|start\.\d+\.(cmd|stop|health\.cmd)|roles\.[^.]+\.login\.command)$/.test(k);
+}
+
+/**
+ * A shell field expanded: `{port:…}` as everywhere, but `${NAME}` becomes a reference to the variable
+ * `ARGUS_SECRET_<NAME>`, quoted for where it stands (`"${…}"` outside quotes, `${…}` inside double
+ * quotes, `'"${…}"'` inside single quotes), so the shell reads the value as data from that command's
+ * environment (`secretEnv`) and it never appears in a command line. Throws `unset NAME` like `expand`.
+ */
+export function expandShell(value, { ports = {}, secrets = {} } = {}) {
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < value.length; ) {
+    const c = value[i];
+    if (c === "\\" && quote !== "'") {
+      out += value.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if ((c === "'" || c === '"') && (quote === null || quote === c)) {
+      quote = quote === null ? c : null;
+      out += c;
+      i++;
+      continue;
+    }
+    const secret = value.slice(i).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
+    if (secret) {
+      const name = secret[1];
+      if (!Object.hasOwn(secrets, name) || secrets[name] === "") throw new Error(`unset ${name}`);
+      const ref = `\${${secretVar(name)}}`;
+      out += quote === '"' ? ref : quote === "'" ? `'"${ref}"'` : `"${ref}"`;
+      i += secret[0].length;
+      continue;
+    }
+    const port = value.slice(i).match(/^\{port:[a-z][a-z0-9_-]*(?:=\d+)?\}/);
+    if (port) {
+      out += expand(port[0], { ports });
+      i += port[0].length;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/** The environment a shell field needs: `ARGUS_SECRET_<NAME>=<value>` for each secret it references. */
+export function secretEnv(cmd, secrets = {}) {
+  const env = {};
+  for (const [, name] of String(cmd ?? "").matchAll(/\$\{ARGUS_SECRET_([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+    if (Object.hasOwn(secrets, name)) env[secretVar(name)] = secrets[name];
+  }
+  return env;
+}
+
+/**
+ * A deep copy of `config` with every string expanded; `config` itself is left as it is. Shell fields
+ * (`store_check`, `reset`, `start[].cmd|stop|health.cmd`, `roles.<r>.login.command`) go through
+ * `expandShell`; everything else (argv lists, env values, URLs) gets the values themselves.
+ */
 export function expandConfig(config, { ports = {}, secrets = {} } = {}) {
-  const walk = (v) => {
-    if (typeof v === "string") return expand(v, { ports, secrets });
-    if (Array.isArray(v)) return v.map(walk);
-    if (isObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+  const walk = (v, at) => {
+    if (typeof v === "string") return isShellField(at) ? expandShell(v, { ports, secrets }) : expand(v, { ports, secrets });
+    if (Array.isArray(v)) return v.map((x, i) => walk(x, [...at, i]));
+    if (isObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x, [...at, k])]));
     return v;
   };
-  return walk(config);
+  return walk(config, []);
 }
 
 /**

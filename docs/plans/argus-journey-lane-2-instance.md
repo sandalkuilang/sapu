@@ -182,21 +182,29 @@ grandchild process that also sleeps (for the process-group test).
 
 Interfaces:
 - `export function expandConfig(config, {ports, secrets})` (config module) → a deep copy with every
-  string expanded; everything below takes the expanded config.
+  string expanded; everything below takes the expanded config. Shell fields (`store_check`, `reset`,
+  `start[].cmd|stop|health.cmd`, `roles.<r>.login.command`) go through `expandShell`: `${NAME}` →
+  a reference to `ARGUS_SECRET_<NAME>`, quoted for its context; `secretEnv(cmd, secrets)` gives that
+  command (and only it) the values. Recorded cmdlines therefore never hold a secret; setup's are
+  recorded with secrets masked.
 - `export async function startEntry(entry, {worktree, env, logs, groups})` → `{pid, pgid, log, exit}`:
-  refuses first when the entry's health `url` already answers (`refused: something already serves
-  <url>`) and when its `env` names HOME or COMPOSE_PROJECT_NAME; then `spawn("/bin/sh", ["-c", cmd],
+  refuses first when the entry's health already answers (a `url` that responds: `refused: something
+  already serves <url>`; a `cmd` that exits 0 within 5 s) and when its `env` names HOME or
+  COMPOSE_PROJECT_NAME; then `spawn("/bin/sh", ["-c", cmd],
   {cwd: worktree, env: {...env, ...entryEnv}, detached: true, stdio: [ignore, log, log]})`, logged to
   `<logs>/<name>.log` (`up` passes `.argus/live/<runId>/logs`); `pgid = pid`, pushed to `groups`.
 - `export async function waitHealth(entry, started, {timeoutS, aliveAfterMs, worktree, env})`: `{url}`
   → GET until 2xx; `{cmd}` → run until exit 0; omitted → alive after `aliveAfterMs` (5 s). A process
   that exits before health passes → throws unless it exited 0 and the entry has `stop`.
-- `export async function checkStore({config, env, worktree, main, contract, deadline})`: run
-  `store_check` (shell, cwd worktree, env) → trimmed stdout must equal `store`; every URL-looking
-  value in `env` must not equal a value in MAIN's env files (`.env`, `.env.local` and the contract's
-  `guard.envFiles`, parsed with `parseEnvFile`, values never printed) and must not name a database
-  or port the contract's `guard.postgres` protects (a `postgres` URL without a port names 5432; a
-  bare numeric value is checked as a port) → else throws `refused: …` naming the key only.
+- `export async function checkStore({config, env, worktree, main, contract, deadline, timeoutS})`:
+  refuses a `store` that `guard.postgres` protects; runs `store_check` (shell, cwd worktree, bounded
+  by `timeoutS`, its group killed after, stdout read until the process exits plus a short drain)
+  under `env` and again under each start entry's own env → each trimmed stdout must equal `store`;
+  every value in `env` and in every `start[].env` is read as a service (URL, `jdbc:` URL, libpq DSN)
+  and must not reach a service MAIN's env files name (`.env`, `.env.local`, the contract's
+  `guard.envFiles`; the same loopback endpoint, or the same scheme, endpoint and path) nor name a
+  port or database `guard.postgres` protects (bare port numbers and bare database names too) → else
+  throws `refused: …` naming the key only.
 - `export async function bringUpStore(ctx)` / `bringUpRest(ctx)`: the order inside `up` — store-phase
   entries (started and healthy one by one) → `checkStore` → `reset` (its group recorded too); then
   the remaining entries → health → `checkStore` again. Every group lands in `ctx.groups` as it starts.
@@ -257,6 +265,8 @@ Interfaces:
   exists and whose `env.COMPOSE_PROJECT_NAME` is `argus-<runId>` (others journalled, never run);
   kills a recorded group only when `ps -o command= -p <pgid>` still equals the recorded `cmdline`;
   removes the old worktree and its HOME; appends `end` for the old run.
+- Stop records replay their `cmd` with `secretEnv(cmd, secrets)` (a stop is a shell field: its
+  recorded command holds variable references, never values).
 - Process groups: `down` and `recover` kill every recorded group, the setup groups included
   (`kill -pgid`, SIGTERM then SIGKILL), so a daemon a setup left behind in its group dies too.
 - Stale records (carried from the Task 2 review): `recover` (and `takeLock`'s return) scans every
