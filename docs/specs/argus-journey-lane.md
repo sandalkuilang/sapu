@@ -353,6 +353,10 @@ real personal or business data), so screenshots and page text may appear in issu
 also lists the tracked config files and code defaults that name a local service (a cache, queue,
 object store, search engine, mail server) and asks for each one's isolated address under `services`.
 
+**Role names** match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<n>` names an account); `anon` and
+`system` are reserved. Tools outside the guard's hook matcher (WebFetch, WebSearch, Skill and the
+like) are kept from the explorer by its frontmatter alone, which an engine test pins.
+
 **The run's origins** = the origins of `base_url`, of each `roles.<r>.base_url`, and of every
 `{port:<name>}` allocated this run on those URLs' hosts. `allow_origins` entries are full origins
 (`scheme://host:port`), never bare hosts.
