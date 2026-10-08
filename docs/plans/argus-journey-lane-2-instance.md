@@ -333,9 +333,12 @@ As built (where it differs from, or adds to, the interfaces below):
 - `writeRunFiles(main, state, {runner, secrets})` writes run.json whole (temp file renamed into place,
   mode 0600), so `up` may rewrite it as the run grows; `worktree` may be null until it exists; keys
   beyond the listed ones pass through (`env` = the instance env and `since` = the daemon's clock at
-  `up`, both for `down`'s runtime gate; `reaper`). Each group's `cmdline` and its `members` ({pid,
-  cmdline}) are read from `ps -A -ww` as they stand, secret values masked: `/bin/sh -c <one command>`
-  execs that command, so `/bin/sh -c …` as recorded at spawn would never match at recovery.
+  `up`, both for `down`'s runtime gate); the `reaper` pid of an earlier write is kept unless `state`
+  names one. Each group's `cmdline` and its `members` ({pid, cmdline}) are read from `ps -A -ww` as
+  they stand, secret values masked: `/bin/sh -c <one command>` execs that command, so `/bin/sh -c …`
+  as recorded at spawn would never match. `startEntry`, `runSetup` and `runStep` set `exited` on a
+  group record when its leader exits; a group with `exited` whose pid a process holds is not
+  refreshed (pid reuse: that process is someone else's).
 - `startEntry(entry, {…, stops})` pushes the entry's stop record `{name, cmd, cwd, env}` as soon as it
   started (before its health), so a failed health still gets its stop replayed.
 - `logsDir(main, runId)` = `.argus/live/<runId>/logs` (kept by `down`); stop replays log to
@@ -344,18 +347,25 @@ As built (where it differs from, or adds to, the interfaces below):
   re-reads the lock at least every 60 s. `argus-live.mjs` exists with `reap <runId>` only (Task 8 adds
   the rest).
 - `down(main, {runId, record, secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs})` →
-  `{report}`: runtime gate (a finding reported) → reaper signalled (only while its pid still runs
-  `argus-live.mjs reap <runId>`, never itself) → stops replayed last-started first (cwd must exist) →
-  groups SIGTERM, SIGKILL after `graceMs` → its own worktree, HOME, setup log (a recorded worktree
-  that is not `<sapu-live>/<repo>-<runId>` is left and reported) → run.json → the lock, under its
-  claim → `end`. `record` (the in-memory run) replaces run.json, for an `up` that fails before its
-  run files are written. It throws only when another process holds the lock's claim (after waiting
-  `claimWaitMs` for a live, fresh holder): the teardown is done, the lock and the end line wait.
+  `{report}`: runtime gate (a finding reported) → stops replayed last-started first (cwd must exist)
+  → groups that still run what was recorded SIGTERM, SIGKILL after `graceMs` → its own worktree,
+  HOME, setup log (made writable first; a recorded worktree that is not `<sapu-live>/<repo>-<runId>`
+  is left and reported; `git worktree prune` only after the directory had to be removed by hand) →
+  the reaper, last (only while its pid still runs `argus-live.mjs reap <runId>`, never itself; once
+  the reaper is in its own `down` it ignores SIGTERM) → run.json → the lock, under its claim → `end`.
+  Each step's failure is reported and the next runs; run.json, the lock and `end` always finish.
+  `record` (the in-memory run of this process) replaces run.json, for an `up` that fails before its
+  run files are written; its groups are refreshed from ps first. It throws only when another process
+  holds the lock's claim (after waiting `claimWaitMs` for a live, fresh holder): the teardown is done,
+  the lock and the end line wait.
 - `recover(main, {secrets, …})` → `{recovered, report}` takes no `stale` argument: it recovers every
   `staleRecords(main)` entry; `takeLock` returns them as `staleRuns` (the taken-over lock included;
-  `stale` is kept). Spec §8 step 1's "process group whose recorded command line still matches" is
-  read as: its leader's command line equals the recorded one, or, with the leader gone (a setup's
-  daemon), one of its members has a recorded pid and command line — so the setup groups die too.
+  `stale` is kept); a run.json that does not name the stale run is reported (its stops and groups
+  are unknown). Recovery always finishes run.json, `end` and the claim's removal, each failure
+  reported. `down` and `recover` kill by one rule (spec §8 `down`): a group still runs what was
+  recorded when its leader shows the recorded command line, or a member a recorded pid and command
+  line (a setup's daemon, its leader gone) — never a group whose own leader exited while a process
+  holds its pid.
 - `claimBusy`: a claim older than 30 s (mtime) counts as interrupted even when its pid is alive.
 
 Interfaces:
@@ -417,6 +427,9 @@ Carried from Task 7:
   for the reaper and for recovery; start the reaper as soon as run.json exists. On a refusal or failure,
   `down(main, {runId, record: <the in-memory run>, secrets})` covers groups not yet written.
 - `ctx` carries `stops: []` beside `groups`; `bringUpStore`/`bringUpRest` hand it to `startEntry`.
+  Keep the group records themselves (not copies) in the in-memory run: `exited` is set on them as
+  leaders exit, and `writeRunFiles`/`down({record})` rely on it.
+- `writeRunFiles` keeps the `reaper` pid from the run.json it replaces; pass `reaper` only to change it.
 - run.json gets `env` (the instance env) and `since` (`daemonNow` or `Date.now()`), and every
   `writeRunFiles` call gets `{secrets}` (members' command lines are masked with them). The last write
   (step 11) comes after every health check, so the recorded command lines are the exec'd ones.

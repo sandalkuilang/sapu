@@ -2359,6 +2359,8 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
         }
       }
     }
+    // A read-only tree a test left behind must not stop the temp dirs' removal.
+    spawnSync("chmod", ["-R", "u+w", tmp]);
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   });
@@ -2466,8 +2468,13 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(runJson(r.main).reaper).toBe(reaper);
     expect(readFileSync(join(r.main, ".argus/live/run.json"), "utf8")).not.toContain(SECRETS.PW);
     expect(await until(() => execFileSync("ps", ["-ww", "-o", "command=", "-p", String(reaper)], { encoding: "utf8" }).includes(`reap ${r.runId}`), 5000)).toBe(true);
+    // A later write keeps the reaper's pid; this stop (replayed first) sees whether the reaper still runs.
+    stops.push({ name: "probe", cmd: 'kill -0 "$REAPER" && echo alive > "$OUT/reaper.txt"', cwd: r.wt, env: { ...r.env, OUT: out, REAPER: String(reaper) } });
+    writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: { app: port }, origins: [], groups, stops, env: r.env });
+    expect(runJson(r.main).reaper).toBe(reaper);
 
     const res = await down(r.main, { runId: r.runId, secrets: SECRETS, graceMs: 3000 });
+    expect(readFileSync(join(out, "reaper.txt"), "utf8")).toBe("alive\n"); // the reaper goes last
     expect(readFileSync(join(out, "stop.txt"), "utf8").trim().split("\n")).toEqual([r.wt, `argus-${r.runId}`, SECRETS.PW]);
     expect(await until(() => ![s.pid, child, daemon, reaper].some(alive), 5000)).toBe(true);
     expect(existsSync(r.wt)).toBe(false);
@@ -2482,7 +2489,9 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
   it("down removes only the run's own worktree: a run.json naming another path (the main checkout) leaves it, and says so", async () => {
     const r = liveRun();
     writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: realpathSync(r.main), ports: {}, origins: [], groups: [], stops: [], env: r.env });
-    const res = await down(r.main, { runId: r.runId, graceMs: 500 });
+    const calls: string[][] = [];
+    const res = await down(r.main, { runId: r.runId, graceMs: 500, runner: (argv: string[], o: Obj) => (calls.push(argv), run(argv, o)) });
+    expect(calls.some((a) => a.includes("prune"))).toBe(false); // git removed the worktree itself: no repo-wide prune
     expect(readFileSync(join(r.main, "app.txt"), "utf8")).toBe("app\n");
     expect(res.report.join("\n")).toContain(`run.json names the worktree ${realpathSync(r.main)}, which is not the run's own`);
     expect(existsSync(r.wt)).toBe(false); // the run's own, by its id, still goes
@@ -2611,7 +2620,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(report).toContain(`stop cwd-gone: its cwd ${join(tmp, "gone")} is gone; journalled, not run`);
     expect(report).toContain(`stop no-project: its env does not name COMPOSE_PROJECT_NAME=argus-${r.runId}; journalled, not run`);
     expect(report).toContain(`stop other-project: its env does not name COMPOSE_PROJECT_NAME=argus-${r.runId}; journalled, not run`);
-    expect(report).toContain(`process group ${changed} (a): its command line changed since it was recorded; not killed`);
+    expect(report).toContain(`process group ${changed} (a): what runs in it is not what was recorded; not killed`);
     expect(await until(() => !alive(same) && !execFileSync("ps", ["-A", "-o", "pgid="], { encoding: "utf8" }).split("\n").some((g) => Number(g) === setup), 5000)).toBe(true);
     expect(alive(changed)).toBe(true);
     expect(existsSync(r.wt)).toBe(false);
@@ -2619,6 +2628,110 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
     expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
     expect(readLock(r.main).runId).toBe(l.runId);
+  });
+
+  describe("pid reuse: a process of the owner's on a recorded pgid", () => {
+    const ownerProcess = async (cmd: string) => {
+      const pid = group(cmd); // detached: its own group, pgid = pid, as a reused pid would be
+      expect(await until(() => execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).trim() === cmd, 3000)).toBe(true);
+      return pid;
+    };
+
+    it("writeRunFiles does not record it once the group's own leader exited, and down does not kill it", async () => {
+      const r = liveRun();
+      const owner = await ownerProcess("sleep 603");
+      // Our setup step's leader exited; its pgid now names the owner's process.
+      const groups = [{ name: "setup[0]", pgid: owner, cmdline: "npm ci", exited: true }];
+      writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups, stops: [], env: r.env });
+      expect(runJson(r.main).groups).toEqual([{ name: "setup[0]", pgid: owner, cmdline: "npm ci", exited: true }]);
+      const res = await down(r.main, { runId: r.runId, graceMs: 500 });
+      expect(alive(owner)).toBe(true);
+      expect(res.report).toContain(`process group ${owner} (setup[0]): what runs in it is not what was recorded; not killed`);
+      expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end `));
+    });
+
+    it("a recorded group whose leader and members now run something else survives down and recover", async () => {
+      const recorded = (owner: number) => [{ name: "app", pgid: owner, cmdline: "node server.mjs", members: [{ pid: owner, cmdline: "node server.mjs" }] }];
+      const a = liveRun();
+      const owner = await ownerProcess("sleep 604");
+      writeRunFiles(a.main, { runId: a.runId, instanceId: "i-1", worktree: a.wt, ports: {}, origins: [], groups: [], stops: [], env: a.env });
+      writeFileSync(join(a.main, ".argus/live/run.json"), JSON.stringify({ ...runJson(a.main), groups: recorded(owner) }));
+      await down(a.main, { runId: a.runId, graceMs: 500 });
+      expect(alive(owner)).toBe(true);
+      const b = liveRun();
+      writeRunFiles(b.main, { runId: b.runId, instanceId: "i-1", worktree: b.wt, ports: {}, origins: [], groups: [], stops: [], env: b.env });
+      writeFileSync(join(b.main, ".argus/live/run.json"), JSON.stringify({ ...runJson(b.main), groups: recorded(owner) }));
+      setLock(b.main, { runId: b.runId, start: now() - 7200, deadline: now() - 60 });
+      takeLock(b.main, { maxCycleMinutes: 45 });
+      const res = await recover(b.main, { graceMs: 500 });
+      expect(alive(owner)).toBe(true);
+      expect(res.report).toContain(`${b.runId}: process group ${owner} (app): what runs in it is not what was recorded; not killed`);
+    });
+
+    it("down from the in-memory record of a failed up kills the groups it started, the exec'd leader too", async () => {
+      const r = liveRun();
+      const port = await freePort();
+      const groups: Obj[] = [];
+      const entry = { name: "app", cmd: app(), env: { PORT: String(port) }, health: { url: `http://127.0.0.1:${port}/health` } };
+      const s = await startEntry(entry, { worktree: r.wt, env: r.env, logs: logsDir(r.main, r.runId), groups });
+      started.push(s.pgid);
+      await waitHealth(entry, s, { timeoutS: 20, worktree: r.wt, env: r.env });
+      expect(groups[0].cmdline).toBe(`/bin/sh -c ${app()}`); // as recorded at spawn, before sh exec'd it
+      await down(r.main, { runId: r.runId, record: { runId: r.runId, worktree: r.wt, groups, stops: [] }, graceMs: 2000 });
+      expect(await until(() => !alive(s.pid), 3000)).toBe(true);
+    });
+  });
+
+  it("down and recover remove read-only trees (a module cache); a removal that still fails is reported, and run.json, lock, end and claim are finished anyway", async () => {
+    const readOnly = (dir: string) => {
+      const d = join(dir, "pkg/mod/m@v1");
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "go.mod"), "module m\n");
+      for (const x of [d, join(dir, "pkg/mod"), join(dir, "pkg")]) chmodSync(x, 0o555);
+    };
+    const a = liveRun();
+    readOnly(a.home);
+    readOnly(a.wt);
+    writeRunFiles(a.main, { runId: a.runId, instanceId: "i-1", worktree: a.wt, ports: {}, origins: [], groups: [], stops: [], env: a.env });
+    await down(a.main, { runId: a.runId, graceMs: 200 });
+    expect(existsSync(a.wt)).toBe(false);
+    expect(existsSync(a.home)).toBe(false);
+    expect(liveFiles(a.main)).toEqual([]); // no lock, no run.json (no stop ran, so no logs)
+    expect(logOf(a.main).at(-1)).toMatch(new RegExp(`^${a.runId} end `));
+
+    const root = join(realpathSync(tmp), "sapu-live");
+    const b = liveRun();
+    const c = liveRun();
+    for (const x of [b, c]) writeRunFiles(x.main, { runId: x.runId, instanceId: "i-1", worktree: x.wt, ports: {}, origins: [], groups: [], stops: [], env: x.env });
+    setLock(c.main, { runId: c.runId, start: now() - 7200, deadline: now() - 60 });
+    const l = takeLock(c.main, { maxCycleMinutes: 45 });
+    chmodSync(root, 0o500); // nothing in it can be removed now
+    let rb: Obj;
+    let rc: Obj;
+    try {
+      rb = await down(b.main, { runId: b.runId, graceMs: 200 });
+      rc = await recover(c.main, { graceMs: 200 });
+    } finally {
+      chmodSync(root, 0o700);
+    }
+    expect(rb.report.join("\n")).toContain(`${b.wt} could not be removed`);
+    expect(liveFiles(b.main)).toEqual([]);
+    expect(logOf(b.main).at(-1)).toMatch(new RegExp(`^${b.runId} end `));
+    expect(rc.report.join("\n")).toContain(`${c.wt} could not be removed`);
+    expect(liveFiles(c.main)).toEqual(["lock.json"]);
+    expect(readLock(c.main).runId).toBe(l.runId);
+    expect(logOf(c.main).filter((x) => x.startsWith(`${c.runId} end `))).toHaveLength(1);
+    expect(staleRecords(c.main)).toEqual([]);
+  });
+
+  it("recover says when run.json does not name the stale run: its stops and groups are unknown", async () => {
+    const main = committed();
+    const OLD = { runId: "20261008080000-0badc0de", start: now() - 7200, deadline: now() - 60 };
+    mkdirSync(join(main, ".argus/live"), { recursive: true });
+    setLock(main, OLD);
+    takeLock(main, { maxCycleMinutes: 45 });
+    const res = await recover(main, { graceMs: 200 });
+    expect(res.report).toContain(`${OLD.runId}: run.json does not name this run: its stop records and process groups are unknown, so what they started may be left running`);
   });
 
   describe("the reaper", () => {

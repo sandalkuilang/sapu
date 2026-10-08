@@ -407,7 +407,7 @@ defence in depth and not enforcement:
    deadline has not passed → refuse: another cycle is running; it is never
    "recovered". A lock past its deadline → recovery first: each recorded stop replayed exactly as
    recorded (`{cmd, cwd, env}`; one whose cwd is gone or whose env lacks its `COMPOSE_PROJECT_NAME`
-   is journalled, never run), each process group whose recorded command line still matches, each
+   is journalled, never run), each process group that still runs what was recorded (below), each
    recorded CLI session by name, the proxy, the worktree and its HOME.
 2. **Refusals**, each naming its cause: no `reset`, `store` or `store_check`; a `confirmed` value not
    true; no `logged_in`; an unset `${NAME}` (its value never printed); a host in `base_url` or a
@@ -572,10 +572,17 @@ it stops every `start` entry (running its `stop`), starts the `phase: store` ent
 `store_check` and `reset`, starts the rest, runs `store_check` and the egress check again, and takes a
 new instance id. It makes no proving logins.
 
-**`down`** replays each stop record, sends SIGTERM to each process group and SIGKILL after 10 s,
-stops the proxy, closes the run's CLI sessions by name (never `close-all`: other projects share the
-CLI), kills the reaper, removes its own worktree (`--force` on that worktree only) and its HOME,
-`run.json` and the lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset.
+**`down`** replays each stop record, sends SIGTERM to each process group that still runs what was
+recorded and SIGKILL after 10 s, stops the proxy, closes the run's CLI sessions by name (never
+`close-all`: other projects share the CLI), removes its own worktree (`--force` on that worktree only)
+and its HOME (read-only trees made writable first), kills the reaper last, removes `run.json` and the
+lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset. A step
+that fails is reported and the next one runs: `run.json`, the lock and the end line are always
+finished, and what could not be removed is named for the owner. A group "still runs what was
+recorded" when its leader shows the command line `run.json` recorded for it, or one of its members the
+recorded pid and command line (a daemon a setup left behind, its leader gone); a group whose own
+leader has exited while a process holds its pid is someone else's (a pid is not reused while its group
+lives), so it is neither recorded nor killed. `down` and recovery kill by this rule alone.
 Known limit: process groups are the unit of every kill, so a process that leaves its group (one that
 calls `setsid`, a daemon that double-forks) escapes them. It is then outside the run's groups, so the
 egress check does not see it either; it surfaces only when the next `up` finds its port taken.
@@ -855,6 +862,13 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Repro exits other than 0 or a valid 3 | journalled as H2 with the failing step and the trace path; never filed |
 | `scrub` refuses | the issue is not filed; the candidate is journalled with the reason |
 | `git worktree remove` refuses a worktree the instance dirtied | `--force` on the run's own worktree only |
+| `down` or recovery cannot remove something (a read-only module cache, a directory it may not write) | read-only trees are made writable first (symlinks not followed); what still cannot be removed is named in the report; `run.json`, the lock, the end line and the stale run's claim are finished anyway, so the next `up` is not blocked |
+| A recorded process group now runs something else (its pid reused by the owner's process) | not killed; named in the report |
+
+`run.json` (mode 0600, under the gitignored `.argus/`) holds the run's expanded environment, secret
+values included (an `env` value that names `${NAME}` holds the value): its stop records are replayed
+with exactly that environment. `down` and recovery remove it; shell fields keep only references
+(`ARGUS_SECRET_<NAME>`), and command lines recorded from `ps` are stored with secret values masked.
 
 ## 13. Cost
 
