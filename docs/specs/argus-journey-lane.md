@@ -733,7 +733,9 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   env, removes the worktree and run files, kills the reaper; recovery refuses a stop record without
   its cwd or `COMPOSE_PROJECT_NAME`; the reaper runs `down` at the deadline, `renew` moves it and
   stops at the cap, and a reaper for another run exits without acting; `up --fresh` keeps the lock
-  and makes no proving logins; `sapu-live.log` gets start and end lines.
+  and makes no proving logins; `sapu-live.log` gets, in epoch seconds under a run id unique per run,
+  a start line when `up` takes the lock (before setup), a `deadline` line at every `renew`, and an end
+  line from `down` and from an `up` that fails after its start line.
 - **Wrapper:** each refused command, flag and file argument; each refused URL and path (`//x`, `/\x`,
   `javascript:`, `data:`, `file:`, `view-source:`, `http://localhost:<port>@x.test`); an unknown,
   retired or foreign-slot token; a role outside the allocation; a `trigger` value with a leading `-`
@@ -766,18 +768,29 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   needs-owner label on the resulting issue.
 
 Elsewhere:
-- `tests/sapu-guard.test.ts`: the explorer's Bash allowlist (allowed chains; refused `$VAR`, globs,
-  env prefixes, pipes, `printenv`, `node -e`, `gh`, a wrapper path that is not the plugin's own); its
-  Read limits (an untracked file, `.argus/config.yml` in any case, a home file) and Grep/Glob refused;
-  `labels.needsOwner` add and remove refused through `gh issue edit`, `gh pr edit`, `gh api` and
-  `gh label …` for every subagent, while `gh issue create --label` passes.
+- `tests/sapu-guard.test.ts`: the explorer's Bash allowlist (allowed chains; a leading `-` in a plain
+  word; `'O'\''Brien'` allowed and read as `O'Brien`; the wrapper by a symlink or a `..` path that
+  resolves to it; refused `$VAR`, globs, env prefixes, pipes, `printenv`, `node -e`, `gh`, `'a'\''b'c`,
+  `\'` outside a quoted word, another file, a missing or relative wrapper path, and an unresolvable
+  wrapper); its tools (Agent, Task, Workflow, Grep, Glob and any other tool refused, StructuredOutput
+  allowed); its Read limits (an untracked file, a file staged but not committed, `.argus/config.yml`
+  in any case, a home file); `labels.needsOwner` add and remove refused through `gh issue edit`,
+  `gh pr edit`, `gh api` and `gh label …` for every subagent, while `gh issue create --label` passes;
+  a not-planned close refused for every subagent through `gh issue close --reason`/`-r` (each
+  spelling and the `=` and glued forms), `gh api` `state_reason` (`-f`, `-F`, `--raw-field`,
+  `--field=`), an unreadable issue body, GraphQL `closeIssue` with `NOT_PLANNED` inline or as a
+  variable, and MCP fields, while a completed close passes.
 - `tests/sapu-merge.test.ts`: ` live=1` written when the gate overlaps an interval in
-  `sapu-live.log`, including a run that started and ended inside the gate, and not otherwise; a
-  `live=1` red never proves a flake.
-- `tests/sapu-contract.test.ts`: `journey` in `SKILLS`; `allowed journey`; `labels.needsOwner`;
-  argus's SELECT skips the lane when `allowed journey` fails; the inspector workflow never selects it.
+  `sapu-live.log`, including a run that started and ended inside the gate and a renewed run past its
+  first deadline, and not otherwise; an earlier `deadline` line never shortens a run; a setup-failed
+  line carries ` live=1`; a `live=1` red, or a `live=1` green half, never proves a flake; a live red
+  verdict says it ran beside a journey cycle.
+- `tests/sapu-contract.test.ts`: `journey` in `SKILLS`; `allowed journey`; `labels.needsOwner`, which
+  must differ in any case from the acceptance, in-progress and done labels and not start with the
+  tier prefix (the default checked too); argus's SELECT skips the lane when `allowed journey` fails;
+  the inspector workflow never selects it.
 - `tests/engine.test.ts`: the new files are English and name no repo; size budgets for `journeys.md`
-  and the agent file; argus SKILL.md grows by at most its one-sentence pointer and the lane name in
+  and the agent file; the agent file's frontmatter is `tools: Bash, Read, StructuredOutput`; argus SKILL.md grows by at most its one-sentence pointer and the lane name in
   SELECT; B2's SKIP names `labels.needsOwner`; `/sapu:init` adds `env_file` to `guard.envFiles` and
   creates the label.
 - Acceptance: the pilots in §15.
@@ -785,7 +798,9 @@ Elsewhere:
 ## 15. Rollout
 
 - **Release** 2.9.0 through the usual checklist (merge, tag, upgrade the repos that use sapu when
-  idle, restart). The upgrade note covers the skills question and the new label.
+  idle, restart). The upgrade note covers the skills question, the new label, and the stricter owner
+  labels (an `accepted` or `needsOwner` label with spaces or `, = " ' / [ ] { } ( ) %` is refused and
+  must be renamed).
 - **Pilot 1**, the repo argus has run on longest: three journeys — one cross-role money journey under
   separation of duties, one self-serve journey at phone width, one internal approval journey.
   Repo-side prep, through that repo's normal PR flow: an explore datastore with its `store_check`
