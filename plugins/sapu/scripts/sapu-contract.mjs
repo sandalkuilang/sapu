@@ -122,6 +122,9 @@ export function resolveSpecialists(c) {
   return Object.fromEntries(SPECIALIST_ROLES.map((r) => [r, isStr(own[r]) ? own[r] : builtIn(r)]));
 }
 
+/** Characters the guard's label matcher splits command text on (or URL-decodes), so a label holding one can never be recognised. */
+const UNRECOGNISABLE_LABEL = /[\s,="'/[\]{}()%]/;
+
 /** The acceptance label when the contract's optional `labels.accepted` names none. */
 export const DEFAULT_ACCEPTED_LABEL = "sapu:accepted";
 /** A login as `trustedAuthors` writes it: letters, digits, hyphens; an app as `app/<name>` or `<name>[bot]`. */
@@ -278,7 +281,7 @@ export function validate(c) {
     for (const k of ["tierPrefix", "inProgress", "done"]) need(isStr(c.labels[k]), `labels.${k} must be a non-empty string`);
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
     if ("needsOwner" in c.labels) need(isStr(c.labels.needsOwner), `labels.needsOwner must be a non-empty label name (omit it for ${DEFAULT_NEEDS_OWNER_LABEL})`);
-    if (isStr(c.labels.needsOwner)) need(!/[\s,="'/[\]{}()]/.test(c.labels.needsOwner), `labels.needsOwner must not contain spaces or any of , = " ' / [ ] { } ( ) (the guard could not recognise it)`);
+    for (const k of ["accepted", "needsOwner"]) if (isStr(c.labels[k])) need(!UNRECOGNISABLE_LABEL.test(c.labels[k]), `labels.${k} must not contain spaces or any of , = " ' / [ ] { } ( ) % (the guard could not recognise it)`);
     if (!("needsOwner" in c.labels) || isStr(c.labels.needsOwner)) need(needsOwnerLabel(c).toLowerCase() !== acceptedLabel(c).toLowerCase(), `labels.needsOwner must differ from the acceptance label: both are "${needsOwnerLabel(c)}"`);
   } else if (!(noTraces && !("labels" in c))) errs.push("labels must be an object");
   need(c.securityEpic === null || (Number.isInteger(c.securityEpic) && c.securityEpic > 0), "securityEpic must be an issue number or null");

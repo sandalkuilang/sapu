@@ -1307,10 +1307,23 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must be a non-empty label name/);
   });
 
-  it.each([["owner/decide"], ["needs owner"]])("refuses labels.needsOwner %s, which the guard could not recognise", (v) => {
+  it.each([["owner/decide"], ["needs owner"], ["a%2Cb"]])("refuses labels.needsOwner %s, which the guard could not recognise", (v) => {
     const c = clone();
     c.labels.needsOwner = v;
     expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must not contain spaces or any of/);
+  });
+
+  it.each([["triage ok"], ["triage/ok"], ["a%2Cb"]])("refuses labels.accepted %s, which the guard could not recognise", (v) => {
+    const c = clone();
+    c.labels.accepted = v;
+    expect(validate(c).join("\n")).toMatch(/labels\.accepted must not contain spaces or any of/);
+  });
+
+  it("still accepts plain owner label names", () => {
+    const c = clone();
+    c.labels.accepted = "triage:ok";
+    c.labels.needsOwner = "owner:decide";
+    expect(validate(c)).toEqual([]);
   });
 
   it("refuses a needs-owner label equal to the acceptance label, whatever the case", () => {
