@@ -17,6 +17,7 @@ import {
   bringUpRest,
   bringUpStore,
   checkCompose,
+  checkDockerRuntime,
   checkEgress,
   checkStore,
   dockerEnv,
@@ -1860,6 +1861,82 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(message(() => instanceEnv({ ...base, config: { env: { [k]: "x" } } }))).toBe(`refused: env may not set ${k}`);
         expect(message(() => instanceEnv({ ...base, config: { pass_env: [k] } }))).toBe(`refused: pass_env may not name ${k}`);
       }
+    });
+  });
+
+  describe("the Docker runtime gate", () => {
+    const P = "argus-run1";
+    const LABEL = "com.docker.compose.project";
+    const T0 = Date.now();
+    const at = (s: number) => new Date(T0 + s * 1000).toISOString();
+    const NEVER = new Date(Date.UTC(1, 0, 1)).toISOString();
+    type State = { containers: Obj[]; volumes: Obj[]; networks: Obj[] };
+    const state = (): State => ({
+      containers: [{ Id: "c1", Name: `/${P}-db-1`, Created: at(10), State: { StartedAt: at(11) }, Config: { Labels: { [LABEL]: P } }, Mounts: [{ Type: "volume", Name: `${P}_pgdata` }, { Type: "volume", Name: "anon1" }], NetworkSettings: { Networks: { [`${P}_default`]: {} } } }, { Id: "c0", Name: "/owner-db", Created: at(-3600), State: { StartedAt: at(-3600) }, Config: { Labels: { [LABEL]: "owner" } }, Mounts: [], NetworkSettings: { Networks: { owner_default: {} } } }],
+      volumes: [{ Name: `${P}_pgdata`, CreatedAt: at(10), Labels: { [LABEL]: P } }, { Name: "anon1", CreatedAt: at(10), Labels: { "com.docker.volume.anonymous": "" } }, { Name: "owner_pgdata", CreatedAt: at(-3600), Labels: { [LABEL]: "owner" } }, { Name: "old_anon", CreatedAt: at(-3600), Labels: { "com.docker.volume.anonymous": "" } }],
+      networks: [{ Id: "n1", Name: `${P}_default`, Created: at(10), Labels: { [LABEL]: P } }, { Id: "n0", Name: "bridge", Created: at(-86400), Labels: {} }, { Id: "n2", Name: "none", Created: at(-86400), Labels: {} }, { Id: "n3", Name: "owner_default", Created: at(-3600), Labels: { [LABEL]: "owner" } }],
+    });
+    /** A fake docker over `s`: `ps`, `inspect --type container`, `volume ls|inspect`, `network ls|inspect`. */
+    const fake = (s: State, calls: Obj[] = []) => (argv: string[], opts: Obj = {}) => {
+      calls.push({ argv, env: opts.env });
+      const a = argv.slice(1).join(" ");
+      const pick = (list: Obj[], key: string) => JSON.stringify(list.filter((x) => argv.includes(x[key])));
+      const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
+      if (a === "ps -aq --no-trunc") return ok(s.containers.map((c) => c.Id).join("\n"));
+      if (a.startsWith("inspect --type container")) return ok(pick(s.containers, "Id"));
+      if (a === "volume ls -q") return ok(s.volumes.map((v) => v.Name).join("\n"));
+      if (a.startsWith("volume inspect")) return ok(pick(s.volumes, "Name"));
+      if (a === "network ls -q --no-trunc") return ok(s.networks.map((n) => n.Id).join("\n"));
+      if (a.startsWith("network inspect")) return ok(pick(s.networks, "Id"));
+      return { status: 1, stdout: "", stderr: `unexpected ${a}` };
+    };
+    const gate = (s: State, over: Obj = {}) => {
+      const main = realpathSync(tempDir());
+      const worktree = realpathSync(tempDir());
+      return message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P, DOCKER_HOST: "unix:///x.sock" }, main, worktree, runner: fake(s), ...over }));
+    };
+
+    it("the run's own containers, volumes (named and new anonymous ones) and networks pass; the owner's untouched ones are not looked at", () => {
+      const calls: Obj[] = [];
+      expect(message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P, DOCKER_HOST: "unix:///x.sock" }, main: tempDir(), worktree: tempDir(), runner: fake(state(), calls) }))).toBe("ok");
+      expect(calls.every((c) => c.argv[0] === "docker" && c.env.DOCKER_HOST === "unix:///x.sock")).toBe(true);
+    });
+
+    it.each([
+      ["a container created during the cycle outside the project", (s: State) => s.containers.push({ Id: "c2", Name: "/scratch", Created: at(20), State: { StartedAt: NEVER }, Config: { Labels: {} }, Mounts: [], NetworkSettings: { Networks: { bridge: {} } } }), /^refused: container scratch was created or started during the cycle and is not of the run's Compose project argus-run1/],
+      ["an owner's container started during the cycle", (s: State) => (s.containers[1].State.StartedAt = at(30)), /^refused: container owner-db was created or started during the cycle/],
+      ["a run container mounting the owner's volume", (s: State) => s.containers[0].Mounts.push({ Type: "volume", Name: "owner_pgdata" }), /^refused: container argus-run1-db-1 mounts volume owner_pgdata, which is not the run's/],
+      ["a run container mounting an old anonymous volume", (s: State) => s.containers[0].Mounts.push({ Type: "volume", Name: "old_anon" }), /^refused: container argus-run1-db-1 mounts volume old_anon/],
+      ["a run container on the default bridge", (s: State) => (s.containers[0].NetworkSettings.Networks.bridge = {}), /^refused: container argus-run1-db-1 joins network bridge, which is not the run's/],
+      ["a run container on the owner's network", (s: State) => (s.containers[0].NetworkSettings.Networks.owner_default = {}), /^refused: container argus-run1-db-1 joins network owner_default/],
+      ["a run container bind-mounting the Docker socket", (s: State) => s.containers[0].Mounts.push({ Type: "bind", Source: "/var/run/docker.sock" }), /^refused: container argus-run1-db-1 bind-mounts a container runtime or datastore socket/],
+      ["a volume created during the cycle outside the project", (s: State) => s.volumes.push({ Name: "loose", CreatedAt: at(5), Labels: null }), /^refused: volume loose was created during the cycle and is not the run's/],
+      ["a network created during the cycle outside the project", (s: State) => s.networks.push({ Id: "n9", Name: "loose_net", Created: at(5), Labels: {} }), /^refused: network loose_net was created during the cycle and is not the run's/],
+    ])("refuses %s", (_what, mutate, why) => {
+      const s = state();
+      (mutate as (s: State) => void)(s);
+      expect(gate(s)).toMatch(why as RegExp);
+    });
+
+    it("a run container bind-mounting the main checkout is refused; one on none, or binding the worktree, passes", () => {
+      const main = realpathSync(tempDir());
+      const worktree = realpathSync(tempDir());
+      const s = state();
+      s.containers[0].NetworkSettings.Networks.none = {};
+      s.containers[0].Mounts.push({ Type: "bind", Source: `${worktree}/data` });
+      const run = () => message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main, worktree, runner: fake(s) }));
+      expect(run()).toBe("ok");
+      s.containers[0].Mounts.push({ Type: "bind", Source: `${main}/data` });
+      expect(run()).toMatch(/^refused: container argus-run1-db-1 bind-mounts a path inside the main checkout/);
+    });
+
+    it("no docker, or no daemon running: nothing was created through it; any other failure is refused", () => {
+      expect(gate(state(), { runner: () => ({ error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) }) })).toBe("ok");
+      expect(gate(state(), { runner: () => ({ status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon at unix:///x.sock. Is the docker daemon running?" }) })).toBe("ok");
+      expect(gate(state(), { runner: () => ({ status: 1, stdout: "", stderr: "permission denied" }) })).toMatch(/^refused: docker ps -aq --no-trunc failed: permission denied/);
+      const s = state();
+      const f = fake(s);
+      expect(gate(s, { runner: (argv: string[], o: Obj) => (argv[1] === "volume" && argv[2] === "inspect" ? { status: 1, stdout: "", stderr: "boom" } : f(argv, o)) })).toMatch(/^refused: docker volume inspect failed: boom/);
     });
   });
 

@@ -265,6 +265,13 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   volume, or one named outside `<project>_`; and each service's environment, command and entrypoint
   through checkStore's comparison as a container (loopback and paths its own; the Docker host
   refused off the run's ports). Docker missing or failing → refused, secrets masked.
+- `export function checkDockerRuntime({since, env, main, worktree, runner, skewMs})`: the runtime gate
+  for what static scans cannot see. Lists every container (`docker ps -aq` + `inspect`), volume and
+  network; one created or started since `since` (epoch ms, minus `skewMs` = 5 s) must carry
+  `com.docker.compose.project=<COMPOSE_PROJECT_NAME>` (a volume may be a new anonymous one); such a
+  container may mount only the run's volumes, join only its networks (or none), and bind-mount nothing
+  the Compose check refuses. No docker or no daemon → nothing to check; any other docker failure →
+  refused.
 - `export function groupPids(pgids, {runner})` → every pid in those groups (`ps -A -o pid= -o pgid=`,
   one command on macOS and Linux, instead of `pgrep -g` / `ps -g`).
 - `export function egressAllowed({config, env, ports})` → `host:port` strings: the run's ports on
@@ -318,6 +325,8 @@ Interfaces:
   refused `-p`/`--project-name` in every command, so a recorded stop acts on its recorded
   `COMPOSE_PROJECT_NAME` only; keep the `env.COMPOSE_PROJECT_NAME === argus-<runId>` test as the
   gate, and do not replay a stop whose recorded env lacks it.
+- `down` runs `checkDockerRuntime({since: <the run's start, epoch ms>, env, main, worktree})` before it
+  replays stops and reports a refusal in its output without stopping the teardown (carried from Task 6).
 - `claimBusy`: a claim older than N seconds by mtime (the critical section takes milliseconds)
   counts as interrupted even when its pid is alive (pid reuse), so the owner gets the
   "remove <path>" instruction instead of "try again" forever.
@@ -348,7 +357,9 @@ Interfaces:
   and stores its result as `ctx.composeServices` before `bringUpStore(ctx)`, so both `checkStore`
   calls see it. Step 8, `upFresh` and `renew` (the CLI's) call `checkEgress({pids: groupPids(<every
   recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports})})`; a refusal
-  → `down`. `up` step 2's "no `lsof`/`ss`" refusal can reuse that message.
+  → `down`. After each egress check (step 8, `upFresh`, `renew`), `checkDockerRuntime({since: <up's start,
+  epoch ms, recorded in run.json>, env, main, worktree})`; a refusal → `down`. `up` step 2's "no
+  `lsof`/`ss`" refusal can reuse that message.
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
   1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role
   hosts resolving to loopback via `dns.lookup`, `~/.playwright/cli.config.json` present, no

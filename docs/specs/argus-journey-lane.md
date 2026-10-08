@@ -508,6 +508,14 @@ defence in depth and not enforcement:
    refuse, naming the process and the endpoint (a code default such as a cache on its standard
    local port, pointing at the owner's). A connection the processes accepted is inbound and not
    counted. Repeated at every `renew`.
+   Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
+   docker:up`): every container created or started, and every volume and network created, since `up`
+   began (a few seconds earlier, for the daemon's clock) must carry the label
+   `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); such
+   a container may mount only the run's volumes, join only the run's networks (or none), and bind-mount
+   nothing step 5 refuses. Otherwise `down` and refuse, naming the object. Repeated at every `renew`,
+   and at `down`, where a finding is reported but never stops the teardown. No docker, or no daemon
+   running, means nothing was created through it.
 9. **Proxy.** Starts the run's filtering proxy (§9).
 10. **Logins.** One proving login per allocated account, sequential, `login_spacing_ms` apart, each
     followed by a check that the browser's requests reached only the run's origins and
@@ -796,6 +804,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Another cycle holds the lock | refuse, naming its run and deadline |
 | The owner's Docker context is not a local unix socket (tcp, ssh) | refuse before step 5, naming the context and its scheme only; `down` runs |
 | A Compose project, Compose file or config command would share something with the owner's stack, or run Docker past the check | refuse, naming the service, file or field and the rule; `down` runs |
+| The Docker runtime gate finds a container, volume or network created or started during the cycle outside the run's project (or a run container on another's volume or network) | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
 | The egress check finds a foreign endpoint | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |
 | Session lost mid-journey | the wrapper signs in once; failing again → a harness event (H2), not a candidate |

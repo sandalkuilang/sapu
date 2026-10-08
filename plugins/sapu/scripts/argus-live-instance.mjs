@@ -1392,6 +1392,74 @@ export function checkCompose({ worktree, env, ports = {}, main, config = {}, con
   return services;
 }
 
+/** The label Compose puts on every container, volume and network of a project. */
+const PROJECT_LABEL = "com.docker.compose.project";
+
+/**
+ * The Docker runtime gate (spec §8 step 8, and at `renew` and `down`): what the static Compose checks
+ * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. Every
+ * container created or started, and every volume and network created, since `since` (epoch ms, the
+ * start of `up`; `skewMs` earlier, for the daemon's clock and its whole-second volume times) must
+ * carry `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, a volume may instead be a new anonymous
+ * one; and such a container may mount only the run's volumes (or new anonymous ones), join only the
+ * run's networks (or none), and bind-mount nothing hostPathRefusal refuses. Runs docker under `env`
+ * (the instance's: its DOCKER_HOST). No docker, or no daemon running, means nothing was created
+ * through it. Throws `refused: …` naming the object.
+ */
+export function checkDockerRuntime({ since, env, main, worktree, runner = run, skewMs = 5000 }) {
+  const project = env.COMPOSE_PROJECT_NAME;
+  const docker = (args) => runner(["docker", ...args], { env, timeout: 60_000 });
+  const failed = (args, r) => new Error(`refused: docker ${args.join(" ")} failed: ${tail((r.error && r.error.message) || r.stderr || `exit ${r.status}`)}`);
+  const list = (args) => {
+    const r = docker(args);
+    if (r.error || r.status !== 0) throw failed(args, r);
+    return r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  };
+  const inspect = (args, ids) => {
+    if (!ids.length) return [];
+    const r = docker([...args, ...ids]);
+    let j;
+    try {
+      j = JSON.parse(r.stdout); // an object removed meanwhile makes it exit 1 with the others listed
+    } catch {
+      j = null;
+    }
+    if (!Array.isArray(j)) throw failed(args, r);
+    return j;
+  };
+  const ps = ["ps", "-aq", "--no-trunc"];
+  const first = docker(ps);
+  if (first.error && first.error.code === "ENOENT") return;
+  if (!first.error && first.status !== 0 && /cannot connect to the docker daemon|is the docker daemon running/i.test(first.stderr || "")) return;
+  if (first.error || first.status !== 0) throw failed(ps, first);
+  const recent = (t) => {
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) && ms >= since - skewMs;
+  };
+  const ours = (labels) => Boolean(labels) && labels[PROJECT_LABEL] === project;
+  const volumes = inspect(["volume", "inspect"], list(["volume", "ls", "-q"]));
+  const networks = inspect(["network", "inspect"], list(["network", "ls", "-q", "--no-trunc"]));
+  const volumeOk = (v) => ours(v.Labels) || (Boolean(v.Labels) && "com.docker.volume.anonymous" in v.Labels && recent(v.CreatedAt));
+  const runVolumes = new Set(volumes.filter(volumeOk).map((v) => v.Name));
+  const runNetworks = new Set(networks.filter((n) => ours(n.Labels)).map((n) => n.Name));
+  const at = { worktree, root: fs.realpathSync.native(worktree), realMain: fs.realpathSync.native(main), sockets: knownSockets(env) };
+  for (const c of inspect(["inspect", "--type", "container"], first.stdout.split("\n").map((s) => s.trim()).filter(Boolean))) {
+    if (!recent(c.Created) && !recent(c.State && c.State.StartedAt)) continue;
+    const name = String(c.Name || c.Id).replace(/^\//, "");
+    if (!ours(c.Config && c.Config.Labels)) throw new Error(`refused: container ${name} was created or started during the cycle and is not of the run's Compose project ${project}`);
+    for (const m of c.Mounts ?? []) {
+      if (m.Type === "volume" && !runVolumes.has(m.Name)) throw new Error(`refused: container ${name} mounts volume ${m.Name}, which is not the run's`);
+      const no = m.Type === "bind" ? hostPathRefusal(m.Source, at) : null;
+      if (no) throw new Error(`refused: container ${name} bind-mounts ${no}`);
+    }
+    for (const n of Object.keys((c.NetworkSettings && c.NetworkSettings.Networks) || {})) {
+      if (n !== "none" && !runNetworks.has(n)) throw new Error(`refused: container ${name} joins network ${n}, which is not the run's`);
+    }
+  }
+  for (const v of volumes) if (recent(v.CreatedAt) && !volumeOk(v)) throw new Error(`refused: volume ${v.Name} was created during the cycle and is not the run's`);
+  for (const n of networks) if (recent(n.Created) && !ours(n.Labels)) throw new Error(`refused: network ${n.Name} was created during the cycle and is not the run's`);
+}
+
 /** Every pid in the process groups `pgids` (`ps -A -o pid= -o pgid=`, the same on macOS and Linux). */
 export function groupPids(pgids, { runner = run } = {}) {
   const want = new Set(pgids.filter((g) => Number.isInteger(g) && g > 1));
