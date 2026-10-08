@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkExplorerRead, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -17,6 +17,7 @@ const checkFile = checkFileUntyped as (i: { tool: string; filePath: string; cwd:
 const checkSearch = checkSearchUntyped as (i: { tool: string; input: Record<string, string>; cwd: string; rules?: unknown }) => string | null;
 const rules = compileRules(FIXTURE_CONTRACT);
 const decide = decideUntyped as (i: Record<string, unknown>) => string | null;
+const checkOther = checkOtherUntyped as (i: { tool: string; ti: Record<string, unknown>; here: string; main: string | null; rules?: unknown; worker?: boolean }) => string | null;
 
 const root = mkdtempSync(join(tmpdir(), "sapu-guard-"));
 const main = join(root, "main");
@@ -1885,5 +1886,62 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
   it("decide() gives the explorer no Grep or Glob", () => {
     for (const [tool_name, tool_input] of [["Grep", { pattern: "x", path: join(w, "src") }], ["Glob", { pattern: "**/*.ts", path: join(w, "src") }]] as const)
       expect(decide({ agent_type: "sapu:ui-explorer", tool_name, tool_input, cwd: m })).toMatch(/journey explorer has only Bash/);
+  });
+});
+
+describe("sapu-guard — closing an issue as not planned is the owner's ruling", () => {
+  const reviewer = (command: string) => check({ command, cwd: wt, main, rules, worker: false });
+  const RULING = /closing an issue as not planned is the owner's ruling/;
+  const Q = "mutation { closeIssue(input: {issueId: \"I_1\", stateReason: NOT_PLANNED}) { issue { id } } }";
+  const QV = "mutation($r: IssueClosedStateReason) { closeIssue(input: {issueId: \"I_1\", stateReason: $r}) { issue { id } } }";
+
+  it.each([
+    ['gh issue close 8 --reason "not planned"'],
+    ['gh issue close 8 -r "not planned"'],
+    ["gh issue close 8 --reason=not_planned"],
+    ["gh issue close 8 -r NOT_PLANNED"],
+    ['gh issue close 8 --reason "Not Planned" --comment "dup of the design"'],
+    ["gh issue close 8 -rnot-planned"],
+    ['gh -R o/r issue close 8 -r "not planned"'],
+    ["gh api -X PATCH repos/o/r/issues/8 -f state=closed -f state_reason=not_planned"],
+    ["gh api repos/o/r/issues/8 -F state_reason=NOT_PLANNED"],
+    ['gh api --method PATCH repos/o/r/issues/8 --raw-field "state_reason=not planned"'],
+    ["gh api --method=PATCH repos/o/r/issues/8 --field=state_reason=not_planned"],
+    [`gh api graphql -f query='${Q}'`],
+    [`gh api graphql -f query='${QV}' -f r=NOT_PLANNED`],
+  ])("refuses %s for every subagent", (cmd) => {
+    expect(reviewer(cmd)).toMatch(RULING);
+    expect(blocked(cmd)).toMatch(RULING);
+  });
+
+  it.each([
+    ["gh api -X PATCH repos/o/r/issues/8 --input body.json"],
+    ["gh api -X PATCH repos/o/r/issues/8 -F state_reason=@reason.txt"],
+    [`gh api graphql -f query='${QV}' -F r=@reason.txt`],
+  ])("refuses %s, whose body the guard cannot read", (cmd) => {
+    expect(reviewer(cmd)).not.toBeNull();
+    expect(blocked(cmd)).not.toBeNull();
+  });
+
+  it.each([
+    ["gh issue close 8"],
+    ["gh issue close 8 --reason completed"],
+    ['gh issue close 8 -r completed --comment "fixed in #9"'],
+    ["gh api -X PATCH repos/o/r/issues/8 -f state=closed -f state_reason=completed"],
+    [`gh api graphql -f query='${Q.replace("NOT_PLANNED", "COMPLETED")}'`],
+    ["gh issue list --state closed --search 'reason:\"not planned\"'"],
+    ["gh api 'repos/o/r/issues?state=closed&state_reason=not_planned'"],
+  ])("allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  it("refuses an MCP tool whose fields close an issue as not planned, and allows a completed close", () => {
+    const other = (tool: string, ti: Record<string, unknown>) => checkOther({ tool, ti, here: wt, main, rules, worker: false });
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 8, state: "closed", state_reason: "not_planned" })).toMatch(RULING);
+    expect(other("mcp__github__issue_write", { method: "update", owner: "o", repo: "r", issue_number: 8, state: "closed", state_reason: "NOT_PLANNED" })).toMatch(RULING);
+    expect(other("mcp__github__graphql", { query: QV, variables: { r: "NOT_PLANNED" } })).toMatch(RULING);
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 8, state: "closed", state_reason: "completed" })).toBeNull();
+    expect(other("mcp__github__list_issues", { owner: "o", repo: "r", state: "closed", state_reason: "not_planned" })).toBeNull();
   });
 });

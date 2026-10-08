@@ -612,7 +612,8 @@ session. `/sapu:sapu` lists it in B2's SKIP. `gh issue create --label <needsOwne
 guard refuses adding or removing it on an existing issue or PR, and creating, editing, deleting or
 cloning the label, for every subagent (§11). The owner removes it to accept; closes the issue as not
 planned to rule it intended, which argus records in `arid.md` as today, and the next charters for
-that journey carry it under `intended`. `question` keeps its present meaning.
+that journey carry it under `intended`. That close is the owner's ruling, so the guard refuses it to
+every subagent (§11). `question` keeps its present meaning.
 
 **Scrub, before every `gh issue create` and `comment`:** `argus-live.mjs scrub --title <t> --body
 <file> [--attach <png>…]`.
@@ -664,8 +665,13 @@ For `sapu:ui-explorer`:
 
 For every subagent: adding or removing `labels.needsOwner` on an existing issue or PR (`gh issue|pr
 edit`, `gh api` REST and GraphQL) and `gh label create|edit|delete|clone` on it are refused;
-`gh issue create --label` with it is allowed. `/sapu:init` adds `env_file`'s name to the contract's
-`guard.envFiles`.
+`gh issue create --label` with it is allowed. Closing an issue as not planned (the owner's ruling
+that a finding is intended, §10) is refused too: `gh issue close` with `--reason`/`-r` not planned in
+any spelling or case (`--reason=` and `-r<value>` forms included), a non-GET `gh api` carrying
+`state_reason` not planned or one read from a file, an issue write whose `--input` or `-F …=@file`
+body cannot be read, a GraphQL `closeIssue` with `NOT_PLANNED` (or a variable read from a file), and
+an MCP write tool or GraphQL tool whose fields carry not planned. A plain `gh issue close` (completed)
+stays allowed. `/sapu:init` adds `env_file`'s name to the contract's `guard.envFiles`.
 
 ## 12. Errors
 

@@ -86,7 +86,8 @@
 // set (an alias, an extension) is BLOCKED. The acceptance label (contract labels.accepted): BLOCKED
 // when named by `gh issue|pr edit --add/--remove-label`, `gh label create|edit|delete`, a non-GET `gh
 // api` argument, or hidden in a label/issue write's --input; `gh label clone` and the GraphQL label
-// mutations are BLOCKED outright. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
+// mutations are BLOCKED outright. A not-planned close (`gh issue close -r`, REST state_reason,
+// GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
 // known one by one; an unknown option that takes a value can hide the program after it. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
@@ -883,6 +884,10 @@ function denied(a, prog, deny, dir) {
   return null;
 }
 
+/** "not planned" in any spelling gh and GitHub take: not_planned, NOT_PLANNED, "Not Planned", not-planned. */
+const NOT_PLANNED = /not[\s_-]*planned/i;
+const notPlanned = (v) => typeof v === "string" && /^not[\s_-]*planned$/i.test(v.trim());
+
 const BLOCK = {
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
@@ -902,6 +907,8 @@ const BLOCK = {
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
     "the acceptance label and the needs-owner label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
+  ownerRuling:
+    "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
@@ -1342,9 +1349,18 @@ function checkCommand(t, state, depth) {
         if (m && namesLabel(m[2] ?? tail[j + 1] ?? "", L)) return BLOCK.acceptLabel;
       }
     }
+    // Closing as not planned is the owner's ruling (argus records it as intended).
+    if (g1 === "issue" && g2 === "close") {
+      for (let j = 0; j < tail.length; j++) {
+        const m = /^(?:--reason(?:=([\s\S]*))?|-r([\s\S]*))$/.exec(tail[j]);
+        if (m && notPlanned(m[1] ?? (m[2] ? m[2].replace(/^=/, "") : tail[j + 1] ?? ""))) return BLOCK.ownerRuling;
+      }
+    }
     if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tail.some((v) => namesLabel(v, L))))) return BLOCK.acceptLabel;
     if (g1 === "api") {
       if (a.some((v) => /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/.test(v))) return BLOCK.acceptLabel;
+      // closeIssue with NOT_PLANNED anywhere in its call, or a variable read from a file
+      if (a.some((v) => /\bcloseIssue\b/.test(v)) && a.some((v, j) => NOT_PLANNED.test(v) || (/^(-F|--field)$/.test(a[j - 1] ?? "") && /=@/.test(v)) || /^(-F|--field=)[^=]*=@/.test(v))) return BLOCK.ownerRuling;
       if (a.some((v) => { let s = v; try { s = decodeURIComponent(v); } catch { /* raw */ } return /(?:[?&]ref=|\/(?:tarball|zipball)\/)(?:refs\/)?pull\//.test(s); })) return BLOCK.prCode;
       if (a.some((v) => /mergePullRequest|enablePullRequestAutoMerge/.test(v))) return BLOCK.merge;
       if (a.includes("graphql")) {
@@ -1374,6 +1390,8 @@ function checkCommand(t, state, depth) {
       if (method.toUpperCase() !== "GET") {
         if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(v))) return BLOCK.merge;
         if (a.some((v) => /\/(contents|git|branches)\//.test(v))) return BLOCK.apiWrite;
+        // REST state_reason not_planned, or one read from a file.
+        if (a.some((v) => { const r = /state_reason=([\s\S]*)$/i.exec(v); return r && (notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
         // A write naming the label, or a label/issue write whose body the guard cannot read.
         if (a.some((v) => namesLabel(v, L))) return BLOCK.acceptLabel;
         const unread = a.some((v) => /^--input(=|$)/.test(v)) || a.some((v, j) => /^(-F|--field)$/.test(a[j - 1] ?? "") && /=@/.test(v));
@@ -1686,6 +1704,7 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     const q = f.filter(([k]) => /^(query|mutation|body)$/i.test(k)).map(([, x]) => x);
     if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
     if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+    if (q.some((x) => /\bcloseIssue\b/.test(x)) && f.some(([, x]) => NOT_PLANNED.test(x))) return BLOCK.ownerRuling;
   }
   if (writes) {
     const bases = new Set([rules.base, "main", "master"].filter(Boolean));
@@ -1695,6 +1714,7 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     // only a label field, or any field of a label tool: a file's content may contain the word
     const labelTool = words.some((w) => /^labels?$/.test(w));
     if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.ownerLabels))) return BLOCK.acceptLabel;
+    if (f.some(([, x]) => notPlanned(x))) return BLOCK.ownerRuling;
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;

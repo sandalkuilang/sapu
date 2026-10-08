@@ -565,6 +565,11 @@ could use them.
 - The needs-owner label (`labels.needsOwner`) is protected beside it: no subagent adds or removes it on
   an existing issue or PR, nor creates, edits, deletes or clones it. `gh issue create --label` with it
   stays allowed for non-worker subagents.
+- Closing an issue as not planned is the owner's ruling that the finding is intended (argus records it
+  in `arid.md`): no subagent makes it — `gh issue close --reason`/`-r` not planned in any spelling, a
+  non-GET `gh api` with `state_reason` not planned (or read from a file, or an issue write whose body
+  cannot be read), a GraphQL `closeIssue` with `NOT_PLANNED`, or an MCP tool whose fields carry it. A
+  plain (completed) close stays allowed.
 - `sapu:ui-explorer` (the journey lane's explorer): its tools are limited by its frontmatter (`tools:
   Bash, Read, StructuredOutput`) and by the guard, which refuses every other tool it sees (Agent, Task
   and Workflow included). Its Bash runs only `node <plugin>/scripts/argus-live.mjs pw …`, the wrapper
