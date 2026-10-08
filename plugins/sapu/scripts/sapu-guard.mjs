@@ -108,7 +108,8 @@ export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
-const EXPLORER_WORD = /^[A-Za-z0-9._:/=@,+#-]+$/;
+// The first character excludes `#` (comment), `=` (zsh `=cmd` expansion) and `-` (option injection).
+const EXPLORER_WORD = /^[A-Za-z0-9./_][A-Za-z0-9._:/=@,+#-]*$/;
 
 /**
  * The explorer's Bash: one or more `node <wrapper> pw …` runs joined by `;`, `&&` or newlines, every
@@ -131,7 +132,7 @@ export function checkExplorerBash(command, wrapper = WRAPPER) {
       i += 2;
     } else if (ch === "'") {
       const end = command.indexOf("'", i + 1);
-      if (end < 0) return BLOCK.explorerBash;
+      if (end < 0 || /[\r\n]/.test(command.slice(i, end))) return BLOCK.explorerBash;
       if (end + 1 < command.length && !/[\s;&]/.test(command[end + 1])) return BLOCK.explorerBash;
       runs.at(-1).push(command.slice(i + 1, end));
       i = end + 1;
