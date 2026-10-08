@@ -94,7 +94,7 @@ the command that opens the CLI's live session dashboard, for an owner who wants 
 
 - **Every path into the lane** runs `sapu-contract.mjs allowed argus` and `allowed journey` first:
   `/sapu:journey`, and argus's SELECT before it ranks any `journey:` cell (argus run from the main
-  session with `app_under_test.live` configured). In 2.9.0 the `/sapu:inspector` workflow's argus
+  session with `.argus/live.json` configured). In 2.9.0 the `/sapu:inspector` workflow's argus
   phase excludes the lane: it runs only from the main session.
 - `journey` joins `SKILLS` in `sapu-contract.mjs`. An explicit `policy.skills` list without `journey`
   means not allowed; the 2.9.0 upgrade note tells the owner to re-run `/sapu:init`'s skills question.
@@ -275,76 +275,73 @@ field inside a fresh nonce fence, as data. A candidate is never a finding (argus
 
 ## 8. Live instance
 
-New block in `.argus/config.yml`, written by `/sapu:init`. The existing `test_accounts` block stays
-as it is; `live.roles` is the explicit per-role map this lane needs. `{port:<name>}` and `${NAME}`
-expand in every string of the block.
+New file `.argus/live.json`, written by `/sapu:init` and tracked beside `config.yml`. It is JSON
+because the plugin has no dependencies to parse YAML; argus's `config.yml` and its free-form
+`test_accounts` block stay as they are, and `roles` here is the explicit per-role map this lane
+needs. Below, `live.<key>` names a key of this file and `limits.<key>` a key of its `limits` object
+(`max_cycle_minutes` included: the lane does not read `config.yml`). `{port:<name>}` and `${NAME}`
+expand in every string of the file. Its schema is validated by `argus-live.mjs` (unknown keys are
+errors, as in the sapu contract).
 
-```yaml
-app_under_test:
-  live:
-    setup: [["npm", "ci"]]                          # argv lists, run in the worktree, no shell
-    services:                                       # every backing service the app reads
-      db:    { env: "DATABASE_URL" }
-      cache: { env: "REDIS_URL" }
-      mail:  { env: "SMTP_URL" }
-    start:
-      - name: backing
-        phase: store                                # started before store_check and reset
-        cmd: "docker compose up postgres redis mailpit"
-        stop: "docker compose down -v"
-        health: { cmd: "docker compose exec -T postgres pg_isready" }
-      - name: api
-        cmd: "npm run dev -- --port {port:api}"
-        health: { url: "http://localhost:{port:api}/health" }
-      - name: web
-        cmd: "npm run dev:web -- --port {port:web}"
-        env: { API_URL: "http://localhost:{port:api}" }
-        health: { url: "http://localhost:{port:web}/" }
-      - name: worker
-        cmd: "npm run worker"                       # no health: alive after 5 s counts
-    base_url: "http://localhost:{port:web}"
-    login_url: "/login"
-    logged_in: "getByRole('button', { name: 'Account' })"   # visible only when signed in
-    env_file: ".argus/live.env"                     # the only source of ${NAME}; gitignored
-    env:
-      DATABASE_URL: "postgres://app:${DB_PW}@localhost:{port:pg}/app_explore"
-      REDIS_URL: "redis://localhost:{port:redis}"
-      SMTP_URL: "smtp://localhost:{port:smtp}"
-      PG_PORT: "{port:pg}"                          # the Compose file maps host ports from these
-      REDIS_PORT: "{port:redis}"
-      SMTP_PORT: "{port:smtp}"
-    pass_env: []
-    store: "app_explore"                            # the one datastore reset may touch
-    store_check: "npm run -s explore:which-db"      # prints the store the app's own config resolves to
-    reset: "npm run -s db:reset:explore"
-    facts: { argv: ["npm", "run", "-s", "explore:facts", "--", "{1}"], args: ["^[A-Za-z0-9._:-]{1,128}$"] }
-    mail:  { argv: ["npm", "run", "-s", "explore:mail"] }   # prints [{to, subject, text}] as JSON
-    triggers:
-      payment-settles: { argv: ["npm", "run", "-s", "explore:settle", "--", "{1}"], args: ["^[A-Za-z0-9-]{1,64}$"] }
-    confirmed: { mocks: true, data: true }
-    allow_origins: []                               # full origins pages may load from, e.g. a font CDN
-    port_range: [41000, 41999]
-    reserved_ports: [3000, 4000, 5432, 6379]        # the repo's dev and E2E ports, never allocated
-    login_spacing_ms: 0
-    timezone: "UTC"
-    locale: "en-US"
-    fixtures: "test/fixtures/explore"               # files `upload` may use
-    roles:                                          # each may also set base_url, login_url, logged_in, login_open
-      anon: {}
-      customer: { code_role: "partner", users: [ { user: "buyer1@example.test", password: "${PW}" },
-                                                  { user: "buyer2@example.test", password: "${PW}" } ] }
-      sales:    { code_role: "sales", users: [ { user: "sales1@example.test", password: "${PW}", totp_secret: "${SALES_TOTP}" } ] }
-      admin:    { code_role: "admin", login: { command: "npm run -s explore:login -- admin" } }
-    viewports: [1440, 390]
-    locales: []
-    settle_ms: 10000
-    prohibited: []
-limits:
-  max_parallel_journeys: 2
-  live_health_timeout_s: 120
-  explorer_pw_calls: 120
-  minimize_runs: 12
+```json
+{
+  "setup": [["npm", "ci"]],
+  "services": { "db": { "env": "DATABASE_URL" }, "cache": { "env": "REDIS_URL" }, "mail": { "env": "SMTP_URL" } },
+  "start": [
+    { "name": "backing", "phase": "store", "cmd": "docker compose up postgres redis mailpit",
+      "stop": "docker compose down -v", "health": { "cmd": "docker compose exec -T postgres pg_isready" } },
+    { "name": "api", "cmd": "npm run dev -- --port {port:api}", "health": { "url": "http://localhost:{port:api}/health" } },
+    { "name": "web", "cmd": "npm run dev:web -- --port {port:web}", "env": { "API_URL": "http://localhost:{port:api}" },
+      "health": { "url": "http://localhost:{port:web}/" } },
+    { "name": "worker", "cmd": "npm run worker" }
+  ],
+  "base_url": "http://localhost:{port:web}",
+  "login_url": "/login",
+  "logged_in": "getByRole('button', { name: 'Account' })",
+  "env_file": ".argus/live.env",
+  "env": {
+    "DATABASE_URL": "postgres://app:${DB_PW}@localhost:{port:pg}/app_explore",
+    "REDIS_URL": "redis://localhost:{port:redis}", "SMTP_URL": "smtp://localhost:{port:smtp}",
+    "PG_PORT": "{port:pg}", "REDIS_PORT": "{port:redis}", "SMTP_PORT": "{port:smtp}"
+  },
+  "pass_env": [],
+  "store": "app_explore",
+  "store_check": "npm run -s explore:which-db",
+  "reset": "npm run -s db:reset:explore",
+  "facts": { "argv": ["npm", "run", "-s", "explore:facts", "--", "{1}"], "args": ["^[A-Za-z0-9._:-]{1,128}$"] },
+  "mail": { "argv": ["npm", "run", "-s", "explore:mail"] },
+  "triggers": { "payment-settles": { "argv": ["npm", "run", "-s", "explore:settle", "--", "{1}"], "args": ["^[A-Za-z0-9-]{1,64}$"] } },
+  "confirmed": { "mocks": true, "data": true },
+  "allow_origins": [],
+  "port_range": [41000, 41999],
+  "reserved_ports": [3000, 4000, 5432, 6379],
+  "login_spacing_ms": 0,
+  "timezone": "UTC",
+  "locale": "en-US",
+  "fixtures": "test/fixtures/explore",
+  "roles": {
+    "anon": {},
+    "customer": { "code_role": "partner", "users": [{ "user": "buyer1@example.test", "password": "${PW}" }, { "user": "buyer2@example.test", "password": "${PW}" }] },
+    "sales": { "code_role": "sales", "users": [{ "user": "sales1@example.test", "password": "${PW}", "totp_secret": "${SALES_TOTP}" }] },
+    "admin": { "code_role": "admin", "login": { "command": "npm run -s explore:login -- admin" } }
+  },
+  "viewports": [1440, 390],
+  "locales": [],
+  "settle_ms": 10000,
+  "prohibited": [],
+  "limits": { "max_cycle_minutes": 45, "max_parallel_journeys": 2, "live_health_timeout_s": 120, "explorer_pw_calls": 120, "minimize_runs": 12 }
+}
 ```
+
+Field notes: `setup` holds argv lists run in the worktree without a shell; `services` lists every
+backing service the app reads; a `start` entry with `"phase": "store"` starts before `store_check`
+and `reset`, and one without `health` counts as healthy when alive after 5 s; `logged_in` is visible
+only when signed in; `env_file` is the only source of `${NAME}` and is gitignored; `store` is the one
+datastore `reset` may touch, and `store_check` prints the store the app's own configuration resolves
+to; `mail` prints `[{to, subject, text}]` as JSON; `allow_origins` are full origins pages may load
+from (a font CDN); `reserved_ports` are the repo's dev and E2E ports, never allocated; `fixtures` holds
+the files `upload` may use; each role may also set `base_url`, `login_url`, `logged_in`,
+`login_open`.
 
 `confirmed` is the owner's statement, asked by `/sapu:init` in these words: `mocks` — every outbound
 integration (payments, email, messaging, identity checks) runs in test or mock mode under `env`,
