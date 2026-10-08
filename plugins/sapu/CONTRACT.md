@@ -198,7 +198,9 @@ written with `@`, an entry without its id, or any other shape is an invalid cont
 
 **Acceptance is the owner's own act.** **`labels.accepted`** (optional, default `sapu:accepted`) is
 the label that accepts an outsider's issue (this and `labels.needsOwner` must be plain names: no
-spaces and none of `, = " ' / [ ] { } ( ) %`, which the guard could not recognise in a command); **`labels.acceptors`** (optional, the same
+spaces and none of `, = " ' / [ ] { } ( ) %`, which the guard could not recognise in a command;
+`labels.needsOwner` must also differ, in any case, from the acceptance label, `labels.inProgress` and
+`labels.done`, and must not start with `labels.tierPrefix`); **`labels.acceptors`** (optional, the same
 `{login, id}` shape, re-resolved by `check` like `trustedAuthors`; default = the trusted set) are
 the only accounts whose application of it counts. Every agent sapu runs works under the active
 account's token, so a label that account applies could be an agent's doing. Hence: no agent ever
@@ -317,7 +319,9 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
 **Version coupling.** `trustedAuthors`, `requireSignedCommits`, `labels.accepted` and
 `labels.acceptors` need plugin **≥ 2.1.0**. An older plugin refuses them as unknown keys: the contract reads as broken, and the
 guard then blocks every subagent. `journey` in `policy.skills` and `labels.needsOwner` need plugin **≥ 2.9.0**;
-an older plugin rejects the contract.
+an older plugin rejects the contract. 2.9.0 also refuses an owner label (`labels.accepted` or
+`labels.needsOwner`) containing spaces or any of `, = " ' / [ ] { } ( ) %`: a contract that 2.8.x
+accepted may need its label renamed (on GitHub and in the contract) before it validates.
 
 ### `guard.deny` rules
 

@@ -1346,6 +1346,31 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label: both are "argus:needs-owner"/);
   });
 
+  it.each([
+    ["the in-progress label", "inProgress", "Agent:In-Progress", /labels\.needsOwner must differ from labels\.inProgress/],
+    ["the done label", "done", "AGENT:DONE", /labels\.needsOwner must differ from labels\.done/],
+  ])("refuses a needs-owner label equal to %s, whatever the case", (_what, key, v, msg) => {
+    const c = clone();
+    c.labels.needsOwner = v;
+    expect(key in c.labels).toBe(true);
+    expect(validate(c).join("\n")).toMatch(msg);
+  });
+
+  it("refuses a needs-owner label that starts with the tier prefix, whatever the case", () => {
+    const c = clone();
+    c.labels.needsOwner = "Risk:owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must not start with labels\.tierPrefix \("risk:"\)/);
+  });
+
+  it("checks the default needs-owner label against the other labels when needsOwner is absent", () => {
+    const c = clone();
+    c.labels.done = "argus:needs-owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from labels\.done/);
+    const t = clone();
+    t.labels.tierPrefix = "argus:";
+    expect(validate(t).join("\n")).toMatch(/labels\.needsOwner must not start with labels\.tierPrefix/);
+  });
+
   it("an invalid needsOwner reports only the name error, not a clash", () => {
     const c = clone();
     c.labels.accepted = "argus:needs-owner";

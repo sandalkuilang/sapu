@@ -282,7 +282,12 @@ export function validate(c) {
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
     if ("needsOwner" in c.labels) need(isStr(c.labels.needsOwner), `labels.needsOwner must be a non-empty label name (omit it for ${DEFAULT_NEEDS_OWNER_LABEL})`);
     for (const k of ["accepted", "needsOwner"]) if (isStr(c.labels[k])) need(!UNRECOGNISABLE_LABEL.test(c.labels[k]), `labels.${k} must not contain spaces or any of , = " ' / [ ] { } ( ) % (the guard could not recognise it)`);
-    if (!("needsOwner" in c.labels) || isStr(c.labels.needsOwner)) need(needsOwnerLabel(c).toLowerCase() !== acceptedLabel(c).toLowerCase(), `labels.needsOwner must differ from the acceptance label: both are "${needsOwnerLabel(c)}"`);
+    if (!("needsOwner" in c.labels) || isStr(c.labels.needsOwner)) {
+      const no = needsOwnerLabel(c).toLowerCase();
+      need(no !== acceptedLabel(c).toLowerCase(), `labels.needsOwner must differ from the acceptance label: both are "${needsOwnerLabel(c)}"`);
+      for (const k of ["inProgress", "done"]) if (isStr(c.labels[k])) need(no !== c.labels[k].toLowerCase(), `labels.needsOwner must differ from labels.${k}: both are "${needsOwnerLabel(c)}"`);
+      if (isStr(c.labels.tierPrefix)) need(!no.startsWith(c.labels.tierPrefix.toLowerCase()), `labels.needsOwner must not start with labels.tierPrefix ("${c.labels.tierPrefix}"): it would read as a risk tier`);
+    }
   } else if (!(noTraces && !("labels" in c))) errs.push("labels must be an object");
   need(c.securityEpic === null || (Number.isInteger(c.securityEpic) && c.securityEpic > 0), "securityEpic must be an issue number or null");
   need(isStr(c.invariantDomains), "invariantDomains must be a non-empty string");
