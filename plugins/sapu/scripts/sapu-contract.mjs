@@ -911,6 +911,55 @@ export function profileProblems(root, skills = Object.keys(PROFILE_SECTIONS), { 
   return out;
 }
 
+// A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
+// echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
+// a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
+const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
+/** Is `command` a handoff command, which the guard's step budget never refuses (a WIP commit, a teardown)? */
+export function isHandoffCommand(command) {
+  // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
+  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
+  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+  const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
+  return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
+}
+
+/** The commands a profile section writes: its inline code spans and the lines of its fenced blocks. */
+function sectionCommands(text, heading) {
+  const m = new RegExp(`^## ${heading}\\s*$([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m").exec(text);
+  if (!m) return [];
+  const body = m[1];
+  const fenced = [...body.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)].flatMap((f) => f[1].split("\n").map((l) => l.trim()).filter(Boolean));
+  const inline = [...body.replace(/^```[^\n]*\n[\s\S]*?^```/gm, "").matchAll(/`([^`\n]+)`/g)].map((x) => x[1].trim());
+  return [...fenced, ...inline];
+}
+
+/**
+ * What /sapu:init should still settle in the profiles (never a failure): worker.md §Teardown writing
+ * commands of which none is a handoff command, so a worker at its step-budget reminder would have
+ * that call refused once instead of tearing down. A section with no command (nothing to tear down)
+ * is fine.
+ */
+export function profileWarnings(root, { rev = "HEAD" } = {}) {
+  const home = contractHome(root);
+  const files = home.mode === "local" ? repoFiles(home.dir, null) : repoFiles(root, rev);
+  const dir = home.mode === "local" ? "." : ".claude/sapu";
+  const out = [];
+  let text = "";
+  try {
+    text = files.list(dir).filter((f) => f === "worker.md" || (f.startsWith("worker-") && f.endsWith(".md"))).map((f) => files.read(`${dir}/${f}`)).join("\n");
+  } catch {
+    return out;
+  }
+  const cmds = sectionCommands(text, "Teardown");
+  if (cmds.length && !cmds.some(isHandoffCommand)) {
+    out.push(
+      "worker.md §Teardown names no command the step budget treats as a handoff (`<script> teardown <ID>`, `npm run teardown -- <ID>`, `bash scripts/teardown.sh <ID>`): put the teardown behind one such command, or a worker at its step-budget reminder has that call refused once",
+    );
+  }
+  return out;
+}
+
 /**
  * Is sapu installed at USER scope (loaded in every repo)? true = yes; false = every sapu install
  * listed is at project or local scope; null = could not tell: `claude` missing, failing or slow,
@@ -1754,6 +1803,7 @@ function main(argv) {
       return;
     }
     if (!here) fail("not inside a git repository");
+    for (const w of profileWarnings(here, { rev: workingTree ? null : "HEAD" })) process.stderr.write(`sapu-contract: WARNING ${w}\n`);
     const probs = profileProblems(here, undefined, { rev: workingTree ? null : "HEAD" });
     const lines = Object.entries(probs).map(([s, m]) => `.claude/sapu/${s}.md: ${m.join(", ")}`);
     if (lines.length) fail(`profile sections missing:\n  - ${lines.join("\n  - ")}`);

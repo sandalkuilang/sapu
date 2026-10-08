@@ -43,6 +43,8 @@ import {
   detectStack,
   gateWorkers,
   resolveTuning,
+  profileWarnings,
+  isHandoffCommand,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -262,6 +264,40 @@ describe("detectStack: the guard /sapu:init proposes for the repo's ecosystem (o
     execFileSync("git", ["init", "-q", r]);
     commit(r, { "manage.py": "print()\n" });
     expect(JSON.parse(cli(r, ["stack"]).out).ecosystems).toEqual(["django"]);
+  });
+});
+
+describe("profile warnings: a teardown the step budget lets through", () => {
+  const warn = profileWarnings as (root: string, o?: { rev: string | null }) => string[];
+  const repoWith = (teardown: string) => {
+    const r = mkdtempSync(join(root, "teardown-"));
+    mkdirSync(join(r, ".claude/sapu"), { recursive: true });
+    writeFileSync(join(r, ".claude/sapu/worker.md"), `## Setup\n\n\`npm ci\`\n\n## Teardown\n\n${teardown}\n\n## Test\n\n\`npm test\`\n`);
+    return r;
+  };
+  it.each([
+    ["`scripts/sapu-worktree.sh teardown <ID>` removes the DB and the containers."],
+    ["Run `npm run teardown -- <ID>`."],
+    ["```\nbash scripts/teardown.sh <ID>\n```"],
+    ["None: the tests use no database, container or port."],
+  ])("passes %j", (text) => {
+    expect(warn(repoWith(text), { rev: null })).toEqual([]);
+  });
+  it.each([
+    ["`dropdb app_test_<ID>`, then `docker compose -p <ID> down -v`."],
+    ["```\nmake clean-db ID=<ID>\n```"],
+  ])("warns on %j", (text) => {
+    expect(warn(repoWith(text), { rev: null })).toEqual([expect.stringMatching(/worker\.md §Teardown names no command the step budget treats as a handoff/)]);
+  });
+  it("is the guard's own test of a handoff command", () => {
+    expect((isHandoffCommand as (c: string) => boolean)("npm run teardown -- 7")).toBe(true);
+    expect((isHandoffCommand as (c: string) => boolean)("dropdb app_test_7")).toBe(false);
+  });
+  it("`profiles --working-tree` prints the warning", () => {
+    const r = repoWith("`dropdb app_test_<ID>`");
+    execFileSync("git", ["init", "-q", r]);
+    const out = cli(r, ["profiles", "--working-tree"]);
+    expect(out.err).toMatch(/WARNING worker\.md §Teardown/);
   });
 });
 

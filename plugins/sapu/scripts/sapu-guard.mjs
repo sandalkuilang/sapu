@@ -117,7 +117,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1972,17 +1972,8 @@ export const STEP_EVERY = DEFAULT_TUNING.stepBudget.every;
 export const STEP_HARD = DEFAULT_TUNING.stepBudget.hard;
 export const STEP_EVERY_LATE = DEFAULT_TUNING.stepBudget.everyLate;
 const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
-// A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
-// echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
-// a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
-const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
-const isHandoff = (command) => {
-  // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
-  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
-  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
-  const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
-  return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
-};
+// A handoff command (isHandoffCommand, in sapu-contract.mjs so /sapu:init's profile check reads the same test).
+const isHandoff = isHandoffCommand;
 
 /**
  * The step budget's verdict for one call of a ladder worker: the reminder to block it with, or null.
