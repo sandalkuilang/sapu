@@ -241,10 +241,10 @@ export function ownDir(dir) {
 
 /**
  * `$TMPDIR/sapu-live`, private to this user (0700, never a symlink), holding every run's worktree and
- * HOME outside the repo, and the pinned browser CLI. Created when missing. With `realMain`, refused
- * when it would lie inside the repo, before and after it exists.
+ * HOME outside the repo. Created when missing; refused when it would lie inside the repo `realMain`,
+ * before and after it exists.
  */
-export function liveRoot(realMain = null) {
+export function liveRoot(realMain) {
   let tmp;
   try {
     tmp = fs.realpathSync.native(os.tmpdir());
@@ -253,7 +253,7 @@ export function liveRoot(realMain = null) {
   }
   const root = path.join(tmp, "sapu-live");
   const inRepo = (p) => new Error(`refused: ${p} would lie inside the repo (TMPDIR points into it)`);
-  if (realMain && within(realMain, root)) throw inRepo(root);
+  if (within(realMain, root)) throw inRepo(root);
   try {
     fs.mkdirSync(root, { mode: 0o700 });
   } catch (e) {
@@ -261,7 +261,7 @@ export function liveRoot(realMain = null) {
   }
   ownDir(root);
   const real = fs.realpathSync.native(root);
-  if (realMain && within(realMain, real)) throw inRepo(real);
+  if (within(realMain, real)) throw inRepo(real);
   return real;
 }
 

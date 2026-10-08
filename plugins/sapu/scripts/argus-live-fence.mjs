@@ -10,18 +10,31 @@ export function nonce() {
   return randomBytes(16).toString("hex");
 }
 
-/** U+2011, the non-breaking hyphen: `PAGE-`/`RETURN-` in fenced text become `PAGE‑`/`RETURN‑`. */
+/** U+2011, the non-breaking hyphen: a marker shape's `PAGE-`/`RETURN-` becomes `PAGE‑`/`RETURN‑`. */
 const NB_HYPHEN = "‑";
 
 /**
- * Page-derived `text` made safe to fence: every non-empty secret value → `***` (longest first), `\r\n`
- * → `\n`, `PAGE-` and `RETURN-` → with U+2011 (so no text can open or close a fence), and every C0 or
- * C1 control (and DEL) other than `\n` and `\t` → U+FFFD (so no terminal escape survives).
+ * Every form a secret value takes in what the CLI prints: as is, JSON/YAML-escaped (a snapshot's or a
+ * body's string), URL-encoded (a request URL) and form-encoded (a form body: space as `+`).
+ */
+export function secretForms(v) {
+  return [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v), new URLSearchParams({ v }).toString().slice(2)];
+}
+
+/** A fence marker's shape: `PAGE-`/`RETURN-` before a 32-hex nonce, or an opening `<<<PAGE-`/`<<<RETURN-`. */
+const MARKER = /(<<<(?:PAGE|RETURN))-|(PAGE|RETURN)-(?=[0-9a-f]{32}(?![0-9a-f]))/g;
+
+/**
+ * Page-derived `text` made safe to fence: every non-empty secret value, in each of its forms
+ * (secretForms), → `***` (longest first); `\r\n` → `\n`; a marker shape's hyphen → U+2011 (no text can
+ * open or close a fence, while a business id such as `RETURN-42` stays as it is); and every C0 or C1
+ * control (and DEL) other than `\n` and `\t` → U+FFFD (no terminal escape survives).
  */
 export function clean(text, { secrets = {} } = {}) {
-  const values = [...new Set(Object.values(secrets).filter((v) => typeof v === "string" && v !== ""))].sort((a, b) => b.length - a.length);
-  let out = values.reduce((t, v) => t.split(v).join("***"), String(text ?? ""));
-  out = out.replace(/\r\n/g, "\n").replace(/(PAGE|RETURN)-/g, `$1${NB_HYPHEN}`);
+  const values = Object.values(secrets).filter((v) => typeof v === "string" && v !== "");
+  const forms = [...new Set(values.flatMap(secretForms))].sort((a, b) => b.length - a.length);
+  let out = forms.reduce((t, v) => t.split(v).join("***"), String(text ?? ""));
+  out = out.replace(/\r\n/g, "\n").replace(MARKER, (_m, open, bare) => `${open || bare}${NB_HYPHEN}`);
   return out.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "�");
 }
 

@@ -692,8 +692,17 @@ socket rule alone.
 ## 9. Browser driver and wrapper
 
 `@playwright/cli` (Microsoft's agent-oriented CLI, more token-efficient than its MCP server), an exact
-pinned version run through `npx -y`, with a clean environment (no `PLAYWRIGHT_*`, no `NODE_OPTIONS`).
-The repo needs no Playwright of its own.
+pinned version, never `npx -y` (which pins no integrity and reads the npm cache under the HOME the run
+replaces): the plugin ships `scripts/pw/package.json` and its `package-lock.json` (an integrity for every
+package), `up` installs them once per user with `npm ci --ignore-scripts` into the user's own cache
+(macOS `~/Library/Caches/sapu/pw-<lock hash>`, else `${XDG_CACHE_HOME:-~/.cache}/sapu/pw-<lock hash>`;
+not `$TMPDIR`, which macOS prunes file by file), writes a manifest (path, size, sha256 of every file)
+and verifies it on every use — a file missing, changed or added is a reinstall. The CLI runs with
+`node` in a clean environment: `PATH`, `USER`, `SHELL`, `LANG`/`LC_*`, `HOME` = `<run HOME>/browser`,
+`TMPDIR` = `<that HOME>/tmp` (Chrome's profiles die with the run), `NO_UPDATE_NOTIFIER=1`, and its daemon
+sockets in `/tmp/sapu-<uid>` (0700, this user's own: a socket path holds at most 103 bytes, which the
+run's HOME exceeds); nothing of the owner's `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS` or `XDG_*`. The
+repo needs no Playwright of its own.
 
 **Per-slot CLI config**, written by `up` to `.argus/live/<run>/<slot>/.playwright/cli.config.json`
 (its location also scopes the CLI's session namespace):

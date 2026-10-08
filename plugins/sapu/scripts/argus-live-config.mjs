@@ -43,9 +43,10 @@ const RANGES = { settle_ms: [0, 120_000], login_spacing_ms: [0, 60_000], "limits
 const outOfRange = (k, v) => (isInt(v, RANGES[k][0], RANGES[k][1]) ? null : `${k} must be an integer from ${RANGES[k][0]} to ${RANGES[k][1]}`);
 
 /**
- * `logged_in` and `login_open` (top level and per role) must be locators parseTarget reads — never a ref
- * or a CSS string — because the wrapper builds its login code from the parsed form (targetCode), so no
- * config string ever becomes code.
+ * `logged_in` and `login_open` (top level and per role) must be locators parseTarget reads — the getBy
+ * family or `locator('<css>')`, chained, with first/last/nth; never a snapshot ref or a bare CSS string —
+ * because the wrapper builds its login code from the parsed form (targetCode), so no config string ever
+ * becomes code.
  */
 const LOCATOR_EXAMPLE = { logged_in: "getByRole('button', { name: 'Account' })", login_open: "getByRole('button', { name: 'Sign in' })" };
 function locatorKey(v, key, where, errs) {
@@ -58,6 +59,24 @@ function locatorKey(v, key, where, errs) {
   }
   if (!t || t.ref !== undefined) errs.push(`${where} must be a Playwright locator such as ${LOCATOR_EXAMPLE[key]}`);
 }
+
+/** A time zone the browser accepts (Intl knows it). */
+const isTimeZone = (tz) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** A well-formed BCP 47 language tag. */
+const isLocale = (l) => {
+  try {
+    return typeof l === "string" && Intl.getCanonicalLocales(l).length === 1;
+  } catch {
+    return false;
+  }
+};
 
 const isRegex = (s) => {
   try {
@@ -132,7 +151,11 @@ export function validateLive(c) {
   for (const k of ["login_spacing_ms", "settle_ms"]) if (has(k)) need(!outOfRange(k, c[k]), outOfRange(k, c[k]));
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
   // The files `upload` may use: copied from the worktree's HEAD tree, so a path inside the repo.
-  if (isStr(c.fixtures)) need(!path.isAbsolute(c.fixtures) && !c.fixtures.includes("\\") && !c.fixtures.split("/").includes(".."), "fixtures must be a repo-relative directory (no absolute path, no ..)");
+  // A leading `-` or `:` would read as an option or a git pathspec magic where it is copied from HEAD.
+  if (isStr(c.fixtures)) need(!path.isAbsolute(c.fixtures) && !/^[-:]/.test(c.fixtures) && !c.fixtures.includes("\\") && !c.fixtures.split("/").includes(".."), "fixtures must be a repo-relative directory (no absolute path, no .., no leading - or :)");
+  if (isStr(c.timezone) && !isTimeZone(c.timezone)) errs.push(`timezone must be an IANA time zone such as UTC or Europe/Berlin: ${c.timezone}`);
+  if (isStr(c.locale) && !isLocale(c.locale)) errs.push(`locale must be a BCP 47 language tag such as en-US: ${c.locale}`);
+  if (strArray(c.locales)) for (const l of c.locales.filter((x) => !isLocale(x))) errs.push(`locales must be BCP 47 language tags such as en-US: ${l}`);
   if (has("compose_files")) {
     const v = c.compose_files;
     // No ":": the run joins the files into COMPOSE_FILE with it as the separator.

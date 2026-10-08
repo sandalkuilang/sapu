@@ -70,13 +70,17 @@ Facts this plan builds on, read from the published package (not assumed):
    call, and reads the npm cache under `HOME`, which the run replaces. The plugin ships
    `plugins/sapu/scripts/pw/package.json` (exact `@playwright/cli` `0.1.22`) and its
    `package-lock.json` (integrity for all three packages). `up` step 2 runs `npm ci --ignore-scripts
-   --no-audit --no-fund --prefer-offline` once into `$TMPDIR/sapu-live/pw-<sha256(lock)[0,12]>/`
-   (the phase-2 0700 root), checks `--version` prints `0.1.22`, and every call runs `node
+   --no-audit --no-fund --prefer-offline` once into the user's cache, `<cache>/sapu/pw-<sha256(lock)[0,12]>/`
+   (macOS `~/Library/Caches`, else `${XDG_CACHE_HOME:-~/.cache}`; 0700; not `$TMPDIR`, which macOS
+   prunes file by file), checks `--version` prints `0.1.22`, writes a manifest of every installed file
+   (path, size, sha256) and verifies it on every use (any difference → reinstall), and every call runs `node
    <dir>/node_modules/@playwright/cli/playwright-cli.js`. Nothing is installed with the plugin; the
    plugin's own scripts still import only `node:` modules. Offline with an empty npm cache → the step-2
    refusal the spec already names.
-2. **The CLI's environment:** `PATH, USER, SHELL, TMPDIR, LANG, LC_*`, `HOME` = `<run HOME>/browser`
-   (0700), `NO_UPDATE_NOTIFIER=1`; never `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS`, `XDG_*`. With HOME
+2. **The CLI's environment:** `PATH, USER, SHELL, LANG, LC_*`, `HOME` = `<run HOME>/browser`
+   (0700), `TMPDIR` = `<that HOME>/tmp` (0700), `PWTEST_SOCKETS_DIR` = `/tmp/sapu-<uid>` (0700, the
+   user's own: socket paths hold at most 103 bytes), `NO_UPDATE_NOTIFIER=1`; nothing of the owner's
+   `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS`, `XDG_*`. With HOME
    replaced the global `~/.playwright/cli.config.json` is never read; step 2's refusal of it stays as
    defence in depth.
 3. **Config paths** follow 0.1.22's schema: `browser.contextOptions`, `browser.initScript`,
@@ -98,8 +102,10 @@ Facts this plan builds on, read from the published package (not assumed):
    `<<<PAGE-<nonce>` … `PAGE-<nonce>>>>` fence per call. Outside it the wrapper prints only its own
    fixed vocabulary (counters, `re-logged-in: <role.k>`, `session-reopened: <role.k>`, `found after
    <ms> ms`, `truncated <n> characters`, harness lines). The spec's "new console signals follow
-   outside the fence" changes accordingly. Inside: `PAGE-` → `PAGE‑` (U+2011), C0/C1 controls other
-   than `\n` and `\t` → U+FFFD, secret values → `***`, capped at 24 000 characters.
+   outside the fence" changes accordingly. Inside: a marker shape (`PAGE-`/`RETURN-` before 32 hex,
+   or `<<<PAGE-`/`<<<RETURN-`) gets U+2011 for its hyphen (a business id such as `RETURN-42` is left
+   alone), C0/C1 controls other than `\n` and `\t` → U+FFFD, secret values → `***` in every form the
+   CLI prints them (as is, JSON/YAML-escaped, URL-encoded, form-encoded), capped at 24 000 characters.
 8. **Wrapper-internal browser work** (login, the `logged_in` probe, draining signals, the state hash)
    runs through `run-code --filename=<0600 file>` built from constant templates with every value a
    JSON literal; the file is removed after the call. `logged_in` and `login_open` (top level and per
@@ -1051,6 +1057,26 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   included), `viewports must be an array of widths from 200 to 4000`, `fixtures must be a repo-relative
   directory (no absolute path, no ..)`, `roles.<name>: <name> is reserved (a wrapper command)`.
 
+- **Review of Tasks 1–4 (fixed after Task 6).**
+  - `clean` masks every secret in each form the CLI prints it (`secretForms`: as is, JSON/YAML-escaped,
+    `encodeURIComponent`, form-encoded), longest first; a password holding `"`, `\`, a space, `&` and
+    `+` is the fixture tests' (and later fence tests') password. Only marker shapes are defused
+    (`(PAGE|RETURN)-` before 32 hex, `<<<PAGE-`, `<<<RETURN-`).
+  - The CLI is installed in the user's cache (`cliCacheRoot`), not `$TMPDIR`; `ensureCli` writes
+    `.sapu-manifest.json` (every file's path, size and sha256; symlinks by target) and checks it on every
+    call, a difference being a reinstall; it removes `pw-*.tmp-<pid>` installs whose process is gone,
+    and refuses a cache inside `realMain`. `liveRoot(realMain)` requires its repo again.
+  - `cliEnv` sets `TMPDIR` = `<home>/tmp` (runCli creates it 0700). Probed: the CLI then puts its daemon
+    socket at `<TMPDIR>/pw-<hash>/cli/…`, past the 103-byte limit for a run HOME under `$TMPDIR/sapu-live`
+    ("Socket directory path is too long"), so `cliEnv` also sets `PWTEST_SOCKETS_DIR` = `/tmp/sapu-<uid>`
+    (`SOCKETS_DIR`, created 0700 by runCli; a symlink, a non-directory or another user's refused).
+    Probed with a 150-character run HOME: open, goto and close work; the manifest stays intact after use.
+  - `explorerTarget` refuses a leading `-`; a chain holds at most 32 links; `targetCode` looks kinds up
+    as own properties only. `fixtures` refuses a leading `-` or `:` (Task 9 copies it with
+    `git --literal-pathspecs … -- <fixtures>`); `timezone` must be one Intl knows, `locale` and each
+    `locales` entry a well-formed BCP 47 tag. The URL-credential mask covers passwords holding `/` or
+    `@`.
+  - For Task 14: `up` passes its real main checkout to `ensureCli` (`realMain`) and `liveRoot`.
 - **Task 5.** `createProxy` takes `allowed` as origins in any form (it canonicalizes them with the
   exported `canonicalOrigin`) and calls `onBlocked` once per origin per server, so serveProxy's log
   holds each blocked origin once whatever the kind. A blocked CONNECT is logged as `https://<host>` for
@@ -1082,7 +1108,7 @@ Spec edits these tasks add (for the coordinator, beside the decisions above; the
 in with Task 5): §8 — top-level
 `login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and
 `limits.explorer_pw_calls`; `fixtures` repo-relative; the five role-free command words reserved as role
-names; `logged_in`/`login_open` must be getBy-family locators, never refs or CSS strings.
+names; `logged_in`/`login_open` must be parseTarget forms (the getBy family or `locator(...)`), never refs or bare CSS strings.
 
 ---
 

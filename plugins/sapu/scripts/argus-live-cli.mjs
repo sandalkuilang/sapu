@@ -4,19 +4,44 @@
 // the module DAG, since the teardown there closes sessions; installing the CLI and the per-slot config
 // are argus-live-browser.mjs's.
 import fs from "node:fs";
+import path from "node:path";
 import { run, runAsync, sameStart, sleep, startTime } from "./argus-live-proc.mjs";
 
 /**
- * The CLI's whole environment: PATH, USER, SHELL, TMPDIR, LANG and the LC_* variables the owner set,
- * HOME = `home` (the run's `<HOME>/browser`, so neither the owner's global CLI config nor its caches are
- * read), NO_UPDATE_NOTIFIER=1 (no registry call). Never PLAYWRIGHT_*, PWTEST_*, NODE_OPTIONS or XDG_*.
+ * The CLI's whole environment: PATH, USER, SHELL, LANG and the LC_* variables the owner set, HOME =
+ * `home` (the run's `<HOME>/browser`, so neither the owner's global CLI config nor its caches are read),
+ * TMPDIR = `<home>/tmp` (Chrome's profiles and the CLI's temp files die with the run's HOME; runCli
+ * creates it), PWTEST_SOCKETS_DIR = SOCKETS_DIR (below), NO_UPDATE_NOTIFIER=1 (no registry call). No
+ * PLAYWRIGHT_*, PWTEST_*, NODE_OPTIONS or XDG_* of the owner's.
  */
 export function cliEnv(home, ownerEnv = process.env) {
   const env = {};
   for (const [k, v] of Object.entries(ownerEnv)) {
-    if (typeof v === "string" && (["PATH", "USER", "SHELL", "TMPDIR", "LANG"].includes(k) || /^LC_[A-Z_]+$/.test(k))) env[k] = v;
+    if (typeof v === "string" && (["PATH", "USER", "SHELL", "LANG"].includes(k) || /^LC_[A-Z_]+$/.test(k))) env[k] = v;
   }
-  return { ...env, HOME: home, NO_UPDATE_NOTIFIER: "1" };
+  return { ...env, TMPDIR: path.join(home, "tmp"), HOME: home, PWTEST_SOCKETS_DIR: SOCKETS_DIR, NO_UPDATE_NOTIFIER: "1" };
+}
+
+/**
+ * Where the CLI's daemons put their unix sockets. A socket path holds at most 103 bytes, and the CLI
+ * builds `<TMPDIR>/pw-<hash>/browser/<16 hex>.sock`, which the run's HOME (under `$TMPDIR/sapu-live`)
+ * exceeds on macOS (probed: "Socket directory path is too long"). So `/tmp/sapu-<uid>`, as tmux does:
+ * short, and this user's own (ownSocketsDir creates it 0700 and refuses one that is not).
+ */
+export const SOCKETS_DIR = `/tmp/sapu-${typeof process.getuid === "function" ? process.getuid() : "user"}`;
+
+/** SOCKETS_DIR, created 0700 when missing; refused when it is a symlink, not a directory, or another user's. */
+function ownSocketsDir() {
+  try {
+    fs.mkdirSync(SOCKETS_DIR, { mode: 0o700 });
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") throw e;
+  }
+  const st = fs.lstatSync(SOCKETS_DIR);
+  if (st.isSymbolicLink() || !st.isDirectory() || (typeof process.getuid === "function" && st.uid !== process.getuid())) {
+    throw new Error(`refused: ${SOCKETS_DIR} is not this user's own directory; remove it`);
+  }
+  if ((st.mode & 0o777) !== 0o700) fs.chmodSync(SOCKETS_DIR, 0o700);
 }
 
 /**
@@ -26,6 +51,10 @@ export function cliEnv(home, ownerEnv = process.env) {
  * detached into a group of its own, so it stays) → {code, stdout, stderr, timedOut}.
  */
 export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000, runner = runAsync }) {
+  const tmp = path.join(home, "tmp");
+  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
+  fs.chmodSync(tmp, 0o700);
+  ownSocketsDir();
   const r = await runner([process.execPath, js, `-s=${session}`, ...args], { cwd, env: cliEnv(home), timeoutMs, stdio: ["ignore", "pipe", "pipe"], capture: true, killAfter: true });
   if (r.error) throw new Error(`failed: the browser CLI could not run: ${r.error.message}`);
   return { code: r.status ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: Boolean(r.timedOut) };

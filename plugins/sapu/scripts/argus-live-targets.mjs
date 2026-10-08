@@ -12,12 +12,14 @@ const METHOD = Object.fromEntries(Object.entries(GET_BY).map(([m, by]) => [by, m
 const OPTIONS = { role: ["name", "exact"], text: ["exact"], label: ["exact"], placeholder: ["exact"], title: ["exact"], altText: ["exact"], testId: [] };
 
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
+/** The most links a chain may have (`A.getByX(…).getByY(…)…`). */
+const MAX_LINKS = 32;
 
 /**
  * A target string → `{ref}`, `{by: "role", role, name?, exact?}`, `{by: "text"|"label"|"placeholder"|
  * "testId"|"title"|"altText", value, exact?}` or `{css}` (`locator('<css>')`), each with an optional
  * `nth` (`.first()` 0, `.last()` -1, `.nth(<int>)`) and an optional `within` (the target it is chained
- * on: `A.getByX(…)`). Strings are single- or double-quoted, with only the escapes `\\`, `\'` and `\"`;
+ * on: `A.getByX(…)`, at most 32 links). Strings are single- or double-quoted, with only the escapes `\\`, `\'` and `\"`;
  * an options object takes only the unquoted keys `name` (getByRole, a string) and `exact` (a boolean).
  * Every form accepted here is one the CLI's own locator parser accepts too (probed). Anything else —
  * a template literal, a call outside the getBy family, a second statement — throws `not a target: <s>`.
@@ -87,9 +89,11 @@ export function parseTarget(s) {
   };
 
   let cur = null;
+  let links = 0;
   for (;;) {
     const name = ident();
     if (Object.hasOwn(GET_BY, name) || name === "locator") {
+      if (++links > MAX_LINKS) throw fail();
       eat("(");
       const arg = str();
       const by = GET_BY[name];
@@ -137,7 +141,7 @@ export function targetCode(t, root = "page") {
   if (typeof t.css === "string") {
     code += `.locator(${JSON.stringify(t.css)})`;
   } else {
-    const method = METHOD[t.by];
+    const method = typeof t.by === "string" && Object.hasOwn(METHOD, t.by) ? METHOD[t.by] : null;
     const arg = t.by === "role" ? t.role : t.value;
     if (!method || typeof arg !== "string") throw bad();
     const opts = [];
@@ -160,10 +164,11 @@ export function targetCode(t, root = "page") {
 
 /**
  * A target the explorer may pass to the CLI: a ref, a locator parseTarget reads, or a selector of at
- * most 500 characters without control characters (the CLI parses it; nothing evaluates it). Else
- * `refused: not a target`.
+ * most 500 characters without control characters and not starting with `-` (the CLI parses it; nothing
+ * evaluates it; it goes after `--`, and a leading `-` is refused all the same). Else `refused: not a
+ * target`.
  */
 export function explorerTarget(s) {
-  if (typeof s !== "string" || s === "" || s.length > 500 || CONTROLS.test(s)) throw new Error("refused: not a target");
+  if (typeof s !== "string" || s === "" || s.length > 500 || s.startsWith("-") || CONTROLS.test(s)) throw new Error("refused: not a target");
   return s;
 }
