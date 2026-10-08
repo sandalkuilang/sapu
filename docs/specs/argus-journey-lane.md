@@ -700,8 +700,9 @@ not `$TMPDIR`, which macOS prunes file by file), writes a manifest (path, size, 
 and verifies it on every use — a file missing, changed or added is a reinstall. The CLI runs with
 `node` in a clean environment: `PATH`, `USER`, `SHELL`, `LANG`/`LC_*`, `HOME` = `<run HOME>/browser`,
 `TMPDIR` = `<that HOME>/tmp` (Chrome's profiles die with the run), `NO_UPDATE_NOTIFIER=1`, and its daemon
-sockets in `/tmp/sapu-<uid>` (0700, this user's own: a socket path holds at most 103 bytes, which the
-run's HOME exceeds); nothing of the owner's `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS` or `XDG_*`. The
+sockets in `/tmp/sapu-<uid>/<hash of that HOME>` (0700, this user's own: a socket path holds at most 103
+bytes, which the run's HOME exceeds; the teardown removes the directory, since the CLI leaves its
+sockets behind); nothing of the owner's `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS` or `XDG_*`. The
 repo needs no Playwright of its own.
 
 **Per-slot CLI config**, written by `up` to `.argus/live/<run>/<slot>/.playwright/cli.config.json`

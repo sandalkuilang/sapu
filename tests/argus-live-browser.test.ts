@@ -4,7 +4,7 @@
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { alive, cleanTemps, freePort, liveRun, tempDir, until } from "./helpers/
 // @ts-expect-error — plain ESM script without types
 import { ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { closeSessions, runCli } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { closeSessions, runCli, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -118,6 +118,10 @@ describe("argus-live browser — sessions and network layers", () => {
     expect(page.stdout).toContain(`- Page URL: ${b.base}/`);
     await closeSessions([rec], { js: cli.js, graceMs: 3000 });
     expect(await until(() => !alive(rec.daemon.pid) && !alive(rec.browser.pid), 5000)).toBe(true);
+    // The CLI leaves its sockets behind; the run's teardown removes their directory.
+    expect(readdirSync(socketsDir(b.home)).length).toBeGreaterThan(0);
+    await down(b.main, { runId: b.runId, graceMs: 2000 });
+    expect(existsSync(socketsDir(b.home))).toBe(false);
   }, 120_000);
 
   it("two sessions of one slot do not share cookies; a storage state signs one in and is not left on disk", async () => {

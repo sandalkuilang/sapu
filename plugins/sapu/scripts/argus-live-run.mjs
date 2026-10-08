@@ -502,7 +502,7 @@ const TEARDOWN = [
   ["process groups", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => !(g && g.internal)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
   ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && g.name === "proxy"), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) })],
   // Each session closed by name, then its daemon and browser killed by identity (closeSessions).
-  ["CLI sessions", (t) => closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note })],
+  ["CLI sessions", (t) => closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note, sockets: true })],
   ["the run's directories", (t) => {
     removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
     removeRunSecrets(t.main, t.runId, t.note);

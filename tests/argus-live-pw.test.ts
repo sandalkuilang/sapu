@@ -12,7 +12,7 @@ import { alive, cleanTemps, example, freePort, liveRun, makeShim, now, setLock, 
 // @ts-expect-error — plain ESM script without types
 import { CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_DIR } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_ROOT, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ROLE_FREE, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -221,10 +221,12 @@ describe("argus-live browser — the pinned CLI", () => {
       AWS_SECRET: "x",
       CI: "1",
     };
-    const SOCKETS = `/tmp/sapu-${process.getuid!()}`;
-    expect(SOCKETS_DIR).toBe(SOCKETS);
-    expect(cliEnv("/run/h/browser", ownerEnv)).toEqual({ PATH: "/usr/bin:/bin", USER: "u", SHELL: "/bin/sh", TMPDIR: "/run/h/browser/tmp", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", HOME: "/run/h/browser", PWTEST_SOCKETS_DIR: SOCKETS, NO_UPDATE_NOTIFIER: "1" });
-    expect(cliEnv("/h", { PATH: "/bin" })).toEqual({ PATH: "/bin", TMPDIR: "/h/tmp", HOME: "/h", PWTEST_SOCKETS_DIR: SOCKETS, NO_UPDATE_NOTIFIER: "1" });
+    expect(SOCKETS_ROOT).toBe(`/tmp/sapu-${process.getuid!()}`);
+    // One sockets directory per run HOME: short (a socket path holds 103 bytes), and the teardown removes it.
+    const sockets = (home: string) => `${SOCKETS_ROOT}/${createHash("sha256").update(home).digest("hex").slice(0, 12)}`;
+    expect(socketsDir("/run/h/browser")).toBe(sockets("/run/h/browser"));
+    expect(cliEnv("/run/h/browser", ownerEnv)).toEqual({ PATH: "/usr/bin:/bin", USER: "u", SHELL: "/bin/sh", TMPDIR: "/run/h/browser/tmp", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", HOME: "/run/h/browser", PWTEST_SOCKETS_DIR: sockets("/run/h/browser"), NO_UPDATE_NOTIFIER: "1" });
+    expect(cliEnv("/h", { PATH: "/bin" })).toEqual({ PATH: "/bin", TMPDIR: "/h/tmp", HOME: "/h", PWTEST_SOCKETS_DIR: sockets("/h"), NO_UPDATE_NOTIFIER: "1" });
   });
 
   it("runCli passes -s=<session> first and runs in cwd with cliEnv", async () => {
@@ -241,8 +243,11 @@ describe("argus-live browser — the pinned CLI", () => {
     // Chrome's profiles and the CLI's temp files die with the run's HOME.
     expect(statSync(join(home, "tmp")).mode & 0o777).toBe(0o700);
     // The daemons' sockets: a short directory of this user's own (a socket path holds at most 103 bytes).
-    expect(lstatSync(SOCKETS_DIR).isDirectory()).toBe(true);
-    expect(statSync(SOCKETS_DIR).mode & 0o777).toBe(0o700);
+    for (const d of [SOCKETS_ROOT, socketsDir(home)]) {
+      expect(lstatSync(d).isDirectory()).toBe(true);
+      expect(statSync(d).mode & 0o777).toBe(0o700);
+    }
+    rmSync(socketsDir(home), { recursive: true });
   });
 
   it("runCli kills the CLI at its timeout and reports its stderr", async () => {
@@ -255,6 +260,7 @@ describe("argus-live browser — the pinned CLI", () => {
     expect(r.timedOut).toBe(true);
     expect(r.code).toBeNull();
     expect(r.stderr).toBe("boom\n");
+    rmSync(socketsDir(dir), { recursive: true });
   });
 });
 
@@ -970,13 +976,18 @@ describe("argus-live teardown — proxy and CLI sessions", () => {
     for (const p of [a.daemon.pid, a.browser.pid, b.daemon.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
     expect(alive(reused.pid)).toBe(true);
     expect(report).toContain(`CLI session ${b.name}: its browser (pid ${reused.pid}) now runs another process; not killed`);
+    // The shim's calls made the run's sockets directory; the teardown removed it (the CLI leaves its sockets behind).
+    expect(existsSync(socketsDir(a.home))).toBe(false);
   });
 
   it("without the CLI (its cache gone) the sessions' processes are still killed by identity", async () => {
     const r = run();
     const a = session(r, 1, "buyer.1");
     writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env, sessions: [a], browser: { js: join(tempDir(), "gone.js"), channel: "chrome" } });
+    mkdirSync(join(socketsDir(a.home), "browser"), { recursive: true });
+    writeFileSync(join(socketsDir(a.home), "browser", "browser-1.sock"), "");
     await down(r.main, { runId: r.runId, graceMs: 2000 });
+    expect(existsSync(socketsDir(a.home))).toBe(false);
     for (const p of [a.daemon.pid, a.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
   });
 

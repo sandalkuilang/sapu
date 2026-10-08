@@ -78,8 +78,8 @@ Facts this plan builds on, read from the published package (not assumed):
    plugin's own scripts still import only `node:` modules. Offline with an empty npm cache → the step-2
    refusal the spec already names.
 2. **The CLI's environment:** `PATH, USER, SHELL, LANG, LC_*`, `HOME` = `<run HOME>/browser`
-   (0700), `TMPDIR` = `<that HOME>/tmp` (0700), `PWTEST_SOCKETS_DIR` = `/tmp/sapu-<uid>` (0700, the
-   user's own: socket paths hold at most 103 bytes), `NO_UPDATE_NOTIFIER=1`; nothing of the owner's
+   (0700), `TMPDIR` = `<that HOME>/tmp` (0700), `PWTEST_SOCKETS_DIR` = `/tmp/sapu-<uid>/<12 hex of
+   sha256(HOME)>` (0700, the user's own: socket paths hold at most 103 bytes; the teardown removes it), `NO_UPDATE_NOTIFIER=1`; nothing of the owner's
    `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS`, `XDG_*`. With HOME
    replaced the global `~/.playwright/cli.config.json` is never read; step 2's refusal of it stays as
    defence in depth.
@@ -1068,8 +1068,12 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     and refuses a cache inside `realMain`. `liveRoot(realMain)` requires its repo again.
   - `cliEnv` sets `TMPDIR` = `<home>/tmp` (runCli creates it 0700). Probed: the CLI then puts its daemon
     socket at `<TMPDIR>/pw-<hash>/cli/…`, past the 103-byte limit for a run HOME under `$TMPDIR/sapu-live`
-    ("Socket directory path is too long"), so `cliEnv` also sets `PWTEST_SOCKETS_DIR` = `/tmp/sapu-<uid>`
-    (`SOCKETS_DIR`, created 0700 by runCli; a symlink, a non-directory or another user's refused).
+    ("Socket directory path is too long"), so `cliEnv` also sets `PWTEST_SOCKETS_DIR` =
+    `/tmp/sapu-<uid>/<12 hex of sha256(HOME)>` (`socketsDir`; both levels created 0700 by runCli, a
+    symlink, a non-directory or another user's refused). Probed: the CLI leaves its `cli/` and
+    `browser/` sockets there after `close`, so the teardown's "CLI sessions" step removes each recorded
+    HOME's sockets directory once every session is closed (`closeSessions(…, {sockets: true})`; `up
+    --fresh` does not, its `up` sessions' HOME being shared).
     Probed with a 150-character run HOME: open, goto and close work; the manifest stays intact after use.
   - `explorerTarget` refuses a leading `-`; a chain holds at most 32 links; `targetCode` looks kinds up
     as own properties only. `fixtures` refuses a leading `-` or `:` (Task 9 copies it with
