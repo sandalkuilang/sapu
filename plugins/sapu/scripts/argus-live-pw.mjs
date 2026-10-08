@@ -12,6 +12,7 @@ import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-c
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
+import { submit } from "./argus-live-return.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
@@ -342,7 +343,15 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     return refused(e);
   }
   if (p.account === null) {
-    if (p.cmd === "submit") return { code: 2, out: [`failed: ${p.cmd} is not available in this build of the wrapper`, counter] };
+    if (p.cmd === "submit") {
+      // Its line holds enums only; a refusal leaves the token live (the explorer fixes its return).
+      try {
+        return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, p.positionals[0])] };
+      } catch (e) {
+        if (!/^refused: /.test(e.message)) throw e;
+        return { code: 1, out: [e.message] };
+      }
+    }
     // code, trigger, facts, mail: what they print is page data, in the fence; their exit and the wrapper's events outside.
     let done;
     try {

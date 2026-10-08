@@ -21,6 +21,8 @@
 //                                the explorer's only way into a browser (spec §9): the page's answer in a
 //                                nonce fence, then the wrapper's own lines; exit 0 ran, 1 refused or
 //                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed
+//   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
+//                                enums and counts, then the return whole in a RETURN nonce fence
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -31,6 +33,7 @@ import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
+import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain } from "./sapu-contract.mjs";
@@ -48,7 +51,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> …";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n>";
 
 try {
   if (cmd === "reap" && args.length === 1) await reap(main, args[0]);
@@ -71,7 +74,11 @@ try {
     else if (!opts.handoff && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
     else throw new Error(`refused: ${usage}`);
   }
-  else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
+  else if (cmd === "intake" && args.length === 1) {
+    if (!/^[1-9][0-9]?$/.test(args[0])) throw new Error("refused: a slot is a number from 1 to 99");
+    // The return is fenced and masked as it is printed; masking whole lines again would cut the nonce.
+    for (const line of intake(main, Number(args[0]), { secrets })) printMasked(line);
+  } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);

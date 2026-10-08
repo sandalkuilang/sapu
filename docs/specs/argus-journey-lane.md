@@ -264,8 +264,10 @@ and starts a fresh explorer with the submitted trail; the browser sessions stay 
 where the first stopped. At most two handoffs per journey.
 
 **Return.** The explorer submits its result through the wrapper (`pw <token> submit <json>`), which
-validates it against the schema, caps every free-text field at 500 characters, and writes
-`.argus/live/<run>/returns/<slot>.json`; its StructuredOutput is only `{status, slot}`. Schema:
+validates it against the schema, caps every free-text field at 500 characters, writes
+`.argus/live/<run>/returns/<slot>.<generation>.json` (each handoff's generation apart) and retires the
+token (a return the schema refuses is written nowhere and leaves the token live; `submit` answers past
+the budget and the deadline); its StructuredOutput is only `{status, slot}`. Schema:
 `{ journey, status: "done"|"handoff"|"aborted", roles, steps: [{role, action, locator, saw,
 off_goal}], created: [markers], values: [{marker, field, role, value, from}], candidates: [{claim,
 oracle, measured, roles, observed, expected, repro, screenshots[], h2h3}], cw: [{step, q1, q2, q3,

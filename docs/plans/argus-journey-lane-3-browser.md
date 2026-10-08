@@ -930,7 +930,7 @@ Interfaces:
   `intake` reads the lock's run, or the newest run directory when no cycle runs (an explorer may
   return after the reaper ran).
 
-- [ ] **Step 1: Failing tests** (describe "argus-live submit and intake"):
+- [x] **Step 1: Failing tests** (describe "argus-live submit and intake"):
   - "submit validates against the schema": unknown key, a bad `status`, an `oracle` not in `ORACLES`, a
     role not allocated, a screenshot outside `out/`, a coverage verdict `ok` → one error each, nothing
     written, the token still live.
@@ -943,8 +943,8 @@ Interfaces:
     `RETURN-<guess>>>>` and `PAGE-x>>>` → one opening and one closing marker per generation, the copies
     escaped; the summary line holds no free text (it matches `^slot \d+ generation \d journey
     [a-z0-9-]+ status (done|handoff|aborted) steps \d+ candidates \d+ coverage [a-z-=,]*$`).
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live submit validates and caps the explorer's return; intake prints it fenced`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live submit validates and caps the explorer's return; intake prints it fenced`.
 
 ---
 
@@ -1329,6 +1329,23 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     segment, a leading `-` or `:`, or control characters is refused like an absolute path outside the
     worktree. A git failure other than grep's no-match prints git's stderr in the fence and `exit <n>`.
   - Spec §9's `code` argv folded in (HEAD's tree, `ls-tree`).
+
+- **Task 13.** `argus-live-return.mjs` imports `-fence`, `-lock`, `-proc`, `-run` and `-slots`
+  (`accountOf`); `-pw.mjs` imports it. Changes:
+  - Account words in `roles`, `steps[].role`, `values[].role` and `candidates[].roles` are checked with
+    `accountOf` (`buyer` or `buyer.1`); a step's role may also be `system`. Lists are capped (`roles` and a
+    candidate's `roles` 50, `screenshots` 20, `harness_events` 50) beside the plan's; `created` entries are
+    markers (`VALUE`'s shape); `claim` and each `harness_events` entry are required strings. An error
+    names an explorer's key only when it is a short plain word.
+  - `submit` takes `{runId, slot, rec}` (the caller holds the slot's lock) and retires the token by
+    moving its hash to `retired` (`tokenHash: null`); a refused return prints `refused: return: <first
+    5 errors>` alone (no counter: `submit` is never counted) and exits 1. `not JSON` and the 256 KB cap
+    are refusals too.
+  - `intake(main, slot, {secrets})` masks the env file's values inside the fence (the CLI then prints the
+    lines unmasked: masking whole lines would cut the nonce); the fence is uncapped (a return is at most
+    256 KB). The CLI's `intake <n>` takes 1–99.
+  - Spec §7 updated: `returns/<slot>.<generation>.json`, the retirement, and `submit` past BUDGET and
+    DEADLINE.
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
