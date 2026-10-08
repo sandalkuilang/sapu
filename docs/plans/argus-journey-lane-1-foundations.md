@@ -389,6 +389,8 @@ git commit -m "feat(sapu): the journey explorer's Bash runs only its wrapper"
 
 ### Task 4: the explorer reads only tracked files of the run's worktree
 
+> Executed with a review change: the explorer has Read only; Grep and Glob are refused (ripgrep's `glob` overrides ignore rules, a directory search reaches untracked files, and a case-folded `.ARGUS` escaped the check on macOS). Code search moves to the wrapper's `code` command in phase 3. See commit history for the final code.
+
 **Files:**
 - Modify: `plugins/sapu/scripts/sapu-guard.mjs` (new export below `checkExplorerBash`; `BLOCK`; the explorer branch in `decide()`)
 - Test: `tests/sapu-guard.test.ts`

@@ -198,9 +198,10 @@ tracked); the owner may edit it:
 
 ## 7. The explorer: `sapu:ui-explorer`
 
-Agent file `plugins/sapu/agents/ui-explorer.md`: model opus, effort high, tools `Bash, Read, Grep,
-Glob, StructuredOutput`. Opus because judging a workflow is not mechanical. Its Bash runs only the
-wrapper; it reads only tracked code in the cycle's worktree (§11).
+Agent file `plugins/sapu/agents/ui-explorer.md`: model opus, effort high, tools `Bash, Read,
+StructuredOutput`. Opus because judging a workflow is not mechanical. Its Bash runs only the
+wrapper; it reads only tracked code in the cycle's worktree, and searches it through the wrapper's
+`code` command (§9, §11).
 
 **Charter:** `Explore journey <id> / as <roles and their allocated accounts> / with <goals per role,
 seed facts> / to discover <oracles>`, plus: its slot **token** (§9); `stop` (the goal state, or the
@@ -460,7 +461,9 @@ The repo needs no Playwright of its own.
   `select`, `check`, `uncheck`, `hover`, `press`, `drag`; `upload` (files from `live.fixtures`, which
   `up` copies to the slot's directory); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
   `screenshot`, `console`, `requests`, `request`, `response-body`; `resize`; `tab-list`,
-  `tab-select`, `tab-close`; `dialog-accept`, `dialog-dismiss`; `login <user> <password>` (accounts
+  `tab-select`, `tab-close`; `dialog-accept`, `dialog-dismiss`; `code grep <pattern> [<pathspec>]` and
+  `code files [<pathspec>]` (`git grep` and `git ls-files` in the worktree: tracked files only, never
+  under `.argus/`, output fenced like page text); `login <user> <password>` (accounts
   the journey itself created); `trigger <name> [values…]`; `facts <marker>`; `mail`; `submit <json>`.
   Everything else is refused — `run-code`, `eval`, `route`, `unroute`, `network-state-set`,
   `state-*`, `cookie-set`, `*storage-set`, `attach`, `close-all`, `kill-all`, `list`, `show`,
@@ -638,10 +641,11 @@ For `sapu:ui-explorer`:
   or a bare word matching `[A-Za-z0-9._:/=@,+#-]+`; any `$`, backtick, `~`, `*`, `?`, `[` or `{`
   outside single quotes, any environment prefix, pipe, redirection or substitution is refused. That
   also closes `printenv`, `node -e`, `curl`, `gh` and git for it.
-- **Read, Grep and Glob** are allowed only on paths whose real path lies in the run's worktree (from
-  `.argus/live/run.json`) and is tracked at HEAD (`git ls-files`), outside `.argus/`. A Grep or Glob
-  without such an explicit path is refused. Page content reaches the explorer only through the
-  wrapper.
+- **Read** is allowed only on a file whose real path (`realpath.native`) lies in the run's worktree
+  (from `.argus/live/run.json`), outside `.argus/` compared without case, and is tracked at HEAD
+  (`git ls-files`). Grep, Glob and every other tool are refused: ripgrep's `glob` overrides ignore
+  rules and a directory search reaches untracked files, so code search goes through the wrapper's
+  `code` command. Page content reaches the explorer only through the wrapper.
 
 For every subagent: adding or removing `labels.needsOwner` on an existing issue or PR (`gh issue|pr
 edit`, `gh api` REST and GraphQL) and `gh label create|edit|delete|clone` on it are refused;
@@ -743,7 +747,7 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
 Elsewhere:
 - `tests/sapu-guard.test.ts`: the explorer's Bash allowlist (allowed chains; refused `$VAR`, globs,
   env prefixes, pipes, `printenv`, `node -e`, `gh`, a wrapper path that is not the plugin's own); its
-  Read/Grep/Glob limits (an untracked file, `.argus/config.yml`, a home file, a Grep without a path);
+  Read limits (an untracked file, `.argus/config.yml` in any case, a home file) and Grep/Glob refused;
   `labels.needsOwner` add and remove refused through `gh issue edit`, `gh pr edit`, `gh api` and
   `gh label …` for every subagent, while `gh issue create --label` passes.
 - `tests/sapu-merge.test.ts`: ` live=1` written when the gate overlaps an interval in
