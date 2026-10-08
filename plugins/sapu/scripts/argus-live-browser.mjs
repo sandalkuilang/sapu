@@ -1,12 +1,13 @@
 // argus-live-browser.mjs — the journey lane's browser driver (spec §9): the pinned @playwright/cli,
 // installed once per machine from the lockfile the plugin ships (scripts/pw/) and run directly with
-// node, in a clean environment; and the Chrome-family browser it drives. Nothing here is installed with
-// the plugin: its own scripts import only `node:` modules.
+// node (argus-live-cli.mjs runs it, in a clean environment); and the Chrome-family browser it drives.
+// Nothing here is installed with the plugin: its own scripts import only `node:` modules.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { redact, run, runAsync } from "./argus-live-proc.mjs";
+import { cliEnv } from "./argus-live-cli.mjs";
+import { redact, run } from "./argus-live-proc.mjs";
 import { liveRoot } from "./argus-live-run.mjs";
 
 export const CLI_PACKAGE = "@playwright/cli";
@@ -104,29 +105,4 @@ const BROWSERS = {
 /** The installed Chrome-family browser → {channel, path} (Google Chrome first, then Microsoft Edge), or null. */
 export function findChrome({ platform = process.platform, exists = fs.existsSync } = {}) {
   return (BROWSERS[platform] || []).find((b) => exists(b.path)) || null;
-}
-
-/**
- * The CLI's whole environment: PATH, USER, SHELL, TMPDIR, LANG and the LC_* variables the owner set,
- * HOME = `home` (the run's `<HOME>/browser`, so neither the owner's global CLI config nor its caches are
- * read), NO_UPDATE_NOTIFIER=1 (no registry call). Never PLAYWRIGHT_*, PWTEST_*, NODE_OPTIONS or XDG_*.
- */
-export function cliEnv(home, ownerEnv = process.env) {
-  const env = {};
-  for (const [k, v] of Object.entries(ownerEnv)) {
-    if (typeof v === "string" && (["PATH", "USER", "SHELL", "TMPDIR", "LANG"].includes(k) || /^LC_[A-Z_]+$/.test(k))) env[k] = v;
-  }
-  return { ...env, HOME: home, NO_UPDATE_NOTIFIER: "1" };
-}
-
-/**
- * One CLI call: `node <js> -s=<session> ...args` in `cwd` (the slot's directory: its `.playwright/`
- * scopes the CLI's config and session namespace), under cliEnv(home), in its own process group, killed
- * with whatever it left in that group when it exits or at `timeoutMs` (the daemon `open` starts is
- * detached into a group of its own, so it stays) → {code, stdout, stderr, timedOut}.
- */
-export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000, runner = runAsync }) {
-  const r = await runner([process.execPath, js, `-s=${session}`, ...args], { cwd, env: cliEnv(home), timeoutMs, stdio: ["ignore", "pipe", "pipe"], capture: true, killAfter: true });
-  if (r.error) throw new Error(`failed: the browser CLI could not run: ${r.error.message}`);
-  return { code: r.status ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: Boolean(r.timedOut) };
 }

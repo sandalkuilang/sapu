@@ -8,7 +8,7 @@ import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, committed, example, freePort, git, liveRun, now, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -20,7 +20,11 @@ import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, make
 // @ts-expect-error — plain ESM script without types
 import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
-import { procStartTicks, run, runAsync } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+import { procStartTicks, run, runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+// @ts-expect-error — plain ESM script without types
+import { startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
+// @ts-expect-error — plain ESM script without types
+import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, recover, startReaper, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 
@@ -2732,8 +2736,8 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     });
   });
 
-  it("down and recovery run one teardown, in spec order (a phase 3 step is one entry of it)", () => {
-    expect(TEARDOWN_STEPS).toEqual(["docker runtime gate", "stops", "process groups", "the run's directories", "the reaper", "run.json"]);
+  it("down and recovery run one teardown, in spec order (each phase 3 step is one entry of it)", () => {
+    expect(TEARDOWN_STEPS).toEqual(["docker runtime gate", "stops", "process groups", "the proxy", "CLI sessions", "the run's directories", "the reaper", "run.json"]);
   });
 
   it("down removes only the run's own worktree: a run.json naming another path (the main checkout) leaves it, and says so", async () => {
@@ -3417,6 +3421,42 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     await down(main, { runId: r.runId, runner: noDocker });
     expect(balanced(main)).toBe(true);
   }, 60000);
+
+  it("up --fresh keeps the proxy, closes the explorer sessions (never the up ones) and retires every slot's token", async () => {
+    const { main } = repo();
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    const groups: Obj[] = [];
+    const proxy = await startProxy(main, r.runId, { groups });
+    reapers.push(proxy.pid);
+    const { shim, calls } = makeShim();
+    const standIn = () => {
+      const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+      reapers.push(p.pid!);
+      return { pid: p.pid!, pgid: p.pid!, started: startTime(p.pid!) };
+    };
+    const home = tempDir();
+    const record = (slot: number | string, account: string) => {
+      const cwd = join(main, ".argus/live", r.runId, String(slot));
+      mkdirSync(cwd, { recursive: true });
+      return { name: sessionName(r.runId, slot, account), slot, account, cwd, home, daemon: standIn(), browser: standIn() };
+    };
+    const explorer = record(1, "buyer.1");
+    const proving = record("up", "buyer.1");
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, ...groups], sessions: [explorer, proving], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    await up(main, opts({ fresh: true }));
+    const fresh = runJson(main);
+    expect(alive(proxy.pid)).toBe(true);
+    expect(fresh.groups.filter((g: Obj) => g.internal).map((g: Obj) => g.pgid)).toEqual([proxy.pid]);
+    expect(fresh.internal).toEqual({ proxy: proxy.port });
+    expect(calls().map((c) => c.argv)).toEqual([[`-s=${explorer.name}`, "close"]]);
+    for (const p of [explorer.daemon.pid, explorer.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
+    expect(alive(proving.daemon.pid)).toBe(true);
+    expect(fresh.sessions.map((s: Obj) => s.name)).toEqual([proving.name]);
+    expect(fresh.slots["1"]).toMatchObject({ tokenHash: null, retired: ["a".repeat(64)] });
+    await down(main, { runId: r.runId });
+    expect(await until(() => !alive(proxy.pid) && !alive(proving.daemon.pid), 5000)).toBe(true);
+  }, 90000);
 
   it("up and up --fresh return the summary the orchestrator reads (never run.json), which statusJson repeats; internal ports stay out of ports and origins", async () => {
     const { main } = repo();

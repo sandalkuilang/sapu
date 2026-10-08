@@ -1,26 +1,30 @@
 // tests/argus-live-pw.test.ts — the journey lane's browser side without a browser (argus-live-browser,
 // -fence, -targets, -config's browser keys, and later the proxy, slots, pw and return): a CLI shim stands
 // in for @playwright/cli wherever a command would reach it.
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, example, freePort, liveRun, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, example, freePort, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CLI_PACKAGE, CLI_VERSION, cliEnv, cliInstallDir, ensureCli, findChrome, runCli } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { CLI_PACKAGE, CLI_VERSION, cliInstallDir, ensureCli, findChrome } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { cliEnv, closeSessions, runCli, sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ROLE_FREE, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { clean, fence, nonce, PAGE_CAP } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
-import { killGroup } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+import { killGroup, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { blockedSince, canonicalOrigin, createProxy, proxyAllows, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
 // @ts-expect-error — plain ESM script without types
-import { down, logsDir, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+// @ts-expect-error — plain ESM script without types
+import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 
@@ -29,37 +33,6 @@ type Obj = Record<string, any>;
 afterEach(cleanTemps);
 
 const PW_DIR = join(__dirname, "../plugins/sapu/scripts/pw");
-
-/**
- * The CLI shim: a Node script standing in for playwright-cli.js. Each call appends `{argv, cwd, env}` as
- * one JSON line to `<shim>.calls`; `goto` answers a page, `run-code` the next line of `<shim>.queue`,
- * anything else a fixed line.
- */
-const makeShim = (dir = tempDir()) => {
-  const shim = join(dir, "shim.mjs");
-  writeFileSync(
-    shim,
-    `import fs from "node:fs";
-const self = new URL(import.meta.url).pathname;
-const argv = process.argv.slice(2);
-fs.appendFileSync(self + ".calls", JSON.stringify({ argv, cwd: process.cwd(), env: process.env }) + "\\n");
-const cmd = argv.find((a) => !a.startsWith("-"));
-if (cmd === "goto") {
-  const url = argv[argv.indexOf("--") + 1];
-  process.stdout.write("### Page\\n- Page URL: " + url + "\\n");
-} else if (cmd === "run-code") {
-  const q = self + ".queue";
-  const lines = fs.existsSync(q) ? fs.readFileSync(q, "utf8").split("\\n").filter(Boolean) : [];
-  process.stdout.write("### Result\\n" + (lines.shift() ?? "null") + "\\n");
-  fs.writeFileSync(q, lines.map((l) => l + "\\n").join(""));
-} else {
-  process.stdout.write("ok " + cmd + "\\n");
-}
-`,
-  );
-  const calls = (): Obj[] => (existsSync(`${shim}.calls`) ? readFileSync(`${shim}.calls`, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-  return { shim, calls };
-};
 
 /**
  * A fake `npm` on PATH: records its argv in `<dir>/npm.calls` and, for `ci`, creates the CLI entry point
@@ -825,5 +798,119 @@ describe("argus-live proxy", () => {
     await expect(startProxy(r.main, r.runId, { groups: sealed })).rejects.toThrow(/being torn down/);
     expect(pgid).toBeGreaterThan(1);
     expect(await until(() => !alive(pgid), 3000)).toBe(true);
+  });
+});
+
+describe("argus-live teardown — proxy and CLI sessions", () => {
+  const saved = { ...process.env };
+  const started: number[] = [];
+  afterEach(() => {
+    for (const p of started.splice(0)) killGroup(p);
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+  /** A detached `sleep` leading its own group, as a CLI daemon or a browser root does: its record. */
+  const standIn = (secs = 600) => {
+    const p = spawn("sleep", [String(secs)], { detached: true, stdio: "ignore" });
+    started.push(p.pid!);
+    return { pid: p.pid!, pgid: p.pid!, started: startTime(p.pid!) };
+  };
+  const run = () => {
+    process.env.TMPDIR = tempDir();
+    return liveRun();
+  };
+  const session = (r: Obj, slot: number | string, account: string, over: Obj = {}) => {
+    const cwd = join(r.main, ".argus/live", r.runId, String(slot));
+    mkdirSync(cwd, { recursive: true });
+    const home = join(r.home, "browser");
+    mkdirSync(home, { recursive: true });
+    return { name: sessionName(r.runId, slot, account), slot, account, cwd, home, daemon: standIn(), browser: standIn(), ...over };
+  };
+
+  it("TEARDOWN_STEPS has the proxy and the CLI sessions after the process groups", () => {
+    expect(TEARDOWN_STEPS).toEqual(["docker runtime gate", "stops", "process groups", "the proxy", "CLI sessions", "the run's directories", "the reaper", "run.json"]);
+  });
+
+  it("sessionName carries the run, the slot and the account", () => {
+    expect(sessionName("20261009000000-0000abcd", 2, "buyer.1")).toBe("20261009000000-0000abcd-2-buyer.1");
+    expect(sessionName("20261009000000-0000abcd", "up", "clerk.2")).toBe("20261009000000-0000abcd-up-clerk.2");
+    expect(() => sessionName("20261009000000-0000abcd", 1, "buyer")).toThrow(/account/);
+  });
+
+  it("down stops the recorded proxy in its own step; the process-groups step leaves internal groups alone", async () => {
+    const r = run();
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env });
+    const groups: Obj[] = [];
+    const { pid } = await startProxy(r.main, r.runId, { groups });
+    started.push(pid);
+    // A second internal group whose identity no longer matches: whichever step looks at it notes it once.
+    const other = standIn();
+    updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, groups: [...groups, { name: "proxy", internal: true, pgid: other.pid, started: "Mon Jan 1 00:00:00 2001", cmdline: "x" }] }));
+    const { report } = await down(r.main, { runId: r.runId, graceMs: 2000 });
+    expect(await until(() => !alive(pid), 3000)).toBe(true);
+    expect(report.filter((l: string) => l.includes(`process group ${other.pid}`))).toEqual([`the proxy: process group ${other.pid} (proxy): what runs in it is not what was recorded; not killed`]);
+    expect(alive(other.pid)).toBe(true);
+  });
+
+  it("down closes each recorded session by name with its own cwd and HOME, never close-all; it kills what still runs as recorded and leaves a reused pid", async () => {
+    const r = run();
+    const { shim, calls } = makeShim();
+    const a = session(r, 1, "buyer.1");
+    const reused = standIn();
+    const b = session(r, 1, "clerk.1", { browser: { ...reused, started: "Mon Jan 1 00:00:00 2001" } });
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env, sessions: [a, b], browser: { js: shim, channel: "chrome" } });
+    const { report } = await down(r.main, { runId: r.runId, graceMs: 2000 });
+    const closes = calls();
+    expect(closes.map((c) => c.argv)).toEqual([[`-s=${a.name}`, "close"], [`-s=${b.name}`, "close"]]);
+    expect(closes.map((c) => [c.cwd, c.env.HOME])).toEqual([[realpathSync(a.cwd), a.home], [realpathSync(b.cwd), b.home]]);
+    expect(closes.flatMap((c) => c.argv).filter((x: string) => /close-all|kill-all/.test(x))).toEqual([]);
+    for (const p of [a.daemon.pid, a.browser.pid, b.daemon.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
+    expect(alive(reused.pid)).toBe(true);
+    expect(report).toContain(`CLI session ${b.name}: its browser (pid ${reused.pid}) now runs another process; not killed`);
+  });
+
+  it("without the CLI (its cache gone) the sessions' processes are still killed by identity", async () => {
+    const r = run();
+    const a = session(r, 1, "buyer.1");
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env, sessions: [a], browser: { js: join(tempDir(), "gone.js"), channel: "chrome" } });
+    await down(r.main, { runId: r.runId, graceMs: 2000 });
+    for (const p of [a.daemon.pid, a.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
+  });
+
+  it("closeSessions sends SIGKILL to what outlives SIGTERM for graceMs", async () => {
+    const tough = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore" });
+    started.push(tough.pid!);
+    await new Promise((ok) => setTimeout(ok, 300));
+    const notes: string[] = [];
+    await closeSessions([{ name: "x-1-a.1", daemon: { pid: tough.pid, pgid: tough.pid, started: startTime(tough.pid) }, browser: null }], { js: null, note: (l: string) => notes.push(l), graceMs: 300 });
+    expect(await until(() => !alive(tough.pid!), 3000)).toBe(true);
+    expect(notes).toEqual([`CLI session x-1-a.1: its daemon (pid ${tough.pid}) outlived SIGTERM for 300 ms: killed`]);
+  });
+
+  it("recover closes the sessions of a stale run", async () => {
+    const r = run();
+    const { shim, calls } = makeShim();
+    const a = session(r, 2, "buyer.2");
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env, sessions: [a], browser: { js: shim, channel: "chrome" } });
+    setLock(r.main, { runId: r.runId, start: now() - 7200, deadline: now() - 60 });
+    takeLock(r.main, { maxCycleMinutes: 45 });
+    await recover(r.main, { graceMs: 2000 });
+    expect(calls().map((c) => c.argv)).toEqual([[`-s=${a.name}`, "close"]]);
+    for (const p of [a.daemon.pid, a.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
+  });
+
+  it("down keeps out/, returns/ and logs/ and removes the CLI configs, slot state and totp.json", async () => {
+    const r = run();
+    const dir = join(r.main, ".argus/live", r.runId);
+    const put = (rel: string, text = "x") => {
+      mkdirSync(join(dir, rel, ".."), { recursive: true });
+      writeFileSync(join(dir, rel), text);
+    };
+    for (const f of ["1/.playwright/cli.config.json", "1/.playwright/signals.js", "1/state.json", "1/lock", "1/out/page.yml", "1/files/receipt.txt", "up/.playwright/cli.config.json", "up/out/page.yml", "returns/1.1.json", "totp.json", "logs/up.log"]) put(f);
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env });
+    await down(r.main, { runId: r.runId, graceMs: 1000 });
+    const left = (execFileSync("find", [dir, "-type", "f"], { encoding: "utf8" }) as string).trim().split("\n").map((f) => f.slice(dir.length + 1)).sort();
+    expect(left.filter((f) => !f.startsWith("logs/"))).toEqual(["1/files/receipt.txt", "1/out/page.yml", "returns/1.1.json", "up/out/page.yml"]);
+    expect(left).toContain("logs/up.log");
   });
 });

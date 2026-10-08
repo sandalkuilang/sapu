@@ -4,8 +4,9 @@
 // This module brings it up: ports, the worktree, HOME and environment, setup, the store phase, start
 // and health, and `up`, `up --fresh`, `renew` and `status`. Its parts, each importing only the ones
 // before it: argus-live-proc.mjs (processes) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint
-// comparison) → -docker.mjs (Compose, the runtime gate) and -egress.mjs (the egress check) → -run.mjs
-// (run.json, teardown) → this module.
+// comparison) → -docker.mjs (Compose, the runtime gate) and -egress.mjs (the egress check), and
+// -cli.mjs (the browser CLI's calls and sessions) → -run.mjs (run.json, teardown) → -browser.mjs and
+// -proxy.mjs → this module; -fence.mjs and -targets.mjs are leaves.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
@@ -13,6 +14,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { closeSessions } from "./argus-live-cli.mjs";
 import { expand, expandConfig, LIVE_FILE, loadLive, portNames, secretEnv } from "./argus-live-config.mjs";
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs";
@@ -739,9 +741,20 @@ function current(main) {
   return { lock, rec, config, secrets };
 }
 
+/** Every slot's live token retired (its hash moved to `retired`), so no explorer outlives `up --fresh`. */
+function retireTokens(slots) {
+  if (!slots || typeof slots !== "object") return slots;
+  const out = {};
+  for (const [n, sl] of Object.entries(slots)) {
+    out[n] = sl && sl.tokenHash ? { ...sl, retired: [...(sl.retired ?? []), sl.tokenHash], tokenHash: null } : sl;
+  }
+  return out;
+}
+
 /**
  * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; stops
- * every `start` entry (its stop replayed, its group stopped; setup groups and the events follower stay), then the store phase,
+ * every `start` entry (its stop replayed, its group stopped; setup groups, the events follower and the
+ * proxy stay), closes every explorer's CLI session and retires every slot's token, then the store phase,
  * checkStore, reset, the other entries, checkStore, the egress check and the runtime gate again, and a
  * new instance id. Any refusal or failure → `down`, and the error rethrown.
  */
@@ -751,8 +764,9 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
   const log = runLog(main, runId, "up.log", secrets, say);
   const state = { ...rec };
   const save = () => writeRunFiles(main, state, { runner, secrets, create: false });
-  // Setup groups (a daemon a setup left) and the events follower live as long as the run.
-  const kept = (rec.groups ?? []).filter((g) => g && (/^setup\[\d+\]$/.test(g.name) || g.name === FOLLOWER));
+  // Setup groups (a daemon a setup left), the events follower and the run's own helpers (`internal`:
+  // the proxy) live as long as the run.
+  const kept = (rec.groups ?? []).filter((g) => g && (/^setup\[\d+\]$/.test(g.name) || g.name === FOLLOWER || g.internal));
   state.groups = recordingArray(save, rec.groups ?? []);
   state.stops = recordingArray(save, rec.stops ?? []);
   let step = "fresh: stop";
@@ -772,6 +786,12 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const g of alive) note(`${g.name} (pgid ${g.pgid}) still runs after the stop; kept in the record for down`);
     state.groups = recordingArray(save, [...kept, ...alive]);
     state.stops = recordingArray(save);
+    // The explorers' sessions and tokens belong to the instance being reset: closed and retired. The
+    // proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
+    const explorers = (rec.sessions ?? []).filter((x) => x && typeof x.slot === "number");
+    await closeSessions(explorers, { js: rec.browser?.js ?? null, runner, note });
+    state.sessions = (rec.sessions ?? []).filter((x) => !explorers.includes(x));
+    state.slots = retireTokens(rec.slots);
     state.instanceId = null;
     save();
     log("fresh: every start entry stopped");

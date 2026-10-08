@@ -1,7 +1,7 @@
 // Helpers shared by the argus-live test files: temp directories, a committed repo, a run as `up`
 // leaves it before its run files, and small process and timing helpers.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,4 +126,35 @@ export const liveRun = () => {
   writeFileSync(`${wt}.setup.log`, "setup output\n");
   const env = { PATH: process.env.PATH!, HOME: home, COMPOSE_PROJECT_NAME: `argus-${l.runId}` };
   return { main, runId: l.runId as string, wt, home, env, lock: l };
+};
+
+/**
+ * The CLI shim: a Node script standing in for playwright-cli.js. Each call appends `{argv, cwd, env}` as
+ * one JSON line to `<shim>.calls`; `goto` answers a page, `run-code` the next line of `<shim>.queue`,
+ * anything else a fixed line.
+ */
+export const makeShim = (dir = tempDir()) => {
+  const shim = join(dir, "shim.mjs");
+  writeFileSync(
+    shim,
+    `import fs from "node:fs";
+const self = new URL(import.meta.url).pathname;
+const argv = process.argv.slice(2);
+fs.appendFileSync(self + ".calls", JSON.stringify({ argv, cwd: process.cwd(), env: process.env }) + "\\n");
+const cmd = argv.find((a) => !a.startsWith("-"));
+if (cmd === "goto") {
+  const url = argv[argv.indexOf("--") + 1];
+  process.stdout.write("### Page\\n- Page URL: " + url + "\\n");
+} else if (cmd === "run-code") {
+  const q = self + ".queue";
+  const lines = fs.existsSync(q) ? fs.readFileSync(q, "utf8").split("\\n").filter(Boolean) : [];
+  process.stdout.write("### Result\\n" + (lines.shift() ?? "null") + "\\n");
+  fs.writeFileSync(q, lines.map((l) => l + "\\n").join(""));
+} else {
+  process.stdout.write("ok " + cmd + "\\n");
+}
+`,
+  );
+  const calls = (): Record<string, any>[] => (existsSync(`${shim}.calls`) ? readFileSync(`${shim}.calls`, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  return { shim, calls };
 };

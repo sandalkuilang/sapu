@@ -442,7 +442,7 @@ Interfaces:
   session (`closeSessions` of records whose slot is a number) and calls `retireAll` (Task 9; until
   then a stub that marks every slot `retired`).
 
-- [ ] **Step 1: Failing tests** (describe "argus-live teardown — proxy and CLI sessions"; the CLI shim
+- [x] **Step 1: Failing tests** (describe "argus-live teardown — proxy and CLI sessions"; the CLI shim
   as `js`, a `sleep 600` group standing in for a daemon):
   - "TEARDOWN_STEPS has the proxy and the CLI sessions after the process groups": equals `["docker
     runtime gate", "stops", "process groups", "the proxy", "CLI sessions", "the run's directories",
@@ -458,8 +458,8 @@ Interfaces:
   - "down keeps out/, returns/ and logs/ and removes configs, state and totp.json".
   - "up --fresh keeps the proxy and closes the explorer sessions": the proxy pid is alive after
     `upFresh`; the shim saw `close` for the slot sessions, not for `up` ones (there are none left).
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live teardown stops the proxy and closes the run's CLI sessions by name`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live teardown stops the proxy and closes the run's CLI sessions by name`.
 
 ---
 
@@ -1062,6 +1062,21 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   run.json: `up` records it at step 9 (Task 14). The server's `closeAll()` also destroys tunnelled and
   upgraded sockets, which `http.Server` stops tracking (its `close` would wait for them forever).
   `CLI` is exported from `-run.mjs`.
+- **Task 6.** The teardown in `-run.mjs` closes sessions, so `closeSessions` cannot live in
+  `-browser.mjs` (above `-run.mjs`): a new module **`argus-live-cli.mjs`** below `-run.mjs` (it imports
+  only `-proc.mjs`) holds `cliEnv`, `runCli` (moved from `-browser.mjs`), `sessionName` and
+  `closeSessions`. DAG: proc → lock → endpoints → docker/egress and cli → run → browser, proxy → …
+  Session records carry `{pid, pgid, started}` for the daemon and the browser root, because each leads
+  a process group of its own: a process whose pgid is its pid gets its group signalled, any other its
+  pid alone. `closeSessions` reads `js` from run.json `browser.js` (Task 14 records it); without it, or
+  with the file gone, the kills alone run. Its notes: `CLI session <name>: its daemon|browser (pid <p>)
+  now runs another process; not killed` and `… outlived SIGTERM for <ms> ms: killed`. "The proxy" step
+  prefixes its notes with `the proxy: `. "The run's directories" also removes the run's `totp.json`
+  and, in every slot directory (`<n>/`, `up/`), `.playwright/`, `state.json`, `lock` and `totp.json`;
+  `out/`, `files/`, `returns/` and `logs/` stay. `writeRunFiles` keeps run.json's `sessions` when the
+  state it writes holds none (openSession appends them through updateRun while `up` holds its own
+  state). `up --fresh` retires the tokens with a local `retireTokens` until Task 9's `retireAll`. The
+  CLI shim moved to `tests/helpers/argus-live.ts` (`makeShim`).
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

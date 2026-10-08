@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { closeSessions } from "./argus-live-cli.mjs";
 import { LIVE_FILE, loadLive, secretEnv, secretsIn } from "./argus-live-config.mjs";
 import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
@@ -157,7 +158,9 @@ export function writeRunFiles(main, state, { runner = run, secrets = {}, create 
     state.runId,
     (prev) => {
       const reaper = state.reaper !== undefined ? state.reaper : prev ? prev.reaper : undefined;
-      return { ...state, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [], ...(reaper === undefined ? {} : { reaper }) };
+      // Sessions are appended by openSession through updateRun: a state that does not hold them keeps them.
+      const sessions = state.sessions ?? (prev && prev.sessions) ?? [];
+      return { ...state, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions, ...(reaper === undefined ? {} : { reaper }) };
     },
     { create },
   );
@@ -400,6 +403,35 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
   }
 }
 
+/**
+ * Removes what the run kept under `.argus/live/<runId>/` that holds secrets or the CLI's state: in each
+ * slot directory (`<n>/`, `up/`) its `.playwright/` (configs, a storage state), `state.json` (counters,
+ * created accounts' passwords), `lock` and `totp.json`; and the run's `totp.json`. `out/`, `files/`,
+ * `returns/` and `logs/` stay (evidence for the owner and the repro). Symlinks are removed, never followed.
+ */
+function removeRunSecrets(main, runId, note) {
+  const dir = path.join(liveDir(main), runId);
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const remove = (p) => {
+    try {
+      fs.lstatSync(p);
+    } catch {
+      return;
+    }
+    removeTree(p, note);
+  };
+  remove(path.join(dir, "totp.json"));
+  for (const e of entries) {
+    if (!e.isDirectory() || ["logs", "returns"].includes(e.name)) continue;
+    for (const f of [".playwright", "state.json", "lock", "totp.json"]) remove(path.join(dir, e.name, f));
+  }
+}
+
 /** Runs one teardown step; an error is noted and the teardown goes on. */
 export async function guarded(what, note, fn) {
   try {
@@ -453,8 +485,8 @@ async function replayRecorded(s, t) {
 }
 
 /**
- * The teardown's steps in spec §8's order, shared by `down` and recovery: one list, so a step added
- * (phase 3: the proxy, then the CLI sessions by name, after the process groups) is one entry. Each runs
+ * The teardown's steps in spec §8's order, shared by `down` and recovery: one list (the proxy, then the
+ * CLI sessions by name, come after the process groups). Each runs
  * guarded: a failure is noted and the next step runs. `t` = {main, runId, rec, mode: "down" | "recover",
  * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh, note}.
  */
@@ -466,8 +498,15 @@ const TEARDOWN = [
     for (const s of [...(t.rec?.stops ?? [])].reverse()) await guarded(`stop ${s && s.name}`, t.note, () => replayRecorded(s, t));
   }],
   // Only groups that still run what was recorded (sameGroup); setup groups included.
-  ["process groups", (t) => stopRecordedGroups(t.rec?.groups, { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
-  ["the run's directories", (t) => removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note })],
+  // The run's own helpers (`internal`: the proxy) have their own steps.
+  ["process groups", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => !(g && g.internal)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
+  ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && g.name === "proxy"), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) })],
+  // Each session closed by name, then its daemon and browser killed by identity (closeSessions).
+  ["CLI sessions", (t) => closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note })],
+  ["the run's directories", (t) => {
+    removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
+    removeRunSecrets(t.main, t.runId, t.note);
+  }],
   // Last of the processes: the reaper, unless it is this process (its own `down`).
   ["the reaper", (t) => (t.rec ? stopReaper(t.rec.reaper, t.runId, t.runner, t.note) : undefined)],
   ["run.json", (t) => (t.mode === "down" ? removeRun(t.main, t.runId, t.claimWaitMs) : t.rec ? fs.rmSync(runPath(t.main), { force: true }) : undefined)],
