@@ -601,7 +601,10 @@ defence in depth and not enforcement:
 10. **Logins.** One proving login per allocated account, sequential, `login_spacing_ms` apart, each
     followed by a check that the browser's requests reached only the run's origins and
     `allow_origins` — any other origin (e.g. a redirect to the owner's own server) → refuse, naming
-    it. The proving sessions are then closed.
+    it. The check reads only the requests and WebSockets of the login's own pages (popups, redirects
+    and blocked requests included), never the proxy's log: Chrome's own start-up traffic, which no
+    flag stops entirely, reaches the proxy too and is no page's request. The proving sessions are
+    then closed.
 11. **Run files.** `.argus/live/run.json` gets its instance id; a detached **reaper**, started with
     the run id as soon as run.json first exists (step 1), runs `down` at the deadline unless `renew`
     moved it, and exits without acting when the lock names another run. `up` ends by printing the
@@ -620,6 +623,7 @@ defence in depth and not enforcement:
     | `reaper` | the reaper's pid | `up` step 1 (the reaper's start) |
     | `ports` | `{<name>: port}` of every `{port:<name>}`: what pages and processes use | `up` step 3 |
     | `internal` | `{<name>: port}` the run's own machinery uses (the proxy, phase 3): never in `ports` or the origins | `up` step 3; the proxy's start |
+    | `upstream` | `{<port>: address}`: the loopback address each run port's listener passed health on (the proxy connects a loopback name such as `localhost` there, never at another listener on that port; a port with none recorded answers 502) | `up`'s health waits; rewritten by `up --fresh` |
     | `origins` | the run's origins (above), from `ports` only | `up` step 3 |
     | `baseUrl` | `base_url`, expanded | `up` step 3 |
     | `home` | the run's HOME | `up` step 3 |
@@ -716,7 +720,19 @@ repo needs no Playwright of its own.
   `--proxy-bypass-list=<-loopback>`, so loopback traffic goes through it too (Chrome bypasses a proxy
   for loopback by default); `network.allowedOrigins` = the same set; `--host-resolver-rules` mapping
   every host to NOTFOUND except the run's hosts and `allow_origins` hosts;
-  `--webrtc-ip-handling-policy=disable_non_proxied_udp`. A live probe with 0.1.22 showed host rules
+  `--webrtc-ip-handling-policy=disable_non_proxied_udp`; and Chrome's own background services kept
+  quiet (background networking, component updates, sync, pings, the sign-in, push-messaging and
+  component-update URLs pointed at a refused loopback port, and the prefetch, optimization-guide,
+  autofill-server and similar features disabled — one `--disable-features` list repeating
+  Playwright's, since Chrome keeps the last). One start-up connection of Chrome's still reaches the
+  proxy, which blocks it: every judgement about where a page went (the proving logins, the
+  `blocked:` lines the explorer sees) reads the page's own requests, never the proxy's log alone.
+  **Origins are compared exactly** — by the proxy, by `goto`'s URL check and by the login check: a
+  host as the run's origin spells it (lower case, one form per IP address, no trailing dot, default
+  ports filled), loopback spellings kept apart (`localhost`, `127.0.0.1` and `::1` may be different
+  listeners on one port), so `http://127.0.0.1:<p>` is not `http://localhost:<p>`. A loopback name is
+  connected to at the address its listener passed health on (run.json `upstream`, §8), a loopback
+  address as written. A live probe with 0.1.22 showed host rules
   plus a proxy plus the WebRTC flag stop page fetches, beacons, images, WebSockets and WebRTC to an
   outside host; the filtering proxy extends that to other ports on loopback. None of these binds
   Node-side code, which is why the explorer gets neither `run-code` nor `eval`, and the runner never
@@ -743,7 +759,8 @@ repo needs no Playwright of its own.
   `install*` — as are the flags `-s`/`--session`, `--config`, `--browser`, `--cdp`, `--profile`,
   `--extension`, `--headed`, and any file argument.
 - **URLs and paths.** A `goto`/`tab-new` path must match `^/(?![/\\])`; a URL is parsed with WHATWG
-  `URL` and must use `http` or `https` with an origin among the run's origins. So `//host`, `/\host`,
+  `URL` and must use `http` or `https` with an origin among the run's origins, compared exactly
+  (above), and carry no credentials or control characters. So `//host`, `/\host`,
   `javascript:`, `data:`, `file:`, `view-source:` and `http://localhost:<port>@host` are refused.
 - **Values into commands.** `trigger`, `facts` and `mail` run their argv with no shell; each value
   replaces one placeholder (`{1}`, `{2}`…) and must match that placeholder's regex in `args` (default
