@@ -1221,7 +1221,7 @@ function checkCommand(t, state, depth) {
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
     if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade"))) return BLOCK.foreignCode;
-    // The acceptance label, in every spelling gh offers.
+    // The owner labels (acceptance, needs-owner), in every spelling gh offers.
     const L = rules.ownerLabels;
     const tail = i2 < 0 ? [] : w.slice(i2 + 1);
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {

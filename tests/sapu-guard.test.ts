@@ -1472,6 +1472,7 @@ describe("sapu-guard — any MCP server, Monitor and PowerShell are judged gener
       ["mcp__github__create_or_update_file", { owner: "o", repo: "r", branch: "main", path: "a.ts", content: "x" }],
       ["mcp__github__push_files", { owner: "o", repo: "r", branch: "refs/heads/main", files: [] }],
       ["mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 3, labels: ["sapu:accepted"] }],
+      ["mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 3, labels: ["argus:needs-owner"] }],
       ["mcp__github__graphql", { query: "mutation { mergePullRequest(input: {}) { clientMutationId } }" }],
       ["mcp__filesystem__write_file", { path: join(repo4, "src.txt"), content: "x" }],
       ["mcp__filesystem__read_file", { path: join(repo4, ".env") }],
