@@ -40,6 +40,8 @@
 //   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
 //   sapu-contract.mjs main        prints <MAIN>, the main checkout (findMain: also for a submodule or a
 //                                 --separate-git-dir checkout, where git lists its git directory first)
+//   sapu-contract.mjs stack       the guard /sapu:init proposes for the checkout (detectStack): its
+//                                 ecosystems' guard.deny rules and the dev databases of guard.postgres/databases
 //   sapu-contract.mjs protect [--ref <rev>] -- <words>   which repo file a contract command pins
 //                                 (protectedCommand), as JSON {words, index, file, why}
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
@@ -203,6 +205,18 @@ function policyProblems(p) {
   return errs;
 }
 
+/** The database engines `guard.databases` protects (the guard knows each one's clients, flags and URLs). */
+export const DB_ENGINES = ["postgres", "mysql", "mongodb", "redis", "sqlite"];
+
+/**
+ * Every protected port and database name of a contract guard, whatever the engine: `guard.postgres`
+ * and each `guard.databases` entry (sqlite files aside). For checks that compare values, not commands.
+ */
+export function protectedDatabases(guard) {
+  const all = [...(guard && guard.postgres ? [guard.postgres] : []), ...(guard && Array.isArray(guard.databases) ? guard.databases.filter((d) => d.engine !== "sqlite") : [])];
+  return { ports: [...new Set(all.flatMap((d) => d.ports))], databases: [...new Set(all.flatMap((d) => d.databases))] };
+}
+
 /** Every schema error in `c` (empty = valid). Unknown keys are errors: a typo must not silently drop a rule. */
 export function validate(c) {
   const errs = [];
@@ -307,7 +321,23 @@ export function validate(c) {
   if ("policy" in c) policyProblems(c.policy).forEach((e) => errs.push(e));
   const g = c.guard;
   if (g && typeof g === "object") {
-    keys(g, "guard", ["envFiles", "postgres", "deny"]);
+    keys(g, "guard", ["envFiles", "postgres", "deny"], ["databases"]);
+    // Optional, like postgres per engine: a dev database other sessions use, of any engine the guard reads.
+    if ("databases" in g) {
+      if (!Array.isArray(g.databases)) errs.push(`guard.databases must be an array of {engine, ports, databases} (engines: ${DB_ENGINES.join(", ")}); omit it for none`);
+      else
+        g.databases.forEach((d, i) => {
+          const where = `guard.databases[${i}]`;
+          const shaped = need(
+            d && typeof d === "object" && !Array.isArray(d) && Object.keys(d).sort().join() === "databases,engine,ports" && Array.isArray(d.ports) && d.ports.every((n) => Number.isInteger(n) && n > 0 && n < 65536) && strArray(d.databases),
+            `${where} must be {engine, ports: [int], databases: [name]} (sqlite: databases are files, absolute or relative to the main checkout)`,
+          );
+          if (shaped !== true) return;
+          if (!DB_ENGINES.includes(d.engine)) errs.push(`${where}.engine must be one of ${DB_ENGINES.join(", ")}`);
+          else if (d.engine === "sqlite" && d.ports.length) errs.push(`${where}: sqlite protects files, not ports`);
+          need(d.ports.length + d.databases.length > 0, `${where} must name at least one port or database`);
+        });
+    }
     need(strArray(g.envFiles), "guard.envFiles must be an array of file names ([] adds nothing to .env/.env.local)");
     // The guard compares basenames: a path would silently protect nothing.
     if (strArray(g.envFiles)) for (const f of g.envFiles) need(!f.includes("/"), `guard.envFiles entries are file names, not paths: "${f}"`);
@@ -1214,6 +1244,171 @@ export function sweepRelease(main, owner) {
   return { released: true };
 }
 
+// THE GUARD /sapu:init PROPOSES. The engine floor knows JS package managers, Prisma and Postgres; every
+// other ecosystem's destructive commands are blocked by the contract's guard.deny, and every other
+// engine's dev database by guard.databases. detectStack reads the checkout (marker files, Compose
+// files, Rails' database.yml; never an env file) and proposes both, for the owner to confirm.
+const drop = (what) => `${what} destroys data other sessions use. Use your own throwaway test database (.claude/sapu/worker.md).`;
+const variants = (progs, words, why) => progs.map((p) => ({ argv: [...p.split(" "), ...words], reason: drop(why) }));
+const PY = ["python", "python3", "manage.py"];
+/** Each ecosystem: the files that mark it (any one; `has` = text a file must contain), and the deny rules it gets. */
+export const ECOSYSTEMS = {
+  rails: {
+    markers: [["bin/rails"], ["config/application.rb", /Rails::Application/]],
+    deny: ["db:drop", "db:reset", "db:purge", "db:truncate_all", "db:migrate:reset", "db:schema:load", "db:seed:replant"].flatMap((t) => variants(["rails", "rake"], [t], `\`rails ${t}\``)),
+  },
+  django: {
+    markers: [["manage.py"]],
+    deny: [...variants([...PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), "django-admin"], ["flush"], "`manage.py flush`"), ...variants(PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), ["reset_db"], "`manage.py reset_db`"), ...variants(PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), ["migrate", "zero"], "`manage.py migrate <app> zero`")],
+  },
+  alembic: { markers: [["alembic.ini"]], deny: variants(["alembic"], ["downgrade"], "`alembic downgrade`") },
+  laravel: {
+    markers: [["artisan"]],
+    deny: ["migrate:fresh", "migrate:reset", "migrate:refresh", "db:wipe"].flatMap((t) => variants(["php artisan", "artisan", "sail artisan"], [t], `\`artisan ${t}\``)),
+  },
+  go: {
+    markers: [["go.mod"]],
+    deny: [...variants(["migrate"], ["drop"], "`migrate drop`"), ...variants(["migrate"], ["down"], "`migrate down`"), ...variants(["goose"], ["reset"], "`goose reset`"), ...variants(["goose"], ["down"], "`goose down`"), ...variants(["atlas"], ["schema", "clean"], "`atlas schema clean`")],
+  },
+  node: {
+    // per ORM, only when package.json names it (Prisma is in the engine floor)
+    markers: [["package.json"]],
+    tools: {
+      sequelize: [...variants(["sequelize", "sequelize-cli"], ["db:drop"], "`sequelize db:drop`"), ...variants(["sequelize", "sequelize-cli"], ["db:migrate:undo:all"], "`sequelize db:migrate:undo:all`")],
+      typeorm: variants(["typeorm"], ["schema:drop"], "`typeorm schema:drop`"),
+      knex: variants(["knex"], ["migrate:rollback", "--all"], "`knex migrate:rollback --all`"),
+      "drizzle-kit": variants(["drizzle-kit"], ["drop"], "`drizzle-kit drop`"),
+    },
+    deny: [],
+  },
+};
+const IMAGE_ENGINE = [[/(^|\/)(postgres|postgis|timescaledb)\b/, "postgres"], [/(^|\/)(mysql|mariadb|percona)\b/, "mysql"], [/(^|\/)mongo\b/, "mongodb"], [/(^|\/)(redis|valkey|keydb)\b/, "redis"]];
+const DB_ENV = /^(POSTGRES_DB|MYSQL_DATABASE|MARIADB_DATABASE|MONGO_INITDB_DATABASE)$/;
+const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+/** Quotes dropped, each `${X:-default}` read as its default; a value with any other substitution → null. */
+const composeValue = (v) => {
+  const s = String(v).trim().replace(/^(["'])(.*)\1$/, "$2").replace(/\$\{\w+:?-([^}]*)\}/g, "$1");
+  return s.includes("$") ? null : s;
+};
+
+/** The dev databases a Compose file's services publish: [{engine, ports, databases}] (a line reader for the common shapes, not YAML). */
+export function composeDatabases(text) {
+  const out = [];
+  let svcIndent = -1;
+  let svc = null;
+  let inPorts = false;
+  for (const raw of String(text).split("\n")) {
+    if (!raw.trim() || raw.trim().startsWith("#")) continue;
+    const indent = raw.length - raw.trimStart().length;
+    const line = raw.trim();
+    if (indent === 0) {
+      svcIndent = line === "services:" ? -2 : -1;
+      continue;
+    }
+    if (svcIndent === -1) continue;
+    if (svcIndent === -2) svcIndent = indent;
+    if (indent === svcIndent) {
+      svc = { image: "", ports: [], databases: [] };
+      out.push(svc);
+      inPorts = false;
+      continue;
+    }
+    if (!svc) continue;
+    if (inPorts && line.startsWith("-") && !/^-\s*[A-Za-z_][\w.-]*\s*:/.test(line)) {
+      svc.ports.push(line.replace(/^-\s*/, ""));
+      continue;
+    }
+    const kv = /^(?:-\s*)?([\w.-]+)\s*[:=]\s*(.*)$/.exec(line);
+    if (kv && kv[1] === "image") svc.image = composeValue(kv[2]) ?? "";
+    if (kv && DB_ENV.test(kv[1])) {
+      const v = composeValue(kv[2]);
+      if (v) svc.databases.push(v);
+    }
+    if (kv && kv[1] === "ports") {
+      inPorts = true;
+      for (const p of kv[2].replace(/^\[|\]$/g, "").split(",").filter((x) => x.trim())) svc.ports.push(p);
+      continue;
+    }
+    if (kv && kv[1] === "published") svc.ports.push(`${composeValue(kv[2])}:0`);
+    else if (kv && !["target", "published", "protocol", "mode", "host_ip", "app_protocol", "name"].includes(kv[1])) inPorts = false;
+  }
+  return out.flatMap((s) => {
+    const engine = IMAGE_ENGINE.find(([re]) => re.test(s.image.toLowerCase()))?.[1];
+    if (!engine) return [];
+    // "HOST:CONTAINER", "IP:HOST:CONTAINER": the host port; a container port alone is a random host port
+    const ports = s.ports.map((p) => composeValue(p)).filter(Boolean).map((p) => p.replace(/\/\w+$/, "").split(":")).filter((x) => x.length >= 2).map((x) => Number(x[x.length - 2])).filter((n) => Number.isInteger(n) && n > 0);
+    return [{ engine, ports, databases: s.databases }];
+  });
+}
+
+/** The development database of a Rails config/database.yml: {engine, database} or null (ERB is skipped). */
+function railsDatabase(text) {
+  const adapter = /^\s*adapter:\s*(\w+)/m.exec(text)?.[1];
+  const engine = { postgresql: "postgres", postgis: "postgres", mysql2: "mysql", trilogy: "mysql", sqlite3: "sqlite" }[adapter];
+  const dev = /^development:\s*\n((?:[ \t]+.*\n?)*)/m.exec(text)?.[1] ?? "";
+  const db = /^\s*database:\s*([^\s<#]+)\s*$/m.exec(dev)?.[1];
+  return engine && db ? { engine, database: db } : null;
+}
+
+/** What /sapu:init proposes for the checkout at `root`: {ecosystems, sources, guard: {postgres, databases, deny}}. */
+export function detectStack(root) {
+  const read = (f) => {
+    try {
+      return fs.readFileSync(path.join(root, f), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const sources = [];
+  const ecosystems = [];
+  const deny = [];
+  for (const [name, eco] of Object.entries(ECOSYSTEMS)) {
+    const hit = eco.markers.find(([f, has]) => {
+      const t = read(f);
+      return t !== null && (!has || has.test(t));
+    });
+    if (!hit) continue;
+    let rules = eco.deny;
+    if (eco.tools) {
+      const pkg = read(hit[0]) ?? "";
+      rules = Object.entries(eco.tools).flatMap(([tool, r]) => (new RegExp(`"${tool.replace(/[.-]/g, "\\$&")}"\\s*:`).test(pkg) ? r : []));
+      if (!rules.length) continue;
+    }
+    ecosystems.push(name);
+    sources.push(hit[0]);
+    deny.push(...rules);
+  }
+  const dbs = [];
+  for (const f of COMPOSE_FILES) {
+    const t = read(f);
+    if (t === null) continue;
+    const found = composeDatabases(t);
+    if (found.length) sources.push(f);
+    dbs.push(...found);
+  }
+  const yml = read("config/database.yml");
+  const rails = yml && railsDatabase(yml);
+  if (rails) {
+    sources.push("config/database.yml");
+    dbs.push({ engine: rails.engine, ports: [], databases: [rails.database] });
+  }
+  // one entry per engine, in the order found
+  const merged = [];
+  for (const d of dbs) {
+    const m = merged.find((x) => x.engine === d.engine);
+    if (m) {
+      m.ports = [...new Set([...m.ports, ...d.ports])];
+      m.databases = [...new Set([...m.databases, ...d.databases])];
+    } else merged.push({ engine: d.engine, ports: [...new Set(d.ports)], databases: [...new Set(d.databases)] });
+  }
+  const pg = merged.find((d) => d.engine === "postgres");
+  return {
+    ecosystems,
+    sources: [...new Set(sources)],
+    guard: { postgres: pg ? { ports: pg.ports, databases: pg.databases } : null, databases: merged.filter((d) => d.engine !== "postgres" && d.ports.length + d.databases.length > 0), deny },
+  };
+}
+
 // WHICH FILE A CONTRACT COMMAND RUNS. sapu-merge.sh runs gate.merge in the PR's worktree, so a word
 // naming repo code runs the PR's copy unless it is pinned: the merge runs <MAIN>'s copy instead,
 // proven identical to origin/<base>'s blob. The one implementation of "which word" is
@@ -1396,8 +1591,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main", "stack"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|stack|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1414,6 +1609,12 @@ function main(argv) {
   }
   const mainDir = findMain(process.cwd());
   const here = workingTree ? checkoutRoot(process.cwd()) : mainDir;
+  if (cmd === "stack") {
+    const root = checkoutRoot(process.cwd());
+    if (!root) fail("not inside a git repository");
+    process.stdout.write(`${JSON.stringify(detectStack(root), null, 2)}\n`);
+    return;
+  }
   if (cmd === "main") {
     if (!mainDir) fail("cannot resolve the main checkout from here: outside a repo, or a --separate-git-dir checkout seen from a linked worktree (run `git config core.worktree <main checkout>` there once)");
     process.stdout.write(`${mainDir}\n`);

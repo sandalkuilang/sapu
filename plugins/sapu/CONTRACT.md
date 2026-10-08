@@ -138,6 +138,10 @@ subagent write to `~/.config/sapu/`.
   "guard": {
     "envFiles": [".env.production"],    // ADDED to the .env/.env.local floor; file names, not paths
     "postgres": { "ports": [6543], "databases": ["app_dev"] }, // DBs that must not be touched; at least one port/DB; null = none
+    "databases": [                      // OPTIONAL: the same for any engine (postgres, mysql, mongodb, redis, sqlite)
+      { "engine": "mysql", "ports": [3307], "databases": ["shop_development"] },
+      { "engine": "sqlite", "ports": [], "databases": ["db/development.sqlite3"] } // files: absolute, or relative to the main checkout
+    ],
     "deny": [                           // commands refused to workers; `reason` = the block message
       { "argv": ["npm", "run", "check"], "allowWith": ["--", "--fast"], "reason": "..." },
       { "path": "scripts/check.ts", "allowWith": ["--fast"], "reason": "..." }
@@ -348,8 +352,8 @@ accepted may need its label renamed (on GitHub and in the contract) before it va
 Each entry uses exactly one matcher:
 
 - `argv`: the rule's words are first stripped of their wrappers exactly like the command (`env`, `nice`,
-  `npx`, `bunx`, `corepack`, `npm exec`/`npm x`, `pnpm exec|dlx`, `yarn exec|dlx`, `timeout`,
-  `xargs`, …; `["npx","playwright","test"]` becomes
+  `npx`, `bunx`, `corepack`, `npm exec`/`npm x`, `pnpm exec|dlx`, `yarn exec|dlx`, `bundle exec`,
+  `uv run`, `poetry run`, `pipenv run`, `timeout`, `xargs`, …; `["npx","playwright","test"]` becomes
   `playwright test`). It matches when the program name (basename, without `@version`) is the same, and the rule's remaining words
   appear **in order** (not necessarily contiguous) among **all** the command's arguments, option words
   included. `["npm","run","check"]` matches `npm run check`, `npm --silent run check`,
@@ -381,7 +385,18 @@ a program written as a path (`scripts/merge.sh`) → a `path` rule; otherwise �
 `npx tsx scripts/merge.ts`). When `gate.fast` = `gate.merge` + extra words, those extra words
 become the `allowWith` of all those rules.
 
-### `guard.postgres` and `guard.envFiles`
+### `guard.postgres`, `guard.databases` and `guard.envFiles`
+
+The engine floor knows JS package managers, Prisma and Postgres; other ecosystems' destructive
+commands are refused through `guard.deny`, and their dev databases through `guard.databases`.
+`sapu-contract.mjs stack` proposes both for the checkout (what `/sapu:init` drafts from): deny rules
+for Rails (`db:drop`, `db:reset`, `db:purge`, `db:schema:load`, … through `rails`/`rake`), Django
+(`manage.py flush`, `reset_db`, `migrate <app> zero`), Alembic (`downgrade`), Laravel (`artisan
+migrate:fresh|reset|refresh`, `db:wipe`, also through `sail`), Go migration tools (`migrate
+drop|down`, `goose reset|down`, `atlas schema clean`) and the Node ORMs `package.json` names
+(Sequelize, TypeORM, Knex, Drizzle); and the dev databases the Compose files publish (Postgres,
+MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `bundle exec`,
+`uv run`, `poetry run` and `pipenv run` are peeled like `npx` before a rule is matched.
 
 - Ports are matched as **numbers** (`-p 06543` = 6543): `-p`, `--port`, `-p<port>`, `--port=`,
   `PGPORT=`, libpq conninfo words inside one token (`"host=db port=6543 dbname=x"`), URL
@@ -391,6 +406,16 @@ become the `allowWith` of all those rules.
   The `/<db>` form counts only **inside a URL** (a token that contains `://`), so `2>/dev/null`
   is not the database `dev`. Postgres tools run through `docker`/`podman`/`kubectl`/`oc exec`
   or `ssh` are checked the same as when run directly.
+- `guard.databases` (optional) protects a dev database of any engine the same way, one entry per
+  database server: from any program, a URL with its port or database (`mysql://…:3307/x`,
+  `mongodb://…/app_dev`, `redis://…:6380/0`) and `MYSQL_TCP_PORT=`; from the engine's own clients
+  (`mysql`/`mariadb`/`mysqldump`/`mysqladmin`/…, `mongosh`/`mongo`/`mongodump`/…,
+  `redis-cli`/`valkey-cli`, also through `docker`/`kubectl`/`ssh`), its port flag (`-P`, `--port`;
+  redis `-p`), its database flag (`-D`, `--database`, `--db`, `-d`; redis `-n <index>`), a word naming
+  the database (`mysql app_dev`, `mysqladmin drop app_dev`, SQL in `-e`), and mongosh's
+  `host:port/db`. A `sqlite` entry names files (absolute, or relative to the main checkout): any
+  command word that resolves to one is refused, whatever the program. `guard.postgres` is the same
+  as an entry of engine `postgres`, and both may be written.
 - Env files (the `.env`/`.env.local` floor + `envFiles`) are matched on the file name (basename, without
   telling upper case from lower case: on a macOS filesystem `.ENV` opens `.env`; that is why `envFiles`
   must hold file names, not paths), also

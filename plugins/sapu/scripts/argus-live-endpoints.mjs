@@ -7,6 +7,7 @@ import net from "node:net";
 import path from "node:path";
 import { parseEnvFile } from "./argus-live-config.mjs";
 import { resolveLink, within } from "./argus-live-proc.mjs";
+import { protectedDatabases } from "./sapu-contract.mjs";
 
 /** Default ports, so `redis://localhost` and `redis://127.0.0.1:6379` name the same service. */
 export const DEFAULT_PORTS = { postgresql: 5432, mysql: 3306, mariadb: 3306, redis: 6379, rediss: 6379, mongodb: 27017, amqp: 5672, amqps: 5671, http: 80, https: 443, smtp: 25, smtps: 465, memcached: 11211, nats: 4222 };
@@ -214,7 +215,7 @@ export function dockerHost(h) {
  */
 export function readOwner(main, contract, alias = (h) => h) {
   const guard = (contract && contract.guard) || {};
-  const o = { realMain: fs.realpathSync.native(main), files: [".env", ".env.local", ...(guard.envFiles ?? [])], endpoints: new Set(), full: new Set(), paths: new Set(), pg: guard.postgres || { ports: [], databases: [] } };
+  const o = { realMain: fs.realpathSync.native(main), files: [".env", ".env.local", ...(guard.envFiles ?? [])], endpoints: new Set(), full: new Set(), paths: new Set(), pg: protectedDatabases(guard) };
   for (const { vars } of ownerEnvFiles(main, contract)) {
     for (const v of Object.values(vars)) {
       const files = filePaths(v);
@@ -263,7 +264,7 @@ export function scopeChecker(o, { worktree, allowOrigins = [], composeServices =
         if (dockerHost(s.host) && !ports.has(s.port)) throw toHost(key, s.host);
       }
       if (endpointsOf([s], exempt).some((e) => o.endpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
-      if (!container && o.pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres protects`);
+      if (!container && o.pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres/databases protects`);
     }
     for (const [k, raw] of Object.entries(mine)) {
       if (raw === null || raw === undefined) continue;
@@ -271,10 +272,10 @@ export function scopeChecker(o, { worktree, allowOrigins = [], composeServices =
       const v = String(raw).trim();
       if (container && dockerHost(v)) throw toHost(key, normHost(v));
       if (/^\d+$/.test(v)) {
-        if (!container && o.pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
+        if (!container && o.pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres/databases protects`);
         continue;
       }
-      if (!container && NAMES_DATABASE.test(k) && o.pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
+      if (!container && NAMES_DATABASE.test(k) && o.pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres/databases protects`);
       const files = filePaths(v);
       if (files) {
         if (container) continue;
@@ -302,9 +303,9 @@ export function scopeChecker(o, { worktree, allowOrigins = [], composeServices =
       } else if (endpointsOf(hosts, exempt).some((e) => o.endpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
       if (container) continue;
       const port = svc.ports.find((p) => o.pg.ports.includes(p));
-      if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
+      if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres/databases protects`);
       const db = svc.databases.find((d) => o.pg.databases.includes(d));
-      if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
+      if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres/databases protects`);
       if (svc.hostless) throw new Error(`refused: ${key} leaves its host to the client's default (the local server); name its host and port`);
       if (svc.portless) throw new Error(`refused: ${key} leaves its port to the client's default; name it`);
     }

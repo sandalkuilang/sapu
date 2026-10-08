@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -744,6 +745,87 @@ describe("review fixes — protected Postgres targets (7)", () => {
     const r = guardOnly({ postgres: { ports: [], databases: ["dev"] } });
     expect(check({ command: "ls foo 2>/dev/null", cwd: wt, main, rules: r })).toBeNull();
     expect(check({ command: "psql postgresql://localhost/dev", cwd: wt, main, rules: r })).toMatch(/protected database/);
+  });
+});
+
+describe("guard.databases — a protected dev database of any engine", () => {
+  const r = guardOnly({
+    databases: [
+      { engine: "mysql", ports: [3307], databases: ["shop_development"] },
+      { engine: "mongodb", ports: [27018], databases: ["ledger_dev"] },
+      { engine: "redis", ports: [6380], databases: ["2"] },
+      { engine: "sqlite", ports: [], databases: ["db/development.sqlite3"] },
+      { engine: "postgres", ports: [5433], databases: [] },
+    ],
+  } as never);
+  const at = (command: string) => check({ command, cwd: wt, main, rules: r });
+
+  it.each([
+    ["mysql -P 3307 -u root"],
+    ["mysql -P3307"],
+    ["mysql --port=3307 -e 'select 1'"],
+    ["mysql shop_development"],
+    ["mysql -D shop_development"],
+    ["mysql --database=shop_development"],
+    ["mysql -h 127.0.0.1 -e 'DROP DATABASE shop_development'"],
+    ["mysqladmin -u root drop shop_development"],
+    ["mariadb-dump shop_development"],
+    ["MYSQL_TCP_PORT=3307 mysql"],
+    ["docker compose exec db mysql shop_development"],
+    ["node scripts/x.js mysql://root@127.0.0.1:3307/x"],
+    ["mongosh --port 27018"],
+    ["mongosh ledger_dev"],
+    ["mongosh localhost:27018/x"],
+    ["mongosh mongodb://localhost/ledger_dev"],
+    ["mongodump --db ledger_dev"],
+    ["mongosh --eval 'db.dropDatabase()' --host localhost:27018"],
+    ["redis-cli -p 6380 FLUSHALL"],
+    ["redis-cli -n 2 FLUSHDB"],
+    ["redis-cli -u redis://localhost:6380/0 flushall"],
+    [`sqlite3 ${main}/db/development.sqlite3 'DELETE FROM users'`],
+    [`rm ${main}/db/development.sqlite3`],
+    ["psql -p 5433"],
+  ])("blocks %s", (cmd) => {
+    expect(at(cmd)).toMatch(/protected database/);
+  });
+
+  it.each([
+    ["mysql -P 3306"],
+    ["mysql -p secret shop_test"],
+    ["mysql -D shop_test"],
+    ["mongosh ledger_test"],
+    ["mongosh --port 27017"],
+    ["redis-cli -p 6379 FLUSHALL"],
+    ["redis-cli -n 3 FLUSHDB"],
+    ["sqlite3 db/development.sqlite3 .tables"],
+    ["npm i -D shop_development"],
+    ["psql -p 5432"],
+  ])("allows %s", (cmd) => {
+    expect(at(cmd)).toBeNull();
+  });
+
+  it("guard.postgres keeps protecting beside guard.databases", () => {
+    const both = guardOnly({ postgres: { ports: [6543], databases: [] }, databases: [{ engine: "mysql", ports: [3307], databases: [] }] } as never);
+    expect(check({ command: "psql -p 6543", cwd: wt, main, rules: both })).toMatch(/protected database/);
+    expect(check({ command: "mysql -P 3307", cwd: wt, main, rules: both })).toMatch(/protected database \(mysql :3307/);
+  });
+});
+
+describe("the guard /sapu:init proposes per ecosystem blocks that ecosystem's destructive commands (fixtures)", () => {
+  const ruleFor = (name: string) => {
+    const s = (detectStack as (root: string) => { guard: Record<string, unknown> })(join(__dirname, "fixtures/ecosystems", name));
+    return compileRules({ ...FIXTURE_CONTRACT, guard: { envFiles: [], ...s.guard } } as typeof FIXTURE_CONTRACT);
+  };
+  it.each([
+    ["rails", ["bin/rails db:drop", "bundle exec rails db:reset", "bundle exec rake db:purge", "RAILS_ENV=test bin/rails db:schema:load", "mysql shop_development", "redis-cli -p 6380 flushall"], ["bin/rails db:migrate", "bundle exec rails test", "bin/rails db:create"]],
+    ["django", ["python manage.py flush --noinput", "python3 manage.py migrate shop zero", "./manage.py reset_db", "uv run python manage.py flush", "poetry run alembic downgrade base", "psql -p 5433"], ["python manage.py test", "python manage.py migrate", "alembic upgrade head"]],
+    ["laravel", ["php artisan migrate:fresh --seed", "./artisan db:wipe", "sail artisan migrate:refresh", "mongosh --port 27018"], ["php artisan migrate", "php artisan test"]],
+    ["go", ["migrate -path db/migrations -database x drop", "goose -dir db reset", "migrate -path db -database x down", "mongosh ledger_dev"], ["go test ./...", "migrate -path db -database x up"]],
+    ["node", ["npx sequelize db:drop", "npx sequelize-cli db:migrate:undo:all", "npx typeorm schema:drop"], ["npx sequelize db:migrate", "npm test"]],
+  ] as const)("%s", (name, refused, allowed) => {
+    const rules = ruleFor(name);
+    for (const c of refused) expect(check({ command: c, cwd: wt, main, rules }), c).not.toBeNull();
+    for (const c of allowed) expect(check({ command: c, cwd: wt, main, rules }), c).toBeNull();
   });
 });
 

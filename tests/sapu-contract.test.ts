@@ -40,6 +40,7 @@ import {
   protectedCommand,
   bodyRefs,
   gitCommonDir,
+  detectStack,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -133,6 +134,11 @@ describe("validate", () => {
     ["a merge method GitHub does not have", (c: any) => (c.mergeMethod = "fast-forward"), /mergeMethod must be "squash", "merge" or "rebase"/],
     ["a host written as a URL", (c: any) => (c.host = "https://ghe.example.com"), /host must be a hostname/],
     ["a host with a path", (c: any) => (c.host = "ghe.example.com/owner"), /host must be a hostname/],
+    ["a database engine the guard does not know", (c: any) => (c.guard.databases = [{ engine: "oracle", ports: [1521], databases: [] }]), /guard\.databases\[0\]\.engine must be one of postgres, mysql, mongodb, redis, sqlite/],
+    ["a database entry that protects nothing", (c: any) => (c.guard.databases = [{ engine: "mysql", ports: [], databases: [] }]), /guard\.databases\[0\] must name at least one port or database/],
+    ["a database entry with a string port", (c: any) => (c.guard.databases = [{ engine: "redis", ports: ["6379"], databases: [] }]), /guard\.databases\[0\] must be \{engine, ports: \[int\], databases: \[name\]\}/],
+    ["a sqlite entry with a port", (c: any) => (c.guard.databases = [{ engine: "sqlite", ports: [1], databases: ["db/dev.sqlite3"] }]), /sqlite.*files, not ports/],
+    ["databases that is not a list", (c: any) => (c.guard.databases = {}), /guard\.databases must be an array/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
     mutate(c);
@@ -146,6 +152,18 @@ describe("validate", () => {
     c.guard.postgres = null;
     expect(validate(c)).toEqual([]);
     c.guard.postgres = { ports: [], databases: ["only_a_db"] };
+    expect(validate(c)).toEqual([]);
+  });
+
+  it("guard.databases is optional and takes one entry per engine (postgres too, besides guard.postgres)", () => {
+    const c = clone();
+    c.guard.databases = [
+      { engine: "mysql", ports: [3306], databases: ["app_dev"] },
+      { engine: "mongodb", ports: [], databases: ["app_dev"] },
+      { engine: "redis", ports: [6379], databases: [] },
+      { engine: "sqlite", ports: [], databases: ["db/development.sqlite3"] },
+      { engine: "postgres", ports: [5433], databases: [] },
+    ];
     expect(validate(c)).toEqual([]);
   });
 
@@ -206,6 +224,42 @@ describe("the repository's git directory, whatever the layout", () => {
     expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-1").held).toBe(true);
     expect(existsSync(join(store, "sapu-sweep.json"))).toBe(true);
     expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-2").held).toBe(false);
+  });
+});
+
+describe("detectStack: the guard /sapu:init proposes for the repo's ecosystem (one fixture per ecosystem)", () => {
+  type Stack = { ecosystems: string[]; sources: string[]; guard: { postgres: { ports: number[]; databases: string[] } | null; databases: { engine: string; ports: number[]; databases: string[] }[]; deny: { argv?: string[]; reason: string }[] } };
+  const stack = (name: string) => (detectStack as (root: string) => Stack)(join(__dirname, "fixtures/ecosystems", name));
+  const argvs = (s: Stack) => s.guard.deny.map((r) => r.argv!.join(" "));
+
+  it.each([
+    ["rails", ["rails"], null, [{ engine: "mysql", ports: [3307], databases: ["shop_development"] }, { engine: "redis", ports: [6380], databases: [] }], ["rails db:drop", "rake db:reset", "rails db:schema:load"]],
+    ["django", ["django", "alembic"], { ports: [5433], databases: ["site_dev"] }, [], ["python manage.py flush", "python3 manage.py flush", "manage.py flush", "django-admin flush", "alembic downgrade"]],
+    ["laravel", ["laravel"], null, [{ engine: "mysql", ports: [3306], databases: ["laravel"] }, { engine: "mongodb", ports: [27018], databases: [] }], ["php artisan migrate:fresh", "artisan db:wipe", "sail artisan migrate:reset"]],
+    ["go", ["go"], null, [{ engine: "mongodb", ports: [27017], databases: ["ledger_dev"] }, { engine: "redis", ports: [6379], databases: [] }], ["migrate drop", "goose reset"]],
+    ["node", ["node"], null, [], ["sequelize db:drop", "typeorm schema:drop"]],
+  ] as const)("%s", (name, ecosystems, postgres, databases, someDeny) => {
+    const s = stack(name);
+    expect(s.ecosystems).toEqual(ecosystems);
+    expect(s.guard.postgres).toEqual(postgres);
+    expect(s.guard.databases).toEqual(databases);
+    expect(argvs(s)).toEqual(expect.arrayContaining([...someDeny]));
+    // what init proposes is a valid contract guard as it stands
+    expect(validate({ ...clone(), guard: { envFiles: [], ...s.guard } })).toEqual([]);
+  });
+
+  it("a repo with no known ecosystem gets no proposal; Node rules come only with the tool in package.json", () => {
+    const empty = mkdtempSync(join(root, "stack-empty-"));
+    expect(stack("node").guard.deny.every((r) => /sequelize|typeorm/.test(r.argv!.join(" ")))).toBe(true);
+    expect((detectStack as (root: string) => Stack)(empty)).toEqual({ ecosystems: [], sources: [], guard: { postgres: null, databases: [], deny: [] } });
+  });
+
+  it("`stack` prints it for the checkout it runs in", () => {
+    const r = join(root, "stack-cli");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commit(r, { "manage.py": "print()\n" });
+    expect(JSON.parse(cli(r, ["stack"]).out).ecosystems).toEqual(["django"]);
   });
 });
 

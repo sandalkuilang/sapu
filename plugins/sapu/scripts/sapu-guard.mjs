@@ -44,7 +44,8 @@
 // RULES. The engine rules (git/gh/stash/force/refs/base branch/main checkout, .env/.env.local,
 // installs through symlinked node_modules, destructive prisma) hold in every repo. The repo adds
 // its own through `guard` in its contract .claude/sapu.json (CONTRACT.md): protected Postgres
-// ports/databases, more env files, and `deny` rules; its `gate.merge` command is denied
+// ports/databases (`postgres`), those of MySQL, MongoDB, Redis and SQLite (`databases`), more env
+// files, and `deny` rules; its `gate.merge` command is denied
 // automatically. The contract is read from <MAIN>'s COMMITTED HEAD, never from a working tree,
 // and <MAIN> is the repo a call touches, not the session's folder (TOUCHED REPO, before decide()).
 // A contract that exists but is broken blocks every call except the canary; a repo with no
@@ -416,6 +417,8 @@ const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const ENV_SPLIT = /^(?:-[a-zA-Z]*?S|--split-string(?:=|$))([\s\S]*)$/;
 /** `npx -c <string>`, `npm exec --call=<string>`, `script -c|--command <string>`: the string is a shell command. */
 const EXEC_CALL = /^(?:-c|--call(?:=|$)|--command(?:=|$))([\s\S]*)$/;
+/** `uv run` options whose value is the next word (`uv run --with x pytest`). */
+const UV_VALUE_OPTS = /^(--with|--with-editable|--with-requirements|--extra|--group|--only-group|--no-group|--package|-p|--python|--env-file|--directory|--project|--index|--default-index|-i|--index-url|--extra-index-url|-f|--find-links)$/;
 /** Package-manager options that take a value before the subcommand (`pnpm --filter api exec …`). */
 const PM_VALUE_OPTS = /^(--filter|-F|-C|--dir|--prefix|-w|--workspace|--cwd)$/;
 
@@ -452,6 +455,10 @@ function programIndex(t) {
         else if (o.startsWith("-") || ASSIGN.test(o)) i++;
         else break;
       }
+    } else if ((v === "bundle" && t[i + 1]?.v === "exec") || ((v === "uv" || v === "poetry" || v === "pipenv") && t[i + 1]?.v === "run")) {
+      // `bundle exec`, `uv run`, `poetry run`, `pipenv run` run the command after them.
+      i += 2;
+      while (i < t.length && t[i].v.startsWith("-")) i += v === "uv" && UV_VALUE_OPTS.test(t[i].v) ? 2 : 1;
     } else if (v === "nice") {
       i++;
       if (t[i]?.v === "-n") i += 2;
@@ -736,12 +743,14 @@ export function compileRules(contract) {
   const g = contract ? contract.guard : { envFiles: [], postgres: null, deny: [] };
   const deny = g.deny.map((r) => (r.argv ? { ...r, argv: peel(r.argv) } : r));
   if (contract) deny.push(...gateRules(contract.gate.merge, contract.gate.fast));
-  const pg = g.postgres;
+  // guard.postgres, then each guard.databases entry: one matcher per engine and entry.
+  const dbEntry = (engine, d) => ({ engine, ports: new Set(d.ports.map(Number)), dbs: new Set(d.databases), label: `${engine === "postgres" ? "" : `${engine} `}${[...d.ports.map((p) => `:${p}`), ...d.databases].join(", ")}` });
+  const dbs = [...(g.postgres ? [["postgres", g.postgres]] : []), ...(Array.isArray(g.databases) ? g.databases.map((d) => [d.engine, d]) : [])];
   return {
     base: contract ? contract.baseBranch : null,
     // lowercase: a case-insensitive filesystem (macOS) opens `.ENV` as `.env`
     envFiles: new Set([...ENV_FLOOR, ...g.envFiles].map((f) => f.toLowerCase())),
-    pg: pg && pg.ports.length + pg.databases.length > 0 ? { ports: new Set(pg.ports.map(Number)), dbs: new Set(pg.databases), label: [...pg.ports.map((p) => `:${p}`), ...pg.databases].join(", ") } : null,
+    dbs: dbs.filter(([, d]) => d.ports.length + d.databases.length > 0).map(([engine, d]) => dbEntry(engine, d)),
     deny,
     // The labels only the owner applies (compared without case, as GitHub does): the one accepting an
     // outsider's issue, and the one marking a finding only the owner can rule on.
@@ -919,6 +928,67 @@ function dbTarget(values, prog, pg) {
   return false;
 }
 
+// ---- protected databases of the other engines (guard.databases) -----------------------------------
+
+/** Each engine's clients, and the flags that name its port and database. */
+const DB_CLIENTS = {
+  mysql: { tools: new Set(["mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlcheck", "mysqlshow", "mysqlsh", "mycli", "mariadb", "mariadb-dump", "mariadb-admin", "mariadb-import", "mariadb-check", "mariadb-show"]), port: ["-P", "--port"], db: ["-D", "--database"], env: /^MYSQL_TCP_PORT=(\d+)$/ },
+  mongodb: { tools: new Set(["mongosh", "mongo", "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongofiles", "mongostat", "mongotop"]), port: ["--port"], db: ["-d", "--db"] },
+  redis: { tools: new Set(["redis-cli", "valkey-cli", "keydb-cli"]), port: ["-p"], db: ["-n"] },
+};
+
+/**
+ * Does a command reach protected database `t` (mysql, mongodb, redis)? From any program: a URL with
+ * its port or database (`mysql://…:3307/x`, `mongodb://…/app_dev`), MYSQL_TCP_PORT. From the
+ * engine's own clients (also through docker/kubectl/ssh): the port and database flags (`-P 3307`,
+ * `-P3307`, `--port=3307`, `-D app`, `--db app`, redis `-p`/`-n`), a word naming the database
+ * (`mysql app_dev`, `mysqladmin drop app_dev`, SQL in `-e`), and mongosh's `host:port/db`.
+ */
+function engineTarget(values, prog, t) {
+  const c = DB_CLIENTS[t.engine];
+  if (REMOTE_EXEC.has(prog)) {
+    const flat = values.flatMap((v) => v.split(/\s+/)).filter(Boolean);
+    const k = flat.findIndex((v) => c.tools.has(bare(v)));
+    if (k >= 0 && engineTarget(flat.slice(k + 1), bare(flat[k]), t)) return true;
+  }
+  const isPort = (x) => /^\d+$/.test(x ?? "") && t.ports.has(Number(x));
+  const isDb = (x) => x !== undefined && t.dbs.has(x);
+  const client = c.tools.has(prog);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v.includes("://") && urlTarget(v, isPort, isDb)) return true;
+    if (c.env && isPort(c.env.exec(v)?.[1])) return true;
+    if (!client) continue;
+    if ((c.port.includes(v) && isPort(values[i + 1])) || (c.db.includes(v) && isDb(values[i + 1]))) return true;
+    const eq = /^(--[\w-]+)=(.*)$/.exec(v);
+    if (eq && ((c.port.includes(eq[1]) && isPort(eq[2])) || (c.db.includes(eq[1]) && isDb(eq[2])))) return true;
+    for (const o of [...c.port, ...c.db]) if (/^-[A-Za-z]$/.test(o) && v.length > 2 && v.startsWith(o) && (c.port.includes(o) ? isPort(v.slice(2)) : isDb(v.slice(2)))) return true;
+    if (t.engine === "redis") continue; // redis's other words are commands and keys
+    if (v.split(/[\s`'";,()=]+/).some(isDb)) return true;
+    if (t.engine === "mongodb" && !v.includes("://")) {
+      for (const part of v.split(",")) {
+        if (isPort(/:(\d+)(?:\/|$)/.exec(part)?.[1]) || isDb(/^[\w.-]+(?::\d+)?\/([\w.-]+)$/.exec(part)?.[1])) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Does a word of the command name a protected SQLite file (absolute, or relative to <MAIN>), as the
+ * cwd resolves it? Any program counts: opening it with a client and deleting it are both a reach.
+ */
+function sqliteTarget(values, t, here, main) {
+  const want = [...t.dbs].map((f) => (path.isAbsolute(f) ? f : main ? path.join(main, f) : null)).filter(Boolean).flatMap((f) => [path.normalize(f), realpathOrSelf(f)]);
+  if (!want.length) return false;
+  return values.some((v) => {
+    const w = v.slice(v.lastIndexOf("=") + 1).replace(/^(?:sqlite3?:\/\/|file:)/, "").replace(/\?.*$/, "");
+    if (!w || (!path.isAbsolute(w) && (here === UNKNOWN || typeof here !== "string"))) return false;
+    const abs = path.resolve(typeof here === "string" ? here : "/", w.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
+    return want.includes(path.normalize(abs)) || want.includes(realpathOrSelf(abs));
+  });
+}
+
 // ---- contract deny rules ------------------------------------------------------------------------------
 
 /** Every word of `need` appears in `args`, in this order (not necessarily adjacent). */
@@ -1017,7 +1087,7 @@ const BLOCK = {
   prisma: "can drop data or write an unreviewed migration. Use `prisma migrate dev --create-only` and review the SQL.",
   nodeModules: "a whole-directory node_modules symlink makes every workspace package resolve to <MAIN>'s unedited source. Use the repo's worktree setup (.claude/sapu/worker.md).",
   env: "real env files hold secrets and are never linked, copied, sourced, read or written in a worktree. Tests run on the repo's committed test env (.claude/sapu/worker.md).",
-  db: (label) => `protected database (${label}; .claude/sapu.json guard.postgres): other sessions use it. Use your own throwaway test DB (.claude/sapu/worker.md).`,
+  db: (label) => `protected database (${label}; .claude/sapu.json guard.postgres or guard.databases): other sessions use it. Use your own throwaway test DB (.claude/sapu/worker.md).`,
   refs: "branch deletion/force-moves (local or remote), worktree removal and ref rewrites touch refs every worktree shares; they are the orchestrator's.",
   mainWrite: (main) => `a write into the main checkout (${main}) outside its .claude/worktrees/ (and, for a subagent that is not a sapu worker, outside ${STATE_DIRS.map((d) => `${d}/`).join(", ")}): other sessions share it. Write only inside your own worktree.`,
   brokenContract: (main, error) => `the sapu contract of ${main}, which this call touches, is unreadable, so nothing there is allowed: ${error}`,
@@ -1420,7 +1490,8 @@ function checkCommand(t, state, depth) {
   // Assignments before the program count (`X=.env`, `PGPORT=…`), also with no program at all.
   const scanned = [...values.slice(0, at), ...a.filter((_, i) => i > 0 && !skip.has(i)), ...optValues];
   if (scanned.some((v) => GIT_CONFIG_ENV.test(v))) return BLOCK.noVerify;
-  if (dbTarget(scanned, prog, rules.pg)) return BLOCK.db(rules.pg.label);
+  const db = rules.dbs.find((d) => (d.engine === "postgres" ? dbTarget(scanned, prog, d) : d.engine === "sqlite" ? sqliteTarget(scanned, d, here, main) : engineTarget(scanned, prog, d)));
+  if (db) return BLOCK.db(db.label);
   if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
   if (!a.length) return null;
 

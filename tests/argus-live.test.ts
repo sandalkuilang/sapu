@@ -1088,6 +1088,16 @@ describe("argus-live instance — processes, health, store", () => {
     await expect(checkStore(w.ctx)).resolves.toBeUndefined();
   });
 
+  it("an env URL naming a database or port guard.databases protects (any engine) is refused", async () => {
+    const w = await world();
+    w.ctx.config.store_check = "echo app_explore";
+    const contract = { guard: { envFiles: [], postgres: null, databases: [{ engine: "mysql", ports: [3307], databases: ["shop_development"] }, { engine: "sqlite", ports: [], databases: ["db/dev.sqlite3"] }] } };
+    const refused = (v: string) => checkStore({ ...w.ctx, contract, env: { ...w.ctx.env, DATABASE_URL: v } }).then(() => "ok", (e: Error) => e.message);
+    expect(await refused("mysql2://app@localhost:3307/app_explore")).toMatch(/^refused: env\.DATABASE_URL names port 3307, which guard\.postgres\/databases protects/);
+    expect(await refused("mysql://app@localhost:41001/shop_development")).toMatch(/names database shop_development/);
+    expect(await refused("mysql://app@localhost:41001/app_explore")).toBe("ok");
+  });
+
   it("an env URL naming a database or port guard.postgres protects is refused", async () => {
     const w = await world();
     w.ctx.config.store_check = "echo app_explore"; // this test is about the guard, not the store
@@ -1328,7 +1338,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
     it("a store that guard.postgres protects is refused", async () => {
       const ctx = await ctxFor({ store: "app_dev" });
       ctx.contract = { guard: { envFiles: [], postgres: { ports: [], databases: ["app_dev"] } } };
-      expect(await message(checkStore(ctx))).toBe('refused: the store "app_dev" is a database guard.postgres protects');
+      expect(await message(checkStore(ctx))).toBe('refused: the store "app_dev" is a database guard.postgres/databases protects');
     });
   });
 

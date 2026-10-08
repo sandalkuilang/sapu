@@ -30,7 +30,7 @@ import { hostOf, loopbackAliases, normHost, ownerEnvFiles, readOwner, resolvesTo
 import { iso, readLock, renew, runIdOk, takeLock } from "./argus-live-lock.mjs";
 import { killGroup, MAX_HOPS, membersOf, msLeft, processTable, readFrom, redact, resolveLink, run, runAsync, runPids, sameGroup, sameStart, sleep, startTime, stopRecordedGroups, tail, within } from "./argus-live-proc.mjs";
 import { down, guarded, liveRoot, logsDir, ownDir, readRun, recover, replayStop, repoName, startReaper, updateRun, writeRunFiles } from "./argus-live-run.mjs";
-import { findMain, loadContract } from "./sapu-contract.mjs";
+import { findMain, loadContract, protectedDatabases } from "./sapu-contract.mjs";
 
 /** True when something accepts a TCP connection at host:port (a timeout counts as yes). */
 function accepts(host, port) {
@@ -413,7 +413,7 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
 
 /**
  * The store checks of `up` steps 6 and 7 (defence in depth: `store_check` and the egress check are the
- * primary guards). The store must not be a database `guard.postgres` protects. `store_check` (shell,
+ * primary guards). The store must not be a database `guard.postgres`/`guard.databases` protects. `store_check` (shell,
  * worktree, bounded by `timeoutS`) must print `store` under the instance env and under the env of
  * every `start` entry that sets its own. No value in those envs may reach what the repo's env files
  * name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here, never printed):
@@ -428,15 +428,15 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
  * `X_HOST` + `X_PORT` count as one endpoint, and a bare `*PORT` as a loopback one; with `lookup` (up's
  * dns lookup), a host name that resolves only to loopback counts as loopback on both sides (loopbackAliases).
  * Nor may a value name
- * a port or database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number,
+ * a port or database `guard.postgres`/`guard.databases` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number,
  * or a bare name under a variable that names a database), nor may a libpq or MySQL-family value leave
  * its host or port to the client's default (the instance names both). Refusals name the key, never a
  * value.
  */
 export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, composeServices = [], runner = runAsync, lookup = null }) {
   const guard = (contract && contract.guard) || {};
-  const pg = guard.postgres || { ports: [], databases: [] };
-  if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres protects`);
+  const pg = protectedDatabases(guard);
+  if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres/databases protects`);
   const scopes = [{ label: "env", where: "", env, own: env }];
   for (const e of config.start ?? []) if (e.env && Object.keys(e.env).length) scopes.push({ label: `start.${e.name}.env`, where: ` under the env of start entry ${e.name}`, env: { ...env, ...e.env }, own: e.env });
   for (const scope of scopes) {
