@@ -34,6 +34,10 @@
 //   sapu-contract.mjs allowed <skill>  exit 0 when policy.skills allows <skill>, else 1 with the reason
 //   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
 //                                 Phase B lanes this machine carries now (safeLanes); no contract needed
+//   sapu-contract.mjs sweep hold|release <run-marker>   one /sapu sweep per repo (ONE SWEEP PER REPO):
+//                                 hold = take or refresh <MAIN>/.git/sapu-sweep.json (the heartbeat), exit 1
+//                                 while another session's heartbeat is fresh; release = remove it, holder only
+//   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
 //   sapu-contract.mjs profiles    every .claude/sapu/<skill>.md carries the sections its skill reads
 //                                 (`--list` prints them; /sapu:init writes them)
@@ -1036,6 +1040,82 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
   };
 }
 
+// ONE SWEEP PER REPO. Two orchestrators on one repo would race for the same issues and merges, so
+// /sapu holds a marker in <MAIN>/.git/sapu-sweep.json (never tracked, never in a worktree), named by
+// its session's run marker (`sapu-run-<date-time>`) and refreshed by its heartbeat: every merge
+// command and every lane launch holds it again. Another session's marker with a heartbeat younger
+// than SWEEP_TTL_MS refuses the start; an older one is stale and taken over (a crashed session, a
+// killed shell). The longest silence a live sweep has is one lane running with nothing else to do,
+// which SWEEP_TTL_MS covers with room. A fresh marker is created atomically (O_EXCL); a takeover is
+// a rename read back afterwards, so two sessions taking over one stale marker at the same instant
+// is the only race left. Only the holder releases it; `sweep clear` is the person's, for a session
+// that died while its marker is still fresh.
+export const SWEEP_TTL_MS = 3 * 3600 * 1000;
+const SWEEP_OWNER = /^[A-Za-z0-9][\w.:-]{0,99}$/;
+const sweepFile = (main) => path.join(main, ".git", "sapu-sweep.json");
+
+/** The marker: {owner, started, beat, host}, {corrupt: true} for one that cannot be read, or null when there is none. */
+function readSweep(main) {
+  let raw;
+  try {
+    raw = fs.readFileSync(sweepFile(main), "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    return { corrupt: true };
+  }
+  try {
+    const m = JSON.parse(raw);
+    return m && typeof m.owner === "string" && Number.isFinite(Date.parse(m.beat)) ? m : { corrupt: true };
+  } catch {
+    return { corrupt: true };
+  }
+}
+
+/** Status of the marker at `now`: {held: false} or {held: true, owner, started, beat, host, agoMin, fresh}. */
+export function sweepStatus(main, now = Date.now()) {
+  const m = readSweep(main);
+  if (!m) return { held: false };
+  if (m.corrupt) return { held: true, owner: null, corrupt: true, fresh: false };
+  const ago = now - Date.parse(m.beat);
+  return { held: true, owner: m.owner, started: m.started, beat: m.beat, host: m.host, agoMin: Math.max(0, Math.floor(ago / 60000)), fresh: ago < SWEEP_TTL_MS };
+}
+
+/**
+ * Take or refresh the sweep marker for `owner`: {held: true, resumed, tookOver} when this session
+ * holds it now, {held: false, holder, agoMin} when another session's heartbeat is fresh.
+ */
+export function sweepHold(main, owner, now = Date.now(), tries = 3) {
+  const file = sweepFile(main);
+  const cur = readSweep(main);
+  const at = new Date(now).toISOString();
+  const mine = (started) => `${JSON.stringify({ owner, started, beat: at, host: os.hostname() })}\n`;
+  if (!cur) {
+    try {
+      fs.writeFileSync(file, mine(at), { flag: "wx" });
+      return { held: true, resumed: false, tookOver: null };
+    } catch (e) {
+      if (e.code !== "EEXIST" || tries <= 0) throw e;
+      return sweepHold(main, owner, now, tries - 1); // another session created it first: judge that one
+    }
+  }
+  const ago = cur.corrupt ? Infinity : now - Date.parse(cur.beat);
+  if (!cur.corrupt && cur.owner !== owner && ago < SWEEP_TTL_MS) return { held: false, holder: cur.owner, host: cur.host, agoMin: Math.max(0, Math.floor(ago / 60000)) };
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, mine(cur.owner === owner && cur.started ? cur.started : at));
+  fs.renameSync(tmp, file);
+  const back = readSweep(main);
+  if (!back || back.owner !== owner) return { held: false, holder: back && back.owner, agoMin: 0 };
+  return { held: true, resumed: cur.owner === owner, tookOver: cur.owner === owner ? null : { owner: cur.owner ?? null, agoMin: Number.isFinite(ago) ? Math.floor(ago / 60000) : null } };
+}
+
+/** Remove the marker when `owner` holds it (or it is gone): {released: true}; another holder's stays: {released: false, holder}. */
+export function sweepRelease(main, owner) {
+  const cur = readSweep(main);
+  if (cur && !cur.corrupt && cur.owner !== owner) return { released: false, holder: cur.owner };
+  fs.rmSync(sweepFile(main), { force: true });
+  return { released: true };
+}
+
 function main(argv) {
   const [cmd, ...args] = argv;
   const workingTree = args.includes("--working-tree");
@@ -1054,8 +1134,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1098,6 +1178,34 @@ function main(argv) {
       hasContract: mainDir ? fs.existsSync(path.join(mainDir, CONTRACT_PATH)) : false,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+    return;
+  }
+  if (cmd === "sweep") {
+    // ONE SWEEP PER REPO (above). No contract needed: the marker lives in <MAIN>/.git.
+    const [verb, owner] = rest;
+    if (!["hold", "release", "status", "clear"].includes(verb) || ((verb === "hold" || verb === "release") && !SWEEP_OWNER.test(owner ?? ""))) {
+      fail("usage: sapu-contract.mjs sweep hold|release <run-marker> | sweep status|clear (run-marker: letters, digits, . _ : -)");
+    }
+    if (!mainDir) fail("not inside a git repository");
+    const script = fileURLToPath(import.meta.url);
+    if (verb === "status") {
+      process.stdout.write(`${JSON.stringify(sweepStatus(mainDir))}\n`);
+    } else if (verb === "clear") {
+      const s = sweepStatus(mainDir);
+      fs.rmSync(sweepFile(mainDir), { force: true });
+      process.stdout.write(s.held ? `removed ${sweepFile(mainDir)} (held by ${s.owner ?? "an unreadable marker"}${s.beat ? `, last heartbeat ${s.agoMin} min ago` : ""})\n` : "no sweep marker\n");
+    } else if (verb === "release") {
+      const r = sweepRelease(mainDir, owner);
+      if (!r.released) fail(`the sweep marker is held by ${r.holder}, not ${owner}: left as it is`);
+      process.stdout.write(`${JSON.stringify(r)}\n`);
+    } else {
+      const r = sweepHold(mainDir, owner);
+      if (!r.held) {
+        fail(`another sapu sweep holds this repo: ${r.holder}, last heartbeat ${r.agoMin} min ago${r.host ? ` on ${r.host}` : ""} (stale after ${SWEEP_TTL_MS / 60000} min). Two orchestrators would race for the same issues and merges: stop and report this. If that session is gone, the person at this machine removes the marker with \`node "${script}" sweep clear\`; never clear it yourself.`);
+      }
+      if (r.tookOver) process.stderr.write(`sapu-contract: took over a stale sweep marker of ${r.tookOver.owner ?? "an unreadable marker"}${r.tookOver.agoMin != null ? ` (last heartbeat ${r.tookOver.agoMin} min ago)` : ""}\n`);
+      process.stdout.write(`${JSON.stringify(r)}\n`);
+    }
     return;
   }
   if (cmd === "home") {

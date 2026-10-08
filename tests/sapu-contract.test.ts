@@ -34,6 +34,9 @@ import {
   underAllowedRoot,
   validate,
   validateMachineConfig,
+  SWEEP_TTL_MS,
+  sweepHold,
+  sweepRelease,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -1397,5 +1400,89 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     const e = validate(c).join("\n");
     expect(e).toMatch(/labels\.needsOwner must be a non-empty label name/);
     expect(e).not.toMatch(/must differ/);
+  });
+});
+
+describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", () => {
+  const hold = sweepHold as (main: string, owner: string, now?: number) => { held: boolean; resumed?: boolean; holder?: string; agoMin?: number; tookOver?: { owner: string } | null };
+  const release = sweepRelease as (main: string, owner: string) => { released: boolean; holder?: string };
+  const fresh = () => {
+    const m = mkdtempSync(join(root, "sweep-"));
+    mkdirSync(join(m, ".git"));
+    return m;
+  };
+  const marker = (m: string) => JSON.parse(readFileSync(join(m, ".git/sapu-sweep.json"), "utf8"));
+
+  it("the first session holds it; a second session is refused while the heartbeat is fresh", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    expect(hold(m, "sapu-run-1", t)).toMatchObject({ held: true, resumed: false });
+    expect(marker(m)).toMatchObject({ owner: "sapu-run-1" });
+    const no = hold(m, "sapu-run-2", t + SWEEP_TTL_MS - 60_000);
+    expect(no).toMatchObject({ held: false, holder: "sapu-run-1" });
+    expect(marker(m).owner).toBe("sapu-run-1");
+  });
+
+  it("holding again is the heartbeat: the same session refreshes it and keeps its start", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    hold(m, "sapu-run-1", t);
+    expect(hold(m, "sapu-run-1", t + SWEEP_TTL_MS - 1000)).toMatchObject({ held: true, resumed: true });
+    expect(marker(m)).toMatchObject({ owner: "sapu-run-1", started: new Date(t).toISOString(), beat: new Date(t + SWEEP_TTL_MS - 1000).toISOString() });
+    // a beat just inside the TTL keeps it from the next session
+    expect(hold(m, "sapu-run-2", t + 2 * SWEEP_TTL_MS - 2000)).toMatchObject({ held: false });
+  });
+
+  it("a stale marker expires: the next session takes it over, and the silent one has lost it", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    hold(m, "sapu-run-1", t);
+    expect(hold(m, "sapu-run-2", t + SWEEP_TTL_MS + 1)).toMatchObject({ held: true, tookOver: { owner: "sapu-run-1" } });
+    expect(hold(m, "sapu-run-1", t + SWEEP_TTL_MS + 2)).toMatchObject({ held: false, holder: "sapu-run-2" });
+    writeFileSync(join(m, ".git/sapu-sweep.json"), "{ broken");
+    expect(hold(m, "sapu-run-3", t)).toMatchObject({ held: true });
+  });
+
+  it("only its holder releases it; releasing a marker that is gone is fine", () => {
+    const m = fresh();
+    hold(m, "sapu-run-1");
+    expect(release(m, "sapu-run-2")).toMatchObject({ released: false, holder: "sapu-run-1" });
+    expect(existsSync(join(m, ".git/sapu-sweep.json"))).toBe(true);
+    expect(release(m, "sapu-run-1")).toMatchObject({ released: true });
+    expect(existsSync(join(m, ".git/sapu-sweep.json"))).toBe(false);
+    expect(release(m, "sapu-run-1")).toMatchObject({ released: true });
+    expect(hold(m, "sapu-run-2")).toMatchObject({ held: true });
+  });
+
+  it("CLI: `sweep hold|release|status|clear` from a worktree act on <MAIN>'s marker, exit 1 when refused", () => {
+    const repo = join(root, "sweep-repo");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    const wt = join(repo, ".claude/worktrees/w");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", wt], { stdio: "ignore" });
+    expect(cli(wt, ["sweep", "hold", "sapu-run-a"]).status).toBe(0);
+    expect(existsSync(join(repo, ".git/sapu-sweep.json"))).toBe(true);
+    const second = cli(repo, ["sweep", "hold", "sapu-run-b"]);
+    expect(second.status).toBe(1);
+    expect(second.err).toMatch(/another sapu sweep holds this repo: sapu-run-a, last heartbeat 0 min ago.*stop.*sweep clear/s);
+    expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toMatchObject({ held: true, owner: "sapu-run-a", fresh: true });
+    expect(cli(repo, ["sweep", "release", "sapu-run-b"]).status).toBe(1);
+    expect(cli(repo, ["sweep", "release", "sapu-run-a"]).status).toBe(0);
+    expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toEqual({ held: false });
+    expect(cli(repo, ["sweep", "hold", "sapu-run-b"]).status).toBe(0);
+    const cleared = cli(repo, ["sweep", "clear"]);
+    expect(cleared.status).toBe(0);
+    expect(cleared.out).toMatch(/removed .*sapu-run-b/);
+    for (const bad of [["sweep"], ["sweep", "hold"], ["sweep", "hold", "x y"], ["sweep", "hold", "../x"], ["sweep", "nope", "a"]]) expect(cli(repo, bad).status, bad.join(" ")).toBe(1);
+    expect(cli(root, ["sweep", "status"]).status).toBe(1); // not a repo
+  });
+
+  it("the sapu skill holds it at Step 0, beats it with every merge and lane launch, and releases it when a session ends", () => {
+    const skill = readFileSync(join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toMatch(/sweep hold <marker>`[^\n]*non-zero = another session is sweeping this repo: stop/);
+    expect(skill).toMatch(/never clear it yourself/);
+    expect(skill).toMatch(/heartbeat[^\n]*every merge command and every `lanes` check/);
+    expect(skill).toMatch(/sweep release <marker>/);
   });
 });
