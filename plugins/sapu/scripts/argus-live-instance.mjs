@@ -20,7 +20,8 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { expand, MAX_CYCLE_MINUTES, parseEnvFile, secretEnv } from "./argus-live-config.mjs";
+import { fileURLToPath } from "node:url";
+import { expand, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, secretEnv } from "./argus-live-config.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
@@ -60,10 +61,10 @@ function appendLive(main, runId, rest) {
   fs.appendFileSync(liveLog(main), `${runId} ${rest}\n`);
 }
 
-/** Write `data` to a temp file beside `file`; returns the temp path. */
-function tempBeside(file, data) {
+/** Write `data` to a temp file beside `file` (created with `mode`, when given); returns the temp path. */
+function tempBeside(file, data, mode) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
-  fs.writeFileSync(tmp, data);
+  fs.writeFileSync(tmp, data, mode === undefined ? undefined : { mode });
   return tmp;
 }
 
@@ -92,7 +93,16 @@ const alive = (pid) => {
   }
 };
 
-/** The refusal for a claim another process holds on a lock that still names `runId`. */
+/**
+ * A claim older than this (by mtime) was interrupted even when its pid is alive: every change made under
+ * a claim takes milliseconds, and the pid may since belong to another program.
+ */
+const CLAIM_STALE_MS = 30_000;
+
+/**
+ * The refusal for a claim another process holds on a lock that still names `runId`. `retry` is set when
+ * its holder is alive and the claim fresh: it will be gone in a moment.
+ */
 function claimBusy(main, runId) {
   const file = claimPath(main, runId);
   let pid;
@@ -101,8 +111,16 @@ function claimBusy(main, runId) {
   } catch {
     pid = undefined;
   }
-  if (alive(pid)) return new Error(`refused: cycle ${runId}'s lock is being changed by process ${pid}; try again`);
-  return new Error(`refused: a change to cycle ${runId}'s lock was interrupted (process ${pid ?? "unknown"} is gone); remove ${file} once no journey cycle is running`);
+  let age = 0;
+  try {
+    age = Date.now() - fs.statSync(file).mtimeMs;
+  } catch {
+    // gone meanwhile: its holder finished
+  }
+  const remove = `remove ${file} once no journey cycle is running`;
+  if (alive(pid) && age > CLAIM_STALE_MS) return new Error(`refused: a change to cycle ${runId}'s lock was interrupted (its claim is ${Math.round(age / 1000)} s old; process ${pid} may be another program by now); ${remove}`);
+  if (alive(pid)) return Object.assign(new Error(`refused: cycle ${runId}'s lock is being changed by process ${pid}; try again`), { retry: true });
+  return new Error(`refused: a change to cycle ${runId}'s lock was interrupted (process ${pid ?? "unknown"} is gone); ${remove}`);
 }
 
 const heldBy = (l) => new Error(`refused: cycle ${l.runId} holds the lock until ${iso(l.deadline)}`);
@@ -131,8 +149,9 @@ export function readLock(main) {
 
 /**
  * Take the lock for a new run and append its start line to the live log.
- * Returns {runId, start, deadline} and, when it took over a lock past its deadline, `stale` (that
- * lock, for recovery; also kept in `claim-<stale run>.json`). Throws `refused: cycle <run> holds the
+ * Returns {runId, start, deadline, staleRuns} and, when it took over a lock past its deadline, `stale`
+ * (that lock; also kept in `claim-<stale run>.json`). `staleRuns` = staleRecords: every run awaiting
+ * `recover`, the taken-over one included. Throws `refused: cycle <run> holds the
  * lock until <iso>` while another run's deadline has not passed. `pause(step)` is a test seam: it runs
  * at "exists", "stale" and "claimed", where another process could act.
  */
@@ -192,7 +211,37 @@ export function takeLock(main, { maxCycleMinutes, now = Date.now(), pause = () =
     fs.rmSync(file, { force: true });
     throw new Error(`refused: cannot append to ${liveLog(main)}: ${e.message}`);
   }
-  return stale ? { ...lock, stale } : lock;
+  const staleRuns = staleRecords(main);
+  return stale ? { ...lock, stale, staleRuns } : { ...lock, staleRuns };
+}
+
+/**
+ * Every run awaiting recovery: each `claim-<R>.json` holding the lock {runId, start, deadline} of run R
+ * (a takeover keeps it as R's record, even one whose live-log append failed and was rolled back) while
+ * the current lock names another run. `recover` deletes each only after it replayed that run.
+ */
+export function staleRecords(main) {
+  const cur = readLock(main);
+  let names;
+  try {
+    names = fs.readdirSync(liveDir(main));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const n of names) {
+    const m = n.match(/^claim-(\d{14}-[0-9a-f]{8})\.json$/);
+    if (!m) continue;
+    let l;
+    try {
+      l = JSON.parse(fs.readFileSync(path.join(liveDir(main), n), "utf8")).lock;
+    } catch {
+      continue; // gone meanwhile, or not a takeover's record
+    }
+    if (!l || l.runId !== m[1] || !isEpoch(l.start) || !isEpoch(l.deadline) || (cur && cur.runId === l.runId)) continue;
+    out.push({ runId: l.runId, start: l.start, deadline: l.deadline });
+  }
+  return out.sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -736,10 +785,12 @@ const PRECHECK_MS = 5000;
  * group (recorded in `groups`), under `env` plus the entry's own env and the secrets its command
  * references, logged to `<logs>/<name>.log`. Refused when its health already answers before it runs
  * (a `url` that responds, a `cmd` that exits 0: something else serves there) and when its env names
- * HOME or COMPOSE_PROJECT_NAME. Returns {name, pid, pgid, log, cmdline, t0, exit} (`exit` = {code,
- * signal} once it exits).
+ * HOME or COMPOSE_PROJECT_NAME. An entry with `stop` gets its stop record in `stops` as soon as it
+ * started ({name, cmd, cwd, env}: replayed exactly by `down`; `cmd` holds variable references, never a
+ * secret value). Returns {name, pid, pgid, log, cmdline, t0, exit} (`exit` = {code, signal} once it
+ * exits).
  */
-export async function startEntry(entry, { worktree, env, logs, secrets = {}, groups = [], runner = runAsync }) {
+export async function startEntry(entry, { worktree, env, logs, secrets = {}, groups = [], stops = [], runner = runAsync }) {
   for (const k of Object.keys(entry.env ?? {})) if (RUN_ENV.includes(k)) throw new Error(`refused: start entry ${entry.name} may not set ${k}`);
   const health = entry.health || {};
   if (health.url && (await answers(health.url))) throw new Error(`refused: something already serves ${health.url} (${entry.name})`);
@@ -766,6 +817,7 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
   });
   started.pid = started.pgid = child.pid;
   groups.push({ name: entry.name, pgid: child.pid, cmdline: started.cmdline });
+  if (entry.stop) stops.push({ name: entry.name, cmd: entry.stop, cwd: worktree, env: { ...env, ...(entry.env ?? {}) } });
   return started;
 }
 
@@ -1961,5 +2013,408 @@ export async function checkEgress({ pids, allowed = [], runner = run, lookup = (
       if (own.some((d) => within(d, real))) continue;
       if (datastore(real)) throw new Error(`refused: ${u.command} (${u.pid}) connects to the socket ${u.path}`);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Run files, reaper, down and recovery (spec §8 steps 1 and 11, `down`). `run.json` is the record every
+// teardown works from: the groups to kill, the stops to replay, the worktree to remove. The guard reads
+// its `worktree` (sapu-guard.mjs liveWorktree).
+
+const runPath = (main) => path.join(liveDir(main), "run.json");
+
+/** Where a run logs: `<MAIN>/.argus/live/<runId>/logs` (kept by `down`, for the owner). */
+export function logsDir(main, runId) {
+  runIdOk(runId);
+  return path.join(liveDir(main), runId, "logs");
+}
+
+/** The CLI the reaper runs (`argus-live.mjs reap <runId>`). */
+const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
+
+/** Every process as {pid, pgid, command} (`ps -A -ww -o pid= -o pgid= -o command=`, the same on macOS and Linux). */
+function processTable(runner) {
+  const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "command="]);
+  if (r.error || r.status !== 0) throw new Error(`failed: ps could not list processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
+  const out = [];
+  for (const line of r.stdout.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s?(.*)$/);
+    if (m) out.push({ pid: Number(m[1]), pgid: Number(m[2]), command: m[3].trim() });
+  }
+  return out;
+}
+
+/** run.json, or null when there is none. Throws `refused: …` on one that cannot be read: it is never guessed at. */
+function readRun(main) {
+  let raw;
+  try {
+    raw = fs.readFileSync(runPath(main), "utf8");
+  } catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    throw new Error(`refused: cannot read ${runPath(main)}: ${e.message}`);
+  }
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    rec = null;
+  }
+  if (!rec || typeof rec !== "object" || typeof rec.runId !== "string" || !RUN_ID.test(rec.runId)) throw new Error(`refused: ${runPath(main)} is not a run record`);
+  return rec;
+}
+
+/** Writes run.json whole (beside, then renamed into place), mode 0600: its stop records carry the run's env. */
+function putRun(main, rec) {
+  const file = runPath(main);
+  fs.mkdirSync(liveDir(main), { recursive: true });
+  fs.renameSync(tempBeside(file, `${JSON.stringify(rec, null, 2)}\n`, 0o600), file);
+}
+
+/**
+ * Writes `<MAIN>/.argus/live/run.json` (mode 0600; atomic, so `up` may rewrite it as the run grows):
+ * {runId, instanceId, worktree, ports, origins, groups: [{name, pgid, cmdline, members}], stops: [{name,
+ * cmd, cwd, env}], sessions: []} plus whatever else `state` holds (`env`, the instance env, and `since`,
+ * the daemon's clock at `up`, for the runtime gate at `down`; `reaper`). `worktree` is the absolute path
+ * the guard reads (null until it exists). Each group's `cmdline` and `members` ({pid, cmdline}) are read
+ * from `ps` as they stand now, secret values masked — `/bin/sh -c <one command>` execs that command, so
+ * what ps shows is what recovery can match; without ps they stay as recorded.
+ */
+export function writeRunFiles(main, state, { runner = run, secrets = {} } = {}) {
+  runIdOk(state.runId);
+  const wt = state.worktree ?? null;
+  if (wt !== null && (typeof wt !== "string" || !path.isAbsolute(wt))) throw new Error("failed: run.json needs the worktree's absolute path");
+  let table = null;
+  try {
+    table = processTable(runner);
+  } catch {
+    table = null; // the command lines stay as recorded: recovery then kills fewer groups, never more
+  }
+  const groups = (state.groups ?? []).map((g) => {
+    const members = table ? table.filter((p) => p.pgid === g.pgid).map((p) => ({ pid: p.pid, cmdline: redact(p.command, secrets) })) : [];
+    if (!members.length) return { ...g };
+    const leader = members.find((p) => p.pid === g.pgid);
+    return { ...g, cmdline: leader ? leader.cmdline : g.cmdline, members };
+  });
+  putRun(main, { ...state, worktree: wt, ports: state.ports ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [] });
+}
+
+/**
+ * Starts the run's reaper: `argus-live.mjs reap <runId>`, detached, in <MAIN>; its pid goes into
+ * run.json as `reaper` (when run.json names the run). Returns the pid.
+ */
+export function startReaper(main, runId, { script = CLI } = {}) {
+  runIdOk(runId);
+  const rec = readRun(main); // an unreadable run.json is refused before anything starts
+  const child = spawn(process.execPath, [script, "reap", runId], { cwd: main, detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  if (!child.pid) throw new Error("failed: the reaper could not start");
+  child.unref();
+  if (rec && rec.runId === runId) putRun(main, { ...rec, reaper: child.pid });
+  return child.pid;
+}
+
+/** The reaper of `runId`, signalled only while its pid still runs `argus-live.mjs reap <runId>` (and is not this process). */
+function stopReaper(pid, runId, runner, note) {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return;
+  const r = runner(["ps", "-ww", "-o", "command=", "-p", String(pid)]);
+  if (r.error || r.status !== 0) return; // gone
+  const cmd = String(r.stdout).trim();
+  if (!cmd.endsWith(` reap ${runId}`) || !cmd.includes("argus-live.mjs")) {
+    note(`the reaper's pid ${pid} now runs something else; not signalled`);
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // gone meanwhile
+  }
+}
+
+/** Replays one stop record exactly: `/bin/sh -c <cmd>` in its cwd under its env, plus the secrets its cmd references. */
+async function replayStop(s, { secrets, asyncRunner, timeoutMs, logs, note }) {
+  const where = `stop ${s && s.name}`;
+  if (!s || typeof s.cmd !== "string" || typeof s.cwd !== "string" || !s.env || typeof s.env !== "object") {
+    note(`${where}: not a stop record {cmd, cwd, env}; not run`);
+    return;
+  }
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  const log = path.join(logs, `stop.${String(s.name).replace(/[^A-Za-z0-9_.-]/g, "-")}.log`);
+  const fd = fs.openSync(log, "a", 0o600);
+  const from = fs.fstatSync(fd).size;
+  let r;
+  try {
+    r = await asyncRunner(["/bin/sh", "-c", s.cmd], { cwd: s.cwd, env: { ...s.env, ...secretEnv(s.cmd, secrets) }, stdio: ["ignore", fd, fd], timeoutMs, killAfter: true });
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (r.timedOut) note(`${where} timed out after ${Math.round(timeoutMs / 1000)} s; its group was killed`);
+  else if (r.error) note(`${where}: ${r.error.message}`);
+  else if (r.status !== 0) note(`${where} exited ${r.status ?? r.signal}: ${tail(readFrom(log, from))}`);
+}
+
+/** SIGTERM to every group in `pgids`, SIGKILL to those still there after `graceMs`; returns the ones killed hard. */
+async function stopGroups(pgids, graceMs) {
+  const live = () =>
+    pgids.filter((g) => {
+      try {
+        process.kill(-g, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  for (const g of pgids) killGroup(g, "SIGTERM");
+  const end = Date.now() + graceMs;
+  while (live().length && Date.now() < end) await sleep(100);
+  const left = live();
+  for (const g of left) killGroup(g, "SIGKILL");
+  return left;
+}
+
+/** `$TMPDIR/sapu-live` (real path) when it exists as this user's own directory, else null; never creates it. */
+function existingLiveRoot(note) {
+  let root;
+  try {
+    root = path.join(fs.realpathSync.native(os.tmpdir()), "sapu-live");
+  } catch {
+    return null;
+  }
+  return privateDir(root, note) ? root : null;
+}
+
+/** True when `dir` is a directory of this user's (not a symlink); a refusal is noted. */
+function privateDir(dir, note) {
+  let st;
+  try {
+    st = fs.lstatSync(dir);
+  } catch {
+    return false;
+  }
+  if (st.isSymbolicLink() || !st.isDirectory() || (typeof process.getuid === "function" && st.uid !== process.getuid())) {
+    note(`refused: ${dir} is not this user's own directory; nothing removed there`);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Removes run `runId`'s worktree, HOME and setup log — only its own: `<sapu-live>/<repo>-<runId>` (and
+ * `.home`, `.setup.log` beside it), where <sapu-live> is `$TMPDIR/sapu-live` or the one run.json's
+ * `worktree` lies in, each this user's own directory. Any other recorded worktree is left as it is.
+ */
+function removeRunDirs(main, runId, recorded, { runner, note }) {
+  const realMain = fs.realpathSync.native(main);
+  const name = `${repoName(realMain)}-${runId}`;
+  const roots = new Set();
+  const cur = existingLiveRoot(note);
+  if (cur) roots.add(cur);
+  if (typeof recorded === "string" && recorded) {
+    const parent = path.dirname(recorded);
+    const own = path.basename(recorded) === name && path.basename(parent) === "sapu-live" && path.isAbsolute(recorded) && !within(realMain, recorded);
+    if (own && privateDir(parent, note)) roots.add(parent);
+    else if (!own) note(`run.json names the worktree ${recorded}, which is not the run's own (<TMPDIR>/sapu-live/${name}): left as it is`);
+  }
+  for (const root of roots) {
+    const wt = path.join(root, name);
+    let st = null;
+    try {
+      st = fs.lstatSync(wt);
+    } catch {
+      st = null;
+    }
+    if (st && st.isDirectory()) {
+      const r = runner(["git", "-C", main, "worktree", "remove", "--force", wt]);
+      if (r.error || r.status !== 0) {
+        // Not a worktree git knows any more, or one it will not remove: the directory is the run's own.
+        note(`git worktree remove ${wt} failed (${tail((r.error && r.error.message) || r.stderr)}); its directory was removed`);
+        fs.rmSync(wt, { recursive: true, force: true });
+      }
+    } else if (st) note(`refused: ${wt} is not a directory; left as it is`);
+    for (const p of [`${wt}.home`, `${wt}.setup.log`]) fs.rmSync(p, { recursive: true, force: true });
+  }
+  runner(["git", "-C", main, "worktree", "prune"]);
+}
+
+/** Removes the lock while it names `runId`, under `claim-<runId>.json` (the lock rule); a busy claim is waited on up to `waitMs`, then refused. Returns true when it removed it. */
+async function releaseLock(main, runId, waitMs) {
+  const end = Date.now() + waitMs;
+  for (;;) {
+    const l = readLock(main);
+    if (!l || l.runId !== runId) return false;
+    if (claim(main, runId, { down: runId })) {
+      try {
+        const cur = readLock(main);
+        if (!cur || cur.runId !== runId) return false;
+        fs.rmSync(lockPath(main), { force: true });
+        return true;
+      } finally {
+        fs.rmSync(claimPath(main, runId), { force: true });
+      }
+    }
+    const busy = claimBusy(main, runId);
+    if (!busy.retry || Date.now() >= end) throw busy;
+    await sleep(100);
+  }
+}
+
+/**
+ * Tears run `runId` down (spec §8 `down`), from `record` or else run.json (when it names the run):
+ * 1. the Docker runtime gate since the run's `since` (a finding is reported, the teardown goes on);
+ * 2. the reaper is signalled (unless it is this process, the reaper's own `down`);
+ * 3. each stop record replayed exactly — `/bin/sh -c <cmd>`, its recorded cwd and env, plus the secrets
+ *    its cmd references (secretEnv) — last started first, each bounded by `stopTimeoutMs`;
+ * 4. SIGTERM to every recorded process group (setup groups included, so a daemon a setup left behind
+ *    dies too), SIGKILL after `graceMs`;
+ * 5. its own worktree (`git worktree remove --force` on that one only), HOME and setup log;
+ * 6. run.json, then the lock under its claim, then `<runId> end <now>` in the live log.
+ * Returns {report: [lines]} (secret values masked). Throws only when the lock still names the run and
+ * another process holds its claim (claimBusy, after waiting `claimWaitMs` for a live holder): the
+ * teardown is done by then, and the lock and its end line wait for the owner.
+ */
+export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000 } = {}) {
+  runIdOk(runId);
+  const report = [];
+  const note = (line) => report.push(redact(line, secrets));
+  let rec = record ?? null;
+  if (!rec) {
+    try {
+      rec = readRun(main);
+    } catch (e) {
+      note(e.message);
+    }
+  }
+  if (rec && rec.runId !== runId) {
+    note(`run.json names cycle ${rec.runId}, not ${runId}: left as it is`);
+    rec = null;
+  }
+  if (rec && Number.isFinite(rec.since) && rec.env && typeof rec.worktree === "string") {
+    try {
+      checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports ?? {}, runner });
+    } catch (e) {
+      note(`docker runtime gate: ${e.message}`);
+    }
+  }
+  if (rec) stopReaper(rec.reaper, runId, runner, note);
+  const logs = logsDir(main, runId);
+  for (const s of [...(rec?.stops ?? [])].reverse()) {
+    if (s && typeof s.cwd === "string" && !fs.existsSync(s.cwd)) note(`stop ${s.name}: its cwd ${s.cwd} is gone; not run`);
+    else await replayStop(s, { secrets, asyncRunner, timeoutMs: stopTimeoutMs, logs, note });
+  }
+  const pgids = [...new Set((rec?.groups ?? []).map((g) => g && g.pgid).filter((g) => Number.isInteger(g) && g > 1 && g !== process.pid))];
+  const hard = await stopGroups(pgids, graceMs);
+  if (hard.length) note(`process groups ${hard.join(", ")} outlived SIGTERM for ${Math.round(graceMs / 1000)} s: killed`);
+  removeRunDirs(main, runId, rec?.worktree, { runner, note });
+  const onDisk = (() => {
+    try {
+      return readRun(main);
+    } catch {
+      return null;
+    }
+  })();
+  if (onDisk && onDisk.runId === runId) fs.rmSync(runPath(main), { force: true });
+  const held = await releaseLock(main, runId, claimWaitMs);
+  if (held || rec) appendEnd(main, runId);
+  return { report };
+}
+
+/**
+ * Recovers every stale run (staleRecords: a lock taken over past its deadline, or a takeover rolled
+ * back) before a new `up` writes its own run files (spec §8 step 1), from run.json when it names that
+ * run: replays only the stop records whose cwd exists and whose env names COMPOSE_PROJECT_NAME =
+ * `argus-<run>` (the others are journalled, never run); kills a recorded group only while what runs in
+ * it is what was recorded — its leader's command line, or, with the leader gone (a setup's daemon), a
+ * member's pid and command line; signals the old reaper; removes the old worktree and its HOME; appends
+ * `<run> end <now>`; and only then deletes the run's claim. Returns {recovered: [runIds], report}.
+ */
+export async function recover(main, { secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000 } = {}) {
+  const report = [];
+  const recovered = [];
+  for (const stale of staleRecords(main)) {
+    const note = (line) => report.push(redact(`${stale.runId}: ${line}`, secrets));
+    let rec = null;
+    try {
+      rec = readRun(main);
+    } catch (e) {
+      note(e.message);
+    }
+    if (rec && rec.runId !== stale.runId) rec = null;
+    if (rec) stopReaper(rec.reaper, stale.runId, runner, note);
+    const project = `argus-${stale.runId}`;
+    const logs = logsDir(main, stale.runId);
+    for (const s of [...(rec?.stops ?? [])].reverse()) {
+      if (!s || typeof s.cwd !== "string" || !fs.existsSync(s.cwd)) note(`stop ${s && s.name}: its cwd ${s && s.cwd} is gone; journalled, not run`);
+      else if (!s.env || s.env.COMPOSE_PROJECT_NAME !== project) note(`stop ${s.name}: its env does not name COMPOSE_PROJECT_NAME=${project}; journalled, not run`);
+      else await replayStop(s, { secrets, asyncRunner, timeoutMs: stopTimeoutMs, logs, note });
+    }
+    const kill = [];
+    const groups = (rec?.groups ?? []).filter((g) => g && Number.isInteger(g.pgid) && g.pgid > 1 && g.pgid !== process.pid);
+    if (groups.length) {
+      let table = null;
+      try {
+        table = processTable(runner);
+      } catch (e) {
+        note(`${e.message}; no process group killed`);
+      }
+      for (const g of table ? groups : []) {
+        const now = table.filter((p) => p.pgid === g.pgid).map((p) => ({ pid: p.pid, cmdline: redact(p.command, secrets) }));
+        if (!now.length) continue;
+        const leader = now.find((p) => p.pid === g.pgid);
+        const same = leader ? leader.cmdline === g.cmdline : now.some((p) => (g.members ?? []).some((m) => m && m.pid === p.pid && m.cmdline === p.cmdline));
+        if (same) kill.push(g.pgid);
+        else note(`process group ${g.pgid} (${g.name}): its command line changed since it was recorded; not killed`);
+      }
+    }
+    const hard = await stopGroups([...new Set(kill)], graceMs);
+    if (hard.length) note(`process groups ${hard.join(", ")} outlived SIGTERM for ${Math.round(graceMs / 1000)} s: killed`);
+    removeRunDirs(main, stale.runId, rec?.worktree, { runner, note });
+    if (rec) fs.rmSync(runPath(main), { force: true });
+    appendEnd(main, stale.runId);
+    fs.rmSync(claimPath(main, stale.runId), { force: true });
+    recovered.push(stale.runId);
+  }
+  return { recovered, report };
+}
+
+/**
+ * The reaper (`argus-live.mjs reap <runId>`): sleeps until the lock's deadline, re-reading the lock at
+ * least every `pollMs` (so a `renew` moves its wake-up), then runs `down` — only while the lock still
+ * names `runId`; otherwise it exits without acting. What it did goes to `<logs>/reaper.log`.
+ */
+export async function reap(main, runId, { pollMs = 60_000 } = {}) {
+  const logs = logsDir(main, runId);
+  const say = (line) => {
+    try {
+      fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(path.join(logs, "reaper.log"), `${new Date().toISOString()} ${line}\n`, { mode: 0o600 });
+    } catch {
+      // nowhere to write: the reaper still does its job
+    }
+  };
+  for (;;) {
+    let lock;
+    try {
+      lock = readLock(main);
+    } catch (e) {
+      say(`${e.message}; exiting without acting`);
+      return "skipped";
+    }
+    if (!lock || lock.runId !== runId) {
+      say(`the lock names ${lock ? `cycle ${lock.runId}` : "no cycle"}, not ${runId}: exiting without acting`);
+      return "skipped";
+    }
+    const left = lock.deadline * 1000 - Date.now();
+    if (left <= 0) break;
+    await sleep(Math.min(left, pollMs));
+  }
+  say("the deadline passed: down");
+  const { secrets } = loadLive(main);
+  try {
+    const { report } = await down(main, { runId, secrets });
+    for (const line of report) say(line);
+    say("down finished");
+    return "down";
+  } catch (e) {
+    say(redact(e.message, secrets));
+    return "failed";
   }
 }

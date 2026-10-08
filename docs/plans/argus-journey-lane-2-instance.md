@@ -329,6 +329,35 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
 
 ### Task 7: run files, reaper, down, recovery
 
+As built (where it differs from, or adds to, the interfaces below):
+- `writeRunFiles(main, state, {runner, secrets})` writes run.json whole (temp file renamed into place,
+  mode 0600), so `up` may rewrite it as the run grows; `worktree` may be null until it exists; keys
+  beyond the listed ones pass through (`env` = the instance env and `since` = the daemon's clock at
+  `up`, both for `down`'s runtime gate; `reaper`). Each group's `cmdline` and its `members` ({pid,
+  cmdline}) are read from `ps -A -ww` as they stand, secret values masked: `/bin/sh -c <one command>`
+  execs that command, so `/bin/sh -c …` as recorded at spawn would never match at recovery.
+- `startEntry(entry, {…, stops})` pushes the entry's stop record `{name, cmd, cwd, env}` as soon as it
+  started (before its health), so a failed health still gets its stop replayed.
+- `logsDir(main, runId)` = `.argus/live/<runId>/logs` (kept by `down`); stop replays log to
+  `stop.<name>.log`, the reaper to `reaper.log`.
+- `startReaper(main, runId)` → pid, patched into run.json as `reaper`. `reap(main, runId, {pollMs})`
+  re-reads the lock at least every 60 s. `argus-live.mjs` exists with `reap <runId>` only (Task 8 adds
+  the rest).
+- `down(main, {runId, record, secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs})` →
+  `{report}`: runtime gate (a finding reported) → reaper signalled (only while its pid still runs
+  `argus-live.mjs reap <runId>`, never itself) → stops replayed last-started first (cwd must exist) →
+  groups SIGTERM, SIGKILL after `graceMs` → its own worktree, HOME, setup log (a recorded worktree
+  that is not `<sapu-live>/<repo>-<runId>` is left and reported) → run.json → the lock, under its
+  claim → `end`. `record` (the in-memory run) replaces run.json, for an `up` that fails before its
+  run files are written. It throws only when another process holds the lock's claim (after waiting
+  `claimWaitMs` for a live, fresh holder): the teardown is done, the lock and the end line wait.
+- `recover(main, {secrets, …})` → `{recovered, report}` takes no `stale` argument: it recovers every
+  `staleRecords(main)` entry; `takeLock` returns them as `staleRuns` (the taken-over lock included;
+  `stale` is kept). Spec §8 step 1's "process group whose recorded command line still matches" is
+  read as: its leader's command line equals the recorded one, or, with the leader gone (a setup's
+  daemon), one of its members has a recorded pid and command line — so the setup groups die too.
+- `claimBusy`: a claim older than 30 s (mtime) counts as interrupted even when its pid is alive.
+
 Interfaces:
 - `export function writeRunFiles(main, state)`: `.argus/live/run.json` = `{runId, instanceId,
   worktree, ports, origins, groups: [{name, pgid, cmdline}], stops: [{name, cmd, cwd, env}],
@@ -379,6 +408,21 @@ Interfaces:
 ---
 
 ### Task 8: `up`, `up --fresh`, `status`, the CLI, and the guard seam
+
+Carried from Task 7:
+- Step 1: `recover(main, {secrets})` right after `takeLock` (when `staleRuns` is not empty) and
+  before `up` writes its own run.json: run.json is one file, and recovery reads the stale run's.
+- Write run.json early (right after recovery: `worktree` null, no groups) and again whenever a group or
+  stop record is added (or at least after each step), so a session that dies mid-`up` leaves a record
+  for the reaper and for recovery; start the reaper as soon as run.json exists. On a refusal or failure,
+  `down(main, {runId, record: <the in-memory run>, secrets})` covers groups not yet written.
+- `ctx` carries `stops: []` beside `groups`; `bringUpStore`/`bringUpRest` hand it to `startEntry`.
+- run.json gets `env` (the instance env) and `since` (`daemonNow` or `Date.now()`), and every
+  `writeRunFiles` call gets `{secrets}` (members' command lines are masked with them). The last write
+  (step 11) comes after every health check, so the recorded command lines are the exec'd ones.
+- `upFresh` stops the entries the way `down` does (replay their stops, SIGTERM/SIGKILL their groups):
+  `replayStop` and `stopGroups` are module-private today; export a small helper rather than copy them.
+- The CLI: `down` prints `report` line by line; a claimBusy refusal → exit 1.
 
 Interfaces:
 - Before `checkStore` compares services, `up` resolves each host name in the env values with
