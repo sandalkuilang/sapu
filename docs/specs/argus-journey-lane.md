@@ -416,7 +416,11 @@ defence in depth and not enforcement:
    `roles.<r>.base_url` that does not resolve to loopback (as nemesis requires);
    `~/.playwright/cli.config.json` present (the CLI merges it underneath ours); no Chrome-family
    browser (the install command named); the pinned CLI not installable (offline, empty npm cache);
-   neither `lsof` nor `ss` available.
+   neither `lsof` nor `ss` available; no process identity (a start time for this very process, from
+   field 22 of `/proc/<pid>/stat` on Linux — boot ticks, which never drift — else `ps -o lstart=`):
+   every kill asks a process's identity first, so without one a teardown would be blind; a
+   `services.<n>.env` variable the instance env (`env`, or a set `pass_env` name) does not set — the
+   app would fall back to its default address, the owner's service.
 3. **Environment.** Every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the
    names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, `HOME` = a per-run directory
    outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode 0700, empty but
@@ -638,7 +642,8 @@ finished, and what could not be removed is named for the owner; the end line is 
 lock's claim by the `down` that removes the lock, so a second `down` adds none. A worktree whose
 directory is already gone loses its record in `.git/worktrees` (that one only, never a repo-wide
 prune). A group "still runs what was recorded" when its leader has the pid and start time `run.json`
-recorded for it (captured when the group started), or one of its members a recorded pid and start
+recorded for it (captured when the group started; boot ticks compared exactly, an `lstart` within a
+second), or one of its members a recorded pid and start
 time (a daemon a setup left behind, its leader gone): unlike a command line, that survives an exec and
 a changed process title, and a reused pid has another start time. A group whose own leader has exited
 while a process holds its pid is someone else's, so it is neither recorded nor killed. `down` and

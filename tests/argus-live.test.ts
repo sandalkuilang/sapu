@@ -25,13 +25,13 @@ import {
   dockerEnv,
   down,
   egressAllowed,
-  groupPids,
   instanceEnv,
   logsDir,
   makeHome,
   makeWorktree,
   portFree,
   portHolder,
+  procStartTicks,
   readLock,
   recover,
   renew,
@@ -119,6 +119,11 @@ const tempDir = () => {
 afterEach(() => {
   while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
 });
+/** A process's identity as argus-live records it: boot ticks from /proc on Linux, else `ps -o lstart` (spaces collapsed). */
+const identityOf = (pid: number) =>
+  process.platform === "linux"
+    ? `ticks:${procStartTicks(readFileSync(`/proc/${pid}/stat`, "utf8"))}`
+    : execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim().replace(/\s+/g, " ");
 
 describe("argus-live config — validateLive", () => {
   it("compose_files, when present, lists repo-relative files: no absolute path, no .., no \":\" (COMPOSE_FILE's separator), at least one", () => {
@@ -2240,8 +2245,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         const file = followed(s.events);
         const p = spawn("/bin/sh", ["-c", "exec sleep 600"], { detached: true, stdio: "ignore" });
         groups.push({ name: "docker-events", pgid: p.pid!, cmdline: "sleep 600" });
-        const started = execFileSync("ps", ["-o", "lstart=", "-p", String(p.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim().replace(/\s+/g, " ");
-        const follower = { name: "docker-events", pgid: p.pid, started };
+        const follower = { name: "docker-events", pgid: p.pid, started: identityOf(p.pid!) };
         const f = fake(s);
         const runner = (argv: string[], o: Obj = {}) => (argv[0] === "docker" ? f(argv, o) : run(argv, o));
         expect(gate(s, { eventsFile: file, follower, runner })).toBe("ok");
@@ -2258,7 +2262,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         const f = await startEventsFollower({ env: { PATH: `${bin}:${process.env.PATH}` }, since: T0, logs, cwd: bin, groups: recorded });
         groups.push(recorded[0] as { name: string; pgid: number; cmdline: string });
         expect(f.file).toBe(join(logs, "docker-events.jsonl"));
-        expect(recorded).toEqual([{ name: "docker-events", pgid: expect.any(Number), started: expect.stringMatching(/\d\d:\d\d:\d\d/), cmdline: `docker events --since ${((T0 - 1000) / 1000).toFixed(3)} --format {{json .}} --filter type=container --filter type=volume --filter type=network` }]);
+        expect(recorded).toEqual([{ name: "docker-events", pgid: expect.any(Number), started: expect.stringMatching(/\d\d:\d\d:\d\d|^ticks:\d+$/), cmdline: `docker events --since ${((T0 - 1000) / 1000).toFixed(3)} --format {{json .}} --filter type=container --filter type=volume --filter type=network` }]);
         const until = Date.now() + 5000;
         while (!(existsSync(f.file) && readFileSync(f.file, "utf8").includes("connect")) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
         expect(readFileSync(f.file, "utf8")).toBe('{"Type":"network","Action":"connect"}\n');
@@ -2304,6 +2308,13 @@ describe("argus-live instance — Compose and egress checks", () => {
         if (typeof port === "string") s.listen(port, ready);
         else s.listen(port, "127.0.0.1", ready);
       });
+    /** Every pid in process group `pgid`. */
+    const groupPids = (pgid: number) =>
+      execFileSync("ps", ["-A", "-o", "pid=", "-o", "pgid="], { encoding: "utf8" })
+        .split("\n")
+        .map((l) => l.trim().split(/\s+/).map(Number))
+        .filter(([, g]) => g === pgid)
+        .map(([p]) => p);
     /** Starts the fixture app; returns its pids (the whole process group) once healthy. */
     const startApp = async (env: Record<string, string>, args = "") => {
       const wt = tempDir();
@@ -2314,7 +2325,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       await waitHealth(entry, s, { worktree: wt, env: base, timeoutS: 20 });
       // Its outbound connection is made at start; give it a moment to be established.
       await new Promise((r) => setTimeout(r, 300));
-      return { wt, web, pids: groupPids([s.pgid]), entry, base };
+      return { wt, web, pids: groupPids(s.pgid), entry, base };
     };
     /** Starts `node -e <code>` as a run entry (alive after 300 ms); returns its pids and worktree. */
     const startNode = async (code: string) => {
@@ -2322,7 +2333,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       const entry = { name: "client", cmd: `exec ${NODE} -e ${JSON.stringify(`${code}; setInterval(() => {}, 1 << 30)`)}` };
       const s = await startEntry(entry, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
       await waitHealth(entry, s, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 300 });
-      return { wt, pids: groupPids([s.pgid]) };
+      return { wt, pids: groupPids(s.pgid) };
     };
 
     it("the fixture's cache fallback to a fixed local port is refused, naming the process and 46379", async () => {
@@ -2498,6 +2509,15 @@ describe("argus-live instance — Compose and egress checks", () => {
   });
 });
 
+describe("argus-live instance — process identity", () => {
+  it("reads a process's start time from /proc/<pid>/stat field 22 (ticks since boot), a name holding spaces and parentheses included", () => {
+    const stat = "1234 (we ird) (x) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 12345 67 18446744073709551615 1 1 0 0 0 0 0 0 0";
+    expect(procStartTicks(stat)).toBe("987654");
+    expect(procStartTicks("1234 (x) S 1 2")).toBeNull();
+    expect(procStartTicks("garbage")).toBeNull();
+  });
+});
+
 describe("argus-live instance — run files, reaper, down, recovery", () => {
   const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
   const app = (args = "") => `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
@@ -2594,7 +2614,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(rec).toMatchObject({ runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: { app: port }, origins: [`http://localhost:${port}`], stops, sessions: [], since: 1 });
     expect(rec.worktree).toBe(realpathSync(r.wt));
     // `/bin/sh -c <one command>` execs it: the record holds what ps shows, so recovery can match it.
-    const STARTED = expect.stringMatching(/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d\d:\d\d:\d\d \d{4}$/);
+    const STARTED = expect.stringMatching(/^([A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d\d:\d\d:\d\d \d{4}|ticks:\d+)$/); // ticks on Linux
     expect(rec.groups).toEqual([{ name: "app", pgid: s.pgid, started: STARTED, cmdline: `${process.execPath} ${SERVER}`, members: [{ pid: s.pgid, started: STARTED, cmdline: `${process.execPath} ${SERVER}` }] }]);
     expect(rec.groups[0].members[0].started).toBe(rec.groups[0].started); // captured when startEntry recorded it
     expect(logsDir(r.main, r.runId)).toBe(join(r.main, ".argus/live", r.runId, "logs"));
@@ -3096,6 +3116,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       login_url: "/login",
       logged_in: "getByRole('button', { name: 'Account' })",
       env_file: ".argus/live.env",
+      services: { cache: { env: "CACHE_URL" } },
       env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_SECRET: "${PW}" },
       pass_env: [],
       store: "app_explore",
@@ -3215,6 +3236,9 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     ["a role base_url that does not resolve", (c: Obj) => (c.roles.buyer.base_url = "http://admin.example.test:{port:web}"), { lookup: async () => Promise.reject(new Error("ENOTFOUND")) }, /^refused: roles\.buyer\.base_url names admin\.example\.test/],
     ["~/.playwright/cli.config.json", () => {}, { playwright: true }, /^refused: .*\.playwright\/cli\.config\.json exists/],
     ["neither lsof nor ss", () => {}, { noTools: true }, /^refused: neither lsof nor ss is available$/],
+    ["a service whose variable the instance env does not set", (c: Obj) => (c.services.mail = { env: "SMTP_URL" }), {}, /^refused: services\.mail\.env names SMTP_URL, which the instance env does not set \(set it in env, to the instance's own mail\)$/],
+    ["a service whose variable is a pass_env name the session does not set", (c: Obj) => ((c.services.mail = { env: "ARGUS_TEST_UNSET_SMTP" }), (c.pass_env = ["ARGUS_TEST_UNSET_SMTP"])), {}, /^refused: services\.mail\.env names ARGUS_TEST_UNSET_SMTP, which the instance env does not set/],
+    ["no process identity (ps gives no start time)", () => {}, { noIdentity: true }, /^refused: process identity is unavailable here \(no start time from ps -o lstart=\): down could not tell the run's processes from others'$/],
   ])("step 2 refuses %s after taking the lock, then tears down (an end line)", async (_what, over, how, why) => {
     const h = how as Obj;
     const { main } = repo(over as (c: Obj) => void, h.env ?? `PW=${PW}\n`);
@@ -3223,7 +3247,11 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       mkdirSync(join(ownerHome, ".playwright"));
       writeFileSync(join(ownerHome, ".playwright/cli.config.json"), "{}");
     }
-    const runner = h.noTools ? (argv: string[], o: Obj) => (argv[0] === "lsof" || argv[0] === "ss" ? { error: Object.assign(new Error(`spawn ${argv[0]} ENOENT`), { code: "ENOENT" }) } : noDocker(argv, o)) : noDocker;
+    const runner = h.noTools
+      ? (argv: string[], o: Obj) => (argv[0] === "lsof" || argv[0] === "ss" ? { error: Object.assign(new Error(`spawn ${argv[0]} ENOENT`), { code: "ENOENT" }) } : noDocker(argv, o))
+      : h.noIdentity
+        ? (argv: string[], o: Obj) => (argv[0] === "ps" && argv.includes("lstart=") ? { status: 1, stdout: "", stderr: "ps: lstart: keyword not found" } : noDocker(argv, o))
+        : noDocker;
     const e = await up(main, { runner, ownerHome, ...(h.lookup ? { lookup: h.lookup } : {}) }).then(() => null, (x: Error & { step?: string }) => x);
     expect(e!.message).toMatch(why as RegExp);
     expect(e!.message).not.toContain(PW);
@@ -3233,7 +3261,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   });
 
   it("the fixture's cache fallback to a fixed local port is caught at up: refused, torn down", async () => {
-    const { main } = repo((c) => delete c.env.CACHE_URL);
+    const { main } = repo((c) => (delete c.env.CACHE_URL, delete c.services)) /* the cache unlisted under services: only the egress check is left to catch it */;
     const s = createServer((c) => c.on("error", () => {}));
     servers.push(s);
     await new Promise<void>((done) => s.listen(46379, "127.0.0.1", () => done()));
@@ -3244,7 +3272,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   }, 60000);
 
   it("renew repeats the egress check and the Docker runtime gate: a later connection, or a foreign container, ends the cycle", async () => {
-    const { main } = repo((c) => delete c.env.CACHE_URL);
+    const { main } = repo((c) => (delete c.env.CACHE_URL, delete c.services)) /* the cache unlisted under services: only the egress check is left to catch it */;
     const r = await up(main, opts());
     reapers.push(runJson(main).reaper);
     const accepted: number[] = [];
@@ -3463,8 +3491,9 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       });
     const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    /** `ps -o lstart` of `pid`, moved by `s` seconds, in ps's own form. */
+    /** `pid`'s identity moved by `s` seconds, in the form argus-live records (boot ticks on Linux, at 100 a second). */
     const lstart = (pid: number, s = 0) => {
+      if (process.platform === "linux") return `ticks:${Number(identityOf(pid).slice(6)) + s * 100}`;
       const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
       const d = new Date(Date.parse(raw) + s * 1000);
       const two = (n: number) => String(n).padStart(2, "0");
@@ -3496,7 +3525,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
       expect(alive(pid)).toBe(true); // doubt about its identity: not killed
     });
-    it("a start time one second off is the same process (clock drift): caught, and killed by the down that follows", async () => {
+    // lstart drifts with the boot time it is derived from; Linux's boot ticks are compared exactly.
+    it.skipIf(process.platform === "linux")("a start time one second off is the same process (clock drift): caught, and killed by the down that follows", async () => {
       const { main, pid } = await recorded(1);
       expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
       expect(await until(() => !alive(pid), 5000)).toBe(true);

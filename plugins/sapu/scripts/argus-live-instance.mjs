@@ -1904,20 +1904,6 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   }
 }
 
-/** Every pid in the process groups `pgids` (`ps -A -o pid= -o pgid=`, the same on macOS and Linux). */
-export function groupPids(pgids, { runner = run } = {}) {
-  const want = new Set(pgids.filter((g) => Number.isInteger(g) && g > 1));
-  if (!want.size) return [];
-  const r = runner(["ps", "-A", "-o", "pid=", "-o", "pgid="]);
-  if (r.error || r.status !== 0) throw new Error(`failed: ps could not list the run's processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
-  const out = [];
-  for (const line of r.stdout.split("\n")) {
-    const m = line.trim().match(/^(\d+)\s+(\d+)$/);
-    if (m && want.has(Number(m[2]))) out.push(Number(m[1]));
-  }
-  return out;
-}
-
 /**
  * The endpoints the run may connect to, as `host:port` (hosts as normHost writes them, names not
  * resolved): this run's `ports` on loopback; every non-loopback endpoint `env` and each start entry's
@@ -2153,8 +2139,9 @@ function ownerSocketDirs(main, contract) {
 const DATASTORE_SOCKET = /^(\.s\.PGSQL\.\d+|mysql[^/]*\.sock|mysqld[^/]*\.sock|redis[^/]*\.sock|mongodb-\d+\.sock|memcached[^/]*\.sock)$/i;
 
 /**
- * `up` step 8 (and every `renew`): sampled `samples` times, `intervalMs` apart, the connections of every
- * process in the run's process groups (`pids`, from groupPids):
+ * `up` step 8 (and every `renew` and `up --fresh`): sampled `samples` times, `intervalMs` apart, the
+ * connections of `pids`, every process of the run's recorded groups whose identity is not someone else's
+ * (runPids):
  * - TCP may reach only `allowed` (egressAllowed's endpoints; a host name stands for every address
  *   `lookup` gives it) or another listener of those processes on loopback; a connection they accepted
  *   (its local port is one they listen on) is inbound, not egress;
@@ -2162,7 +2149,7 @@ const DATASTORE_SOCKET = /^(\.s\.PGSQL\.\d+|mysql[^/]*\.sock|mysqld[^/]*\.sock|r
  *   memcached socket name, a socket in a datastore's default directory or in a directory the owner's env
  *   files name for a socket, or any socket inside <MAIN> (`main`; its env files read through `contract`).
  * On the first sample, when `expectListen` names ports, at least one must show as a listener of those
- * processes, or the listing is not trusted. Throws `refused: <process> (<pid>) connects to <host:port>`
+ * processes, or the listing is not trusted (and with no process to list at all, it is not either). Throws `refused: <process> (<pid>) connects to <host:port>`
  * or `… connects to the socket <path>`; neither lsof nor ss → `refused: neither lsof nor ss is
  * available`; an lsof that exits 1 with an error → `failed: …`. Known limits (spec §8): a process that
  * left its group or lives in a container is not listed, and a connection between two samples is not seen.
@@ -2232,16 +2219,43 @@ const LSTART = /^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{
 const C_LOCALE = () => ({ ...process.env, LC_ALL: "C" });
 
 /**
- * When process `pid` started (`ps -o lstart=`), or undefined when it is gone or ps fails. With its pid,
- * a process's identity: it survives exec and a changed title, and a reused pid has another start time.
+ * Field 22 of a `/proc/<pid>/stat` line (starttime: clock ticks since boot, fixed for the process's life,
+ * so no drift), or null. The command name (field 2) is in parentheses and may hold spaces and
+ * parentheses itself: the fields are counted from the last `)`.
+ */
+export function procStartTicks(text) {
+  const t = String(text);
+  const i = t.lastIndexOf(")");
+  if (i < 0) return null;
+  const f = t.slice(i + 1).trim().split(/\s+/); // f[0] is field 3
+  return /^\d+$/.test(f[19] ?? "") ? f[19] : null;
+}
+
+/** On Linux, `ticks:<starttime>` from /proc (preferred: monotonic, unlike lstart, derived from a drifting boot time); else undefined. */
+function procStart(pid) {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const t = procStartTicks(fs.readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return t ? `ticks:${t}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * When process `pid` started — on Linux its boot ticks from /proc, else `ps -o lstart=` — or undefined
+ * when it is gone or neither tells. With its pid, a process's identity: it survives exec and a changed
+ * title, and a reused pid has another start time.
  */
 function startTime(pid, runner = run) {
+  const ticks = procStart(pid);
+  if (ticks) return ticks;
   const r = runner(["ps", "-o", "lstart=", "-p", String(pid)], { env: C_LOCALE() });
   const m = !r.error && r.status === 0 && String(r.stdout).trim().match(LSTART);
   return m ? m[1].replace(/\s+/g, " ") : undefined;
 }
 
-/** Every process as {pid, pgid, started, command} (`ps -A -ww -o pid= -o pgid= -o lstart= -o command=`, the same on macOS and Linux). */
+/** Every process as {pid, pgid, started, command} (`ps -A -ww -o pid= -o pgid= -o lstart= -o command=`, the same on macOS and Linux; on Linux `started` is the boot ticks from /proc where it can be read, as startTime gives them). */
 function processTable(runner) {
   const r = runner(["ps", "-A", "-ww", "-o", "pid=", "-o", "pgid=", "-o", "lstart=", "-o", "command="], { env: C_LOCALE() });
   if (r.error || r.status !== 0) throw new Error(`failed: ps could not list processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
@@ -2249,18 +2263,20 @@ function processTable(runner) {
   for (const line of r.stdout.split("\n")) {
     const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
     const t = m && m[3].match(LSTART);
-    if (t) out.push({ pid: Number(m[1]), pgid: Number(m[2]), started: t[1].replace(/\s+/g, " "), command: m[3].slice(t[0].length).trim() });
+    if (t) out.push({ pid: Number(m[1]), pgid: Number(m[2]), started: procStart(Number(m[1])) ?? t[1].replace(/\s+/g, " "), command: m[3].slice(t[0].length).trim() });
   }
   return out;
 }
 
 /**
- * True when two `ps -o lstart` times name the same process start: equal, or at most 1 s apart (Linux
- * derives lstart from boot time, which drifts). A reused pid starts far later.
+ * True when two recorded start times name the same process start: boot ticks (`ticks:<n>`) only when
+ * equal; `ps -o lstart` times when equal or at most 1 s apart (lstart is derived from a boot time that
+ * drifts). A reused pid starts far later.
  */
 function sameStart(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
+  if (String(a).startsWith("ticks:") || String(b).startsWith("ticks:")) return false;
   const [x, y] = [Date.parse(a), Date.parse(b)];
   return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= 1000;
 }
@@ -3046,7 +3062,8 @@ async function tearDown(main, state, { secrets, runner, log }) {
 /**
  * `argus-live.mjs up` (spec §8, steps 1-8 and 11): 1 the lock (and recovery of stale runs, then run.json
  * and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
- * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss);
+ * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss, no
+ * process identity (start times), a `services` variable the instance env does not set);
  * 3 the environment (ports, HOME, the run's Docker client, `since` and the events follower); 4 the worktree and setup; 5 the Compose
  * check; 6 the store phase, checkStore and reset; 7 the other entries and checkStore again; 8 the egress
  * check and the Docker runtime gate; 11 the instance id. Any refusal or failure after the lock → `down`
@@ -3109,6 +3126,22 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
       return Boolean(r.error && r.error.code === "ENOENT");
     };
     if (missing(["lsof", "-v"]) && missing(["ss", "-V"])) throw new Error("refused: neither lsof nor ss is available");
+    // Every kill of a teardown asks a process's identity (pid and start time) first: without one, down would be blind.
+    let table = null;
+    try {
+      table = processTable(runner);
+    } catch {
+      table = null;
+    }
+    const me = startTime(process.pid, runner);
+    const listed = table && table.find((p) => p.pid === process.pid);
+    if (!me || !listed || !sameStart(me, listed.started)) throw new Error("refused: process identity is unavailable here (no start time from ps -o lstart=): down could not tell the run's processes from others'");
+    // Every backing service the app reads must have its address in the instance env, or the app falls back to its default (the owner's).
+    for (const [n, svc] of Object.entries(config.services ?? {})) {
+      const k = svc && svc.env;
+      const set = (Object.hasOwn(config.env ?? {}, k) && config.env[k] !== "") || ((config.pass_env ?? []).includes(k) && Boolean(process.env[k]));
+      if (!set) throw new Error(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
+    }
     log("step 2 refusals: none");
 
     step = "3 environment";
