@@ -1701,7 +1701,8 @@ describe("argus-live instance — Compose and egress checks", () => {
     it("a compliant project passes, returns its service names, and docker ran in the worktree under the instance env, every profile included", () => {
       const w = world(null);
       w.set(good(w.wt));
-      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
+      // The host ports its services publish (all the run's) come back too: the Docker daemon serves them.
+      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual({ services: ["db", "web", "sidecar"], published: [41001, 41002] });
       expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f compose.yaml --profile * config --format json`]);
     });
 
@@ -1757,13 +1758,13 @@ describe("argus-live instance — Compose and egress checks", () => {
 
     it("no Compose file: nothing to check, docker never runs", () => {
       const w = world(good(), { files: ["README.md"] });
-      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual([]);
+      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual({ services: [], published: [] });
       expect(w.ran()).toEqual([]);
     });
 
     it("COMPOSE_FILE in the env, or in a .env the worktree tracks, is read as Compose reads it: at the root, with no -f", () => {
       const w = world(good(), { files: [] });
-      expect(checkCompose({ worktree: w.wt, env: { ...w.env, COMPOSE_FILE: "elsewhere/dev.yml" }, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
+      expect(checkCompose({ worktree: w.wt, env: { ...w.env, COMPOSE_FILE: "elsewhere/dev.yml" }, ports: w.ports, main: w.main }).services).toEqual(["db", "web", "sidecar"]);
       expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose --profile * config --format json`]);
       const v = world(good(), { files: [] });
       writeFileSync(join(v.wt, ".env"), "COMPOSE_FILE=elsewhere/dev.yml\n");
@@ -1917,7 +1918,7 @@ describe("argus-live instance — Compose and egress checks", () => {
     it("its service names are what checkStore exempts as the instance's own hosts", async () => {
       const w = world(good());
       writeFileSync(join(w.main, ".env"), "DATABASE_URL=postgres://owner@db:5432/app_dev\n");
-      const composeServices = checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main });
+      const composeServices = checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main }).services;
       const ctx = { config: { store: "app_explore", store_check: "echo app_explore", start: [] }, env: { PATH: process.env.PATH!, DATABASE_URL: "postgres://app@db:5432/app_explore" }, worktree: w.wt, main: w.main, contract: null, timeoutS: 10, deadline: Math.floor(Date.now() / 1000) + 600 };
       expect(await message(checkStore({ ...ctx, composeServices }))).toBe("ok");
       expect(await message(checkStore(ctx))).toMatch(/^refused: env\.DATABASE_URL points at a service/);
@@ -3098,6 +3099,37 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(calls).toEqual(["context inspect"]);
     expect(balanced(main)).toBe(true);
   });
+
+  /** A docker whose context is a local socket, whose daemon is not running, and whose `compose config` prints `project(env)`. */
+  const composeDocker = (project: (env: Obj) => Obj) => (argv: string[], o: Obj = {}) => {
+    if (argv[0] !== "docker") return run(argv, o);
+    if (argv[1] === "context") return { status: 0, stdout: JSON.stringify([{ Name: "default", Endpoints: { docker: { Host: "unix:///nonexistent/docker.sock" } } }]), stderr: "" };
+    if (argv[1] === "compose") return { status: 0, stdout: JSON.stringify(project(o.env)), stderr: "" };
+    return { status: 1, stdout: "", stderr: "Cannot connect to the Docker daemon at unix:///nonexistent/docker.sock. Is the docker daemon running?" };
+  };
+
+  it("base_url on a port a Compose service publishes (docker compose up in the foreground): step 8 expects no host listener there", async () => {
+    const { main } = repo((c) => {
+      c.env.WEB_PORT = "{port:web}";
+      c.start[1] = { name: "web", cmd: `exec ${JSON.stringify(NODE)} fg.cjs`, env: { PORT: "{port:web}" }, health: { url: "http://127.0.0.1:{port:web}/health" } };
+    });
+    // fg.cjs stands in for `docker compose up web`: it stays in the foreground, while what serves the
+    // published port runs outside the run's process groups (as the Docker daemon's proxy does).
+    writeFileSync(join(main, "fg.cjs"), `require("node:child_process").spawn(process.execPath, [${JSON.stringify(SERVER)}], { detached: true, stdio: "ignore" }).unref();\nsetInterval(() => {}, 1 << 30);\n`);
+    writeFileSync(join(main, "compose.yaml"), "services:\n  web:\n    image: nginx\n");
+    git(main, "add", "fg.cjs", "compose.yaml");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "compose");
+    const runner = composeDocker((env) => ({ name: env.COMPOSE_PROJECT_NAME, services: { web: { image: "nginx", ports: [{ mode: "ingress", target: 80, published: env.WEB_PORT, protocol: "tcp" }] } } }));
+    const r = await up(main, { runner, ownerHome: tempDir() });
+    const rec = runJson(main);
+    reapers.push(rec.reaper);
+    expect(rec.composeServices).toEqual(["web"]);
+    expect(rec.composePorts).toEqual([rec.ports.web]);
+    // renew repeats step 8 with the same expectation.
+    expect(await message(renewRun(main, { runner }))).toBe("ok");
+    await down(main, { runId: r.runId });
+    expect(balanced(main)).toBe(true);
+  }, 60000);
 
   describe("egress fails closed, kills stay careful: a run recorded by hand around one fixture process", () => {
     const freePort = () =>

@@ -537,8 +537,9 @@ defence in depth and not enforcement:
    `down` and refuse, naming the process and the endpoint or socket (a code default such as a cache
    on its standard local port, pointing at the owner's). A connection the processes accepted is
    inbound and not counted. A listing that cannot be trusted fails `up`: `lsof` exiting 1 with an
-   error, or no listener of the run (the port of `base_url`, when the app serves it from the host)
-   in the first sample. Repeated at every `renew`.
+   error, or no listener of the run (the port of `base_url`, when the app serves it from the host and
+   not through a port a Compose service publishes, which the Docker daemon serves) in the first
+   sample. Repeated at every `renew`.
    Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
    docker:up`): every container created or started, and every volume and network created, since `up`
    began (read from the daemon's own clock, `docker info`, so a second's tolerance is enough) must

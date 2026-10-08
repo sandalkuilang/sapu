@@ -1459,8 +1459,9 @@ const composeOrder = (a, b) => {
  *    or named outside the project; and each service's environment, command and entrypoint pass
  *    checkStore's comparison (as a container: its loopback is its own, the Docker host is refused off
  *    the run's ports).
- * Docker missing or failing is a refusal. Returns the service names of every project (checkStore's
- * `composeServices`), or [] without a Compose file.
+ * Docker missing or failing is a refusal. Returns {services, published}: the service names of every
+ * project (checkStore's `composeServices`) and the host ports they publish (all of them the run's: a
+ * listener there is the Docker daemon's, not a process of the run); both [] without a Compose file.
  */
 export function checkCompose({ worktree, env, ports = {}, main, config = {}, contract = null, secrets = {}, runner = run }) {
   for (const [where, commands] of commandsOf(config)) {
@@ -1506,7 +1507,7 @@ export function checkCompose({ worktree, env, ports = {}, main, config = {}, con
     });
     hint = "; list the files the instance uses in compose_files to check only those";
   }
-  if (!runs.length) return [];
+  if (!runs.length) return { services: [], published: [] };
   try {
     return composeProjects({ worktree, env, ports, main, realMain, config, contract, secrets, runner, scan, runs });
   } catch (e) {
@@ -1561,6 +1562,7 @@ function composeProjects({ worktree, env, ports, main, realMain, config, contrac
     return { c, cwd };
   });
   const services = [...new Set(projects.flatMap(({ c }) => Object.keys(c.services ?? {})))];
+  const published = new Set();
   const check = scopeChecker(readOwner(main, contract), { worktree, allowOrigins: config.allow_origins, composeServices: services, runPorts: [...runPorts] });
   for (const { c, cwd } of projects) {
     const local = { ...at, worktree: cwd };
@@ -1587,7 +1589,10 @@ function composeProjects({ worktree, env, ports, main, realMain, config, contrac
         if (p.published === undefined || p.published === null || p.published === "") throw new Error(`${svc} publishes container port ${p.target} on a random host port; publish one of this run's ports ({port:<name>})`);
         const m = String(p.published).match(/^(\d+)(?:-(\d+))?$/);
         if (!m) throw new Error(`${svc} publishes host port ${p.published}, which is not one of this run's ports`);
-        for (let n = Number(m[1]); n <= Number(m[2] ?? m[1]); n++) if (!runPorts.has(n)) throw new Error(`${svc} publishes host port ${n}, which is not one of this run's ports`);
+        for (let n = Number(m[1]); n <= Number(m[2] ?? m[1]); n++) {
+          if (!runPorts.has(n)) throw new Error(`${svc} publishes host port ${n}, which is not one of this run's ports`);
+          published.add(n);
+        }
       }
       for (const v of s.volumes ?? []) {
         const no = v.type === "bind" && v.source ? hostPathRefusal(v.source, local) : null;
@@ -1630,7 +1635,7 @@ function composeProjects({ worktree, env, ports, main, realMain, config, contrac
       }
     }
   }
-  return services;
+  return { services, published: [...published].sort((a, b) => a - b) };
 }
 
 /**
@@ -2749,9 +2754,9 @@ function contractOf(main) {
 /**
  * The context steps 6-8 share (bringUpStore, bringUpRest, the egress checks): `egress` is the one-sample
  * check waitHealth runs between tries, `fullEgress` step 8's five samples, which also expect a listener
- * on base_url's port when it is one of the run's.
+ * on base_url's port when it is one of the run's and no Compose service publishes it (`composePorts`).
  */
-function runContext({ main, runId, x, env, worktree, home, ports, secrets, contract, groups, stops, deadline, composeServices, runner, lookup }) {
+function runContext({ main, runId, x, env, worktree, home, ports, secrets, contract, groups, stops, deadline, composeServices, composePorts = [], runner, lookup }) {
   const allowed = egressAllowed({ config: x, env, ports });
   let port = NaN;
   try {
@@ -2759,7 +2764,8 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
   } catch {
     port = NaN;
   }
-  const expectListen = Object.values(ports).includes(port) ? [port] : [];
+  // A port a Compose service publishes is served by the Docker daemon, not by a process of the run.
+  const expectListen = Object.values(ports).includes(port) && !composePorts.includes(port) ? [port] : [];
   const egress = (samples, listen = []) => checkEgress({ pids: runPids(groups, runner), allowed, runner, lookup, samples, expectListen: listen, runDirs: [worktree, home], main, contract });
   return {
     config: x,
@@ -2829,7 +2835,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, composeServices: [] };
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, composeServices: [], composePorts: [] };
   const save = () => writeRunFiles(main, state, { runner, secrets });
   state.groups = recordingArray(save);
   state.stops = recordingArray(save);
@@ -2889,11 +2895,13 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     log(`step 4 worktree: ${state.worktree}; setup ${(x.setup ?? []).length} command(s)`);
 
     step = "5 Compose";
-    state.composeServices = checkCompose({ worktree: state.worktree, env: state.env, ports, main, config: x, contract, secrets, runner });
+    const compose = checkCompose({ worktree: state.worktree, env: state.env, ports, main, config: x, contract, secrets, runner });
+    state.composeServices = compose.services;
+    state.composePorts = compose.published;
     save();
     log(`step 5 Compose: ${state.composeServices.length ? `services ${state.composeServices.join(", ")}` : "no Compose file"}`);
 
-    const ctx = runContext({ main, runId, x, env: state.env, worktree: state.worktree, home: state.home, ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: state.composeServices, runner, lookup });
+    const ctx = runContext({ main, runId, x, env: state.env, worktree: state.worktree, home: state.home, ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: state.composeServices, composePorts: state.composePorts, runner, lookup });
     step = "6 store";
     await bringUpStore(ctx);
     log(`step 6 store: ${x.start.filter((e) => e.phase === "store").map((e) => e.name).join(", ") || "no store entry"} healthy; store_check printed ${x.store}; reset done`);
@@ -2967,7 +2975,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     log("fresh: every start entry stopped");
     const contract = contractOf(main);
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
-    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: rec.composeServices ?? [], runner, lookup });
+    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract, groups: state.groups, stops: state.stops, deadline: lock.deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     step = "fresh: store";
     await bringUpStore(ctx);
     step = "fresh: start";
@@ -2998,7 +3006,7 @@ export async function renewRun(main, { runner = run, lookup = defaultLookup, say
   const deadline = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
   try {
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
-    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], runner, lookup });
+    const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     await ctx.fullEgress();
     checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports, runner });
     log(`renew: cycle ${runId} until ${iso(deadline)}; egress and the Docker runtime gate passed`);
