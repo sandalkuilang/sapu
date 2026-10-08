@@ -214,7 +214,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 
 | | |
 |---|---|
-| [Install and use](docs/usage.md) | Setup, day-to-day commands, requirements and limits, cleanup, updating, common problems |
+| [Install and use](docs/usage.md) | Setup, day-to-day commands, requirements and limits, cleanup, updating, rolling back, a new machine, common problems |
 | [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories |
 | [How the agents work](docs/agents.md) | One diagram per skill |
 | [Contributing](docs/contributing.md) | Repo layout, the gate, rule guard, versioning |

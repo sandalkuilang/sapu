@@ -169,6 +169,54 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+### Rolling back to a previous version
+
+Every version is tagged `v<version>` on GitHub (the Releases page lists them, newest first), so going back means pointing the marketplace at an older tag. Do it between sweeps: a running session keeps the version it started with.
+
+From GitHub, pin the marketplace to the tag. A marketplace that is already added keeps its source when you add it again, so remove it first. Removing it uninstalls sapu and senior-dev-team from every repo on this machine, so reinstall in each repo that uses them:
+
+```bash
+claude plugin marketplace remove sapu
+```
+
+```bash
+claude plugin marketplace add sandalkuilang/sapu#v<previous-version>
+```
+
+```bash
+claude plugin install sapu@sapu --scope project
+```
+
+From a local clone, check out the tag instead, then update as usual:
+
+```bash
+git -C <path-to-clone> checkout v<previous-version>
+```
+
+```bash
+claude plugin marketplace update sapu
+```
+
+```bash
+claude plugin update sapu@sapu --scope project
+```
+
+Start a new session, and check the version with `claude plugin list --json` (the `version` of `sapu@sapu`). When `update` says the plugin is already at the latest version although the version differs, uninstall it at that scope and install it again. To return to the newest version, add the marketplace again without `#<tag>` (or check out the base branch in the clone) and repeat the same steps. A rollback changes only the plugin: the repo's contract and profiles stay as they are, and a contract key the older version does not know makes it stop with "unknown key", so remove that key while you run the older version.
+
+### A new machine
+
+Everything sapu needs on a machine, in order. The repos themselves hold their contract and profiles (unless the contract is local, step 5), so nothing else has to be copied over.
+
+1. **Tools:** Node ≥ 22.18, bash, git, jq, and `gh` signed in with the account the repos' contracts name (`gh auth login`; for a private marketplace also `gh auth setup-git`, so that Claude Code's git can clone it without a prompt).
+2. **The marketplace:** `claude plugin marketplace add sandalkuilang/sapu` (or `<path-to-clone>` for a local clone; `#v<version>` to pin a version, above).
+3. **Each repo that uses sapu:** `claude plugin install sapu@sapu --scope project` from its main checkout. A repo whose committed `.claude/settings.json` already enables sapu still needs this once on a new machine: Claude Code does not fetch a plugin that only project settings enable. Then `git config --local user.email <gitEmail of the contract>`.
+4. **The machine config (optional):** `~/.config/sapu/config.json` with `allowedRoots` and `projectScopeOnly` ([Safety and trust](security.md#restricting-where-sapu-may-run-optional)). It belongs to this machine and is never in a repo, so write it again; without it, sapu runs in any checkout whose contract matches.
+5. **Local contracts:** a repo with a local contract keeps it in `~/.config/sapu/repos/<owner>__<name>/` on the old machine only. Copy that folder over, or run `/sapu:init` there again.
+6. **Per-repo session settings:** in a new session in each repo, run `/sapu:init`. With a contract in place it only completes what is missing, and it writes this machine's `.claude/settings.local.json` (the working-directory reset, the agent-memory links, `GH_HOST` for a GitHub Enterprise host) and the `.git/info/exclude` lines, which are never committed.
+7. **Contributors to this repo:** recreate `.sapu-banned` at the root of the clone, if you keep one ([Contributing](contributing.md)): it is gitignored, so it does not come with the clone.
+
+Then check one repo: in a session there, `/sapu:init`'s preflight reports the account, the install scope and the allowed root; `claude plugin list` shows `sapu@sapu` and `senior-dev-team@sapu` enabled.
+
 ### Common problems
 
 | Message | What it means |
