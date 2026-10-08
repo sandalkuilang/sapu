@@ -463,6 +463,7 @@ say "gate running at $SHA (workers=$WORKERS) — log: $LOG"
 GATE_RC=0
 AFTER_PENDING=1
 GATE_START=$SECONDS
+GATE_T0="$(date +%s)"
 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
   run_contract "$WT" "$WT" "$GATE_MERGE" >"$LOG" 2>&1 || GATE_RC=$?
 # Gate wall-clock goes into the merges log: SKILL.md B3 drops an overlapping wave to one test runner
@@ -471,14 +472,27 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
 # steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
 # (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
 GATES_LOG="$MAIN/.git/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
+# A gate that overlapped a journey cycle ran beside its browsers and dev servers (argus-live.mjs
+# appends `<run> start <epoch> deadline <epoch>` and `<run> end <epoch>` to <MAIN>/.git/sapu-live.log;
+# a run with no end line counts until its deadline). Its line says live=1, and no flake proof uses it.
+LIVE_LOG="$MAIN/.git/sapu-live.log"
+live_overlap() { # <gate start epoch> <gate end epoch>
+  [ -f "$LIVE_LOG" ] || return 1
+  awk -v s="$1" -v e="$2" '
+    $2 == "start" && $3 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ { st[$1] = $3; dl[$1] = $5 }
+    $2 == "end" && $3 ~ /^[0-9]+$/ { en[$1] = $3 }
+    END { for (r in st) { stop = (r in en) ? en[r] : dl[r]; if (st[r] + 0 <= e + 0 && stop + 0 >= s + 0) hit = 1 } exit !hit }' "$LIVE_LOG" 2>/dev/null
+}
+LIVE=""
+if live_overlap "$GATE_T0" "$(date +%s)"; then LIVE=1; fi
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
-  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" >>"$GATES_LOG"; } 2>/dev/null \
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -522,7 +536,7 @@ if [ -n "$RED" ]; then
   # nothing else made this gate red. A verdict never merges anything: only a green gate does.
   # ponytail: the last 1000 runs are the ledger's memory; a flake older than that is unknown again.
   PROVEN="$( { tail -n 1000 "$GATES_LOG" 2>/dev/null || true; } | awk -v pr="$PR" '
-    $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
+    $0 !~ / live=1$/ && $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
       k = $2 " " $7
       if ($4 == "green") green[k] = 1
       else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)

@@ -844,3 +844,49 @@ describe("sapu-merge.sh — the repo's policy (who merges, what stays on GitHub)
     expect(h.gh()).not.toMatch(/pr comment|pr merge|issue edit/);
   });
 });
+
+describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and never proves a flake", () => {
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+  const live = (h: { MAIN: string }, ...lines: string[]) => writeFileSync(join(h.MAIN, ".git/sapu-live.log"), lines.map((l) => `${l}\n`).join(""));
+  const now = () => Math.floor(Date.now() / 1000);
+  const proof = (redTail: string) =>
+    [
+      `2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown${redTail}`,
+      "2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5",
+    ].map((l) => `${l}\n`).join("");
+
+  it("marks a gate that ran while a journey run was open", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} live=1$/);
+  });
+
+  it("does not mark a gate after the run ended, nor after an unended run's deadline", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 7200} deadline ${now() - 3600}`, `r2 start ${now() - 900} deadline ${now() + 900}`, `r2 end ${now() - 300}`);
+    h.run();
+    expect(gates(h).at(-1)).not.toMatch(/live=1/);
+  });
+
+  it("a red-then-green proof made beside a journey cycle proves nothing", () => {
+    const h = harness();
+    writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(" live=1"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("control: the same proof without live=1 is a known-flake", () => {
+    const h = harness();
+    writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(""));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: known-flake/);
+  });
+
+  it("a malformed live log never breaks the gate record", () => {
+    const h = harness();
+    live(h, "garbage line", "r1 start notanumber deadline x");
+    expect(h.run().status).toBe(0);
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s /);
+  });
+});
