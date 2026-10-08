@@ -133,6 +133,9 @@ const isId = (v) => Number.isInteger(v) && v > 0;
 
 /** The label a trusted login applies to accept an outsider's issue: `labels.accepted`, else the default. */
 export const acceptedLabel = (c) => (c && c.labels && isStr(c.labels.accepted) ? c.labels.accepted : DEFAULT_ACCEPTED_LABEL);
+/** The label marking a finding only the owner can rule on (argus journey lane); sapu skips it in B2. */
+export const DEFAULT_NEEDS_OWNER_LABEL = "argus:needs-owner";
+export const needsOwnerLabel = (c) => (c && c.labels && isStr(c.labels.needsOwner) ? c.labels.needsOwner : DEFAULT_NEEDS_OWNER_LABEL);
 
 /**
  * The trusted set for contract `c` and the active owner account `owner` ({login, id}): the owner
@@ -149,7 +152,7 @@ export function trustedSet(c, owner) {
 }
 
 /** The skills a policy can allow (`policy.skills`). */
-export const SKILLS = ["sapu", "forge", "argus", "momus", "nemesis", "inspector", "dream"];
+export const SKILLS = ["sapu", "forge", "argus", "journey", "momus", "nemesis", "inspector", "dream"];
 /** Severities a pre-PR review command reports, highest first. */
 export const SEVERITIES = ["critical", "medium", "low"];
 
@@ -271,9 +274,11 @@ export function validate(c) {
   }
   need(c.mergeAfter === null || isStr(c.mergeAfter), "mergeAfter must be a command or null");
   if (c.labels && typeof c.labels === "object") {
-    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors"]);
+    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors", "needsOwner"]);
     for (const k of ["tierPrefix", "inProgress", "done"]) need(isStr(c.labels[k]), `labels.${k} must be a non-empty string`);
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
+    if ("needsOwner" in c.labels) need(isStr(c.labels.needsOwner), `labels.needsOwner must be a non-empty label name (omit it for ${DEFAULT_NEEDS_OWNER_LABEL})`);
+    need(needsOwnerLabel(c).toLowerCase() !== acceptedLabel(c).toLowerCase(), "labels.needsOwner must differ from the acceptance label");
   } else if (!(noTraces && !("labels" in c))) errs.push("labels must be an object");
   need(c.securityEpic === null || (Number.isInteger(c.securityEpic) && c.securityEpic > 0), "securityEpic must be an issue number or null");
   need(isStr(c.invariantDomains), "invariantDomains must be a non-empty string");

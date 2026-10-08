@@ -12,6 +12,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { SAPU_AGENT } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import {
   DEFAULT_ACCEPTED_LABEL,
+  DEFAULT_NEEDS_OWNER_LABEL,
+  SKILLS,
+  needsOwnerLabel,
   LADDER_AGENT,
   PROFILE_SECTIONS,
   SPECIALIST_ROLES,
@@ -1268,5 +1271,45 @@ describe("labels: required, except under traces none", () => {
     const { labels: _l, ...rest } = FIXTURE_CONTRACT as Record<string, unknown>;
     expect(validate({ ...rest, policy: { traces: "none" } })).toEqual([]);
     expect(validate(rest).join()).toMatch(/missing "labels"/);
+  });
+});
+
+describe("journey lane — the contract fields (2.9.0)", () => {
+  it("journey is a skill a policy can allow, and `allowed journey` follows the policy", () => {
+    expect(SKILLS).toContain("journey");
+    expect(validate({ ...clone(), policy: { skills: ["argus", "journey"] } })).toEqual([]);
+    const repo = join(root, "policy-journey");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["argus"] } }) });
+    const no = cli(repo, ["allowed", "journey"]);
+    expect(no.status).toBe(1);
+    expect(no.err).toMatch(/journey is not allowed in this repo/);
+  });
+
+  it("labels.needsOwner is optional; absent, the label is argus:needs-owner", () => {
+    expect(DEFAULT_NEEDS_OWNER_LABEL).toBe("argus:needs-owner");
+    expect(needsOwnerLabel(FIXTURE_CONTRACT)).toBe("argus:needs-owner");
+    const c = clone();
+    c.labels.needsOwner = "owner:decide";
+    expect(validate(c)).toEqual([]);
+    expect(needsOwnerLabel(c)).toBe("owner:decide");
+  });
+
+  it.each([
+    ["an empty label", ""],
+    ["a blank label", "  "],
+    ["a number", 3],
+    ["null", null],
+  ])("refuses labels.needsOwner as %s", (_what, v) => {
+    const c = clone();
+    c.labels.needsOwner = v;
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must be a non-empty label name/);
+  });
+
+  it("refuses a needs-owner label equal to the acceptance label, whatever the case", () => {
+    const c = clone();
+    c.labels.needsOwner = "Sapu:Accepted";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label/);
   });
 });
