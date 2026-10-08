@@ -125,15 +125,16 @@ export async function closeSessions(records, { js = null, runner = run, cliRunne
   }
   if (targets.length) await stop(targets, runner, graceMs, note);
   // The teardown's last word on them: their sockets (left behind by the CLI) go with the run.
-  if (sockets) {
-    for (const home of new Set(list.map((s) => s.home).filter((h) => typeof h === "string"))) {
-      try {
-        const dir = socketsDir(home);
-        if (fs.lstatSync(dir).isDirectory()) fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // none
-      }
-    }
+  if (sockets) for (const home of new Set(list.map((s) => s.home).filter((h) => typeof h === "string"))) removeSockets(home);
+}
+
+/** Removes the sockets directory of the CLI sessions whose HOME is `home` (socketsDir), once none of them runs: the CLI leaves its sockets behind. */
+export function removeSockets(home) {
+  try {
+    const dir = socketsDir(home);
+    if (fs.lstatSync(dir).isDirectory()) fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // none
   }
 }
 

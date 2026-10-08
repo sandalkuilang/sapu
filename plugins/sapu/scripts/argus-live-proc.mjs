@@ -347,3 +347,92 @@ export function runPids(groups, runner) {
   if (!out.length && foreign) throw new Error(`failed: the run's process listing cannot be trusted: process group ${foreign.pgid} (${foreign.name}) has processes, none of them the run's`);
   return out;
 }
+
+/** The process runs (one of another user's counts as running). */
+const pidAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return Boolean(e && e.code === "EPERM");
+  }
+};
+
+/** This process's start time (startTime), read once. */
+let ownStart;
+const ownStarted = (runner) => (ownStart ??= startTime(process.pid, runner) ?? null);
+
+/** A lock file whose content cannot be read as a holder is left this long before it counts as abandoned (a holder writes it whole, with link(2)). */
+const UNREADABLE_LOCK_MS = 5000;
+
+/**
+ * Runs `fn` while holding the lock file `file` (spec §9: the TOTP steps and each slot's calls), → what
+ * `fn` returns. The lock is created whole with link(2) (so it never exists half-written) holding
+ * `{pid, started, nonce}`. A lock whose holder no longer runs (its pid gone, or running with another
+ * start time), or older than `staleMs`, is taken over: renamed aside, and taken only when what was
+ * renamed is still the lock judged stale (else put back). A live holder is waited for, polling, up to
+ * `waitMs` → `failed: <file> is held by process <pid>`. Released (removed) only while it is still this
+ * call's own.
+ */
+export async function withFileLock(file, fn, { waitMs = 30_000, staleMs = Infinity, runner = run, poll = 50 } = {}) {
+  const mine = JSON.stringify({ pid: process.pid, started: ownStarted(runner), nonce: randomBytes(8).toString("hex") });
+  const end = Date.now() + waitMs;
+  for (;;) {
+    const tmp = tempBeside(file, mine, 0o600);
+    try {
+      fs.linkSync(tmp, file);
+      break;
+    } catch (e) {
+      if (!e || e.code !== "EEXIST") throw e;
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+    let raw = null;
+    let age = 0;
+    try {
+      raw = fs.readFileSync(file, "utf8");
+      age = Date.now() - fs.statSync(file).mtimeMs;
+    } catch {
+      continue; // released meanwhile
+    }
+    let holder = null;
+    try {
+      holder = JSON.parse(raw);
+    } catch {
+      holder = null;
+    }
+    const dead = holder && Number.isInteger(holder.pid) && holder.pid > 0 ? (holder.started ? !sameStart(startTime(holder.pid, runner), holder.started) : !pidAlive(holder.pid)) : age > UNREADABLE_LOCK_MS;
+    if (dead || age > staleMs) {
+      takeOver(file, raw);
+      continue;
+    }
+    if (Date.now() >= end) throw new Error(`failed: ${file} is held by process ${holder ? holder.pid : "unknown"}; try again`);
+    await sleep(poll);
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      if (fs.readFileSync(file, "utf8") === mine) fs.rmSync(file, { force: true });
+    } catch {
+      // taken over or removed: not this call's any more
+    }
+  }
+}
+
+/** Moves a stale lock `file` (whose content was `raw`) aside and removes it; one that changed meanwhile (another taker's fresh lock) is put back. */
+function takeOver(file, raw) {
+  const aside = `${file}.stale-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    fs.renameSync(file, aside);
+  } catch {
+    return; // gone meanwhile
+  }
+  try {
+    if (fs.readFileSync(aside, "utf8") !== raw) fs.linkSync(aside, file);
+  } catch {
+    // another lock is in place already: the one put aside was stale or is now superseded
+  } finally {
+    fs.rmSync(aside, { force: true });
+  }
+}

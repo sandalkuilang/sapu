@@ -3079,7 +3079,10 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
   const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
   const NODE = process.execPath;
-  const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
+  /** Marks this describe's fixture processes: other test files run the fixture at the same time, and theirs are not this describe's to kill or count. */
+  const MARK = "--from=argus-live-cli-tests";
+  const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)} ${MARK}${args ? ` ${args}` : ""}`;
+  const ours = (l: string) => l.includes(SERVER) && l.includes(MARK);
   const PW = "pw-v4lue-7Kq2";
   const saved = { ...process.env };
   const servers: Server[] = [];
@@ -3091,10 +3094,10 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   /** Reapers the tests started (killed after each test, whatever it asserted). */
   const reapers: number[] = [];
   afterEach(async () => {
-    // Whatever a failed assertion left: the fixture app's processes (only this file runs it) and the reapers.
+    // Whatever a failed assertion left: this describe's fixture processes (marked) and the reapers.
     for (const line of execFileSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "command="], { encoding: "utf8" }).split("\n")) {
       const m = line.trim().match(/^(\d+)\s+(.*)$/);
-      if (m && m[2].includes(SERVER)) reapers.push(Number(m[1]));
+      if (m && ours(m[2])) reapers.push(Number(m[1]));
     }
     for (const pid of reapers.splice(0)) {
       try {
@@ -3108,7 +3111,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   });
-  const fixtureProcesses = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(SERVER));
+  const fixtureProcesses = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter(ours);
   /** docker absent: the Docker client, the daemon's clock and the runtime gate have nothing to look at. */
   const noDocker = (argv: string[], opts: Obj = {}) => (argv[0] === "docker" ? { error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) } : run(argv, opts));
   const config = (data: string, over: (c: Obj) => void = () => {}) => {

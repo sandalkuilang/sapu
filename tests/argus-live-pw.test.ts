@@ -24,6 +24,8 @@ import { blockedSince, canonicalOrigin, createProxy, proxyAllows, startProxy } f
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
+import { base32Decode, loginCode, loginPlan, reserveStep, runCode, totp } from "../plugins/sapu/scripts/argus-live-login.mjs";
+// @ts-expect-error — plain ESM script without types
 import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
@@ -1086,5 +1088,104 @@ describe("argus-live per-slot config", () => {
     expect(slotDir(main, "20261009000000-0000abcd", 2)).toBe(join(main, ".argus/live/20261009000000-0000abcd/2"));
     expect(slotDir(main, "20261009000000-0000abcd", "up")).toBe(join(main, ".argus/live/20261009000000-0000abcd/up"));
     for (const bad of ["../x", "0", "x", -1, 1.5]) expect(() => slotDir(main, "20261009000000-0000abcd", bad), String(bad)).toThrow(/slot/);
+  });
+});
+
+describe("argus-live TOTP and login code", () => {
+  const LOGIN = join(__dirname, "../plugins/sapu/scripts/argus-live-login.mjs");
+  const RFC = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // base32 of "12345678901234567890"
+
+  it("base32Decode reads RFC 4648 in any case, ignoring padding and spaces, and refuses other characters", () => {
+    expect(base32Decode(RFC).toString()).toBe("12345678901234567890");
+    expect(base32Decode("gezd gnbv gy3t qojq gezd gnbv gy3t qojq").toString()).toBe("12345678901234567890");
+    expect(base32Decode("MZXW6===").toString()).toBe("foo");
+    expect(() => base32Decode("MZXW1")).toThrow(/base32/);
+  });
+
+  it("totp matches RFC 6238's SHA-1 vectors", () => {
+    expect(totp(RFC, Math.floor(59 / 30), 8)).toBe("94287082");
+    expect(totp(RFC, Math.floor(1111111109 / 30), 8)).toBe("07081804");
+    expect(totp(RFC, Math.floor(1234567890 / 30), 8)).toBe("89005924");
+    expect(totp(RFC, Math.floor(59 / 30))).toBe("287082");
+  });
+
+  it("reserveStep never hands out a step twice, across processes, and never writes the secret", async () => {
+    const file = join(tempDir(), "totp.json");
+    const at = 30_000 * 60_000_000 + 10_000; // 10 s into a step
+    const child = () =>
+      new Promise<string>((done) => {
+        const code = `import { reserveStep } from ${JSON.stringify(LOGIN)};
+const s = await reserveStep(${JSON.stringify(file)}, ${JSON.stringify(RFC)}, { now: () => ${at}, sleep: async () => {} });
+process.stdout.write(String(s));`;
+        const p = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "inherit"] });
+        let out = "";
+        p.stdout!.on("data", (d) => (out += d));
+        p.on("close", () => done(out));
+      });
+    const steps = (await Promise.all([child(), child()])).map(Number).sort();
+    expect(steps).toEqual([60_000_000, 60_000_001]);
+    const held = readFileSync(file, "utf8");
+    expect(held).not.toContain(RFC);
+    expect(Object.values(JSON.parse(held))).toEqual([60_000_001]);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("reserveStep waits for the next step when under 3 s remain", async () => {
+    const file = join(tempDir(), "totp.json");
+    const waits: number[] = [];
+    const step = await reserveStep(file, RFC, { now: () => 30_000 * 1000 + 28_500, sleep: async (ms: number) => void waits.push(ms) });
+    expect(step).toBe(1001);
+    expect(Math.max(...waits)).toBeGreaterThanOrEqual(1500);
+  });
+
+  it("reserveStep takes over a lock whose holder no longer runs", async () => {
+    const file = join(tempDir(), "totp.json");
+    writeFileSync(`${file}.lock`, JSON.stringify({ pid: 999_999, started: "Mon Jan 1 00:00:00 2001", nonce: "x" }));
+    expect(await reserveStep(file, RFC, { now: () => 30_000 * 7 + 1000, sleep: async () => {} })).toBe(7);
+    expect(existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  it("loginCode embeds the payload only as JSON, and the targets only through targetCode", () => {
+    const password = "'); process.exit(); ('";
+    const payload = { url: "http://localhost:41001/login", open: "getByRole('button', { name: 'Sign in' })", loggedIn: "getByRole('button', { name: 'Account' })", user: "buyer1@example.test", password, settleMs: 3000 };
+    const code = loginCode("credentials", payload);
+    const lines = code.split("\n").filter((l: string) => l.includes(password));
+    expect(lines).toHaveLength(1);
+    const line = lines[0].trim();
+    expect(line.startsWith("const P = ")).toBe(true);
+    expect(line.endsWith(";")).toBe(true);
+    expect(JSON.parse(line.slice("const P = ".length, -1))).toEqual(payload);
+    expect(code.startsWith("async page => {")).toBe(true);
+    expect(code).toContain('pg.getByRole("button", {"name": "Account"})');
+    expect(code).toContain('pg.getByRole("button", {"name": "Sign in"})');
+    for (const stage of ["otp", "probe", "observe"]) expect(loginCode(stage, { loggedIn: payload.loggedIn, code: "123456", url: payload.url, settleMs: 1 }).startsWith("async page => {")).toBe(true);
+    expect(() => loginCode("credentials", { ...payload, loggedIn: "page.evaluate(() => 1)" })).toThrow(/not a target/);
+    expect(() => loginCode("credentials", { ...payload, loggedIn: "e15" })).toThrow(/ref/);
+    expect(() => loginCode("eval", payload)).toThrow(/stage/);
+  });
+
+  it("loginPlan takes the role's own keys, else the top level, and resolves login_url on the base", () => {
+    const live = { base_url: "http://localhost:41001", login_url: "/login", logged_in: "getByRole('button', { name: 'Account' })", settle_ms: 4000, roles: { buyer: { users: [] }, clerk: { base_url: "http://localhost:41002", login_url: "/staff/login", login_open: "getByRole('button', { name: 'Sign in' })", logged_in: "getByText('Staff')" } } };
+    expect(loginPlan(live, "buyer")).toEqual({ url: "http://localhost:41001/login", base: "http://localhost:41001/", open: null, loggedIn: live.logged_in, settleMs: 4000 });
+    expect(loginPlan(live, "clerk")).toEqual({ url: "http://localhost:41002/staff/login", base: "http://localhost:41002/", open: "getByRole('button', { name: 'Sign in' })", loggedIn: "getByText('Staff')", settleMs: 4000 });
+  });
+
+  it("runCode runs a 0600 file through run-code, removes it, and reads the result; an error is thrown", async () => {
+    const { shim, calls } = makeShim();
+    const cwd = join(tempDir(), "1");
+    mkdirSync(join(cwd, ".playwright"), { recursive: true });
+    const home = join(tempDir(), "browser");
+    writeFileSync(`${shim}.queue`, `${JSON.stringify({ state: "in", origins: [] })}\n`);
+    expect(await runCode({ js: shim, session: "s-1-buyer.1", cwd, home, code: "async page => 1" })).toEqual({ state: "in", origins: [] });
+    const c = calls()[0];
+    expect(c.argv[0]).toBe("-s=s-1-buyer.1");
+    expect(c.argv[1]).toBe("run-code");
+    expect(c.argv[2]).toMatch(new RegExp(`^--filename=${join(cwd, ".playwright")}/run-[0-9a-f]{32}\\.js$`));
+    expect(readdirSync(join(cwd, ".playwright"))).toEqual([]);
+    const failing = join(tempDir(), "fail.mjs");
+    writeFileSync(failing, 'process.stdout.write("### Error\\nError: boom\\n"); process.exit(1);\n');
+    await expect(runCode({ js: failing, session: "s-1-buyer.1", cwd, home, code: "async page => 1" })).rejects.toThrow(/^failed: run-code: Error: boom$/);
+    rmSync(socketsDir(home), { recursive: true, force: true });
   });
 });

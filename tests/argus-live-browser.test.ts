@@ -2,9 +2,9 @@
 // through the pinned CLI: sessions recorded with their daemon and browser, isolated per account, and
 // the network block in layers (the run's proxy, host-resolver rules, the WebRTC flag) proven in Chrome.
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
@@ -16,6 +16,8 @@ import { ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfi
 import { closeSessions, runCli, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { commandLogin, login, loginPlan, proveLogins } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -70,7 +72,7 @@ const listen = <T extends Server | HttpServer>(s: T) => {
  * (started with startEntry and recorded), run.json with its origins and `allowOrigins`, the run's proxy,
  * and slot 1's directory with its CLI config. `down` runs after the test.
  */
-const browserRun = async ({ allowOrigins = [] as string[] } = {}) => {
+const browserRun = async ({ allowOrigins = [] as string[], app = {} as Record<string, string> } = {}) => {
   process.env.TMPDIR = tempDir();
   const r = liveRun();
   runIds.add(r.runId);
@@ -78,7 +80,7 @@ const browserRun = async ({ allowOrigins = [] as string[] } = {}) => {
   const cache = await listen(createNetServer((c) => c.on("error", () => {})));
   const web = await freePort();
   const data = join(tempDir(), "app_explore");
-  const appEnv = { PATH: process.env.PATH!, PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", CONTROL_TOKEN: "control-7", CACHE_URL: `tcp://127.0.0.1:${cache}` };
+  const appEnv = { PATH: process.env.PATH!, PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", CONTROL_TOKEN: "control-7", CACHE_URL: `tcp://127.0.0.1:${cache}`, ...app };
   expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: appEnv }).status).toBe(0);
   const groups: Obj[] = [];
   const entry = { name: "web", cmd: `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}`, env: appEnv, health: { url: `http://127.0.0.1:${web}/health` } };
@@ -219,6 +221,158 @@ describe("argus-live browser — sessions and network layers", () => {
     const signals = (await b.call(s.name, "eval", "--", "() => JSON.stringify(window.__argusSignals)")).stdout;
     expect(signals).toContain("Order placed");
     expect(signals).toContain("status");
+  }, 120_000);
+});
+
+describe("argus-live logins", () => {
+  const RFC = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+  const LOGIN = join(__dirname, "../plugins/sapu/scripts/argus-live-login.mjs");
+  const ACCOUNT = "getByRole('button', { name: 'Account' })";
+  /** The fixture's login variants as role configs, on the run's base URL. */
+  const config = (b: Obj, settle = 5000) => ({
+    base_url: b.base,
+    login_url: "/login",
+    logged_in: ACCOUNT,
+    settle_ms: settle,
+    login_spacing_ms: 0,
+    roles: {
+      anon: {},
+      buyer: { users: [{ user: "buyer1@example.test", password: PW }, { user: "buyer2@example.test", password: PW }] },
+      clerk: { users: [{ user: "clerk1@example.test", password: PW, totp_secret: RFC }] },
+      twostep: { login_url: "/login/two-step", users: [{ user: "buyer2@example.test", password: PW }] },
+      modal: { login_url: "/", login_open: "getByRole('button', { name: 'Sign in' })", users: [{ user: "clerk2@example.test", password: PW }] },
+      admin: { login: { command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --login-state clerk2@example.test` } },
+    },
+  });
+  /** Signs `account` in as `user` by `role`'s plan, in a session opened for it (or `session` when given). */
+  const signIn = async (b: Obj, role: string, account: string, user: string, { password = PW, totpSecret = null as string | null, settle = 5000, session = null as Obj | null } = {}) => {
+    const s = session ?? (await b.open(account));
+    const res = await login({ main: b.main, runId: b.runId, session: s.name, account, user, password, totpSecret, plan: loginPlan(config(b, settle), role), js: cli.js, home: b.home, cwd: b.dir });
+    return { s, res };
+  };
+  const stats = async (b: Obj) => (await (await fetch(`${b.base}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
+
+  it("plain, two-step, modal and TOTP logins succeed", async () => {
+    const b = await browserRun();
+    const done = [
+      await signIn(b, "buyer", "buyer.1", "buyer1@example.test"),
+      await signIn(b, "twostep", "twostep.1", "buyer2@example.test"),
+      await signIn(b, "modal", "modal.1", "clerk2@example.test"),
+      await signIn(b, "clerk", "clerk.1", "clerk1@example.test", { totpSecret: RFC }),
+    ];
+    for (const { s, res } of done) {
+      expect(res, s.account).toMatchObject({ ok: true });
+      await b.call(s.name, "goto", "--", `${b.base}/`);
+      expect(await b.text(s.name), s.account).toContain("Account");
+    }
+    const st = await stats(b);
+    expect(st["POST /login/otp"]).toBe(1);
+    expect(existsSync(join(b.main, ".argus/live", b.runId, "totp.json"))).toBe(true);
+    expect(readFileSync(join(b.main, ".argus/live", b.runId, "totp.json"), "utf8")).not.toContain(RFC);
+    expect(readdirSync(join(b.dir, ".playwright")).filter((f) => f.startsWith("run-"))).toEqual([]);
+  }, 180_000);
+
+  it("the login page is opened fresh each time", async () => {
+    const b = await browserRun();
+    const one = await signIn(b, "buyer", "buyer.1", "buyer1@example.test");
+    const two = await signIn(b, "buyer", "buyer.1", "buyer1@example.test", { session: one.s });
+    expect([one.res.ok, two.res.ok]).toEqual([true, true]);
+    expect((await stats(b))["GET /login"]).toBe(2);
+  }, 120_000);
+
+  it("no TOTP step is reused across two processes", async () => {
+    const b = await browserRun();
+    const sessions = [await b.open("clerk.1"), await b.open("clerk.2")];
+    const plan = loginPlan(config(b), "clerk");
+    const child = (s: Obj) =>
+      new Promise<string>((done) => {
+        const args = { main: b.main, runId: b.runId, session: s.name, account: s.account, user: "clerk1@example.test", password: PW, totpSecret: RFC, plan, js: cli.js, home: b.home, cwd: b.dir };
+        const code = `import { login } from ${JSON.stringify(LOGIN)};
+process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
+        const p = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "inherit"] });
+        let out = "";
+        p.stdout!.on("data", (d) => (out += d));
+        p.on("close", () => done(out));
+      });
+    const results = (await Promise.all(sessions.map(child))).map((o) => JSON.parse(o));
+    expect(results.map((r) => r.ok)).toEqual([true, true]);
+    expect((await stats(b))["POST /login/otp"]).toBe(2);
+  }, 180_000);
+
+  it("a failed login is recorded and never retried", async () => {
+    const b = await browserRun();
+    const first = await signIn(b, "buyer", "buyer.2", "buyer2@example.test", { password: "wrong", settle: 2000 });
+    expect(first.res).toMatchObject({ ok: false, reason: "rejected" });
+    expect(readRun(b.main).loginFailed).toEqual({ "buyer/buyer2@example.test": "rejected" });
+    const before = await stats(b);
+    const again = await signIn(b, "buyer", "buyer.2", "buyer2@example.test", { session: first.s, settle: 2000 });
+    expect(again.res).toEqual({ ok: false, reason: "rejected", origins: [] });
+    const after = await stats(b);
+    expect([after["GET /login"], after["POST /login"]]).toEqual([before["GET /login"], before["POST /login"]]);
+  }, 120_000);
+
+  it("a 429 is a rate-limit, not a rejection", async () => {
+    const b = await browserRun();
+    for (let i = 0; i < 3; i++) {
+      const page = await fetch(`${b.base}/login`);
+      const pre = (page.headers.get("set-cookie") ?? "").split(";")[0];
+      const csrf = /name="csrf" value="([0-9a-f]+)"/.exec(await page.text())![1];
+      await fetch(`${b.base}/login`, { method: "POST", headers: { cookie: pre, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, user: "buyer1@example.test", password: "wrong" }), redirect: "manual" });
+    }
+    const { res } = await signIn(b, "buyer", "buyer.1", "buyer1@example.test", { settle: 2000 });
+    expect(res).toMatchObject({ ok: false, reason: "rate-limited" });
+  }, 120_000);
+
+  it("login traffic is cleared", async () => {
+    const b = await browserRun();
+    const { s, res } = await signIn(b, "buyer", "buyer.1", "buyer1@example.test");
+    expect(res.ok).toBe(true);
+    for (const args of [["requests", "--static"], ["requests"], ["console", "debug"]]) {
+      const out = (await b.call(s.name, ...args)).stdout;
+      expect(out, args.join(" ")).not.toMatch(/\/login|example\.test/);
+    }
+    // The same session's next page is listed: the lists were cleared, not switched off.
+    await b.call(s.name, "goto", "--", `${b.base}/orders/new`);
+    expect((await b.call(s.name, "requests", "--static")).stdout).toContain("/orders/new");
+  }, 120_000);
+
+  it("a login command's storage state signs the session in", async () => {
+    const b = await browserRun();
+    const state = await commandLogin({ role: "admin", live: config(b), env: b.appEnv, worktree: b.wt, origins: [b.base], dir: b.dir });
+    expect(statSync(state).mode & 0o777).toBe(0o600);
+    const s = await b.open("admin.1", state);
+    expect(existsSync(state)).toBe(false);
+    await b.call(s.name, "goto", "--", `${b.base}/`);
+    expect(await b.text(s.name)).toContain("Account");
+    // A state for another host is refused.
+    const other = { ...config(b), roles: { admin: { login: { command: `echo '{"cookies":[{"name":"sid","value":"x","domain":"outside.test","path":"/"}],"origins":[]}'` } } } };
+    await expect(commandLogin({ role: "admin", live: other, env: b.appEnv, worktree: b.wt, origins: [b.base], dir: b.dir })).rejects.toThrow(/cookie for outside\.test, not a host of the run/);
+  }, 120_000);
+
+  it("proveLogins proves every account and closes its sessions", async () => {
+    const b = await browserRun();
+    const lines: string[] = [];
+    const live = config(b);
+    const proven = await proveLogins(b.main, b.runId, { live, origins: [b.base], js: cli.js, home: b.home, proxyPort: b.proxy.port, chrome, env: b.appEnv, worktree: b.wt, say: (l: string) => lines.push(l) });
+    expect(proven).toBe(6);
+    expect(lines).toEqual(["buyer.1", "buyer.2", "clerk.1", "twostep.1", "modal.1", "admin.1"].map((a) => `login ${a}: proven`));
+    expect(readRun(b.main).sessions).toEqual([]);
+    expect(existsSync(socketsDir(b.home))).toBe(false);
+    const left = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" });
+    expect(left).not.toContain(`cliDaemon.js ${b.runId}-up-`);
+  }, 240_000);
+
+  it("proveLogins refuses a login that redirects to another origin", async () => {
+    let hits = 0;
+    const counting = createHttpServer((_q, res) => res.end("x"));
+    counting.on("connection", () => (hits += 1));
+    const other = await listen(counting);
+    const b = await browserRun({ app: { LOGIN_REDIRECT: `http://127.0.0.1:${other}/` } });
+    const live = { ...config(b, 2000), roles: { buyer: { users: [{ user: "buyer1@example.test", password: PW }] } } };
+    await expect(proveLogins(b.main, b.runId, { live, origins: [b.base], js: cli.js, home: b.home, proxyPort: b.proxy.port, chrome, env: b.appEnv, worktree: b.wt })).rejects.toThrow(`refused: the login of buyer.1 reached http://127.0.0.1:${other}, outside the run's origins`);
+    expect(hits).toBe(0);
+    expect(readRun(b.main).sessions).toEqual([]);
+    expect(existsSync(socketsDir(b.home))).toBe(false);
   }, 120_000);
 });
 

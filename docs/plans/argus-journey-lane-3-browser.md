@@ -583,7 +583,7 @@ Interfaces:
   <role>.<k> reached <origin>, outside the run's origins`; then the session is closed. Any failure →
   `refused: <role>.<k> could not sign in (<reason>)`, never the password.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   `tests/argus-live-pw.test.ts`, describe "argus-live TOTP and login code":
   - "totp matches RFC 6238's SHA-1 vectors": secret base32 of `12345678901234567890`
     (`GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`), 8 digits: T=59 → `94287082`, 1111111109 → `07081804`,
@@ -611,8 +611,8 @@ Interfaces:
   - "proveLogins refuses a login that redirects to another origin": `LOGIN_REDIRECT` →
     `http://127.0.0.1:<other>/` → `refused: the login of buyer.1 reached http://127.0.0.1:<other>`;
     the counting server saw 0 hits.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live logins — plain, two-step, modal, TOTP and command — and the proving logins`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live logins — plain, two-step, modal, TOTP and command — and the proving logins`.
 
 ---
 
@@ -1126,6 +1126,36 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     session again when its daemon is not in ps or run.json cannot take the record. `processTable` rows
     carry `ppid`.
   - The signal script records a toast removed after 1 s (read through the wrapper's own `eval`).
+
+- **Task 8.** Probed with 0.1.22: `run-code --filename=<file>` prints `### Result` and the function's
+  JSON on one line, then `### Ran Playwright code` echoing the code (read by the wrapper, never shown),
+  then `### Page`; a thrown error prints `### Error` and its message and exits 1; the function runs
+  without `require`. `requests --clear` and `console --clear` exist. Changes:
+  - A lock helper `withFileLock(file, fn, {waitMs, staleMs})` in `-proc.mjs` (shared with Task 9's
+    `withSlotLock`): the lock is created whole with link(2) holding `{pid, started, nonce}`; a holder that
+    no longer runs (pid gone or another start time), or one older than `staleMs`, is taken over by
+    renaming it aside and keeping it only when it is still the lock judged stale; released only while
+    it is still the caller's. `reserveStep` records the step under it and waits for the step outside it.
+  - `loginCode`'s payload keeps the target strings (`loggedIn`, `open`) as data in `P`; they also become
+    `(pg) => <targetCode>` functions. Stages answer `{state: "in"|"otp"|"failed"|"no-form"|"error",
+    status429, lockout, origins, error?}`; `origins` holds every request's and every WebSocket's origin
+    of the context's pages (popups included; `ws:`/`wss:` as `http:`/`https:`). The one-time-code
+    fallback also reads `type=tel` and `type=number` inputs; the lockout text is
+    `/too many|\blocked\b|try again later/i`. `observe` returns `{signals, loggedIn, url, aria, tabs}`
+    (the wrapper hashes `url` + `aria`: the function has no `require`).
+  - `loginPlan(live, role)` (exported) gives `{url, base, open, loggedIn, settleMs}`. `login` takes
+    `{main, runId, session, account, user, password, totpSecret, plan, js, home, cwd}` and answers
+    `{ok, reason?, origins}`; reasons also `no-totp-secret` and `error: <first line>`. A CLI that fails
+    (a session gone) throws and records nothing, so a browser crash never locks an account out.
+  - `commandLogin` also takes `origins` (cookie domains must be their hosts; storage origins run
+    origins) and `dir`; it throws `failed: the login command of <role> …`, never quoting stdout.
+  - `proveLogins` also takes `proxyPort`, `chrome`, `env` and `worktree`, writes slot `up`'s CLI config,
+    says `login <role>.<k>: proven`, and after each login closes the session, drops its record from
+    run.json and removes its sockets directory (`removeSockets` in `-cli.mjs`) unless another recorded
+    session shares that HOME.
+  - Tests: the CLI describe of `tests/argus-live.test.ts` killed and counted every process running the
+    fixture, which the browser tests now run at the same time: its fixture commands carry a marker
+    argument and only those are killed and counted.
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
