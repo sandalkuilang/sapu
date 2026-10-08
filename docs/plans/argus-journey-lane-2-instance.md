@@ -247,6 +247,9 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   `cliPluginsExtraDirs`); DOCKER_HOST = the owner's current context's socket (`docker context
   inspect`), refused unless `unix://`. Without docker, only DOCKER_CONFIG. `instanceEnv` and
   `startEntry` refuse DOCKER_CONFIG, DOCKER_HOST and DOCKER_CONTEXT in env, pass_env and an entry's env.
+  With `compose_files`, `instanceEnv` sets COMPOSE_FILE = the files joined with ":" (the instance's own
+  Compose commands read only the checked files, not a tracked override) and refuses COMPOSE_FILE or
+  COMPOSE_PATH_SEPARATOR in env, pass_env or a start entry's env.
 - `export function checkCompose({worktree, env, ports, main, config, contract, secrets, runner})` →
   the service names of every project (`[]` without a Compose file). In order: (1) every command of
   `config` (setup, facts, mail, triggers, store_check, reset, start cmd/stop/health.cmd, role login
@@ -272,14 +275,15 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   refused off the run's ports). Docker missing or failing → refused, secrets masked.
 - `export function daemonNow({env, runner})` → the daemon's clock, epoch ms (`docker info --format
   {{json .SystemTime}}`), or null without docker or a daemon.
-- `export function checkDockerRuntime({since, env, main, worktree, runner, skewMs})`: the runtime gate
+- `export function checkDockerRuntime({since, env, main, worktree, ports, runner, skewMs})`: the runtime gate
   for what static scans cannot see. Lists every container (`docker ps -aq` + `inspect`), volume and
   network; one created or started since `since` (epoch ms from daemonNow, minus `skewMs` = 1 s) must carry
   `com.docker.compose.project=<COMPOSE_PROJECT_NAME>` (a volume may be a new anonymous one); such a
-  container may mount only the run's volumes, join only its networks (or none), and bind-mount nothing
-  the Compose check refuses. Then `docker events --since <since - skew> --until <daemonNow>` (container,
+  container may mount only the run's volumes, join only its networks (or none), bind-mount nothing
+  the Compose check refuses, not be privileged (`HostConfig.Privileged`), and publish only `ports`
+  (`HostConfig.PortBindings`; a random host port refused). Then `docker events --since <since - skew> --until <daemonNow>` (container,
   volume, network): a container action (create, start, restart, kill, stop, die, destroy, pause,
-  unpause, update, rename, exec_create, exec_start) on a container without the run's label, unless it
+  unpause, update, rename, exec_create, exec_start, archive-path, extract-to-dir) on a container without the run's label, unless it
   is that container's own healthcheck exec (`Config.Healthcheck.Test`, CMD or CMD-SHELL), or a
   volume/network destroy whose name is not `<project>_…` and which was not created in the window →
   refused. No docker or no daemon → nothing to check; any other docker failure → refused.
@@ -299,7 +303,8 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   another listener of the same processes is allowed; anything else → `refused: <process> (<pid>)
   connects to <host:port>`. Unix: a peer path outside `runDirs` that is a datastore socket (name,
   default directory, a directory the owner's env files name for a socket, or inside MAIN; on macOS a
-  peer lsof cannot see is named by `netstat -an -f unix`, whose addresses are lsof's) →
+  peer lsof cannot see is named by `netstat -an -f unix`, whose addresses are lsof's; a netstat that
+  fails there → `failed: …`) →
   `refused: … connects to the socket <path>`. `lsof` exiting 1 with anything but warnings on stderr,
   or (first sample) none of `expectListen` listening → `failed: …`. Missing both tools → `refused:
   neither lsof nor ss is available`. `waitHealth({..., egress})` runs a one-sample check between
@@ -389,7 +394,7 @@ Interfaces:
   a refusal → `down`. Every `waitHealth` of steps 6 and 7 gets `egress: () => checkEgress({...same,
   pids: groupPids(<the groups so far>), samples: 1})`. `up` records `daemonNow({env})` (else
   `Date.now()`) as it starts, in run.json. After each egress check (step 8, `upFresh`, `renew`),
-  `checkDockerRuntime({since: <that recorded start>, env, main, worktree})`; a refusal → `down`. `up` step 2's "no
+  `checkDockerRuntime({since: <that recorded start>, env, main, worktree, ports})`; a refusal → `down`. `up` step 2's "no
   `lsof`/`ss`" refusal can reuse that message.
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
   1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role

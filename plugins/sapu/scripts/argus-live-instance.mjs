@@ -454,6 +454,9 @@ export function makeHome(main, runId) {
 
 /** What every command inherits from the session: nothing that names an account or a credential. */
 const BASE_ENV = ["PATH", "USER", "SHELL", "TMPDIR", "LANG"];
+/** What decides which Compose files Compose reads: with `compose_files`, the run's alone. */
+const COMPOSE_FILE_VARS = ["COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"];
+
 /** Variables the run sets itself (or, DOCKER_CONTEXT, keeps unset): `env`, `pass_env` and a start entry's env may not name them. */
 const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT"];
 
@@ -462,10 +465,22 @@ const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME", "DOCKER_CONFIG", "DOCKER_HOST",
  * (when set), the `pass_env` names (when set), every `env` entry expanded, `COMPOSE_PROJECT_NAME =
  * argus-<runId>`, `HOME` = the run's home, and `docker` (dockerEnv's DOCKER_CONFIG and DOCKER_HOST).
  * No owner home, so no tool picks up the owner's cloud, Git or registry credentials. `env` and
- * `pass_env` may not name RUN_ENV.
+ * `pass_env` may not name RUN_ENV. With `compose_files`, COMPOSE_FILE = those files joined with ":",
+ * so the instance's own Compose commands read exactly the files checkCompose checked (not a tracked
+ * `compose.override.yaml` beside them); `env`, `pass_env` and a start entry's env may not then set
+ * COMPOSE_FILE or COMPOSE_PATH_SEPARATOR.
  */
 export function instanceEnv({ config, ports, secrets, runId, home, docker = {} }) {
   runIdOk(runId);
+  const listed = Array.isArray(config.compose_files) && config.compose_files.length ? config.compose_files : null;
+  if (listed) {
+    const why = "when compose_files is set (the run sets COMPOSE_FILE from it)";
+    for (const k of COMPOSE_FILE_VARS) {
+      if (k in (config.env ?? {})) throw new Error(`refused: env may not set ${k} ${why}`);
+      if ((config.pass_env ?? []).includes(k)) throw new Error(`refused: pass_env may not name ${k} ${why}`);
+      for (const e of config.start ?? []) if (e.env && k in e.env) throw new Error(`refused: start entry ${e.name} may not set ${k} ${why}`);
+    }
+  }
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && (BASE_ENV.includes(k) || k.startsWith("LC_"))) env[k] = v;
   for (const k of config.pass_env ?? []) {
@@ -479,6 +494,7 @@ export function instanceEnv({ config, ports, secrets, runId, home, docker = {} }
   env.COMPOSE_PROJECT_NAME = `argus-${runId}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   env.HOME = home;
   for (const k of ["DOCKER_CONFIG", "DOCKER_HOST"]) if (typeof docker[k] === "string") env[k] = docker[k];
+  if (listed) env.COMPOSE_FILE = listed.join(":");
   return env;
 }
 
@@ -1510,8 +1526,8 @@ export function daemonNow({ env, runner = run }) {
   return Number.isFinite(t) ? t : null;
 }
 
-/** Container actions on an object the run does not own that the gate refuses (an exec, a stop, a removal…). */
-const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop", "die", "destroy", "pause", "unpause", "update", "rename", "exec_create", "exec_start"]);
+/** Container actions on an object the run does not own that the gate refuses (an exec, a stop, a removal, a `docker cp`…). */
+const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop", "die", "destroy", "pause", "unpause", "update", "rename", "exec_create", "exec_start", "archive-path", "extract-to-dir"]);
 
 /** The command line a container's healthcheck execs, as `docker events` spells it, or null. */
 function healthcheckCmd(c) {
@@ -1531,7 +1547,8 @@ const PROJECT_LABEL = "com.docker.compose.project";
  * start of `up`; `skewMs` earlier, for the daemon's clock and its whole-second volume times) must
  * carry `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, a volume may instead be a new anonymous
  * one; and such a container may mount only the run's volumes (or new anonymous ones), join only the
- * run's networks (or none), and bind-mount nothing hostPathRefusal refuses. And the daemon's events
+ * run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and publish
+ * only the run's `ports` (never a random one), whatever file or script started it. And the daemon's events
  * from `since` to its own now: a container action (CONTAINER_ACTIONS: an exec, kill, stop, die,
  * destroy…) on a container without the run's label, other than that container's own healthcheck exec,
  * or the removal of a volume or network neither named `<project>_…` nor created in the window, is
@@ -1539,7 +1556,7 @@ const PROJECT_LABEL = "com.docker.compose.project";
  * from daemonNow. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no daemon
  * running, means nothing was created through it. Throws `refused: …` naming the object.
  */
-export function checkDockerRuntime({ since, env, main, worktree, runner = run, skewMs = 1000 }) {
+export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000 }) {
   const project = env.COMPOSE_PROJECT_NAME;
   const docker = (args) => runner(["docker", ...args], { env, timeout: 60_000 });
   const failed = (args, r) => new Error(`refused: docker ${args.join(" ")} failed: ${tail((r.error && r.error.message) || r.stderr || `exit ${r.status}`)}`);
@@ -1576,11 +1593,23 @@ export function checkDockerRuntime({ since, env, main, worktree, runner = run, s
   const runVolumes = new Set(volumes.filter(volumeOk).map((v) => v.Name));
   const runNetworks = new Set(networks.filter((n) => ours(n.Labels)).map((n) => n.Name));
   const at = { worktree, root: fs.realpathSync.native(worktree), realMain: fs.realpathSync.native(main), sockets: knownSockets(env) };
+  const runPorts = new Set(Object.values(ports).map(Number));
   const containers = inspect(["inspect", "--type", "container"], first.stdout.split("\n").map((s) => s.trim()).filter(Boolean));
   for (const c of containers) {
     if (!recent(c.Created) && !recent(c.State && c.State.StartedAt)) continue;
     const name = String(c.Name || c.Id).replace(/^\//, "");
     if (!ours(c.Config && c.Config.Labels)) throw new Error(`refused: container ${name} was created or started during the cycle and is not of the run's Compose project ${project}`);
+    const host = c.HostConfig || {};
+    if (host.Privileged) throw new Error(`refused: container ${name} is privileged`);
+    for (const [target, binds] of Object.entries(host.PortBindings || {})) {
+      for (const b of binds || []) {
+        const p = String((b && b.HostPort) || "");
+        if (!p) throw new Error(`refused: container ${name} publishes container port ${target} on a random host port`);
+        const m = p.match(/^(\d+)(?:-(\d+))?$/);
+        for (let n = Number(m ? m[1] : NaN); m && n <= Number(m[2] ?? m[1]); n++) if (!runPorts.has(n)) throw new Error(`refused: container ${name} publishes host port ${n}, which is not one of this run's ports`);
+        if (!m) throw new Error(`refused: container ${name} publishes host port ${p}, which is not one of this run's ports`);
+      }
+    }
     for (const m of c.Mounts ?? []) {
       if (m.Type === "volume" && !runVolumes.has(m.Name)) throw new Error(`refused: container ${name} mounts volume ${m.Name}, which is not the run's`);
       const no = m.Type === "bind" ? hostPathRefusal(m.Source, at) : null;
@@ -1783,12 +1812,17 @@ const sockAddr = (a) => String(a).toLowerCase().replace(/^0x/, "").replace(/^0+(
 /**
  * `netstat -an -f unix` (macOS, BSD) → {address: path} for every bound socket, every user's: lsof sees
  * only the sockets of processes it may inspect, so a server another user runs is named here. Its
- * Address column is the address lsof prints (checked against lsof on macOS). Empty when netstat fails.
+ * Address column is the address lsof prints (checked against lsof on macOS). On macOS a netstat that
+ * fails is `failed: …` (another user's server would go unseen); elsewhere, where `-f unix` is not
+ * netstat's, it maps nothing.
  */
 function netstatUnix(runner) {
   const r = runner(["netstat", "-an", "-f", "unix"]);
   const map = new Map();
-  if (r.error || r.status !== 0) return map;
+  if (r.error || r.status !== 0) {
+    if (process.platform !== "darwin") return map;
+    throw new Error(`failed: netstat -an -f unix ${r.error ? r.error.message : `exited ${r.status}: ${tail(r.stderr)}`}`);
+  }
   for (const line of String(r.stdout || "").split("\n")) {
     const m = line.trim().match(/^([0-9a-f]+)\s+\S+\s+\d+\s+\d+\s+[0-9a-f]+\s+[0-9a-f]+\s+[0-9a-f]+\s+[0-9a-f]+\s+(\/.*)$/i);
     if (m) map.set(sockAddr(m[1]), m[2]);

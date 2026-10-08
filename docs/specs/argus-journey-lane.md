@@ -353,7 +353,8 @@ to; `mail` prints `[{to, subject, text}]` as JSON; `allow_origins` are full orig
 from (a font CDN); `reserved_ports` are the repo's dev and E2E ports, never allocated; `fixtures` holds
 the files `upload` may use; each role may also set `base_url`, `login_url`, `logged_in`,
 `login_open`. An optional `compose_files` lists the Compose files the instance uses (paths from the
-repo's root, tracked, no `..`), in Compose's `-f` order: only those are checked (step 5).
+repo's root, tracked, no `..`), in Compose's `-f` order: only those are checked (step 5), and the run
+sets `COMPOSE_FILE` from them (step 3), so its own Compose commands read only those too.
 
 `confirmed` is the owner's statement, asked by `/sapu:init` in these words: `mocks` — every outbound
 integration (payments, email, messaging, identity checks) runs in test or mock mode under `env`,
@@ -392,7 +393,8 @@ defence in depth and not enforcement:
   cycle, and every exec, stop, kill or removal of one, the owner's included: what the owner does on the
   same daemon meanwhile (other than a container's own healthcheck) ends the cycle.
 - Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
-  sockets of servers other users run; its addresses are the ones lsof prints), or by `ss -xp` on Linux;
+  sockets of servers other users run; its addresses are the ones lsof prints; a netstat that fails
+  there fails the check), or by `ss -xp` on Linux;
   with only Linux's `lsof`, a client's peer is not named.
 - Nothing is enforced by the operating system. A sandbox that denies the instance every other
   connection (`sandbox-exec` on macOS, a network namespace on Linux) is future work.
@@ -424,7 +426,9 @@ defence in depth and not enforcement:
    else: tcp, ssh). Private images are therefore pulled beforehand by the owner. Anything else a tool
    genuinely needs from the owner's home (an npm cache) is named in `pass_env`. `env`, `pass_env` and
    a start entry's env may not name `HOME`, `COMPOSE_PROJECT_NAME`, `DOCKER_CONFIG`, `DOCKER_HOST` or
-   `DOCKER_CONTEXT`.
+   `DOCKER_CONTEXT`. With `live.compose_files`, `COMPOSE_FILE` = those files joined with `:` (so a
+   tracked `compose.override.yaml` beside them is not read), and none of them may set `COMPOSE_FILE`
+   or `COMPOSE_PATH_SEPARATOR`.
 4. **Worktree.** A linked worktree at HEAD **outside** the repo (`$TMPDIR/sapu-live/<repo>-<run>`),
    so no lookup that walks up the directory tree finds the repo's own `.env`. `$TMPDIR/sapu-live` is
    the user's own directory, mode 0700, never a symlink, and never inside the repo. `live.setup` runs
@@ -538,10 +542,11 @@ defence in depth and not enforcement:
    began (read from the daemon's own clock, `docker info`, so a second's tolerance is enough) must
    carry the label
    `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); such
-   a container may mount only the run's volumes, join only the run's networks (or none), and bind-mount
-   nothing step 5 refuses. And the daemon's events from then to its now (`docker events`) may hold no
+   a container may mount only the run's volumes, join only the run's networks (or none), bind-mount
+   nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a random one). And the daemon's events from then to its now (`docker events`) may hold no
    action on an object the run does not own: an exec (other than the container's own healthcheck),
-   kill, stop, die, removal or other change of a container without the run's label, or the removal of
+   a copy in or out (`docker cp`), kill, stop, die, removal or other change of a container without
+   the run's label, or the removal of
    a volume or network neither named `<project>_…` nor created during the cycle. Otherwise `down` and
    refuse, naming the object. Repeated at every `renew`,
    and at `down`, where a finding is reported but never stops the teardown. No docker, or no daemon

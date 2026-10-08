@@ -1931,6 +1931,29 @@ describe("argus-live instance — Compose and egress checks", () => {
       const failing = () => ({ status: 1, stdout: "", stderr: "context not found" });
       expect(message(() => dockerEnv({ home: tempDir(), runner: failing, ownerEnv: { HOME: tempDir() } }))).toMatch(/^refused: docker context inspect failed: context not found/);
     });
+    describe("compose_files reaches the instance's own Compose commands", () => {
+      const base = { ports: {}, secrets: {}, runId: "20990101000000-0123abcd", home: "/h" };
+      it("COMPOSE_FILE is the listed files joined with \":\", so a tracked compose.override.yaml is not read at runtime", () => {
+        const wt = realpathSync(tempDir());
+        execFileSync("git", ["-C", wt, "init", "-q"]);
+        writeFileSync(join(wt, "compose.yaml"), "services: {}\n");
+        writeFileSync(join(wt, "compose.override.yaml"), "services: {}\n");
+        execFileSync("git", ["-C", wt, "add", "."]);
+        expect(instanceEnv({ ...base, config: { env: {}, pass_env: [], compose_files: ["compose.yaml"] } }).COMPOSE_FILE).toBe("compose.yaml");
+        expect(instanceEnv({ ...base, config: { compose_files: ["compose.yaml", "deploy/stack.yml"] } }).COMPOSE_FILE).toBe("compose.yaml:deploy/stack.yml");
+        expect(instanceEnv({ ...base, config: { env: {} } }).COMPOSE_FILE).toBeUndefined();
+      });
+      it("compose_files together with COMPOSE_FILE or COMPOSE_PATH_SEPARATOR in env, pass_env or a start entry's env is refused", () => {
+        const cf = { compose_files: ["compose.yaml"] };
+        for (const k of ["COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"]) {
+          expect(message(() => instanceEnv({ ...base, config: { ...cf, env: { [k]: "x" } } }))).toBe(`refused: env may not set ${k} when compose_files is set (the run sets COMPOSE_FILE from it)`);
+          expect(message(() => instanceEnv({ ...base, config: { ...cf, pass_env: [k] } }))).toBe(`refused: pass_env may not name ${k} when compose_files is set (the run sets COMPOSE_FILE from it)`);
+          expect(message(() => instanceEnv({ ...base, config: { ...cf, start: [{ name: "db", cmd: "x", env: { [k]: "x" } }] } }))).toBe(`refused: start entry db may not set ${k} when compose_files is set (the run sets COMPOSE_FILE from it)`);
+        }
+        expect(message(() => instanceEnv({ ...base, config: { env: { COMPOSE_FILE: "x.yml" } } }))).toBe("ok");
+      });
+    });
+
     it("instanceEnv carries them, and refuses DOCKER_CONFIG, DOCKER_HOST or DOCKER_CONTEXT in env or pass_env", () => {
       const base = { ports: {}, secrets: {}, runId: "20990101000000-0123abcd", home: "/h" };
       const env = instanceEnv({ ...base, config: { env: {}, pass_env: [] }, docker: { DOCKER_CONFIG: "/h/.docker", DOCKER_HOST: "unix:///s.sock" } });
@@ -2011,6 +2034,18 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toMatch(why as RegExp);
     });
 
+    it("a run container that is privileged, or publishes a host port that is not the run's (or a random one), is refused", () => {
+      const run = (hc: Obj) => {
+        const s = state();
+        s.containers[0].HostConfig = hc;
+        return gate(s, { ports: { pg: 41001, web: 41002 } });
+      };
+      expect(run({ Privileged: false, PortBindings: { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "41001" }] } })).toBe("ok");
+      expect(run({ Privileged: true })).toMatch(/^refused: container argus-run1-db-1 is privileged$/);
+      expect(run({ PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "5432" }] } })).toMatch(/^refused: container argus-run1-db-1 publishes host port 5432, which is not one of this run's ports$/);
+      expect(run({ PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "" }] } })).toMatch(/^refused: container argus-run1-db-1 publishes container port 5432\/tcp on a random host port$/);
+    });
+
     it("a run container bind-mounting the main checkout is refused; one on none, or binding the worktree, passes", () => {
       const main = realpathSync(tempDir());
       const worktree = realpathSync(tempDir());
@@ -2037,6 +2072,8 @@ describe("argus-live instance — Compose and egress checks", () => {
       ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which is not the run's$/],
       ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
       ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which is not the run's$/],
+      ["a copy out of the owner's container (docker cp)", ev("container", "archive-path", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker archive-path hit container owner-db/],
+      ["a copy into the owner's container (docker cp)", ev("container", "extract-to-dir", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker extract-to-dir hit container owner-db/],
     ])("refuses %s", (_what, event, why) => {
       const s = state();
       s.events.push(event as Obj);
@@ -2202,8 +2239,11 @@ describe("argus-live instance — Compose and egress checks", () => {
           return argv[0] === "lsof" && argv.includes("-U") ? { ...r, stdout: hide(r.stdout) } : r;
         };
         expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner }))).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
-        const blind = (argv: string[], o: Obj = {}) => (argv[0] === "netstat" ? { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : runner(argv, o));
-        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }))).toBe("ok");
+        // A netstat that fails is reported on macOS, where it is the only way to see another user's server.
+        const blind = (argv: string[], o: Obj = {}) => (argv[0] === "netstat" ? { status: 1, stdout: "", stderr: "netstat: sysctl: Operation not permitted" } : runner(argv, o));
+        const said = await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }));
+        if (process.platform === "darwin") expect(said).toBe("failed: netstat -an -f unix exited 1: netstat: sysctl: Operation not permitted");
+        else expect(said).toBe("ok");
       });
 
       it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {
@@ -2236,7 +2276,7 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it("a listing that cannot be trusted fails: lsof exiting 1 with an error, or no listener of the run in it", async () => {
-      const lsof = (stdout: string, status = 0, stderr = "") => (argv: string[]) => (argv[0] === "lsof" ? { status, stdout: argv.includes("-U") ? "" : stdout, stderr } : { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) });
+      const lsof = (stdout: string, status = 0, stderr = "") => (argv: string[]) => (argv[0] === "lsof" ? { status, stdout: argv.includes("-U") ? "" : stdout, stderr } : argv[0] === "netstat" ? { status: 0, stdout: "", stderr: "" } : { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) });
       expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner: lsof("", 1, "lsof: unsupported option -F\n") }))).toMatch(/^failed: lsof exited 1: lsof: unsupported option/);
       expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner: lsof("", 1, "lsof: WARNING: can't stat() fuse file system /run/user/1/doc\n") }))).toBe("ok");
       const listing = "p700\ncnode\nf20\nn127.0.0.1:41002\nTST=LISTEN\n";
