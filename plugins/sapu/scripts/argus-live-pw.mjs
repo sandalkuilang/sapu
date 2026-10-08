@@ -11,6 +11,7 @@ import { openSession, slotDir } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
+import { codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
@@ -281,7 +282,8 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * repeated); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
  * <c>/<max>`, `loop <n>/3` and the wrapper's own events. `login <user> <password>` signs the session in as
  * an account the journey created (`login: ok` or `login: failed (<reason>)`; kept in state.json
- * `created` for its re-logins once it worked). Exit codes: 0 the command ran (a CLI
+ * `created` for its re-logins once it worked). The role-free `code`, `trigger`, `facts` and `mail`
+ * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
  * `cli` (a test seam) stands in for the installed CLI (run.json `browser.js`).
  */
@@ -339,7 +341,24 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   } catch (e) {
     return refused(e);
   }
-  if (p.account === null) return { code: 2, out: [`failed: ${p.cmd} is not available in this build of the wrapper`, counter] };
+  if (p.account === null) {
+    if (p.cmd === "submit") return { code: 2, out: [`failed: ${p.cmd} is not available in this build of the wrapper`, counter] };
+    // code, trigger, facts, mail: what they print is page data, in the fence; their exit and the wrapper's events outside.
+    let done;
+    try {
+      if (p.cmd === "code") {
+        const c = codeCommand(p.positionals[0], p.positionals.slice(1), { worktree: rec.worktree });
+        done = { stdout: c.text, code: c.code, events: [] };
+      } else {
+        const [name, values] = p.cmd === "trigger" ? [p.positionals[0], p.positionals.slice(1)] : [p.cmd, p.positionals];
+        done = await runHook(p.cmd, name, values, { rec, live });
+      }
+    } catch (e) {
+      return refused(e);
+    }
+    const { body, truncated } = fence(String(done.stdout).trimEnd(), { secrets });
+    return { code: 0, out: [body, counter, ...(done.code !== 0 && done.code !== null ? [`exit ${done.code}`] : []), ...done.events, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
+  }
 
   const role = account.split(".")[0];
   const plan = loginPlan(live, role);

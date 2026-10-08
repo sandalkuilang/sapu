@@ -1864,3 +1864,112 @@ describe("argus-live pw — refusals and limits", () => {
     for (const f of [...filesUnder(join(t.main, ".argus/live")), `${t.shim}.calls`]) expect(readFileSync(f, "utf8"), f).not.toContain(t.token);
   });
 });
+
+describe("argus-live pw — code, trigger, facts, mail", () => {
+  const saved = { ...process.env };
+  const runs: { main: string; runId: string }[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+  const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
+
+  /**
+   * A cycle whose worktree's HEAD holds src/app.js, .argus/config.yml and .ARGUS/x.js (a tree entry only:
+   * the file system may not tell the two apart), with an untracked src/new.js beside them; the fixture
+   * app's facts, mail and settle trigger as hooks over a data directory holding one order.
+   */
+  const hookRun = (over: (c: Obj) => void = () => {}) => {
+    const data = join(tempDir(), "app_explore");
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(data, "orders.json"), JSON.stringify([{ id: "ORD-1", quantity: 2, status: "placed", user: "buyer1@example.test" }]));
+    writeFileSync(join(data, "mail.json"), JSON.stringify([{ to: "buyer1@example.test", subject: "Order ORD-1 placed", text: "Your order ORD-1 was placed." }]));
+    const main = liveRepo((c) => {
+      c.facts = { argv: [process.execPath, SERVER, "--facts", "{1}"] };
+      c.mail = { argv: [process.execPath, SERVER, "--mail"] };
+      c.triggers = { settle: { argv: [process.execPath, SERVER, "--trigger", "settle", "{1}"] }, any: { argv: [process.execPath, SERVER, "--trigger", "any", "{1}"], args: ["^.*$"] }, hang: { argv: ["/bin/sleep", "600"] } };
+      over(c);
+    });
+    const r = liveCycle(main, { env: { PATH: process.env.PATH, DATA_DIR: data } });
+    runs.push({ main, runId: r.runId });
+    const g = (...a: string[]) => execFileSync("git", ["-C", r.wt, ...a], { encoding: "utf8" }).trim();
+    mkdirSync(join(r.wt, "src"), { recursive: true });
+    mkdirSync(join(r.wt, ".argus"), { recursive: true });
+    writeFileSync(join(r.wt, "src/app.js"), "// app\nexport function createOrder() {}\n");
+    writeFileSync(join(r.wt, ".argus/config.yml"), "createOrder: secret\n");
+    g("add", "-f", "src/app.js", ".argus/config.yml");
+    const blob = execFileSync("git", ["-C", r.wt, "hash-object", "-w", "--stdin"], { input: "createOrder()\n", encoding: "utf8" }).trim();
+    g("update-index", "--add", "--cacheinfo", `100644,${blob},.ARGUS/x.js`);
+    g("-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "app");
+    writeFileSync(join(r.wt, "src/new.js"), "createOrder()\n");
+    const m = mintSlot(main, { slot: 1, journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test" } });
+    const call = (...args: string[]) => pw(main, [m.token, ...args], { cli: join(tempDir(), "no-cli.js") });
+    return { ...r, main, data, call };
+  };
+  const body = (r: { out: string[] }) => r.out[0].split("\n").slice(1, -1).join("\n");
+
+  it("code grep searches HEAD's tracked files and prints absolute paths; never .argus in any case", async () => {
+    const t = hookRun();
+    const r = await t.call("code", "grep", "createOrder");
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toMatch(/^<<<PAGE-[0-9a-f]{32}\n/);
+    expect(body(r)).toBe(`${t.wt}/src/app.js:2:export function createOrder() {}`);
+    expect(r.out[1]).toBe("calls 1/120");
+    expect(body(await t.call("code", "grep", "nothing-matches-this"))).toBe("");
+  });
+
+  it("code grep's pattern is never an option; code files takes a literal pathspec inside the worktree", async () => {
+    const t = hookRun();
+    const trap = join(tempDir(), "x");
+    expect((await t.call("code", "grep", `--output=${trap}`)).code).toBe(0);
+    expect(existsSync(trap)).toBe(false);
+    expect((await t.call("code", "grep", "-e")).code).toBe(0);
+    expect(body(await t.call("code", "files", ":(glob)**"))).toBe("");
+    expect(body(await t.call("code", "files", "src"))).toBe(`${t.wt}/src/app.js`);
+    expect(body(await t.call("code", "files", `${t.wt}/src`))).toBe(`${t.wt}/src/app.js`);
+    expect(body(await t.call("code", "files"))).not.toMatch(/\.argus|\.ARGUS/);
+    for (const bad of ["/etc", "../x", "src/../../x"]) expect((await t.call("code", "files", bad)).out[0], bad).toMatch(/^refused: .* is not a path inside the worktree$/);
+    expect((await t.call("code", "nope")).out[0]).toMatch(/^refused: code takes grep/);
+  });
+
+  it("trigger refuses option-like and shell-like values before running; a value is one argv element", async () => {
+    const t = hookRun();
+    for (const v of ["-rf", "--help", "$(id)", ";id", "a b", "x\ny", "'q'"]) {
+      const r = await t.call("trigger", "settle", v);
+      expect(r.code, v).toBe(1);
+      expect(r.out[0], v).toMatch(/^refused: value 1 of settle does not match /);
+    }
+    const ok = await t.call("trigger", "settle", "ORD-1");
+    expect(ok.code).toBe(0);
+    expect(JSON.parse(body(ok)).slice(-2)).toEqual(["settle", "ORD-1"]);
+    // A custom regex that allows anything still never takes a leading -.
+    expect((await t.call("trigger", "any", "-x")).out[0]).toMatch(/^refused: value 1 of any does not match \^\.\*\$ without a leading -$/);
+    // Arity and names.
+    expect((await t.call("trigger", "settle")).out[0]).toBe("refused: settle takes 1 value");
+    expect((await t.call("trigger", "settle", "a", "b")).out[0]).toBe("refused: settle takes 1 value");
+    expect((await t.call("trigger", "nope", "a")).out[0]).toBe("refused: nope is not a trigger of .argus/live.json");
+  });
+
+  it("facts and mail print fenced JSON; a settle trigger changes the facts", async () => {
+    const t = hookRun();
+    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "placed", quantity: 2 });
+    await t.call("trigger", "settle", "ORD-1");
+    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "paid", quantity: 2 });
+    const mail = await t.call("mail");
+    expect(JSON.parse(body(mail))[0]).toMatchObject({ subject: "Order ORD-1 placed" });
+    expect(mail.out.slice(1)).toEqual(["calls 4/120"]);
+    // A hook that fails: its exit code outside the fence.
+    expect((await t.call("facts", "ORD-9")).out.slice(1)).toEqual(["calls 5/120", "exit 1"]);
+  });
+
+  it("a hook that hangs is killed with its group", async () => {
+    const t = hookRun((c) => (c.settle_ms = 100));
+    const start = Date.now();
+    const r = await t.call("trigger", "hang");
+    expect(Date.now() - start).toBeLessThan(35_000);
+    expect(r.out.slice(1)).toEqual(["calls 1/120", "harness: trigger timed out"]);
+    const left = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l === "/bin/sleep 600");
+    expect(left).toEqual([]);
+  }, 60_000);
+});

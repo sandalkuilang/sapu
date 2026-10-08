@@ -752,9 +752,9 @@ repo needs no Playwright of its own.
   `up` copies to the slot's directory); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
   `screenshot`, `console`, `requests`, `request`, `response-body`; `resize`; `tab-list`,
   `tab-select`, `tab-close`; `dialog-accept`, `dialog-dismiss`; `code grep <pattern> [<pathspec>]` and
-  `code files [<pathspec>]` — fixed argv `git --literal-pathspecs -C <wt> grep -e <pattern> --
-  <pathspec>` and `git --literal-pathspecs -C <wt> ls-files -- <pathspec>`, no flag from the explorer:
-  tracked files only, any path under `.argus/` (compared without case) filtered out, each path printed
+  `code files [<pathspec>]` — fixed argv `git --literal-pathspecs -C <wt> grep -z -n -I --no-color
+  -e <pattern> HEAD -- <pathspec>` and `git --literal-pathspecs -C <wt> ls-tree -z -r --name-only HEAD
+  -- <pathspec>`, no flag from the explorer: HEAD's tree only (as the explorer's Read sees blobs at HEAD), any path under `.argus/` (compared without case) filtered out, each path printed
   absolute inside the worktree, output fenced like page text; `login <user> <password>` (accounts
   the journey itself created); `trigger <name> [values…]`; `facts <marker>`; `mail`; `submit <json>`.
   Everything else is refused — `run-code`, `eval`, `route`, `unroute`, `network-state-set`,

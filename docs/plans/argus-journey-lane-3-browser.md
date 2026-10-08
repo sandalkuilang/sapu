@@ -877,7 +877,7 @@ Interfaces:
 - In `pw`: `trigger`, `facts`, `mail` and `code` output goes in the fence; exit code of the command
   and `harness:` lines outside.
 
-- [ ] **Step 1: Failing tests** (describe "argus-live pw — code, trigger, facts, mail"; a `liveRun()`
+- [x] **Step 1: Failing tests** (describe "argus-live pw — code, trigger, facts, mail"; a `liveRun()`
   whose worktree holds `src/app.js`, an untracked `src/new.js`, `.argus/config.yml` and
   `.ARGUS/x.js`; `live.triggers.settle = {argv: [node, server, --trigger, settle, "{1}"]}`):
   - "code grep searches HEAD's tracked files and prints absolute paths": `pw <t> code grep
@@ -895,8 +895,8 @@ Interfaces:
     `{"status":"placed","quantity":2}` inside the fence; `mail` → the order's message inside the fence.
   - "a hook that hangs is killed with its group": a trigger `sleep 600` with `settle_ms: 100` → returns
     within 35 s and no `sleep` process of it remains.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live pw code, trigger, facts and mail — fixed argv, literal values, HEAD only`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live pw code, trigger, facts and mail — fixed argv, literal values, HEAD only`.
 
 ---
 
@@ -1314,6 +1314,21 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   - Nits: `slotLockWaitMs(settle_ms)` (15 × settle_ms + 420 s) bounds both `pw`'s and `handoffSlot`'s
     wait for the slot's lock; `pw` reads the deadline from the lock again once it holds the slot's lock;
     a handoff keeps `proxyBlocked` and `blockedReported`.
+
+- **Task 12.** `argus-live-hooks.mjs` imports only `-fence.mjs` (PAGE_CAP) and `-proc.mjs`. Changes:
+  - `fillArgv(argv, args, values, name)` takes the hook's name for its refusals: `refused: <name> takes
+    <n> value(s)`, `refused: value <i> of <name> does not match <regex>` (`… without a leading -` when
+    only the leading `-` failed); a name is echoed only when it is a short plain word.
+  - `runHook(kind, name, values, {rec, live, runner})` → `{code, stdout, events}`: `code` the exit
+    status (null on a timeout); `events` the wrapper's words (`harness: <kind> timed out`, `harness:
+    <kind> printed no JSON` when it exited 0 without the JSON its kind owes). `pw` prints the stdout in
+    the fence and, outside, `exit <n>` for a non-zero status, then the events. A hook that cannot be
+    spawned fails the call (`failed: the <kind> command could not run: <errno code>`).
+  - `codeCommand(sub, args, {worktree, runner})` → `{code, text}`, synchronous; `git grep` and `git
+    ls-tree` run with `-z`, so a path holding `:` or a newline is read exactly; a pathspec holding a `..`
+    segment, a leading `-` or `:`, or control characters is refused like an absolute path outside the
+    worktree. A git failure other than grep's no-match prints git's stderr in the fence and `exit <n>`.
+  - Spec §9's `code` argv folded in (HEAD's tree, `ls-tree`).
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
