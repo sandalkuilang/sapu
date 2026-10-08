@@ -744,7 +744,7 @@ Interfaces:
       `calls <c>/<max>`, `loop <n>/3` when n > 1, the wrapper events, `truncated <n> characters`.
   Exit 0. The token is never printed, logged or written.
 
-- [ ] **Step 1: Failing tests** (describe "argus-live pw — refusals and limits"; a `liveRun()` with an
+- [x] **Step 1: Failing tests** (describe "argus-live pw — refusals and limits"; a `liveRun()` with an
   instance id, slot 1 holding `buyer.1`, `anon.1`, the shim as `cli`; observation stubbed through the
   shim's `run-code` queue):
   - "each refused command is refused before the CLI runs": for every name in the refused list above,
@@ -783,8 +783,8 @@ Interfaces:
   - "concurrent calls of one slot are counted, not lost": 10 parallel `pw` calls → `calls === 10`.
   - "the token appears in no output, log or file": after a run of calls, grep every file under
     `.argus/live/` and every `out` for the token → none.
-- [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live pw — the explorer's allowlist, URL and value checks, nonce-fenced output, budget, loop and deadline`.
+- [x] **Step 2–4:** run (FAIL), implement, run (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live pw — the explorer's allowlist, URL and value checks, nonce-fenced output, budget, loop and deadline`.
 
 ---
 
@@ -1217,6 +1217,42 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     state it writes lacks them (their owners write them through updateRun).
   - CLI: `slot <n>` takes `--journey`/`--accounts` in either order; anything else is `refused: <usage>`
     (exit 1).
+
+- **Task 10.** Probed with 0.1.22 against the fixture: `goto` prints `### Ran Playwright code`, `###
+  Page` and a link to the snapshot file it wrote (`- [Snapshot](out/page-<time>.yml)`); `snapshot`
+  prints the YAML inline; a failing command prints `### Error` and exits 1; `request <n>` prints its
+  headers indented as `name: value`; `fill -- <target> -5` types `-5`. Changes:
+  - `checkUrl` compares origins as the proxy does (exactly as the run's origin spells its host), so
+    `http://127.0.0.1:<p>/x` is refused when the run's origin is `http://localhost:<p>` (the plan's test
+    expected it allowed); it also refuses control characters (a URL parser drops tabs and newlines:
+    `/<tab>/host` would become `//host`) and URLs carrying credentials.
+  - `parsePw`: the explorer's own `--` ends its flags; a flag that is not repeatable is refused when
+    given twice; `find` takes a text or `--regex=`, one of them; a role-bound command given a role-free
+    one's place (`pw <t> buyer.1 submit …`) is refused as taking no role. A refusal echoes an explorer
+    argument only when it is short printable ASCII, a flag only when flag-shaped.
+  - A refusal prints its line and `calls <c>/<max>`; `BUDGET`, `DEADLINE` and `unknown`/`retired token`
+    print their line alone; `LOOP` and `HARNESS` add the counter. `pw` catches its own failures (exit 2,
+    `failed: …`, masked).
+  - Observation (the part of Task 11 the loop rule needs): one `observe` run-code after every browser
+    command; `lastState` = sha256 of the URL and the body's aria snapshot; the drained signals go inside
+    the fence as `signal <kind>: <text>`; an observation that fails adds `harness: observation failed`.
+  - The session: a recorded one (with a daemon) is used, else `openSession` (a login-command role's
+    with `commandLogin`'s state, then signed in); a users role signs in on first use through `login`,
+    its `signedIn` kept in state.json `sessions[<account>]`; a login that fails answers `HARNESS`. The
+    CLI is run.json's `browser.js` (never `ensureCli` per call), HOME `<run HOME>/browser`.
+  - Output: the CLI's links (`out/…`, any path under the slot) by basename; `request` through
+    `maskHeaders`; masked: the env file's values (now and as `up` read them), every role password and
+    TOTP secret, the passwords in state.json `created`.
+  - The loop rule applies to role-bound commands (role-free ones have no page state).
+  - Until Tasks 11–13, `login` and the role-free commands parse, are counted, and answer `failed: <cmd>
+    is not available in this build of the wrapper` (exit 2); `submit` is exempt from DEADLINE and BUDGET.
+  - The CLI prints `pw`'s lines and `slot`'s JSON line as they are: `pw` masked its page text in the
+    fence, and masking a whole line again with the env file's values cut a token or a fence's nonce
+    wherever a short value occurred in its hex (found by the slot CLI test with `DB_PW=db`; Task 9's
+    `slot` printed through the masking `print`).
+  - Live: a test in Chrome drives `pw` and the spawned `argus-live.mjs pw` — first use signs buyer.1 in
+    with no login trace in the output or in `requests`, anon stays signed out, a flag-shaped value is
+    typed as text.
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

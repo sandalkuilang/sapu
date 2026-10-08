@@ -130,8 +130,9 @@ export const liveRun = () => {
 
 /**
  * The CLI shim: a Node script standing in for playwright-cli.js. Each call appends `{argv, cwd, env}` as
- * one JSON line to `<shim>.calls`; `goto` answers a page, `run-code` the next line of `<shim>.queue`,
- * anything else a fixed line.
+ * one JSON line to `<shim>.calls`; a command named in `<shim>.answers` (`answer(cmd, text)`) prints that
+ * text; else `goto` answers a page, `run-code` the next line of `<shim>.queue` (`queue(value)`), anything
+ * else a fixed line.
  */
 export const makeShim = (dir = tempDir()) => {
   const shim = join(dir, "shim.mjs");
@@ -142,7 +143,10 @@ const self = new URL(import.meta.url).pathname;
 const argv = process.argv.slice(2);
 fs.appendFileSync(self + ".calls", JSON.stringify({ argv, cwd: process.cwd(), env: process.env }) + "\\n");
 const cmd = argv.find((a) => !a.startsWith("-"));
-if (cmd === "goto") {
+const answers = fs.existsSync(self + ".answers") ? JSON.parse(fs.readFileSync(self + ".answers", "utf8")) : {};
+if (Object.hasOwn(answers, cmd)) {
+  process.stdout.write(answers[cmd]);
+} else if (cmd === "goto") {
   const url = argv[argv.indexOf("--") + 1];
   process.stdout.write("### Page\\n- Page URL: " + url + "\\n");
 } else if (cmd === "run-code") {
@@ -156,5 +160,11 @@ if (cmd === "goto") {
 `,
   );
   const calls = (): Record<string, any>[] => (existsSync(`${shim}.calls`) ? readFileSync(`${shim}.calls`, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-  return { shim, calls };
+  const answer = (cmd: string, text: string) => {
+    const file = `${shim}.answers`;
+    const all = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+    writeFileSync(file, JSON.stringify({ ...all, [cmd]: text }));
+  };
+  const queue = (...values: unknown[]) => writeFileSync(`${shim}.queue`, values.map((v) => `${JSON.stringify(v)}\n`).join(""), { flag: "a" });
+  return { shim, calls, answer, queue };
 };

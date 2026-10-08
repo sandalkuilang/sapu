@@ -21,6 +21,10 @@ import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-insta
 // @ts-expect-error — plain ESM script without types
 import { commandLogin, login, loginPlan, proveLogins } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
+import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
+// @ts-expect-error — plain ESM script without types
+import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
+// @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { blockedSince, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
@@ -445,6 +449,67 @@ process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
     expect(readRun(b.main).sessions).toEqual([]);
     expect(existsSync(socketsDir(b.home))).toBe(false);
   }, 120_000);
+});
+
+describe("argus-live pw in Chrome", () => {
+  /** browserRun plus what `up` leaves for the wrapper: .argus/live.json and its env file, the instance id and ports in run.json, slot 1 minted. */
+  const pwRun = async () => {
+    const b = await browserRun();
+    const c = {
+      start: [{ name: "web", cmd: "true" }],
+      base_url: "http://localhost:{port:web}",
+      login_url: "/login",
+      logged_in: "getByRole('button', { name: 'Account' })",
+      env_file: ".argus/live.env",
+      store: "app_explore",
+      store_check: "true",
+      reset: "true",
+      confirmed: { mocks: true, data: true },
+      port_range: [41000, 41999],
+      settle_ms: 5000,
+      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${PW}" }] } },
+      limits: { max_cycle_minutes: 45 },
+    };
+    mkdirSync(join(b.main, ".argus"), { recursive: true });
+    writeFileSync(join(b.main, ".argus/live.json"), JSON.stringify(c));
+    writeFileSync(join(b.main, ".argus/live.env"), `PW='${PW}'\n`);
+    updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, instanceId: "0123456789abcdef", ports: { web: b.web } }));
+    const m = mintSlot(b.main, { slot: 1, journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test", "anon.1": null } });
+    const call = (...args: string[]) => pw(b.main, [m.token, ...args]);
+    const stats = async () => (await (await fetch(`${b.base}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
+    return { ...b, token: m.token, call, stats };
+  };
+  const text = (r: { out: string[] }) => r.out.join("\n");
+
+  it("first use opens the session and signs it in, invisibly; anon is never signed in; values go after --", async () => {
+    const t = await pwRun();
+    const go = await t.call("buyer.1", "goto", "/");
+    expect(go.code).toBe(0);
+    expect(text(go)).toMatch(/^<<<PAGE-[0-9a-f]{32}\n/);
+    expect(text(go)).toContain(`- Page URL: ${t.base}/`);
+    for (const hidden of ["Sign in", PW, "password", "/login"]) expect(text(go)).not.toContain(hidden);
+    expect(text(await t.call("buyer.1", "snapshot"))).toContain('button "Account"');
+    expect(text(await t.call("buyer.1", "requests", "--static"))).not.toContain("/login");
+    expect((await t.stats())["POST /login"]).toBe(1);
+    // anon: its own session, never signed in.
+    expect((await t.call("anon", "goto", "/")).code).toBe(0);
+    expect(text(await t.call("anon", "snapshot"))).toContain('button "Sign in"');
+    expect((await t.stats())["POST /login"]).toBe(1);
+    // A value that looks like a flag is typed as text.
+    await t.call("buyer.1", "goto", "/orders/new");
+    const trap = join(tempDir(), "written-by-filename");
+    expect((await t.call("buyer.1", "fill", "getByLabel('Quantity')", `--filename=${trap}`)).code).toBe(0);
+    expect(existsSync(trap)).toBe(false);
+    expect(readRun(t.main).sessions.map((s: Obj) => s.account).sort()).toEqual(["anon.1", "buyer.1"]);
+    const counted = text(await t.call("buyer.1", "find", "Quantity"));
+    expect(counted).toMatch(/\ncalls 8\/120$/);
+    // The same through the CLI, as the explorer's Bash runs it.
+    const viaCli = spawnSync(process.execPath, [join(__dirname, "../plugins/sapu/scripts/argus-live.mjs"), "pw", t.token, "buyer.1", "goto", "/"], { cwd: t.main, encoding: "utf8" });
+    expect(viaCli.status).toBe(0);
+    expect(viaCli.stdout).toContain(`- Page URL: ${t.base}/`);
+    expect(viaCli.stdout).toMatch(/\ncalls 9\/120\n$/);
+    expect(`${viaCli.stdout}${viaCli.stderr}`).not.toContain(t.token);
+  }, 180_000);
 });
 
 /** No CLI daemon or browser of a run of this file outlives its test (whatever the test asserted): only this file's runs' sessions. */
