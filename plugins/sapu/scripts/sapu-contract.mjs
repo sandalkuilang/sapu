@@ -117,7 +117,7 @@ export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
  * Why `t` cannot be a specialist, or null. A reviewer must be a dedicated agent with its own
  * model: `general-purpose` inherits the session's, and a ladder worker is a worker, not a reviewer.
  */
-/** The plugin's former built-in role agents (removed in 2.6.0): a contract still naming one dispatches nothing. */
+/** The plugin's former built-in role agents, which it no longer ships: a contract still naming one dispatches nothing. */
 const REMOVED_ROLE_AGENT = /(^|:)sapu-(qa|architect|db|developer|ux|writer|product)$/;
 const notSpecialist = (t) =>
   t === "general-purpose" ? "general-purpose inherits the session model"

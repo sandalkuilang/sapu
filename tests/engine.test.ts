@@ -223,8 +223,40 @@ describe("the engine carries no repo history", () => {
     [/\b(?:have|has)? ?shipped before\b|\bthat seeded this\b|\bwas met every cycle\b|\bhave never been (?:swept|probed|tested)\b|\bwere caught only by\b|\bearlier work\b|\bbecame the (?:[\w/-]+ )?convention\b|\binsiden yang\s+sudah terjadi\b|^\s*sudah terjadi \(/i, "a past event"],
     [/\bone (?:issue|cycle|run|pass|surface|probe entity) (?:bundled|declared|stayed|became)\b|\bcost (?:a|an|the|this) [^.]{0,30} once\b|\b(?:two|three|four|five|\d+) entries failed\b|\bcould not be fetched\b|\bhundreds of (?:bogus|false)\b/i, "what a past run did or measured"],
     [new RegExp(`\\b${N} employees\\b|\\bstatutory floor\\b`, "i"), "one consumer's headcount or statute"],
+    // A release named as the time something happened: "in the 2.2.9 pilot", "the sweep on 2.5.2", "removed in 2.6.0".
+    // Two-part versions are standards (WCAG 2.2, ASVS 3.4.8 has three parts but no run word beside it).
+    [/\bv?\d+\.\d+\.\d+ (?:pilot|sweep|run|session|wave|cycle)s?\b|\b(?:pilot|sweep|run|session|wave|cycle)s? (?:of|on|in|with) v?\d+\.\d+\.\d+\b|\b(?:added|removed|introduced|changed|fixed|new) in v?\d+\.\d+\.\d+\b/i, "version-tagged run history"],
   ];
-  const scanned = [...files.map((f) => [rel(f), f] as const), ["README.md", join(ROOT, "README.md")] as const];
+  // Numbers one machine or one model measured, stated in the prose as if universal: a context size
+  // ("750k"), a core count, "measured on", a fixed gate worker count, a step budget in tool calls, a
+  // model window. The engine derives them (`sapu-contract.mjs lanes` and `tuning`) and the prose names
+  // those values instead. Prose only (.md and the README): a script's constants are the method.
+  const MACHINE_TUNED: ReadonlyArray<readonly [RegExp, string]> = [
+    [/\b\d{2,4}k\b/, "a context size in tokens"],
+    [/\b\d+-core\b|\bmeasured on\b/i, "a figure measured on one machine"],
+    [/--workers \d|\b\d+ tool calls\b|\b\d+(?:\.\d+)?M tokens\b/, "a fixed worker count, step budget or model window"],
+  ];
+  const machineTuned = (line: string) => MACHINE_TUNED.filter(([re]) => re.test(line)).map(([, w]) => w);
+
+  it("the history and tuning scans flag run history and machine figures, and pass the method's own numbers (canary)", () => {
+    const story = (line: string) => RUN_STORY.filter(([re]) => re.test(line)).map(([, w]) => w);
+    for (const bad of ["as seen in the 2.2.9 pilot", "the sweep on 2.5.2 showed it", "the former agents (removed in 2.6.0)", "2.3.1 runs were slower"]) expect(story(bad), bad).toContain("version-tagged run history");
+    for (const ok of ["WCAG 2.2 SC 2.4.11, new in 2.2", "ASVS V3.4.8 (3.4.8)", "sapu v2.9.0 — ", "max 2 cycles"]) expect(story(ok), ok).toEqual([]);
+    for (const bad of ["while context < 750k", "defaults measured on a 10-core machine", "`--workers 8` (4 beside a lane)", "past ~120 tool calls", "a window of about 1M tokens"]) expect(machineTuned(bad), bad).not.toEqual([]);
+    for (const ok of ["`--workers <W>` from `lanes`", "`tuning.stepBudget.soft` tool calls", "recheck_after_cycles: 5", "a 24×24 CSS px target"]) expect(machineTuned(ok), ok).toEqual([]);
+  });
+
+  const prose = scannedFiles().filter(([name]) => name.endsWith(".md"));
+  it.each(prose)("%s states no machine-tuned number", (name, path) => {
+    const bad = readFileSync(path, "utf8")
+      .split("\n")
+      .flatMap((line, i) => (machineTuned(line).length ? [`${name}:${i + 1}: ${machineTuned(line).join("; ")}: ${line.trim().slice(0, 120)}`] : []));
+    expect(bad).toEqual([]);
+  });
+  function scannedFiles() {
+    return [...files.map((f) => [rel(f), f] as const), ["README.md", join(ROOT, "README.md")] as const];
+  }
+  const scanned = scannedFiles();
   it.each(scanned)("%s", (name, path) => {
     const bad = readFileSync(path, "utf8")
       .split("\n")
@@ -517,7 +549,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 describe("context budgets", () => {
   // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
   const BUDGETS: Record<string, number> = {
-    "skills/sapu/SKILL.md": 40_120,
+    "skills/sapu/SKILL.md": 39_950,
     "skills/sapu/subagent-brief.md": 14_000,
     "skills/forge/SKILL.md": 15_400,
     "skills/forge/reference.md": 16_000,
