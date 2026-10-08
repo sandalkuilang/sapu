@@ -9,11 +9,14 @@ import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { expand, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { expand, expandConfig, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import {
   allocatePorts,
   appendEnd,
+  bringUpRest,
+  bringUpStore,
+  checkStore,
   instanceEnv,
   makeHome,
   makeWorktree,
@@ -22,7 +25,9 @@ import {
   readLock,
   renew,
   runSetup,
+  startEntry,
   takeLock,
+  waitHealth,
 } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 
 type Obj = Record<string, any>;
@@ -246,6 +251,18 @@ describe("argus-live config — expand", () => {
 
   it("an empty secret counts as unset", () => {
     expect(() => expand("${PW}", { secrets: { PW: "" } })).toThrow(/unset PW/);
+  });
+
+  it("expandConfig expands every string of the file, and only strings", () => {
+    const ports: Record<string, number> = { api: 1, web: 2, pg: 3, redis: 4, smtp: 5 };
+    const c = expandConfig(example(), { ports, secrets: { DB_PW: "d", PW: "p", SALES_TOTP: "t" } });
+    expect(JSON.stringify(c)).not.toMatch(/\{port:|\$\{/);
+    expect(c.start[2]).toMatchObject({ cmd: "npm run dev:web -- --port 2", env: { API_URL: "http://localhost:1" }, health: { url: "http://localhost:2/" } });
+    expect(c.env.DATABASE_URL).toBe("postgres://app:d@localhost:3/app_explore");
+    expect(c.roles.sales.users[0]).toEqual({ user: "sales1@example.test", password: "p", totp_secret: "t" });
+    expect(c.facts.argv.at(-1)).toBe("{1}");
+    expect(c.limits.max_cycle_minutes).toBe(45);
+    expect(example().base_url).toBe("http://localhost:{port:web}");
   });
 
   it("leaves everything else alone", () => {
@@ -732,7 +749,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
   const link = (target: string, at: string) =>
     node(`const fs = require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(at)}), { recursive: true }); fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(at)})`);
 
-  it("makes a detached worktree at HEAD outside the repo, without the repo's ignored files", () => {
+  it("makes a detached worktree at HEAD outside the repo, without the repo's ignored files", async () => {
     const main = committed();
     const id = runId();
     const wt = makeWorktree(main, id);
@@ -746,14 +763,14 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => makeWorktree(main, "../x")).toThrow(/run id/);
   });
 
-  it("tightens an existing sapu-live directory to 0700", () => {
+  it("tightens an existing sapu-live directory to 0700", async () => {
     mkdirSync(join(tmp, "sapu-live"), { mode: 0o755 });
     chmodSync(join(tmp, "sapu-live"), 0o755);
     makeHome(committed(), runId());
     expect(statSync(join(tmp, "sapu-live")).mode & 0o777).toBe(0o700);
   });
 
-  it("refuses a sapu-live that is a symlink (it could lead into the repo), and a TMPDIR inside the repo", () => {
+  it("refuses a sapu-live that is a symlink (it could lead into the repo), and a TMPDIR inside the repo", async () => {
     const main = committed();
     mkdirSync(join(main, "inside"));
     symlinkSync(join(main, "inside"), join(tmp, "sapu-live"));
@@ -765,7 +782,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => makeHome(main, runId())).toThrow(/^refused: .* would lie inside the repo/);
   });
 
-  it("makes an empty per-run HOME beside the worktree, outside the repo, mode 0700", () => {
+  it("makes an empty per-run HOME beside the worktree, outside the repo, mode 0700", async () => {
     const main = committed();
     const id = runId();
     const home = makeHome(main, id);
@@ -777,7 +794,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => makeHome(main, id)).toThrow(/^refused: .*\.home is not empty/);
   });
 
-  it("refuses a HOME path that is already a symlink", () => {
+  it("refuses a HOME path that is already a symlink", async () => {
     const main = committed();
     const id = runId();
     mkdirSync(join(tmp, "sapu-live"), { mode: 0o700 });
@@ -785,16 +802,16 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => makeHome(main, id)).toThrow(/^refused: .*\.home is a symlink/);
   });
 
-  it("a setup may link into the run's own HOME", () => {
+  it("a setup may link into the run's own HOME", async () => {
     const main = committed();
     const id = runId();
     const wt = makeWorktree(main, id);
     const home = makeHome(main, id);
     writeFileSync(join(home, "python"), "");
-    expect(() => setup(wt, [link(join(home, "python"), ".venv/bin/python")])).not.toThrow();
+    await expect(setup(wt, [link(join(home, "python"), ".venv/bin/python")])).resolves.toBeUndefined();
   });
 
-  it("the environment holds only the listed variables, the expanded env, the run's Compose project and HOME", () => {
+  it("the environment holds only the listed variables, the expanded env, the run's Compose project and HOME", async () => {
     process.env.ARGUS_TEST_LEAK = "1";
     process.env.ARGUS_PASS = "passed";
     process.env.LC_ARGUS_TEST = "C";
@@ -809,7 +826,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(env).not.toHaveProperty("ARGUS_TEST_LEAK");
   });
 
-  it("refuses env or pass_env naming HOME or COMPOSE_PROJECT_NAME, and an unset secret", () => {
+  it("refuses env or pass_env naming HOME or COMPOSE_PROJECT_NAME, and an unset secret", async () => {
     const args = (config: object) => ({ config, ports: {}, secrets: {}, runId: runId(), home: "/h" });
     for (const k of ["HOME", "COMPOSE_PROJECT_NAME"]) {
       expect(() => instanceEnv(args({ env: { [k]: "x" } }))).toThrow(`refused: env may not set ${k}`);
@@ -818,7 +835,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => instanceEnv(args({ env: { A: "${NOPE}" } }))).toThrow(/unset NOPE/);
   });
 
-  it("setup runs each argv in the worktree under that environment, without a shell", () => {
+  it("setup runs each argv in the worktree under that environment, without a shell", async () => {
     process.env.ARGUS_TEST_LEAK = "1";
     const main = committed();
     const id = runId();
@@ -826,7 +843,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     const home = makeHome(main, id);
     const env = instanceEnv({ config: {}, ports: {}, secrets: {}, runId: id, home });
     const dump = "require('fs').writeFileSync('env.json', JSON.stringify({ cwd: process.cwd(), env: process.env }))";
-    runSetup(wt, { setup: [node(dump), node("require('fs').writeFileSync('$NOT_EXPANDED', '')")] }, env, { deadline: later(600) });
+    await runSetup(wt, { setup: [node(dump), node("require('fs').writeFileSync('$NOT_EXPANDED', '')")] }, env, { deadline: later(600) });
     const seen = JSON.parse(readFileSync(join(wt, "env.json"), "utf8"));
     expect(seen.cwd).toBe(wt);
     expect(seen.env).toMatchObject({ COMPOSE_PROJECT_NAME: `argus-${id}`, HOME: home });
@@ -834,13 +851,13 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(existsSync(join(wt, "$NOT_EXPANDED"))).toBe(true);
   });
 
-  it("a failing setup step is reported with its own error, every secret value masked", () => {
+  it("a failing setup step is reported with its own error, every secret value masked", async () => {
     const wt = makeWorktree(committed(), runId());
-    expect(() => setup(wt, [node("console.error('boom'); process.exit(3)")])).toThrow(/^failed: setup .* exited 3: boom/);
+    await expect(setup(wt, [node("console.error('boom'); process.exit(3)")])).rejects.toThrow(/^failed: setup .* exited 3: boom/);
     const leak = node("console.log('url postgres://app:hunter2@localhost/x'); console.error('token s3cr3t-value and hunter2'); process.exit(1)");
     let msg = "";
     try {
-      setup(wt, [[...leak.slice(0, 2), `${leak[2]} // hunter2`]], { secrets: { PW: "hunter2", TOKEN: "s3cr3t-value", EMPTY: "" } });
+      await setup(wt, [[...leak.slice(0, 2), `${leak[2]} // hunter2`]], { secrets: { PW: "hunter2", TOKEN: "s3cr3t-value", EMPTY: "" } });
     } catch (e) {
       msg = (e as Error).message;
     }
@@ -850,30 +867,81 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(msg).toContain("token *** and ***");
   });
 
-  it("a setup step is bounded by the lock's deadline", () => {
+  it("a setup step is bounded by the lock's deadline", async () => {
     const wt = makeWorktree(committed(), runId());
     const t0 = Date.now();
-    expect(() => setup(wt, [node("setTimeout(() => {}, 20000)")], { deadline: later(2) })).toThrow(/^failed: setup .* timed out/);
+    await expect(setup(wt, [node("setTimeout(() => {}, 20000)")], { deadline: later(2) })).rejects.toThrow(/^failed: setup .* timed out/);
     expect(Date.now() - t0).toBeLessThan(10_000);
-    expect(() => setup(wt, [node("require('fs').writeFileSync('ran', '')")], { deadline: later(-1) })).toThrow(/^failed: setup .* timed out/);
+    await expect(setup(wt, [node("require('fs').writeFileSync('ran', '')")], { deadline: later(-1) })).rejects.toThrow(/^failed: setup .* timed out/);
     expect(existsSync(join(wt, "ran"))).toBe(false);
-    expect(() => runSetup(wt, { setup: [] }, PATH(), {})).toThrow(/deadline/);
+    await expect(runSetup(wt, { setup: [] }, PATH(), {})).rejects.toThrow(/deadline/);
   });
 
-  it("after setup, a symlink into the main checkout is refused; one inside the worktree is fine", () => {
+  describe("setup in its own process group", () => {
+    const gone = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const settle = async (pid: number) => {
+      for (let i = 0; i < 40 && !gone(pid); i++) await new Promise((r) => setTimeout(r, 50));
+      return gone(pid);
+    };
+    const parentWithChild = (exit: string) =>
+      node(`const c = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)'], { stdio: 'ignore' }); require('fs').writeFileSync('child.pid', String(c.pid)); ${exit}`);
+
+    it("a timed-out setup with a grandchild leaves no process", async () => {
+      const wt = makeWorktree(committed(), runId());
+      const groups: { name: string; pgid: number }[] = [];
+      await expect(setup(wt, [parentWithChild("setInterval(() => {}, 1 << 30)")], { deadline: later(2), groups })).rejects.toThrow(/timed out/);
+      const child = Number(readFileSync(join(wt, "child.pid"), "utf8"));
+      expect(await settle(child)).toBe(true);
+      expect(groups).toEqual([expect.objectContaining({ name: "setup[0]", pgid: expect.any(Number) })]);
+    });
+
+    it("a failed setup with a grandchild leaves no process", async () => {
+      const wt = makeWorktree(committed(), runId());
+      await expect(setup(wt, [parentWithChild("process.exit(1)")])).rejects.toThrow(/exited 1/);
+      expect(await settle(Number(readFileSync(join(wt, "child.pid"), "utf8")))).toBe(true);
+    });
+
+    it("a setup that leaves a daemon in its group succeeds, and its group stays recorded for down", async () => {
+      const wt = makeWorktree(committed(), runId());
+      const groups: { name: string; pgid: number }[] = [];
+      await setup(wt, [parentWithChild("process.exit(0)")], { groups });
+      const child = Number(readFileSync(join(wt, "child.pid"), "utf8"));
+      try {
+        expect(gone(child)).toBe(false);
+        expect(groups).toHaveLength(1);
+      } finally {
+        process.kill(-groups[0].pgid, "SIGKILL");
+      }
+      expect(await settle(child)).toBe(true);
+    });
+
+    it("a setup argv that cannot start is reported", async () => {
+      const wt = makeWorktree(committed(), runId());
+      await expect(setup(wt, [["/no/such/tool"]])).rejects.toThrow(/^failed: setup \/no\/such\/tool: .*ENOENT/);
+    });
+  });
+
+  it("after setup, a symlink into the main checkout is refused; one inside the worktree is fine", async () => {
     const main = committed();
     const wt = makeWorktree(main, runId());
-    setup(wt, [link(join(wt, "app.txt"), "node_modules/.bin/app"), link("../../app.txt", "node_modules/.bin/rel")]);
-    expect(() => setup(wt, [link(join(main, "node_modules"), "deps/node_modules")])).toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
+    await setup(wt, [link(join(wt, "app.txt"), "node_modules/.bin/app"), link("../../app.txt", "node_modules/.bin/rel")]);
+    await expect(setup(wt, [link(join(main, "node_modules"), "deps/node_modules")])).rejects.toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
     rmSync(join(wt, "deps"), { recursive: true });
-    expect(() => setup(wt, [link(main, "up")])).toThrow(/points into the main checkout/);
+    await expect(setup(wt, [link(main, "up")])).rejects.toThrow(/points into the main checkout/);
   });
 
   describe("links the check must see through", () => {
-    const refusedAfter = (make: (main: string, wt: string) => string[]) => {
+    const refusedAfter = async (make: (main: string, wt: string) => string[]) => {
       const main = committed();
       const wt = makeWorktree(main, runId());
-      expect(() => setup(wt, [make(main, wt)])).toThrow(/points into the main checkout/);
+      await expect(setup(wt, [make(main, wt)])).rejects.toThrow(/points into the main checkout/);
     };
     it("a relative link", () => refusedAfter((main, wt) => link(relative(join(wt, "a"), join(main, "app.txt")), "a/rel")));
     it("a broken link to a missing file in the repo", () => refusedAfter((main) => link(join(main, "missing/deep/file"), "broken")));
@@ -898,33 +966,33 @@ describe("argus-live instance — worktree, environment, setup", () => {
         return link(join(hop, "alias", ...Array.from({ length: 60 }, (_, i) => `d${i}`)), "deep");
       }));
 
-    const unresolved = (make: (wt: string) => string[]) => {
+    const unresolved = async (make: (wt: string) => string[]) => {
       const main = committed();
       const wt = makeWorktree(main, runId());
-      expect(() => setup(wt, [make(wt)])).toThrow(/^refused: .* could not be resolved/);
+      await expect(setup(wt, [make(wt)])).rejects.toThrow(/^refused: .* could not be resolved/);
     };
     it("a link loop fails closed", () => unresolved(() => node("const fs = require('fs'); fs.symlinkSync('b', 'a'); fs.symlinkSync('a', 'b')")));
-    it("a chain longer than 40 links fails closed; 30 resolve", () => {
+    it("a chain longer than 40 links fails closed; 30 resolve", async () => {
       const chain = (n: number) => {
         const hop = realpathSync(tempDir());
         writeFileSync(join(hop, "end"), "");
         for (let i = n; i > 0; i--) symlinkSync(join(hop, i === n ? "end" : `l${i + 1}`), join(hop, `l${i}`));
         return join(hop, "l1");
       };
-      unresolved(() => link(chain(41), "long"));
+      await unresolved(() => link(chain(41), "long"));
       const main = committed();
       const wt = makeWorktree(main, runId());
-      expect(() => setup(wt, [link(chain(30), "ok")])).not.toThrow();
+      await expect(setup(wt, [link(chain(30), "ok")])).resolves.toBeUndefined();
     });
   });
 
-  it("a missing TMPDIR is refused, not a raw error", () => {
+  it("a missing TMPDIR is refused, not a raw error", async () => {
     const main = committed();
     process.env.TMPDIR = join(tmp, "gone");
     expect(() => makeWorktree(main, runId())).toThrow(/^refused: TMPDIR .*gone does not exist/);
   });
 
-  it("a worktree found inside the repo after git added it is removed before refusing", () => {
+  it("a worktree found inside the repo after git added it is removed before refusing", async () => {
     const main = committed();
     const id = runId();
     const calls: string[][] = [];
@@ -936,5 +1004,169 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(() => makeWorktree(main, id, { runner })).toThrow(/^refused: the worktree .* lies inside the repo/);
     const wt = join(realpathSync(tmp), "sapu-live", `${basename(main)}-${id}`);
     expect(calls.at(-1)).toEqual(["git", "-C", main, "worktree", "remove", "--force", wt]);
+  });
+});
+
+describe("argus-live instance — processes, health, store", () => {
+  const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
+  const app = (args = "") => `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
+  const groups: { name: string; pgid: number }[] = [];
+  const servers: Server[] = [];
+  afterEach(async () => {
+    for (const g of groups.splice(0)) {
+      try {
+        process.kill(-g.pgid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))));
+  });
+  const freePort = () =>
+    new Promise<number>((done) => {
+      const s = createServer();
+      s.listen(0, "127.0.0.1", () => {
+        const p = (s.address() as { port: number }).port;
+        s.close(() => done(p));
+      });
+    });
+  const serve = () =>
+    new Promise<number>((done) => {
+      const s = createServer((c) => c.end("HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 0\r\n\r\n", () => c.destroy()));
+      s.listen(0, "127.0.0.1", () => {
+        servers.push(s);
+        done((s.address() as { port: number }).port);
+      });
+    });
+  /** A worktree stand-in, a MAIN with an env file, and an expanded config for the fixture app. */
+  const world = async (over: Record<string, unknown> = {}) => {
+    const wt = tempDir();
+    const main = tempDir();
+    const data = join(tempDir(), "app_explore");
+    const [store, web] = [await freePort(), await freePort()];
+    const ev = (name: string) => `echo ${name} >> events; `;
+    const config = {
+      store: "app_explore",
+      store_check: `${ev("check")}${app("--which-store")}`,
+      reset: `${ev("reset")}${app("--reset")}`,
+      start: [
+        { name: "web", cmd: `${ev("web")}exec ${app()}`, env: { PORT: String(web) }, health: { url: `http://127.0.0.1:${web}/health` } },
+        { name: "backing", phase: "store", cmd: `${ev("backing")}exec ${app()}`, env: { PORT: String(store) }, health: { url: `http://127.0.0.1:${store}/health` } },
+      ],
+      ...over,
+    };
+    const env = { PATH: process.env.PATH!, DATA_DIR: data, CACHE_URL: `tcp://127.0.0.1:${store}` };
+    const ctx = { config, env, worktree: wt, main, contract: null, secrets: {}, logs: join(wt, "logs"), groups, timeoutS: 20, deadline: Math.floor(Date.now() / 1000) + 600 };
+    return { wt, main, data, ctx, events: () => (existsSync(join(wt, "events")) ? readFileSync(join(wt, "events"), "utf8").trim().split("\n") : []) };
+  };
+
+  it("brings up the store phase first, checks the store, resets, then the rest, then checks again", async () => {
+    const w = await world();
+    mkdirSync(w.data, { recursive: true });
+    writeFileSync(join(w.data, "sentinel"), "");
+    await bringUpStore(w.ctx);
+    expect(w.events()).toEqual(["backing", "check", "reset"]);
+    expect(readdirSync(w.data)).toEqual(["seed.json"]);
+    await bringUpRest(w.ctx);
+    expect(w.events()).toEqual(["backing", "check", "reset", "web", "check"]);
+    expect(groups.map((g) => g.name)).toEqual(["backing", "reset", "web"]);
+    expect(readFileSync(join(w.ctx.logs, "web.log"), "utf8")).toMatch(/listening on/);
+  });
+
+  it("a store_check printing another store is refused, and reset never runs", async () => {
+    const w = await world();
+    w.ctx.config.store_check = "echo app_dev";
+    mkdirSync(w.data, { recursive: true });
+    writeFileSync(join(w.data, "sentinel"), "");
+    await expect(bringUpStore(w.ctx)).rejects.toThrow('refused: store_check printed "app_dev", not the store "app_explore"');
+    expect(w.events()).toEqual(["backing"]);
+    expect(existsSync(join(w.data, "sentinel"))).toBe(true);
+  });
+
+  it("an env URL equal to one in the repo's env files is refused, naming the key and never the value", async () => {
+    const w = await world();
+    writeFileSync(join(w.main, ".env"), "REDIS_URL=redis://localhost:6379/0\n");
+    const env = { ...w.ctx.env, CACHE: "redis://localhost:6379/0" };
+    const err = checkStore({ ...w.ctx, env }).catch((e: Error) => e.message);
+    expect(await err).toBe("refused: env.CACHE equals a value in the repo's env files (.env, .env.local); it would reach the owner's service");
+    writeFileSync(join(w.main, ".env.production"), "X=redis://localhost:7000\n");
+    const prod = await checkStore({ ...w.ctx, env: { ...w.ctx.env, C: "redis://localhost:7000" }, contract: { guard: { envFiles: [".env.production"], postgres: null } } }).catch((e: Error) => e.message);
+    expect(prod).toMatch(/^refused: env\.C equals a value in the repo's env files/);
+    await expect(checkStore(w.ctx)).resolves.toBeUndefined();
+  });
+
+  it("an env URL naming a database or port guard.postgres protects is refused", async () => {
+    const w = await world();
+    const contract = { guard: { envFiles: [], postgres: { ports: [6543, 5432], databases: ["app_dev"] } } };
+    const refused = (v: string) => checkStore({ ...w.ctx, contract, env: { ...w.ctx.env, DATABASE_URL: v } }).then(() => "ok", (e: Error) => e.message);
+    expect(await refused("postgres://app:pw@localhost:6543/app_explore")).toMatch(/^refused: env\.DATABASE_URL names port 6543/);
+    expect(await refused("postgresql://app@localhost:41001/app_dev")).toMatch(/^refused: env\.DATABASE_URL names database app_dev/);
+    expect(await refused("postgresql://app@localhost:41001/app%5Fdev")).toMatch(/names database app_dev/);
+    expect(await refused("postgresql://app@[::1]:41001,localhost:6543/x")).toMatch(/names port 6543/);
+    expect(await refused("postgres://app@localhost/app_explore")).toMatch(/names port 5432/);
+    expect(await refused("postgresql://app@localhost:41001/x?dbname=app_dev")).toMatch(/names database app_dev/);
+    expect(await refused("postgresql://app@localhost:41001/app_explore")).toBe("ok");
+    expect(await refused("pw-not-in-message")).toBe("ok");
+  });
+
+  it("a health url that already answers before start is refused, and the command never runs", async () => {
+    const w = await world();
+    const port = await serve();
+    const entry = { name: "web", cmd: "echo ran >> events", health: { url: `http://127.0.0.1:${port}/health` } };
+    await expect(startEntry(entry, { ...w.ctx, groups })).rejects.toThrow(`refused: something already serves http://127.0.0.1:${port}/health (web)`);
+    expect(w.events()).toEqual([]);
+  });
+
+  it("an entry that exits before its health fails, unless it has stop", async () => {
+    const w = await world();
+    const quick = { name: "starter", cmd: "echo detached" };
+    const s1 = await startEntry(quick, { ...w.ctx, groups });
+    await expect(waitHealth(quick, s1, { ...w.ctx, aliveAfterMs: 1000 })).rejects.toThrow(/^failed: starter exited \(code 0\) before its health passed/);
+    const withStop = { ...quick, stop: "true" };
+    const s2 = await startEntry(withStop, { ...w.ctx, groups });
+    await expect(waitHealth(withStop, s2, { ...w.ctx, aliveAfterMs: 1000 })).resolves.toBeUndefined();
+    const failing = { name: "broken", cmd: "exit 4", stop: "true" };
+    const s3 = await startEntry(failing, { ...w.ctx, groups });
+    await expect(waitHealth(failing, s3, { ...w.ctx, aliveAfterMs: 1000 })).rejects.toThrow(/^failed: broken exited \(code 4\)/);
+  });
+
+  it("no health: alive after the wait passes; a health cmd passes once it exits 0", async () => {
+    const w = await world();
+    const sleeper = { name: "worker", cmd: `exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"` };
+    await expect(waitHealth(sleeper, await startEntry(sleeper, { ...w.ctx, groups }), { ...w.ctx, aliveAfterMs: 300 })).resolves.toBeUndefined();
+    const ready = { name: "ready", cmd: `sleep 1; touch ready; exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"`, health: { cmd: "test -f ready" } };
+    await expect(waitHealth(ready, await startEntry(ready, { ...w.ctx, groups }), w.ctx)).resolves.toBeUndefined();
+  });
+
+  it("a health timeout fails, naming the entry", async () => {
+    const w = await world();
+    const port = await freePort();
+    const never = { name: "api", cmd: `exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"`, health: { url: `http://127.0.0.1:${port}/health` } };
+    const t0 = Date.now();
+    await expect(waitHealth(never, await startEntry(never, { ...w.ctx, groups }), { ...w.ctx, timeoutS: 1 })).rejects.toThrow(/^failed: api was not healthy within 1 s/);
+    expect(Date.now() - t0).toBeLessThan(5000);
+  });
+
+  it("an entry runs in its own process group, with the instance env and its own, never HOME or COMPOSE_PROJECT_NAME", async () => {
+    const w = await world();
+    const pidFile = join(w.wt, "child.pid");
+    const port = await freePort();
+    const entry = { name: "web", cmd: `exec ${app("--spawn-child")}`, env: { PORT: String(port), CHILD_PID_FILE: pidFile }, health: { url: `http://127.0.0.1:${port}/health` } };
+    const s = await startEntry(entry, { ...w.ctx, groups });
+    await waitHealth(entry, s, w.ctx);
+    expect(s.pgid).toBe(s.pid);
+    expect(groups.at(-1)).toMatchObject({ name: "web", pgid: s.pgid });
+    process.kill(-s.pgid, "SIGKILL");
+    const child = Number(readFileSync(pidFile, "utf8"));
+    for (let i = 0; i < 40; i++) {
+      try {
+        process.kill(child, 0);
+      } catch {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(() => process.kill(child, 0)).toThrow();
+    await expect(startEntry({ name: "x", cmd: "true", env: { HOME: "/" } }, { ...w.ctx, groups })).rejects.toThrow("refused: start entry x may not set HOME");
   });
 });

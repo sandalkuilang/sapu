@@ -181,25 +181,30 @@ when `basename(DATA_DIR)` does not end in `_explore`); connects (TCP, keeps the 
 grandchild process that also sleeps (for the process-group test).
 
 Interfaces:
-- `export function startEntry(entry, {worktree, env})` → `{pid, pgid}`: `spawn("/bin/sh", ["-c",
-  cmd], {cwd: worktree, env: {...env, ...entryEnv}, detached: true, stdio: [ignore, log, log]})`,
-  logs to `.argus/live/<runId>/logs/<name>.log`; `pgid = pid`.
-- `export async function waitHealth(entry, {timeoutS, run})`: `{url}` → GET until 2xx; `{cmd}` →
-  run until exit 0; omitted → alive after 5 s. Before starting, a health `url` that already answers
-  → throws `refused: something already serves <url>`. A process that exits before health passes →
-  throws unless the entry has `stop`.
-- `export function checkStore({config, env, worktree, main, contract})`: run `store_check` (shell,
-  cwd worktree, env) → trimmed stdout must equal `store`; every URL-looking value in `env` must not
-  equal a value in MAIN's env files (`.env`, `.env.local` and the contract's `guard.envFiles`, parsed
-  with `parseEnvFile`, values never printed) and must not name a database or port the contract's
-  `guard.postgres` protects → else throws `refused: …` naming the key only.
+- `export function expandConfig(config, {ports, secrets})` (config module) → a deep copy with every
+  string expanded; everything below takes the expanded config.
+- `export async function startEntry(entry, {worktree, env, logs, groups})` → `{pid, pgid, log, exit}`:
+  refuses first when the entry's health `url` already answers (`refused: something already serves
+  <url>`) and when its `env` names HOME or COMPOSE_PROJECT_NAME; then `spawn("/bin/sh", ["-c", cmd],
+  {cwd: worktree, env: {...env, ...entryEnv}, detached: true, stdio: [ignore, log, log]})`, logged to
+  `<logs>/<name>.log` (`up` passes `.argus/live/<runId>/logs`); `pgid = pid`, pushed to `groups`.
+- `export async function waitHealth(entry, started, {timeoutS, aliveAfterMs, worktree, env})`: `{url}`
+  → GET until 2xx; `{cmd}` → run until exit 0; omitted → alive after `aliveAfterMs` (5 s). A process
+  that exits before health passes → throws unless it exited 0 and the entry has `stop`.
+- `export async function checkStore({config, env, worktree, main, contract, deadline})`: run
+  `store_check` (shell, cwd worktree, env) → trimmed stdout must equal `store`; every URL-looking
+  value in `env` must not equal a value in MAIN's env files (`.env`, `.env.local` and the contract's
+  `guard.envFiles`, parsed with `parseEnvFile`, values never printed) and must not name a database
+  or port the contract's `guard.postgres` protects (a `postgres` URL without a port names 5432; a
+  bare numeric value is checked as a port) → else throws `refused: …` naming the key only.
+- `export async function bringUpStore(ctx)` / `bringUpRest(ctx)`: the order inside `up` — store-phase
+  entries (started and healthy one by one) → `checkStore` → `reset` (its group recorded too); then
+  the remaining entries → health → `checkStore` again. Every group lands in `ctx.groups` as it starts.
 - Setup in process groups (carried from the Task 4 review): `runSetup` spawns each `setup` argv
   asynchronously and detached (its own process group), records its pgid before waiting, and on a
   timeout or a failure kills the whole group (`kill -pgid`). Every setup group stays recorded, so
   a setup that leaves a daemon behind in its group is also killed at `down` (Task 7). Test: a
   timed-out setup with a grandchild leaves no process.
-- Order inside `up` (Task 8 wires it): store-phase entries → health → `checkStore` → `reset` →
-  remaining entries → health → `checkStore` again.
 
 - [ ] Tests (fixture app): a `phase: "store"` entry starts first (its log line precedes `reset`);
   `checkStore` refuses a `store_check` printing another name and `reset` never runs (a sentinel file

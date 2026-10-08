@@ -13,13 +13,13 @@
 // process holds it), after re-reading the lock under the claim. A takeover replaces the stale lock with
 // rename(2), so `lock.json` never goes missing in between, and keeps its claim: that file is the stale
 // run's record for recovery, and it makes every later taker of the same stale run back off.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { expand, MAX_CYCLE_MINUTES } from "./argus-live-config.mjs";
+import { expand, MAX_CYCLE_MINUTES, parseEnvFile } from "./argus-live-config.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
@@ -524,32 +524,307 @@ function readFrom(file, from) {
   }
 }
 
+/** SIGKILL (or `signal`) to every process of group `pgid`; a group already gone is fine. */
+export function killGroup(pgid, signal = "SIGKILL") {
+  if (!Number.isInteger(pgid) || pgid <= 1) return;
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // gone already
+  }
+}
+
 /**
- * Runs each `setup` argv in the worktree under `env`, without a shell, its output appended to `log`
- * (a file, never a pipe: a lingering grandchild cannot hold the run open); each step is bounded by
- * the time left before `deadline` (the lock's, epoch seconds). Then refuses a symlink into <MAIN>.
- * Throws `failed: setup <argv> exited <code>: <its output's last lines>` or `failed: setup <argv>
- * timed out`, every non-empty `secrets` value masked.
+ * The async runner: `argv` without a shell, detached into its own process group (pgid = pid, handed
+ * to `onStart` before anything is awaited). On `timeoutMs` the whole group gets SIGKILL. With
+ * `capture`, stdout is collected (up to 1 MiB) → {status, signal, timedOut, error, stdout}.
  */
-export function runSetup(worktree, config, env, { main = findMain(worktree), runner = run, secrets = {}, deadline, log = `${worktree}.setup.log` } = {}) {
-  if (!Number.isInteger(deadline)) throw new Error("failed: runSetup needs the lock's deadline (epoch seconds)");
+export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore", "ignore"], capture = false, onStart = () => {} } = {}) {
+  return new Promise((done) => {
+    let finished = false;
+    let timedOut = false;
+    let timer;
+    let stdout = "";
+    const finish = (r) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      done({ timedOut, stdout, ...r });
+    };
+    let child;
+    try {
+      child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: capture ? [stdio[0], "pipe", stdio[2]] : stdio });
+    } catch (e) {
+      finish({ error: e });
+      return;
+    }
+    child.once("error", (e) => finish({ error: e }));
+    if (capture) child.stdout.on("data", (d) => stdout.length < 1 << 20 && (stdout += d));
+    if (!child.pid) return;
+    onStart(child.pid);
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        killGroup(child.pid);
+      }, Math.max(0, timeoutMs));
+    }
+    child.once(capture ? "close" : "exit", (status, signal) => finish({ status, signal }));
+  });
+}
+
+/** `deadline` (epoch seconds) as milliseconds left; refuses a missing one. */
+function msLeft(deadline, what) {
+  if (!Number.isInteger(deadline)) throw new Error(`failed: ${what} needs the lock's deadline (epoch seconds)`);
+  return deadline * 1000 - Date.now();
+}
+
+/**
+ * Runs each `setup` argv in the worktree under `env`, without a shell, each in its own process group
+ * (recorded in `groups` as `setup[<i>]` before it is awaited, so `down` kills a daemon it leaves
+ * behind), its output appended to `log`; each step is bounded by the time left before `deadline` (the
+ * lock's, epoch seconds), and a timed-out or failed step's whole group is killed. Then refuses a
+ * symlink into <MAIN>. Throws `failed: setup <argv> exited <code>: <its output's last lines>` or
+ * `failed: setup <argv> timed out`, every non-empty `secrets` value masked.
+ */
+export async function runSetup(worktree, config, env, { main = findMain(worktree), runner = runAsync, secrets = {}, deadline, log = `${worktree}.setup.log`, groups = [] } = {}) {
+  msLeft(deadline, "runSetup");
   if (!main) throw new Error(`failed: no main checkout found for ${worktree}`);
-  for (const argv of config.setup ?? []) {
+  for (const [i, argv] of (config.setup ?? []).entries()) {
     const shown = redact(argv.join(" "), secrets);
-    const left = deadline * 1000 - Date.now();
+    const left = msLeft(deadline, "runSetup");
     if (left <= 0) throw new Error(`failed: setup ${shown} timed out (the cycle's deadline passed)`);
     const fd = fs.openSync(log, "a", 0o600);
     const from = fs.fstatSync(fd).size;
+    let pgid;
     let r;
     try {
-      r = runner(argv, { cwd: worktree, env, stdio: ["ignore", fd, fd], timeout: left, killSignal: "SIGKILL" });
+      r = await runner(argv, {
+        cwd: worktree,
+        env,
+        stdio: ["ignore", fd, fd],
+        timeoutMs: left,
+        onStart: (p) => {
+          pgid = p;
+          groups.push({ name: `setup[${i}]`, pgid: p, cmdline: argv.join(" ") });
+        },
+      });
     } finally {
       fs.closeSync(fd);
     }
     const out = () => tail(redact(readFrom(log, from), secrets));
-    if (r.error && r.error.code === "ETIMEDOUT") throw new Error(`failed: setup ${shown} timed out (the cycle's deadline): ${out()}`);
+    if (r.timedOut) {
+      killGroup(pgid);
+      throw new Error(`failed: setup ${shown} timed out (the cycle's deadline): ${out()}`);
+    }
     if (r.error) throw new Error(`failed: setup ${shown}: ${redact(r.error.message, secrets)}`);
-    if (r.status !== 0) throw new Error(`failed: setup ${shown} exited ${r.status ?? r.signal}: ${out()}`);
+    if (r.status !== 0) {
+      killGroup(pgid);
+      throw new Error(`failed: setup ${shown} exited ${r.status ?? r.signal}: ${out()}`);
+    }
   }
   refuseLinksIntoMain(worktree, main);
+}
+
+/** True when something answers at `url` (any HTTP response, or a connection that never replies). */
+async function answers(url) {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(1000), redirect: "manual" });
+    return true;
+  } catch (e) {
+    return Boolean(e && e.name === "TimeoutError");
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Starts one expanded `start` entry: `/bin/sh -c <cmd>` in the worktree, detached into its own process
+ * group (recorded in `groups`), under `env` plus the entry's own env, logged to `<logs>/<name>.log`.
+ * Refused when its health `url` already answers (something else serves there) and when its env names
+ * HOME or COMPOSE_PROJECT_NAME. Returns {name, pid, pgid, log, cmdline, t0, exit} (`exit` = {code,
+ * signal} once it exits).
+ */
+export async function startEntry(entry, { worktree, env, logs, groups = [] }) {
+  for (const k of Object.keys(entry.env ?? {})) if (RUN_ENV.includes(k)) throw new Error(`refused: start entry ${entry.name} may not set ${k}`);
+  const url = entry.health && entry.health.url;
+  if (url && (await answers(url))) throw new Error(`refused: something already serves ${url} (${entry.name})`);
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  const log = path.join(logs, `${entry.name}.log`);
+  const fd = fs.openSync(log, "a", 0o600);
+  let child;
+  try {
+    child = spawn("/bin/sh", ["-c", entry.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, detached: true, stdio: ["ignore", fd, fd] });
+  } finally {
+    fs.closeSync(fd);
+  }
+  const started = { name: entry.name, pid: undefined, pgid: undefined, log, cmdline: `/bin/sh -c ${entry.cmd}`, t0: Date.now(), exit: null };
+  child.once("exit", (code, signal) => {
+    started.exit = { code, signal };
+  });
+  await new Promise((ok, fail) => {
+    child.once("spawn", ok);
+    child.once("error", (e) => fail(new Error(`failed: ${entry.name} could not start: ${e.message}`)));
+  });
+  started.pid = started.pgid = child.pid;
+  groups.push({ name: entry.name, pgid: child.pid, cmdline: started.cmdline });
+  return started;
+}
+
+/**
+ * Waits until `entry` is healthy: `{url}` answering 2xx, `{cmd}` exiting 0 (run like the entry), or,
+ * without health, the process alive after `aliveAfterMs`. A process that exits before then fails it,
+ * unless it exited 0 and the entry has `stop` (a detached starter). `timeoutS` bounds the wait.
+ */
+export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync }) {
+  const until = Date.now() + timeoutS * 1000;
+  const exited = () => {
+    const x = started.exit;
+    if (!x) return null;
+    if (x.code === 0 && entry.stop) return null;
+    return new Error(`failed: ${entry.name} exited (code ${x.code ?? x.signal}) before its health passed; log ${started.log}: ${tail(redact(readFrom(started.log, 0), secrets))}`);
+  };
+  const timeout = () => new Error(`failed: ${entry.name} was not healthy within ${timeoutS} s; log ${started.log}`);
+  if (!entry.health) {
+    while (Date.now() < started.t0 + aliveAfterMs) {
+      const x = exited();
+      if (x) throw x;
+      if (started.exit && entry.stop) return;
+      await sleep(50);
+    }
+    const x = exited();
+    if (x) throw x;
+    return;
+  }
+  for (;;) {
+    const left = until - Date.now();
+    let x = exited();
+    if (x) throw x;
+    if (left <= 0) throw timeout();
+    let ok = false;
+    if (entry.health.url) {
+      try {
+        const res = await fetch(entry.health.url, { signal: AbortSignal.timeout(Math.min(2000, left)), redirect: "manual" });
+        ok = res.status >= 200 && res.status < 300;
+      } catch {
+        ok = false;
+      }
+    } else {
+      const r = await runner(["/bin/sh", "-c", entry.health.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}) }, timeoutMs: Math.min(30_000, left) });
+      ok = !r.error && !r.timedOut && r.status === 0;
+    }
+    if (ok) return;
+    x = exited();
+    if (x) throw x;
+    if (Date.now() >= until) throw timeout();
+    await sleep(250);
+  }
+}
+
+const URL_LIKE = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/** The ports and database names a connection URL names, a scheme's default port included. */
+function urlParts(v) {
+  const m = v.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)(\?[^#]*)?/i);
+  if (!m) return { ports: [], databases: [] };
+  const pg = /^postgres(ql)?$/i.test(m[1]);
+  const hosts = m[2].slice(m[2].lastIndexOf("@") + 1).split(",");
+  const ports = hosts.map((h) => {
+    const p = h.match(/:(\d+)$/);
+    return p ? Number(p[1]) : pg ? 5432 : null;
+  });
+  const decode = (x) => {
+    try {
+      return decodeURIComponent(x);
+    } catch {
+      return x;
+    }
+  };
+  const db = m[3].split("/").filter(Boolean)[0];
+  const databases = db ? [decode(db)] : [];
+  const q = new URLSearchParams((m[4] || "").slice(1));
+  for (const k of ["dbname", "database"]) if (q.get(k)) databases.push(q.get(k));
+  if (q.get("port")) ports.push(...q.get("port").split(",").map(Number));
+  return { ports: ports.filter((p) => p !== null), databases };
+}
+
+/**
+ * Runs `store_check` (shell, worktree, env, bounded by `deadline`): its output must be `store`. No URL
+ * in `env` may equal a value in the repo's env files (`.env`, `.env.local`, the contract's
+ * `guard.envFiles`; read here, never printed) or name a port or database the contract's
+ * `guard.postgres` protects. Refusals name the key, never a value.
+ */
+export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, runner = runAsync }) {
+  const left = msLeft(deadline, "checkStore");
+  const r = await runner(["/bin/sh", "-c", config.store_check], { cwd: worktree, env, capture: true, timeoutMs: Math.max(0, left) });
+  if (r.timedOut) throw new Error("failed: store_check timed out (the cycle's deadline)");
+  if (r.error || r.status !== 0) throw new Error(`failed: store_check ${r.error ? redact(r.error.message, secrets) : `exited ${r.status ?? r.signal}`}`);
+  const got = r.stdout.trim();
+  if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}", not the store "${config.store}"`);
+  const guard = (contract && contract.guard) || {};
+  const files = [".env", ".env.local", ...(guard.envFiles ?? [])];
+  const repo = new Set();
+  for (const f of files) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(main, f), "utf8");
+    } catch {
+      continue;
+    }
+    for (const v of Object.values(parseEnvFile(text))) if (v.trim()) repo.add(v.trim());
+  }
+  const pg = guard.postgres || { ports: [], databases: [] };
+  for (const [k, raw] of Object.entries(env)) {
+    const v = String(raw).trim();
+    if (/^\d+$/.test(v)) {
+      if (pg.ports.includes(Number(v))) throw new Error(`refused: env.${k} names port ${v}, which guard.postgres protects`);
+      continue;
+    }
+    if (!URL_LIKE.test(v)) continue;
+    if (repo.has(v)) throw new Error(`refused: env.${k} equals a value in the repo's env files (${files.join(", ")}); it would reach the owner's service`);
+    const { ports, databases } = urlParts(v);
+    const port = ports.find((p) => pg.ports.includes(p));
+    if (port !== undefined) throw new Error(`refused: env.${k} names port ${port}, which guard.postgres protects`);
+    const db = databases.find((d) => pg.databases.includes(d));
+    if (db !== undefined) throw new Error(`refused: env.${k} names database ${db}, which guard.postgres protects`);
+  }
+}
+
+/** Runs one config command (`reset`) through the shell in the worktree, logged, bounded by `deadline`. */
+async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {}, groups = [], runner = runAsync }) {
+  const left = msLeft(deadline, name);
+  if (left <= 0) throw new Error(`failed: ${name} timed out (the cycle's deadline passed)`);
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  const log = path.join(logs, `${name}.log`);
+  const fd = fs.openSync(log, "a", 0o600);
+  const from = fs.fstatSync(fd).size;
+  let r;
+  try {
+    r = await runner(["/bin/sh", "-c", cmd], { cwd: worktree, env, stdio: ["ignore", fd, fd], timeoutMs: left, onStart: (p) => groups.push({ name, pgid: p, cmdline: `/bin/sh -c ${cmd}` }) });
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (r.timedOut) throw new Error(`failed: ${name} timed out (the cycle's deadline)`);
+  if (r.error) throw new Error(`failed: ${name}: ${redact(r.error.message, secrets)}`);
+  if (r.status !== 0) throw new Error(`failed: ${name} exited ${r.status ?? r.signal}: ${tail(redact(readFrom(log, from), secrets))}`);
+}
+
+async function startHealthy(entry, ctx) {
+  await waitHealth(entry, await startEntry(entry, ctx), ctx);
+}
+
+/**
+ * `up` steps 6: the `phase: "store"` entries (started and healthy, one by one), `checkStore`, and only
+ * then `reset`. `ctx` = {config (expanded), env, worktree, main, contract, secrets, logs, groups,
+ * timeoutS, deadline}; every started group lands in `ctx.groups` as it starts.
+ */
+export async function bringUpStore(ctx) {
+  for (const e of ctx.config.start.filter((x) => x.phase === "store")) await startHealthy(e, ctx);
+  await checkStore(ctx);
+  await runStep("reset", ctx.config.reset, ctx);
+}
+
+/** `up` step 7: every other entry (started and healthy, one by one), then `checkStore` again. */
+export async function bringUpRest(ctx) {
+  for (const e of ctx.config.start.filter((x) => x.phase !== "store")) await startHealthy(e, ctx);
+  await checkStore(ctx);
 }

@@ -225,6 +225,17 @@ export function expand(value, { ports = {}, secrets = {} } = {}) {
   });
 }
 
+/** A deep copy of `config` with every string expanded (`expand`); `config` itself is left as it is. */
+export function expandConfig(config, { ports = {}, secrets = {} } = {}) {
+  const walk = (v) => {
+    if (typeof v === "string") return expand(v, { ports, secrets });
+    if (Array.isArray(v)) return v.map(walk);
+    if (isObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  return walk(config);
+}
+
 /**
  * The ports the config asks for, before anything is expanded: `names` = every `{port:<name>}` in
  * every string, in order of first appearance; `fixed` = `{name: n}` for each `{port:<name>=<n>}`
