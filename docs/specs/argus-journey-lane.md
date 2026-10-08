@@ -659,7 +659,8 @@ For `sapu:ui-explorer`:
   That also closes `printenv`, `node -e`, `curl`, `gh` and git for it.
 - **Read** is allowed only on a file whose real path (`realpath.native`) lies in the run's worktree
   (from `.argus/live/run.json`), outside `.argus/` compared without case, and is committed at HEAD
-  (`git ls-tree HEAD` names exactly that path; a staged or untracked file is refused). Grep, Glob and
+  (`git ls-tree HEAD` lists exactly that path as a blob; a staged or untracked file, a directory or
+  a gitlink is refused). Grep, Glob and
   every other tool are refused: ripgrep's `glob` overrides ignore rules and a directory search
   reaches untracked files, so code search goes through the wrapper's `code` command. Page content
   reaches the explorer only through the wrapper.
@@ -669,10 +670,13 @@ edit`, `gh api` REST and GraphQL) and `gh label create|edit|delete|clone` on it 
 `gh issue create --label` with it is allowed. Closing an issue as not planned (the owner's ruling
 that a finding is intended, §10) is refused too: `gh issue close` with `--reason`/`-r` not planned in
 any spelling or case (`--reason=` and `-r<value>` forms included), a non-GET `gh api` carrying
-`state_reason` not planned or one read from a file, an issue write whose `--input` or `-F …=@file`
-body cannot be read, a GraphQL `closeIssue` with `NOT_PLANNED` (or a variable read from a file), and
-an MCP write tool or GraphQL tool whose fields carry not planned. A plain `gh issue close` (completed)
-stays allowed. `/sapu:init` adds `env_file`'s name to the contract's `guard.envFiles`.
+`state_reason` not planned or one read from a file, an issue write (`/issues/<n>`, query string and
+fragment ignored) whose `--input` or `-F …=@file` body cannot be read, a GraphQL `closeIssue` with
+`stateReason: NOT_PLANNED` or a variable exactly `NOT_PLANNED` (or one read from a file), and an MCP
+tool whose reason field carries not planned or any of whose fields names `closeIssue` beside
+`NOT_PLANNED`. A reason, label or `closeIssue` field value the shell builds (`$VAR`, `$( )`,
+backticks) is refused like the owner's own. A plain `gh issue close` (completed) and prose saying
+"not planned" stay allowed. `/sapu:init` adds `env_file`'s name to the contract's `guard.envFiles`.
 
 ## 12. Errors
 

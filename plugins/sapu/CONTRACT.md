@@ -563,24 +563,31 @@ could use them.
   `-c`). gh's `-R`/`--repo`/`--hostname` are dropped wherever they stand before the subcommand; a first word that is not
   one of gh's own commands (an alias, an extension) is refused.
 - The acceptance label (`labels.accepted`): no subagent applies or removes it (`gh issue|pr edit
-  --add-label/--remove-label`, a non-GET `gh api` naming it, a label or issue write whose `--input`
-  cannot be read), creates, edits, renames into it or deletes it (`gh label create|edit|delete`),
-  clones labels (`gh label clone`), or runs a GraphQL label mutation.
+  --add-label/--remove-label`, also with a label the shell builds — `$VAR`, `$( )`, backticks — that
+  the guard cannot read; a non-GET `gh api` naming it; a label write whose `--input` or `-F …=@file`
+  body cannot be read, a query string or fragment on the route ignored), creates, edits, renames into
+  it or deletes it (`gh label create|edit|delete`), clones labels (`gh label clone`), or runs a GraphQL
+  label mutation (in a GraphQL tool's query, or in any MCP field holding a mutation document).
 - The needs-owner label (`labels.needsOwner`) is protected beside it: no subagent adds or removes it on
   an existing issue or PR, nor creates, edits, deletes or clones it. `gh issue create --label` with it
   stays allowed for non-worker subagents.
 - Closing an issue as not planned is the owner's ruling that the finding is intended (argus records it
   in `arid.md`): no subagent makes it — `gh issue close --reason`/`-r` not planned in any spelling, a
-  non-GET `gh api` with `state_reason` not planned (or read from a file, or an issue write whose body
-  cannot be read), a GraphQL `closeIssue` with `NOT_PLANNED`, or an MCP tool whose fields carry it. A
-  plain (completed) close stays allowed.
+  non-GET `gh api` with `state_reason` not planned, an issue write (`/issues/<n>`, a query string or
+  fragment ignored) whose `--input` or `-F …=@file` body cannot be read, a GraphQL `closeIssue` with
+  `stateReason: NOT_PLANNED` or a variable exactly `NOT_PLANNED`, or an MCP tool with a reason field
+  (`state_reason`, `stateReason`, `reason`, at any depth) carrying not planned, or any field naming
+  `closeIssue` beside `NOT_PLANNED`. A reason, `state_reason` or `closeIssue` field value the shell
+  builds is refused too. A plain (completed) close, and prose that merely says "not planned", stay
+  allowed; an MCP tool that only reads (`get`, `list`, `search`…, or `method: GET`) may filter by it.
 - `sapu:ui-explorer` (the journey lane's explorer): its tools are limited by its frontmatter (`tools:
   Bash, Read, StructuredOutput`) and by the guard, which refuses every other tool it sees (Agent, Task
   and Workflow included). Its Bash runs only `node <plugin>/scripts/argus-live.mjs pw …`, the wrapper
   named by an absolute path whose real path is the plugin's own, with single-quoted arguments
   (segments joined only by `\'`: `'O'\''Brien'`) or plain words (a first character from
   `[A-Za-z0-9./_-]`, then `[A-Za-z0-9._:/=@,+-]`, never `==`; no `#` anywhere). Read is only of files
-  committed at HEAD in the live run's worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in
+  committed at HEAD as a blob (a file or symlink, never a directory or gitlink) in the live run's
+  worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in
   any case. It has no Grep or Glob: code search comes through the wrapper.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.

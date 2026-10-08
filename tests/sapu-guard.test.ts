@@ -1866,6 +1866,21 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
     expect(read("Read", { file_path })).toMatch(/journey explorer reads only files committed/);
   });
 
+  it("refuses a path HEAD records as a directory or a gitlink, though a file stands there now", () => {
+    const head = execFileSync("git", ["-C", w, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    g("update-index", "--add", "--cacheinfo", `160000,${head},sub`);
+    mkdirSync(join(w, "dd"), { recursive: true });
+    writeFileSync(join(w, "dd/x.txt"), "x\n");
+    g("add", "dd/x.txt");
+    g("commit", "-qm", "gitlink and dir");
+    rmSync(join(w, "dd"), { recursive: true, force: true });
+    writeFileSync(join(w, "dd"), "not the tree\n");
+    writeFileSync(join(w, "sub"), "not the gitlink\n");
+    expect(read("Read", { file_path: join(w, "dd") })).toMatch(/journey explorer reads only files committed/);
+    expect(read("Read", { file_path: join(w, "sub") })).toMatch(/journey explorer reads only files committed/);
+    expect(read("Read", { file_path: join(w, "src/orders/route.ts") })).toBeNull();
+  });
+
   it("refuses a file staged but not committed", () => {
     writeFileSync(join(w, "src/orders/staged.ts"), "staged\n");
     g("add", "src/orders/staged.ts");
@@ -1934,6 +1949,66 @@ describe("sapu-guard — closing an issue as not planned is the owner's ruling",
   ])("allows %s", (cmd) => {
     expect(reviewer(cmd)).toBeNull();
     expect(blocked(cmd)).toBeNull();
+  });
+
+  it.each([
+    ["gh api -X PATCH repos/o/r/issues/5 --input body.json"],
+    ["gh api -X PATCH 'repos/o/r/issues/5?x=1' --input body.json"],
+    ["gh api -X PATCH 'repos/o/r/issues/5#top' -F body=@b.md"],
+    ["gh api -X PATCH repos/o/r/issues/5 -Fbody=@b.md"],
+    ["gh api -X PATCH repos/o/r/issues/5 --field=body=@b.md"],
+  ])("refuses %s: an issue write whose body it cannot read is the ruling's", (cmd) => {
+    expect(reviewer(cmd)).toMatch(RULING);
+    expect(blocked(cmd)).toMatch(RULING);
+  });
+
+  it("keeps the label reason for an unreadable label write, a query string included", () => {
+    expect(reviewer("gh api -X POST 'repos/o/r/issues/5/labels?x=1' --input body.json")).toMatch(/acceptance label/);
+  });
+
+  it.each([
+    [`R='not planned'; gh issue close 5 -r "$R"`],
+    ['gh issue close 5 -r "$(echo not planned)"'],
+    ['gh issue close 5 --reason="$REASON"'],
+    ["gh issue close 5 -r `echo not planned` --comment x"],
+    ["gh issue close 5 -r$R"],
+    [`gh api graphql -f query='${QV}' -f r="$R"`],
+    [`gh api graphql -f query='${Q.replace("NOT_PLANNED", "COMPLETED")}' -f note="$N"`],
+    ['gh api -X PATCH repos/o/r/issues/5 -f state=closed -f state_reason="$R"'],
+  ])("refuses %s: a reason built by the shell", (cmd) => {
+    expect(reviewer(cmd)).toMatch(RULING);
+    expect(blocked(cmd)).toMatch(RULING);
+  });
+
+  it.each([['gh issue edit 5 --add-label "$L"'], ["gh issue edit 5 --remove-label=$L"], ["gh pr edit 5 --add-label $(cat l.txt) --title t"]])(
+    "refuses %s: a label built by the shell",
+    (cmd) => {
+      expect(reviewer(cmd)).toMatch(/acceptance label/);
+      expect(blocked(cmd)).toMatch(/acceptance label/);
+    },
+  );
+
+  it.each([
+    [`gh api graphql -f query='${Q.replace("NOT_PLANNED", "COMPLETED")}' -f note='not planned at first'`],
+    [`gh api graphql -f query='${QV}' -f r=COMPLETED -f note=not_planned`],
+    ["gh issue edit 5 --add-label bug --remove-label 'needs info'"],
+  ])("allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  it("MCP: a reason field decides, never prose; any field holding closeIssue is read as GraphQL", () => {
+    const other = (tool: string, ti: Record<string, unknown>) => checkOther({ tool, ti, here: wt, main, rules, worker: false });
+    expect(other("mcp__github__add_issue_comment", { owner: "o", repo: "r", issue_number: 5, body: "not planned" })).toBeNull();
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 5, state: "closed", state_reason: "completed", body: "Not planned" })).toBeNull();
+    expect(other("mcp__github__graphql", { query: Q.replace("NOT_PLANNED", "COMPLETED"), variables: { note: "not planned at first" } })).toBeNull();
+    expect(other("mcp__gh__api_request", { method: "PATCH", endpoint: "/repos/o/r/issues/5", body: { state_reason: "not_planned" } })).toMatch(RULING);
+    expect(other("mcp__gh__call", { payload: { issue: { stateReason: "NOT_PLANNED" } } })).toMatch(RULING);
+    expect(other("mcp__gh__close_issue", { issue_number: 5, reason: "not planned" })).toMatch(RULING);
+    expect(other("mcp__gh__execute_operation", { document: QV, variables: { r: "NOT_PLANNED" } })).toMatch(RULING);
+    expect(other("mcp__gh__execute_operation", { document: Q })).toMatch(RULING);
+    expect(other("mcp__gh__execute_operation", { document: "mutation { addLabelsToLabelable(input: {}) { clientMutationId } }" })).toMatch(/acceptance label/);
+    expect(other("mcp__gh__execute_operation", { document: "mutation { mergePullRequest(input: {}) { clientMutationId } }" })).toMatch(/only the orchestrator merges/);
   });
 
   it("refuses an MCP tool whose fields close an issue as not planned, and allows a completed close", () => {

@@ -204,8 +204,10 @@ export function checkExplorerRead({ input, worktree, cwd }) {
   try {
     if (!fs.statSync(real).isFile()) return BLOCK.explorerRead;
     const posix = rel.split(path.sep).join("/");
-    const out = execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-tree", "-z", "--name-only", "HEAD", "--", posix], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    if (out !== `${posix}\0`) return BLOCK.explorerRead;
+    // exactly one entry, a blob (file or symlink) at that very path: never a tree or a gitlink
+    const out = execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-tree", "-z", "HEAD", "--", posix], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const m = /^(100644|100755|120000) blob [0-9a-f]+\t([^\0]*)\0$/.exec(out);
+    if (!m || m[2] !== posix) return BLOCK.explorerRead;
   } catch {
     return BLOCK.explorerRead;
   }
@@ -884,8 +886,9 @@ function denied(a, prog, deny, dir) {
   return null;
 }
 
+/** GraphQL's inline enum; a variable counts only as exactly NOT_PLANNED. */
+const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
 /** "not planned" in any spelling gh and GitHub take: not_planned, NOT_PLANNED, "Not Planned", not-planned. */
-const NOT_PLANNED = /not[\s_-]*planned/i;
 const notPlanned = (v) => typeof v === "string" && /^not[\s_-]*planned$/i.test(v.trim());
 
 const BLOCK = {
@@ -1331,7 +1334,7 @@ function checkCommand(t, state, depth) {
   }
 
   if (prog === "gh") {
-    const { w, i1, i2 } = ghWords(a);
+    const { w, i1, i2, ix } = ghWords(a);
     let [g1, g2] = [i1 < 0 ? undefined : w[i1], i2 < 0 ? undefined : w[i2]];
     if (g1 === "co") [g1, g2] = ["pr", "checkout"];
     if (g1 !== undefined && !g1.startsWith("-") && !GH_COMMANDS.has(g1)) return BLOCK.ghUnknown;
@@ -1343,24 +1346,28 @@ function checkCommand(t, state, depth) {
     // The owner labels (acceptance, needs-owner), in every spelling gh offers.
     const L = rules.ownerLabels;
     const tail = i2 < 0 ? [] : w.slice(i2 + 1);
+    const tailT = i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]);
+    // A label or reason the shell builds cannot be read: refused like the owner's own.
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {
-      for (let j = 0; j < tail.length; j++) {
-        const m = /^--(add|remove)-label(?:=([\s\S]*))?$/.exec(tail[j]);
-        if (m && namesLabel(m[2] ?? tail[j + 1] ?? "", L)) return BLOCK.acceptLabel;
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^--(add|remove)-label(?:=([\s\S]*))?$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[2] === undefined ? null : `=${m[2]}`);
+        if (val && (val.dyn || namesLabel(val.v, L))) return BLOCK.acceptLabel;
       }
     }
     // Closing as not planned is the owner's ruling (argus records it as intended).
     if (g1 === "issue" && g2 === "close") {
-      for (let j = 0; j < tail.length; j++) {
-        const m = /^(?:--reason(?:=([\s\S]*))?|-r([\s\S]*))$/.exec(tail[j]);
-        if (m && notPlanned(m[1] ?? (m[2] ? m[2].replace(/^=/, "") : tail[j + 1] ?? ""))) return BLOCK.ownerRuling;
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^(?:--reason(?:=([\s\S]*))?|-r([\s\S]*))$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[1] !== undefined ? `=${m[1]}` : m[2] || null);
+        if (val && (val.dyn || notPlanned(val.v))) return BLOCK.ownerRuling;
       }
     }
     if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tail.some((v) => namesLabel(v, L))))) return BLOCK.acceptLabel;
     if (g1 === "api") {
       if (a.some((v) => /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/.test(v))) return BLOCK.acceptLabel;
-      // closeIssue with NOT_PLANNED anywhere in its call, or a variable read from a file
-      if (a.some((v) => /\bcloseIssue\b/.test(v)) && a.some((v, j) => NOT_PLANNED.test(v) || (/^(-F|--field)$/.test(a[j - 1] ?? "") && /=@/.test(v)) || /^(-F|--field=)[^=]*=@/.test(v))) return BLOCK.ownerRuling;
+      // closeIssue: NOT_PLANNED inline, a variable exactly NOT_PLANNED, or any field the guard cannot read
+      if (a.some((v) => /\bcloseIssue\b/.test(v)) && (a.some((v) => GQL_NOT_PLANNED.test(v)) || ghFields(argv).some((f) => f.dyn || f.file || f.v.slice(f.v.indexOf("=") + 1) === "NOT_PLANNED"))) return BLOCK.ownerRuling;
       if (a.some((v) => { let s = v; try { s = decodeURIComponent(v); } catch { /* raw */ } return /(?:[?&]ref=|\/(?:tarball|zipball)\/)(?:refs\/)?pull\//.test(s); })) return BLOCK.prCode;
       if (a.some((v) => /mergePullRequest|enablePullRequestAutoMerge/.test(v))) return BLOCK.merge;
       if (a.includes("graphql")) {
@@ -1390,12 +1397,14 @@ function checkCommand(t, state, depth) {
       if (method.toUpperCase() !== "GET") {
         if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(v))) return BLOCK.merge;
         if (a.some((v) => /\/(contents|git|branches)\//.test(v))) return BLOCK.apiWrite;
-        // REST state_reason not_planned, or one read from a file.
-        if (a.some((v) => { const r = /state_reason=([\s\S]*)$/i.exec(v); return r && (notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
+        // REST state_reason not_planned, built by the shell, or read from a file.
+        if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
         // A write naming the label, or a label/issue write whose body the guard cannot read.
         if (a.some((v) => namesLabel(v, L))) return BLOCK.acceptLabel;
-        const unread = a.some((v) => /^--input(=|$)/.test(v)) || a.some((v, j) => /^(-F|--field)$/.test(a[j - 1] ?? "") && /=@/.test(v));
-        if (unread && a.some((v) => /\/labels\b|\/issues\/\d+\/?$/.test(v))) return BLOCK.acceptLabel;
+        const unread = a.some((v) => /^--input(=|$)/.test(v)) || ghFields(argv).some((f) => f.file);
+        const route = (v) => v.replace(/[?#][\s\S]*$/, "");
+        if (unread && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
+        if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.ownerRuling;
       }
     }
     return null;
@@ -1438,13 +1447,49 @@ function checkCommand(t, state, depth) {
  */
 function ghWords(a) {
   const w = [];
+  const ix = []; // each word's index in `a`
   for (let j = 1; j < a.length; j++) {
     if (a[j] === "-R" || a[j] === "--repo" || a[j] === "--hostname") j++;
-    else if (!/^(?:--repo|--hostname)=|^-R./.test(a[j])) w.push(a[j]);
+    else if (!/^(?:--repo|--hostname)=|^-R./.test(a[j])) {
+      w.push(a[j]);
+      ix.push(j);
+    }
   }
   const i1 = w.findIndex((v) => !v.startsWith("-"));
   const i2 = i1 < 0 ? -1 : w.findIndex((v, j) => j > i1 && !v.startsWith("-"));
-  return { w, i1, i2 };
+  return { w, i1, i2, ix };
+}
+
+/**
+ * The value of an option at `tail[j]` ({v, dyn}): glued (`--x=v`, `-xv`) or the next word. A value
+ * the shell builds is dyn; one an unquoted $( ) or backtick cut off is missing, read as dyn too.
+ */
+function optionValue(tail, j, glued) {
+  if (glued) return { v: glued.replace(/^=/, ""), dyn: tail[j].dyn };
+  return tail[j + 1] ?? { v: "", dyn: true };
+}
+
+/** gh api's field values ({v: "key=value", dyn, file}), separate or glued; `file`: -F/--field reading `@path`. */
+function ghFields(argv) {
+  const out = [];
+  for (let k = 1; k < argv.length; k++) {
+    const x = argv[k].v;
+    let f = null;
+    let typed = false;
+    if (/^(-f|-F|--field|--raw-field)$/.test(x)) {
+      f = argv[k + 1] ?? { v: "", dyn: true };
+      typed = /^(-F|--field)$/.test(x);
+      k++;
+    } else {
+      const m = /^(-f|-F|--field=|--raw-field=)([\s\S]+)$/.exec(x);
+      if (m) {
+        f = { v: m[2], dyn: argv[k].dyn };
+        typed = /^(-F|--field=)$/.test(m[1]);
+      }
+    }
+    if (f) out.push({ v: f.v, dyn: f.dyn, file: typed && /^[^=]*=@/.test(f.v) });
+  }
+  return out;
 }
 
 function prSource(toks) {
@@ -1699,13 +1744,17 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
   const f = fieldsOf(ti);
   // merges: merge_pull_request, accept_merge_request, set_auto_merge; not update/approve/list_merge_request(s)
   if ((words[0] === "merge" || (words.includes("merge") && words.some((w) => /^(accept|auto)$/.test(w))) || words.includes("automerge")) && !words.some((w) => /^(get|list|status|check)$/.test(w))) return BLOCK.merge;
-  // GraphQL mutations only in a graphql tool's query: a search or a file may name them
-  if (words.some((w) => /^(graphql|gql)$/.test(w))) {
-    const q = f.filter(([k]) => /^(query|mutation|body)$/i.test(k)).map(([, x]) => x);
-    if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
-    if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
-    if (q.some((x) => /\bcloseIssue\b/.test(x)) && f.some(([, x]) => NOT_PLANNED.test(x))) return BLOCK.ownerRuling;
-  }
+  // GraphQL mutations only in a graphql tool's query, or in a field holding a mutation document:
+  // a search or a file's prose may name them
+  const gqlTool = words.some((w) => /^(graphql|gql)$/.test(w));
+  const q = f.filter(([k, x]) => (gqlTool && /^(query|mutation|body|document)$/i.test(k)) || /^\s*mutation\b/.test(x)).map(([, x]) => x);
+  if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
+  if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+  // any field naming closeIssue makes every field GraphQL: NOT_PLANNED inline, or a value exactly NOT_PLANNED
+  if (f.some(([, x]) => /\bcloseIssue\b/.test(x)) && f.some(([, x]) => GQL_NOT_PLANNED.test(x) || x.trim() === "NOT_PLANNED")) return BLOCK.ownerRuling;
+  // a reason field, at any depth and whatever the verb, unless the tool only reads (a list filter)
+  const reads = !writes && (words.some((w) => /^(get|list|search|read|find|fetch|view|show)$/.test(w)) || f.some(([k, x]) => /^method$/i.test(k) && /^get$/i.test(x.trim())));
+  if (!reads && f.some(([k, x]) => /reason/i.test(k) && notPlanned(x))) return BLOCK.ownerRuling;
   if (writes) {
     const bases = new Set([rules.base, "main", "master"].filter(Boolean));
     // a pull/merge request names the base it targets without moving it
@@ -1714,7 +1763,6 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     // only a label field, or any field of a label tool: a file's content may contain the word
     const labelTool = words.some((w) => /^labels?$/.test(w));
     if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.ownerLabels))) return BLOCK.acceptLabel;
-    if (f.some(([, x]) => notPlanned(x))) return BLOCK.ownerRuling;
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;
