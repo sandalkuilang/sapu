@@ -193,6 +193,11 @@ Interfaces:
   equal a value in MAIN's env files (`.env`, `.env.local` and the contract's `guard.envFiles`, parsed
   with `parseEnvFile`, values never printed) and must not name a database or port the contract's
   `guard.postgres` protects → else throws `refused: …` naming the key only.
+- Setup in process groups (carried from the Task 4 review): `runSetup` spawns each `setup` argv
+  asynchronously and detached (its own process group), records its pgid before waiting, and on a
+  timeout or a failure kills the whole group (`kill -pgid`). Every setup group stays recorded, so
+  a setup that leaves a daemon behind in its group is also killed at `down` (Task 7). Test: a
+  timed-out setup with a grandchild leaves no process.
 - Order inside `up` (Task 8 wires it): store-phase entries → health → `checkStore` → `reset` →
   remaining entries → health → `checkStore` again.
 
@@ -247,6 +252,8 @@ Interfaces:
   exists and whose `env.COMPOSE_PROJECT_NAME` is `argus-<runId>` (others journalled, never run);
   kills a recorded group only when `ps -o command= -p <pgid>` still equals the recorded `cmdline`;
   removes the old worktree and its HOME; appends `end` for the old run.
+- Process groups: `down` and `recover` kill every recorded group, the setup groups included
+  (`kill -pgid`, SIGTERM then SIGKILL), so a daemon a setup left behind in its group dies too.
 - Stale records (carried from the Task 2 review): `recover` (and `takeLock`'s return) scans every
   `.argus/live/claim-*.json` that has a `lock` field whose run is not the current lock's run,
   returns them all as stale records, and deletes each claim only after its recovery replayed. This

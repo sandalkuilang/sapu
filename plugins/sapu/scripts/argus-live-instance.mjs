@@ -334,26 +334,47 @@ const within = (root, p) => {
   return r === "" || (r !== ".." && !r.startsWith(`..${path.sep}`) && !path.isAbsolute(r));
 };
 
+/** Symlinks followed while resolving one path before giving up (Linux's MAXSYMLINKS). */
+const MAX_HOPS = 40;
+
 /**
  * The real path `p` leads to, following every symlink on the way even when the end is missing (a
- * broken link, or a chain through one): the missing tail is appended to the real path reached.
+ * broken link, or a chain through one): the real path of the nearest existing ancestor plus the
+ * missing rest. Null when it takes more than MAX_HOPS links (a loop): the caller fails closed.
  */
-function resolveLink(p, depth = 0) {
+function resolveLink(p) {
   try {
     return fs.realpathSync.native(p);
   } catch {
-    // missing, or a loop: resolved by hand below
+    // missing, or too many links: walked by hand below
   }
-  const parent = path.dirname(p);
-  if (parent === p || depth > 40) return p;
-  const at = path.join(resolveLink(parent, depth + 1), path.basename(p));
-  let st;
-  try {
-    st = fs.lstatSync(at);
-  } catch {
-    return at;
+  let hops = 0;
+  let cur = path.parse(path.resolve(p)).root;
+  const pending = path.resolve(p).split(path.sep).filter(Boolean);
+  while (pending.length) {
+    const name = pending.shift();
+    if (name === ".") continue;
+    if (name === "..") {
+      cur = path.dirname(cur);
+      continue;
+    }
+    const next = path.join(cur, name);
+    let st;
+    try {
+      st = fs.lstatSync(next);
+    } catch {
+      return path.join(next, ...pending);
+    }
+    if (!st.isSymbolicLink()) {
+      cur = next;
+      continue;
+    }
+    if (++hops > MAX_HOPS) return null;
+    const target = fs.readlinkSync(next);
+    if (path.isAbsolute(target)) cur = path.parse(target).root;
+    pending.unshift(...target.split(path.sep).filter(Boolean));
   }
-  return st.isSymbolicLink() ? resolveLink(path.resolve(path.dirname(at), fs.readlinkSync(at)), depth + 1) : at;
+  return cur;
 }
 
 const repoName = (realMain) => path.basename(realMain).replace(/[^A-Za-z0-9._-]/g, "-");
@@ -372,7 +393,13 @@ function ownDir(dir) {
  * HOME outside the repo. Refused when it would lie inside the repo, before and after it exists.
  */
 function liveRoot(realMain) {
-  const root = path.join(fs.realpathSync.native(os.tmpdir()), "sapu-live");
+  let tmp;
+  try {
+    tmp = fs.realpathSync.native(os.tmpdir());
+  } catch (e) {
+    throw new Error(`refused: TMPDIR ${os.tmpdir()} does not exist or cannot be read (${e.code || e.message})`);
+  }
+  const root = path.join(tmp, "sapu-live");
   const inRepo = (p) => new Error(`refused: ${p} would lie inside the repo (TMPDIR points into it)`);
   if (within(realMain, root)) throw inRepo(root);
   try {
@@ -398,7 +425,10 @@ export function makeWorktree(main, runId, { runner = run } = {}) {
   const r = runner(["git", "-C", main, "worktree", "add", "--detach", wt, "HEAD"]);
   if (r.error || r.status !== 0) throw new Error(`failed: git worktree add ${wt}: ${((r.error && r.error.message) || r.stderr || "").trim()}`);
   const real = fs.realpathSync.native(wt);
-  if (within(realMain, real)) throw new Error(`refused: the worktree ${real} lies inside the repo`);
+  if (within(realMain, real)) {
+    runner(["git", "-C", main, "worktree", "remove", "--force", wt]);
+    throw new Error(`refused: the worktree ${real} lies inside the repo`);
+  }
   return real;
 }
 
@@ -464,6 +494,7 @@ export function refuseLinksIntoMain(worktree, main) {
       const p = path.join(dir, d.name);
       if (d.isSymbolicLink()) {
         const target = resolveLink(path.resolve(dir, fs.readlinkSync(p)));
+        if (target === null) throw new Error(`refused: ${p} could not be resolved (a link loop, or more than ${MAX_HOPS} links)`);
         if (within(realMain, target) || within(target, realMain)) throw new Error(`refused: ${p} points into the main checkout`);
       } else if (d.isDirectory()) stack.push(p);
     }

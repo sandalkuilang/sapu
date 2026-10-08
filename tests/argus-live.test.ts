@@ -891,5 +891,50 @@ describe("argus-live instance — worktree, environment, setup", () => {
       }));
     it("a link to an ancestor of the repo", () => refusedAfter((main) => link(join(main, ".."), "parent")));
     it("a link to /", () => refusedAfter(() => link("/", "root")));
+    it("a long missing tail under an alias of the repo", () =>
+      refusedAfter((main) => {
+        const hop = tempDir();
+        symlinkSync(main, join(hop, "alias"));
+        return link(join(hop, "alias", ...Array.from({ length: 60 }, (_, i) => `d${i}`)), "deep");
+      }));
+
+    const unresolved = (make: (wt: string) => string[]) => {
+      const main = committed();
+      const wt = makeWorktree(main, runId());
+      expect(() => setup(wt, [make(wt)])).toThrow(/^refused: .* could not be resolved/);
+    };
+    it("a link loop fails closed", () => unresolved(() => node("const fs = require('fs'); fs.symlinkSync('b', 'a'); fs.symlinkSync('a', 'b')")));
+    it("a chain longer than 40 links fails closed; 30 resolve", () => {
+      const chain = (n: number) => {
+        const hop = realpathSync(tempDir());
+        writeFileSync(join(hop, "end"), "");
+        for (let i = n; i > 0; i--) symlinkSync(join(hop, i === n ? "end" : `l${i + 1}`), join(hop, `l${i}`));
+        return join(hop, "l1");
+      };
+      unresolved(() => link(chain(41), "long"));
+      const main = committed();
+      const wt = makeWorktree(main, runId());
+      expect(() => setup(wt, [link(chain(30), "ok")])).not.toThrow();
+    });
+  });
+
+  it("a missing TMPDIR is refused, not a raw error", () => {
+    const main = committed();
+    process.env.TMPDIR = join(tmp, "gone");
+    expect(() => makeWorktree(main, runId())).toThrow(/^refused: TMPDIR .*gone does not exist/);
+  });
+
+  it("a worktree found inside the repo after git added it is removed before refusing", () => {
+    const main = committed();
+    const id = runId();
+    const calls: string[][] = [];
+    const runner = (argv: string[]) => {
+      calls.push(argv);
+      if (argv[3] === "worktree" && argv[4] === "add") symlinkSync(main, argv[6]);
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    expect(() => makeWorktree(main, id, { runner })).toThrow(/^refused: the worktree .* lies inside the repo/);
+    const wt = join(realpathSync(tmp), "sapu-live", `${basename(main)}-${id}`);
+    expect(calls.at(-1)).toEqual(["git", "-C", main, "worktree", "remove", "--force", wt]);
   });
 });
