@@ -15,6 +15,7 @@
 // run's record for recovery, and it makes every later taker of the same stale run back off.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import dns from "node:dns";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -1036,4 +1037,268 @@ export async function bringUpStore(ctx) {
 export async function bringUpRest(ctx) {
   for (const e of ctx.config.start.filter((x) => x.phase !== "store")) await startHealthy(e, ctx);
   await checkStore(ctx);
+}
+
+/** The files `docker compose` reads by itself in a project directory. */
+const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+/** Compose's global flags that make a command read other files, or act on another project, than the check saw. */
+const COMPOSE_ESCAPES = new Set(["-p", "--project-name", "-f", "--file", "--project-directory", "--env-file"]);
+/** Compose's global flags that take a value (the next word, unless written `--flag=value`). */
+const COMPOSE_VALUED = new Set([...COMPOSE_ESCAPES, "--profile", "--ansi", "--parallel", "--progress"]);
+
+/** A shell command's simple commands as word lists, quotes stripped: enough to find a flag, not a parser. */
+const shellWords = (cmd) =>
+  String(cmd)
+    .split(/&&|\|\||[;&|\n()]/)
+    .map((s) => s.trim().split(/\s+/).filter(Boolean).map((w) => w.replace(/^(['"])(.*)\1$/, "$2")));
+
+/** Every command of the config, as [where, words[][]]: argv lists are one command each, shell fields split. */
+function commandsOf(config) {
+  const out = [];
+  (config.setup ?? []).forEach((argv, i) => out.push([`setup[${i}]`, [argv.map(String)]]));
+  for (const k of ["facts", "mail"]) if (config[k] && Array.isArray(config[k].argv)) out.push([`${k}.argv`, [config[k].argv.map(String)]]);
+  for (const [n, t] of Object.entries(config.triggers ?? {})) if (t && Array.isArray(t.argv)) out.push([`triggers.${n}.argv`, [t.argv.map(String)]]);
+  for (const k of ["store_check", "reset"]) if (typeof config[k] === "string") out.push([k, shellWords(config[k])]);
+  for (const e of config.start ?? []) {
+    for (const [k, v] of [["cmd", e.cmd], ["stop", e.stop], ["health.cmd", e.health && e.health.cmd]]) if (typeof v === "string") out.push([`start.${e.name}.${k}`, shellWords(v)]);
+  }
+  for (const [r, role] of Object.entries(config.roles ?? {})) if (role && role.login && typeof role.login.command === "string") out.push([`roles.${r}.login.command`, shellWords(role.login.command)]);
+  return out;
+}
+
+/** The first COMPOSE_ESCAPES flag a `docker compose` / `docker-compose` call in `words` passes before its subcommand, or null. */
+function composeEscape(words) {
+  const base = (w) => w.split("/").pop();
+  for (let i = 0; i < words.length; i++) {
+    const b = base(words[i]);
+    if (b !== "docker-compose" && !(b === "compose" && words.slice(0, i).some((w) => base(w) === "docker"))) continue;
+    for (let j = i + 1; j < words.length && words[j].startsWith("-"); j++) {
+      const t = words[j];
+      const flag = /^-[pf]./.test(t) ? t.slice(0, 2) : t.split("=")[0];
+      if (COMPOSE_ESCAPES.has(flag)) return flag;
+      if (COMPOSE_VALUED.has(flag) && !t.includes("=")) j++;
+    }
+  }
+  return null;
+}
+
+/**
+ * `up` step 5's Compose check. First, no command of `config` may pass Compose a project, file,
+ * project directory or env file of its own (`-p`, `-f`, `--project-directory`, `--env-file`): the
+ * check would not see what it runs. Then, when the worktree has a Compose file (or the env, or a
+ * tracked `.env`, names COMPOSE_FILE), `docker compose --profile * config --format json` runs in the
+ * worktree under the instance env (every profile, so no service hides from it) and the project must
+ * share nothing by name with the owner's stack: it is named COMPOSE_PROJECT_NAME; no service sets
+ * `container_name`, publishes a host port that is not one of this run's `ports` (a random one
+ * included), uses `network_mode` host or `container:…`, bind-mounts a path inside the main checkout
+ * (or one holding it) or the Docker socket; no network or volume is external or named outside the
+ * project. Docker missing or failing is a refusal too. Returns the project's service names (checkStore's
+ * `composeServices`: their single-label hosts are the instance's own), or [] without a Compose file.
+ */
+export function checkCompose({ worktree, env, ports = {}, main, config = {}, secrets = {}, runner = run }) {
+  for (const [where, commands] of commandsOf(config)) {
+    for (const words of commands) {
+      const flag = composeEscape(words);
+      if (flag) throw new Error(`refused: ${where} passes ${flag} to docker compose; the check sees only the files and project the env gives (COMPOSE_FILE, COMPOSE_PROFILES; COMPOSE_PROJECT_NAME is the run's): set them there`);
+    }
+  }
+  let what = COMPOSE_FILES.filter((f) => fs.existsSync(path.join(worktree, f))).map((f) => `${f} is in the worktree`)[0];
+  if (!what && env.COMPOSE_FILE) what = "env names COMPOSE_FILE";
+  if (!what) {
+    let dotenv = {};
+    try {
+      dotenv = parseEnvFile(fs.readFileSync(path.join(worktree, ".env"), "utf8"));
+    } catch {
+      // no .env tracked
+    }
+    if (dotenv.COMPOSE_FILE) what = "the worktree's .env names COMPOSE_FILE";
+  }
+  if (!what) return [];
+  const why = `refused: ${what}, but docker compose config could not read it`;
+  const r = runner(["docker", "compose", "--profile", "*", "config", "--format", "json"], { cwd: worktree, env, timeout: 60_000 });
+  if (r.error || r.status !== 0) {
+    const said = tail(redact((r.error && r.error.message) || r.stderr || `exit ${r.status}`, secrets));
+    throw new Error(`${why}: ${said} (with HOME the run's empty one, docker finds its compose plugin through DOCKER_CONFIG: name DOCKER_CONFIG in pass_env)`);
+  }
+  let c;
+  try {
+    c = JSON.parse(r.stdout);
+  } catch {
+    c = null;
+  }
+  if (!c || typeof c !== "object" || Array.isArray(c)) throw new Error(`${why}: its output is not JSON`);
+  const project = env.COMPOSE_PROJECT_NAME;
+  if (c.name !== project) throw new Error(`refused: the Compose project is named ${c.name}, not ${project} (COMPOSE_PROJECT_NAME)`);
+  const runPorts = new Set(Object.values(ports).map(Number));
+  const realMain = fs.realpathSync.native(main);
+  for (const [name, s] of Object.entries(c.services ?? {})) {
+    const svc = `refused: Compose service ${name}`;
+    if (s.container_name) throw new Error(`${svc} sets container_name (a fixed name collides with, or takes over, the owner's container)`);
+    const mode = String(s.network_mode ?? "");
+    if (mode === "host" || mode.startsWith("container:")) throw new Error(`${svc} uses network_mode ${mode} (it would share a network the run does not own)`);
+    for (const p of s.ports ?? []) {
+      if (p.published === undefined || p.published === null || p.published === "") throw new Error(`${svc} publishes container port ${p.target} on a random host port; publish one of this run's ports ({port:<name>})`);
+      const m = String(p.published).match(/^(\d+)(?:-(\d+))?$/);
+      if (!m) throw new Error(`${svc} publishes host port ${p.published}, which is not one of this run's ports`);
+      for (let n = Number(m[1]); n <= Number(m[2] ?? m[1]); n++) if (!runPorts.has(n)) throw new Error(`${svc} publishes host port ${n}, which is not one of this run's ports`);
+    }
+    for (const v of s.volumes ?? []) {
+      if (v.type !== "bind" || !v.source) continue;
+      const src = resolveLink(path.resolve(worktree, v.source));
+      if (src === null || within(realMain, src) || within(src, realMain)) throw new Error(`${svc} bind-mounts a path inside the main checkout (or one holding it)`);
+      if ([v.source, src].some((x) => /(^|\/)(docker|podman)\.sock$/.test(x))) throw new Error(`${svc} bind-mounts the Docker socket (the container could control the owner's containers)`);
+    }
+  }
+  for (const [kind, all] of [["network", c.networks], ["volume", c.volumes]]) {
+    for (const [name, x] of Object.entries(all ?? {})) {
+      if (x && x.external) throw new Error(`refused: Compose ${kind} ${name} is external (the project would use one it does not own)`);
+      if (x && x.name && !x.name.startsWith(`${project}_`)) throw new Error(`refused: Compose ${kind} ${name} is named ${x.name}, outside the project ${project}`);
+    }
+  }
+  return Object.keys(c.services ?? {});
+}
+
+/** Every pid in the process groups `pgids` (`ps -A -o pid= -o pgid=`, the same on macOS and Linux). */
+export function groupPids(pgids, { runner = run } = {}) {
+  const want = new Set(pgids.filter((g) => Number.isInteger(g) && g > 1));
+  if (!want.size) return [];
+  const r = runner(["ps", "-A", "-o", "pid=", "-o", "pgid="]);
+  if (r.error || r.status !== 0) throw new Error(`failed: ps could not list the run's processes: ${(r.error && r.error.message) || tail(r.stderr)}`);
+  const out = [];
+  for (const line of r.stdout.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)$/);
+    if (m && want.has(Number(m[2]))) out.push(Number(m[1]));
+  }
+  return out;
+}
+
+/**
+ * The endpoints the run may connect to, as `host:port` (hosts as normHost writes them, names not
+ * resolved): this run's `ports` on loopback, every endpoint `env` and each start entry's env name (a
+ * URL or DSN, `X_HOST` + `X_PORT`, a bare `*PORT` on loopback), and each `allow_origins` origin.
+ */
+export function egressAllowed({ config = {}, env = {}, ports = {} }) {
+  const out = new Set(Object.values(ports).map((p) => `loopback:${p}`));
+  for (const vars of [env, ...(config.start ?? []).map((e) => e.env ?? {})]) {
+    for (const s of splitEndpoints(vars, { barePorts: true })) out.add(`${s.host}:${s.port}`);
+    for (const raw of Object.values(vars)) {
+      const v = String(raw).trim();
+      if (filePath(v)) continue;
+      const svc = service(v);
+      if (svc) endpointsOf(svc.hosts).forEach((e) => out.add(e));
+    }
+  }
+  for (const o of config.allow_origins ?? []) {
+    try {
+      const u = new URL(o);
+      out.add(`${normHost(u.hostname)}:${u.port || DEFAULT_PORTS[u.protocol.slice(0, -1)]}`);
+    } catch {
+      // validateLive refuses a bad origin
+    }
+  }
+  return [...out];
+}
+
+/** `addr` (`host:port`, `[v6]:port`) split at its last colon. */
+const splitAddr = (addr) => {
+  const i = String(addr).lastIndexOf(":");
+  return [addr.slice(0, i), addr.slice(i + 1)];
+};
+
+/** `host:port` as the egress check compares it: normHost's form, a zone dropped, an IPv4-mapped IPv6 address read as IPv4. */
+function endpointKey(host, port) {
+  let h = String(host).replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "");
+  const dotted = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (dotted) h = dotted[1];
+  h = normHost(h);
+  const hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hex) {
+    const [a, b] = [parseInt(hex[1], 16), parseInt(hex[2], 16)];
+    h = `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+  }
+  return `${h}:${port}`;
+}
+
+/** `lsof -F pcnT` output → [{pid, command, local, remote, listen}]. */
+function parseLsof(out) {
+  const conns = [];
+  let pid;
+  let command;
+  let cur = null;
+  for (const line of out.split("\n")) {
+    const [tag, val] = [line[0], line.slice(1)];
+    if (tag === "p") pid = Number(val);
+    else if (tag === "c") command = val;
+    else if (tag === "f") cur = null;
+    else if (tag === "n") {
+      const [local, remote] = val.split("->");
+      cur = { pid, command, local, remote, listen: false };
+      conns.push(cur);
+    } else if (tag === "T" && cur && val === "ST=LISTEN") cur.listen = true;
+  }
+  return conns;
+}
+
+/** `ss -tanpH` output → the sockets of `want` pids, as parseLsof's. */
+function parseSs(out, want) {
+  const conns = [];
+  for (const line of out.split("\n")) {
+    const f = line.trim().split(/\s+/);
+    if (f.length < 5) continue;
+    const [state, , , local, peer] = f;
+    const listen = state === "LISTEN";
+    for (const [, command, pid] of line.matchAll(/\("([^"]*)",pid=(\d+)/g)) {
+      if (want.has(Number(pid))) conns.push({ pid: Number(pid), command, local, remote: listen || /:\*$/.test(peer) ? undefined : peer, listen });
+    }
+  }
+  return conns;
+}
+
+/** The TCP sockets of `pids`: `lsof`, else `ss`; neither → refused. */
+function tcpSockets(pids, runner) {
+  const l = runner(["lsof", "-nP", "-a", "-iTCP", "-p", pids.join(","), "-FpcnT"]);
+  if (!l.error) {
+    // lsof exits 1 when it found nothing (or some pid is gone), with what it found on stdout.
+    if (l.status !== 0 && l.status !== 1) throw new Error(`failed: lsof exited ${l.status ?? l.signal}: ${tail(l.stderr)}`);
+    return parseLsof(l.stdout || "");
+  }
+  if (l.error.code !== "ENOENT") throw new Error(`failed: lsof: ${l.error.message}`);
+  const s = runner(["ss", "-tanpH"]);
+  if (s.error && s.error.code === "ENOENT") throw new Error("refused: neither lsof nor ss is available");
+  if (s.error || s.status !== 0) throw new Error(`failed: ss: ${(s.error && s.error.message) || `exited ${s.status}: ${tail(s.stderr)}`}`);
+  return parseSs(s.stdout || "", new Set(pids));
+}
+
+/**
+ * `up` step 8 (and every `renew`): the TCP connections of every process in the run's process groups
+ * (`pids`, from groupPids) may reach only `allowed` (egressAllowed's endpoints; a host name stands for
+ * every address `lookup` gives it) or another listener of those processes on loopback. A connection
+ * they accepted (its local port is one they listen on) is inbound, not egress. Anything else throws
+ * `refused: <process> (<pid>) connects to <host:port>`; neither lsof nor ss → `refused: neither lsof nor
+ * ss is available`. Known limit (spec §8): a process that left its group, or one inside a container,
+ * is not listed.
+ */
+export async function checkEgress({ pids, allowed = [], runner = run, lookup = (h) => dns.promises.lookup(h, { all: true }) }) {
+  const want = [...new Set((pids ?? []).filter((p) => Number.isInteger(p) && p > 0))];
+  if (!want.length) return;
+  const sockets = tcpSockets(want, runner);
+  const ok = new Set();
+  for (const a of allowed) {
+    const [h, p] = splitAddr(a);
+    ok.add(endpointKey(h, p));
+    if (h === "loopback" || net.isIP(h.replace(/^\[(.*)\]$/, "$1"))) continue;
+    try {
+      for (const r of await lookup(h)) ok.add(endpointKey(r.address, p));
+    } catch {
+      // a name that does not resolve here allows nothing more
+    }
+  }
+  const listening = new Set(sockets.filter((s) => s.listen).map((s) => splitAddr(s.local)[1]));
+  for (const s of sockets) {
+    if (s.listen || !s.remote || listening.has(splitAddr(s.local)[1])) continue;
+    const [h, p] = splitAddr(s.remote);
+    const key = endpointKey(h, p);
+    if (ok.has(key) || (key.startsWith("loopback:") && listening.has(p))) continue;
+    throw new Error(`refused: ${s.command} (${s.pid}) connects to ${s.remote}`);
+  }
 }

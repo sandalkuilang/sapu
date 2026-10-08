@@ -403,10 +403,19 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
 5. **Ports.** `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which
    `/sapu:init` fills with the repo's dev and E2E ports; `port_range` is required whenever a
    `{port:<name>}` is used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming
-   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse. When the worktree has a Compose file,
-   `docker compose config --format json` must publish only this run's ports and name no
-   `container_name`; otherwise refuse (a fixed host port or container name would collide with, or
-   take over, the owner's stack).
+   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse. When the worktree has a Compose file
+   (or the env, or a tracked `.env`, names `COMPOSE_FILE`), `docker compose --profile '*' config
+   --format json` (every profile, under step 3's environment) must describe a project that shares
+   nothing by name with the owner's stack, otherwise refuse: it is named `COMPOSE_PROJECT_NAME`; it
+   publishes only this run's ports (no random host port either) and names no `container_name`; no
+   service uses `network_mode` `host` or `container:…`, or bind-mounts a path inside the main
+   checkout (or one holding it) or the Docker socket; no network or volume is `external` or named
+   outside the project (a fixed host port, container, network or volume would collide with, or take
+   over, the owner's). Docker missing or failing is a refusal too (with `HOME` empty, docker finds
+   its compose plugin through `DOCKER_CONFIG`, which `pass_env` then names). No command of the
+   config may pass Compose `-p`, `-f`, `--project-directory` or `--env-file` before its subcommand:
+   the check would not see what it runs (the env's `COMPOSE_FILE` and `COMPOSE_PROFILES` do that).
+   The project's service names are the Compose services step 6 exempts.
 6. **Store.** Starts the `phase: store` entries (each in its own process group) and waits for their
    health. `store` must not be a database the contract's `guard.postgres` protects. Runs
    `store_check` under the instance environment and again under the environment of every `start`
@@ -445,10 +454,12 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    `cmd` and `store_check` runs in its own process group, killed once it returns. Then `store_check`
    again.
 8. **Egress check.** Lists the TCP connections of every process in the run's process groups (`lsof
-   -nP -a -i -p <pids>`, or `ss`). A connection to an endpoint other than the run's ports, the
-   endpoints named in `env`, and `allow_origins` → `down` and refuse, naming the process and the
-   endpoint (a code default such as a cache on its standard local port, pointing at the owner's).
-   Repeated at every `renew`.
+   -nP -a -iTCP -p <pids>`, or `ss`). A connection to an endpoint other than the run's ports, the
+   endpoints named in `env` and the start entries' env (a host name standing for every address it
+   resolves to), `allow_origins`, and another listener of those processes on loopback → `down` and
+   refuse, naming the process and the endpoint (a code default such as a cache on its standard
+   local port, pointing at the owner's). A connection the processes accepted is inbound and not
+   counted. Repeated at every `renew`.
 9. **Proxy.** Starts the run's filtering proxy (§9).
 10. **Logins.** One proving login per allocated account, sequential, `login_spacing_ms` apart, each
     followed by a check that the browser's requests reached only the run's origins and

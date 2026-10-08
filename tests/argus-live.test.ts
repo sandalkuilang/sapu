@@ -16,7 +16,11 @@ import {
   appendEnd,
   bringUpRest,
   bringUpStore,
+  checkCompose,
+  checkEgress,
   checkStore,
+  egressAllowed,
+  groupPids,
   instanceEnv,
   makeHome,
   makeWorktree,
@@ -24,6 +28,7 @@ import {
   portHolder,
   readLock,
   renew,
+  run,
   runSetup,
   startEntry,
   takeLock,
@@ -1540,5 +1545,254 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
     await new Promise<void>((r) => slow.listen(port, "127.0.0.1", () => r()));
     servers.push(slow);
     expect(await message(waitHealth(entry, s, ctx))).toMatch(/^failed: w exited \(code 1\) before its health passed/);
+  });
+});
+
+describe("argus-live instance — Compose and egress checks", () => {
+  const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
+  const app = (args = "") => `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}${args ? ` ${args}` : ""}`;
+  const groups: { name: string; pgid: number; cmdline: string }[] = [];
+  const servers: Server[] = [];
+  afterEach(async () => {
+    for (const g of groups.splice(0)) {
+      try {
+        process.kill(-g.pgid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    await Promise.all(servers.splice(0).map((s) => new Promise((done) => s.close(done))));
+  });
+  const message = (p: Promise<unknown> | (() => unknown)) =>
+    typeof p === "function"
+      ? (() => {
+          try {
+            p();
+            return "ok";
+          } catch (e) {
+            return (e as Error).message;
+          }
+        })()
+      : p.then(() => "ok", (e: Error) => e.message);
+
+  describe("Compose", () => {
+    const PROJECT = "argus-run1";
+    /** A worktree with a Compose file, and a fake `docker` on PATH that records how it ran and prints `json`. */
+    const world = (json: unknown, { file = "compose.yaml" as string | null, status = 0, stderr = "" } = {}) => {
+      const wt = realpathSync(tempDir());
+      const main = realpathSync(tempDir());
+      const bin = tempDir();
+      if (file) writeFileSync(join(wt, file), "services: {}\n");
+      writeFileSync(join(bin, "out.json"), JSON.stringify(json));
+      const docker = join(bin, "docker");
+      writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$PWD" "$COMPOSE_PROJECT_NAME" "$*" > ${JSON.stringify(join(bin, "ran"))}\nprintf '%s' ${JSON.stringify(stderr)} >&2\ncat ${JSON.stringify(join(bin, "out.json"))}\nexit ${status}\n`);
+      chmodSync(docker, 0o755);
+      const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, COMPOSE_PROJECT_NAME: PROJECT };
+      return { wt, main, bin, env, ran: () => (existsSync(join(bin, "ran")) ? readFileSync(join(bin, "ran"), "utf8").trim().split("\n") : null), ports: { pg: 41001, web: 41002 } };
+    };
+    const good = (wt = "/w"): Obj => ({
+      name: PROJECT,
+      services: {
+        db: {
+          image: "postgres:16",
+          ports: [{ mode: "ingress", target: 5432, published: "41001", protocol: "tcp" }],
+          volumes: [
+            { type: "volume", source: "pgdata", target: "/var/lib/postgresql/data", volume: {} },
+            { type: "bind", source: `${wt}/data`, target: "/x", bind: {} },
+            { type: "bind", source: "/etc/hosts", target: "/h", read_only: true, bind: {} },
+            { type: "tmpfs", target: "/tmp" },
+          ],
+          networks: { default: null },
+        },
+        web: { image: "nginx", ports: [{ mode: "ingress", host_ip: "127.0.0.1", target: 80, published: "41002", protocol: "tcp" }] },
+        sidecar: { image: "busybox", network_mode: "service:db" },
+      },
+      networks: { default: { name: `${PROJECT}_default`, ipam: {} } },
+      volumes: { pgdata: { name: `${PROJECT}_pgdata` } },
+    });
+
+    it("a compliant project passes, returns its service names, and docker ran in the worktree under the instance env, every profile included", () => {
+      const w = world(null);
+      writeFileSync(join(w.bin, "out.json"), JSON.stringify(good(w.wt)));
+      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
+      expect(w.ran()).toEqual([w.wt, PROJECT, "compose --profile * config --format json"]);
+    });
+
+    it.each(["compose.yml", "docker-compose.yaml", "docker-compose.yml"])("%s is a Compose file too", (file) => {
+      const w = world(good(), { file });
+      expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main }))).toBe("ok");
+      expect(w.ran()).not.toBeNull();
+    });
+
+    it("no Compose file: nothing to check, docker never runs", () => {
+      const w = world(good(), { file: null });
+      expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual([]);
+      expect(w.ran()).toBeNull();
+    });
+
+    it("COMPOSE_FILE in the env, or in a .env the worktree tracks, makes Compose read a file elsewhere: checked too", () => {
+      const w = world(good(), { file: null });
+      expect(checkCompose({ worktree: w.wt, env: { ...w.env, COMPOSE_FILE: "deploy/dev.yml" }, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
+      const v = world(good(), { file: null });
+      writeFileSync(join(v.wt, ".env"), "COMPOSE_FILE=deploy/dev.yml\n");
+      expect(checkCompose({ worktree: v.wt, env: v.env, ports: v.ports, main: v.main })).toEqual(["db", "web", "sidecar"]);
+    });
+
+    const refusals: [string, (c: Obj, main: string) => void, RegExp][] = [
+      ["a host port outside the run", (c) => (c.services.db.ports[0].published = "5432"), /^refused: Compose service db publishes host port 5432, which is not one of this run's ports/],
+      ["a published range reaching outside the run", (c) => (c.services.db.ports[0].published = "41001-41003"), /^refused: Compose service db publishes host port 41003/],
+      ["a random host port", (c) => delete c.services.db.ports[0].published, /^refused: Compose service db publishes container port 5432 on a random host port/],
+      ["a container_name", (c) => (c.services.web.container_name = "web"), /^refused: Compose service web sets container_name/],
+      ["the host's network", (c) => (c.services.web.network_mode = "host"), /^refused: Compose service web uses network_mode host/],
+      ["another container's network", (c) => (c.services.web.network_mode = "container:owner-db-1"), /^refused: Compose service web uses network_mode container:owner-db-1/],
+      ["an external network", (c) => (c.networks.ext = { name: "owner_net", external: true }), /^refused: Compose network ext is external/],
+      ["a network named outside the project", (c) => (c.networks.ext = { name: "owner_net" }), /^refused: Compose network ext is named owner_net, outside the project argus-run1/],
+      ["an external volume", (c) => (c.volumes.pgdata = { name: "owner_pgdata", external: true }), /^refused: Compose volume pgdata is external/],
+      ["a volume named outside the project", (c) => (c.volumes.pgdata = { name: "owner_pgdata" }), /^refused: Compose volume pgdata is named owner_pgdata, outside the project argus-run1/],
+      ["a project named otherwise", (c) => (c.name = "owner"), /^refused: the Compose project is named owner, not argus-run1/],
+      ["a bind mount from the main checkout", (c, main) => c.services.db.volumes.push({ type: "bind", source: `${main}/data`, target: "/y", bind: {} }), /^refused: Compose service db bind-mounts a path inside the main checkout/],
+      ["the Docker socket", (c) => c.services.db.volumes.push({ type: "bind", source: "/var/run/docker.sock", target: "/var/run/docker.sock", bind: {} }), /^refused: Compose service db bind-mounts the Docker socket/],
+    ];
+    it.each(refusals)("refuses %s", (_what, mutate, why) => {
+      const w = world(null);
+      const c = good(w.wt);
+      mutate(c, w.main);
+      writeFileSync(join(w.bin, "out.json"), JSON.stringify(c));
+      expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main }))).toMatch(why);
+    });
+
+    it("docker missing or failing is a refusal (fail closed), with the DOCKER_CONFIG hint and every secret masked", () => {
+      const w = world(good());
+      const empty = tempDir();
+      expect(message(() => checkCompose({ worktree: w.wt, env: { ...w.env, PATH: empty }, ports: w.ports, main: w.main }))).toMatch(
+        /^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*DOCKER_CONFIG in pass_env/,
+      );
+      const f = world(good(), { status: 1, stderr: "bad interpolation near s3cret" });
+      const m = message(() => checkCompose({ worktree: f.wt, env: f.env, ports: f.ports, main: f.main, secrets: { PW: "s3cret" } }));
+      expect(m).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*bad interpolation near \*\*\*/);
+      expect(m).not.toContain("s3cret");
+      const j = world("not json");
+      writeFileSync(join(j.bin, "out.json"), "{oops");
+      expect(message(() => checkCompose({ worktree: j.wt, env: j.env, ports: j.ports, main: j.main }))).toMatch(/^refused: .*not JSON/);
+    });
+
+    describe("Compose flags in the config's commands that would escape the check", () => {
+      const cfg = (over: Obj): Obj => ({ setup: [], store_check: "true", reset: "true", start: [{ name: "backing", phase: "store", cmd: "docker compose up -d", stop: "docker compose down -v" }], ...over });
+      it.each([
+        [{ start: [{ name: "backing", cmd: "docker compose up -d", stop: "docker compose -p owner down -v" }] }, /^refused: start\.backing\.stop passes -p to docker compose/],
+        [{ start: [{ name: "backing", cmd: "docker-compose --file=../x.yml up" }] }, /^refused: start\.backing\.cmd passes --file to docker compose/],
+        [{ start: [{ name: "b", cmd: "docker compose -powner up" }] }, /^refused: start\.b\.cmd passes -p to docker compose/],
+        [{ reset: "cd x && docker compose --project-directory /srv/app exec db reset" }, /^refused: reset passes --project-directory to docker compose/],
+        [{ setup: [["docker", "compose", "--env-file", "/x/.env", "pull"]] }, /^refused: setup\[0\] passes --env-file to docker compose/],
+        [{ start: [{ name: "b", cmd: "docker compose up -d", health: { cmd: "docker compose --project-name=o ps" } }] }, /^refused: start\.b\.health\.cmd passes --project-name to docker compose/],
+      ])("%j is refused", (over, why) => {
+        const w = world(good(), { file: null });
+        expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main, config: cfg(over as Obj) }))).toMatch(why as RegExp);
+      });
+      it.each(["docker compose up -d && docker compose logs -f web", "docker compose --profile dev up -d", "docker compose exec -T db pg_isready -p 5432", "tail -f log; rm -f x"])("%s passes", (cmd) => {
+        const w = world(good(), { file: null });
+        expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main, config: cfg({ start: [{ name: "b", cmd }] }) }))).toBe("ok");
+      });
+    });
+
+    it("its service names are what checkStore exempts as the instance's own hosts", async () => {
+      const w = world(good());
+      writeFileSync(join(w.main, ".env"), "DATABASE_URL=postgres://owner@db:5432/app_dev\n");
+      const composeServices = checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main });
+      const ctx = { config: { store: "app_explore", store_check: "echo app_explore", start: [] }, env: { PATH: process.env.PATH!, DATABASE_URL: "postgres://app@db:5432/app_explore" }, worktree: w.wt, main: w.main, contract: null, timeoutS: 10, deadline: Math.floor(Date.now() / 1000) + 600 };
+      expect(await message(checkStore({ ...ctx, composeServices }))).toBe("ok");
+      expect(await message(checkStore(ctx))).toMatch(/^refused: env\.DATABASE_URL points at a service/);
+    });
+  });
+
+  describe("egress", () => {
+    const freePort = () =>
+      new Promise<number>((done) => {
+        const s = createServer();
+        s.listen(0, "127.0.0.1", () => {
+          const p = (s.address() as { port: number }).port;
+          s.close(() => done(p));
+        });
+      });
+    const listen = (port = 0) =>
+      new Promise<number>((done, fail) => {
+        const s = createServer((c) => c.on("error", () => {}));
+        s.once("error", fail);
+        s.listen(port, "127.0.0.1", () => {
+          servers.push(s);
+          done((s.address() as { port: number }).port);
+        });
+      });
+    /** Starts the fixture app; returns its pids (the whole process group) once healthy. */
+    const startApp = async (env: Record<string, string>, args = "") => {
+      const wt = tempDir();
+      const web = await freePort();
+      const entry = { name: "web", cmd: `exec ${app(args)}`, env: { PORT: String(web) }, health: { url: `http://127.0.0.1:${web}/health` } };
+      const base = { PATH: process.env.PATH!, DATA_DIR: join(wt, "app_explore"), ...env };
+      const s = await startEntry(entry, { worktree: wt, env: base, logs: join(wt, "logs"), groups });
+      await waitHealth(entry, s, { worktree: wt, env: base, timeoutS: 20 });
+      // Its outbound connection is made at start; give it a moment to be established.
+      await new Promise((r) => setTimeout(r, 300));
+      return { wt, web, pids: groupPids([s.pgid]), entry, base };
+    };
+
+    it("the fixture's cache fallback to a fixed local port is refused, naming the process and 46379", async () => {
+      await listen(46379);
+      const a = await startApp({});
+      const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web } });
+      expect(await message(checkEgress({ pids: a.pids, allowed }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+    });
+
+    it("CACHE_URL pointing at a run port passes (the health request it answered is inbound, not egress)", async () => {
+      const cache = await listen();
+      const a = await startApp({ CACHE_URL: `tcp://127.0.0.1:${cache}` });
+      const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web, cache } });
+      expect(await message(checkEgress({ pids: a.pids, allowed }))).toBe("ok");
+    });
+
+    it("an endpoint the env names is allowed even when it is not a run port; one it does not name is refused", async () => {
+      const cache = await listen();
+      const a = await startApp({ CACHE_URL: `tcp://localhost:${cache}` });
+      expect(await message(checkEgress({ pids: a.pids, allowed: egressAllowed({ config: { start: [a.entry] }, env: a.base, ports: { web: a.web } }) }))).toBe("ok");
+      expect(await message(checkEgress({ pids: a.pids, allowed: [`loopback:${a.web}`] }))).toMatch(new RegExp(`^refused: node \\(\\d+\\) connects to 127\\.0\\.0\\.1:${cache}$`));
+    });
+
+    it("every process of the run's groups is listed, a grandchild included", async () => {
+      const cache = await listen();
+      const wt = tempDir();
+      const pidFile = join(wt, "child.pid");
+      const a = await startApp({ CACHE_URL: `tcp://127.0.0.1:${cache}`, CHILD_PID_FILE: pidFile }, "--spawn-child");
+      expect(a.pids).toContain(Number(readFileSync(pidFile, "utf8")));
+      expect(a.pids.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("refuses when neither lsof nor ss is available", async () => {
+      const empty = tempDir();
+      const runner = (argv: string[], opts: Obj = {}) => run(argv, { ...opts, env: { PATH: empty } });
+      expect(await message(checkEgress({ pids: [process.pid], allowed: [], runner }))).toBe("refused: neither lsof nor ss is available");
+    });
+
+    it("reads ss when lsof is missing, skipping listeners and connections to them", async () => {
+      const ss = [
+        'LISTEN 0 511 127.0.0.1:41002 0.0.0.0:* users:(("node",pid=700,fd=20))',
+        'ESTAB 0 0 127.0.0.1:41002 127.0.0.1:53000 users:(("node",pid=700,fd=21))',
+        'ESTAB 0 0 [::1]:53001 [::1]:41001 users:(("node",pid=701,fd=22))',
+        'ESTAB 0 0 127.0.0.1:53002 127.0.0.1:41002 users:(("worker",pid=702,fd=9))',
+        'ESTAB 0 0 10.0.0.5:53003 [::ffff:93.184.216.34]:443 users:(("node",pid=700,fd=23))',
+        'SYN-SENT 0 1 127.0.0.1:53004 127.0.0.1:6379 users:(("other",pid=999,fd=3))',
+      ].join("\n");
+      const runner = (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("spawn lsof ENOENT"), { code: "ENOENT" }) } : { status: 0, stdout: ss, stderr: "" });
+      const lookup = async (host: string) => (host === "api.example.test" ? [{ address: "93.184.216.34", family: 4 }] : []);
+      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001", "api.example.test:443"], runner, lookup }))).toBe("ok");
+      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001"], runner, lookup }))).toBe("refused: node (700) connects to [::ffff:93.184.216.34]:443");
+      const syn = ss.replace("pid=999", "pid=702");
+      const r2 = (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : { status: 0, stdout: syn, stderr: "" });
+      expect(await message(checkEgress({ pids: [702], allowed: ["loopback:41001", "loopback:41002", "api.example.test:443"], runner: r2, lookup }))).toBe("refused: other (702) connects to 127.0.0.1:6379");
+    });
+
+    it("an allow_origins origin and a URL's default port are allowed endpoints", () => {
+      const allowed = egressAllowed({ config: { allow_origins: ["https://fonts.example.test"], start: [{ name: "w", env: { API: "http://[::1]:41009/x" } }] }, env: { DB: "postgres:///app_explore", REDIS_HOST: "127.0.0.1", REDIS_PORT: "41003", SQLITE: "sqlite:///x.db" }, ports: { web: 41002 } });
+      expect([...allowed].sort()).toEqual(["fonts.example.test:443", "loopback:41002", "loopback:41003", "loopback:41009", "loopback:5432"].sort());
+    });
   });
 });
