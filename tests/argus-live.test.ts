@@ -1,10 +1,11 @@
 // tests/argus-live.test.ts — the journey lane's live instance (argus-live*.mjs): its config
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
 import { expand, loadLive, parseEnvFile, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
@@ -155,7 +156,25 @@ describe("argus-live config — validateLive", () => {
   it("refuses an allow_origins entry that is not a full origin", () => {
     expect(errorsOf((c) => (c.allow_origins = ["fonts.example.com"])).some((e) => e.includes("allow_origins"))).toBe(true);
     expect(errorsOf((c) => (c.allow_origins = ["https://fonts.example.com/css"])).some((e) => e.includes("allow_origins"))).toBe(true);
+    expect(errorsOf((c) => (c.allow_origins = ["https://user@fonts.example.com"])).some((e) => e.includes("allow_origins"))).toBe(true);
     expect(errorsOf((c) => (c.allow_origins = ["https://fonts.example.com", "https://cdn.example.com:8443"]))).toEqual([]);
+  });
+
+  it("accepts an origin written with its default port (compared after URL normalisation)", () => {
+    expect(errorsOf((c) => (c.allow_origins = ["https://fonts.example.com:443", "http://cdn.example.com:80"]))).toEqual([]);
+  });
+
+  it("bounds limits.max_cycle_minutes to a day", () => {
+    expect(errorsOf((c) => (c.limits.max_cycle_minutes = 1440))).toEqual([]);
+    expect(errorsOf((c) => (c.limits.max_cycle_minutes = 1441)).some((e) => e.includes("max_cycle_minutes"))).toBe(true);
+    expect(errorsOf((c) => (c.limits.max_cycle_minutes = 1e300)).some((e) => e.includes("max_cycle_minutes"))).toBe(true);
+  });
+
+  it("refuses any ${ that is not a valid ${NAME}", () => {
+    for (const bad of ["${ PW}", "${1PW}", "${PW", "${}", "a${PW-x}b", "${PW}${"]) {
+      expect(errorsOf((c) => (c.env.X = bad)).some((e) => e.includes("env.X")), bad).toBe(true);
+    }
+    expect(errorsOf((c) => (c.env.X = "$PW and ${_PW_2}"))).toEqual([]);
   });
 
   it("refuses a bad port_range and a malformed placeholder", () => {
@@ -184,6 +203,7 @@ describe("argus-live config — expand", () => {
 
   it("substitutes a secret, once (a value is never expanded again)", () => {
     expect(expand("${PW}", { secrets: { PW: "s" } })).toBe("s");
+    expect(expand("x${PW}y", { secrets: { PW: "0" } })).toBe("x0y");
     expect(expand("a${PW}b{port:w}", { ports: { w: 1 }, secrets: { PW: "${X}{port:w}" } })).toBe("a${X}{port:w}b1");
   });
 
@@ -195,6 +215,10 @@ describe("argus-live config — expand", () => {
     } catch (e) {
       expect(String((e as Error).message)).not.toContain("hunter2");
     }
+  });
+
+  it("an empty secret counts as unset", () => {
+    expect(() => expand("${PW}", { secrets: { PW: "" } })).toThrow(/unset PW/);
   });
 
   it("leaves everything else alone", () => {
@@ -237,8 +261,30 @@ describe("argus-live config — loadLive", () => {
 
   it("reports a missing env_file, and one outside the repo", () => {
     expect(loadLive(withLive(example())).errors.some((e: string) => e.includes(".argus/live.env"))).toBe(true);
-    expect(loadLive(withLive({ ...example(), env_file: "../live.env" }, "")).errors.some((e: string) => e.includes("env_file"))).toBe(true);
-    expect(loadLive(withLive({ ...example(), env_file: "/etc/passwd" }, "")).errors.some((e: string) => e.includes("env_file"))).toBe(true);
+    for (const f of ["../live.env", "/etc/passwd", "."]) {
+      expect(loadLive(withLive({ ...example(), env_file: f }, "")).errors.some((e: string) => e.includes(`env_file must be a path inside the repo: ${f}`)), f).toBe(true);
+    }
+  });
+
+  it("refuses an env_file that is a symlink out of the repo, and reads one that stays inside", () => {
+    const outside = tempDir();
+    writeFileSync(join(outside, "live.env"), "PW=leak\n");
+    const out = withLive(example());
+    symlinkSync(join(outside, "live.env"), join(out, ".argus/live.env"));
+    const r = loadLive(out);
+    expect(r.errors.some((e: string) => e.includes("env_file") && e.includes("inside the repo"))).toBe(true);
+    expect(r.secrets).toEqual({});
+    const inside = withLive(example());
+    writeFileSync(join(inside, ".argus/real.env"), "PW=ok\n");
+    symlinkSync(join(inside, ".argus/real.env"), join(inside, ".argus/live.env"));
+    expect(loadLive(inside)).toMatchObject({ errors: [], secrets: { PW: "ok" } });
+  });
+
+  it("follows a repo path reached through a symlinked parent (both sides are real paths)", () => {
+    const real = withLive(example(), "PW=ok\n");
+    const link = join(tempDir(), "repo-link");
+    symlinkSync(real, link);
+    expect(loadLive(link)).toMatchObject({ errors: [], secrets: { PW: "ok" } });
   });
 
   it("without env_file there are no secrets", () => {
@@ -318,15 +364,26 @@ describe("argus-live instance — lock, live log, renew", () => {
     expect(logOf(main).trim().split("\n")).toHaveLength(1);
   });
 
-  it("a lock past its deadline is returned as stale, and the new run takes over", () => {
+  /** A lock file as another run would have left it. */
+  const plant = (main: string, lock: { runId: string; start: number; deadline: number }) => {
+    mkdirSync(join(main, ".argus/live"), { recursive: true });
+    writeFileSync(join(main, ".argus/live/lock.json"), `${JSON.stringify(lock)}\n`);
+    return lock;
+  };
+  const OLD = { runId: "20261008080000-0badc0de", start: S0 - 7200, deadline: S0 - 60 };
+  const FRESH = { runId: "20261008092900-feedf00d", start: S0 - 60, deadline: S0 + 3600 };
+  const claimOf = (main: string, runId: string) => join(main, ".argus/live", `claim-${runId}.json`);
+  const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid!;
+
+  it("a lock past its deadline is returned as stale, and its claim is kept as the record for recovery", () => {
     const main = repo();
-    const old = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    const later = T0 + (MAX * 60 + 900 + 1) * 1000;
-    const l = takeLock(main, { maxCycleMinutes: MAX, now: later });
-    expect(l.stale).toEqual({ runId: old.runId, start: old.start, deadline: old.deadline });
-    expect(l.runId).not.toBe(old.runId);
+    plant(main, OLD);
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    expect(l.stale).toEqual(OLD);
     expect(lockOf(main).runId).toBe(l.runId);
-    expect(readdirLive(main)).toEqual(["lock.json"]);
+    expect(JSON.parse(readFileSync(claimOf(main, OLD.runId), "utf8"))).toMatchObject({ lock: OLD, by: l.runId });
+    expect(readdirLive(main)).toEqual([`claim-${OLD.runId}.json`, "lock.json"]);
+    expect(logOf(main).trim().split("\n")).toEqual([`${l.runId} start ${l.start} deadline ${l.deadline}`]);
   });
 
   it("refuses an unreadable lock instead of recovering it", () => {
@@ -335,25 +392,162 @@ describe("argus-live instance — lock, live log, renew", () => {
     writeFileSync(join(main, ".argus/live/lock.json"), "{half");
     expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(/refused: .*lock\.json/);
     expect(existsSync(join(main, ".git/sapu-live.log"))).toBe(false);
+    expect(readdirLive(main)).toEqual(["lock.json"]);
   });
 
-  it("renew moves the deadline by max_cycle_minutes, appends it, and stops at start + 3 x max", () => {
+  it("refuses a lock whose times are out of range, and limits.max_cycle_minutes beyond a day", () => {
+    for (const bad of [{ ...OLD, start: 1e300 }, { ...OLD, deadline: 12 }, { ...OLD, deadline: OLD.start - 1 }]) {
+      const main = repo();
+      plant(main, bad);
+      expect(() => readLock(main)).toThrow(/^refused: /);
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(/^refused: /);
+    }
+    for (const max of [0, 1441, 1e300, 1.5]) expect(() => takeLock(repo(), { maxCycleMinutes: max, now: T0 })).toThrow(/^refused: limits\.max_cycle_minutes/);
+    expect(() => takeLock(repo(), { maxCycleMinutes: MAX, now: 1e300 })).toThrow(/^refused: /);
+  });
+
+  describe("races, replayed step by step", () => {
+    it("the lock vanishes between the failed link and the read: take it fresh", () => {
+      const main = repo();
+      plant(main, FRESH);
+      const l = takeLock(main, { maxCycleMinutes: MAX, now: T0, pause: (s: string) => s === "exists" && rmSync(join(main, ".argus/live/lock.json")) });
+      expect(l.stale).toBeUndefined();
+      expect(lockOf(main).runId).toBe(l.runId);
+    });
+
+    it("another taker claimed the stale run and already replaced the lock: refuse, naming the new run", () => {
+      const main = repo();
+      plant(main, OLD);
+      const pause = (s: string) => {
+        if (s !== "stale") return;
+        writeFileSync(claimOf(main, OLD.runId), JSON.stringify({ lock: OLD, by: FRESH.runId, pid: process.pid }));
+        plant(main, FRESH);
+      };
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0, pause })).toThrow(`refused: cycle ${FRESH.runId} holds the lock until`);
+      expect(lockOf(main)).toEqual(FRESH);
+    });
+
+    it("another taker holds the claim and is still at work: refuse, never touch the lock", () => {
+      const main = repo();
+      plant(main, OLD);
+      writeFileSync(claimOf(main, OLD.runId), JSON.stringify({ lock: OLD, by: FRESH.runId, pid: process.pid }));
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(new RegExp(`refused: cycle ${OLD.runId}'s lock is being changed by process ${process.pid}`));
+      expect(lockOf(main)).toEqual(OLD);
+    });
+
+    it("a claim whose process is gone: refuse, naming the file to remove", () => {
+      const main = repo();
+      plant(main, OLD);
+      const pid = deadPid();
+      writeFileSync(claimOf(main, OLD.runId), JSON.stringify({ lock: OLD, by: FRESH.runId, pid }));
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(`interrupted (process ${pid} is gone); remove ${claimOf(main, OLD.runId)}`);
+      expect(lockOf(main)).toEqual(OLD);
+    });
+
+    it("the stale lock was removed after we claimed it: drop the claim and take the lock fresh", () => {
+      const main = repo();
+      plant(main, OLD);
+      const l = takeLock(main, { maxCycleMinutes: MAX, now: T0, pause: (s: string) => s === "claimed" && rmSync(join(main, ".argus/live/lock.json")) });
+      expect(l.stale).toBeUndefined();
+      expect(lockOf(main).runId).toBe(l.runId);
+      expect(existsSync(claimOf(main, OLD.runId))).toBe(false);
+    });
+
+    it("the stale lock was replaced by a fresh one after we claimed it: never overwrite it", () => {
+      const main = repo();
+      plant(main, OLD);
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0, pause: (s: string) => s === "claimed" && plant(main, FRESH) })).toThrow(`refused: cycle ${FRESH.runId} holds the lock`);
+      expect(lockOf(main)).toEqual(FRESH);
+      expect(existsSync(claimOf(main, OLD.runId))).toBe(false);
+    });
+
+    it("the live log cannot be written: the lock is rolled back", () => {
+      const main = repo();
+      mkdirSync(join(main, ".git/sapu-live.log"));
+      expect(() => takeLock(main, { maxCycleMinutes: MAX, now: T0 })).toThrow(/^refused: cannot append to .*sapu-live\.log/);
+      expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+      expect(readdirLive(main)).toEqual([]);
+    });
+  });
+
+  it("concurrent takers: exactly one wins, it alone gets the stale record, and no fresh lock is removed", async () => {
+    const mod = join(__dirname, "../plugins/sapu/scripts/argus-live-instance.mjs");
+    const code = `
+      import { takeLock } from ${JSON.stringify(pathToFileURL(mod).href)};
+      const [main, at] = process.argv.slice(1);
+      while (Date.now() < Number(at)) {}
+      try { console.log(JSON.stringify({ ok: takeLock(main, { maxCycleMinutes: 45 }) })); }
+      catch (e) { console.log(JSON.stringify({ err: e.message })); }`;
+    const once = (main: string, at: number) =>
+      new Promise<{ ok?: { runId: string; stale?: unknown }; err?: string }>((done, fail) => {
+        const p = spawn(process.execPath, ["--input-type=module", "-e", code, main, String(at)]);
+        let out = "";
+        p.stdout.on("data", (d) => (out += d));
+        p.on("error", fail);
+        p.on("close", () => done(JSON.parse(out)));
+      });
+    for (const n of [2, 4, 8, 8, 8]) {
+      const main = repo();
+      const now = Math.floor(Date.now() / 1000);
+      const old = plant(main, { ...OLD, start: now - 7200, deadline: now - 1 });
+      const at = Date.now() + 500;
+      const results = await Promise.all(Array.from({ length: n }, () => once(main, at)));
+      const won = results.filter((r) => r.ok);
+      expect(won, JSON.stringify(results)).toHaveLength(1);
+      expect(won[0].ok!.stale).toEqual(old);
+      for (const r of results.filter((x) => !x.ok)) expect(r.err).toMatch(/^refused: /);
+      expect(lockOf(main).runId).toBe(won[0].ok!.runId);
+      expect(logOf(main).trim().split("\n")).toHaveLength(1);
+      expect(JSON.parse(readFileSync(claimOf(main, old.runId), "utf8")).by).toBe(won[0].ok!.runId);
+    }
+  }, 30_000);
+
+  it("renew moves the deadline by max_cycle_minutes, appends it, and stops at start + 3 x max + 15 min", () => {
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    const d1 = renew(main, { maxCycleMinutes: MAX, now: T0 + 60_000 });
+    const d1 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 });
     expect(d1).toBe(l.deadline + MAX * 60);
     expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: d1 });
-    const d2 = renew(main, { maxCycleMinutes: MAX, now: T0 + 120_000 });
-    expect(d2).toBe(S0 + 3 * MAX * 60);
-    expect(() => renew(main, { maxCycleMinutes: MAX, now: T0 + 180_000 })).toThrow(/cap reached/);
+    const d2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 120_000 });
+    expect(d2).toBe(S0 + 3 * MAX * 60 + 900);
+    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 180_000 })).toThrow(/cap reached/);
     expect(logOf(main).trim().split("\n").slice(1)).toEqual([`${l.runId} deadline ${d1}`, `${l.runId} deadline ${d2}`]);
+    expect(readdirLive(main)).toEqual(["lock.json"]);
   });
 
-  it("renew refuses with no lock, and once the deadline has passed", () => {
-    expect(() => renew(repo(), { maxCycleMinutes: MAX, now: T0 })).toThrow(/no lock/);
+  it("a short cycle can still renew: the cap carries the same 15 min grace", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: 5, now: T0 });
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 1000 })).toBe(S0 + 300 + 900 + 300);
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 2000 })).toBe(S0 + 3 * 300 + 900);
+    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 3000 })).toThrow(/cap reached/);
+  });
+
+  it("renew refuses with no lock, once the deadline has passed, and for another run's lock", () => {
+    expect(() => renew(repo(), { runId: OLD.runId, maxCycleMinutes: MAX, now: T0 })).toThrow(/no lock/);
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    expect(() => renew(main, { maxCycleMinutes: MAX, now: l.deadline * 1000 })).toThrow(/deadline .* passed/);
+    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: l.deadline * 1000 })).toThrow(/deadline .* passed/);
+    expect(() => renew(main, { runId: OLD.runId, maxCycleMinutes: MAX, now: T0 + 1000 })).toThrow(`refused: the lock names cycle ${l.runId}, not ${OLD.runId}`);
+    expect(lockOf(main).deadline).toBe(l.deadline);
+    expect(() => renew(main, { runId: "nope", maxCycleMinutes: MAX, now: T0 })).toThrow(/run id/);
+  });
+
+  it("renew never overwrites a lock that changed under it, nor one being changed", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const pause = (s: string) => s === "claimed" && plant(main, FRESH);
+    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 1000, pause })).toThrow(/^refused: the lock changed/);
+    expect(lockOf(main)).toEqual(FRESH);
+    expect(logOf(main).trim().split("\n")).toHaveLength(1);
+    expect(existsSync(claimOf(main, l.runId))).toBe(false);
+
+    const busy = repo();
+    const b = takeLock(busy, { maxCycleMinutes: MAX, now: T0 });
+    writeFileSync(claimOf(busy, b.runId), JSON.stringify({ pid: process.pid }));
+    expect(() => renew(busy, { runId: b.runId, maxCycleMinutes: MAX, now: T0 + 1000 })).toThrow(/being changed/);
+    expect(lockOf(busy).deadline).toBe(b.deadline);
+    expect(existsSync(claimOf(busy, b.runId))).toBe(true);
   });
 
   it("appendEnd appends an end line, and refuses a malformed run id", () => {
@@ -367,7 +561,7 @@ describe("argus-live instance — lock, live log, renew", () => {
   it("seam: live_overlap sees a renewed run up to its latest deadline, and a run up to its end", () => {
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    const d2 = renew(main, { maxCycleMinutes: MAX, now: T0 + 60_000 });
+    const d2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 });
     expect(overlaps(main, l.deadline + 10, l.deadline + 20)).toBe(true);
     expect(overlaps(main, d2 + 10, d2 + 20)).toBe(false);
     expect(overlaps(main, S0 - 20, S0 - 10)).toBe(false);

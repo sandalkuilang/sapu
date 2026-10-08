@@ -97,16 +97,21 @@ Interfaces:
   `<runId> start <start> deadline <deadline>` to `<main>/.git/sapu-live.log` (epoch seconds,
   `deadline = start + maxCycleMinutes*60 + 900`). Run id: `<yyyymmddhhmmss>-<8 hex>` (unique).
   A lock whose deadline is in the future → throws `refused: cycle <runId> holds the lock until <iso>`.
-  A lock past its deadline → returns `{stale: <old lock>}` alongside, for `recover` (Task 7).
-- `export function renew(main, {maxCycleMinutes, now})` → new deadline = `min(deadline +
-  maxCycleMinutes*60, start + 3*maxCycleMinutes*60)`; rewrites the lock; appends
-  `<runId> deadline <new>`; when the deadline cannot move (cap reached) throws `cap reached`.
+  A lock past its deadline → returns `{stale: <old lock>}` alongside, for `recover` (Task 7). A lock
+  naming run R is replaced or removed only by the holder of `.argus/live/claim-<R>.json` (created
+  with link(2)); a takeover keeps that claim as R's record for `recover`, which must also honour
+  the claim rule when `down` removes a lock. If the live-log append fails, the lock is rolled back.
+  `maxCycleMinutes` is 1–1440 and lock times must be sane epochs, else `refused:`.
+- `export function renew(main, {runId, maxCycleMinutes, now})` → refuses when the lock names
+  another run; new deadline = `min(deadline + maxCycleMinutes*60, start + 3*maxCycleMinutes*60 +
+  900)`; under `claim-<runId>.json` re-reads the lock, appends `<runId> deadline <new>`, rewrites the
+  lock; when the deadline cannot move (cap reached) throws `cap reached`.
 - `export function appendEnd(main, runId, now)` appends `<runId> end <now>`.
 
 - [ ] **Step 1: Failing tests** — a temp git repo as MAIN: `takeLock` writes the lock and one start
   line matching `^\d{14}-[0-9a-f]{8} start \d{9,10} deadline \d{9,10}$`; a second `takeLock` with a
   live lock throws `refused`; a lock with a past deadline is returned as `stale`; `renew` appends a
-  `deadline` line and caps at start + 3 × max; `appendEnd` appends `end`; **seam test**: for a
+  `deadline` line and caps at start + 3 × max + 15 min; `appendEnd` appends `end`; **seam test**: for a
   renewed run, the exact awk of `live_overlap` (read it out of `plugins/sapu/scripts/sapu-merge.sh`
   between the `awk -v s="$1" -v e="$2" '` line and its closing `'`, run with `/usr/bin/awk` or `awk`
   over the written log) reports overlap for a gate after the first deadline and before the renewed

@@ -14,6 +14,9 @@ export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ROLES = ["anon", "system"];
 const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
 const START_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
+/** A cycle longer than a day is a mistake, and keeps every epoch the lock computes in range. */
+export const MAX_CYCLE_MINUTES = 1440;
 
 const TOP_KEYS = [
   "setup", "services", "start", "base_url", "login_url", "logged_in", "env_file", "env", "pass_env", "store", "store_check", "reset",
@@ -108,6 +111,7 @@ export function validateLive(c) {
     unknown(c.limits, "limits", LIMIT_KEYS);
     need("max_cycle_minutes" in c.limits, 'limits: missing "max_cycle_minutes"');
     for (const k of LIMIT_KEYS) if (k in c.limits) need(isInt(c.limits[k], 1), `limits.${k} must be a positive integer`);
+    if (isInt(c.limits.max_cycle_minutes, 1)) need(c.limits.max_cycle_minutes <= MAX_CYCLE_MINUTES, `limits.max_cycle_minutes must be at most ${MAX_CYCLE_MINUTES}`);
   }
   placeholders(c, "", errs);
   return errs;
@@ -168,18 +172,22 @@ function localUrl(raw, where, errs) {
   if (literal && !(/^127\./.test(h) || h === "[::1]")) errs.push(`${where} must name a loopback host (the instance never reaches another machine): ${h}`);
 }
 
+/** `scheme://host[:port]` and nothing more (a default port is fine: origins are compared as `new URL(x).origin`). */
 function isOrigin(s) {
+  if (!/^https?:\/\/[^/?#@\s]+$/i.test(s)) return false;
   try {
-    const u = new URL(s);
-    return /^https?:$/.test(u.protocol) && u.origin === s;
+    return new URL(s).origin !== "null";
   } catch {
     return false;
   }
 }
 
-/** Every `{port:` in every string must be `{port:<name>}` or `{port:<name>=<port>}`. */
+/** Every `{port:` in every string must be `{port:<name>}` or `{port:<name>=<port>}`, every `${` a `${NAME}`. */
 function placeholders(v, where, errs) {
   if (typeof v === "string") {
+    for (const m of v.matchAll(/\$\{/g)) {
+      if (!SECRET.test(v.slice(m.index))) errs.push(`${where || LIVE_FILE}: bad placeholder "${v.slice(m.index, m.index + 24)}" (write \${NAME}, NAME matching [A-Za-z_][A-Za-z0-9_]*)`);
+    }
     for (const m of v.matchAll(/\{port:([^}]*)\}?/g)) {
       const [name, fixed] = m[1].split("=");
       const ok = m[0].endsWith("}") && PORT_NAME.test(name) && (fixed === undefined || (/^\d+$/.test(fixed) && isPort(Number(fixed))));
@@ -192,13 +200,13 @@ function placeholders(v, where, errs) {
 /**
  * `value` with `{port:<name>}` → `ports[name]`, `{port:<name>=<n>}` → n (recorded in `ports`), and
  * `${NAME}` → `secrets[NAME]`, in one pass (a substituted value is never expanded again). Anything
- * else is left as it is. Throws `unset NAME` (the name only) for an unknown secret, and on a port name
+ * else is left as it is. Throws `unset NAME` (the name only) for an unknown or empty secret, and on a port name
  * not allocated.
  */
 export function expand(value, { ports = {}, secrets = {} } = {}) {
   return value.replace(/\{port:([a-z][a-z0-9_-]*)(?:=(\d+))?\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, port, fixed, secret) => {
     if (secret !== undefined) {
-      if (!Object.hasOwn(secrets, secret)) throw new Error(`unset ${secret}`);
+      if (!Object.hasOwn(secrets, secret) || secrets[secret] === "") throw new Error(`unset ${secret}`);
       return secrets[secret];
     }
     if (fixed !== undefined) {
@@ -240,14 +248,20 @@ export function loadLive(main) {
   let secrets = {};
   if (isObj(config) && isStr(config.env_file)) {
     const rel = config.env_file;
-    const abs = path.resolve(main, rel);
-    const up = path.relative(main, abs);
-    if (path.isAbsolute(rel) || up === ".." || up.startsWith(`..${path.sep}`)) errors.push(`env_file must be a path inside the repo: ${rel}`);
+    const outside = (base, p) => {
+      const up = path.relative(base, p);
+      return up === "" || up === ".." || up.startsWith(`..${path.sep}`) || path.isAbsolute(up);
+    };
+    const inside = `env_file must be a path inside the repo: ${rel}`;
+    if (path.isAbsolute(rel) || outside(main, path.resolve(main, rel))) errors.push(inside);
     else {
       try {
-        secrets = parseEnvFile(fs.readFileSync(abs, "utf8"));
+        // Real paths on both sides: a symlink out of the repo must not pass as a file inside it.
+        const real = fs.realpathSync(path.resolve(main, rel));
+        if (outside(fs.realpathSync(main), real)) errors.push(inside);
+        else secrets = parseEnvFile(fs.readFileSync(real, "utf8"));
       } catch (e) {
-        errors.push(`env_file ${rel} ${e && e.code === "ENOENT" ? "is missing" : "cannot be read"}`);
+        errors.push(`env_file ${rel} ${e && e.code === "ENOENT" ? "is missing" : `cannot be read: ${e.message}`}`);
       }
     }
   }

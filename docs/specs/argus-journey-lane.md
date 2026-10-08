@@ -413,7 +413,8 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
     which runs `down` at the deadline unless `renew` moved it, and exits without acting when the lock
     names another run.
 
-**`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that, and
+**`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that + the
+same 15 min grace as the first deadline (so a short cycle can still renew), and
 appends `<run id> deadline <epoch>` to `sapu-live.log`; the cycle renews after each explorer returns and before each repro. Reaching the cap ends the cycle;
 candidates not yet reproduced are journalled `not reproduced: harness`.
 
