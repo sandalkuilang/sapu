@@ -3085,6 +3085,97 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(balanced(b.main)).toBe(true);
   }, 90000);
 
+  it("the run's Docker client is resolved (a local socket) before the daemon's clock is read: a remote context is refused and docker info never runs", async () => {
+    const { main } = repo();
+    const calls: string[] = [];
+    const runner = (argv: string[], o: Obj = {}) => {
+      if (argv[0] !== "docker") return run(argv, o);
+      calls.push(argv.slice(1, 3).join(" "));
+      if (argv[1] === "context") return { status: 0, stdout: JSON.stringify([{ Name: "remote", Endpoints: { docker: { Host: "tcp://10.0.0.5:2376" } } }]), stderr: "" };
+      return { status: 1, stdout: "", stderr: "unexpected" };
+    };
+    expect(await message(up(main, { runner, ownerHome: tempDir() }))).toMatch(/^refused: the docker context remote is not a local unix socket \(tcp\)/);
+    expect(calls).toEqual(["context inspect"]);
+    expect(balanced(main)).toBe(true);
+  });
+
+  describe("egress fails closed, kills stay careful: a run recorded by hand around one fixture process", () => {
+    const freePort = () =>
+      new Promise<number>((done) => {
+        const s = createServer();
+        s.listen(0, "127.0.0.1", () => {
+          const p = (s.address() as { port: number }).port;
+          s.close(() => done(p));
+        });
+      });
+    const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    /** `ps -o lstart` of `pid`, moved by `s` seconds, in ps's own form. */
+    const lstart = (pid: number, s = 0) => {
+      const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+      const d = new Date(Date.parse(raw) + s * 1000);
+      const two = (n: number) => String(n).padStart(2, "0");
+      return `${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`;
+    };
+    /** The fixture app, its cache left to the fixed local port a test listener holds; a run recorded around it (`started` as `shift` says). */
+    const recorded = async (shift: number | null) => {
+      const { main } = repo();
+      const s = createServer((c) => c.on("error", () => {}));
+      servers.push(s);
+      const accepted: number[] = [];
+      s.on("connection", () => accepted.push(1));
+      await new Promise<void>((done) => s.listen(46379, "127.0.0.1", () => done()));
+      const web = await freePort();
+      const p = spawn("/bin/sh", ["-c", app()], { detached: true, stdio: "ignore", env: { ...process.env, PORT: String(web) } });
+      expect(await until(() => accepted.length > 0, 5000)).toBe(true);
+      const l = takeLock(main, { maxCycleMinutes: 30 });
+      const worktree = makeWorktree(main, l.runId);
+      const home = makeHome(main, l.runId);
+      const env = { PATH: process.env.PATH!, HOME: home, COMPOSE_PROJECT_NAME: `argus-${l.runId}` };
+      writeRunFiles(main, { runId: l.runId, instanceId: "i-1", worktree, home, ports: { cache: web + 1, web }, origins: [], env, since: Date.now(), groups: [], stops: [] });
+      const rec = runJson(main);
+      rec.groups = [{ name: "web", pgid: p.pid, cmdline: "node server.mjs", ...(shift === null ? {} : { started: lstart(p.pid!, shift) }) }];
+      writeFileSync(join(main, ".argus/live/run.json"), JSON.stringify(rec));
+      return { main, pid: p.pid! };
+    };
+    it("a group whose start time could not be recorded is still listed: its connection is caught", async () => {
+      const { main, pid } = await recorded(null);
+      expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+      expect(alive(pid)).toBe(true); // doubt about its identity: not killed
+    });
+    it("a start time one second off is the same process (clock drift): caught, and killed by the down that follows", async () => {
+      const { main, pid } = await recorded(1);
+      expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+      expect(await until(() => !alive(pid), 5000)).toBe(true);
+    });
+    it("a group whose processes are not the run's (another start time) leaves nothing to list: the listing cannot be trusted, and nothing is killed", async () => {
+      const { main, pid } = await recorded(5);
+      expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^failed: the run's process listing cannot be trusted: process group \d+ \(web\) has processes, none of them the run's$/);
+      expect(alive(pid)).toBe(true);
+      expect(balanced(main)).toBe(true);
+    });
+  });
+
+  it("up --fresh keeps an old group that is still alive after the stop in the record, and reports it", async () => {
+    const { main } = repo();
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    const old = runJson(main).groups.find((g: Obj) => g.name === "web");
+    // ps keeps showing the old leader, as for a process that would not die.
+    const ghost = (argv: string[], o: Obj = {}) => {
+      const res = noDocker(argv, o) as Obj;
+      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${old.pgid} ${old.pgid} ${old.started} ${old.cmdline}\n` };
+      return res;
+    };
+    await up(main, { ...opts({ fresh: true }), runner: ghost });
+    const groups = runJson(main).groups;
+    expect(groups.filter((g: Obj) => g.name === "web").map((g: Obj) => g.pgid)).toContain(old.pgid);
+    expect(groups.filter((g: Obj) => g.name === "web")).toHaveLength(2);
+    expect(readFileSync(join(main, ".argus/live", r.runId, "logs", "up.log"), "utf8")).toContain(`fresh: web (pgid ${old.pgid}) still runs after the stop; kept in the record for down`);
+    await down(main, { runId: r.runId });
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
   describe("the CLI", () => {
     /** A docker whose context is a local socket and whose daemon is not running. */
     const fakeDocker = () => {
@@ -3100,6 +3191,35 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       const r = spawnSync(NODE, [CLI, ...args], { cwd: main, env, encoding: "utf8", timeout: 60000 });
       return { code: r.status, out: `${r.stdout}${r.stderr}` };
     };
+    it("an up that did not finish (killed in step 4): up --fresh and renew refuse (exit 1), down cleans up", async () => {
+      const { main } = repo((c) => (c.setup = [["sleep", "30"]]));
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      const child = spawn(NODE, [CLI, "up"], { cwd: main, env, stdio: "ignore" });
+      const inSetup = () => {
+        try {
+          const r = runJson(main);
+          return Boolean(r.worktree && r.env && r.groups.some((g: Obj) => g.name === "setup[0]"));
+        } catch {
+          return false;
+        }
+      };
+      expect(await until(inSetup, 20000)).toBe(true);
+      child.kill("SIGKILL");
+      await new Promise((done) => child.once("exit", done));
+      const rec = runJson(main);
+      reapers.push(rec.reaper);
+      const sleeper = rec.groups.find((g: Obj) => g.name === "setup[0]").pgid;
+      reapers.push(sleeper); // killed after the test whatever it asserted
+      for (const args of [["up", "--fresh"], ["renew"]]) {
+        const r = cli(main, args, env);
+        expect(r.code).toBe(1);
+        expect(r.out).toContain(`refused: cycle ${rec.runId}'s up did not finish; run down`);
+      }
+      expect(cli(main, ["down"], env).code).toBe(0);
+      expect(await until(() => !alive(sleeper) && !alive(rec.reaper), 5000)).toBe(true);
+      expect(balanced(main)).toBe(true);
+    }, 60000);
+
     it("up, status, a second up (refused: exit 1), renew, down; a failing up exits 2; no output or log holds a secret value", async () => {
       const { main } = repo();
       const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };

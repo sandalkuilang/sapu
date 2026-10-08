@@ -2125,6 +2125,17 @@ function processTable(runner) {
   return out;
 }
 
+/**
+ * True when two `ps -o lstart` times name the same process start: equal, or at most 1 s apart (Linux
+ * derives lstart from boot time, which drifts). A reused pid starts far later.
+ */
+function sameStart(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const [x, y] = [Date.parse(a), Date.parse(b)];
+  return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) <= 1000;
+}
+
 /** The processes of group `pgid` in `table`, as recorded: {pid, started, cmdline} (secret values masked). */
 const membersOf = (table, pgid, secrets) => table.filter((p) => p.pgid === pgid).map((p) => ({ pid: p.pid, started: p.started, cmdline: redact(p.command, secrets) }));
 
@@ -2166,7 +2177,7 @@ function refreshGroups(groups, table, secrets) {
     if (!table || !g) return { ...g };
     const now = membersOf(table, g.pgid, secrets);
     const leader = now.find((p) => p.pid === g.pgid);
-    if (!now.length || (leader && (g.exited || (g.started && leader.started !== g.started)))) return { ...g };
+    if (!now.length || (leader && (g.exited || (g.started && !sameStart(leader.started, g.started))))) return { ...g };
     return { ...g, started: g.started ?? (leader && leader.started), cmdline: leader ? leader.cmdline : g.cmdline, members: now };
   });
 }
@@ -2179,8 +2190,8 @@ function refreshGroups(groups, table, secrets) {
  */
 function sameGroup(g, now) {
   const leader = now.find((p) => p.pid === g.pgid);
-  if (leader && !g.exited && g.started && leader.started === g.started) return true;
-  return now.some((p) => (g.members ?? []).some((m) => m && m.pid === p.pid && m.started && m.started === p.started));
+  if (leader && !g.exited && sameStart(leader.started, g.started)) return true;
+  return now.some((p) => (g.members ?? []).some((m) => m && m.pid === p.pid && sameStart(m.started, p.started)));
 }
 
 /**
@@ -2537,7 +2548,14 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     const onDisk = readRun(main);
     if (onDisk && onDisk.runId === runId) fs.rmSync(runPath(main), { force: true });
   });
-  await releaseLock(main, runId, claimWaitMs, () => guarded("the live log", note, () => appendEnd(main, runId)));
+  await releaseLock(main, runId, claimWaitMs, () => {
+    // Synchronous: the end line is written before the claim is released.
+    try {
+      appendEnd(main, runId);
+    } catch (e) {
+      note(`the live log: ${e.message}`);
+    }
+  });
   return { report };
 }
 
@@ -2675,17 +2693,28 @@ function recordingArray(save, items = []) {
   return a;
 }
 
-/** The pids of the run's processes: every member of each recorded group that is still the run's (pid reuse aside). */
+/**
+ * The pids the egress check lists: every process of each recorded group, unless the group is known to
+ * be someone else's (its leader exited, or started at another time, while a process holds its pid). A
+ * group whose identity cannot be confirmed (no start time recorded) is listed: for a check, doubt
+ * means look. When recorded groups still have processes but none is listed, the listing cannot be
+ * trusted (`failed: …`): an empty listing would pass anything.
+ */
 function runPids(groups, runner) {
   const table = processTable(runner);
   const out = [];
+  let foreign = null;
   for (const g of groups) {
     if (!g || !Number.isInteger(g.pgid) || g.pgid <= 1) continue;
     const now = membersOf(table, g.pgid, {});
     const leader = now.find((p) => p.pid === g.pgid);
-    if (leader && (g.exited || (g.started && leader.started !== g.started))) continue;
+    if (leader && (g.exited || (g.started && !sameStart(leader.started, g.started)))) {
+      foreign = foreign ?? g;
+      continue;
+    }
     out.push(...now.map((p) => p.pid));
   }
+  if (!out.length && foreign) throw new Error(`failed: the run's process listing cannot be trusted: process group ${foreign.pgid} (${foreign.name}) has processes, none of them the run's`);
   return out;
 }
 
@@ -2810,7 +2839,6 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
       const r = await recover(main, { secrets, runner });
       for (const l of r.report) log(`recovery: ${l}`);
     }
-    state.since = daemonNow({ env: process.env, runner }) ?? Date.now();
     save();
     state.reaper = startReaper(main, runId);
     log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
@@ -2848,6 +2876,9 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     state.home = makeHome(main, runId);
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
+    // The daemon's clock through the run's own client (its context checked by dockerEnv just now);
+    // nothing of the run has touched Docker before this step.
+    state.since = daemonNow({ env: state.env, runner }) ?? Date.now();
     save();
     log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}`);
 
@@ -2892,6 +2923,8 @@ function current(main) {
   if (!lock) throw new Error("refused: no journey cycle is running");
   const rec = readRun(main);
   if (!rec || rec.runId !== lock.runId || typeof rec.worktree !== "string" || !rec.env) throw new Error(`refused: run.json does not hold the instance of cycle ${lock.runId} (it is still starting, or it failed)`);
+  // An instance id is set only once `up` (or `up --fresh`) finished every step: anything less was never checked whole.
+  if (!rec.instanceId) throw new Error(`refused: cycle ${lock.runId}'s up did not finish; run down`);
   const { config, errors, secrets } = loadLive(main);
   if (errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
   return { lock, rec, config, secrets };
@@ -2918,8 +2951,16 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const s of [...(rec.stops ?? [])].reverse()) {
       await guarded(`stop ${s && s.name}`, note, () => replayStop(s, { secrets, asyncRunner: runAsync, timeoutMs: 120_000, logs: logsDir(main, runId), note }));
     }
-    await stopRecordedGroups((rec.groups ?? []).filter((g) => !setupGroups.includes(g)), { runner, secrets, graceMs: 10_000, note });
-    state.groups = recordingArray(save, setupGroups);
+    const old = (rec.groups ?? []).filter((g) => !setupGroups.includes(g));
+    await stopRecordedGroups(old, { runner, secrets, graceMs: 10_000, note });
+    // A group the stop could not end stays in the record, so `down` tries again; it is reported.
+    const table = processTable(runner);
+    const alive = old.filter((g) => {
+      const now = membersOf(table, g.pgid, secrets);
+      return now.length > 0 && sameGroup(g, now);
+    });
+    for (const g of alive) note(`${g.name} (pgid ${g.pgid}) still runs after the stop; kept in the record for down`);
+    state.groups = recordingArray(save, [...setupGroups, ...alive]);
     state.stops = recordingArray(save);
     state.instanceId = null;
     save();

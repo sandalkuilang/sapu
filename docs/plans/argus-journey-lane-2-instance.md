@@ -440,6 +440,16 @@ As built:
 - The fixture app retries its cache connection every 500 ms, as a cache client does, so a connection
   made after `up` is what `renew` catches.
 - CLI: `cap reached` exits 1 like a refusal.
+- `upFresh` and `renewRun` refuse a run whose `up` never finished (no `instanceId` in run.json:
+  `refused: cycle <R>'s up did not finish; run down`).
+- `since` is read through the run's own Docker client, right after `dockerEnv` checked its context
+  (step 3); nothing of the run touches Docker before that.
+- Doubt means look for a check and leave alone for a kill: the egress check lists a group whose
+  identity cannot be confirmed (no start time), and when recorded groups still have processes but
+  none of them is the run's it fails (`the run's process listing cannot be trusted`). Start times
+  match within 1 s (Linux derives lstart from a drifting boot time).
+- `upFresh` keeps an old group that still runs after its stop in the record (reported), so `down`
+  tries again.
 
 Carried from Task 7:
 - Step 1: `recover(main, {secrets})` right after `takeLock` (when `staleRuns` is not empty) and
