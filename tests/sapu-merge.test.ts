@@ -110,6 +110,15 @@ function harness({
     HX_CLAUDE_JSON: JSON.stringify([{ id: "sapu@sapu", scope: "project" }]),
   });
   const stub = (name: string, body: string) => writeFileSync(join(bin, name), body, { mode: 0o755 });
+  // The fake HOME is not the account's home, which sapu-contract.mjs refuses; the script never
+  // forwards the CLI's test seam, so this shim adds it to every sapu-contract.mjs call it makes.
+  stub(
+    "node",
+    `#!/bin/sh
+[ -n "\${HX_NO_SEAM:-}" ] || case "$1" in */sapu-contract.mjs) f="$1"; shift; exec "${process.execPath}" "$f" --machine-config "$HOME/.config/sapu/config.json" "$@" ;; esac
+exec "${process.execPath}" "$@"
+`,
+  );
   stub(
     "gh",
     `#!/usr/bin/env bash
@@ -631,6 +640,15 @@ describe("sapu-merge.sh — the scope lock of the machine config", () => {
     const r = h.run();
     expect(r.status).toBe(1);
     expect(r.err).toMatch(/is outside the allowed roots in .*\/\.config\/sapu\/config\.json/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("a HOME that is not the account's home is refused before anything merges, even with gh's token in the environment", () => {
+    const h = harness();
+    const r = h.run({ HX_NO_SEAM: "1", GH_TOKEN: "x" });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/HOME is .*, not this account's home directory/);
     expect(h.gh()).not.toMatch(/pr merge/);
     expect(h.gateLog()).toBe("");
   });

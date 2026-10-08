@@ -585,6 +585,40 @@ export function machineConfigPath() {
   return path.join(os.homedir(), ".config", "sapu", "config.json");
 }
 
+/**
+ * Why $HOME cannot be trusted to find the machine config, or null. os.homedir() follows $HOME, which
+ * a repo's committed settings `env` can set: pointed elsewhere, the config is not found (no
+ * restriction), and gh keeps its login when GH_TOKEN, GH_CONFIG_DIR or XDG_CONFIG_HOME carries it.
+ * So $HOME must resolve to the account's own home directory (the password database's, which no
+ * environment variable moves); an account the system cannot name fails closed.
+ */
+export function homeProblem(home = os.homedir(), account = null) {
+  let own = account;
+  if (own === null) {
+    try {
+      own = os.userInfo().homedir;
+    } catch (e) {
+      return `the home directory of this account cannot be read (${e.message}), so the machine config cannot be found`;
+    }
+  }
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  if (own && real(home) === real(own)) return null;
+  return `HOME is ${home}, not this account's home directory ${own || "(none)"}: the machine config is read from ~/.config/sapu/config.json, so a moved HOME would lift its scope lock. Run sapu with HOME=${own || "<your home>"}`;
+}
+
+/** The machine config a sapu run is bound by: refused when $HOME is not the account's home (homeProblem). */
+export function accountMachineConfig({ main = null } = {}) {
+  const p = homeProblem();
+  if (p) throw new Error(p);
+  return loadMachineConfig(machineConfigPath(), { main });
+}
+
 /** Every error in a parsed machine config (empty = valid). Strict like the contract: an unknown key is a typo that must not silently drop a restriction. */
 export function validateMachineConfig(c) {
   if (!c || typeof c !== "object" || Array.isArray(c)) return ["the machine config must be a JSON object"];
@@ -806,7 +840,7 @@ export function machineNow() {
  * checks come from the contract; the allowed roots and the project-scope rule from the machine
  * config (loadMachineConfig), which no contract can widen.
  */
-export function lockProblems(main, c, machine = loadMachineConfig(machineConfigPath(), { main })) {
+export function lockProblems(main, c, machine = accountMachineConfig({ main })) {
   const p = [];
   // A bare repository has no files to compare against origin and no branch to fast-forward.
   if (sh("git", ["-C", main, "rev-parse", "--is-bare-repository"], main) === "true") {
@@ -1721,6 +1755,16 @@ export function gateProtectionWarning(contract, hasFile) {
 }
 
 function main(argv) {
+  // `--machine-config <file>` first: read that file as the machine config, $HOME aside (the tests' seam).
+  let machineFile = null;
+  if (argv[0] === "--machine-config") {
+    if (!argv[1] || !path.isAbsolute(argv[1])) {
+      process.stderr.write("sapu-contract: --machine-config needs an absolute file path\n");
+      process.exit(1);
+    }
+    machineFile = argv[1];
+    argv = argv.slice(2);
+  }
   const [cmd, ...args] = argv;
   if (cmd === "protect") {
     // protect [--ref <rev>] -- <word>...: before the option parsing below, which would eat a gate's own `--text`.
@@ -1785,7 +1829,9 @@ function main(argv) {
   // typo must not silently lift the restriction.
   const machineOrFail = () => {
     try {
-      return loadMachineConfig(machineConfigPath(), { main: mainDir });
+      // --machine-config is the test harness's seam: a CLI argument no repo setting can supply, and
+      // sapu-merge.sh never forwards one.
+      return machineFile !== null ? loadMachineConfig(machineFile, { main: mainDir }) : accountMachineConfig({ main: mainDir });
     } catch (e) {
       return fail(e.message);
     }

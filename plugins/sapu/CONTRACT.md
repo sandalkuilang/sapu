@@ -95,7 +95,12 @@ an install at user scope or one whose scope cannot be determined. That file is n
 repo (a config that lives inside the repo's checkout is refused), so the contract cannot widen its
 roots. Without that file, only the identity above is checked; a file that cannot be read, or a symlink
 that does not end in a file, is not "no file" but an error. The guard refuses every
-subagent write to `~/.config/sapu/`.
+subagent write to `~/.config/sapu/`. `~` is `$HOME`, which that same `env` could move: pointed
+elsewhere, the file would not be found, and gh would keep its login through `GH_TOKEN`,
+`GH_CONFIG_DIR` or `XDG_CONFIG_HOME`. So `check`, `preflight` and the merge refuse a `$HOME` that
+does not resolve to the account's own home directory (the system's account record, which no
+environment variable changes). `sapu-contract.mjs --machine-config <file> <command>` reads another
+file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 
 ## `.claude/sapu.json`
 

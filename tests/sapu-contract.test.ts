@@ -5,7 +5,7 @@
 // machine's own config, accounts and plugin installs never leak into a result.
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -27,6 +27,7 @@ import {
   loadMachineConfig,
   lockProblems,
   machineConfigPath,
+  homeProblem,
   nwoFromRemote,
   resolveSpecialists,
   safeLanes,
@@ -97,13 +98,18 @@ function fakeHome(name: string, config?: unknown) {
 const DEFAULT_HOME = fakeHome("home-none");
 const DEFAULT_BIN = stubBin("bin-default");
 
-/** Run the CLI with a throwaway HOME (no XDG_CONFIG_HOME) and stubbed gh/claude; returns {status, out, err}. */
-function cli(cwd: string, a: string[], { home = DEFAULT_HOME, bin = DEFAULT_BIN, xdg, env: extra = {} }: { home?: string; bin?: string; xdg?: string; env?: Record<string, string> } = {}) {
+/**
+ * Run the CLI with a throwaway HOME (no XDG_CONFIG_HOME) and stubbed gh/claude; returns {status, out, err}.
+ * A HOME that is not the account's own is refused, so the CLI is told the throwaway HOME's machine
+ * config through its test seam (`--machine-config`) — unless `seam` is false.
+ */
+function cli(cwd: string, a: string[], { home = DEFAULT_HOME, bin = DEFAULT_BIN, xdg, env: extra = {}, seam = true }: { home?: string; bin?: string; xdg?: string; env?: Record<string, string>; seam?: boolean } = {}) {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra, HOME: home, PATH: `${bin}:${process.env.PATH}` };
   delete env.XDG_CONFIG_HOME;
   if (xdg !== undefined) env.XDG_CONFIG_HOME = xdg;
+  const pre = seam ? ["--machine-config", join(home, ".config/sapu/config.json")] : [];
   // spawnSync, not execFileSync: stderr is kept on success too (issue-trust --comments reports there).
-  const r = spawnSync("node", [CLI, ...a], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const r = spawnSync("node", [CLI, ...pre, ...a], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   return { status: r.status, out: r.stdout, err: r.stderr };
 }
 
@@ -431,6 +437,34 @@ describe("machine config", () => {
       if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = saved;
     }
+  });
+
+  it("a HOME that is not the account's home directory is refused: it would hide the machine config, while GH_TOKEN keeps gh logged in", () => {
+    expect(homeProblem("/a/b", "/a/b")).toBeNull();
+    expect(homeProblem(join(root, "elsewhere"), homedir())).toMatch(/HOME is .*elsewhere, not this account's home directory .*: the machine config is read from ~\/\.config\/sapu\/config\.json/);
+    // a link to the account's home is that home
+    const link = join(root, "home-link");
+    symlinkSync(userInfo().homedir, link);
+    expect(homeProblem(link, userInfo().homedir)).toBeNull();
+    // the CLI, without the test seam: check and preflight stop, whatever gh's token says
+    const repo = join(root, "home-moved");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify(FIXTURE_CONTRACT) });
+    for (const cmd of ["check", "preflight"]) {
+      const r = cli(repo, [cmd], { seam: false, env: { GH_TOKEN: "x" } });
+      expect(r.status, cmd).toBe(1);
+      expect(r.err, cmd).toMatch(/HOME is .*home-none, not this account's home directory/);
+    }
+    // HOME spelled through a link to the account's home passes that check (preflight reports facts)
+    expect(cli(repo, ["preflight"], { seam: false, home: link }).err).not.toMatch(/not this account's home directory/);
+  });
+
+  it("--machine-config is the CLI's test seam only: sapu-merge.sh never forwards one", () => {
+    expect(readFileSync(join(import.meta.dirname, "../plugins/sapu/scripts/sapu-merge.sh"), "utf8")).not.toMatch(/machine-config/);
+    const r = cli(root, ["--machine-config", "relative.json", "preflight"], { seam: false });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/--machine-config needs an absolute file path/);
   });
 
   it("an absent file means no restriction", () => {
