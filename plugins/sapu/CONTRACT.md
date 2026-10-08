@@ -108,6 +108,7 @@ subagent write to `~/.config/sapu/`.
   "baseBranch": "main",
   "mergeMethod": "squash",              // OPTIONAL (default squash): squash | merge | rebase — what the repo allows (gh api repos/<repo>: allow_*_merge)
   "host": "github.example.com",         // OPTIONAL (default github.com): a GitHub Enterprise host; origin is pinned to it
+  "tuning": { "contextWindow": 200000 }, // OPTIONAL: step budget and context limits (§Tuning); absent = the defaults
 
   "gate": {
     "fast": "npm run check -- --fast", // the worker's gate before a PR (static + fast); must differ from merge
@@ -149,6 +150,18 @@ subagent write to `~/.config/sapu/`.
   }
 }
 ```
+
+### Tuning
+
+What depends on the machine is derived from it: `sapu-contract.mjs lanes` prints the Phase B lanes
+and the merge gate's workers (`gateWorkers` alone, `gateWorkersBeside` beside a lane running tests;
+from the cores, the smaller one while the machine is busy), and `sapu-merge.sh` without `--workers`
+uses `gateWorkers`. What depends on the repo and the model is the optional `tuning` object, every key
+optional: `stepBudget` (`soft`, `every`, `hard`, `everyLate`: the guard's worker reminders, in tool
+calls), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
+(`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
+A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
+tokens, with the defaults for every key the contract leaves out.
 
 ### Specialist agents
 
@@ -573,7 +586,8 @@ could use them.
   `agent_type` alone and is still the orchestrator, while a ladder worker's or the explorer's
   `agent_type` alone keeps the floor). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
-  hand-off reminder at 120, every 15 up to 170, every 5 after; the re-issued call passes. The count
+  hand-off reminder at `tuning.stepBudget.soft` tool calls, every `every` up to `hard`, every
+  `everyLate` after (§Tuning); the re-issued call passes. The count
   needs the hook input's `agent_id` and a writable counter, and switches itself off without them, so
   the worker canary's block message also tells the worker to report `step_budget`: `counting` (the
   canary call was counted) or `off: <why>`. `sapu-wave.js` requires it and logs anything but `counting`

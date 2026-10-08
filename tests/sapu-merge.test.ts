@@ -7,7 +7,7 @@
 // a real GitHub repo.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus as osCpus, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
@@ -557,6 +557,19 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.status).toBe(0);
     expect(r.err).toMatch(/warning: could not record the gate run/);
     expect(r.err).not.toMatch(/Is a directory|No such file/);
+  });
+});
+
+const cpuCount = () => osCpus().length;
+
+describe("sapu-merge.sh — gate workers come from the machine", () => {
+  it("without --workers the gate gets the machine's gateWorkers (sapu-contract.mjs lanes), with it the number given", () => {
+    const cpus = cpuCount();
+    const allowed = [Math.max(1, Math.floor(cpus * 0.8)), Math.max(1, Math.floor(cpus * 0.4))];
+    const h = harness();
+    const n = Number(/gate running at [0-9a-f]+ \(workers=(\d+)\)/.exec(h.run().err)?.[1]);
+    expect(allowed).toContain(n);
+    expect(harness().run({}, ["--workers", "3"]).err).toMatch(/\(workers=3\)/);
   });
 });
 

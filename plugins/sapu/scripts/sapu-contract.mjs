@@ -32,8 +32,11 @@
 //   sapu-contract.mjs pr-reviews <N>  PR <N>'s reviews + inline review comments by the trusted set and
 //                                 policy.reviewers only (prReviews); others are counted as withheld
 //   sapu-contract.mjs allowed <skill>  exit 0 when policy.skills allows <skill>, else 1 with the reason
-//   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
-//                                 Phase B lanes this machine carries now (safeLanes); no contract needed
+//   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, gateWorkers, gateWorkersBeside, cpus, ramGB,
+//                                 load1, memFreePct}: how many Phase B lanes this machine carries now
+//                                 (safeLanes) and the merge gate's workers (gateWorkers); no contract needed
+//   sapu-contract.mjs tuning      prints the repo's resolved tuning (resolveTuning: the step budget, the
+//                                 context window and the context limits in tokens) with the gate workers
 //   sapu-contract.mjs sweep hold|release <run-marker>   one /sapu sweep per repo (ONE SWEEP PER REPO):
 //                                 hold = take or refresh <MAIN>/.git/sapu-sweep.json (the heartbeat), exit 1
 //                                 while another session's heartbeat is fresh; release = remove it, holder only
@@ -232,7 +235,7 @@ export function validate(c) {
     c,
     "sapu.json",
     ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", ...(noTraces && !("labels" in c) ? [] : ["labels"]), "securityEpic", "invariantDomains", "testResources", "guard"],
-    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels", "mergeMethod", "host"],
+    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels", "mergeMethod", "host", "tuning"],
   );
   if ("mergeMethod" in c) need(MERGE_METHODS.includes(c.mergeMethod), `mergeMethod must be "squash", "merge" or "rebase" (the method the repo allows; omit it for squash)`);
   if ("host" in c) need(typeof c.host === "string" && HOSTNAME.test(c.host), 'host must be a hostname, e.g. "github.example.com" (the GitHub Enterprise host; omit it for github.com)');
@@ -319,6 +322,7 @@ export function validate(c) {
   need(isStr(c.invariantDomains), "invariantDomains must be a non-empty string");
   need(isStr(c.testResources), "testResources must be a non-empty string");
   if ("policy" in c) policyProblems(c.policy).forEach((e) => errs.push(e));
+  if ("tuning" in c) tuningProblems(c.tuning).forEach((e) => errs.push(e));
   const g = c.guard;
   if (g && typeof g === "object") {
     keys(g, "guard", ["envFiles", "postgres", "deny"], ["databases"]);
@@ -711,6 +715,63 @@ export function safeLanes({ cpus, ramGB, load1, memFreePct }) {
   const ceiling = Math.max(1, Math.min(4, Math.floor(cpus / 4), Math.floor((ramGB - 8) / 3)));
   const busy = load1 > cpus || memFreePct < 20;
   return { lanes: busy ? Math.max(1, ceiling - 1) : ceiling, ceiling, busy };
+}
+
+/**
+ * The merge gate's test workers for a machine of `cpus` cores: most of them when the gate runs
+ * alone (`gateWorkers`), about half that beside a lane that is running tests (`gateWorkersBeside`),
+ * and the smaller figure while the machine is already busy.
+ */
+export function gateWorkers({ cpus, busy }) {
+  const beside = Math.max(1, Math.floor(cpus * 0.4));
+  return { gateWorkers: busy ? beside : Math.max(1, Math.floor(cpus * 0.8)), gateWorkersBeside: beside };
+}
+
+/**
+ * What a repo may tune (contract `tuning`, every key optional) and its defaults: the worker step
+ * budget the guard enforces (a reminder at `soft` tool calls, every `every` up to `hard`, every
+ * `everyLate` past it), and the orchestrator's context limits as fractions of the model's context
+ * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
+ */
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+
+/** The contract's tuning with every absent key at its default; context limits in tokens. */
+export function resolveTuning(c) {
+  const t = (c && c.tuning) || {};
+  const window = t.contextWindow ?? DEFAULT_TUNING.contextWindow;
+  const frac = { ...DEFAULT_TUNING.contextLimits, ...(t.contextLimits || {}) };
+  return {
+    stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
+    contextWindow: window,
+    contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
+  };
+}
+
+function tuningProblems(t) {
+  const errs = [];
+  if (!t || typeof t !== "object" || Array.isArray(t)) return ["tuning must be an object (omit it for the defaults)"];
+  const known = (obj, where, allowed) => Object.keys(obj).filter((k) => !allowed.includes(k)).forEach((k) => errs.push(`${where}: unknown key "${k}"`));
+  known(t, "tuning", Object.keys(DEFAULT_TUNING));
+  if ("stepBudget" in t) {
+    const s = t.stepBudget;
+    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push("tuning.stepBudget must be an object");
+    else {
+      known(s, "tuning.stepBudget", Object.keys(DEFAULT_TUNING.stepBudget));
+      for (const k of Object.keys(DEFAULT_TUNING.stepBudget)) if (k in s && !(Number.isInteger(s[k]) && s[k] >= 1)) errs.push(`tuning.stepBudget.${k} must be a whole number of tool calls, at least 1`);
+      const r = { ...DEFAULT_TUNING.stepBudget, ...s };
+      if (Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
+    }
+  }
+  if ("contextWindow" in t && !(Number.isInteger(t.contextWindow) && t.contextWindow >= 10_000)) errs.push("tuning.contextWindow must be a token count (the model's context window, at least 10000)");
+  if ("contextLimits" in t) {
+    const l = t.contextLimits;
+    if (!l || typeof l !== "object" || Array.isArray(l)) errs.push("tuning.contextLimits must be an object");
+    else {
+      known(l, "tuning.contextLimits", Object.keys(DEFAULT_TUNING.contextLimits));
+      for (const k of Object.keys(DEFAULT_TUNING.contextLimits)) if (k in l && !(typeof l[k] === "number" && l[k] > 0 && l[k] <= 1)) errs.push(`tuning.contextLimits.${k} must be a fraction of the context window (0 < x ≤ 1)`);
+    }
+  }
+  return errs;
 }
 
 /** This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping. */
@@ -1591,8 +1652,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main", "stack"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|stack|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main", "stack", "tuning"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1604,7 +1665,8 @@ function main(argv) {
   }
   if (cmd === "lanes") {
     const m = machineNow();
-    process.stdout.write(`${JSON.stringify({ ...safeLanes(m), ...m })}\n`);
+    const l = safeLanes(m);
+    process.stdout.write(`${JSON.stringify({ ...l, ...gateWorkers({ cpus: m.cpus, busy: l.busy }), ...m })}\n`);
     return;
   }
   const mainDir = findMain(process.cwd());
@@ -1724,6 +1786,11 @@ function main(argv) {
   }
   if (cmd === "policy") {
     process.stdout.write(`${JSON.stringify(resolvePolicy(contract))}\n`);
+    return;
+  }
+  if (cmd === "tuning") {
+    const m = machineNow();
+    process.stdout.write(`${JSON.stringify({ ...resolveTuning(contract), ...gateWorkers({ cpus: m.cpus, busy: safeLanes(m).busy }) })}\n`);
     return;
   }
   if (cmd === "pr-reviews") {

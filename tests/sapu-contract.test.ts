@@ -41,6 +41,8 @@ import {
   bodyRefs,
   gitCommonDir,
   detectStack,
+  gateWorkers,
+  resolveTuning,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -1311,7 +1313,47 @@ describe("safeLanes: how many Phase B lanes the machine carries", () => {
   it("the CLI prints it with the figures it used, no contract needed", () => {
     const out = JSON.parse(execFileSync("node", [join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs"), "lanes"], { cwd: tmpdir(), encoding: "utf8" }));
     expect(out.lanes).toBeGreaterThanOrEqual(1);
-    expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "cpus", "ramGB", "load1", "memFreePct"]);
+    expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "gateWorkers", "gateWorkersBeside", "cpus", "ramGB", "load1", "memFreePct"]);
+    expect(out).toMatchObject(gateWorkers({ cpus: out.cpus, busy: out.busy }));
+  });
+});
+
+describe("tuning: what the engine derives from the machine and the model, and what a contract may override", () => {
+  it("gate workers follow the cores: most of them alone, half that beside a lane running tests, the smaller one while the machine is busy", () => {
+    expect(gateWorkers({ cpus: 10, busy: false })).toEqual({ gateWorkers: 8, gateWorkersBeside: 4 });
+    expect(gateWorkers({ cpus: 4, busy: false })).toEqual({ gateWorkers: 3, gateWorkersBeside: 1 });
+    expect(gateWorkers({ cpus: 1, busy: false })).toEqual({ gateWorkers: 1, gateWorkersBeside: 1 });
+    expect(gateWorkers({ cpus: 16, busy: true })).toEqual({ gateWorkers: 6, gateWorkersBeside: 6 });
+  });
+
+  it("the step budget and the context limits default as before and follow `tuning`; the limits are fractions of the context window", () => {
+    const d = resolveTuning(FIXTURE_CONTRACT);
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
+    const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextWindow: 200_000 } });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
+    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.5 } } }).contextLimits).toEqual({ session: 500_000, phaseA: 600_000 });
+  });
+
+  it.each([
+    [{ stepBudget: { soft: 0 } }, /tuning\.stepBudget\.soft must be a whole number/],
+    [{ stepBudget: { soft: 200, hard: 100 } }, /tuning\.stepBudget\.hard must not be below soft/],
+    [{ stepBudget: { sotf: 10 } }, /tuning\.stepBudget: unknown key "sotf"/],
+    [{ contextWindow: 5000 }, /tuning\.contextWindow must be a token count/],
+    [{ contextLimits: { session: 75 } }, /tuning\.contextLimits\.session must be a fraction/],
+    [{ workers: 8 }, /tuning: unknown key "workers"/],
+  ])("refuses tuning %j", (tuning, msg) => {
+    expect(validate({ ...clone(), tuning }).join("\n")).toMatch(msg);
+  });
+
+  it("`tuning` prints the resolved values for the repo and the machine", () => {
+    const r = join(root, "tuning-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commit(r, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, tuning: { contextWindow: 200_000 } }) });
+    const out = JSON.parse(cli(r, ["tuning"]).out);
+    expect(out.contextLimits).toEqual({ session: 150_000, phaseA: 120_000 });
+    expect(out.stepBudget.soft).toBe(120);
+    expect(out.gateWorkers).toBeGreaterThanOrEqual(1);
   });
 });
 

@@ -1784,6 +1784,16 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     for (let i = 0; i < STEP_SOFT; i++) expect(budget({ main: f, agentId: "a7", tool: "Bash", command: "ls" })).toBeNull();
   });
 
+  it("follows the contract's tuning.stepBudget, through the rules the guard compiles", () => {
+    const m = fresh();
+    const steps = (compileRules({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 10, every: 3, hard: 16, everyLate: 2 } } } as typeof FIXTURE_CONTRACT) as { steps: unknown }).steps;
+    const out: (string | null)[] = [];
+    for (let i = 0; i < 20; i++) out.push((stepBudgetUntyped as (i: Record<string, unknown>) => string | null)({ main: m, agentId: "t1", tool: "Bash", command: "ls", steps }));
+    expect(refused(out)).toEqual([10, 13, 16, 18, 20]);
+    expect(out[9]).toMatch(/STEP BUDGET: 10 tool calls.*every 3 calls, every 2 past 16/s);
+    expect((compileRules(FIXTURE_CONTRACT) as { steps: unknown }).steps).toEqual({ soft: STEP_SOFT, every: STEP_EVERY, hard: STEP_HARD, everyLate: STEP_EVERY_LATE });
+  });
+
   it("counts in the repository's git directory when .git is a file (a submodule, --separate-git-dir)", () => {
     const m = mkdtempSync(join(tmpdir(), "sapu-steps-sep-"));
     const store = mkdtempSync(join(tmpdir(), "sapu-steps-store-"));

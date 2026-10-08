@@ -117,7 +117,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, findMain, gitCommonDir, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -755,6 +755,8 @@ export function compileRules(contract) {
     // The labels only the owner applies (compared without case, as GitHub does): the one accepting an
     // outsider's issue, and the one marking a finding only the owner can rule on.
     ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract)].map((l) => l.toLowerCase()),
+    // The worker step budget: the contract's tuning.stepBudget over the defaults.
+    steps: resolveTuning(contract).stepBudget,
   };
 }
 
@@ -1964,10 +1966,11 @@ export function checkSearch({ tool, input = {}, cwd, rules: given = ENGINE_ONLY,
 // may shift a reminder by one, which is harmless); ladder workers only, and only calls the guard's
 // own rules let through. ponytail: hooked tools only (Bash, Monitor, PowerShell, file, search and MCP tools), not WebFetch or
 // Agent calls; an unwritable counter switches the budget off rather than block work.
-export const STEP_SOFT = 120;
-export const STEP_EVERY = 15;
-export const STEP_HARD = 170;
-export const STEP_EVERY_LATE = 5;
+// The defaults; a contract's `tuning.stepBudget` overrides each (resolveTuning, through compileRules).
+export const STEP_SOFT = DEFAULT_TUNING.stepBudget.soft;
+export const STEP_EVERY = DEFAULT_TUNING.stepBudget.every;
+export const STEP_HARD = DEFAULT_TUNING.stepBudget.hard;
+export const STEP_EVERY_LATE = DEFAULT_TUNING.stepBudget.everyLate;
 const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
 // A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
 // echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
@@ -2023,7 +2026,7 @@ export function stepProbe({ main, agentId }) {
   }
 }
 
-export function stepBudget({ main, agentId, tool, command }) {
+export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
   let n;
   try {
@@ -2034,8 +2037,9 @@ export function stepBudget({ main, agentId, tool, command }) {
   const file = path.join(stepsDir(main), agentId.replace(/[^\w.-]/g, "_"));
   // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
   // never skipped. The last one given is kept in `<id>.r`.
-  const soft = Math.floor((Math.min(n, STEP_HARD) - STEP_SOFT) / STEP_EVERY) + 1;
-  const dueSlots = n < STEP_SOFT ? 0 : soft + (n > STEP_HARD ? Math.floor((n - STEP_HARD) / STEP_EVERY_LATE) : 0);
+  const { soft: SOFT, every: EVERY, hard: HARD, everyLate: LATE } = steps;
+  const soft = Math.floor((Math.min(n, HARD) - SOFT) / EVERY) + 1;
+  const dueSlots = n < SOFT ? 0 : soft + (n > HARD ? Math.floor((n - HARD) / LATE) : 0);
   let given = 0;
   try {
     given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
@@ -2046,7 +2050,7 @@ export function stepBudget({ main, agentId, tool, command }) {
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
+  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`;
 }
 
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
@@ -2493,7 +2497,7 @@ export function decide(input) {
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
-  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command }) : null;
+  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps }) : null;
 }
 
 /** True when this file is the process's entry point, however it was reached (symlink, relative path). */

@@ -14,7 +14,8 @@
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
 #                          "Notes (recorded, not filed)". The gate summary is appended to a
 #                          COPY of it before it is posted (the input file is not modified).
-#   --workers N            passed to the gate as SAPU_WORKERS (default 8; use 4 while another
+#   --workers N            passed to the gate as SAPU_WORKERS (default: this machine's gateWorkers
+#                          from `sapu-contract.mjs lanes`; pass its gateWorkersBeside while another
 #                          worker is running tests).
 #   --dry-run              run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, worktree resolution) and print the plan; no
@@ -56,7 +57,7 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=8; DRY=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
@@ -68,9 +69,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PR" ] && [ -n "$COMMENT_FILE" ] || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--dry-run]"
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
+command -v jq >/dev/null || die "jq is required"
+# No --workers: the machine decides (its cores, fewer while it is already busy).
+if [ -z "$WORKERS" ]; then
+  WORKERS="$(node "$SCRIPT_DIR/sapu-contract.mjs" lanes | jq -r .gateWorkers)" || die "cannot read this machine's gate workers (sapu-contract.mjs lanes): pass --workers N"
+fi
 case "$WORKERS" in ''|*[!0-9]*) die "--workers must be a number" ;; esac
 [ "$WORKERS" -ge 1 ] || die "--workers must be >= 1"
-command -v jq >/dev/null || die "jq is required"
 
 BLOCKERS=0
 # In a dry run a failed check is reported and counted instead of aborting, so one run
