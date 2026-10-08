@@ -473,7 +473,8 @@ skipping none (each failure = non-zero exit + a one-line reason):
 8. the red-area classifier from the main checkout (`redAreas --ref <SHA>`): a red area without a
    first line `Review tier: red` in the review comment = refuse; classifier failed = refuse;
 9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself); every
-   run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files,
+   run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files —
+   read from vitest/jest, pytest, go test, cargo test/nextest, rspec, mocha, Maven Surefire and Gradle output —,
    a flake verdict and its failed summary steps). A trailing ` live=1` field marks a gate (green, red or
    setup-failed) that overlapped a journey cycle, recorded in `<MAIN>/.git/sapu-live.log` in epoch
    seconds under a run id unique per run: `<run> start <epoch> deadline <epoch>` when `up` takes its

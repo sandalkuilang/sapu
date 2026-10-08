@@ -511,18 +511,51 @@ if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; 
 if [ -n "$RED" ]; then
   FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
-  # The failing test FILES, from anywhere in the log, colour codes stripped: vitest/jest
-  # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and
-  # no space or comma is taken (the ledger is space- and comma-separated). ponytail: two runners'
-  # formats; any other runner records failed=- and gets no verdict.
+  # The failing test FILES, from anywhere in the log, colour codes stripped: per runner, a file
+  # where it names one, else its most stable name for the failing unit. Go `FAIL\t<package>\t<n>s`
+  # (a package that did not build is no test failure); cargo nextest `FAIL [ <n>s] <binary> <test>`
+  # (as <binary>/<test>); vitest/jest ` FAIL  [|project| ]<file> > …`; pytest `FAILED <file>::…`;
+  # rspec `rspec ./<file>[:line|[id]] # …`; cargo `test <path> ... FAILED`; Maven surefire's class
+  # line `Tests run: … <<< FAILURE!|ERROR! -- in <class>`; Gradle `<class> > <test> FAILED`; mocha's
+  # `N failing` section, each failure's first stack path under the worktree that looks like a test
+  # file (mocha prints absolute paths). Only a name without a space or comma is taken (the ledger
+  # is space- and comma-separated); one line, one runner (`t` stops at the first that matched).
+  # ponytail: these formats only; another runner records failed=- and gets no verdict.
   CLEAN="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG")"
+  TAB=$'\t'
   FILES="$(sed -nE \
-    -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' \
-    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' <<<"$CLEAN")"
+    -e '/^FAIL[[:space:]].*\[(build|setup) failed\]$/d' \
+    -e "s/^FAIL${TAB}([^[:space:],]+)${TAB}[0-9.]+s\$/\\1/p" -e t \
+    -e 's/^[[:space:]]*FAIL \[[^]]*\] ([^[:space:],]+) ([^[:space:],]+)$/\1\/\2/p' -e t \
+    -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' -e t \
+    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' -e t \
+    -e 's/^rspec (\.\/)?([^[:space:],]+\.rb)(:[0-9]+|\[[0-9:]+\])? # .*/\2/p' -e t \
+    -e 's/^test ([^[:space:],]+) \.\.\. FAILED$/\1/p' -e t \
+    -e 's/^(\[ERROR\] )?Tests run: .*<<< (FAILURE|ERROR)!( -+)? in ([^[:space:],]+)[[:space:]]*$/\4/p' -e t \
+    -e 's/^([^[:space:],>]+) > .* FAILED$/\1/p' <<<"$CLEAN")"
+  # mocha: one line per failure, `F <file>` or `X` (no test file under the worktree in its stack).
+  MOCHA="$(awk -v wt="$WT/" '
+    function flush() { if (want) print "X"; want = 0 }
+    /^  [0-9]+ failing$/ { flush(); failing = 1; next }
+    failing && /^  [0-9]+\) / { flush(); want = 1; next }
+    want {
+      line = $0
+      while (match(line, /(file:\/\/)?\/[^ ()]+/)) {
+        f = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+        sub(/^file:\/\//, "", f); sub(/:[0-9]+:[0-9]+$/, "", f)
+        if (index(f, wt) != 1 || f ~ /\/node_modules\//) continue
+        f = substr(f, length(wt) + 1)
+        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f); want = 0; break }
+      }
+    }
+    END { flush() }' <<<"$CLEAN")"
+  FILES="$( { printf '%s\n' "$FILES"; sed -n 's/^F //p' <<<"$MOCHA"; } | grep . || true)"
   TESTS="$(printf '%s\n' "$FILES" | grep . | sort -u | paste -sd, - || true)"
-  # A failure line no file was read from (pytest ERROR, a path with a space) or an unhandled error
-  # outside any test = something besides the named tests failed: never known-flake.
-  RAW="$(grep -cE '^[[:space:]]*FAIL[[:space:]]|^(FAILED|ERROR) ' <<<"$CLEAN" || true)"
+  # A failure line no file was read from (pytest ERROR, a path with a space, a Go package that did
+  # not build, a mocha failure outside the tests) or an unhandled error outside any test = something
+  # besides the named tests failed: never known-flake.
+  RAW="$(grep -cE '^[[:space:]]*FAIL[[:space:]]|^(FAILED|ERROR) |^rspec [^[:space:]]+ # |^test .* \.\.\. FAILED$|Tests run: .*<<< (FAILURE|ERROR)!|^[^[:space:]]+ > .* FAILED$' <<<"$CLEAN" || true)"
+  RAW="$((RAW + $(grep -c . <<<"$MOCHA" || true)))"
   READ="$(printf '%s\n' "$FILES" | grep -c . || true)"
   OTHER=""
   [ "$RAW" = "$READ" ] || OTHER="$((RAW - READ)) failure line(s) without a readable file"
@@ -550,7 +583,7 @@ if [ -n "$RED" ]; then
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
-  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
+  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
   # …or a test word beside a non-test tool (lint test files, build:test, tsc -p tsconfig.test.json)
   STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"

@@ -401,6 +401,61 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts, tests\/test_b\.py/);
   });
 
+  // What each runner prints for a failure, and the entry the ledger records for it: a file where the
+  // runner names one, else its most stable name for the failing unit (a Go package, a cargo test path,
+  // a JUnit class). `wt` is the PR worktree: mocha prints absolute stack paths.
+  const RUNNERS: ReadonlyArray<readonly [string, (wt: string) => string, string]> = [
+    ["go test", () => "--- FAIL: TestRefund (0.01s)\n    pay_test.go:12: boom\nFAIL\nFAIL\texample.com/app/pay\t0.012s\nok  \texample.com/app/cart\t0.004s\nFAIL", "example.com/app/pay"],
+    ["go test, a versioned module path", () => "FAIL\tgithub.com/o/app.v2/pay\t1.5s", "github.com/o/app.v2/pay"],
+    ["cargo test", () => "test pay::tests::ok ... ok\ntest pay::tests::refund ... FAILED\n\nfailures:\n    pay::tests::refund\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored", "pay::tests::refund"],
+    ["cargo nextest", () => "        PASS [   0.002s] app tests::ok\n        FAIL [   0.004s] app::integration tests::refund\n  Summary [   0.010s] 2 tests run: 1 passed, 1 failed\n        FAIL [   0.004s] app::integration tests::refund", "app::integration/tests::refund"],
+    ["rspec", () => "Failures:\n  1) Order totals\n\nFailed examples:\n\nrspec ./spec/models/order_spec.rb:12 # Order totals\nrspec ./spec/models/order_spec.rb[1:2] # Order again", "spec/models/order_spec.rb"],
+    ["maven surefire", () => "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.05 s <<< FAILURE! -- in com.example.PayTest\n[ERROR] com.example.PayTest.refund -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0", "com.example.PayTest"],
+    ["maven surefire 2", () => "Tests run: 2, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 0.2 sec <<< ERROR! - in com.example.CartTest", "com.example.CartTest"],
+    ["gradle", () => "PayTest > refund() FAILED\n    org.opentest4j.AssertionFailedError at PayTest.java:12\n\n3 tests completed, 1 failed", "PayTest"],
+    [
+      "mocha",
+      (wt) =>
+        `  Pay\n    1) refunds\n\n  0 passing (12ms)\n  2 failing\n\n  1) Pay\n       refunds:\n     AssertionError [ERR_ASSERTION]: boom\n      at Context.<anonymous> (file://${wt}/test/pay.spec.mjs:5:14)\n      at process.processImmediate (node:internal/timers:483:21)\n\n` +
+        `  2) Cart\n       times out:\n     Error: Timeout of 2000ms exceeded. For async tests and hooks, ensure "done()" is called; if returning a Promise, ensure it resolves. (${wt}/test/cart.spec.js)\n      at listOnTimeout (node:internal/timers:581:17)\n`,
+      "test/cart.spec.js,test/pay.spec.mjs",
+    ],
+  ];
+
+  it.each(RUNNERS)("red: %s failures are read into the ledger", (_runner, out, failed) => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out(h.WT) });
+    expect(r.status).toBe(2);
+    expect(gates(h)).toEqual([expect.stringMatching(new RegExp(` red gate=\\d+s failed=${failed.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} tree=[0-9a-f]{40} verdict=unknown$`))]);
+    expect(r.err).toMatch(/verdict: unknown — not proven flaky/);
+  });
+
+  it("a runner's entry proven flaky elsewhere is known-flake, like a file", () => {
+    const h = harness();
+    seed(h, ...provenBy(5, "example.com/app/pay"));
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: "FAIL\texample.com/app/pay\t0.012s" }).err).toMatch(/verdict: known-flake — .*example\.com\/app\/pay \(PR #5\)/);
+  });
+
+  it.each([
+    ["a Go package that did not build", "FAIL\tgithub.com/o/app.v2/pay [build failed]"],
+    ["a doc test (a name with spaces)", "test src/lib.rs - pay::refund (line 3) ... FAILED"],
+    ["a mocha failure with no test file in its stack", (wt: string) => `  1 failing\n\n  1) Pay\n       refunds:\n     Error: boom\n      at helper (${wt}/node_modules/x/index.js:1:1)\n`],
+    ["a mocha failure in a hook outside the worktree", () => "  1 failing\n\n  1) \"before all\" hook:\n     Error: boom\n      at /elsewhere/test/setup.js:1:1\n"],
+  ] as const)("%s keeps the verdict unknown: something besides a readable test failed", (_what, extra) => {
+    const h = harness();
+    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${typeof extra === "string" ? extra : extra(h.WT)}` });
+    expect(r.err).toMatch(/verdict: unknown \(not only tests failed: /);
+  });
+
+  it("an rspec, mocha or JUnit summary step is a test step", () => {
+    for (const step of ["✗ rspec 3.0s", "✗ mocha 2.0s", "✗ junit 9.0s"]) {
+      const h = harness();
+      seed(h, ...provenBy(5, "apps/a.test.ts"));
+      expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: step }).err, step).toMatch(/verdict: known-flake/);
+    }
+  });
+
   it("a vitest project label, colour codes, an empty FAIL line and a path with a space are never taken for a file", () => {
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  |db| apps/api/new.test.ts > breaks\n\x1b[31m FAIL \x1b[39m |pure| src/c.test.ts > x\n FAIL \n FAIL  src/my file.test.ts > y" });
