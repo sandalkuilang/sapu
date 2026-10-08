@@ -2309,7 +2309,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         else s.listen(port, "127.0.0.1", ready);
       });
     /** Every pid in process group `pgid`. */
-    const groupPids = (pgid: number) =>
+    const pidsOf = (pgid: number) =>
       execFileSync("ps", ["-A", "-o", "pid=", "-o", "pgid="], { encoding: "utf8" })
         .split("\n")
         .map((l) => l.trim().split(/\s+/).map(Number))
@@ -2325,7 +2325,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       await waitHealth(entry, s, { worktree: wt, env: base, timeoutS: 20 });
       // Its outbound connection is made at start; give it a moment to be established.
       await new Promise((r) => setTimeout(r, 300));
-      return { wt, web, pids: groupPids(s.pgid), entry, base };
+      return { wt, web, pids: pidsOf(s.pgid), entry, base };
     };
     /** Starts `node -e <code>` as a run entry (alive after 300 ms); returns its pids and worktree. */
     const startNode = async (code: string) => {
@@ -2333,7 +2333,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       const entry = { name: "client", cmd: `exec ${NODE} -e ${JSON.stringify(`${code}; setInterval(() => {}, 1 << 30)`)}` };
       const s = await startEntry(entry, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
       await waitHealth(entry, s, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 300 });
-      return { wt, pids: groupPids(s.pgid) };
+      return { wt, pids: pidsOf(s.pgid) };
     };
 
     it("the fixture's cache fallback to a fixed local port is refused, naming the process and 46379", async () => {

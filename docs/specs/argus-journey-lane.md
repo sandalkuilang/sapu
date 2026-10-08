@@ -388,7 +388,9 @@ defence in depth and not enforcement:
   allowed for one it no longer has.
 - `allow_origins` is matched for every process of the run, not only for pages.
 - A container reaches the Docker host by names and addresses the checks know (`host.docker.internal`,
-  `host-gateway`, `172.16-31.0.1`, `192.168.65.0/24`); a custom bridge subnet escapes them.
+  `host.containers.internal`, `host.lima.internal`, `host-gateway`, `172.16-31.0.1`,
+  `192.168.65.0/24`); a custom bridge subnet escapes them, and so do OrbStack's `host.orb.internal`
+  and rootless Docker's slirp4netns gateway (`10.0.2.2`). Podman's Docker-compatible socket is untested.
 - The Docker runtime gate judges objects by when they were created, not by who created them: what
   touches an object that existed before the cycle (other than a container's own healthcheck) ends the
   cycle, the owner's own work on the same daemon included — and so does a sweep's gate that started a
@@ -396,8 +398,10 @@ defence in depth and not enforcement:
   it touches the owner's state (step 8).
 - Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
   sockets of servers other users run; its addresses are the ones lsof prints; a netstat that fails
-  there fails the check), or by `ss -xp` on Linux;
-  with only Linux's `lsof`, a client's peer is not named.
+  there fails the check), or by `ss -xp` on Linux; a Linux without `ss` is blind to unix-socket peers
+  (its `lsof` does not name a client's peer).
+- The worktree and HOME live under `$TMPDIR`. On a Linux whose `/tmp` is a tmpfs, a large checkout
+  and its dependencies take memory; point `TMPDIR` at a disk-backed directory of the user's own.
 - Nothing is enforced by the operating system. A sandbox that denies the instance every other
   connection (`sandbox-exec` on macOS, a network namespace on Linux) is future work.
 
@@ -421,7 +425,12 @@ defence in depth and not enforcement:
    every kill asks a process's identity first, so without one a teardown would be blind; a
    `services.<n>.env` variable the instance env (`env`, or a set `pass_env` name) does not set — the
    app would fall back to its default address, the owner's service.
-3. **Environment.** Every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the
+3. **Ports and environment.** The **ports** first, since the environment names them:
+   `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which `/sapu:init`
+   fills with the repo's dev and E2E ports; `port_range` is required whenever a `{port:<name>}` is
+   used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming the process holding
+   it; one port fixed for two names, or one name fixed at two ports → refuse. Then the
+   **environment**: every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the
    names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, `HOME` = a per-run directory
    outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode 0700, empty but
    for `.docker`; a setup may link into it, e.g. a managed Python or a package store) — so no tool
@@ -445,12 +454,7 @@ defence in depth and not enforcement:
    secret value masked in the error quoted; afterwards `up` refuses when any symlink in the worktree, followed through every link
    (broken ones too), resolves into the repo's main checkout or to a directory holding it (a
    dependency directory linked from there would be written by the instance).
-5. **Ports.** (Allocated as step 3 builds the environment, which names them.) `{port:<name>}` takes a
-   free port from `port_range` outside `reserved_ports` (which
-   `/sapu:init` fills with the repo's dev and E2E ports; `port_range` is required whenever a
-   `{port:<name>}` is used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming
-   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse.
-   **Compose.** No command of the config (setup, `store_check`, `reset`, start `cmd`/`stop`/health
+5. **Compose.** No command of the config (setup, `store_check`, `reset`, start `cmd`/`stop`/health
    `cmd`, login commands, `facts`, `mail`, `triggers`) may set or unset a `COMPOSE_*` or `DOCKER_*`
    variable (`X=… cmd`, `env X=…`, `export`, `unset`), run `docker` other than `docker compose`
    (no `docker run`, `exec`, `rm`, `volume …`, `--context`), or pass Compose `-p`, `-f`,

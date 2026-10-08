@@ -97,7 +97,8 @@ Interfaces:
   `<runId> start <start> deadline <deadline>` to `<main>/.git/sapu-live.log` (epoch seconds,
   `deadline = start + maxCycleMinutes*60 + 900`). Run id: `<yyyymmddhhmmss>-<8 hex>` (unique).
   A lock whose deadline is in the future → throws `refused: cycle <runId> holds the lock until <iso>`.
-  A lock past its deadline → returns `{stale: <old lock>}` alongside, for `recover` (Task 7). A lock
+  A lock past its deadline → returns `{stale: <old lock>}` alongside, for `recover` (Task 7); as built
+  it also returns `staleRuns`, every run awaiting recovery (Task 7, As built). A lock
   naming run R is replaced or removed only by the holder of `.argus/live/claim-<R>.json` (created
   with link(2)); a takeover keeps that claim as R's record for `recover`, which must also honour
   the claim rule when `down` removes a lock. If the live-log append fails, the lock is rolled back.
@@ -153,8 +154,9 @@ Interfaces:
   `HOME=<home>` (`makeHome(main, runId)`: an empty directory `$TMPDIR/sapu-live/<repo>-<runId>.home`,
   mode 0700, outside MAIN, so a setup may link into it). `$TMPDIR/sapu-live` is created 0700 and
   refused when it is a symlink, another user's, or inside MAIN (checked again after realpath).
-- `export function runSetup(worktree, config, env, {deadline, secrets, log})`: each `setup` argv via
-  `spawnSync` with `{cwd: worktree, env}`, no shell, its output appended to `log` (default
+- `export function runSetup(worktree, config, env, {deadline, secrets, log})` (superseded in part: each
+  step runs asynchronously in its own process group, Task 5's "Setup in process groups"): each `setup`
+  argv with `{cwd: worktree, env}`, no shell, its output appended to `log` (default
   `<worktree>.setup.log`), each bounded by the time left before the lock's `deadline` (`failed:
   setup <cmd> timed out`), every non-empty `secrets` value masked as `***` in any message; then
   `refuseLinksIntoMain(worktree, main)`: walk the worktree (skip `.git`), any symlink whose target,
@@ -252,7 +254,9 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   Compose commands read only the checked files, not a tracked override) and refuses COMPOSE_FILE or
   COMPOSE_PATH_SEPARATOR in env, pass_env or a start entry's env.
 - `export function checkCompose({worktree, env, ports, main, config, contract, secrets, runner})` →
-  the service names of every project (`[]` without a Compose file). In order: (1) every command of
+  `{services, published}`: the service names of every project and the host ports they publish (both
+  `[]` without a Compose file; a published port is served by the Docker daemon, so step 8 expects no
+  host listener there). In order: (1) every command of
   `config` (setup, facts, mail, triggers, store_check, reset, start cmd/stop/health.cmd, role login
   commands) may not set or unset COMPOSE_*/DOCKER_*, run `docker` other than `docker compose`, or pass
   Compose `-p`/`-f`/`--project-directory`/`--env-file` or a variable before its subcommand (quotes
@@ -276,20 +280,9 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   refused off the run's ports). Docker missing or failing → refused, secrets masked.
 - `export function daemonNow({env, runner})` → the daemon's clock, epoch ms (`docker info --format
   {{json .SystemTime}}`), or null without docker or a daemon.
-- `export function checkDockerRuntime({since, env, main, worktree, ports, runner, skewMs})`: the runtime gate
-  for what static scans cannot see. Lists every container (`docker ps -aq` + `inspect`), volume and
-  network; one created or started since `since` (epoch ms from daemonNow, minus `skewMs` = 1 s) must carry
-  `com.docker.compose.project=<COMPOSE_PROJECT_NAME>` (a volume may be a new anonymous one); such a
-  container may mount only the run's volumes, join only its networks (or none), bind-mount nothing
-  the Compose check refuses, not be privileged (`HostConfig.Privileged`), and publish only `ports`
-  (`HostConfig.PortBindings` and the live `NetworkSettings.Ports`; a random host port, and `HostConfig.PublishAllPorts` (`-P`), refused). Then `docker events --since <since - skew> --until <daemonNow>` (container,
-  volume, network): a container action (create, start, restart, kill, stop, die, destroy, pause,
-  unpause, update, rename, exec_create, exec_start, archive-path, extract-to-dir) on a container without the run's label, unless it
-  is that container's own healthcheck exec (`Config.Healthcheck.Test`, CMD or CMD-SHELL), or a
-  volume/network destroy whose name is not `<project>_…` and which was not created in the window →
-  refused. No docker or no daemon → nothing to check; any other docker failure → refused.
-- `export function groupPids(pgids, {runner})` → every pid in those groups (`ps -A -o pid= -o pgid=`,
-  one command on macOS and Linux, instead of `pgrep -g` / `ps -g`).
+- `export function checkDockerRuntime({since, env, main, worktree, ports, runner, skewMs, eventsFile,
+  follower})`: the runtime gate. Superseded by spec §8 step 8 as built in the phase-end review (the
+  owner-state rule and the events follower; see "As built (phase-end review)" below).
 - `export function egressAllowed({config, env, ports})` → `host:port` strings: the run's ports on
   loopback (the only loopback endpoints allowed: the owner's dev servers listen there too); every
   non-loopback endpoint `env` and each `start[].env` name (URL, DSN, `X_HOST` + `X_PORT`); each
@@ -372,44 +365,15 @@ As built (where it differs from, or adds to, the interfaces below):
   holds its pid.
 - `claimBusy`: a claim older than 30 s (mtime) counts as interrupted even when its pid is alive.
 
-Interfaces:
-- `export function writeRunFiles(main, state)`: `.argus/live/run.json` = `{runId, instanceId,
-  worktree, ports, origins, groups: [{name, pgid, cmdline}], stops: [{name, cmd, cwd, env}],
-  sessions: []}` (written with mode 0600; `worktree` absolute, matching the guard's `liveWorktree`).
-- `export function startReaper(main, runId)`: `spawn(process.execPath, [<argus-live.mjs>, "reap",
-  runId], {detached: true, stdio: "ignore"}).unref()`; `reap` sleeps until the lock's deadline
-  (re-reading it, so `renew` moves it), then runs `down` only when `lock.json` still names `runId`;
-  exits without acting otherwise. Its pid goes into `run.json` as `reaper`.
-- `export function down(main, {runId})`: replays each stop record exactly (shell, recorded cwd and
-  env); SIGTERM every recorded group (`process.kill(-pgid)`), SIGKILL after 10 s; kills the reaper;
-  `git worktree remove --force <worktree>` only when `<worktree>` is the run's own (path under
-  `$TMPDIR/sapu-live/`); removes the run's HOME (`$TMPDIR/sapu-live/<repo>-<runId>.home`) and its
-  `<worktree>.setup.log`; removes `run.json` and `lock.json`; appends `end`.
-- `export function recover(main, stale)`: for a stale lock: replays only stop records whose `cwd`
-  exists and whose `env.COMPOSE_PROJECT_NAME` is `argus-<runId>` (others journalled, never run);
-  kills a recorded group only when `ps -o command= -p <pgid>` still equals the recorded `cmdline`;
-  removes the old worktree and its HOME; appends `end` for the old run.
+Interfaces: superseded by the As built notes above, spec §8 `down` (the teardown order, the kill rule
+by pid and start time) and spec §8 step 11 (run.json's one schema). Kept from the original:
 - Stop records replay their `cmd` with `secretEnv(cmd, secrets)` (a stop is a shell field: its
   recorded command holds variable references, never values).
-- Process groups: `down` and `recover` kill every recorded group, the setup groups included
-  (`kill -pgid`, SIGTERM then SIGKILL), so a daemon a setup left behind in its group dies too.
-- Stale records (carried from the Task 2 review): `recover` (and `takeLock`'s return) scans every
-  `.argus/live/claim-*.json` that has a `lock` field whose run is not the current lock's run,
-  returns them all as stale records, and deletes each claim only after its recovery replayed. This
-  covers a takeover whose live-log append failed and was rolled back, and a session that died
-  before `recover` ran.
-- Recovery replaying a stop record that runs Compose (carried from Task 6): `checkCompose` already
-  refused `-p`/`--project-name` in every command, so a recorded stop acts on its recorded
-  `COMPOSE_PROJECT_NAME` only; keep the `env.COMPOSE_PROJECT_NAME === argus-<runId>` test as the
-  gate, and do not replay a stop whose recorded env lacks it.
-- `down` runs `checkDockerRuntime({since: <the run's start, epoch ms>, env, main, worktree})` before it
-  replays stops and reports a refusal in its output without stopping the teardown (carried from Task 6).
-- `claimBusy`: a claim older than N seconds by mtime (the critical section takes milliseconds)
-  counts as interrupted even when its pid is alive (pid reuse), so the owner gets the
-  "remove <path>" instruction instead of "try again" forever.
-- `down` and `reap` take `claim-<run>.json` when they remove the lock (the Task 2 claim rule: only
-  the claim holder replaces or removes a lock naming its run) and surface the same orphaned-claim
-  message instead of failing teardown silently.
+- Recovery replays a stop only when its cwd exists and its env names `COMPOSE_PROJECT_NAME =
+  argus-<runId>` (checkCompose refused `-p`/`--project-name` in every command, so a recorded stop acts on
+  that project only).
+- `claimBusy`: a claim older than 30 s (mtime) counts as interrupted even when its pid is alive (pid
+  reuse), so the owner gets the "remove <path>" instruction instead of "try again" forever.
 
 - [ ] Tests: the three review carry-overs above (an orphaned rolled-back claim is returned as stale; an old claim with a live pid → "remove"; `down` under a held claim refuses with that message); `down` kills the fixture app and its `--spawn-child` grandchild (process group); replays
   a stop record with its own cwd and env (the stop writes `pwd` and `$COMPOSE_PROJECT_NAME` to a file);
@@ -434,7 +398,7 @@ As built:
 - run.json is written right after recovery and on every push of a group or stop record (`up`'s
   `groups`/`stops` are arrays whose `push` saves), the reaper started right after the first write.
 - The egress checks take their pids from the recorded groups by identity (a group whose pid is
-  another process's is left out) instead of `groupPids`.
+  another process's is left out): `runPids`.
 - `checkStore({lookup})` resolves every host name both sides name; one that resolves only to loopback
   is compared as loopback (instance and owner side alike).
 - The fixture app retries its cache connection every 500 ms, as a cache client does, so a connection
@@ -469,35 +433,10 @@ Carried from Task 7:
   `replayStop` and `stopGroups` are module-private today; export a small helper rather than copy them.
 - The CLI: `down` prints `report` line by line; a claimBusy refusal → exit 1.
 
-Interfaces:
-- Before `checkStore` compares services, `up` resolves each host name in the env values with
-  `dns.lookup` (all addresses) and treats one that resolves only to loopback as `localhost`, so an
-  alias such as `db.localtest.me` cannot slip past the loopback endpoint comparison (carried from
-  the Task 5 review).
-- Wiring Task 6 (carried from it): step 3 calls `dockerEnv({home})` right after `makeHome` and
-  passes its result to `instanceEnv({..., docker})` (a refusal there comes before step 5). Step 5
-  calls `checkCompose({worktree, env, ports, main, config: <expanded config>, contract, secrets})`
-  and stores its result as `ctx.composeServices` before `bringUpStore(ctx)`, so both `checkStore`
-  calls see it. Step 8, `upFresh` and `renew` (the CLI's) call `checkEgress({pids: groupPids(<every
-  recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports}), runDirs:
-  [worktree, home], main, contract, expectListen: [<base_url's port, when a start entry serves it>]})`;
-  a refusal → `down`. Every `waitHealth` of steps 6 and 7 gets `egress: () => checkEgress({...same,
-  pids: groupPids(<the groups so far>), samples: 1})`. `up` records `daemonNow({env})` (else
-  `Date.now()`) as it starts, in run.json. After each egress check (step 8, `upFresh`, `renew`),
-  `checkDockerRuntime({since: <that recorded start>, env, main, worktree, ports})`; a refusal → `down`. `up` step 2's "no
-  `lsof`/`ss`" refusal can reuse that message.
-- `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
-  1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role
-  hosts resolving to loopback via `dns.lookup`, `~/.playwright/cli.config.json` present, no
-  `lsof`/`ss`), 3 environment, 4 worktree + setup + links check, 5 ports + Compose check, 6 store
-  phase + `checkStore` + `reset`, 7 remaining entries + health + `checkStore`, 8 egress check,
-  11 run files + reaper. Any refusal or failure after the lock → `down` (which appends `end`) and
-  rethrows. (The browser and Chrome checks of step 2 join in phase 3.)
-- `upFresh(main)`: keeps lock, worktree, ports and reaper; stops every entry (running `stop`), then
-  store phase → `checkStore` → `reset` → rest → `checkStore` → egress; new `instanceId`.
-- `status(main)` prints the run id, deadline, worktree and each entry's state.
-- CLI `argus-live.mjs`: `up [--fresh]`, `down`, `renew`, `status`, `reap <runId>` (internal); exit 0
-  / 1 refused / 2 failed; never prints a secret value.
+Interfaces: superseded by the As built notes above and spec §8 (`up` steps 1-8 and 11, `up --fresh`,
+`renew`): `since` is read at step 3 through the run's Docker client (not as `up` starts), and the
+egress checks take their pids from the recorded groups by identity (`runPids`). The CLI: `up [--fresh]`, `down`, `renew`, `status [--json]`, `reap <runId>` (internal);
+exit 0 / 1 refused / 2 failed; never prints a secret value.
 
 - [ ] Tests: a full `up` on the fixture app (store phase via a second fixture process, `CACHE_URL` to
   a run port) succeeds, writes `run.json`, and `down` leaves no process, no worktree, and a balanced
@@ -517,12 +456,40 @@ Interfaces:
 - [ ] Phase-end review (owner's rule): senior-dev-team QA reviewer and architect read
   `git diff <phase 2 base>..HEAD`; fixes by the developer; re-review; suite green.
 
+As built (phase-end review):
+- A base_url port that a Compose service publishes is served by the Docker daemon: `checkCompose`
+  returns `{services, published}` and step 8 expects no host listener there (`composePorts`).
+- One writer path for run.json: `updateRun(main, runId, fn, {waitMs, sealed, create})`, a
+  read-modify-write under `claim-<runId>.json` that throws once the lock no longer names the run.
+  `writeRunFiles` and `startReaper` go through it; `down` seals the record (`closing`) before reading
+  it and removes it under the claim, and every write of `up` after its first passes `create: false`,
+  so an `up` racing a `down` fails into its own teardown instead of leaving an orphan run.json or a
+  group the teardown did not read.
+- `down` and `recover` run one ordered step list, `TEARDOWN` (exported names: `TEARDOWN_STEPS`);
+  phase 3 adds the proxy and the CLI sessions after the process groups, one entry each.
+- The events follower (`startEventsFollower`) starts at step 3 when the daemon answers, as a recorded
+  group writing `<logs>/docker-events.jsonl`; the gate reads that file, then catches up from its last
+  event, and refuses when the follower no longer runs. `up --fresh` keeps it, like the setup groups.
+- The Docker runtime gate follows the owner-state rule (spec §8 step 8), so a cycle can run beside a
+  sweep whose gates use Docker; a linked worktree inside MAIN is not the main checkout for it.
+- run.json records `digest` (sha256 of `.argus/live.json` and the env_file, from `loadLive`);
+  `up --fresh` and `renew` refuse a change, and `down` reports one. They also refuse a passed deadline
+  or a sealed record.
+- `checkEgress` with no process to list fails while a listener is expected.
+- `up` and `up --fresh` return (and the CLI prints last) the summary `{runId, instanceId, deadline,
+  baseUrl, origins, ports, worktree}`; `status --json` (`statusJson`) repeats it. run.json's
+  `internal` holds the run's own ports (the proxy), outside `ports` and the origins.
+- Step 2 also refuses a `services.<n>.env` variable the instance env does not set, and a machine where
+  this process's start time cannot be read; on Linux start times are the boot ticks of
+  `/proc/<pid>/stat` (`procStartTicks`), compared exactly.
+
 ## Self-review
 
 - Spec §8 coverage: lock and recovery (T2, T7), refusals (T1, T3, T8), environment (T4), worktree
   (T4), ports and Compose (T3, T6), store (T5), start and health (T5), egress (T6), run files and
   reaper (T7), renew (T2, T7), `up --fresh` (T8), `down` (T7), beside a sweep — the writer side (T2
   seam test). Deferred to phase 3 with their reasons: the filtering proxy (step 9), proving logins
-  (step 10), the Chrome check and `~/.playwright` guard's browser half.
-- Interfaces shared across tasks: `run.json` keys (T7) are what the guard reads (`worktree`) and
+  (step 10), the Chrome check and the pinned CLI's install check (`~/.playwright/cli.config.json` is
+  refused at step 2 already).
+- Interfaces shared across tasks: `run.json` keys (spec §8 step 11) are what the guard reads (`worktree`) and
   what phase 3 extends (`sessions`, tokens); `sapu-live.log` lines (T2) match `live_overlap`.
