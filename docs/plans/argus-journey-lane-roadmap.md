@@ -14,6 +14,7 @@ proxy's mechanics in phase 3 depend on the instance lifecycle of phase 2).
 | 2 | Instance | the fixture app's server side; `argus-live.mjs` config loading and expansion, refusals, lock, ports, worktree outside the repo, environment, store phase, start and health, Compose checks, egress check, run files, `sapu-live.log`, reaper, `down`, `up --fresh`, `renew`, recovery | §8, §12 |
 | 3 | Browser | per-slot CLI config, the filtering proxy and the other network layers, the `pw` wrapper (tokens, command allowlist, URL and value validation, logins with two-step, modal and TOTP, re-login, nonce-fenced output, signal capture, budget, loop and deadline, `trigger`, `facts`, `mail`, `submit`, `intake`) | §7 return, §9 |
 | 4 | Findings | the repro DSL runner with its exit codes and `final` templates, `parallel` and per-account steps, minimize, the generated Playwright test; `scrub`; `map-check`, refresh triggers, SELECT scoring and account allocation | §6, §10 |
+| 4b | Backlog | every open backlog issue of this repo, fixed or (where the fix is a design limit) documented and closed with its reason, each commit carrying `Closes #N`; order: safety first (agent cwd and memory, the guard following the touched repo, writes into the active plugin folder, machine and git config write paths, a second sweep stopping early, the step budget proof), then portability and generic defaults, then trust-rule refinements and dogfooding | per issue |
 | 5 | Engine text and release | `journeys.md`, the `/sapu:journey` skill, the `sapu:ui-explorer` agent, argus SKILL.md, reference.md and standards.md edits, `/sapu:init`, sapu B2, the inspector exclusion, CONTRACT.md, docs and diagram, engine tests (including one pinning the `ui-explorer` frontmatter to `tools: Bash, Read, StructuredOutput`), the upgrade note (the skills question, the new label, and stricter owner labels: a 2.8.x label with spaces or `, = " ' / [ ] { } ( ) %` must be renamed), the release checklist; the lane prompt runs `argus-live.mjs up` with a long timeout or in the background, so a harness timeout cannot cut it mid-setup (an `up` cut short leaves a run that only `down` accepts) | §4, §5, §7, §16 |
 | 6 | Pilot | repo-side prep in the repo argus has run on longest (explore datastore, `store_check`, `reset`, `facts`, `mail`, `triggers`, `live` block, `env_file`), three journeys, the scorecard | §15 |
 
@@ -21,4 +22,5 @@ Rules for every phase:
 - TDD: the failing test first, then the code, then the whole suite (`npx vitest run`).
 - The suite runs on the release machine; browser tests need a local Chrome and fail without one.
 - Commits carry no assistant attribution. One feature branch, `feat/argus-journey-lane`, one PR at
-  the end of phase 5; phase 6 runs on the released plugin.
+  the end of phase 5, carrying the backlog of phase 4b too; nothing is merged, tagged or released
+  until the owner says so; phase 6 runs on the released plugin.
