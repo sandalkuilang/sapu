@@ -37,7 +37,7 @@ Only consider issues that are open, not `needs-clarification`/`<blocked>`, not a
 
 - Worktree + branch per issue off `origin/<base>`; never commit directly to `<base>`, never `checkout`/`pull`/`stash` in the main checkout. Never force-push a shared/protected branch or rewrite published history.
 - Conventional commits, atomic and self-describing.
-- Squash-merge to keep `<base>` linear; delete the branch after.
+- Merge with the contract's `mergeMethod` (default squash, which keeps `<base>` linear); delete the branch after.
 - One issue → one branch → one PR. Small PRs, small blast radius — even with no human reading them.
 
 ```bash

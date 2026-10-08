@@ -38,6 +38,8 @@ import {
   sweepHold,
   sweepRelease,
   protectedCommand,
+  bodyRefs,
+  gitCommonDir,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
@@ -128,6 +130,9 @@ describe("validate", () => {
     ["a fast gate equal to the merge gate", (c: any) => (c.gate.fast = ` ${c.gate.merge}  `), /gate.fast must differ from gate.merge/],
     // round 4 D: a path in envFiles would never match (the guard compares basenames)
     ["an env file given as a path", (c: any) => (c.guard.envFiles = ["config/.env.production"]), /envFiles.*file names/],
+    ["a merge method GitHub does not have", (c: any) => (c.mergeMethod = "fast-forward"), /mergeMethod must be "squash", "merge" or "rebase"/],
+    ["a host written as a URL", (c: any) => (c.host = "https://ghe.example.com"), /host must be a hostname/],
+    ["a host with a path", (c: any) => (c.host = "ghe.example.com/owner"), /host must be a hostname/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
     mutate(c);
@@ -142,6 +147,76 @@ describe("validate", () => {
     expect(validate(c)).toEqual([]);
     c.guard.postgres = { ports: [], databases: ["only_a_db"] };
     expect(validate(c)).toEqual([]);
+  });
+
+  it("mergeMethod and host are optional: a contract without them stays valid, and each value GitHub has is accepted", () => {
+    for (const m of ["squash", "merge", "rebase"]) expect(validate({ ...clone(), mergeMethod: m }), m).toEqual([]);
+    expect(validate({ ...clone(), host: "ghe.example.com" })).toEqual([]);
+    expect(validate({ ...clone(), host: "github.com" })).toEqual([]);
+  });
+});
+
+describe("the repository's git directory, whatever the layout", () => {
+  const gd = gitCommonDir as (main: string | null) => string | null;
+  it("is <MAIN>/.git in a plain clone, the directory a .git file names (submodule, --separate-git-dir), the repo itself when bare, null when none exists", () => {
+    const plain = join(root, "gd-plain");
+    execFileSync("git", ["init", "-q", plain]);
+    expect(gd(plain)).toBe(join(plain, ".git"));
+    const sep = join(root, "gd-sep");
+    const store = join(root, "gd-sep-store");
+    execFileSync("git", ["init", "-q", `--separate-git-dir=${store}`, sep]);
+    expect(realpathSync(gd(sep)!)).toBe(realpathSync(store));
+    const bare = join(root, "gd-bare.git");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    expect(gd(bare)).toBe(bare);
+    const dangling = mkdtempSync(join(root, "gd-dangling-"));
+    writeFileSync(join(dangling, ".git"), "gitdir: nowhere\n");
+    expect(gd(dangling)).toBeNull();
+    expect(gd(null)).toBeNull();
+  });
+
+  it("<MAIN> is the checkout, not the git directory git lists first for a submodule or a --separate-git-dir checkout", () => {
+    const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const sep = join(root, "main-sep");
+    g(root, "init", "-q", `--separate-git-dir=${join(root, "main-sep-store")}`, sep);
+    g(sep, "commit", "-q", "--allow-empty", "-m", "x");
+    g(sep, "worktree", "add", "-q", join(sep, ".claude/worktrees/w1"));
+    expect(cli(sep, ["main"]).out.trim()).toBe(realpathSync(sep));
+    // from a linked worktree the git directory does not say where its checkout is…
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).status).toBe(1);
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).err).toMatch(/core\.worktree/);
+    // …until core.worktree does
+    g(sep, "config", "core.worktree", sep);
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).out.trim()).toBe(realpathSync(sep));
+    // a submodule records its checkout in core.worktree
+    const lib = join(root, "main-lib");
+    g(root, "init", "-q", lib);
+    g(lib, "commit", "-q", "--allow-empty", "-m", "x");
+    const sup = join(root, "main-super");
+    g(root, "init", "-q", sup);
+    g(sup, "submodule", "add", "-q", lib, "sub");
+    g(join(sup, "sub"), "worktree", "add", "-q", join(sup, "sub/.claude/worktrees/w1"));
+    expect(cli(join(sup, "sub/.claude/worktrees/w1"), ["main"]).out.trim()).toBe(realpathSync(join(sup, "sub")));
+  });
+
+  it("the sweep marker lives in that directory, so a --separate-git-dir checkout holds one too", () => {
+    const sep = join(root, "sweep-sep");
+    const store = join(root, "sweep-sep-store");
+    execFileSync("git", ["init", "-q", `--separate-git-dir=${store}`, sep]);
+    expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-1").held).toBe(true);
+    expect(existsSync(join(store, "sapu-sweep.json"))).toBe(true);
+    expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-2").held).toBe(false);
+  });
+});
+
+describe("bodyRefs on GitHub Enterprise", () => {
+  it("reads an issue URL of the contract's host as a reference; one on github.com names another repository", () => {
+    const refs = bodyRefs as (body: string, host?: string) => { closes: { repo: string | null; number: number }[]; refs: { repo: string | null; number: number }[] };
+    expect(refs("Fixes https://ghe.example.com/owner/app/issues/8", "ghe.example.com").closes).toEqual([{ repo: "owner/app", number: 8 }]);
+    expect(refs("See https://ghe.example.com/other/x/pull/3", "ghe.example.com").refs).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("Fixes https://github.com/owner/app/issues/9", "ghe.example.com").closes).toEqual([{ repo: "github.com/owner/app", number: 9 }]);
+    expect(refs("Fixes https://github.com/owner/app/issues/9").closes).toEqual([{ repo: "owner/app", number: 9 }]);
+    expect(refs("Fixes https://ghe.example.com/owner/app/issues/8").closes).toEqual([]);
   });
 });
 
@@ -420,6 +495,63 @@ describe("the scope lock", () => {
     expect(nwoFromRemote("git@evil.example:github.com/owner/app.git")).toBeNull();
     expect(nwoFromRemote("https://github.com.evil.example/owner/app.git")).toBeNull();
     expect(nwoFromRemote("/srv/mirror/github.com/owner/app.git")).toBeNull();
+  });
+
+  it("nwoFromRemote pins the contract's host (GitHub Enterprise) and reads an SSH host alias through what ssh resolves it to", () => {
+    const nwo = nwoFromRemote as (url: string, host?: string, resolve?: (alias: string) => string | null) => string | null;
+    const ssh = (map: Record<string, string>) => (alias: string) => map[alias] ?? alias;
+    expect(nwo("https://ghe.example.com/owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("git@ghe.example.com:owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("ssh://git@ghe.example.com:2222/owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("https://github.com/owner/app.git", "ghe.example.com")).toBeNull();
+    expect(nwo("https://ghe.example.com/owner/app.git")).toBeNull();
+    // an alias from ~/.ssh/config: what it resolves to is the host the push really goes to
+    expect(nwo("git@github-work:owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("ssh://git@github-work/owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("github-work:owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("git@github-work:owner/app.git", "github.com", ssh({ "github-work": "evil.example" }))).toBeNull();
+    expect(nwo("git@github-work:owner/app.git", "github.com", () => null)).toBeNull();
+    // https has no aliases, and an option-looking alias is never handed to ssh
+    let asked = 0;
+    const counting = (a: string) => (asked++, a === "github.example" ? "github.com" : a);
+    expect(nwo("https://github.example/owner/app.git", "github.com", counting)).toBeNull();
+    expect(nwo("git@-oProxyCommand=x:owner/app.git", "github.com", counting)).toBeNull();
+    expect(asked).toBe(0);
+  });
+
+  it("the default alias resolver asks `ssh -G` (no connection), so the scope lock accepts an alias of the contract's host", () => {
+    const bin = stubBin("ssh-alias");
+    writeFileSync(join(bin, "ssh"), '#!/bin/sh\n[ "$1" = -G ] || exit 9\nif [ "$2" = github-work ]; then echo "user git"; echo "hostname github.com"; else echo "hostname $2"; fi\n', { mode: 0o755 });
+    const r = join(root, "alias-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    execFileSync("git", ["-C", r, "config", "--local", "user.email", FIXTURE_CONTRACT.gitEmail]);
+    execFileSync("git", ["-C", r, "remote", "add", "origin", `git@github-work:${FIXTURE_CONTRACT.repo}.git`]);
+    expect(withPath(bin, () => lockProblems(r, FIXTURE_CONTRACT, NO_MACHINE))).toEqual([]);
+    execFileSync("git", ["-C", r, "remote", "set-url", "origin", `git@other-alias:${FIXTURE_CONTRACT.repo}.git`]);
+    expect(withPath(bin, () => lockProblems(r, FIXTURE_CONTRACT, NO_MACHINE)).join("\n")).toMatch(/origin is "none"/);
+  });
+
+  it("the scope lock refuses a bare repository as the main checkout: the merge compares files and fast-forwards there", () => {
+    const bare = join(root, "lock-bare.git");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    expect(withPath(stubBin("id-ok"), () => lockProblems(bare, FIXTURE_CONTRACT, NO_MACHINE)).join("\n")).toMatch(/bare repository/);
+  });
+
+  it("a contract `host` reaches gh as GH_HOST and pins origin to that host", () => {
+    const bin = stubBin("ghe-bin");
+    writeFileSync(join(bin, "gh"), '#!/bin/sh\n[ "$GH_HOST" = ghe.example.com ] && echo owner\n', { mode: 0o755 });
+    const r = join(root, "ghe-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    execFileSync("git", ["-C", r, "config", "--local", "user.email", FIXTURE_CONTRACT.gitEmail]);
+    execFileSync("git", ["-C", r, "remote", "add", "origin", `https://ghe.example.com/${FIXTURE_CONTRACT.repo}.git`]);
+    commit(r, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, host: "ghe.example.com" }) });
+    const ok = cli(r, ["check"], { bin });
+    expect(ok.err).not.toMatch(/active gh account|origin is/);
+    expect(ok.status).toBe(0);
+    const pre = JSON.parse(cli(r, ["preflight"], { bin }).out);
+    expect([pre.origin, pre.host]).toEqual(["owner/app", "ghe.example.com"]);
   });
 
   it("lockProblems reads the repo-LOCAL git email, not a global one (13)", () => {

@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { MAX_CYCLE_MINUTES } from "./argus-live-config.mjs";
 import { sleep, tempBeside } from "./argus-live-proc.mjs";
+import { gitCommonDir } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
 export const RUN_ID = /^\d{14}-[0-9a-f]{8}$/;
@@ -29,7 +30,8 @@ const EPOCH_MAX = 4102444800;
 export const liveDir = (main) => path.join(main, ".argus", "live");
 const lockPath = (main) => path.join(liveDir(main), "lock.json");
 export const claimPath = (main, runId) => path.join(liveDir(main), `claim-${runId}.json`);
-const liveLog = (main) => path.join(main, ".git", "sapu-live.log");
+// in the repository's git directory: <MAIN>/.git in a plain clone, elsewhere for a submodule or --separate-git-dir
+const liveLog = (main) => path.join(gitCommonDir(main) ?? path.join(main, ".git"), "sapu-live.log");
 export const iso = (s) => new Date(s * 1000).toISOString();
 const isEpoch = (s) => Number.isInteger(s) && s >= EPOCH_MIN && s < EPOCH_MAX;
 

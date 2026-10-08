@@ -116,7 +116,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
+import { acceptedLabel, checkoutRoot, findMain, gitCommonDir, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1150,9 +1150,21 @@ function gitHomePaths() {
   return [home, realPathOf(home)].flatMap((h) => [path.join(h, ".gitconfig"), path.join(process.env.XDG_CONFIG_HOME || path.join(h, ".config"), "git")]);
 }
 
-/** Is this one of git's own files: a `.git` file or directory (or anything in one), ~/.gitconfig, ~/.config/git/…? */
+/**
+ * Is `p`, or a directory above it, a git directory (HEAD, objects/ and refs/ in it)? That is git's
+ * own directory wherever it lies and however it is named: a `--separate-git-dir` store, a
+ * submodule's under `.git/modules/`, a bare repository.
+ */
+function inGitDir(p) {
+  for (let d = p; ; d = path.dirname(d)) {
+    if (["HEAD", "objects", "refs"].every((x) => fs.existsSync(path.join(d, x)))) return true;
+    if (path.dirname(d) === d) return false;
+  }
+}
+
+/** Is this one of git's own files: a `.git` file or directory (or anything in one), any other git directory, ~/.gitconfig, ~/.config/git/…? */
 function isGitFile(p) {
-  return p.split(path.sep).includes(".git") || gitHomePaths().some((x) => inside(p, x));
+  return p.split(path.sep).includes(".git") || inGitDir(p) || gitHomePaths().some((x) => inside(p, x));
 }
 
 /**
@@ -1902,9 +1914,16 @@ const isHandoff = (command) => {
  * The step budget's verdict for one call of a ladder worker: the reminder to block it with, or null.
  * @param {{ main: string|null, agentId?: string, tool: string, command?: string }} i
  */
+/** The counters' directory: sapu-steps/ in the repository's git directory (gitCommonDir), or null when there is none. */
+const stepsDir = (main) => {
+  const gd = gitCommonDir(main);
+  return gd ? path.join(gd, "sapu-steps") : null;
+};
+
 /** Count one call of `agentId` in <MAIN>/.git/sapu-steps/ and return the count so far; throws when the counter cannot be written. */
 function countStep(main, agentId) {
-  const dir = path.join(main, ".git", "sapu-steps");
+  const dir = stepsDir(main);
+  if (!dir) throw Object.assign(new Error("no git directory"), { code: "ENOGITDIR" });
   const file = path.join(dir, agentId.replace(/[^\w.-]/g, "_"));
   fs.mkdirSync(dir, { recursive: true });
   fs.appendFileSync(file, ".");
@@ -1929,19 +1948,19 @@ export function stepProbe({ main, agentId }) {
     countStep(main, agentId);
     return "counting";
   } catch (e) {
-    return `off: ${path.join(main, ".git", "sapu-steps")} cannot be written (${e && e.code ? e.code : "error"})`;
+    return `off: ${stepsDir(main) ?? `the git directory of ${main} (none found)`} cannot be written (${e && e.code ? e.code : "error"})`;
   }
 }
 
 export function stepBudget({ main, agentId, tool, command }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
-  const file = path.join(main, ".git", "sapu-steps", agentId.replace(/[^\w.-]/g, "_"));
   let n;
   try {
     n = countStep(main, agentId);
   } catch {
     return null;
   }
+  const file = path.join(stepsDir(main), agentId.replace(/[^\w.-]/g, "_"));
   // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
   // never skipped. The last one given is kept in `<id>.r`.
   const soft = Math.floor((Math.min(n, STEP_HARD) - STEP_SOFT) / STEP_EVERY) + 1;

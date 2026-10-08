@@ -1061,6 +1061,15 @@ describe("round 4 D — cheap closures", () => {
     expect(checkFile({ tool: "Read", filePath: `${wt}/.ENV`, cwd: wt, main, rules })).toMatch(/env files/);
     expect(checkFile({ tool: "Read", filePath: `${wt}/.git/config`, cwd: wt, main, rules })).toBeNull();
   });
+
+  it("a git directory outside any `.git` path (--separate-git-dir, a submodule's, a bare repository) is git's own files too", () => {
+    const store = join(root, "store-of-app");
+    execFileSync("git", ["init", "-q", "--bare", store]);
+    for (const cmd of [`echo x > ${store}/hooks/pre-push`, `cp evil ${store}/config`, `rm -rf ${store}`]) expect(blocked(cmd), cmd).toMatch(/git's own files/);
+    expect(checkFile({ tool: "Write", filePath: `${store}/hooks/post-checkout`, cwd: wt, main, rules })).toMatch(/git's own files/);
+    expect(checkFile({ tool: "Read", filePath: `${store}/config`, cwd: wt, main, rules })).toBeNull();
+    expect(blocked(`echo x > ${root}/not-a-git-dir.txt`)).toBeNull();
+  });
 });
 
 describe("sapu's machine config (~/.config/sapu/) is written by the person at the machine, never a subagent", () => {
@@ -1682,7 +1691,7 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     expect(budget({ main: m, agentId: "p1", tool: "Bash", command: "npm test" })).toBeNull();
   });
 
-  it("counts each agent apart, and does nothing without an agent id or a main checkout (or when .git is not a directory)", () => {
+  it("counts each agent apart, and does nothing without an agent id or a main checkout (or when its git directory cannot be found)", () => {
     const m = fresh();
     calls(m, "a5", STEP_SOFT - 1);
     expect(budget({ main: m, agentId: "a6", tool: "Bash", command: "npm test" })).toBeNull();
@@ -1691,6 +1700,15 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     const f = mkdtempSync(join(tmpdir(), "sapu-steps-file-"));
     writeFileSync(join(f, ".git"), "gitdir: elsewhere\n");
     for (let i = 0; i < STEP_SOFT; i++) expect(budget({ main: f, agentId: "a7", tool: "Bash", command: "ls" })).toBeNull();
+  });
+
+  it("counts in the repository's git directory when .git is a file (a submodule, --separate-git-dir)", () => {
+    const m = mkdtempSync(join(tmpdir(), "sapu-steps-sep-"));
+    const store = mkdtempSync(join(tmpdir(), "sapu-steps-store-"));
+    execFileSync("git", ["init", "-q", `--separate-git-dir=${store}`, m]);
+    expect(refused(calls(m, "s1", STEP_SOFT))).toEqual([STEP_SOFT]);
+    expect(readFileSync(join(store, "sapu-steps/s1"), "utf8")).toHaveLength(STEP_SOFT);
+    expect((stepProbeUntyped as (i: { main: string; agentId: string }) => string)({ main: m, agentId: "s2" })).toBe("counting");
   });
 
   it("the hook counts only ladder workers: a reviewer or specialist is never budgeted", () => {

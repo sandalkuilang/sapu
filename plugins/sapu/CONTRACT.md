@@ -45,7 +45,8 @@ No silent defaults: a missing required field = the skill stops with a message th
 `/sapu:init`. The only exceptions, recorded and deliberate: the optional fields
 `specialists` (§Specialist agents), whose default is the senior-dev-team plugin's agents, and
 `trustedAuthors`, `requireSignedCommits`, `labels.accepted` and `labels.acceptors` (§Trusted
-authors), whose defaults are the owner alone, `false`, `sapu:accepted` and the trusted set. The contract can only
+authors), whose defaults are the owner alone, `false`, `sapu:accepted` and the trusted set; and
+`mergeMethod` and `host` (below), whose defaults are a squash merge and github.com. The contract can only
 **add** restrictions: the engine's guardrails (see §Engine floor) cannot be switched off from the contract.
 
 **The committed version is what counts.** `sapu-contract.mjs` (`check`, `show`, `get`,
@@ -66,9 +67,25 @@ the plugin — including its guard hook for subagents — is active in every rep
 The contract names its account: `sapu-contract.mjs check` refuses to run when the active `gh`
 account is not `ghUser`, when `git config --local user.email` is not `gitEmail` (a global email that
 happens to match does not count), when `origin` is not `repo`, or when a `trustedAuthors` login no
-longer resolves to its recorded id (§Trusted authors). The `origin` remote must be
-exactly `github.com` (`https://[user@]github.com/o/r`, `git@github.com:o/r`, or
-`ssh://git@github.com[:port]/o/r`), not a URL that merely contains the text "github.com".
+longer resolves to its recorded id (§Trusted authors), or when the main checkout is a bare
+repository. The `origin` remote must be on exactly the contract's host — `github.com`, or the
+GitHub Enterprise host the optional `host` names (`https://[user@]<host>/o/r`, `[user@]<host>:o/r`,
+or `ssh://[user@]<host>[:port]/o/r`) — not a URL that merely contains that text. An SSH host alias
+(`git@github-work:o/r`) counts when `ssh -G <alias>` resolves it to that host (it reads the person's
+ssh config and connects nowhere; `ssh.github.com`, GitHub's port-443 endpoint, is github.com). With
+`host`, every `gh` call of the scripts goes to that host (`GH_HOST`); the orchestrator's own `gh`
+calls need `GH_HOST` in the session (`/sapu:init` writes it into `.claude/settings.local.json`).
+`origin` must be the repository itself: a fork with the repository as `upstream` is not supported
+(sapu pushes to `origin`, and `pr-trust` refuses PRs from forks).
+
+**The main checkout and the git directory.** `<MAIN>` is the main checkout,
+`sapu-contract.mjs main`: the first `git worktree list` entry, except for a submodule or a
+`--separate-git-dir` checkout, where git lists the git directory there and `<MAIN>` is its
+`core.worktree` (a submodule records it; for `--separate-git-dir`, run `git config core.worktree
+<checkout>` once, or a linked worktree cannot find `<MAIN>`). A bare clone with worktrees is not
+supported: the merge compares the contract and its hooks in `<MAIN>` and fast-forwards it. Paths
+written `<MAIN>/.git/…` mean the repository's git directory (`git -C <MAIN> rev-parse
+--git-common-dir`): `<MAIN>/.git` in a plain clone, the directory a `.git` file names otherwise.
 
 Where sapu may run is decided on the machine, not in the contract: an optional per-machine config
 (only `~/.config/sapu/config.json` — not `$XDG_CONFIG_HOME`, which `env` in the repo's
@@ -89,6 +106,8 @@ subagent write to `~/.config/sapu/`.
   "ghUser": "owner",                    // the gh account that must be active
   "gitEmail": "me@example.com",         // the required git config --local user.email
   "baseBranch": "main",
+  "mergeMethod": "squash",              // OPTIONAL (default squash): squash | merge | rebase — what the repo allows (gh api repos/<repo>: allow_*_merge)
+  "host": "github.example.com",         // OPTIONAL (default github.com): a GitHub Enterprise host; origin is pinned to it
 
   "gate": {
     "fast": "npm run check -- --fast", // the worker's gate before a PR (static + fast); must differ from merge
@@ -483,8 +502,9 @@ skipping none (each failure = non-zero exit + a one-line reason):
    toward a flake proof, and a red verdict beside a journey cycle says so;
 10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
     after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
-    `gh pr merge --squash --delete-branch --match-head-commit <gated SHA>` (commits landing during
-    the gate are not merged untested);
+    `gh pr merge --<mergeMethod> --delete-branch --match-head-commit <gated SHA>` (commits landing during
+    the gate are not merged untested; a refusal quotes GitHub's message, e.g. a method the repo does
+    not allow);
 11. relabel the issues of the body's `Closes/Fixes/Resolves #X` list (`labels.inProgress` →
     `labels.done`; `Refs #X` untouched);
 12. `fetch origin <base>` + `git -C <MAIN> merge --ff-only origin/<base>` ONLY when the main

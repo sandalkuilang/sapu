@@ -9,6 +9,7 @@ import { closeSessions, removeSockets, sweepSessions } from "./argus-live-cli.mj
 import { LIVE_FILE, loadLive, secretEnv, secretsIn } from "./argus-live-config.mjs";
 import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
+import { gitCommonDir } from "./sapu-contract.mjs";
 import { processTable, readFrom, redact, refreshGroups, run, runAsync, sleep, sleepSync, stopRecordedGroups, tail, tempBeside, withFileLock, within } from "./argus-live-proc.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -319,7 +320,7 @@ function removeTree(p, note) {
  * that record alone: `git worktree prune` would also drop every other missing worktree of the repo.
  */
 function forgetWorktree(main, wt, note) {
-  const admin = path.join(main, ".git", "worktrees");
+  const admin = path.join(gitCommonDir(main) ?? path.join(main, ".git"), "worktrees");
   let ids;
   try {
     ids = fs.readdirSync(admin);

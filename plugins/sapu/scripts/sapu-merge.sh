@@ -35,7 +35,9 @@
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
 # it keeps. Every gate run is one line of <MAIN>/.git/sapu-gates.log; a red one names its failing
 # test files and a flake verdict (`known-flake`: each proven flaky, i.e. red then green on one tree
-# in another PR's gates, and nothing but tests failed; else `unknown`).
+# in another PR's gates, and nothing but tests failed; else `unknown`). `<MAIN>/.git` here and below
+# is the repository's git directory ($GITDIR: a file `.git` names it in a submodule or a
+# --separate-git-dir checkout). The merge method is the contract's `mergeMethod` (default squash).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
@@ -77,10 +79,17 @@ check_fail() { if [ "$DRY" = 1 ]; then say "WOULD REFUSE: $*"; BLOCKERS=$((BLOCK
 plan() { [ "$DRY" = 1 ] && printf 'PLAN  %s\n' "$*" >&2 || true; }
 
 # --- contract ---------------------------------------------------------------------------------
-# <MAIN> = the first entry of `git worktree list` seen from the cwd (resolved first: the lock lives in its .git).
-# awk reads to the end (no `exit`): an early exit would SIGPIPE git, and pipefail would fail the assignment.
-MAIN="$(git worktree list --porcelain 2>/dev/null | awk 'NR==1 && $1=="worktree"{sub(/^worktree /,""); print}')"
-[ -n "$MAIN" ] && [ -d "$MAIN" ] || die "run this from inside the repo (cannot resolve <MAIN> from git worktree list)"
+# <MAIN> = the main checkout seen from the cwd (resolved first: the lock lives in its git directory):
+# the first entry of `git worktree list`, or for a submodule or a --separate-git-dir checkout, whose
+# git directory git lists there, the checkout itself (sapu-contract.mjs main, findMain).
+MAIN="$(node "$SCRIPT_DIR/sapu-contract.mjs" main)" || die "run this from inside the repo (cannot resolve <MAIN>: see above)"
+[ -n "$MAIN" ] && [ -d "$MAIN" ] || die "run this from inside the repo (cannot resolve <MAIN>)"
+# A bare clone has no files to compare against origin and no base branch checked out to fast-forward.
+[ "$(git -C "$MAIN" rev-parse --is-bare-repository 2>/dev/null)" != true ] \
+  || die "<MAIN> ($MAIN) is a bare repository: sapu needs a main checkout of the base branch as the first worktree, not a bare clone with worktrees"
+# The repository's git directory: <MAIN>/.git in a plain clone; for a submodule or a --separate-git-dir
+# checkout (<MAIN>/.git is a file) the directory it names. The lock and every ledger live there.
+GITDIR="$(cd "$MAIN" && cd "$(git rev-parse --git-common-dir)" && pwd)" || die "cannot find the git directory of $MAIN"
 # Only the base branch's NAME comes from <MAIN>'s own contract. The contract itself is read from a
 # freshly fetched origin/<base> (an explicit refspec, so a rewritten fetch config cannot redirect
 # it), and origin's contract must name the same base.
@@ -92,6 +101,12 @@ CONTRACT="$(cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" show --ref "$BASE
 cget() { printf '%s' "$CONTRACT" | jq -r "$1 // empty"; }
 [ "$(cget .baseBranch)" = "$BASE" ] || die "origin/$BASE's contract names base '$(cget .baseBranch)', <MAIN>'s names '$BASE': reconcile them first"
 REPO="$(cget .repo)"; GH_USER="$(cget .ghUser)"; GIT_EMAIL="$(cget .gitEmail)"
+# How the PR is merged (squash unless the contract says the repo allows only merge or rebase), and
+# on which GitHub host: a GitHub Enterprise host reaches every gh call below as GH_HOST.
+METHOD="$(printf '%s' "$CONTRACT" | jq -r '.mergeMethod // "squash"')"
+case "$METHOD" in squash|merge|rebase) ;; *) die "contract mergeMethod '$METHOD' is not squash, merge or rebase" ;; esac
+HOST="$(cget .host)"
+if [ -n "$HOST" ] && [ "$HOST" != github.com ]; then export GH_HOST="$HOST"; fi
 # origin commits whose files <MAIN>'s copies may equal: the fetched origin/<base>, and after the merge the new one.
 TRUSTED=("$BASE_SHA")
 GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"
@@ -212,7 +227,7 @@ trap on_exit EXIT
 # path under <MAIN>/.git — NOT $TMPDIR, which differs between sandboxed and unsandboxed
 # processes and would let two runs miss each other.
 if [ "$DRY" = 0 ]; then
-  LOCK="$MAIN/.git/sapu-merge.lock"
+  LOCK="$GITDIR/sapu-merge.lock"
   mkdir "$LOCK" 2>/dev/null || die "another sapu-merge run holds $LOCK. If a previous run was killed (SIGKILL/power loss) and none is active, remove it: rmdir '$LOCK'"
   LOCK_HELD=1
 fi
@@ -287,9 +302,10 @@ done
 # --- 4. worktree resolution ---------------------------------------------------------------------
 
 # Path of the worktree that already holds refs/heads/<HEAD>, if any.
+# The first entry is <MAIN>, whatever path git prints for it (its git directory, see MAIN above).
 worktree_for_branch() {
-  git -C "$MAIN" worktree list --porcelain | awk -v ref="refs/heads/$1" '
-    $1=="worktree"{sub(/^worktree /,""); p=$0}
+  git -C "$MAIN" worktree list --porcelain | awk -v ref="refs/heads/$1" -v main="$MAIN" '
+    $1=="worktree"{sub(/^worktree /,""); p=(n++ ? $0 : main)}
     $1=="branch" && $2==ref && !found {print p; found=1}'
 }
 
@@ -319,10 +335,10 @@ if [ "$DRY" = 1 ]; then
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
   if [ -n "$(protected_path "$P_GATE")" ]; then plan "gate.merge pins <MAIN>'s $(protected_path "$P_GATE") (origin/$BASE's blob; the PR's copy only while origin has none)"
   else plan "gate.merge pins no repo file ($(jq -r '.why' <<<"$P_GATE")): the PR's own copy of the gate's logic runs"; fi
-  plan "gate in $WT: $(jq -r '.words | join(" ")' <<<"$P_GATE")  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $MAIN/.git/sapu-gates.log)"
-  plan "(real runs hold a lock dir $MAIN/.git/sapu-merge.lock; a second run dies)"
+  plan "gate in $WT: $(jq -r '.words | join(" ")' <<<"$P_GATE")  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $GITDIR/sapu-gates.log)"
+  plan "(real runs hold a lock dir $GITDIR/sapu-merge.lock; a second run dies)"
   if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
-  else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"; fi
+  else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --$METHOD --delete-branch --match-head-commit <gated SHA>"; fi
   plan "relabel issues from every 'Closes/Fixes/Resolves #N[, #M...]' in PR body: $L_IN_PROGRESS -> $L_DONE (Refs #N untouched)"
   plan "after merge: fetch origin $BASE; git -C $MAIN merge --ff-only origin/$BASE ONLY if <MAIN> is on $BASE with a clean tree (else WARNING, continue)"
   if [ -n "$MERGE_AFTER" ]; then plan "mergeAfter once on every exit after the gate started, while $WT still exists: $MERGE_AFTER (SAPU_OUTCOME=merged|not-merged)"; fi
@@ -468,14 +484,14 @@ GATE_SECS=$((SECONDS - GATE_START))
 # steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
 # (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
-GATES_LOG="$MAIN/.git/sapu-gates.log"
+GATES_LOG="$GITDIR/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
 # A gate that overlapped a journey cycle ran beside its browsers and dev servers. argus-live.mjs
 # appends to <MAIN>/.git/sapu-live.log, in epoch seconds, under a run id unique per run:
 # `<run> start <epoch> deadline <epoch>` when `up` takes the lock, `<run> deadline <epoch>` at every
 # `renew`, `<run> end <epoch>` from `down` and from an `up` that fails after its start line. A run
 # stops at its end, else at its latest deadline. The gate's line says live=1, and no flake proof uses it.
-LIVE_LOG="$MAIN/.git/sapu-live.log"
+LIVE_LOG="$GITDIR/sapu-live.log"
 live_overlap() { # <gate start epoch> <gate end epoch>
   [ -f "$LIVE_LOG" ] || return 1
   awk -v s="$1" -v e="$2" '
@@ -607,7 +623,7 @@ FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 } >"$FULL_COMMENT"
 if [ "$P_TRACES" = none ]; then
   # traces: none — the review and the gate summary stay on this machine; nothing on the PR says sapu.
-  KEEP="$MAIN/.git/sapu-review-pr$PR.md"
+  KEEP="$GITDIR/sapu-review-pr$PR.md"
   mv "$FULL_COMMENT" "$KEEP" 2>/dev/null && say "review + gate summary kept locally: $KEEP" || rm -f "$FULL_COMMENT"
 else
   ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
@@ -625,7 +641,7 @@ if [ "$P_MERGE" = human ]; then
   for r in $P_REVIEWERS; do
     gh pr edit "$PR" --repo "$REPO" --add-reviewer "$r" >/dev/null 2>&1 || say "warning: could not request a review from $r"
   done
-  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-handoffs.log" 2>/dev/null || true
+  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-handoffs.log" 2>/dev/null || true
   printf 'sapu-merge: PR #%s gate green at %s, handed off for review%s (merge: human)\n' "$PR" "$SHA" "${P_REVIEWERS:+ to $P_REVIEWERS}"
   exit 4
 fi
@@ -637,12 +653,14 @@ fi
 # PR head moved, GitHub refuses and the worktree stays for a re-run.
 ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
 [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before merging"
-gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --match-head-commit "$SHA" >/dev/null \
-  || die "gh pr merge failed (PR head may have moved since $SHA); worktree $WT kept"
+# GitHub's own words are kept: a repo that does not allow this method refuses with a message that
+# says so, which a guess ("the head moved") would hide.
+MERGE_ERR="$(gh pr merge "$PR" --repo "$REPO" "--$METHOD" --delete-branch --match-head-commit "$SHA" 2>&1 >/dev/null)" \
+  || die "gh pr merge --$METHOD failed: $(printf '%s' "$MERGE_ERR" | tail -n 5) — a repo that does not allow $METHOD merges needs the contract's mergeMethod (squash, merge or rebase); else the PR head may have moved since $SHA; worktree $WT kept"
 # One line per merge that really happened: sapu-metrics --merges-log counts merged PRs from this,
 # because a transcript only records the merge commands, not which of them merged.
-printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-merges.log" 2>/dev/null \
-  || say "warning: merged, but could not record it in $MAIN/.git/sapu-merges.log"
+printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-merges.log" 2>/dev/null \
+  || say "warning: merged, but could not record it in $GITDIR/sapu-merges.log"
 
 RELABELED=""
 [ "$P_TRACES" = none ] && ISSUES="" # traces: none — no sapu labels on the issues either
@@ -696,7 +714,7 @@ fi
 git -C "$MAIN" branch -D "$HEAD" >/dev/null 2>&1 || true # best effort; may be checked out elsewhere
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
-printf 'PR #%s merged (squash)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
-  "$PR" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
+printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
+  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }

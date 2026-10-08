@@ -71,7 +71,13 @@ function harness({
   issues = {},
   children = {},
   listedOnly = [],
+  separateGitDir = false,
+  originUrl = "https://github.com/owner/app.git",
 }: {
+  /** <MAIN>'s git directory lives outside it (`git init --separate-git-dir`): <MAIN>/.git is a file. */
+  separateGitDir?: boolean;
+  /** What `git remote get-url origin` answers in <MAIN>. */
+  originUrl?: string;
   contract?: Record<string, unknown>;
   main?: Files;
   pr?: Files;
@@ -107,14 +113,14 @@ function harness({
   stub(
     "gh",
     `#!/usr/bin/env bash
-printf 'gh %s\\n' "$*" >> "$HX_GH_LOG"
+printf '%sgh %s\\n' "\${GH_HOST:+[$GH_HOST] }" "$*" >> "$HX_GH_LOG"
 ${GH_API}
 if [ "$1" = api ]; then gh_api "$@"; exit $?; fi
 case "$1 $2" in
   "repo view") echo owner/app ;;
   "pr list") [ -f "$HX_API/pr_list.json" ] && jq -r '.[].number' "$HX_API/pr_list.json" ;;
   "pr comment"|"pr edit"|"issue edit") ;;
-  "pr merge") exit "\${HX_GH_MERGE_RC:-0}" ;;
+  "pr merge") [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2; exit "\${HX_GH_MERGE_RC:-0}" ;;
   *) echo "gh stub: unexpected: $*" >&2; exit 1 ;;
 esac
 `,
@@ -123,7 +129,7 @@ esac
   stub(
     "git",
     `#!/bin/sh
-if [ "$1" = "-C" ] && [ "$3 $4 $5" = "remote get-url origin" ]; then echo "https://github.com/owner/app.git"; exit 0; fi
+if [ "$1" = "-C" ] && [ "$3 $4 $5" = "remote get-url origin" ]; then echo "${originUrl}"; exit 0; fi
 exec "${REAL_GIT}" "$@"
 `,
   );
@@ -147,7 +153,8 @@ exec "${REAL_GIT}" "$@"
     ...contract,
   };
   git(dir, "init", "-q", "--bare", "-b", "main", bare);
-  git(MAIN, "init", "-q", "-b", "main");
+  if (separateGitDir) git(dir, "init", "-q", "-b", "main", `--separate-git-dir=${join(dir, "main-store")}`, MAIN);
+  else git(MAIN, "init", "-q", "-b", "main");
   git(MAIN, "config", "user.email", FIXTURE_CONTRACT.gitEmail);
   git(MAIN, "config", "user.name", "Owner");
   git(MAIN, "remote", "add", "origin", bare);
@@ -550,6 +557,58 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.status).toBe(0);
     expect(r.err).toMatch(/warning: could not record the gate run/);
     expect(r.err).not.toMatch(/Is a directory|No such file/);
+  });
+});
+
+describe("sapu-merge.sh — merge method, git directory layout and GitHub host", () => {
+  it("merges with the contract's mergeMethod, and the plan and the report name it", () => {
+    const h = harness({ contract: { mergeMethod: "rebase" } });
+    expect(h.run({}, ["--dry-run"]).err).toMatch(/gh pr merge 7 --rebase --delete-branch/);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/gh pr merge 7 --repo owner\/app --rebase --delete-branch --match-head-commit [0-9a-f]{40}/);
+    expect(r.out).toMatch(/PR #7 merged \(rebase\)/);
+  });
+
+  it("a merge GitHub refuses says what GitHub said and points at mergeMethod", () => {
+    const h = harness();
+    const r = h.run({ HX_GH_MERGE_RC: "1", HX_GH_MERGE_ERR: "GraphQL: Squash merges are not allowed on this repository. (mergePullRequest)" });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/gh pr merge --squash failed: GraphQL: Squash merges are not allowed on this repository/);
+    expect(r.err).toMatch(/mergeMethod/);
+  });
+
+  it("a --separate-git-dir checkout (.git is a file): the lock and every ledger live in its git directory", () => {
+    const h = harness({ separateGitDir: true });
+    const store = join(h.dir, "main-store");
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(readFileSync(join(store, "sapu-gates.log"), "utf8")).toMatch(/ red gate=/);
+    const r2 = harness({ separateGitDir: true });
+    expect(r2.run().status).toBe(0);
+    const store2 = join(r2.dir, "main-store");
+    expect(readFileSync(join(store2, "sapu-merges.log"), "utf8")).toMatch(/^\S+ 7 [0-9a-f]{40} gate=\d+s$/m);
+    expect(existsSync(join(store2, "sapu-merge.lock"))).toBe(false);
+  });
+
+  it("refuses a bare repository as the main checkout, naming the layout", () => {
+    const h = harness();
+    const wt = join(h.dir, "bare-wt");
+    execFileSync(REAL_GIT, ["-C", h.bare, "worktree", "add", "-q", wt, "main"]);
+    const r = spawnSync("bash", [MERGE, "7", join(h.dir, "review.md")], { cwd: wt, encoding: "utf8" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/bare repository/);
+  });
+
+  it("a contract `host` (GitHub Enterprise): origin is pinned to it and every gh call goes to it", () => {
+    const h = harness({ contract: { host: "ghe.example.com" }, originUrl: "https://ghe.example.com/owner/app.git" });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    const calls = h.gh().split("\n").filter(Boolean);
+    expect(calls.length).toBeGreaterThan(3);
+    for (const c of calls) expect(c).toMatch(/^\[ghe\.example\.com\] gh /);
+    const wrong = harness({ contract: { host: "ghe.example.com" } });
+    expect(wrong.run().err).toMatch(/origin is "none" on ghe\.example\.com/);
   });
 });
 

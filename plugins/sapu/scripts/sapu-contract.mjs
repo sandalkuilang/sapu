@@ -38,6 +38,10 @@
 //                                 hold = take or refresh <MAIN>/.git/sapu-sweep.json (the heartbeat), exit 1
 //                                 while another session's heartbeat is fresh; release = remove it, holder only
 //   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
+//   sapu-contract.mjs main        prints <MAIN>, the main checkout (findMain: also for a submodule or a
+//                                 --separate-git-dir checkout, where git lists its git directory first)
+//   sapu-contract.mjs protect [--ref <rev>] -- <words>   which repo file a contract command pins
+//                                 (protectedCommand), as JSON {words, index, file, why}
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
 //   sapu-contract.mjs profiles    every .claude/sapu/<skill>.md carries the sections its skill reads
 //                                 (`--list` prints them; /sapu:init writes them)
@@ -214,8 +218,10 @@ export function validate(c) {
     c,
     "sapu.json",
     ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", ...(noTraces && !("labels" in c) ? [] : ["labels"]), "securityEpic", "invariantDomains", "testResources", "guard"],
-    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels"],
+    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels", "mergeMethod", "host"],
   );
+  if ("mergeMethod" in c) need(MERGE_METHODS.includes(c.mergeMethod), `mergeMethod must be "squash", "merge" or "rebase" (the method the repo allows; omit it for squash)`);
+  if ("host" in c) need(typeof c.host === "string" && HOSTNAME.test(c.host), 'host must be a hostname, e.g. "github.example.com" (the GitHub Enterprise host; omit it for github.com)');
   need(c.version === 1, "version must be 1");
   need(typeof c.repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(c.repo), "repo must be owner/name");
   need(isStr(c.ghUser), "ghUser must be a non-empty string");
@@ -331,15 +337,66 @@ export function validate(c) {
   return errs;
 }
 
-/** <MAIN> = the first `git worktree list` entry seen from `cwd`; null outside a repo. */
-export function findMain(cwd) {
+/**
+ * The repository's common git directory for checkout `main` — where sapu keeps its locks, ledgers
+ * and counters (`<MAIN>/.git/…` in the docs): `<main>/.git` in a plain clone; the directory a `.git`
+ * FILE names (a submodule, `--separate-git-dir`), through its `commondir`; `main` itself when it is
+ * a bare repository. Read from the files, no git process (the guard calls it on every tool call);
+ * null when no such directory exists.
+ */
+export function gitCommonDir(main) {
+  if (!main) return null;
+  const dotgit = path.join(main, ".git");
+  let dir = null;
   try {
-    const out = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const first = out.split("\n").find((l) => l.startsWith("worktree "));
-    return first ? first.slice("worktree ".length) : null;
+    const st = fs.statSync(dotgit);
+    if (st.isDirectory()) dir = dotgit;
+    else {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotgit, "utf8"));
+      if (m) dir = path.resolve(main, m[1]);
+    }
+  } catch {
+    if (fs.existsSync(path.join(main, "HEAD")) && fs.existsSync(path.join(main, "objects"))) dir = main;
+  }
+  if (!dir) return null;
+  try {
+    const common = fs.readFileSync(path.join(dir, "commondir"), "utf8").trim();
+    if (common) dir = path.resolve(dir, common);
+  } catch {}
+  try {
+    return fs.statSync(dir).isDirectory() ? dir : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * <MAIN> = the main checkout seen from `cwd`: the first `git worktree list` entry; null outside a
+ * repo. Where `.git` is a file (a submodule, `--separate-git-dir`) git names its git DIRECTORY
+ * there, so the checkout is that directory's `core.worktree` (a submodule records it); without one,
+ * the toplevel when `cwd` is in the main checkout itself, else null (`git config core.worktree
+ * <checkout>` makes every worktree find it; linked worktrees ignore that key). A bare repository
+ * stays as named: the scope lock and sapu-merge.sh refuse it.
+ */
+export function findMain(cwd) {
+  let first;
+  try {
+    const out = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    first = out.split("\n").find((l) => l.startsWith("worktree "));
+  } catch {
+    return null;
+  }
+  if (!first) return null;
+  const p = first.slice("worktree ".length);
+  const isGitDir = !fs.existsSync(path.join(p, ".git")) && fs.existsSync(path.join(p, "HEAD")) && fs.existsSync(path.join(p, "objects"));
+  if (!isGitDir) return p;
+  const cfg = (k) => sh("git", ["config", "--file", path.join(p, "config"), "--get", k], cwd);
+  const wt = cfg("core.worktree");
+  if (wt) return path.resolve(p, wt);
+  if (cfg("core.bare") === "true") return p;
+  const abs = (flag) => sh("git", ["-C", cwd, "rev-parse", "--path-format=absolute", flag], cwd);
+  const own = abs("--git-dir");
+  return own && own === abs("--git-common-dir") ? checkoutRoot(cwd) : null;
 }
 
 /** The checkout (worktree) root holding `cwd`; null outside a repo. */
@@ -394,7 +451,8 @@ export function localHome(nwo) {
 
 /** The local contract file for `root` when one exists (or a broken link stands there), else null. */
 function localContractFile(root) {
-  const nwo = nwoFromRemote(sh("git", ["-C", root, "remote", "get-url", "origin"], root));
+  // any host: a GitHub Enterprise repo names its host in the contract, and the scope lock pins it
+  const nwo = parseRemote(sh("git", ["-C", root, "remote", "get-url", "origin"], root))?.nwo;
   if (!nwo) return null;
   const f = path.join(localHome(nwo), "sapu.json");
   try {
@@ -557,22 +615,52 @@ export function loadMachineConfig(file = machineConfigPath(), { main = null } = 
   return { path: file, allowedRoots: (c.allowedRoots ?? []).map(expand), projectScopeOnly: c.projectScopeOnly === true };
 }
 
+/** The GitHub host the contract's repo lives on: `host` (GitHub Enterprise), else github.com. */
+export const DEFAULT_HOST = "github.com";
+export const hostOf = (c) => (c && isStr(c.host) ? c.host.toLowerCase() : DEFAULT_HOST);
+/** How sapu-merge.sh merges a PR: `mergeMethod`, else a squash merge. */
+export const MERGE_METHODS = ["squash", "merge", "rebase"];
+export const mergeMethodOf = (c) => (c && MERGE_METHODS.includes(c.mergeMethod) ? c.mergeMethod : "squash");
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
+
 /**
- * owner/name from a github.com remote URL, or null. The host is pinned: only
- * `https://[user@]github.com/o/r[.git]`, `git@github.com:o/r[.git]` and
- * `ssh://git@github.com[:port]/o/r[.git]` — never a URL that merely contains "github.com".
+ * The host an SSH host alias stands for, as `ssh -G <alias>` resolves it from the person's ssh
+ * config (it prints the configuration, never connects); null when ssh cannot say.
  */
-export function nwoFromRemote(url) {
-  const forms = [
-    /^https:\/\/(?:[^@/\s]+@)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-    /^git@github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-    /^ssh:\/\/git@github\.com(?::\d+)?\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-  ];
-  for (const re of forms) {
-    const m = re.exec(url || "");
-    if (m) return `${m[1]}/${m[2]}`;
-  }
-  return null;
+export function sshHostname(alias) {
+  const r = spawnSync("ssh", ["-G", alias], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  return r.status === 0 ? (/^hostname\s+(\S+)\s*$/m.exec(r.stdout || "")?.[1] ?? null) : null;
+}
+
+/**
+ * {host, nwo} of a remote URL (`https://[user@]host/o/r`, `[user@]host:o/r`, `ssh://[user@]host[:port]/o/r`,
+ * each with an optional `.git`), or null. An SSH host is read through `resolve` (an alias in the
+ * ssh config: the host the push really goes to); an https host is taken as written.
+ */
+export function parseRemote(url, resolve = sshHostname) {
+  const u = String(url || "");
+  const path2 = String.raw`([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$`;
+  const https = new RegExp(String.raw`^https:\/\/(?:[^@/\s]+@)?([^/@:\s]+)\/${path2}`, "i").exec(u);
+  if (https) return HOSTNAME.test(https[1]) ? { host: https[1].toLowerCase(), nwo: `${https[2]}/${https[3]}` } : null;
+  const ssh = new RegExp(String.raw`^ssh:\/\/(?:[\w.-]+@)?([^/@:\s]+)(?::\d+)?\/${path2}`, "i").exec(u) || new RegExp(String.raw`^(?:[\w.-]+@)?([^/@:\s]+):${path2}`, "i").exec(u);
+  // an alias that looks like an option is never handed to ssh
+  if (!ssh || !HOSTNAME.test(ssh[1])) return null;
+  const named = ssh[1].toLowerCase();
+  // github.com itself needs no lookup; a name ssh cannot resolve is taken as written (never wider)
+  const host = (named === DEFAULT_HOST ? named : resolve(ssh[1]) || named).toLowerCase();
+  // ssh.github.com is GitHub's documented SSH endpoint on port 443
+  return { host: host === `ssh.${DEFAULT_HOST}` ? DEFAULT_HOST : host, nwo: `${ssh[2]}/${ssh[3]}` };
+}
+
+/**
+ * owner/name from a remote URL on `host` (github.com unless the contract names a GitHub Enterprise
+ * host), or null. The host is pinned: a URL that merely contains it is not it, and an SSH host alias
+ * counts only when ssh resolves it to that host.
+ */
+export function nwoFromRemote(url, host = DEFAULT_HOST, resolve = sshHostname) {
+  // the host itself needs no ssh lookup (the common case, and no process spawned for it)
+  const r = parseRemote(url, (alias) => (alias.toLowerCase() === host.toLowerCase() ? alias : resolve(alias)));
+  return r && r.host === host.toLowerCase() ? r.nwo : null;
 }
 
 function sh(cmd, args, cwd) {
@@ -618,6 +706,10 @@ export function machineNow() {
  */
 export function lockProblems(main, c, machine = loadMachineConfig(machineConfigPath(), { main })) {
   const p = [];
+  // A bare repository has no files to compare against origin and no branch to fast-forward.
+  if (sh("git", ["-C", main, "rev-parse", "--is-bare-repository"], main) === "true") {
+    p.push(`${main} is a bare repository: sapu needs a main checkout of the base branch as the first worktree (git worktree list), not a bare clone`);
+  }
   if (machine.allowedRoots.length && !underAllowedRoot(main, machine.allowedRoots)) {
     p.push(`${main} is outside the allowed roots in ${machine.path} (${machine.allowedRoots.join(", ")})`);
   }
@@ -626,8 +718,8 @@ export function lockProblems(main, c, machine = loadMachineConfig(machineConfigP
   // --local: a global email that happens to match must not pass for this repo's identity.
   const email = sh("git", ["-C", main, "config", "--local", "user.email"], main);
   if (email !== c.gitEmail) p.push(`git user.email is "${email || "unset"}", the contract needs "${c.gitEmail}"`);
-  const origin = nwoFromRemote(sh("git", ["-C", main, "remote", "get-url", "origin"], main));
-  if (!origin || origin.toLowerCase() !== c.repo.toLowerCase()) p.push(`origin is "${origin || "none"}", the contract says "${c.repo}"`);
+  const origin = nwoFromRemote(sh("git", ["-C", main, "remote", "get-url", "origin"], main), hostOf(c));
+  if (!origin || origin.toLowerCase() !== c.repo.toLowerCase()) p.push(`origin is "${origin || "none"}" on ${hostOf(c)}, the contract says "${c.repo}"`);
   // A trusted login renamed and re-registered by someone else would still pass by id elsewhere, but
   // the contract would name the wrong person: the recorded login must still resolve to its id.
   const lists = [["trustedAuthors", c.trustedAuthors], ["labels.acceptors", c.labels && c.labels.acceptors]];
@@ -920,24 +1012,30 @@ export function prReviews(c, n, trusted = resolveTrusted(c)) {
   };
 }
 
-// An issue as a PR body names it: #N, owner/repo#N, GH-N, or a github.com issue/PR URL.
-const ONE_REF = String.raw`(?:https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
-const CLOSE_LIST = new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+(${ONE_REF}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${ONE_REF})*)`, "gi");
-const asRef = (r) => ({ repo: r[1] || r[3] || null, number: Number(r[2] || r[4] || r[5] || r[6]) });
+// An issue as a PR body names it: #N, owner/repo#N, GH-N, or an issue/PR URL on github.com or the contract's host.
+const oneRef = (host) => {
+  const hosts = [...new Set([DEFAULT_HOST, host.toLowerCase()])].map((h) => h.replace(/[.-]/g, "\\$&")).join("|");
+  return String.raw`(?:https?:\/\/(${hosts})\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
+};
+const closeList = (one) => new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+(${one}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${one})*)`, "gi");
+// A URL on another host than the repo's names another repository (`github.com/o/r` from a GitHub Enterprise PR).
+const asRef = (host) => (r) => ({ repo: r[2] ? (lc(r[1]) === lc(host) ? r[2] : `${lc(r[1])}/${r[2]}`) : r[4] || null, number: Number(r[3] || r[5] || r[6] || r[7]) });
 
 /**
  * Every issue or PR a PR body names, as {repo, number} (repo null = this repo): `closes` = those a
  * Closes/Fixes/Resolves list closes (relabelled after the merge), `refs` = every other mention —
  * `Refs #8`, `Implements #8`, `Part of #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL. Code
- * (fenced blocks, inline spans) is skipped, as GitHub skips it when it links references.
+ * (fenced blocks, inline spans) is skipped, as GitHub skips it when it links references. `host` is
+ * the repo's GitHub host (hostOf).
  */
-export function bodyRefs(body) {
+export function bodyRefs(body, host = DEFAULT_HOST) {
+  const one = oneRef(host);
   const text = String(body || "").replace(/```[\s\S]*?(```|$)/g, " ").replace(/`[^`\n]*`/g, " ");
   const closes = [];
-  for (const m of text.matchAll(CLOSE_LIST)) for (const r of m[1].matchAll(new RegExp(ONE_REF, "gi"))) closes.push(asRef(r));
+  for (const m of text.matchAll(closeList(one))) for (const r of m[1].matchAll(new RegExp(one, "gi"))) closes.push(asRef(host)(r));
   const key = (x) => `${lc(x.repo ?? "")}#${x.number}`;
   const closing = new Set(closes.map(key));
-  const refs = [...text.matchAll(new RegExp(ONE_REF, "gi"))].map(asRef).filter((x) => !closing.has(key(x)));
+  const refs = [...text.matchAll(new RegExp(one, "gi"))].map(asRef(host)).filter((x) => !closing.has(key(x)));
   return { closes, refs };
 }
 
@@ -1004,7 +1102,7 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
       if (!ok(signer)) return refuse("commit signature", `commit ${sha} is signed by ${named(signer)}, who is not in the trusted set`);
     }
   }
-  const refs = bodyRefs(pr.body);
+  const refs = bodyRefs(pr.body, hostOf(c));
   const gh = pr.closingIssuesReferences;
   if (gh.totalCount > gh.nodes.length) return refuse("closing issue", `it closes ${gh.totalCount} issues, more than can be checked`);
   // GitHub's own reference without a repository cannot be placed: it counts as another repository's.
@@ -1052,7 +1150,7 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
 // that died while its marker is still fresh.
 export const SWEEP_TTL_MS = 3 * 3600 * 1000;
 const SWEEP_OWNER = /^[A-Za-z0-9][\w.:-]{0,99}$/;
-const sweepFile = (main) => path.join(main, ".git", "sapu-sweep.json");
+const sweepFile = (main) => path.join(gitCommonDir(main) ?? path.join(main, ".git"), "sapu-sweep.json");
 
 /** The marker: {owner, started, beat, host}, {corrupt: true} for one that cannot be read, or null when there is none. */
 function readSweep(main) {
@@ -1298,8 +1396,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1316,6 +1414,11 @@ function main(argv) {
   }
   const mainDir = findMain(process.cwd());
   const here = workingTree ? checkoutRoot(process.cwd()) : mainDir;
+  if (cmd === "main") {
+    if (!mainDir) fail("cannot resolve the main checkout from here: outside a repo, or a --separate-git-dir checkout seen from a linked worktree (run `git config core.worktree <main checkout>` there once)");
+    process.stdout.write(`${mainDir}\n`);
+    return;
+  }
   // A broken machine config stops the lock and preflight: the owner restricted this machine, and a
   // typo must not silently lift the restriction.
   const machineOrFail = () => {
@@ -1329,12 +1432,17 @@ function main(argv) {
     // For /sapu:init: facts only, no contract needed, never fails on them.
     const dir = mainDir || process.cwd();
     const machine = machineOrFail();
+    const remote = mainDir ? parseRemote(sh("git", ["-C", dir, "remote", "get-url", "origin"], dir)) : null;
+    // gh asks the origin's host (GitHub Enterprise) unless GH_HOST already names one
+    if (remote && remote.host !== DEFAULT_HOST && !process.env.GH_HOST) process.env.GH_HOST = remote.host;
     const out = {
       main: mainDir,
       allowedRoot: machine.allowedRoots.length ? underAllowedRoot(dir, machine.allowedRoots) : null,
       machineConfig: machine.path,
       projectScopeOnly: machine.projectScopeOnly,
-      origin: mainDir ? nwoFromRemote(sh("git", ["-C", dir, "remote", "get-url", "origin"], dir)) : null,
+      origin: remote ? remote.nwo : null,
+      host: remote ? remote.host : null,
+      bare: mainDir ? sh("git", ["-C", mainDir, "rev-parse", "--is-bare-repository"], mainDir) === "true" : null,
       ghLogin: sh("gh", ["api", "user", "--jq", ".login"], dir) || null,
       gitEmail: mainDir ? sh("git", ["-C", dir, "config", "user.email"], dir) || null : null,
       userScopeInstall: userScopeInstall(),
@@ -1391,6 +1499,8 @@ function main(argv) {
   }
   const { contract, error } = loadContract(here, { workingTree, ref: ref ?? "HEAD" });
   if (error) fail(error);
+  // Every gh call below (and in its children) goes to the contract's GitHub host.
+  if (hostOf(contract) !== DEFAULT_HOST) process.env.GH_HOST = hostOf(contract);
   if (cmd === "show" || cmd === "check") {
     const warning = gateProtectionWarning(contract, (f) => fileAt(here, workingTree ? null : (ref ?? "HEAD"), f));
     if (warning) process.stderr.write(`sapu-contract: WARNING ${warning}\n`);
