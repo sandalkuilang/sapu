@@ -1803,36 +1803,37 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
   const read = (tool: string, input: Record<string, string>, worktree: string | null = w) =>
     (checkExplorerRead as (i: object) => string | null)({ tool, input, worktree, cwd: w });
 
-  it("allows a tracked file, and a Grep or Glob below the worktree root", () => {
+  it("allows a tracked file, by absolute or relative path", () => {
     expect(read("Read", { file_path: join(w, "src/orders/route.ts") })).toBeNull();
     expect(read("Read", { file_path: "src/orders/route.ts" })).toBeNull();
-    expect(read("Grep", { pattern: "export", path: join(w, "src") })).toBeNull();
-    expect(read("Grep", { pattern: "export", path: join(w, "src/orders/route.ts") })).toBeNull();
-    expect(read("Glob", { pattern: "**/*.ts", path: join(w, "src/orders") })).toBeNull();
   });
 
   it.each([
-    ["an untracked file", "Read", { file_path: join(w, "src/orders/untracked.ts") }],
-    ["the tracked argus config", "Read", { file_path: join(w, ".argus/config.yml") }],
-    ["a file outside the worktree", "Read", { file_path: outside }],
-    ["a symlink leaving the worktree", "Read", { file_path: join(w, "src/link.txt") }],
-    ["a missing file", "Read", { file_path: join(w, "src/none.ts") }],
-    ["the worktree root as a Read", "Read", { file_path: w }],
-    ["a Grep of the worktree root (it holds .argus/)", "Grep", { pattern: "x", path: w }],
-    ["a Grep with no path", "Grep", { pattern: "x" }],
-    ["a Grep of .argus/", "Grep", { pattern: "x", path: join(w, ".argus") }],
-    ["a Glob climbing out", "Glob", { pattern: "../**", path: join(w, "src") }],
-  ])("refuses %s", (_what, tool, input) => {
-    expect(read(tool, input)).toMatch(/journey explorer reads only tracked files/);
+    ["an untracked file", join(w, "src/orders/untracked.ts")],
+    ["the tracked argus config", join(w, ".argus/config.yml")],
+    ["the argus config, upper-cased", join(w, ".ARGUS/config.yml")],
+    ["the argus config, mixed case", join(w, ".Argus/config.yml")],
+    ["a file outside the worktree", outside],
+    ["a symlink leaving the worktree", join(w, "src/link.txt")],
+    ["a missing file", join(w, "src/none.ts")],
+    ["the worktree root", w],
+  ])("refuses %s", (_what, file_path) => {
+    expect(read("Read", { file_path })).toMatch(/journey explorer reads only files tracked/);
   });
 
   it("refuses every read when no run is live", () => {
-    expect(read("Read", { file_path: join(w, "src/orders/route.ts") }, null)).toMatch(/journey explorer reads only tracked files/);
+    expect(read("Read", { file_path: join(w, "src/orders/route.ts") }, null)).toMatch(/journey explorer reads only files tracked/);
   });
 
   it("decide() reads the live run's worktree from <MAIN>/.argus/live/run.json", () => {
     const d = (file_path: string) => decide({ agent_type: "sapu:ui-explorer", tool_name: "Read", tool_input: { file_path }, cwd: m });
     expect(d(join(w, "src/orders/route.ts"))).toBeNull();
-    expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only tracked files/);
+    expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only files tracked/);
+    expect(d(join(w, ".ARGUS/config.yml"))).toMatch(/journey explorer reads only files tracked/);
+  });
+
+  it("decide() gives the explorer no Grep or Glob", () => {
+    for (const [tool_name, tool_input] of [["Grep", { pattern: "x", path: join(w, "src") }], ["Glob", { pattern: "**/*.ts", path: join(w, "src") }]] as const)
+      expect(decide({ agent_type: "sapu:ui-explorer", tool_name, tool_input, cwd: m })).toMatch(/journey explorer has only Bash/);
   });
 });

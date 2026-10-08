@@ -155,38 +155,35 @@ export function checkExplorerBash(command, wrapper = WRAPPER) {
 function liveWorktree(main) {
   try {
     const w = JSON.parse(fs.readFileSync(path.join(main, ".argus/live/run.json"), "utf8")).worktree;
-    return typeof w === "string" && w ? fs.realpathSync(w) : null;
+    return typeof w === "string" && w ? fs.realpathSync.native(w) : null;
   } catch {
     return null;
   }
 }
 
 /**
- * The explorer's Read, Grep and Glob: only paths whose real path lies in the run's worktree, outside
- * `.argus/`; a Read only of a file tracked at HEAD; a Grep or Glob only of a path below the worktree
- * root (the root holds `.argus/`). Page content reaches the explorer only through the wrapper.
+ * The explorer's Read: only a file whose real path lies in the run's worktree, outside `.argus/`
+ * (compared case-folded: macOS is case-insensitive), and tracked at HEAD. Page content and code
+ * search reach the explorer only through the wrapper.
  */
-export function checkExplorerRead({ tool, input, worktree, cwd }) {
+export function checkExplorerRead({ input, worktree, cwd }) {
   if (!worktree) return BLOCK.explorerRead;
-  const raw = tool === "Read" ? input.file_path : input.path;
+  const raw = input.file_path;
   if (typeof raw !== "string" || !raw) return BLOCK.explorerRead;
   let real;
   try {
-    real = fs.realpathSync(path.resolve(cwd, raw));
+    real = fs.realpathSync.native(path.resolve(cwd, raw));
   } catch {
     return BLOCK.explorerRead;
   }
   const rel = path.relative(worktree, real);
-  if (rel === "") return BLOCK.explorerRead;
-  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === ".argus" || rel.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
-  if (tool === "Read" || fs.statSync(real).isFile()) {
-    try {
-      execFileSync("git", ["-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
-    } catch {
-      return BLOCK.explorerRead;
-    }
+  const low = rel.toLowerCase();
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel) || low === ".argus" || low.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
+  try {
+    execFileSync("git", ["-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
+  } catch {
+    return BLOCK.explorerRead;
   }
-  if (tool === "Glob" && typeof input.pattern === "string" && (/(^|\/)\.\.(\/|$)/.test(input.pattern) || input.pattern.startsWith("/"))) return BLOCK.explorerRead;
   return null;
 }
 
@@ -866,8 +863,8 @@ const BLOCK = {
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
   explorerRead:
-    "the journey explorer reads only tracked files of the run's worktree, outside .argus/, and a Grep or Glob must name a path below the worktree root; page content comes through the wrapper.",
-  explorerTool: "the journey explorer has only Bash (its wrapper), Read, Grep and Glob.",
+    "the journey explorer reads only files tracked at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
+  explorerTool: "the journey explorer has only Bash (its wrapper) and Read; it searches code through the wrapper's `code` command.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
@@ -1911,7 +1908,7 @@ export function decide(input) {
     const why =
       tool === "Bash"
         ? checkExplorerBash(ti.command)
-        : tool === "Read" || SEARCH_TOOLS.has(tool)
+        : tool === "Read"
           ? checkExplorerRead({ tool, input: ti, worktree: m ? liveWorktree(m) : null, cwd: input.cwd || process.cwd() })
           : BLOCK.explorerTool;
     if (why) return why;
