@@ -291,8 +291,11 @@ account at all and exactly `gitEmail`; more than 100 commits, or more authors th
 refuses); `commit signature` (with `requireSignedCommits`); `closing issue` / `referenced issue`
 (GitHub's closing references, plus EVERY issue or PR the body names outside code — `Closes #8`,
 `Refs #8`, `Implements #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL: one in another
-repository — or a closing reference GitHub gives without a repository — refuses, and every other one
-must pass `issue-trust`; only the `Closes/Fixes/Resolves` ones are relabelled). A refusal prints only
+repository that a `Closes/Fixes/Resolves` or `Refs/Ref/References` list names — or a closing
+reference GitHub gives without a repository — refuses, and every one in this repository must pass
+`issue-trust`; any other mention of another repository, such as the release a change adapts to, is
+informational: never trust-checked, relabelled or read; only the `Closes/Fixes/Resolves` ones are
+relabelled). A refusal prints only
 `{trusted, pr, author, rule, reason}` — nothing of the PR's own text, and no commit email (free text
 a committer chooses): a commit is named by its SHA. A pass prints the PR's facts (state, branches,
 head SHA, commit count, `closes`, `refs`), and `--text` its title and body.

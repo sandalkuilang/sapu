@@ -312,6 +312,21 @@ describe("bodyRefs on GitHub Enterprise", () => {
   });
 });
 
+describe("bodyRefs — the Refs list", () => {
+  const refs = bodyRefs as (body: string, host?: string) => { cited: { repo: string | null; number: number }[] };
+  it("`cited` holds what a Refs/Ref/References list names; other mentions are not cited", () => {
+    expect(refs("Refs #8, other/x#3 and https://github.com/o/r/pull/4").cited).toEqual([
+      { repo: null, number: 8 },
+      { repo: "other/x", number: 3 },
+      { repo: "o/r", number: 4 },
+    ]);
+    expect(refs("Ref: other/x#3").cited).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("References other/x#3").cited).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("Adapts to other/x#3; see #8. Implements other/x#5").cited).toEqual([]);
+    expect(refs("Prefs #8, `Refs other/x#3`").cited).toEqual([]);
+  });
+});
+
 describe("specialists — the optional role map", () => {
   const BUILT_IN = Object.fromEntries(SPECIALIST_ROLES.map((r: string) => [r, DEFAULT_SPECIALISTS[r]]));
   const OWN = {

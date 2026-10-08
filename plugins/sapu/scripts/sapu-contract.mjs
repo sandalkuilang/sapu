@@ -1157,26 +1157,31 @@ const oneRef = (host) => {
   const hosts = [...new Set([DEFAULT_HOST, host.toLowerCase()])].map((h) => h.replace(/[.-]/g, "\\$&")).join("|");
   return String.raw`(?:https?:\/\/(${hosts})\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
 };
-const closeList = (one) => new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+(${one}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${one})*)`, "gi");
+const listOf = (keyword) => (one) => new RegExp(String.raw`\b(?:${keyword})\b[:\s]+(${one}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${one})*)`, "gi");
+const closeList = listOf(String.raw`close[sd]?|fix(?:e[sd])?|resolve[sd]?`);
+const citeList = listOf(String.raw`refs?|references?`);
 // A URL on another host than the repo's names another repository (`github.com/o/r` from a GitHub Enterprise PR).
 const asRef = (host) => (r) => ({ repo: r[2] ? (lc(r[1]) === lc(host) ? r[2] : `${lc(r[1])}/${r[2]}`) : r[4] || null, number: Number(r[3] || r[5] || r[6] || r[7]) });
 
 /**
  * Every issue or PR a PR body names, as {repo, number} (repo null = this repo): `closes` = those a
  * Closes/Fixes/Resolves list closes (relabelled after the merge), `refs` = every other mention —
- * `Refs #8`, `Implements #8`, `Part of #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL. Code
+ * `Refs #8`, `Implements #8`, `Part of #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL — and
+ * `cited` = those of `refs` a Refs/Ref/References list names (a deliberate reference, which pr-trust
+ * refuses in another repository; any other mention of another repository is informational). Code
  * (fenced blocks, inline spans) is skipped, as GitHub skips it when it links references. `host` is
  * the repo's GitHub host (hostOf).
  */
 export function bodyRefs(body, host = DEFAULT_HOST) {
   const one = oneRef(host);
   const text = String(body || "").replace(/```[\s\S]*?(```|$)/g, " ").replace(/`[^`\n]*`/g, " ");
-  const closes = [];
-  for (const m of text.matchAll(closeList(one))) for (const r of m[1].matchAll(new RegExp(one, "gi"))) closes.push(asRef(host)(r));
+  const listed = (list) => [...text.matchAll(list(one))].flatMap((m) => [...m[1].matchAll(new RegExp(one, "gi"))].map(asRef(host)));
+  const closes = listed(closeList);
   const key = (x) => `${lc(x.repo ?? "")}#${x.number}`;
   const closing = new Set(closes.map(key));
   const refs = [...text.matchAll(new RegExp(one, "gi"))].map(asRef(host)).filter((x) => !closing.has(key(x)));
-  return { closes, refs };
+  const cited = listed(citeList).filter((x) => !closing.has(key(x)));
+  return { closes, refs, cited };
 }
 
 /**
@@ -1205,8 +1210,9 @@ const PR_QUERY =
  * (cross-repository, or a head repository that is not this one); author (its id); commit author
  * (every author of every commit, co-authors included: a trusted id, or no GitHub account and
  * gitEmail); commit signature (with requireSignedCommits: a valid signature by a trusted id); closing
- * / referenced issue (GitHub's closing references plus the body's Closes/Fixes/Resolves and Refs
- * lists, in any form: in another repository, or failing issueTrust). Throws when GitHub cannot be read.
+ * / referenced issue (GitHub's closing references plus every issue the body names: one a
+ * Closes/Fixes/Resolves or Refs list puts in another repository, or one of this repository failing
+ * issueTrust; other mentions of another repository are informational). Throws when GitHub cannot be read.
  */
 export function prTrust(c, n, trusted = resolveTrusted(c)) {
   const ids = new Set(trusted.map((t) => t.id));
@@ -1250,10 +1256,13 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
   const outside = (list) => list.find((x) => x.repo !== null && !here(x.repo));
   const fc = outside(closing);
   if (fc) return refuse("closing issue", `it closes ${fc.repo || "an issue in a repository GitHub did not name"}#${fc.number}, outside ${c.repo}`);
-  const fr = outside(refs.refs);
+  // A Refs list is deliberate, so one into another repository refuses like a closing one. Any other
+  // mention of another repository (the plugin release a change adapts to) is informational: its
+  // trust cannot be read, so it is neither checked nor relabelled, and its text is never read.
+  const fr = outside(refs.cited);
   if (fr) return refuse("referenced issue", `it refs ${fr.repo}#${fr.number}, outside ${c.repo}`);
   const closes = [...new Set(closing.map((x) => x.number))].filter(isId).sort((a, b) => a - b);
-  const refNums = [...new Set(refs.refs.map((x) => x.number))].filter((x) => isId(x) && !closes.includes(x)).sort((a, b) => a - b);
+  const refNums = [...new Set(refs.refs.filter((x) => x.repo === null || here(x.repo)).map((x) => x.number))].filter((x) => isId(x) && !closes.includes(x)).sort((a, b) => a - b);
   for (const [rule, nums] of [["closing issue", closes], ["referenced issue", refNums]]) {
     for (const i of nums) {
       const v = issueTrust(c, i, trusted);

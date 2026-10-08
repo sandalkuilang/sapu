@@ -876,7 +876,8 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     ["a bare mention of an outsider's issue", { prJson: { body: "Closes #7. See #8 for the plan." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a GH-8 mention of an outsider's issue", { prJson: { body: "Closes #7 (GH-8)" }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a stray `#N` in prose, naming the sentence and the fix", { prJson: { body: "Closes #7.\nThe change keeps invariant #8 intact." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8.*keeps invariant #8 intact.*without the #/],
-    ["a mention of another repository's issue", { prJson: { body: "Closes #7, like other/repo#3 did" } }, /\(rule: referenced issue\).*other\/repo#3/],
+    ["a Refs list naming another repository's issue", { prJson: { body: "Closes #7. Refs #9, other/repo#3" } }, /\(rule: referenced issue\).*other\/repo#3/],
+    ["a `Ref:` naming another repository's issue URL", { prJson: { body: "Closes #7\n\nRef: https://github.com/other/repo/issues/3" } }, /\(rule: referenced issue\).*other\/repo#3/],
     ["more commits than can be checked", { prJson: { commitsTotal: 101 } }, /\(rule: commit author\).*101 commits/],
     ["a PR GitHub returns as null", { prJson: { nullNode: true } }, /\(rule: unreadable\).*GitHub returned no PR #7/],
   ])("refuses %s before any worktree, gate or merge — in --dry-run too", (_what, spec, reason) => {
@@ -921,6 +922,21 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     const r = h.run();
     expect(r.err).not.toMatch(/refusing/);
     expect(r.status).toBe(0);
+  });
+
+  it("a trusted author's plain mention of another repository is informational: neither trust-checked nor relabelled", () => {
+    // #3, #4 and #5 here are outsiders' issues: other/plugin#3 must not be read as this repo's #3.
+    const h = harness({
+      prJson: { body: "Closes #7. Adapts to other/plugin#3 (see https://github.com/other/plugin/pull/4), as Implements other/plugin#5 asked." },
+      issues: { 3: { author: "stranger" }, 4: { author: "stranger" }, 5: { author: "stranger" } },
+    });
+    const dry = h.run({}, ["--dry-run"]);
+    expect(dry.err).not.toMatch(/refusing/);
+    expect(dry.status).toBe(0);
+    expect(dry.err).toMatch(/trust OK: .*closes: 7, refs: none/);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).not.toMatch(/gh issue edit [345] /);
   });
 
   it("a bare #N inside code is not a reference: GitHub does not link it either", () => {
