@@ -126,11 +126,13 @@ subagent write to `~/.config/sapu/`.
   "specialists": { "qa": "my-qa-agent" }, // OPTIONAL: role → subagent type; a role not named = its senior-dev-team default
   "trustedAuthors": [{ "login": "alice", "id": 2 }], // OPTIONAL: accounts trusted besides ghUser, by numeric id; absent = ghUser alone
   "requireSignedCommits": true,         // OPTIONAL (default false): every PR commit signed by a trusted id
+  "agentFiledNeedsAcceptance": true,    // OPTIONAL (default false): an agent-filed issue steers sapu only once accepted
   "mergeAfter": "scripts/sapu-hooks.sh after", // null = none
 
   "labels": { "tierPrefix": "risk:", "inProgress": "agent:in-progress", "done": "agent:done",
               "accepted": "sapu:accepted",          // OPTIONAL (default sapu:accepted): a trusted account's acceptance of an outsider's issue
               "needsOwner": "argus:needs-owner",    // optional; a finding only the owner can rule on (argus journey lane); sapu skips it
+              "agentFiled": "sapu:agent-filed",     // OPTIONAL (default sapu:agent-filed): every issue an agent files carries it
               "acceptors": [{ "login": "alice", "id": 2 }] }, // OPTIONAL (default: the trusted set): the only accounts whose label counts
   "securityEpic": 123,                  // parent issue for security gaps; null = file as a plain issue labelled security
   "invariantDomains": "money, permissions, schema/migrations, auth, personal data",
@@ -249,6 +251,23 @@ into the acceptance label, say — accepts nothing until it is applied again. Wh
 should read the verdict's `lastEditedAt`/`editor` first: an outsider's edit made just before the
 label is covered by it.
 
+**Agent-filed issues.** argus, nemesis, momus, forge and the sapu orchestrator file issues under the
+running account, which is trusted, so their issues pass `issue-trust` by author. Their provenance is
+a label: **`labels.agentFiled`** (optional, default `sapu:agent-filed`; a plain name like the owner
+labels, apart from each of them and from the workflow and tier labels). Every issue an agent files
+carries it from `gh issue create --label` on — except the orchestrator's `flake:`/`base:` issue,
+whose text is the base's own gate output and which it works at once — and no agent removes it,
+renames it or deletes it (the guard refuses it to subagents: §Engine floor); with `policy.traces`
+`"none"` it is not applied. A missing label is created by the owner (`/sapu:init` proposes it); an
+agent that finds it missing reports it, and files the issue without it only while
+`agentFiledNeedsAcceptance` is not set. The `issue-trust` verdict says
+`agentFiled: true`, and what such an issue quotes is data. **`agentFiledNeedsAcceptance`** (optional
+boolean, default `false`; `true` needs `traces` `"visible"`) goes further: an issue carrying the
+label is then judged like an outsider's — it steers sapu only once an acceptor applied the
+acceptance label, and only an acceptor may edit or retitle it after that. Set it when an agent's
+issue may quote outside material (a page, a response, a log line) that nobody has read yet, and
+list the humans as `acceptors`, or the agents' own account could edit it after acceptance.
+
 **Bots are accounts too.** An app is trusted by its id; its login appears as `app/<name>` (gh) or
 `<name>[bot]` (REST, GraphQL) — either spelling works in `trustedAuthors`, and matching is by id, so
 the form does not matter. But trusting an app (`github-actions[bot]`, a dependency bot, a coding
@@ -348,7 +367,9 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
   by it. The verdict shows `lastEditedAt`/`editor`; the acceptor checks them.
 - Issues the agents file (argus, momus, nemesis findings, sapu's security gaps) are authored by the
   owner's account, so they are trusted. The filing skills never copy an outsider's text into one;
-  that rule is prose, and an agent talked into breaking it would plant trusted text.
+  that rule is prose, and an agent talked into breaking it would plant trusted text. The
+  agent-filed label marks them; `agentFiledNeedsAcceptance` makes them wait for an acceptor
+  (§Agent-filed issues). The orchestrator is not guarded: that it never removes the label is prose.
 - The guard reads commands, not intent: a diff saved to a file and applied later, a SHA piped into
   `xargs`, or code an interpreter writes are not traced (the guard's LIMITS name them).
 - Also protect the repo on GitHub itself: branch protection on the base branch (PRs required, no
@@ -357,7 +378,8 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
 
 **Version coupling.** `trustedAuthors`, `requireSignedCommits`, `labels.accepted` and
 `labels.acceptors` need plugin **≥ 2.1.0**. An older plugin refuses them as unknown keys: the contract reads as broken, and the
-guard then blocks every subagent. `journey` in `policy.skills` and `labels.needsOwner` need plugin **≥ 2.9.0**;
+guard then blocks every subagent. `journey` in `policy.skills`, `labels.needsOwner`,
+`labels.agentFiled` and `agentFiledNeedsAcceptance` need plugin **≥ 2.9.0**;
 an older plugin rejects the contract. 2.9.0 also refuses an owner label (`labels.accepted` or
 `labels.needsOwner`) containing spaces or any of `, = " ' / [ ] { } ( ) %`, equal to
 `labels.inProgress` or `labels.done`, or starting with `labels.tierPrefix`: a contract that 2.8.x
@@ -667,7 +689,8 @@ could use them.
   label mutation (in a GraphQL tool's query, or in any MCP field holding a mutation document).
 - The needs-owner label (`labels.needsOwner`) is protected beside it: no subagent adds or removes it on
   an existing issue or PR, nor creates, edits, deletes or clones it. `gh issue create --label` with it
-  stays allowed for non-worker subagents.
+  stays allowed for non-worker subagents. The agent-filed label (`labels.agentFiled`) is protected
+  the same way: an agent files a new issue with it and never removes it.
 - Closing an issue as not planned is the owner's ruling that the finding is intended (argus records it
   in `arid.md`): no subagent makes it — `gh issue close --reason`/`-r` not planned in any spelling, a
   non-GET `gh api` with `state_reason` not planned, an issue write (`/issues/<n>`, a query string or

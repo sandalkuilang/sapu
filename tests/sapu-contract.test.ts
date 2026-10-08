@@ -13,6 +13,8 @@ import { SAPU_AGENT } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import {
   DEFAULT_ACCEPTED_LABEL,
   DEFAULT_NEEDS_OWNER_LABEL,
+  DEFAULT_AGENT_FILED_LABEL,
+  agentFiledLabel,
   SKILLS,
   needsOwnerLabel,
   LADDER_AGENT,
@@ -1157,6 +1159,42 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
     expect(r.v).toMatchObject({ lastEditedAt: at(4), editor: { login: "stranger", id: 666 } });
   });
 
+  it("an agent-filed issue says so in the verdict, and stays trusted by its author unless the contract asks for acceptance", () => {
+    const F = "sapu:agent-filed";
+    const plain = judge({ author: "owner", labels: [F], events: [{ event: "labeled", label: F, actor: "owner", minute: 0 }] });
+    expect(plain.status).toBe(0);
+    expect(plain.v).toMatchObject({ trusted: true, agentFiled: true });
+    expect(judge({ author: "owner" }).v.agentFiled).toBe(false);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      const filed = { author: "owner", labels: [F], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }] };
+      const r = judge(filed);
+      expect(r.status).toBe(1);
+      expect(r.v.reason).toMatch(/carries sapu:agent-filed and the contract sets agentFiledNeedsAcceptance.*does not carry sapu:accepted/);
+      // the label in another case is the same label to GitHub
+      expect(judge({ ...filed, labels: ["Sapu:Agent-Filed"] }).status).toBe(1);
+      const accepted = { ...filed, labels: [F, L], events: [...filed.events, { event: "labeled" as const, label: L, actor: "owner", minute: 30 }] };
+      expect(judge(accepted).v).toMatchObject({ trusted: true, agentFiled: true, acceptedBy: { login: "owner", id: 1, at: at(30) } });
+      // an untouched trusted author's issue is still trusted by its author
+      expect(judge({ author: "owner" }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
+  it("with labels.acceptors, an agent-filed issue edited after acceptance by a non-acceptor (the agents' own account) refuses", () => {
+    const F = "sapu:agent-filed";
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true, labels: { ...TRUSTING.labels, acceptors: [ALICE] } }) });
+    try {
+      const base = { author: "owner", labels: [F, L], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "labeled" as const, label: L, actor: "alice", minute: 30 }] };
+      expect(judge(base).status).toBe(0);
+      expect(judge({ ...base, edits: [{ by: "owner", minute: 0 }, { by: "owner", minute: 40 }] }).v.reason).toMatch(/edited by owner \(id 1\) after sapu:accepted was applied/);
+      expect(judge({ ...base, edits: [{ by: "owner", minute: 0 }, { by: "alice", minute: 40 }] }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
   it("labels.accepted names the label; the default one then accepts nothing", () => {
     commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, labels: { ...TRUSTING.labels, accepted: "triage:ok" } }) });
     try {
@@ -1613,6 +1651,34 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     const c = clone();
     c.labels.needsOwner = "Sapu:Accepted";
     expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label/);
+  });
+
+  it("labels.agentFiled is optional (default sapu:agent-filed), a plain name apart from every other owner, workflow and tier label", () => {
+    expect(DEFAULT_AGENT_FILED_LABEL).toBe("sapu:agent-filed");
+    expect(agentFiledLabel(FIXTURE_CONTRACT)).toBe("sapu:agent-filed");
+    const c = clone();
+    c.labels.agentFiled = "bot:filed";
+    expect(validate(c)).toEqual([]);
+    expect(agentFiledLabel(c)).toBe("bot:filed");
+    for (const [v, msg] of [
+      ["", /labels\.agentFiled must be a non-empty label name/],
+      ["bot filed", /labels\.agentFiled must not contain spaces/],
+      ["Sapu:Accepted", /labels\.agentFiled must differ from labels\.accepted/],
+      ["argus:needs-owner", /labels\.agentFiled must differ from labels\.needsOwner/],
+      ["AGENT:DONE", /labels\.agentFiled must differ from labels\.done/],
+      ["risk:filed", /labels\.agentFiled must not start with labels\.tierPrefix/],
+    ] as const) {
+      const d = clone();
+      d.labels.agentFiled = v;
+      expect(validate(d).join("\n"), v).toMatch(msg);
+    }
+  });
+
+  it("agentFiledNeedsAcceptance is an optional boolean, and needs the label that traces none forbids", () => {
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: true })).toEqual([]);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: false })).toEqual([]);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: "yes" }).join("\n")).toMatch(/agentFiledNeedsAcceptance must be true or false/);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: true, policy: { traces: "none" } }).join("\n")).toMatch(/agentFiledNeedsAcceptance needs traces "visible"/);
   });
 
   it("`allowed journey` passes when the policy allows it", () => {

@@ -132,8 +132,9 @@ cat <main-checkout>/.nemesis/state/findings.json
 
 # Before the first write: the contract check (SKILL.md §5) — non-zero exit = stop
 node "<plugin root>/scripts/sapu-contract.mjs" check   # the exact command in SKILL.md §5, where the plugin root is already filled in
+# <agentFiled> = the contract's labels.agentFiled (default sapu:agent-filed; none with policy.traces "none"): every agent-filed issue carries it (CONTRACT.md, Agent-filed issues)
 gh issue create --repo <repo> --title "..." --body-file "$TMPDIR/momus-issue.md" \
-  --label "momus,severity:s1,found-by:momus"
+  --label "momus,severity:s1,found-by:momus,<agentFiled>"
 ```
 
 ## `.momus/` state

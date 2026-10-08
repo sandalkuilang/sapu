@@ -2172,6 +2172,21 @@ describe("sapu-guard — the needs-owner label is the owner's, like the acceptan
     expect(reviewer("gh issue create --title t --body b --label argus:needs-owner")).toBeNull();
   });
 
+  it.each([
+    ["gh issue edit 8 --remove-label sapu:agent-filed"],
+    ["gh issue edit 8 --add-label Sapu:Agent-Filed"],
+    ["gh label edit sapu:agent-filed --name x"],
+    ["gh label delete sapu:agent-filed --yes"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels/sapu%3Aagent-filed"],
+  ])("protects the agent-filed label (labels.agentFiled) beside them: refuses %s", (cmd) => {
+    expect(reviewer(cmd)).toMatch(/agent-filed label/);
+    expect(reviewer(cmd, compileRules({ ...FIXTURE_CONTRACT, labels: { ...FIXTURE_CONTRACT.labels, agentFiled: "bot:filed" } }))).toBeNull();
+  });
+
+  it("lets a non-worker subagent file an issue carrying the agent-filed label", () => {
+    expect(reviewer("gh issue create --title t --body b --label sapu:agent-filed,bug")).toBeNull();
+  });
+
   it("follows labels.needsOwner, and still protects the acceptance label", () => {
     const custom = compileRules({ ...FIXTURE_CONTRACT, labels: { ...FIXTURE_CONTRACT.labels, needsOwner: "owner:decide" } });
     expect(reviewer("gh issue edit 8 --remove-label owner:decide", custom)).toMatch(/needs-owner label/);

@@ -65,7 +65,8 @@ Never add, remove, rename or create the acceptance label (`labels.accepted`): ac
 File only well-formed issues: title, context, repro or rationale, clear acceptance criteria, a priority label, severity if relevant. No spam — if everything's fine, file nothing. Never open a 🔴-tier issue and auto-merge your own fix for it in the same breath; red stays red regardless of who opened it.
 
 ```bash
-gh issue create --repo <repo> --title "..." --body "..." --label "<type>,<priority>"   # label names: profile §Labels
+# <agentFiled> = the contract's labels.agentFiled (default sapu:agent-filed; none with policy.traces "none"): every agent-filed issue carries it (CONTRACT.md, Agent-filed issues)
+gh issue create --repo <repo> --title "..." --body "..." --label "<type>,<priority>,<agentFiled>"   # label names: profile §Labels
 ```
 
 ## State & labels

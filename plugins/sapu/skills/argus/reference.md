@@ -243,9 +243,10 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" issue-trust <n> --text > 
 gh api "repos/<repo>/issues?state=all&per_page=100" --paginate \
   --jq '.[] | select(.pull_request | not) | select(((.title // "") + " " + (.body // "")) | test("markShipped|<rule id>")) | {number, author: .user.login}'
 
+# <agentFiled> = the contract's labels.agentFiled (default sapu:agent-filed; none with policy.traces "none"): every agent-filed issue carries it (CONTRACT.md, Agent-filed issues)
 gh issue create --repo <repo> \
   --title "[S2][orders] <role> account can ship an order it created — <rule id>" \
-  --label "bug,class:business,severity:s2,priority:p1,workflow,found-by:pm,argus" \
+  --label "bug,class:business,severity:s2,priority:p1,workflow,found-by:pm,argus,<agentFiled>" \
   --body-file .argus/tmp/issue-body.md
 
 gh issue comment <n> --repo <repo> --body "Reconfirmed on <sha>: <new reproduction path>"

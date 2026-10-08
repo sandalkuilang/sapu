@@ -103,7 +103,8 @@
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
 // gh: -R/--repo/--hostname are dropped wherever they stand before the subcommand; a first word outside gh's own command
-// set (an alias, an extension) is BLOCKED. The acceptance label (contract labels.accepted): BLOCKED
+// set (an alias, an extension) is BLOCKED. The owner labels (contract labels.accepted, needsOwner,
+// agentFiled; the last two may still be given to a new issue by `gh issue create`): BLOCKED
 // when named by `gh issue|pr edit --add/--remove-label`, `gh label create|edit|delete`, a non-GET `gh
 // api` argument, or hidden in a label/issue write's --input; `gh label clone` and the GraphQL label
 // mutations are BLOCKED outright. A not-planned close (`gh issue close -r`, REST state_reason,
@@ -117,7 +118,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -753,8 +754,9 @@ export function compileRules(contract) {
     dbs: dbs.filter(([, d]) => d.ports.length + d.databases.length > 0).map(([engine, d]) => dbEntry(engine, d)),
     deny,
     // The labels only the owner applies (compared without case, as GitHub does): the one accepting an
-    // outsider's issue, and the one marking a finding only the owner can rule on.
-    ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract)].map((l) => l.toLowerCase()),
+    // outsider's issue, the one marking a finding only the owner can rule on, and the provenance of an
+    // agent-filed issue (removing it would launder the issue into a plain trusted one).
+    ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract), agentFiledLabel(contract)].map((l) => l.toLowerCase()),
     // The worker step budget: the contract's tuning.stepBudget over the defaults.
     steps: resolveTuning(contract).stepBudget,
   };
@@ -1065,7 +1067,7 @@ const BLOCK = {
   ghUnknown:
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
-    "the acceptance label and the needs-owner label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
+    "the acceptance label, the needs-owner label and the agent-filed label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them (an agent only files a new issue with the agent-filed or needs-owner label) — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
   ownerRuling:
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",

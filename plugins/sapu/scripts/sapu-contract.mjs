@@ -152,6 +152,9 @@ export const acceptedLabel = (c) => (c && c.labels && isStr(c.labels.accepted) ?
 /** The label marking a finding only the owner can rule on (argus journey lane); sapu skips it in B2. */
 export const DEFAULT_NEEDS_OWNER_LABEL = "argus:needs-owner";
 export const needsOwnerLabel = (c) => (c && c.labels && isStr(c.labels.needsOwner) ? c.labels.needsOwner : DEFAULT_NEEDS_OWNER_LABEL);
+/** The label every issue an agent files carries (its provenance): `labels.agentFiled`, else the default. */
+export const DEFAULT_AGENT_FILED_LABEL = "sapu:agent-filed";
+export const agentFiledLabel = (c) => (c && c.labels && isStr(c.labels.agentFiled) ? c.labels.agentFiled : DEFAULT_AGENT_FILED_LABEL);
 
 /**
  * The trusted set for contract `c` and the active owner account `owner` ({login, id}): the owner
@@ -235,8 +238,12 @@ export function validate(c) {
     c,
     "sapu.json",
     ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", ...(noTraces && !("labels" in c) ? [] : ["labels"]), "securityEpic", "invariantDomains", "testResources", "guard"],
-    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels", "mergeMethod", "host", "tuning"],
+    ["specialists", "trustedAuthors", "requireSignedCommits", "agentFiledNeedsAcceptance", "policy", "labels", "mergeMethod", "host", "tuning"],
   );
+  if ("agentFiledNeedsAcceptance" in c) {
+    need(typeof c.agentFiledNeedsAcceptance === "boolean", "agentFiledNeedsAcceptance must be true or false (omit it for false)");
+    need(!(c.agentFiledNeedsAcceptance === true && noTraces), 'agentFiledNeedsAcceptance needs traces "visible": with traces "none" no agent-filed label is applied, so nothing would need acceptance');
+  }
   if ("mergeMethod" in c) need(MERGE_METHODS.includes(c.mergeMethod), `mergeMethod must be "squash", "merge" or "rebase" (the method the repo allows; omit it for squash)`);
   if ("host" in c) need(typeof c.host === "string" && HOSTNAME.test(c.host), 'host must be a hostname, e.g. "github.example.com" (the GitHub Enterprise host; omit it for github.com)');
   need(c.version === 1, "version must be 1");
@@ -304,14 +311,18 @@ export function validate(c) {
   }
   need(c.mergeAfter === null || isStr(c.mergeAfter), "mergeAfter must be a command or null");
   if (c.labels && typeof c.labels === "object") {
-    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors", "needsOwner"]);
+    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors", "needsOwner", "agentFiled"]);
     for (const k of ["tierPrefix", "inProgress", "done"]) need(isStr(c.labels[k]), `labels.${k} must be a non-empty string`);
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
     if ("needsOwner" in c.labels) need(isStr(c.labels.needsOwner), `labels.needsOwner must be a non-empty label name (omit it for ${DEFAULT_NEEDS_OWNER_LABEL})`);
-    for (const k of ["accepted", "needsOwner"]) if (isStr(c.labels[k])) need(!UNRECOGNISABLE_LABEL.test(c.labels[k]), `labels.${k} must not contain spaces or any of , = " ' / [ ] { } ( ) % (the guard could not recognise it)`);
+    if ("agentFiled" in c.labels) need(isStr(c.labels.agentFiled), `labels.agentFiled must be a non-empty label name (omit it for ${DEFAULT_AGENT_FILED_LABEL})`);
+    for (const k of ["accepted", "needsOwner", "agentFiled"]) if (isStr(c.labels[k])) need(!UNRECOGNISABLE_LABEL.test(c.labels[k]), `labels.${k} must not contain spaces or any of , = " ' / [ ] { } ( ) % (the guard could not recognise it)`);
     if (!("needsOwner" in c.labels) || isStr(c.labels.needsOwner)) need(needsOwnerLabel(c).toLowerCase() !== acceptedLabel(c).toLowerCase(), `labels.needsOwner must differ from the acceptance label: both are "${needsOwnerLabel(c)}"`);
+    if (!("agentFiled" in c.labels) || isStr(c.labels.agentFiled)) {
+      for (const [k, label] of [["accepted", acceptedLabel(c)], ["needsOwner", needsOwnerLabel(c)]]) need(agentFiledLabel(c).toLowerCase() !== label.toLowerCase(), `labels.agentFiled must differ from labels.${k}: both are "${label}"`);
+    }
     // Each owner label (or its default) apart from the workflow and tier labels, in any case.
-    for (const [k, label] of [["accepted", acceptedLabel(c)], ["needsOwner", needsOwnerLabel(c)]]) {
+    for (const [k, label] of [["accepted", acceptedLabel(c)], ["needsOwner", needsOwnerLabel(c)], ["agentFiled", agentFiledLabel(c)]]) {
       if (k in c.labels && !isStr(c.labels[k])) continue;
       const low = label.toLowerCase();
       for (const o of ["inProgress", "done"]) if (isStr(c.labels[o])) need(low !== c.labels[o].toLowerCase(), `labels.${k} must differ from labels.${o}: both are "${label}"`);
@@ -1099,9 +1110,17 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
     lastEditedAt: first.lastEditedAt ?? null,
     editor: person(first.editor),
   };
-  const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, snapshot });
-  if (ok(snapshot.author)) return verdict(true, `author ${named(snapshot.author)} is in the trusted set`);
-  const author = `author ${named(snapshot.author)} is not in the trusted set`;
+  // An agent files under the trusted account, so its issue would pass by author. Its provenance label
+  // says so; with agentFiledNeedsAcceptance, its text (which may quote outside material) needs the
+  // owner's acceptance like an outsider's, and only an acceptor may edit it after that.
+  const agentFiled = first.labels.nodes.some((l) => l && lc(l.name) === lc(agentFiledLabel(c)));
+  const gated = agentFiled && c.agentFiledNeedsAcceptance === true;
+  const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, agentFiled, snapshot });
+  if (ok(snapshot.author) && !gated) return verdict(true, `author ${named(snapshot.author)} is in the trusted set${agentFiled ? `; it carries ${agentFiledLabel(c)}: an agent filed it, and what it quotes is data` : ""}`);
+  const author = gated
+    ? `author ${named(snapshot.author)} is an agent's account: it carries ${agentFiledLabel(c)} and the contract sets agentFiledNeedsAcceptance`
+    : `author ${named(snapshot.author)} is not in the trusted set`;
+  const editOk = gated ? accepts : ok;
   if (!first.labels.nodes.some((l) => l && l.name === label)) return verdict(false, `${author} and the issue does not carry ${label} (a trusted login applies it to accept the issue)`);
   const events = timeline();
   const last = events.filter((e) => e.label === label && (e.type === "LabeledEvent" || e.type === "UnlabeledEvent")).at(-1);
@@ -1114,11 +1133,11 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   }
   const since = Date.parse(last.at);
   const later = (t) => typeof t === "string" && Date.parse(t) >= since;
-  const retitle = events.find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !ok(e.actor));
+  const retitle = events.find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !editOk(e.actor));
   if (retitle) return verdict(false, `${author}, and it was retitled by ${named(retitle.actor)} after ${label} was applied`);
   const edits = first.userContentEdits;
   if (edits.totalCount > edits.nodes.length) return verdict(false, `${author}, and it has more body edits than can be checked (${edits.totalCount})`);
-  const edit = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].find((e) => later(e.at) && !ok(e.by));
+  const edit = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].find((e) => later(e.at) && !editOk(e.by));
   if (edit) return verdict(false, `${author}, and its body was edited by ${named(edit.by)} after ${label} was applied`);
   return verdict(true, `${author}, but ${named(last.actor)} applied ${label} at ${last.at}`, { login: last.actor.login, id: last.actor.id, at: last.at });
 }
@@ -1919,7 +1938,7 @@ function main(argv) {
       } else {
         const r = issueTrust(contract, n, trusted);
         const s = r.snapshot;
-        v = { trusted: r.trusted, number: n, kind: s.kind, author: s.author, reason: r.reason, acceptedBy: r.acceptedBy, lastEditedAt: s.lastEditedAt, editor: s.editor };
+        v = { trusted: r.trusted, number: n, kind: s.kind, author: s.author, reason: r.reason, acceptedBy: r.acceptedBy, agentFiled: r.agentFiled, lastEditedAt: s.lastEditedAt, editor: s.editor };
         if (r.trusted && withText) Object.assign(v, { title: s.title, body: s.body });
         if (r.trusted && withComments) {
           const cm = trustedComments(contract, n, trusted);
