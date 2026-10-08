@@ -1,0 +1,25 @@
+# Runs the test suite on Linux for every push and pull request. The journey lane's live instance has
+# Linux-only paths (process start times from /proc, unix-socket peers from `ss -xp`) that a run on
+# macOS never takes, so its tests go first, on their own; then the rest of the suite.
+name: test
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # package.json's engines: node >= 22.18
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: The live instance's tests
+        run: npx vitest run tests/argus-live.test.ts
+      - name: The rest of the suite
+        run: npx vitest run --exclude tests/argus-live.test.ts
