@@ -460,10 +460,12 @@ skipping none (each failure = non-zero exit + a one-line reason):
    first line `Review tier: red` in the review comment = refuse; classifier failed = refuse;
 9. **`gate.merge`** in the PR worktree (it prepares the repo's throwaway dependencies/DB itself); every
    run, red too, is appended to `<MAIN>/.git/sapu-gates.log` (a red run names its failing test files,
-   a flake verdict and its failed summary steps). A trailing ` live=1` field marks a gate that overlapped
-   a journey cycle, recorded in `<MAIN>/.git/sapu-live.log` (`<run> start <epoch> deadline <epoch>`,
-   `<run> end <epoch>`; an unended run counts until its deadline); such a line never counts toward a
-   flake proof;
+   a flake verdict and its failed summary steps). A trailing ` live=1` field marks a gate (green, red or
+   setup-failed) that overlapped a journey cycle, recorded in `<MAIN>/.git/sapu-live.log` in epoch
+   seconds under a run id unique per run: `<run> start <epoch> deadline <epoch>` when `up` takes its
+   lock, `<run> deadline <epoch>` at each `renew`, `<run> end <epoch>` from `down` and from a failed
+   `up`. A run lasts until its end line, else until its latest deadline. A `live=1` line never counts
+   toward a flake proof, and a red verdict beside a journey cycle says so;
 10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
     after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
     `gh pr merge --squash --delete-branch --match-head-commit <gated SHA>` (commits landing during

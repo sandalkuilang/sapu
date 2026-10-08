@@ -356,8 +356,11 @@ object store, search engine, mail server) and asks for each one's isolated addre
 (`scheme://host:port`), never bare hosts.
 
 **`argus-live.mjs up`** (no LLM; every step logged to `.argus/live/logs/`):
-1. **Lock.** Takes `.argus/live/lock.json` (run id, deadline = start + `limits.max_cycle_minutes` +
-   15 min). A lock whose deadline has not passed → refuse: another cycle is running; it is never
+1. **Lock.** Takes `.argus/live/lock.json` (run id, unique per run; deadline = start +
+   `limits.max_cycle_minutes` + 15 min) and, before any setup or install, appends `<run id> start
+   <epoch> deadline <epoch>` to `<MAIN>/.git/sapu-live.log` (epoch seconds, like every time in that
+   log). Every exit of `up` that fails after this line appends `<run id> end <epoch>`. A lock whose
+   deadline has not passed → refuse: another cycle is running; it is never
    "recovered". A lock past its deadline → recovery first: each recorded stop replayed exactly as
    recorded (`{cmd, cwd, env}`; one whose cwd is gone or whose env lacks its `COMPOSE_PROJECT_NAME`
    is journalled, never run), each process group whose recorded command line still matches, each
@@ -403,13 +406,12 @@ object store, search engine, mail server) and asks for each one's isolated addre
     `allow_origins` — any other origin (e.g. a redirect to the owner's own server) → refuse, naming
     it. The proving sessions are then closed.
 11. **Run files.** `.argus/live/run.json` (run id, instance id, process groups, stop records, ports,
-    origins, worktree, tokens, session names); an append-only line `<run id> start <time>
-    deadline <time>` in `<MAIN>/.git/sapu-live.log`; a detached **reaper** started with the run id,
+    origins, worktree, tokens, session names); a detached **reaper** started with the run id,
     which runs `down` at the deadline unless `renew` moved it, and exits without acting when the lock
     names another run.
 
-**`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that; the
-cycle renews after each explorer returns and before each repro. Reaching the cap ends the cycle;
+**`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that, and
+appends `<run id> deadline <epoch>` to `sapu-live.log`; the cycle renews after each explorer returns and before each repro. Reaching the cap ends the cycle;
 candidates not yet reproduced are journalled `not reproduced: harness`.
 
 **`up --fresh`** (between repro runs) keeps the lock, worktree, dependencies, ports, proxy and reaper:
@@ -420,14 +422,15 @@ new instance id. It makes no proving logins.
 **`down`** replays each stop record, sends SIGTERM to each process group and SIGKILL after 10 s,
 stops the proxy, closes the run's CLI sessions by name (never `close-all`: other projects share the
 CLI), kills the reaper, removes its own worktree (`--force` on that worktree only), `run.json` and the
-lock, appends `<run id> end <time>` to `sapu-live.log`, and leaves the data for the next reset.
+lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset.
 
 **Beside a sapu sweep.** Separate ports, worktree, services and data let a journey cycle run while a
 sweep gates PRs, but browsers and dev servers take CPU from its gates. `sapu-merge.sh` appends
-` live=1` to a gates-log line whose `[gate start, gate end]` overlaps any interval in
-`sapu-live.log` (a run with no `end` line counts until its deadline), and a `live=1` line never counts
-toward the flake ledger (neither half of a red-then-green proof). `limits.max_parallel_journeys`
-bounds the load.
+` live=1` to a gates-log line (green, red or setup-failed) whose `[gate start, gate end]` overlaps
+any run in `sapu-live.log`: a run lasts from its `start` to its `end` line, or, with no `end`, to the
+latest deadline its `start` and `deadline` lines name. A `live=1` line never counts toward the flake
+ledger (neither half of a red-then-green proof), and a red gate's verdict line adds `(this gate ran
+beside a journey cycle)`. `limits.max_parallel_journeys` bounds the load.
 
 ## 9. Browser driver and wrapper
 

@@ -25,6 +25,8 @@ afterAll(() => rmSync(top, { recursive: true, force: true }));
 
 const GATE = `#!/usr/bin/env bash
 echo "gate ran: $0 in $PWD"
+# a journey run that starts and ends while the gate runs
+if [ -n "\${HX_GATE_LIVE:-}" ]; then t=$(date +%s); printf '%s start %s deadline %s\\n%s end %s\\n' "$HX_GATE_LIVE" "$t" "$((t + 600))" "$HX_GATE_LIVE" "$t" >> "$SAPU_MAIN/.git/sapu-live.log"; fi
 [ -z "\${HX_GATE_OUT:-}" ] || printf '%s\\n' "$HX_GATE_OUT"
 if [ -n "\${HX_GATE_BIG:-}" ]; then
   echo "Gate summary"; echo "⊘ skipped-check (no database)"
@@ -881,6 +883,53 @@ describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and n
     writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(""));
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
     expect(r.err).toMatch(/verdict: known-flake/);
+  });
+
+  it("a renewed run counts until its latest deadline", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 7200} deadline ${now() - 3600}`, `r1 deadline ${now() + 600}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ live=1$/);
+  });
+
+  it("an earlier deadline line never shortens a run", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`, `r1 deadline ${now() - 30}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ live=1$/);
+  });
+
+  it("marks a gate inside which a journey run started and ended", () => {
+    const h = harness();
+    live(h, `r0 start ${now() - 7200} deadline ${now() - 3600}`, `r0 end ${now() - 3600}`);
+    h.run({ HX_GATE_LIVE: "r9" });
+    expect(readFileSync(join(h.MAIN, ".git/sapu-live.log"), "utf8")).toMatch(/^r9 end \d+$/m);
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} live=1$/);
+  });
+
+  it("a proof whose green half ran beside a journey cycle proves nothing", () => {
+    const h = harness();
+    writeFileSync(
+      join(h.MAIN, ".git/sapu-gates.log"),
+      ["2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown", "2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5 live=1"].map((l) => `${l}\n`).join(""),
+    );
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("a setup-failed gate beside a journey cycle is marked live=1", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    expect(h.run({ HX_GATE_RC: "75", HX_GATE_LAST: "no database" }).status).toBe(1);
+    expect(gates(h).at(-1)).toMatch(/ setup-failed gate=\d+s failed=- tree=\S+ live=1$/);
+  });
+
+  it("a red verdict beside a journey cycle says so, and only then", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" }).err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts \(this gate ran beside a journey cycle\)/);
+    const h2 = harness();
+    expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" }).err).not.toMatch(/beside a journey cycle/);
   });
 
   it("a malformed live log never breaks the gate record", () => {

@@ -478,19 +478,24 @@ GATE_SECS=$((SECONDS - GATE_START))
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
 GATES_LOG="$MAIN/.git/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
-# A gate that overlapped a journey cycle ran beside its browsers and dev servers (argus-live.mjs
-# appends `<run> start <epoch> deadline <epoch>` and `<run> end <epoch>` to <MAIN>/.git/sapu-live.log;
-# a run with no end line counts until its deadline). Its line says live=1, and no flake proof uses it.
+# A gate that overlapped a journey cycle ran beside its browsers and dev servers. argus-live.mjs
+# appends to <MAIN>/.git/sapu-live.log, in epoch seconds, under a run id unique per run:
+# `<run> start <epoch> deadline <epoch>` when `up` takes the lock, `<run> deadline <epoch>` at every
+# `renew`, `<run> end <epoch>` from `down` and from an `up` that fails after its start line. A run
+# stops at its end, else at its latest deadline. The gate's line says live=1, and no flake proof uses it.
 LIVE_LOG="$MAIN/.git/sapu-live.log"
 live_overlap() { # <gate start epoch> <gate end epoch>
   [ -f "$LIVE_LOG" ] || return 1
   awk -v s="$1" -v e="$2" '
-    $2 == "start" && $3 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ { st[$1] = $3; dl[$1] = $5 }
+    function later(r, t) { if (!(r in dl) || t + 0 > dl[r] + 0) dl[r] = t }
+    $2 == "start" && $3 ~ /^[0-9]+$/ && $4 == "deadline" && $5 ~ /^[0-9]+$/ { st[$1] = $3; later($1, $5) }
+    $2 == "deadline" && $3 ~ /^[0-9]+$/ { later($1, $3) }
     $2 == "end" && $3 ~ /^[0-9]+$/ { en[$1] = $3 }
     END { for (r in st) { stop = (r in en) ? en[r] : dl[r]; if (st[r] + 0 <= e + 0 && stop + 0 >= s + 0) hit = 1 } exit !hit }' "$LIVE_LOG" 2>/dev/null
 }
 LIVE=""
 if live_overlap "$GATE_T0" "$(date +%s)"; then LIVE=1; fi
+LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
   { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
@@ -559,10 +564,10 @@ if [ -n "$RED" ]; then
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
-  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
-  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)"
-  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")"
-  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}"; fi
+  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
+  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$LIVE_NOTE"
+  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
+  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$LIVE_NOTE"; fi
   exit 2
 fi
 gate_record green -
