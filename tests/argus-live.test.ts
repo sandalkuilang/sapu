@@ -2,7 +2,7 @@
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
@@ -39,6 +39,7 @@ import {
   runSetup,
   staleRecords,
   startEntry,
+  startEventsFollower,
   startReaper,
   status,
   takeLock,
@@ -2055,19 +2056,74 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it.each([
-      ["a container created during the cycle outside the project", (s: State) => s.containers.push({ Id: "c2", Name: "/scratch", Created: at(20), State: { StartedAt: NEVER }, Config: { Labels: {} }, Mounts: [], NetworkSettings: { Networks: { bridge: {} } } }), /^refused: container scratch was created or started during the cycle and is not of the run's Compose project argus-run1/],
-      ["an owner's container started during the cycle", (s: State) => (s.containers[1].State.StartedAt = at(30)), /^refused: container owner-db was created or started during the cycle/],
+      ["an owner's container started during the cycle", (s: State) => (s.containers[1].State.StartedAt = at(30)), /^refused: container owner-db existed before the cycle, is not the run's, and was started during it$/],
       ["a run container mounting the owner's volume", (s: State) => s.containers[0].Mounts.push({ Type: "volume", Name: "owner_pgdata" }), /^refused: container argus-run1-db-1 mounts volume owner_pgdata, which is not the run's/],
       ["a run container mounting an old anonymous volume", (s: State) => s.containers[0].Mounts.push({ Type: "volume", Name: "old_anon" }), /^refused: container argus-run1-db-1 mounts volume old_anon/],
       ["a run container on the default bridge", (s: State) => (s.containers[0].NetworkSettings.Networks.bridge = {}), /^refused: container argus-run1-db-1 joins network bridge, which is not the run's/],
       ["a run container on the owner's network", (s: State) => (s.containers[0].NetworkSettings.Networks.owner_default = {}), /^refused: container argus-run1-db-1 joins network owner_default/],
       ["a run container bind-mounting the Docker socket", (s: State) => s.containers[0].Mounts.push({ Type: "bind", Source: "/var/run/docker.sock" }), /^refused: container argus-run1-db-1 bind-mounts a container runtime or datastore socket/],
-      ["a volume created during the cycle outside the project", (s: State) => s.volumes.push({ Name: "loose", CreatedAt: at(5), Labels: null }), /^refused: volume loose was created during the cycle and is not the run's/],
-      ["a network created during the cycle outside the project", (s: State) => s.networks.push({ Id: "n9", Name: "loose_net", Created: at(5), Labels: {} }), /^refused: network loose_net was created during the cycle and is not the run's/],
     ])("refuses %s", (_what, mutate, why) => {
       const s = state();
       (mutate as (s: State) => void)(s);
       expect(gate(s)).toMatch(why as RegExp);
+    });
+
+    describe("beside a sapu sweep: what is not the run's but new is refused only when it touches the owner's state", () => {
+      /** A container a sweep's gate created during the cycle: no label of the run's, on the default bridge. */
+      const sweep = (over: Obj = {}) => ({ Id: "c7", Name: "/gate-db-1", Created: at(20), State: { StartedAt: at(21) }, Config: { Labels: { [LABEL]: "gate" } }, HostConfig: {}, Mounts: [], NetworkSettings: { Networks: { bridge: {} } }, ...over });
+      it("its containers, volumes and networks pass, and so do its own actions on them (an exec, a stop, a removal)", () => {
+        const s = state();
+        s.containers.push(sweep({ Mounts: [{ Type: "volume", Name: "gate_data" }], NetworkSettings: { Networks: { gate_default: {}, bridge: {} } }, HostConfig: { PortBindings: { "5432/tcp": [{ HostPort: "5432" }] } } }));
+        s.volumes.push({ Name: "gate_data", CreatedAt: at(19), Labels: { [LABEL]: "gate" } }, { Name: "loose", CreatedAt: at(5), Labels: null });
+        s.networks.push({ Id: "n7", Name: "gate_default", Created: at(19), Labels: { [LABEL]: "gate" } }, { Id: "n9", Name: "loose_net", Created: at(5), Labels: {} });
+        s.events.push(
+          ev("container", "exec_start: psql -c select 1", "c7", { [LABEL]: "gate", name: "gate-db-1" }, 25),
+          // One created and removed within the cycle: gone from the listing, its create event says it is new.
+          ev("container", "create", "c8", { name: "gate-tmp" }, 22),
+          ev("container", "stop", "c8", { name: "gate-tmp" }, 30),
+          ev("container", "die", "c8", { name: "gate-tmp" }, 30),
+          ev("container", "destroy", "c8", { name: "gate-tmp" }, 31),
+          ev("volume", "create", "gate_tmp", { driver: "local" }, 22),
+          ev("volume", "destroy", "gate_tmp", { driver: "local" }, 31),
+          ev("network", "create", "n8", { name: "gate_tmp_net" }, 22),
+          ev("network", "destroy", "n8", { name: "gate_tmp_net" }, 31),
+        );
+        expect(gate(s)).toBe("ok");
+      });
+      it.each([
+        ["mounts a volume that existed before the cycle", { Mounts: [{ Type: "volume", Name: "owner_pgdata" }] }, /^refused: container gate-db-1, created during the cycle outside the run's Compose project argus-run1, mounts volume owner_pgdata, which existed before the cycle$/],
+        ["joins a user network that existed before the cycle", { NetworkSettings: { Networks: { owner_default: {} } } }, /^refused: container gate-db-1, .* joins network owner_default, which existed before the cycle$/],
+        ["joins the host's network", { NetworkSettings: { Networks: { host: {} } } }, /^refused: container gate-db-1, .* joins network host, which existed before the cycle$/],
+        ["is privileged", { HostConfig: { Privileged: true } }, /^refused: container gate-db-1, .* is privileged$/],
+        ["bind-mounts the Docker socket", { Mounts: [{ Type: "bind", Source: "/var/run/docker.sock" }] }, /^refused: container gate-db-1, .* bind-mounts a container runtime or datastore socket/],
+      ])("refused when it %s", (_what, over, why) => {
+        const s = state();
+        s.containers.push(sweep(over as Obj));
+        expect(gate(s)).toMatch(why as RegExp);
+      });
+      it("bind-mounting the main checkout is refused; a linked worktree inside it (a sweep's) is not the main checkout", () => {
+        const main = realpathSync(tempDir());
+        execFileSync("git", ["-C", main, "init", "-q"]);
+        writeFileSync(join(main, "a.txt"), "a\n");
+        execFileSync("git", ["-C", main, "add", "."]);
+        execFileSync("git", ["-C", main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+        const wt = join(main, ".claude/worktrees/wt-pr-1");
+        execFileSync("git", ["-C", main, "worktree", "add", "-q", "--detach", wt, "HEAD"]);
+        const s = state();
+        const f = fake(s);
+        const runner = (argv: string[], o: Obj = {}) => (argv[0] === "docker" ? f(argv, o) : run(argv, o));
+        const check = () => message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main, worktree: realpathSync(tempDir()), runner }));
+        s.containers.push(sweep({ Mounts: [{ Type: "bind", Source: join(wt, "data") }] }));
+        expect(check()).toBe("ok");
+        s.containers[2].Mounts.push({ Type: "bind", Source: join(main, "data") });
+        expect(check()).toMatch(/^refused: container gate-db-1, .* bind-mounts a path inside the main checkout/);
+      });
+      it("a new volume that binds the main checkout is refused; any other new volume or network passes", () => {
+        const main = realpathSync(tempDir());
+        const s = state();
+        s.volumes.push({ Name: "loose", CreatedAt: at(5), Labels: null, Options: { type: "none", o: "bind", device: join(main, "x") } });
+        expect(message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main, worktree: realpathSync(tempDir()), runner: fake(s) }))).toMatch(/^refused: volume loose, created during the cycle outside the run's Compose project argus-run1, binds a path inside the main checkout/);
+      });
     });
 
     it("a run container that is privileged, or publishes a host port that is not the run's (or a random one), is refused", () => {
@@ -2117,12 +2173,12 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it.each([
-      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which is not of the run's Compose project argus-run1$/],
+      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1$/],
       ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
       ...(["kill", "stop", "die", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
-      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which is not the run's$/],
+      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's$/],
       ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
-      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which is not the run's$/],
+      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's$/],
       ["a copy out of the owner's container (docker cp)", ev("container", "archive-path", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker archive-path hit container owner-db/],
       ["a copy into the owner's container (docker cp)", ev("container", "extract-to-dir", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker extract-to-dir hit container owner-db/],
     ])("refuses %s", (_what, event, why) => {
@@ -2138,6 +2194,65 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toBe("ok");
       s.events.push(ev("container", "exec_start: pg_isready -U owner; rm -rf /", "c0", { [LABEL]: "owner", name: "owner-db" }));
       expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
+    });
+
+    describe("the events follower (the daemon replays only its last events to `docker events --since`)", () => {
+      const early = () => ev("container", "exec_start: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }, 15);
+      const followed = (events: Obj[]) => {
+        const file = join(tempDir(), "docker-events.jsonl");
+        writeFileSync(file, `${events.map((e) => JSON.stringify(e)).join("\n")}\n`);
+        return file;
+      };
+      it("the gate judges what the follower wrote, however long ago: an action the daemon no longer replays is still refused", () => {
+        const s = state();
+        const file = followed([...s.events, early()]);
+        s.events = []; // all a `--since` query replays by now
+        expect(gate(s)).toBe("ok"); // without the follower's file, blind
+        expect(gate(s, { eventsFile: file })).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db, which existed before it/);
+      });
+      it("then catches up from the last event it saw to the daemon's now; an event only the catch-up has is judged too; a torn last line is skipped", () => {
+        const s = state();
+        const file = followed(s.events);
+        appendFileSync(file, '{"Type":"contai');
+        const calls: Obj[] = [];
+        const main = realpathSync(tempDir());
+        const run1 = () => message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main, worktree: realpathSync(tempDir()), runner: fake(s, calls), eventsFile: file }));
+        expect(run1()).toBe("ok");
+        const events = calls.find((c) => c.argv[1] === "events")!.argv;
+        expect(events).toEqual(["docker", "events", "--since", ((T0 + 50000 - 1000) / 1000).toFixed(3), "--until", ((T0 + 60000) / 1000).toFixed(3), "--format", "{{json .}}", "--filter", "type=container", "--filter", "type=volume", "--filter", "type=network"]);
+        s.events = [early()];
+        expect(run1()).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
+      });
+      it("a follower that no longer runs leaves the gate blind: refused", async () => {
+        const s = state();
+        const file = followed(s.events);
+        const p = spawn("/bin/sh", ["-c", "exec sleep 600"], { detached: true, stdio: "ignore" });
+        groups.push({ name: "docker-events", pgid: p.pid!, cmdline: "sleep 600" });
+        const started = execFileSync("ps", ["-o", "lstart=", "-p", String(p.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim().replace(/\s+/g, " ");
+        const follower = { name: "docker-events", pgid: p.pid, started };
+        const f = fake(s);
+        const runner = (argv: string[], o: Obj = {}) => (argv[0] === "docker" ? f(argv, o) : run(argv, o));
+        expect(gate(s, { eventsFile: file, follower, runner })).toBe("ok");
+        process.kill(-p.pid!, "SIGKILL");
+        await new Promise((done) => p.once("exit", done));
+        expect(gate(s, { eventsFile: file, follower, runner })).toBe(`refused: the docker events follower (process group ${p.pid}) no longer runs; the Docker runtime gate cannot see the whole cycle`);
+      });
+      it("startEventsFollower runs `docker events --since <since>` under the run's env in its own recorded group, writing the run's logs", async () => {
+        const bin = tempDir();
+        const logs = join(tempDir(), "logs");
+        writeFileSync(join(bin, "docker"), `#!/bin/sh\necho "$*" > ${JSON.stringify(join(bin, "args"))}\necho '{"Type":"network","Action":"connect"}'\nexec sleep 600\n`);
+        chmodSync(join(bin, "docker"), 0o755);
+        const recorded: Obj[] = [];
+        const f = await startEventsFollower({ env: { PATH: `${bin}:${process.env.PATH}` }, since: T0, logs, cwd: bin, groups: recorded });
+        groups.push(recorded[0] as { name: string; pgid: number; cmdline: string });
+        expect(f.file).toBe(join(logs, "docker-events.jsonl"));
+        expect(recorded).toEqual([{ name: "docker-events", pgid: expect.any(Number), started: expect.stringMatching(/\d\d:\d\d:\d\d/), cmdline: `docker events --since ${((T0 - 1000) / 1000).toFixed(3)} --format {{json .}} --filter type=container --filter type=volume --filter type=network` }]);
+        const until = Date.now() + 5000;
+        while (!(existsSync(f.file) && readFileSync(f.file, "utf8").includes("connect")) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+        expect(readFileSync(f.file, "utf8")).toBe('{"Type":"network","Action":"connect"}\n');
+        expect(readFileSync(join(bin, "args"), "utf8").trim()).toBe(`events --since ${((T0 - 1000) / 1000).toFixed(3)} --format {{json .}} --filter type=container --filter type=volume --filter type=network`);
+        expect(statSync(f.file).mode & 0o777).toBe(0o600);
+      });
     });
 
     it("daemonNow reads the daemon's clock; no docker or no daemon gives null", () => {
@@ -2283,7 +2398,10 @@ describe("argus-live instance — Compose and egress checks", () => {
         const dir = realpathSync(tempDir());
         const pg = join(dir, ".s.PGSQL.41998");
         await listen(pg);
-        const c = await startNode(`require("net").connect(${JSON.stringify(pg)})`);
+        // Sampled only once connected: under load the connect can land after startNode's 300 ms.
+        const connected = join(dir, "connected");
+        const c = await startNode(`require("net").connect(${JSON.stringify(pg)}, () => require("fs").writeFileSync(${JSON.stringify(connected)}, ""))`);
+        for (const end = Date.now() + 5000; !existsSync(connected) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 50));
         const hide = (out: string) => out.split(/(?=^p\d+$)/m).filter((b) => !b.startsWith(`p${process.pid}\n`)).join("");
         const runner = (argv: string[], o: Obj = {}) => {
           const r = run(argv, o);
@@ -2587,7 +2705,8 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
       if (a === "ps -aq --no-trunc") return ok("cX");
       if (a === "volume ls -q" || a === "network ls -q --no-trunc") return ok("");
-      if (a.startsWith("inspect --type container")) return ok(JSON.stringify([{ Id: "cX", Name: "/foreign", Created: new Date(T).toISOString(), State: {}, Config: { Labels: {} }, Mounts: [], NetworkSettings: {} }]));
+      // The owner's container, older than the cycle, started during it.
+      if (a.startsWith("inspect --type container")) return ok(JSON.stringify([{ Id: "cX", Name: "/foreign", Created: new Date(T - 3600_000).toISOString(), State: { StartedAt: new Date(T).toISOString() }, Config: { Labels: {} }, Mounts: [], NetworkSettings: {} }]));
       return { status: 1, stdout: "", stderr: `unexpected ${a}` };
     };
     const order: string[] = [];
@@ -2596,7 +2715,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     writeRunFiles(r.main, { runId: r.runId, instanceId: "i-1", worktree: r.wt, ports: {}, origins: [], groups: [], stops, env: r.env, since: T });
     const res = await down(r.main, { runId: r.runId, runner, graceMs: 500 });
     expect(order[0]).toBe("gate");
-    expect(res.report).toContain(`docker runtime gate: refused: container foreign was created or started during the cycle and is not of the run's Compose project argus-${r.runId}`);
+    expect(res.report).toContain("docker runtime gate: refused: container foreign existed before the cycle, is not the run's, and was started during it");
     expect(readFileSync(join(out, "stop.txt"), "utf8")).toBe("stopped\n");
     expect(existsSync(r.wt)).toBe(false);
     expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end `));
@@ -3125,7 +3244,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
     expect(balanced(main)).toBe(true);
 
-    // The runtime gate at renew: a container created during the cycle outside the run's project.
+    // The runtime gate at renew: a container created during the cycle outside the run's project, privileged.
     const b = repo();
     const rb = await up(b.main, opts());
     reapers.push(runJson(b.main).reaper);
@@ -3135,10 +3254,10 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
       if (a === "ps -aq --no-trunc") return ok("cX");
       if (a === "volume ls -q" || a === "network ls -q --no-trunc") return ok("");
-      if (a.startsWith("inspect --type container")) return ok(JSON.stringify([{ Id: "cX", Name: "/scratch", Created: new Date().toISOString(), State: {}, Config: { Labels: {} }, Mounts: [], NetworkSettings: {} }]));
+      if (a.startsWith("inspect --type container")) return ok(JSON.stringify([{ Id: "cX", Name: "/scratch", Created: new Date().toISOString(), State: {}, Config: { Labels: {} }, HostConfig: { Privileged: true }, Mounts: [], NetworkSettings: {} }]));
       return { status: 1, stdout: "", stderr: `unexpected ${a}` };
     };
-    expect(await message(renewRun(b.main, { runner: foreign }))).toBe(`refused: container scratch was created or started during the cycle and is not of the run's Compose project argus-${rb.runId}`);
+    expect(await message(renewRun(b.main, { runner: foreign }))).toBe(`refused: container scratch, created during the cycle outside the run's Compose project argus-${rb.runId}, is privileged`);
     expect(existsSync(join(b.main, ".argus/live/lock.json"))).toBe(false);
     expect(balanced(b.main)).toBe(true);
   }, 90000);
@@ -3185,6 +3304,41 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     // renew repeats step 8 with the same expectation.
     expect(await message(renewRun(main, { runner }))).toBe("ok");
     await down(main, { runId: r.runId });
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
+  it("up starts the docker events follower at step 3 as a recorded group; renew judges what it wrote; down stops it", async () => {
+    const bin = tempDir();
+    writeFileSync(
+      join(bin, "docker"),
+      [
+        "#!/bin/sh",
+        'case "$1" in',
+        `  context) echo '[{"Name":"default","Endpoints":{"docker":{"Host":"unix:///nonexistent/docker.sock"}}}]' ;;`,
+        `  info) date -u +'"%Y-%m-%dT%H:%M:%SZ"' ;;`,
+        "  ps|volume|network) ;;",
+        `  events) case "$*" in *--until*) ;; *) echo '{"Type":"network","Action":"connect","Actor":{"ID":"n1","Attributes":{}}}'; exec sleep 600 ;; esac ;;`,
+        '  *) echo "unexpected $*" >&2; exit 1 ;;',
+        "esac",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "docker"), 0o755);
+    process.env.PATH = `${bin}:${process.env.PATH}`;
+    const { main } = repo();
+    const r = await up(main, { runner: run, ownerHome: tempDir() });
+    const rec = runJson(main);
+    reapers.push(rec.reaper);
+    const follower = rec.groups.find((g: Obj) => g.name === "docker-events");
+    reapers.push(follower.pgid);
+    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["docker-events", "cache", "reset", "web"]);
+    expect(rec.events).toBe(join(main, ".argus/live", r.runId, "logs", "docker-events.jsonl"));
+    expect(readFileSync(rec.events, "utf8")).toContain('"Action":"connect"');
+    expect(await message(renewRun(main, { runner: run }))).toBe("ok");
+    const t = Date.now();
+    appendFileSync(rec.events, `${JSON.stringify({ Type: "container", Action: "exec_start: psql", Actor: { ID: "c0", Attributes: { name: "owner-db" } }, time: Math.floor(t / 1000), timeNano: t * 1e6 })}\n`);
+    expect(await message(renewRun(main, { runner: run }))).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db, which existed before it/);
+    expect(await until(() => !alive(follower.pgid), 5000)).toBe(true);
     expect(balanced(main)).toBe(true);
   }, 60000);
 

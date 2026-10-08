@@ -389,9 +389,11 @@ defence in depth and not enforcement:
 - `allow_origins` is matched for every process of the run, not only for pages.
 - A container reaches the Docker host by names and addresses the checks know (`host.docker.internal`,
   `host-gateway`, `172.16-31.0.1`, `192.168.65.0/24`); a custom bridge subnet escapes them.
-- The Docker runtime gate sees every container, volume and network created or started during the
-  cycle, and every exec, stop, kill or removal of one, the owner's included: what the owner does on the
-  same daemon meanwhile (other than a container's own healthcheck) ends the cycle.
+- The Docker runtime gate judges objects by when they were created, not by who created them: what
+  touches an object that existed before the cycle (other than a container's own healthcheck) ends the
+  cycle, the owner's own work on the same daemon included — and so does a sweep's gate that started a
+  container before the cycle and stops it during it. A new object that is not the run's passes unless
+  it touches the owner's state (step 8).
 - Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
   sockets of servers other users run; its addresses are the ones lsof prints; a netstat that fails
   there fails the check), or by `ss -xp` on Linux;
@@ -419,7 +421,8 @@ defence in depth and not enforcement:
    names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, `HOME` = a per-run directory
    outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode 0700, empty but
    for `.docker`; a setup may link into it, e.g. a managed Python or a package store) — so no tool
-   picks up the owner's cloud, Git or registry credentials — and the run's Docker client:
+   picks up the owner's cloud, Git or registry credentials — and the run's Docker client (through which
+   `since`, the daemon's clock, is read and the events follower, step 8, starts right after):
    `DOCKER_CONFIG` = `<HOME>/.docker`, holding only links to the owner's Docker CLI plugins and a
    `config.json` without `auths`, `credsStore` or `currentContext`, and `DOCKER_HOST` = the local unix
    socket of the owner's current Docker context (refused before step 5 when that context is anything
@@ -541,19 +544,33 @@ defence in depth and not enforcement:
    not through a port a Compose service publishes, which the Docker daemon serves) in the first
    sample. Repeated at every `renew`.
    Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
-   docker:up`): every container created or started, and every volume and network created, since `up`
-   began (read from the daemon's own clock, `docker info`, so a second's tolerance is enough) must
-   carry the label
-   `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); such
-   a container may mount only the run's volumes, join only the run's networks (or none), bind-mount
-   nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a random one, nor every exposed port with `-P`; the ports asked for and the ones the daemon bound alike). And the daemon's events from then to its now (`docker events`) may hold no
-   action on an object the run does not own: an exec (other than the container's own healthcheck),
-   a copy in or out (`docker cp`), kill, stop, die, removal or other change of a container without
-   the run's label, or the removal of
-   a volume or network neither named `<project>_…` nor created during the cycle. Otherwise `down` and
-   refuse, naming the object. Repeated at every `renew`,
+   docker:up`), over the window since `up` began (`since`: the daemon's own clock, `docker info`,
+   read at step 3, so a second's tolerance is enough). The run's own objects carry the label
+   `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); a
+   container of the run may mount only the run's volumes, join only the run's networks (or none),
+   bind-mount nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a
+   random one, nor every exposed port with `-P`; the ports asked for and the ones the daemon bound
+   alike). What is not the run's falls under the **owner-state rule**, so a cycle can run beside a
+   sapu sweep whose gates use the same daemon: an object that existed before `since` and is not the
+   run's may not be touched — not started, and no action on it in the daemon's events (an exec other
+   than the container's own healthcheck, a copy in or out with `docker cp`, kill, stop, die, removal or
+   other change of a container; the removal of a volume or network); an object created during the
+   cycle that is not the run's (a sweep's gate container, say) is refused only when it touches the
+   owner's state — a container that mounts a volume that existed before `since`, joins a network that
+   existed before `since` (the default `bridge` and `none` aside; `host` included), bind-mounts a path
+   inside the main checkout (a linked worktree inside it, such as a sweep's under `.claude/worktrees/`,
+   is not the main checkout) or a container runtime or datastore socket or a directory holding one, or
+   is privileged; a volume whose device binds such a path. What such an object does to itself is its
+   own. The events come from the run's **events follower**, started at step 3 when a daemon answers:
+   `docker events --since <since> --format '{{json .}}'` in its own recorded process group, writing
+   `<logs>/docker-events.jsonl` (the daemon replays only its last 256 events to a later `--since`, so
+   only a follower sees a long cycle whole); the gate reads that file, then catches up with `docker
+   events --since <the last event it saw> --until <the daemon's now>`. A follower that no longer runs
+   leaves the gate blind: refused. Every teardown stops the follower like any process group, after the
+   gate. Otherwise `down` and refuse, naming the object. Repeated at every `renew`, at `up --fresh`,
    and at `down`, where a finding is reported but never stops the teardown. No docker, or no daemon
-   running, means nothing was created through it.
+   running, means nothing was created through it (a run whose daemon did not answer at step 3 has no
+   follower; its gate reads the daemon's own window from `since`).
 9. **Proxy.** Starts the run's filtering proxy (§9).
 10. **Logins.** One proving login per allocated account, sequential, `login_spacing_ms` apart, each
     followed by a check that the browser's requests reached only the run's origins and
@@ -602,7 +619,10 @@ sweep gates PRs, but browsers and dev servers take CPU from its gates. `sapu-mer
 any run in `sapu-live.log`: a run lasts from its `start` to its `end` line, or, with no `end`, to the
 latest deadline its `start` and `deadline` lines name. A `live=1` line never counts toward the flake
 ledger (neither half of a red-then-green proof), and a red gate's verdict line adds `(this gate ran
-beside a journey cycle)`. `limits.max_parallel_journeys` bounds the load.
+beside a journey cycle)`. `limits.max_parallel_journeys` bounds the load. On a shared Docker daemon,
+the runtime gate's owner-state rule (step 8) lets a sweep's gates create, use and remove their own
+containers, volumes and networks during the cycle; only what touches objects older than the cycle, or
+the owner's volumes, networks, checkout or sockets, ends it.
 
 ## 9. Browser driver and wrapper
 
@@ -856,7 +876,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Another cycle holds the lock | refuse, naming its run and deadline |
 | The owner's Docker context is not a local unix socket (tcp, ssh) | refuse before step 5, naming the context and its scheme only; `down` runs |
 | A Compose project, Compose file or config command would share something with the owner's stack, or run Docker past the check | refuse, naming the service, file or field and the rule; `down` runs |
-| The Docker runtime gate finds a container, volume or network created or started during the cycle outside the run's project, a run container on another's volume or network, or an exec, stop, kill or removal of an object that is not the run's | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
+| The Docker runtime gate finds a run container on another's volume or network (or otherwise outside step 8's rule), an object that is not the run's and existed before the cycle started or acted on during it, a new object that is not the run's touching the owner's state, or a follower that no longer runs | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
 | The egress check finds a foreign endpoint or a datastore socket, or its listing cannot be trusted | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |
 | Session lost mid-journey | the wrapper signs in once; failing again → a harness event (H2), not a candidate |

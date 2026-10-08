@@ -1348,13 +1348,15 @@ function dockerRunDirs() {
 
 /**
  * Why a host path a container would get (a bind mount, a local volume's device) is refused, or null:
- * it lies inside <MAIN> or holds it, or (outside the worktree `root`) it is a container runtime or
- * datastore socket or a directory holding one.
+ * it lies inside <MAIN> (outside the `exempt` directories: linked worktrees, which are not the main
+ * checkout) or holds it, or (outside the worktree `root`) it is a container runtime or datastore socket
+ * or a directory holding one.
  */
-function hostPathRefusal(source, { worktree, root, realMain, sockets }) {
+function hostPathRefusal(source, { worktree, root, realMain, sockets, exempt = [] }) {
   const raw = path.resolve(worktree, String(source));
   const real = resolveLink(raw);
-  if (real === null || within(realMain, real) || within(real, realMain)) return "a path inside the main checkout (or one holding it)";
+  const inMain = real !== null && within(realMain, real) && !exempt.some((d) => within(d, real));
+  if (real === null || inMain || within(real, realMain)) return "a path inside the main checkout (or one holding it)";
   if (within(root, real)) return null; // the run's own
   const runDirs = dockerRunDirs();
   const runtime = (p) => SOCKET_NAME.test(path.basename(p)) || sockets.some((s) => within(p, s)) || runDirs.some((d) => within(p, d) || (within(d, p) && p.endsWith(".sock")));
@@ -1668,24 +1670,104 @@ function healthcheckCmd(c) {
 /** The label Compose puts on every container, volume and network of a project. */
 const PROJECT_LABEL = "com.docker.compose.project";
 
+/** The event types the gate judges. */
+const EVENT_FILTERS = ["--filter", "type=container", "--filter", "type=volume", "--filter", "type=network"];
+/** The name of the events follower's group in run.json. */
+const FOLLOWER = "docker-events";
+
+/**
+ * Starts the run's events follower (spec §8 step 3): `docker events --since <since - skewMs> --format
+ * {{json .}}` for containers, volumes and networks, under the run's env (its Docker client), detached
+ * into its own process group recorded in `groups` (so every teardown stops it like any group), its output
+ * appended to `<logs>/docker-events.jsonl` (mode 0600). `docker events --since` alone replays only the
+ * daemon's last events, so over a long cycle only a follower sees them all. Returns {file, record}.
+ */
+export async function startEventsFollower({ env, since, logs, cwd, groups = [], skewMs = 1000 }) {
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  const file = path.join(logs, "docker-events.jsonl");
+  const args = ["events", "--since", ((since - skewMs) / 1000).toFixed(3), "--format", "{{json .}}", ...EVENT_FILTERS];
+  const out = fs.openSync(file, "a", 0o600);
+  const err = fs.openSync(path.join(logs, "docker-events.log"), "a", 0o600);
+  let child;
+  try {
+    child = spawn("docker", args, { cwd, env, detached: true, stdio: ["ignore", out, err] });
+  } finally {
+    fs.closeSync(out);
+    fs.closeSync(err);
+  }
+  await new Promise((ok, fail) => {
+    child.once("spawn", ok);
+    child.once("error", (e) => fail(new Error(`failed: docker events could not start: ${e.message}`)));
+  });
+  const record = { name: FOLLOWER, pgid: child.pid, started: startTime(child.pid), cmdline: ["docker", ...args].join(" ") };
+  child.once("exit", () => {
+    record.exited = true; // from now on, a process holding its pid is not ours
+  });
+  child.unref();
+  groups.push(record);
+  return { file, record };
+}
+
+/** The follower's events as lines of JSON, and the time of the last one (epoch ms) or null; a torn last line is skipped. */
+function followedEvents(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    throw new Error(`refused: the docker events follower's file ${file} cannot be read (${e.code || e.message}); the Docker runtime gate cannot see the whole cycle`);
+  }
+  const events = [];
+  let last = null;
+  for (const line of text.split("\n")) {
+    let e;
+    try {
+      e = line.trim() ? JSON.parse(line) : null;
+    } catch {
+      e = null;
+    }
+    if (!e || typeof e !== "object") continue;
+    events.push(e);
+    const t = Number.isFinite(e.timeNano) ? e.timeNano / 1e6 : Number.isFinite(e.time) ? e.time * 1000 : NaN;
+    if (Number.isFinite(t)) last = last === null ? t : Math.max(last, t);
+  }
+  return { events, last };
+}
+
+/** The real paths of the repo's linked worktrees (`git worktree list`), <MAIN> itself aside; [] when git cannot tell. */
+function linkedWorktrees(main, realMain, runner) {
+  const r = runner(["git", "-C", main, "worktree", "list", "--porcelain"]);
+  if (r.error || r.status !== 0) return [];
+  return String(r.stdout)
+    .split("\n")
+    .filter((l) => l.startsWith("worktree "))
+    .map((l) => resolveLink(l.slice("worktree ".length)))
+    .filter((p) => p && p !== realMain);
+}
+
 /**
  * The Docker runtime gate (spec §8 step 8, and at `renew` and `down`): what the static Compose checks
- * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. Every
- * container created or started, and every volume and network created, since `since` (epoch ms, the
- * start of `up`; `skewMs` earlier, for the daemon's clock and its whole-second volume times) must
- * carry `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, a volume may instead be a new anonymous
- * one; and such a container may mount only the run's volumes (or new anonymous ones), join only the
- * run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and publish
- * only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike), whatever file or
- * script started it. And the daemon's events
- * from `since` to its own now: a container action (CONTAINER_ACTIONS: an exec, kill, stop, die,
- * destroy…) on a container without the run's label, other than that container's own healthcheck exec,
- * or the removal of a volume or network neither named `<project>_…` nor created in the window, is
- * refused too (the owner's own activity in the window is a documented false positive). `since` comes
- * from daemonNow. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no daemon
- * running, means nothing was created through it. Throws `refused: …` naming the object.
+ * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. `since` is the
+ * daemon's clock at `up` (epoch ms; `skewMs` earlier, for its whole-second volume times). The rule:
+ * - The run's own objects (labelled `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`; a volume may
+ *   instead be a new anonymous one): a container of the run may mount only the run's volumes, join only
+ *   the run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and
+ *   publish only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike).
+ * - An object that existed before `since` and is not the run's (the owner's state) may not be touched:
+ *   a container of it started during the cycle, or any action on it in the daemon's events
+ *   (CONTAINER_ACTIONS: an exec — other than its own healthcheck —, kill, stop, die, removal, a copy in
+ *   or out…; the removal of a volume or network).
+ * - An object created during the cycle that is not the run's (a sapu sweep's gate, beside the cycle) is
+ *   refused only when it touches the owner's state: a container that mounts a volume that existed before
+ *   `since`, joins a network that did (the default bridge and none aside), bind-mounts the main checkout
+ *   (a linked worktree inside it is not the main checkout) or a container runtime or datastore socket, or
+ *   is privileged; a volume whose device binds such a path. What it does to itself is its own.
+ * The events: what the follower (`eventsFile`, startEventsFollower) wrote, however long ago, then a
+ * catch-up from the last event it saw (`docker events --since <last> --until <daemon now>`); without a
+ * follower, the window from `since`. A `follower` group (its run.json record) that no longer runs leaves
+ * the gate blind: refused. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no
+ * daemon running, means nothing was created through it. Throws `refused: …` naming the object.
  */
-export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000 }) {
+export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null }) {
   const project = env.COMPOSE_PROJECT_NAME;
   const docker = (args) => runner(["docker", ...args], { env, timeout: 60_000 });
   const failed = (args, r) => new Error(`refused: docker ${args.join(" ")} failed: ${tail((r.error && r.error.message) || r.stderr || `exit ${r.status}`)}`);
@@ -1711,6 +1793,15 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   if (first.error && first.error.code === "ENOENT") return;
   if (!first.error && first.status !== 0 && /cannot connect to the docker daemon|is the docker daemon running/i.test(first.stderr || "")) return;
   if (first.error || first.status !== 0) throw failed(ps, first);
+  if (follower) {
+    let now;
+    try {
+      now = membersOf(processTable(runner), follower.pgid, {});
+    } catch (e) {
+      throw new Error(`refused: the docker events follower cannot be checked (${e.message}); the Docker runtime gate cannot see the whole cycle`);
+    }
+    if (!now.length || !sameGroup(follower, now)) throw new Error(`refused: the docker events follower (process group ${follower.pgid}) no longer runs; the Docker runtime gate cannot see the whole cycle`);
+  }
   const recent = (t) => {
     const ms = Date.parse(t);
     return Number.isFinite(ms) && ms >= since - skewMs;
@@ -1718,17 +1809,39 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   const ours = (labels) => Boolean(labels) && labels[PROJECT_LABEL] === project;
   const volumes = inspect(["volume", "inspect"], list(["volume", "ls", "-q"]));
   const networks = inspect(["network", "inspect"], list(["network", "ls", "-q", "--no-trunc"]));
+  const volumeByName = new Map(volumes.map((v) => [v.Name, v]));
+  const networkByName = new Map(networks.map((n) => [n.Name, n]));
   const volumeOk = (v) => ours(v.Labels) || (Boolean(v.Labels) && "com.docker.volume.anonymous" in v.Labels && recent(v.CreatedAt));
   const runVolumes = new Set(volumes.filter(volumeOk).map((v) => v.Name));
   const runNetworks = new Set(networks.filter((n) => ours(n.Labels)).map((n) => n.Name));
-  const at = { worktree, root: fs.realpathSync.native(worktree), realMain: fs.realpathSync.native(main), sockets: knownSockets(env) };
+  const realMain = fs.realpathSync.native(main);
+  const at = { worktree, root: fs.realpathSync.native(worktree), realMain, sockets: knownSockets(env) };
+  let ownerAt = null;
+  const forOthers = () => ownerAt ?? (ownerAt = { ...at, exempt: linkedWorktrees(main, realMain, runner) });
   const runPorts = new Set(Object.values(ports).map(Number));
   const containers = inspect(["inspect", "--type", "container"], first.stdout.split("\n").map((s) => s.trim()).filter(Boolean));
   for (const c of containers) {
-    if (!recent(c.Created) && !recent(c.State && c.State.StartedAt)) continue;
+    const created = recent(c.Created);
+    if (!created && !recent(c.State && c.State.StartedAt)) continue;
     const name = String(c.Name || c.Id).replace(/^\//, "");
-    if (!ours(c.Config && c.Config.Labels)) throw new Error(`refused: container ${name} was created or started during the cycle and is not of the run's Compose project ${project}`);
     const host = c.HostConfig || {};
+    if (!ours(c.Config && c.Config.Labels)) {
+      if (!created) throw new Error(`refused: container ${name} existed before the cycle, is not the run's, and was started during it`);
+      const why = `refused: container ${name}, created during the cycle outside the run's Compose project ${project},`;
+      if (host.Privileged) throw new Error(`${why} is privileged`);
+      for (const m of c.Mounts ?? []) {
+        const v = m.Type === "volume" ? volumeByName.get(m.Name) : null;
+        if (m.Type === "volume" && (!v || !recent(v.CreatedAt))) throw new Error(`${why} mounts volume ${m.Name}, which existed before the cycle`);
+        const no = m.Type === "bind" ? hostPathRefusal(m.Source, forOthers()) : null;
+        if (no) throw new Error(`${why} bind-mounts ${no}`);
+      }
+      for (const n of Object.keys((c.NetworkSettings && c.NetworkSettings.Networks) || {})) {
+        if (n === "bridge" || n === "none") continue;
+        const net = networkByName.get(n);
+        if (!net || !recent(net.Created)) throw new Error(`${why} joins network ${n}, which existed before the cycle`);
+      }
+      continue;
+    }
     if (host.Privileged) throw new Error(`refused: container ${name} is privileged`);
     if (host.PublishAllPorts) throw new Error(`refused: container ${name} publishes every exposed port on a random host port (-P)`);
     // What was asked (PortBindings) and what the daemon bound (NetworkSettings.Ports; null = exposed, not published).
@@ -1751,13 +1864,19 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       if (n !== "none" && !runNetworks.has(n)) throw new Error(`refused: container ${name} joins network ${n}, which is not the run's`);
     }
   }
-  for (const v of volumes) if (recent(v.CreatedAt) && !volumeOk(v)) throw new Error(`refused: volume ${v.Name} was created during the cycle and is not the run's`);
-  for (const n of networks) if (recent(n.Created) && !ours(n.Labels)) throw new Error(`refused: network ${n.Name} was created during the cycle and is not the run's`);
+  for (const v of volumes) {
+    if (!recent(v.CreatedAt) || volumeOk(v)) continue;
+    const o = v.Options || {};
+    const no = o.device && (/\bbind\b/.test(String(o.o ?? "")) || o.type === "none") ? hostPathRefusal(o.device, forOthers()) : null;
+    if (no) throw new Error(`refused: volume ${v.Name}, created during the cycle outside the run's Compose project ${project}, binds ${no}`);
+  }
+  const followed = eventsFile ? followedEvents(eventsFile) : { events: [], last: null };
+  const from = Math.max(since - skewMs, followed.last === null ? -Infinity : followed.last - skewMs);
   const now = daemonNow({ env, runner }) ?? Date.now();
-  const evArgs = ["events", "--since", ((since - skewMs) / 1000).toFixed(3), "--until", (now / 1000).toFixed(3), "--format", "{{json .}}", "--filter", "type=container", "--filter", "type=volume", "--filter", "type=network"];
+  const evArgs = ["events", "--since", (from / 1000).toFixed(3), "--until", (now / 1000).toFixed(3), "--format", "{{json .}}", ...EVENT_FILTERS];
   const er = docker(evArgs);
   if (er.error || er.status !== 0) throw failed(evArgs, er);
-  const events = [];
+  const events = [...followed.events];
   for (const line of er.stdout.split("\n")) {
     try {
       if (line.trim()) events.push(JSON.parse(line));
@@ -1766,21 +1885,22 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     }
   }
   const byId = new Map(containers.map((c) => [c.Id, c]));
-  const createdNow = new Set(events.filter((e) => e.Action === "create").map((e) => e.Actor && e.Actor.ID));
+  // New during the cycle: created in the window (its create event), or listed with a recent creation time.
+  const createdNow = new Set([...events.filter((e) => e.Action === "create").map((e) => e.Actor && e.Actor.ID), ...containers.filter((c) => recent(c.Created)).map((c) => c.Id)]);
   for (const e of events) {
     const id = (e.Actor && e.Actor.ID) || "";
     const a = (e.Actor && e.Actor.Attributes) || {};
     const action = String(e.Action || "");
     const verb = action.split(":")[0].trim();
     if (e.Type === "container") {
-      if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project) continue;
+      if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project || createdNow.has(id)) continue;
       if (verb.startsWith("exec_") && action.slice(action.indexOf(":") + 1).trim() === healthcheckCmd(byId.get(id))) continue;
-      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which is not of the run's Compose project ${project}`);
+      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which existed before it and is not of the run's Compose project ${project}`);
     }
     if (verb !== "destroy") continue;
     const name = e.Type === "network" ? a.name || id : id;
     if (String(name).startsWith(`${project}_`) || createdNow.has(id)) continue;
-    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which is not the run's`);
+    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's`);
   }
 }
 
@@ -2613,7 +2733,7 @@ async function replayRecorded(s, t) {
  */
 const TEARDOWN = [
   // `down` only: a finding is reported, never stops the teardown.
-  ["docker runtime gate", (t) => (t.mode === "down" && t.rec && Number.isFinite(t.rec.since) && t.rec.env && typeof t.rec.worktree === "string" ? checkDockerRuntime({ since: t.rec.since, env: t.rec.env, main: t.main, worktree: t.rec.worktree, ports: t.rec.ports ?? {}, runner: t.runner }) : undefined)],
+  ["docker runtime gate", (t) => (t.mode === "down" && t.rec && Number.isFinite(t.rec.since) && t.rec.env && typeof t.rec.worktree === "string" ? checkDockerRuntime({ ...gateOf(t.rec, t.rec.groups), main: t.main, runner: t.runner }) : undefined)],
   // Last started first, each bounded by stopTimeoutMs.
   ["stops", async (t) => {
     for (const s of [...(t.rec?.stops ?? [])].reverse()) await guarded(`stop ${s && s.name}`, t.note, () => replayRecorded(s, t));
@@ -2755,6 +2875,11 @@ export async function reap(main, runId, { pollMs = 60_000 } = {}) {
 // filtering proxy) and 10 (proving logins) arrive with the browser driver.
 
 const defaultLookup = (h) => dns.promises.lookup(h, { all: true });
+
+/** checkDockerRuntime's view of a run (`rec`: run.json, or `up`'s state) whose groups are `groups`: since, env, worktree, ports, the follower's file and group. */
+function gateOf(rec, groups = []) {
+  return { since: rec.since, env: rec.env, worktree: rec.worktree, ports: rec.ports ?? {}, eventsFile: rec.events ?? null, follower: (groups ?? []).find((g) => g && g.name === FOLLOWER) ?? null };
+}
 
 /** `e` (an Error) tagged with the `up` step it failed in, for the CLI's report. */
 const atStep = (e, step) => Object.assign(e instanceof Error ? e : new Error(String(e)), { step });
@@ -2913,7 +3038,7 @@ async function tearDown(main, state, { secrets, runner, log }) {
  * `argus-live.mjs up` (spec §8, steps 1-8 and 11): 1 the lock (and recovery of stale runs, then run.json
  * and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
  * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss);
- * 3 the environment (ports, HOME, the run's Docker client); 4 the worktree and setup; 5 the Compose
+ * 3 the environment (ports, HOME, the run's Docker client, `since` and the events follower); 4 the worktree and setup; 5 the Compose
  * check; 6 the store phase, checkStore and reset; 7 the other entries and checkStore again; 8 the egress
  * check and the Docker runtime gate; 11 the instance id. Any refusal or failure after the lock → `down`
  * (an end line) and the error rethrown, tagged with its `step`. Ports are allocated at step 3: every
@@ -2933,7 +3058,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, composeServices: [], composePorts: [] };
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, events: null, composeServices: [], composePorts: [] };
   // Only the first write creates run.json: a later one finding it gone means a `down` removed it.
   let created = false;
   const save = () => {
@@ -2986,10 +3111,13 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
     // The daemon's clock through the run's own client (its context checked by dockerEnv just now);
-    // nothing of the run has touched Docker before this step.
-    state.since = daemonNow({ env: state.env, runner }) ?? Date.now();
+    // nothing of the run has touched Docker before this step. With a daemon, the events follower starts
+    // here: the runtime gate reads every event since, not only the daemon's last ones.
+    const clock = daemonNow({ env: state.env, runner });
+    state.since = clock ?? Date.now();
+    if (clock !== null) state.events = (await startEventsFollower({ env: state.env, since: state.since, logs: logsDir(main, runId), cwd: state.home, groups: state.groups })).file;
     save();
-    log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}`);
+    log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}${state.events ? "; docker events followed" : ""}`);
 
     step = "4 worktree";
     state.worktree = makeWorktree(main, runId, { runner });
@@ -3013,7 +3141,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     log(`step 7 start: ${x.start.filter((e) => e.phase !== "store").map((e) => e.name).join(", ") || "no other entry"} healthy; store_check printed ${x.store}`);
     step = "8 egress";
     await ctx.fullEgress();
-    checkDockerRuntime({ since: state.since, env: state.env, main, worktree: state.worktree, ports, runner });
+    checkDockerRuntime({ ...gateOf(state, state.groups), main, runner });
     log("step 8 egress: the run's processes reach only what the run allows; the Docker runtime gate passed");
 
     step = "11 run files";
@@ -3044,7 +3172,7 @@ function current(main) {
 
 /**
  * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; stops
- * every `start` entry (its stop replayed, its group stopped; setup groups stay), then the store phase,
+ * every `start` entry (its stop replayed, its group stopped; setup groups and the events follower stay), then the store phase,
  * checkStore, reset, the other entries, checkStore, the egress check and the runtime gate again, and a
  * new instance id. Any refusal or failure → `down`, and the error rethrown.
  */
@@ -3054,7 +3182,8 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
   const log = runLog(main, runId, "up.log", secrets, say);
   const state = { ...rec };
   const save = () => writeRunFiles(main, state, { runner, secrets, create: false });
-  const setupGroups = (rec.groups ?? []).filter((g) => g && /^setup\[\d+\]$/.test(g.name));
+  // Setup groups (a daemon a setup left) and the events follower live as long as the run.
+  const kept = (rec.groups ?? []).filter((g) => g && (/^setup\[\d+\]$/.test(g.name) || g.name === FOLLOWER));
   state.groups = recordingArray(save, rec.groups ?? []);
   state.stops = recordingArray(save, rec.stops ?? []);
   let step = "fresh: stop";
@@ -3063,7 +3192,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const s of [...(rec.stops ?? [])].reverse()) {
       await guarded(`stop ${s && s.name}`, note, () => replayStop(s, { secrets, asyncRunner: runAsync, timeoutMs: 120_000, logs: logsDir(main, runId), note }));
     }
-    const old = (rec.groups ?? []).filter((g) => !setupGroups.includes(g));
+    const old = (rec.groups ?? []).filter((g) => !kept.includes(g));
     await stopRecordedGroups(old, { runner, secrets, graceMs: 10_000, note });
     // A group the stop could not end stays in the record, so `down` tries again; it is reported.
     const table = processTable(runner);
@@ -3072,7 +3201,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
       return now.length > 0 && sameGroup(g, now);
     });
     for (const g of alive) note(`${g.name} (pgid ${g.pgid}) still runs after the stop; kept in the record for down`);
-    state.groups = recordingArray(save, [...setupGroups, ...alive]);
+    state.groups = recordingArray(save, [...kept, ...alive]);
     state.stops = recordingArray(save);
     state.instanceId = null;
     save();
@@ -3086,7 +3215,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     await bringUpRest(ctx);
     step = "fresh: egress";
     await ctx.fullEgress();
-    checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports, runner });
+    checkDockerRuntime({ ...gateOf(rec, state.groups), main, runner });
     state.instanceId = randomBytes(8).toString("hex");
     save();
     log(`fresh: instance ${state.instanceId}; store reset, every entry healthy, egress and the Docker runtime gate passed`);
@@ -3112,7 +3241,7 @@ export async function renewRun(main, { runner = run, lookup = defaultLookup, say
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
     const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     await ctx.fullEgress();
-    checkDockerRuntime({ since: rec.since, env: rec.env, main, worktree: rec.worktree, ports: rec.ports, runner });
+    checkDockerRuntime({ ...gateOf(rec, rec.groups), main, runner });
     log(`renew: cycle ${runId} until ${iso(deadline)}; egress and the Docker runtime gate passed`);
     return { runId, deadline };
   } catch (e) {
