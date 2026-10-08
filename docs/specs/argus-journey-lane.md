@@ -367,7 +367,7 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    "recovered". A lock past its deadline → recovery first: each recorded stop replayed exactly as
    recorded (`{cmd, cwd, env}`; one whose cwd is gone or whose env lacks its `COMPOSE_PROJECT_NAME`
    is journalled, never run), each process group whose recorded command line still matches, each
-   recorded CLI session by name, the proxy, the worktree.
+   recorded CLI session by name, the proxy, the worktree and its HOME.
 2. **Refusals**, each naming its cause: no `reset`, `store` or `store_check`; a `confirmed` value not
    true; no `logged_in`; an unset `${NAME}` (its value never printed); a host in `base_url` or a
    `roles.<r>.base_url` that does not resolve to loopback (as nemesis requires);
@@ -376,16 +376,23 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    neither `lsof` nor `ss` available.
 3. **Environment.** Every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the
    names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, and `HOME` = an empty per-run
-   directory — so no tool picks up the owner's cloud, Git or registry credentials. Anything a tool
-   genuinely needs from the owner's home (an npm cache, a Docker config) is named in `pass_env`.
+   directory outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode
+   0700; a setup may link into it, e.g. a managed Python or a package store) — so no tool picks up
+   the owner's cloud, Git or registry credentials. Anything a tool genuinely needs from the owner's home
+   (an npm cache, a Docker config) is named in `pass_env`. `env` and `pass_env` may not name `HOME`
+   or `COMPOSE_PROJECT_NAME`.
 4. **Worktree.** A linked worktree at HEAD **outside** the repo (`$TMPDIR/sapu-live/<repo>-<run>`),
-   so no lookup that walks up the directory tree finds the repo's own `.env`. `live.setup` runs in it
-   under step 3's environment; afterwards `up` refuses when any symlink in the worktree resolves into
-   the repo's main checkout (a dependency directory linked from there would be written by the
-   instance).
+   so no lookup that walks up the directory tree finds the repo's own `.env`. `$TMPDIR/sapu-live` is
+   the user's own directory, mode 0700, never a symlink, and never inside the repo. `live.setup` runs
+   in the worktree under step 3's environment, each command bounded by the time left before the
+   lock's deadline (`failed: setup <cmd> timed out`), its output logged to a private file and every
+   secret value masked in the error quoted; afterwards `up` refuses when any symlink in the worktree, followed through every link
+   (broken ones too), resolves into the repo's main checkout or to a directory holding it (a
+   dependency directory linked from there would be written by the instance).
 5. **Ports.** `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which
-   `/sapu:init` fills with the repo's dev and E2E ports); `{port:<name>=<n>}` fixes one, and a taken
-   fixed port → refuse, naming the process holding it. When the worktree has a Compose file,
+   `/sapu:init` fills with the repo's dev and E2E ports; `port_range` is required whenever a
+   `{port:<name>}` is used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming
+   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse. When the worktree has a Compose file,
    `docker compose config --format json` must publish only this run's ports and name no
    `container_name`; otherwise refuse (a fixed host port or container name would collide with, or
    take over, the owner's stack).
@@ -425,8 +432,8 @@ new instance id. It makes no proving logins.
 
 **`down`** replays each stop record, sends SIGTERM to each process group and SIGKILL after 10 s,
 stops the proxy, closes the run's CLI sessions by name (never `close-all`: other projects share the
-CLI), kills the reaper, removes its own worktree (`--force` on that worktree only), `run.json` and the
-lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset.
+CLI), kills the reaper, removes its own worktree (`--force` on that worktree only) and its HOME,
+`run.json` and the lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset.
 
 **Beside a sapu sweep.** Separate ports, worktree, services and data let a journey cycle run while a
 sweep gates PRs, but browsers and dev servers take CPU from its gates. `sapu-merge.sh` appends
@@ -683,7 +690,8 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 
 | Event | Response |
 |---|---|
-| `up` refuses or fails | the step and the tool's own error are quoted; `down` runs; the cycle ends with that report (`/sapu:argus` chooses another lane); the owner's servers are untouched |
+| `up` refuses or fails | the step and the tool's own error are quoted, every secret value masked; `down` runs; the cycle ends with that report (`/sapu:argus` chooses another lane); the owner's servers are untouched |
+| A `setup` command outlives the lock's deadline | it is killed; `failed: setup <cmd> timed out`; `down` runs |
 | Another cycle holds the lock | refuse, naming its run and deadline |
 | The egress check finds a foreign endpoint | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |

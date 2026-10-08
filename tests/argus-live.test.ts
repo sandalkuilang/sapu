@@ -2,12 +2,12 @@
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
 import { expand, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -188,6 +188,20 @@ describe("argus-live config — validateLive", () => {
       expect(errorsOf((c) => (c.env.X = bad)).some((e) => e.includes("env.X")), bad).toBe(true);
     }
     expect(errorsOf((c) => (c.env.X = "$PW and ${_PW_2}"))).toEqual([]);
+  });
+
+  it("requires port_range whenever a {port:<name>} is used (a fixed port alone needs none)", () => {
+    expect(errorsOf((c) => delete c.port_range).some((e) => e.includes("port_range is required"))).toBe(true);
+    const c = example();
+    delete c.port_range;
+    const at: Record<string, number> = { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 };
+    const fixedOnly = JSON.parse(JSON.stringify(c).replace(/\{port:([a-z]+)\}/g, (_m: string, n: string) => `{port:${n}=${at[n]}}`));
+    expect(validateLive(fixedOnly).filter((e: string) => e.includes("port_range"))).toEqual([]);
+  });
+
+  it("refuses one port fixed for two names, and one name fixed at two ports", () => {
+    expect(errorsOf((c) => Object.assign(c.env, { A: "{port:db=5433}", B: "{port:cache=5433}" })).some((e) => e.includes("port 5433 is fixed for both db and cache"))).toBe(true);
+    expect(errorsOf((c) => Object.assign(c.env, { A: "{port:db=5433}", B: "{port:db=5440}" })).some((e) => e.includes("port db is fixed at both 5433 and 5440"))).toBe(true);
   });
 
   it("refuses a bad port_range and a malformed placeholder", () => {
@@ -624,6 +638,15 @@ describe("argus-live instance — ports", () => {
     expect(portNames(c)).toEqual({ names: ["api", "web", "redis", "smtp"], fixed: { pg: 5433 } });
     c.env.OTHER = "{port:pg=5440}";
     expect(() => portNames(c)).toThrow(/refused: port pg is fixed at both 5433 and 5440/);
+    c.env.OTHER = "{port:cache=5433}";
+    expect(() => portNames(c)).toThrow(/refused: port 5433 is fixed for both pg and cache/);
+  });
+
+  it("refuses, rather than crashing, with no range for a name, or one port fixed twice", async () => {
+    await expect(allocatePorts(["web"], {})).rejects.toThrow("refused: port_range is required for {port:web}");
+    const p = await freeRun(1);
+    await expect(allocatePorts([], { fixed: { a: p, b: p } })).rejects.toThrow(`refused: port ${p} is fixed for both a and b`);
+    expect(await allocatePorts([], { fixed: { a: p } })).toEqual({ a: p });
   });
 
   it("a port held by a listener, or answering on ::1 only, is not free", async () => {
@@ -674,11 +697,16 @@ describe("argus-live instance — ports", () => {
 });
 
 describe("argus-live instance — worktree, environment, setup", () => {
-  const worktrees: string[] = [];
   const saved = { ...process.env };
+  let tmp = "";
+  beforeEach(() => {
+    // Every worktree and HOME goes under $TMPDIR/sapu-live: a private TMPDIR per test.
+    tmp = tempDir();
+    process.env.TMPDIR = tmp;
+  });
   afterEach(() => {
-    for (const w of worktrees.splice(0)) rmSync(w, { recursive: true, force: true });
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
   });
   const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
   /** A repo with one commit, an ignored `.env` in its working tree. */
@@ -694,36 +722,76 @@ describe("argus-live instance — worktree, environment, setup", () => {
   };
   const runId = () => `20261008093000-${Math.random().toString(16).slice(2, 10).padEnd(8, "0")}`;
   const inside = (root: string, p: string) => {
-    const r = relative(realpathSync(root), p);
+    const r = relative(realpathSync(root), realpathSync(p));
     return r === "" || (!r.startsWith("..") && !r.startsWith("/"));
   };
-  const worktree = (main: string, id = runId()) => {
-    const wt = makeWorktree(main, id);
-    worktrees.push(wt);
-    return wt;
-  };
+  const later = (s: number) => Math.floor(Date.now() / 1000) + s;
+  const PATH = () => ({ PATH: process.env.PATH! });
+  const setup = (wt: string, steps: string[][], opts: Record<string, unknown> = {}) => runSetup(wt, { setup: steps }, PATH(), { deadline: later(600), ...opts });
+  const node = (code: string) => [process.execPath, "-e", code];
+  const link = (target: string, at: string) =>
+    node(`const fs = require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(at)}), { recursive: true }); fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(at)})`);
 
   it("makes a detached worktree at HEAD outside the repo, without the repo's ignored files", () => {
     const main = committed();
     const id = runId();
-    const wt = worktree(main, id);
+    const wt = makeWorktree(main, id);
     expect(wt).toBe(realpathSync(wt));
-    expect(wt).toBe(join(realpathSync(tmpdir()), "sapu-live", `${basename(main)}-${id}`));
+    expect(wt).toBe(join(realpathSync(tmp), "sapu-live", `${basename(main)}-${id}`));
     expect(inside(main, wt)).toBe(false);
     expect(git(wt, "rev-parse", "HEAD")).toBe(git(main, "rev-parse", "HEAD"));
     expect(readFileSync(join(wt, "app.txt"), "utf8")).toBe("app\n");
     expect(existsSync(join(wt, ".env"))).toBe(false);
+    expect(statSync(join(tmp, "sapu-live")).mode & 0o777).toBe(0o700);
     expect(() => makeWorktree(main, "../x")).toThrow(/run id/);
   });
 
-  it("makes an empty per-run HOME under .argus/live/<run>/home", () => {
+  it("tightens an existing sapu-live directory to 0700", () => {
+    mkdirSync(join(tmp, "sapu-live"), { mode: 0o755 });
+    chmodSync(join(tmp, "sapu-live"), 0o755);
+    makeHome(committed(), runId());
+    expect(statSync(join(tmp, "sapu-live")).mode & 0o777).toBe(0o700);
+  });
+
+  it("refuses a sapu-live that is a symlink (it could lead into the repo), and a TMPDIR inside the repo", () => {
+    const main = committed();
+    mkdirSync(join(main, "inside"));
+    symlinkSync(join(main, "inside"), join(tmp, "sapu-live"));
+    expect(() => makeWorktree(main, runId())).toThrow(/^refused: .*sapu-live is a symlink/);
+    expect(() => makeHome(main, runId())).toThrow(/^refused: .*sapu-live is a symlink/);
+    expect(readdirSync(join(main, "inside"))).toEqual([]);
+    process.env.TMPDIR = join(main, "inside");
+    expect(() => makeWorktree(main, runId())).toThrow(/^refused: .* would lie inside the repo/);
+    expect(() => makeHome(main, runId())).toThrow(/^refused: .* would lie inside the repo/);
+  });
+
+  it("makes an empty per-run HOME beside the worktree, outside the repo, mode 0700", () => {
     const main = committed();
     const id = runId();
     const home = makeHome(main, id);
-    expect(home).toBe(join(realpathSync(main), ".argus/live", id, "home"));
+    expect(home).toBe(join(realpathSync(tmp), "sapu-live", `${basename(main)}-${id}.home`));
+    expect(inside(main, home)).toBe(false);
+    expect(statSync(home).mode & 0o777).toBe(0o700);
     expect(readdirSync(home)).toEqual([]);
     writeFileSync(join(home, ".npmrc"), "x");
-    expect(() => makeHome(main, id)).toThrow(/^refused: .*home is not empty/);
+    expect(() => makeHome(main, id)).toThrow(/^refused: .*\.home is not empty/);
+  });
+
+  it("refuses a HOME path that is already a symlink", () => {
+    const main = committed();
+    const id = runId();
+    mkdirSync(join(tmp, "sapu-live"), { mode: 0o700 });
+    symlinkSync(main, join(tmp, "sapu-live", `${basename(main)}-${id}.home`));
+    expect(() => makeHome(main, id)).toThrow(/^refused: .*\.home is a symlink/);
+  });
+
+  it("a setup may link into the run's own HOME", () => {
+    const main = committed();
+    const id = runId();
+    const wt = makeWorktree(main, id);
+    const home = makeHome(main, id);
+    writeFileSync(join(home, "python"), "");
+    expect(() => setup(wt, [link(join(home, "python"), ".venv/bin/python")])).not.toThrow();
   });
 
   it("the environment holds only the listed variables, the expanded env, the run's Compose project and HOME", () => {
@@ -754,11 +822,11 @@ describe("argus-live instance — worktree, environment, setup", () => {
     process.env.ARGUS_TEST_LEAK = "1";
     const main = committed();
     const id = runId();
-    const wt = worktree(main, id);
+    const wt = makeWorktree(main, id);
     const home = makeHome(main, id);
     const env = instanceEnv({ config: {}, ports: {}, secrets: {}, runId: id, home });
     const dump = "require('fs').writeFileSync('env.json', JSON.stringify({ cwd: process.cwd(), env: process.env }))";
-    runSetup(wt, { setup: [[process.execPath, "-e", dump], [process.execPath, "-e", "require('fs').writeFileSync('$NOT_EXPANDED', '')"]] }, env);
+    runSetup(wt, { setup: [node(dump), node("require('fs').writeFileSync('$NOT_EXPANDED', '')")] }, env, { deadline: later(600) });
     const seen = JSON.parse(readFileSync(join(wt, "env.json"), "utf8"));
     expect(seen.cwd).toBe(wt);
     expect(seen.env).toMatchObject({ COMPOSE_PROJECT_NAME: `argus-${id}`, HOME: home });
@@ -766,19 +834,62 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(existsSync(join(wt, "$NOT_EXPANDED"))).toBe(true);
   });
 
-  it("a failing setup step is reported with its own error", () => {
-    const main = committed();
-    const wt = worktree(main);
-    expect(() => runSetup(wt, { setup: [[process.execPath, "-e", "console.error('boom'); process.exit(3)"]] }, { PATH: process.env.PATH! })).toThrow(/^failed: setup .* exited 3: boom/);
+  it("a failing setup step is reported with its own error, every secret value masked", () => {
+    const wt = makeWorktree(committed(), runId());
+    expect(() => setup(wt, [node("console.error('boom'); process.exit(3)")])).toThrow(/^failed: setup .* exited 3: boom/);
+    const leak = node("console.log('url postgres://app:hunter2@localhost/x'); console.error('token s3cr3t-value and hunter2'); process.exit(1)");
+    let msg = "";
+    try {
+      setup(wt, [[...leak.slice(0, 2), `${leak[2]} // hunter2`]], { secrets: { PW: "hunter2", TOKEN: "s3cr3t-value", EMPTY: "" } });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toMatch(/^failed: setup /);
+    expect(msg).not.toContain("hunter2");
+    expect(msg).not.toContain("s3cr3t-value");
+    expect(msg).toContain("token *** and ***");
+  });
+
+  it("a setup step is bounded by the lock's deadline", () => {
+    const wt = makeWorktree(committed(), runId());
+    const t0 = Date.now();
+    expect(() => setup(wt, [node("setTimeout(() => {}, 20000)")], { deadline: later(2) })).toThrow(/^failed: setup .* timed out/);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    expect(() => setup(wt, [node("require('fs').writeFileSync('ran', '')")], { deadline: later(-1) })).toThrow(/^failed: setup .* timed out/);
+    expect(existsSync(join(wt, "ran"))).toBe(false);
+    expect(() => runSetup(wt, { setup: [] }, PATH(), {})).toThrow(/deadline/);
   });
 
   it("after setup, a symlink into the main checkout is refused; one inside the worktree is fine", () => {
     const main = committed();
-    const wt = worktree(main);
-    const link = (target: string, at: string) => [process.execPath, "-e", `const fs = require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(at)}), { recursive: true }); fs.symlinkSync(${JSON.stringify(target)}, ${JSON.stringify(at)})`];
-    runSetup(wt, { setup: [link(join(wt, "app.txt"), "node_modules/.bin/app")] }, { PATH: process.env.PATH! });
-    expect(() => runSetup(wt, { setup: [link(join(main, "node_modules"), "deps/node_modules")] }, { PATH: process.env.PATH! })).toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
+    const wt = makeWorktree(main, runId());
+    setup(wt, [link(join(wt, "app.txt"), "node_modules/.bin/app"), link("../../app.txt", "node_modules/.bin/rel")]);
+    expect(() => setup(wt, [link(join(main, "node_modules"), "deps/node_modules")])).toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
     rmSync(join(wt, "deps"), { recursive: true });
-    expect(() => runSetup(wt, { setup: [link(main, "up")] }, { PATH: process.env.PATH! })).toThrow(/points into the main checkout/);
+    expect(() => setup(wt, [link(main, "up")])).toThrow(/points into the main checkout/);
+  });
+
+  describe("links the check must see through", () => {
+    const refusedAfter = (make: (main: string, wt: string) => string[]) => {
+      const main = committed();
+      const wt = makeWorktree(main, runId());
+      expect(() => setup(wt, [make(main, wt)])).toThrow(/points into the main checkout/);
+    };
+    it("a relative link", () => refusedAfter((main, wt) => link(relative(join(wt, "a"), join(main, "app.txt")), "a/rel")));
+    it("a broken link to a missing file in the repo", () => refusedAfter((main) => link(join(main, "missing/deep/file"), "broken")));
+    it("a chain through a broken link outside the worktree", () =>
+      refusedAfter((main) => {
+        const hop = tempDir();
+        symlinkSync(join(main, "missing"), join(hop, "b"));
+        return link(join(hop, "b"), "chain");
+      }));
+    it("a chain through a symlinked directory outside the worktree", () =>
+      refusedAfter((main) => {
+        const hop = tempDir();
+        symlinkSync(main, join(hop, "dir"));
+        return link(join(hop, "dir", "not-there"), "via-dir");
+      }));
+    it("a link to an ancestor of the repo", () => refusedAfter((main) => link(join(main, ".."), "parent")));
+    it("a link to /", () => refusedAfter(() => link("/", "root")));
   });
 });

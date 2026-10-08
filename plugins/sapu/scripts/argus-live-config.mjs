@@ -114,6 +114,11 @@ export function validateLive(c) {
     if (isInt(c.limits.max_cycle_minutes, 1)) need(c.limits.max_cycle_minutes <= MAX_CYCLE_MINUTES, `limits.max_cycle_minutes must be at most ${MAX_CYCLE_MINUTES}`);
   }
   placeholders(c, "", errs);
+  try {
+    if (portNames(c).names.length && !has("port_range")) errs.push("port_range is required whenever a {port:<name>} is used");
+  } catch (e) {
+    errs.push(e.message.replace(/^refused: /, ""));
+  }
   return errs;
 }
 
@@ -223,7 +228,8 @@ export function expand(value, { ports = {}, secrets = {} } = {}) {
 /**
  * The ports the config asks for, before anything is expanded: `names` = every `{port:<name>}` in
  * every string, in order of first appearance; `fixed` = `{name: n}` for each `{port:<name>=<n>}`
- * (a fixed name is not in `names`). A name fixed at two different ports is refused.
+ * (a fixed name is not in `names`). A name fixed at two different ports, and a port fixed for two
+ * names, are refused.
  */
 export function portNames(config) {
   const seen = [];
@@ -241,6 +247,11 @@ export function portNames(config) {
     else if (isObj(v)) Object.values(v).forEach(walk);
   };
   walk(config);
+  const owner = {};
+  for (const [name, n] of Object.entries(fixed)) {
+    if (Object.hasOwn(owner, n)) throw new Error(`refused: port ${n} is fixed for both ${owner[n]} and ${name}`);
+    owner[n] = name;
+  }
   return { names: seen.filter((n) => !Object.hasOwn(fixed, n)), fixed };
 }
 

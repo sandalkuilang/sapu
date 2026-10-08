@@ -130,6 +130,9 @@ Interfaces:
   `refused: port <n> (<name>) is taken by <process>` with the holder from `lsof -nP -iTCP:<n>
   -sTCP:LISTEN` (or `ss -ltnp`), `unknown` when neither is available.
 - Names come from every `{port:<name>}` in the expanded config strings (collect before expanding).
+- `validateLive` requires `port_range` whenever a `{port:<name>}` is used; `allocatePorts` refuses
+  (never crashes) without one. One port fixed for two names, or one name fixed at two ports, is
+  refused by both `portNames` and `allocatePorts`.
 
 - [ ] Tests: allocation avoids `reserved` and a port held by a test listener; a fixed taken port →
   refused naming the holder (the test's own node process); range exhaustion → refused; collecting
@@ -147,11 +150,16 @@ Interfaces:
 - `export function instanceEnv({config, ports, secrets, runId, home})` → a plain object holding ONLY
   `PATH, USER, SHELL, TMPDIR, LANG, LC_*` (from `process.env` when set), each `pass_env` name, every
   expanded `env` entry, `COMPOSE_PROJECT_NAME=argus-<runId>` (lower case, `[a-z0-9_-]`), and
-  `HOME=<home>` (an empty directory `.argus/live/<runId>/home` created under MAIN).
-- `export function runSetup(worktree, config, env)`: each `setup` argv via `execFileSync` with
-  `{cwd: worktree, env}`, no shell; then `refuseLinksIntoMain(worktree, main)`: walk the worktree
-  (skip `.git`), any symlink whose `realpath` is inside `<main>` → throws
-  `refused: <link> points into the main checkout`.
+  `HOME=<home>` (`makeHome(main, runId)`: an empty directory `$TMPDIR/sapu-live/<repo>-<runId>.home`,
+  mode 0700, outside MAIN, so a setup may link into it). `$TMPDIR/sapu-live` is created 0700 and
+  refused when it is a symlink, another user's, or inside MAIN (checked again after realpath).
+- `export function runSetup(worktree, config, env, {deadline, secrets, log})`: each `setup` argv via
+  `spawnSync` with `{cwd: worktree, env}`, no shell, its output appended to `log` (default
+  `<worktree>.setup.log`), each bounded by the time left before the lock's `deadline` (`failed:
+  setup <cmd> timed out`), every non-empty `secrets` value masked as `***` in any message; then
+  `refuseLinksIntoMain(worktree, main)`: walk the worktree (skip `.git`), any symlink whose target,
+  followed through every link (broken ones too), is inside `<main>` or contains it (an ancestor,
+  `/`) → throws `refused: <link> points into the main checkout`.
 
 - [ ] Tests: the worktree is outside MAIN, at HEAD, holds no gitignored file (a `.env` written in MAIN
   and ignored there is absent in the worktree); `instanceEnv` contains no other variable (set a
@@ -233,11 +241,12 @@ Interfaces:
 - `export function down(main, {runId})`: replays each stop record exactly (shell, recorded cwd and
   env); SIGTERM every recorded group (`process.kill(-pgid)`), SIGKILL after 10 s; kills the reaper;
   `git worktree remove --force <worktree>` only when `<worktree>` is the run's own (path under
-  `$TMPDIR/sapu-live/`); removes `run.json` and `lock.json`; appends `end`.
+  `$TMPDIR/sapu-live/`); removes the run's HOME (`$TMPDIR/sapu-live/<repo>-<runId>.home`) and its
+  `<worktree>.setup.log`; removes `run.json` and `lock.json`; appends `end`.
 - `export function recover(main, stale)`: for a stale lock: replays only stop records whose `cwd`
   exists and whose `env.COMPOSE_PROJECT_NAME` is `argus-<runId>` (others journalled, never run);
   kills a recorded group only when `ps -o command= -p <pgid>` still equals the recorded `cmdline`;
-  removes the old worktree; appends `end` for the old run.
+  removes the old worktree and its HOME; appends `end` for the old run.
 - Stale records (carried from the Task 2 review): `recover` (and `takeLock`'s return) scans every
   `.argus/live/claim-*.json` that has a `lock` field whose run is not the current lock's run,
   returns them all as stale records, and deletes each claim only after its recovery replayed. This

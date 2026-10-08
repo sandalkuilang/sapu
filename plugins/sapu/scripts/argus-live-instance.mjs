@@ -296,8 +296,15 @@ export function portHolder(port, { runner = run } = {}) {
  * refused, naming its holder. `probe` (default portFree) is a test seam.
  */
 export async function allocatePorts(names, { range, reserved = [], fixed = {}, probe = portFree, runner = run }) {
-  const [lo, hi] = range;
   const out = {};
+  const owner = {};
+  for (const [name, n] of Object.entries(fixed)) {
+    if (Object.hasOwn(owner, n)) throw new Error(`refused: port ${n} is fixed for both ${owner[n]} and ${name}`);
+    owner[n] = name;
+  }
+  const wanted = names.filter((n) => !Object.hasOwn(fixed, n));
+  if (wanted.length && !Array.isArray(range)) throw new Error(`refused: port_range is required for {port:${wanted[0]}}`);
+  const [lo, hi] = range ?? [0, -1];
   for (const [name, n] of Object.entries(fixed)) {
     if (reserved.includes(n)) throw new Error(`refused: port ${n} (${name}) is one of reserved_ports`);
     if (!(await probe(n))) throw new Error(`refused: port ${n} (${name}) is taken by ${portHolder(n, { runner })}`);
@@ -327,17 +334,56 @@ const within = (root, p) => {
   return r === "" || (r !== ".." && !r.startsWith(`..${path.sep}`) && !path.isAbsolute(r));
 };
 
-/** The real path of `p`, or, when it does not exist, its nearest existing ancestor's real path + the rest. */
-function realish(p) {
-  let rest = "";
-  for (let at = path.resolve(p); ; at = path.dirname(at)) {
-    try {
-      return path.join(fs.realpathSync.native(at), rest);
-    } catch {
-      if (path.dirname(at) === at) return path.resolve(p);
-      rest = path.join(path.basename(at), rest);
-    }
+/**
+ * The real path `p` leads to, following every symlink on the way even when the end is missing (a
+ * broken link, or a chain through one): the missing tail is appended to the real path reached.
+ */
+function resolveLink(p, depth = 0) {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    // missing, or a loop: resolved by hand below
   }
+  const parent = path.dirname(p);
+  if (parent === p || depth > 40) return p;
+  const at = path.join(resolveLink(parent, depth + 1), path.basename(p));
+  let st;
+  try {
+    st = fs.lstatSync(at);
+  } catch {
+    return at;
+  }
+  return st.isSymbolicLink() ? resolveLink(path.resolve(path.dirname(at), fs.readlinkSync(at)), depth + 1) : at;
+}
+
+const repoName = (realMain) => path.basename(realMain).replace(/[^A-Za-z0-9._-]/g, "-");
+
+/** Refuses a path that is a symlink, not a directory, or not the current user's. */
+function ownDir(dir) {
+  const st = fs.lstatSync(dir);
+  if (st.isSymbolicLink()) throw new Error(`refused: ${dir} is a symlink; remove it`);
+  if (!st.isDirectory()) throw new Error(`refused: ${dir} is not a directory`);
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`refused: ${dir} belongs to another user`);
+  if ((st.mode & 0o777) !== 0o700) fs.chmodSync(dir, 0o700);
+}
+
+/**
+ * `$TMPDIR/sapu-live`, private to this user (0700, never a symlink), holding every run's worktree and
+ * HOME outside the repo. Refused when it would lie inside the repo, before and after it exists.
+ */
+function liveRoot(realMain) {
+  const root = path.join(fs.realpathSync.native(os.tmpdir()), "sapu-live");
+  const inRepo = (p) => new Error(`refused: ${p} would lie inside the repo (TMPDIR points into it)`);
+  if (within(realMain, root)) throw inRepo(root);
+  try {
+    fs.mkdirSync(root, { mode: 0o700 });
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") throw e;
+  }
+  ownDir(root);
+  const real = fs.realpathSync.native(root);
+  if (within(realMain, real)) throw inRepo(real);
+  return real;
 }
 
 /**
@@ -348,22 +394,31 @@ function realish(p) {
 export function makeWorktree(main, runId, { runner = run } = {}) {
   runIdOk(runId);
   const realMain = fs.realpathSync.native(main);
-  const parent = path.join(fs.realpathSync.native(os.tmpdir()), "sapu-live");
-  const wt = path.join(parent, `${path.basename(realMain).replace(/[^A-Za-z0-9._-]/g, "-")}-${runId}`);
-  if (within(realMain, wt)) throw new Error(`refused: the worktree ${wt} would lie inside the repo (TMPDIR points into it)`);
-  fs.mkdirSync(parent, { recursive: true });
+  const wt = path.join(liveRoot(realMain), `${repoName(realMain)}-${runId}`);
   const r = runner(["git", "-C", main, "worktree", "add", "--detach", wt, "HEAD"]);
   if (r.error || r.status !== 0) throw new Error(`failed: git worktree add ${wt}: ${((r.error && r.error.message) || r.stderr || "").trim()}`);
-  return fs.realpathSync.native(wt);
+  const real = fs.realpathSync.native(wt);
+  if (within(realMain, real)) throw new Error(`refused: the worktree ${real} lies inside the repo`);
+  return real;
 }
 
-/** The run's own empty HOME, `<MAIN>/.argus/live/<runId>/home` (mode 0700); refused when not empty. */
+/**
+ * The run's own empty HOME, `$TMPDIR/sapu-live/<repo>-<runId>.home` (mode 0700), beside the worktree
+ * and outside the repo, so a setup may link into it (a managed Python, a package store). Refused
+ * when it is a symlink, another user's, or not empty.
+ */
 export function makeHome(main, runId) {
   runIdOk(runId);
-  const home = path.join(fs.realpathSync.native(main), ".argus", "live", runId, "home");
-  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  const realMain = fs.realpathSync.native(main);
+  const home = path.join(liveRoot(realMain), `${repoName(realMain)}-${runId}.home`);
+  try {
+    fs.mkdirSync(home, { mode: 0o700 });
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") throw e;
+  }
+  ownDir(home);
   if (fs.readdirSync(home).length) throw new Error(`refused: ${home} is not empty`);
-  return home;
+  return fs.realpathSync.native(home);
 }
 
 /** What every command inherits from the session: nothing that names an account or a credential. */
@@ -395,8 +450,9 @@ export function instanceEnv({ config, ports, secrets, runId, home }) {
 
 /**
  * Throws `refused: <link> points into the main checkout` for any symlink in the worktree (its `.git`
- * aside) whose target lies in <MAIN>: the instance would write there (a dependency directory linked
- * from the owner's checkout). Symlinked directories are not followed.
+ * aside) whose target lies in <MAIN> or holds it (an ancestor, `/`): the instance would write there
+ * (a dependency directory linked from the owner's checkout). Targets are followed through every
+ * link, broken ones included; symlinked directories inside the worktree are not walked.
  */
 export function refuseLinksIntoMain(worktree, main) {
   const realMain = fs.realpathSync.native(main);
@@ -407,25 +463,62 @@ export function refuseLinksIntoMain(worktree, main) {
       if (dir === worktree && d.name === ".git") continue;
       const p = path.join(dir, d.name);
       if (d.isSymbolicLink()) {
-        if (within(realMain, realish(path.resolve(dir, fs.readlinkSync(p))))) throw new Error(`refused: ${p} points into the main checkout`);
+        const target = resolveLink(path.resolve(dir, fs.readlinkSync(p)));
+        if (within(realMain, target) || within(target, realMain)) throw new Error(`refused: ${p} points into the main checkout`);
       } else if (d.isDirectory()) stack.push(p);
     }
   }
 }
 
+/** `text` with every non-empty secret value replaced by `***` (longest first). */
+export function redact(text, secrets = {}) {
+  const values = [...new Set(Object.values(secrets).filter((v) => typeof v === "string" && v !== ""))].sort((a, b) => b.length - a.length);
+  return values.reduce((t, v) => t.split(v).join("***"), String(text ?? ""));
+}
+
 /** The last lines of a command's output, for an error message. */
 const tail = (text) => (text || "").trim().split("\n").slice(-5).join(" | ").slice(-500);
 
+/** What `file` gained from byte `from` on (at most its last 64 KiB). */
+function readFrom(file, from) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(from, size - 64 * 1024);
+    const buf = Buffer.alloc(Math.max(0, size - start));
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
- * Runs each `setup` argv in the worktree under `env`, without a shell; then refuses a symlink into
- * <MAIN>. Throws `failed: setup <argv> exited <code>: <its output's last lines>`.
+ * Runs each `setup` argv in the worktree under `env`, without a shell, its output appended to `log`
+ * (a file, never a pipe: a lingering grandchild cannot hold the run open); each step is bounded by
+ * the time left before `deadline` (the lock's, epoch seconds). Then refuses a symlink into <MAIN>.
+ * Throws `failed: setup <argv> exited <code>: <its output's last lines>` or `failed: setup <argv>
+ * timed out`, every non-empty `secrets` value masked.
  */
-export function runSetup(worktree, config, env, { main = findMain(worktree), runner = run } = {}) {
+export function runSetup(worktree, config, env, { main = findMain(worktree), runner = run, secrets = {}, deadline, log = `${worktree}.setup.log` } = {}) {
+  if (!Number.isInteger(deadline)) throw new Error("failed: runSetup needs the lock's deadline (epoch seconds)");
   if (!main) throw new Error(`failed: no main checkout found for ${worktree}`);
   for (const argv of config.setup ?? []) {
-    const r = runner(argv, { cwd: worktree, env });
-    if (r.error) throw new Error(`failed: setup ${argv.join(" ")}: ${r.error.message}`);
-    if (r.status !== 0) throw new Error(`failed: setup ${argv.join(" ")} exited ${r.status ?? r.signal}: ${tail(r.stderr || r.stdout)}`);
+    const shown = redact(argv.join(" "), secrets);
+    const left = deadline * 1000 - Date.now();
+    if (left <= 0) throw new Error(`failed: setup ${shown} timed out (the cycle's deadline passed)`);
+    const fd = fs.openSync(log, "a", 0o600);
+    const from = fs.fstatSync(fd).size;
+    let r;
+    try {
+      r = runner(argv, { cwd: worktree, env, stdio: ["ignore", fd, fd], timeout: left, killSignal: "SIGKILL" });
+    } finally {
+      fs.closeSync(fd);
+    }
+    const out = () => tail(redact(readFrom(log, from), secrets));
+    if (r.error && r.error.code === "ETIMEDOUT") throw new Error(`failed: setup ${shown} timed out (the cycle's deadline): ${out()}`);
+    if (r.error) throw new Error(`failed: setup ${shown}: ${redact(r.error.message, secrets)}`);
+    if (r.status !== 0) throw new Error(`failed: setup ${shown} exited ${r.status ?? r.signal}: ${out()}`);
   }
   refuseLinksIntoMain(worktree, main);
 }
