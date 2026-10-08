@@ -5,6 +5,7 @@
 // JSON, not YAML: the plugin has no dependencies. Unknown keys are errors at every level (a typo must
 // not silently drop a setting, as in the sapu contract). Secrets come only from `env_file`, never from
 // the process environment, and no error message ever holds a secret's value.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -461,15 +462,24 @@ export function parseEnvFile(text) {
   return out;
 }
 
-/** {config, errors, secrets} from `<main>/.argus/live.json` and `<main>/<env_file>`. Never throws. */
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+/**
+ * {config, errors, secrets, digest} from `<main>/.argus/live.json` and `<main>/<env_file>`. `digest` =
+ * {live, env_file}: the sha256 of each file's bytes as read (null when not read), so a run can tell
+ * either changed since its `up`. Never throws.
+ */
 export function loadLive(main) {
   const file = path.join(main, LIVE_FILE);
+  const digest = { live: null, env_file: null };
   let config;
   try {
-    config = JSON.parse(fs.readFileSync(file, "utf8"));
+    const raw = fs.readFileSync(file, "utf8");
+    digest.live = sha256(raw);
+    config = JSON.parse(raw);
   } catch (e) {
     const why = e && e.code === "ENOENT" ? "is missing (/sapu:init writes it)" : e instanceof SyntaxError ? `is not valid JSON: ${e.message}` : `cannot be read: ${e.message}`;
-    return { config: null, errors: [`${LIVE_FILE} ${why}`], secrets: {} };
+    return { config: null, errors: [`${LIVE_FILE} ${why}`], secrets: {}, digest };
   }
   const errors = validateLive(config);
   let secrets = {};
@@ -486,11 +496,15 @@ export function loadLive(main) {
         // Real paths on both sides: a symlink out of the repo must not pass as a file inside it.
         const real = fs.realpathSync(path.resolve(main, rel));
         if (outside(fs.realpathSync(main), real)) errors.push(inside);
-        else secrets = parseEnvFile(fs.readFileSync(real, "utf8"));
+        else {
+          const raw = fs.readFileSync(real, "utf8");
+          digest.env_file = sha256(raw);
+          secrets = parseEnvFile(raw);
+        }
       } catch (e) {
         errors.push(`env_file ${rel} ${e && e.code === "ENOENT" ? "is missing" : `cannot be read: ${e.message}`}`);
       }
     }
   }
-  return { config, errors, secrets };
+  return { config, errors, secrets, digest };
 }

@@ -2,6 +2,7 @@
 // (.argus/live.json) is validated and expanded, and the lock and live log it keeps match what
 // sapu-merge.sh's live_overlap reads.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:net";
@@ -42,6 +43,7 @@ import {
   startEventsFollower,
   startReaper,
   status,
+  statusJson,
   takeLock,
   TEARDOWN_STEPS,
   up,
@@ -342,6 +344,16 @@ describe("argus-live config — loadLive", () => {
     expect(r.errors).toEqual([]);
     expect(r.config.store).toBe("app_explore");
     expect(r.secrets).toEqual({ PW: "pw", DB_PW: "db" });
+  });
+
+  it("digests the two files it read (sha256 of their bytes), so a run can tell they changed since up", () => {
+    const main = withLive(example(), "PW=pw\n");
+    const sha = (t: string) => createHash("sha256").update(t).digest("hex");
+    expect(loadLive(main).digest).toEqual({ live: sha(JSON.stringify(example())), env_file: sha("PW=pw\n") });
+    writeFileSync(join(main, ".argus/live.env"), "PW=pw2\n");
+    expect(loadLive(main).digest.env_file).toBe(sha("PW=pw2\n"));
+    expect(loadLive(withLive({ ...example(), env_file: undefined })).digest.env_file).toBeNull();
+    expect(loadLive(tempDir()).digest).toEqual({ live: null, env_file: null });
   });
 
   it("reports a missing file, bad JSON and schema errors without throwing", () => {
@@ -2453,6 +2465,11 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, expectListen: [41003], runner: lsof(listing) }))).toBe("failed: the socket listing shows no listener of the run on 41003; it cannot be trusted");
     });
 
+    it("no process of the run left while base_url's port should be served by one: the listing cannot be trusted (never a silent pass)", async () => {
+      expect(await message(checkEgress({ pids: [], allowed: [], samples: 1, expectListen: [41002] }))).toBe("failed: no process of the run is left to list, yet one should serve port 41002; the listing cannot be trusted");
+      expect(await message(checkEgress({ pids: [], allowed: [], samples: 1 }))).toBe("ok"); // a one-sample check while entries start expects no listener
+    });
+
     it("reads ss when lsof is missing, skipping listeners and connections to them", async () => {
       const ss = [
         'LISTEN 0 511 127.0.0.1:41002 0.0.0.0:* users:(("node",pid=700,fd=20))',
@@ -3342,6 +3359,57 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(balanced(main)).toBe(true);
   }, 60000);
 
+  it("up --fresh and renew refuse once .argus/live.json or its env_file changed since up (run down and up again); down reports it and tears down", async () => {
+    const { main } = repo();
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    expect(runJson(main).digest).toEqual(loadLive(main).digest);
+    const live = join(main, ".argus/live.json");
+    const text = readFileSync(live, "utf8");
+    writeFileSync(live, `${text}\n`);
+    for (const p of [up(main, opts({ fresh: true })), renewRun(main, { runner: noDocker })]) expect(await message(p)).toBe("refused: .argus/live.json changed since up; run down and up again");
+    writeFileSync(live, text);
+    writeFileSync(join(main, ".argus/live.env"), `PW=${PW}\nX=1\n`);
+    expect(await message(renewRun(main, { runner: noDocker }))).toBe("refused: .argus/live.env changed since up; run down and up again");
+    const { report } = await down(main, { runId: r.runId, runner: noDocker });
+    expect(report).toContain(".argus/live.env changed since up: the stops were replayed with its values as they are now");
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
+  it("up --fresh and renew refuse a cycle whose deadline passed (run down)", async () => {
+    const { main } = repo();
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    const l = readLock(main);
+    const past = Math.floor(Date.now() / 1000) - 5;
+    writeFileSync(join(main, ".argus/live/lock.json"), `${JSON.stringify({ ...l, start: past - 60, deadline: past })}\n`);
+    const why = `refused: the deadline of cycle ${r.runId} passed at ${new Date(past * 1000).toISOString()}; run down`;
+    for (const p of [up(main, opts({ fresh: true })), renewRun(main, { runner: noDocker })]) expect(await message(p)).toBe(why);
+    await down(main, { runId: r.runId, runner: noDocker });
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
+  it("up and up --fresh return the summary the orchestrator reads (never run.json), which statusJson repeats; internal ports stay out of ports and origins", async () => {
+    const { main } = repo();
+    expect(await statusJson(main)).toEqual({ runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null });
+    const r = await up(main, opts());
+    const rec = runJson(main);
+    reapers.push(rec.reaper);
+    const want = { runId: rec.runId, instanceId: rec.instanceId, deadline: readLock(main).deadline, baseUrl: `http://localhost:${rec.ports.web}`, origins: rec.origins, ports: rec.ports, worktree: rec.worktree };
+    expect(r).toEqual(want);
+    expect(Object.keys(r)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);
+    expect(rec.internal).toEqual({});
+    expect(rec.baseUrl).toBe(want.baseUrl);
+    expect(await statusJson(main)).toEqual(want);
+    const f = await up(main, opts({ fresh: true }));
+    expect(f).toEqual({ ...want, instanceId: runJson(main).instanceId });
+    // A port of the run's own (the proxy's, phase 3) lives in `internal`: never in ports or origins.
+    writeRunFiles(main, { ...runJson(main), internal: { proxy: 41999 } });
+    expect(await statusJson(main)).toEqual({ ...want, instanceId: f.instanceId });
+    await down(main, { runId: r.runId, runner: noDocker });
+    expect(balanced(main)).toBe(true);
+  }, 60000);
+
   describe("a down racing up or up --fresh", () => {
     /** Calls `down` once, from inside the step line `at` (so it runs while that `up` goes on). */
     const raceAt = (main: string, at: RegExp) => {
@@ -3417,7 +3485,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       const worktree = makeWorktree(main, l.runId);
       const home = makeHome(main, l.runId);
       const env = { PATH: process.env.PATH!, HOME: home, COMPOSE_PROJECT_NAME: `argus-${l.runId}` };
-      writeRunFiles(main, { runId: l.runId, instanceId: "i-1", worktree, home, ports: { cache: web + 1, web }, origins: [], env, since: Date.now(), groups: [], stops: [] });
+      writeRunFiles(main, { runId: l.runId, instanceId: "i-1", worktree, home, ports: { cache: web + 1, web }, origins: [], env, since: Date.now(), digest: loadLive(main).digest, groups: [], stops: [] });
       const rec = runJson(main);
       rec.groups = [{ name: "web", pgid: p.pid, cmdline: "node server.mjs", ...(shift === null ? {} : { started: lstart(p.pid!, shift) }) }];
       writeFileSync(join(main, ".argus/live/run.json"), JSON.stringify(rec));
@@ -3519,9 +3587,16 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(u.out).toMatch(/^step 11 run files: /m);
       reapers.push(runJson(main).reaper);
       const runId = runJson(main).runId;
+      // The last line is the summary, as JSON: all the orchestrator needs.
+      const summary = JSON.parse(u.out.trim().split("\n").at(-1)!);
+      expect(Object.keys(summary)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);
+      expect(summary).toMatchObject({ runId, instanceId: runJson(main).instanceId, worktree: runJson(main).worktree });
       const st = go(["status"]);
       expect(st.code).toBe(0);
       expect(st.out).toContain(runId);
+      const sj = go(["status", "--json"]);
+      expect(sj.code).toBe(0);
+      expect(JSON.parse(sj.out)).toEqual(summary);
       const again = go(["up"]);
       expect(again.code).toBe(1);
       expect(again.out).toMatch(new RegExp(`^refused: cycle ${runId} holds the lock until `, "m"));

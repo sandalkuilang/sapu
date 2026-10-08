@@ -21,7 +21,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expand, expandConfig, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, portNames, secretEnv } from "./argus-live-config.mjs";
+import { expand, expandConfig, LIVE_FILE, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, portNames, secretEnv } from "./argus-live-config.mjs";
 import { findMain, loadContract } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
@@ -2169,7 +2169,11 @@ const DATASTORE_SOCKET = /^(\.s\.PGSQL\.\d+|mysql[^/]*\.sock|mysqld[^/]*\.sock|r
  */
 export async function checkEgress({ pids, allowed = [], runner = run, lookup = (h) => dns.promises.lookup(h, { all: true }), samples = 5, intervalMs = 500, expectListen = [], runDirs = [], main, contract }) {
   const want = [...new Set((pids ?? []).filter((p) => Number.isInteger(p) && p > 0))];
-  if (!want.length) return;
+  if (!want.length) {
+    // Nothing to list passes everything: only right while no listener is expected.
+    if (expectListen.length) throw new Error(`failed: no process of the run is left to list, yet one should serve port ${expectListen.join(", ")}; the listing cannot be trusted`);
+    return;
+  }
   const ok = new Set();
   for (const a of allowed) {
     const [h, p] = splitAddr(a);
@@ -2394,7 +2398,7 @@ export function writeRunFiles(main, state, { runner = run, secrets = {}, create 
     state.runId,
     (prev) => {
       const reaper = state.reaper !== undefined ? state.reaper : prev ? prev.reaper : undefined;
-      return { ...state, worktree: wt, ports: state.ports ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [], ...(reaper === undefined ? {} : { reaper }) };
+      return { ...state, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions: state.sessions ?? [], ...(reaper === undefined ? {} : { reaper }) };
     },
     { create },
   );
@@ -2783,6 +2787,11 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     note(`run.json names cycle ${rec.runId}, not ${runId}: left as it is`);
     rec = null;
   }
+  if (rec && rec.digest) {
+    const now = loadLive(main);
+    if (now.digest.live !== rec.digest.live) note(`${LIVE_FILE} changed since up: down works from run.json as recorded`);
+    if (now.digest.env_file !== rec.digest.env_file) note(`${(now.config && now.config.env_file) || "the env_file"} changed since up: the stops were replayed with its values as they are now`);
+  }
   await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh: Boolean(record), note });
   await releaseLock(main, runId, claimWaitMs, () => {
     // Synchronous: the end line is written before the claim is released.
@@ -3043,11 +3052,11 @@ async function tearDown(main, state, { secrets, runner, log }) {
  * check and the Docker runtime gate; 11 the instance id. Any refusal or failure after the lock → `down`
  * (an end line) and the error rethrown, tagged with its `step`. Ports are allocated at step 3: every
  * command's environment names them. `say` gets one line per step; `runner`, `lookup` and `ownerHome`
- * are test seams. Returns {runId, instanceId, worktree, ports, baseUrl}.
+ * are test seams. Returns the run's summary (summaryOf).
  */
 export async function up(main, { fresh = false, runner = run, lookup = defaultLookup, ownerHome = os.homedir(), say = () => {} } = {}) {
   if (fresh) return upFresh(main, { runner, lookup, say });
-  const { config, errors, secrets } = loadLive(main);
+  const { config, errors, secrets, digest } = loadLive(main);
   const max = config && config.limits && config.limits.max_cycle_minutes;
   if (!Number.isInteger(max)) throw atStep(new Error(`refused: .argus/live.json: ${errors.join("; ") || "limits.max_cycle_minutes is missing"}`), "1 lock");
   let lock;
@@ -3058,7 +3067,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, origins: [], env: null, since: null, events: null, composeServices: [], composePorts: [] };
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, internal: {}, origins: [], baseUrl: null, env: null, since: null, events: null, digest, composeServices: [], composePorts: [] };
   // Only the first write creates run.json: a later one finding it gone means a `down` removed it.
   let created = false;
   const save = () => {
@@ -3107,6 +3116,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     state.ports = ports;
     const x = expandConfig(config, { ports: { ...ports }, secrets });
     state.origins = originsOf(x, ports);
+    state.baseUrl = x.base_url;
     state.home = makeHome(main, runId);
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
@@ -3148,7 +3158,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     state.instanceId = randomBytes(8).toString("hex");
     save();
     log(`step 11 run files: instance ${state.instanceId}; base_url ${x.base_url}; reaper ${state.reaper}`);
-    return { runId, instanceId: state.instanceId, worktree: state.worktree, ports, baseUrl: x.base_url };
+    return summaryOf(lock, state);
   } catch (e) {
     log(`step ${step}: ${e.message}`);
     await tearDown(main, state, { secrets, runner, log });
@@ -3160,12 +3170,17 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
 function current(main) {
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
+  if (lock.deadline * 1000 <= Date.now()) throw new Error(`refused: the deadline of cycle ${lock.runId} passed at ${iso(lock.deadline)}; run down`);
   const rec = readRun(main);
   if (!rec || rec.runId !== lock.runId || typeof rec.worktree !== "string" || !rec.env) throw new Error(`refused: run.json does not hold the instance of cycle ${lock.runId} (it is still starting, or it failed)`);
   if (rec.closing) throw new Error(`refused: cycle ${lock.runId} is being torn down`);
   // An instance id is set only once `up` (or `up --fresh`) finished every step: anything less was never checked whole.
   if (!rec.instanceId) throw new Error(`refused: cycle ${lock.runId}'s up did not finish; run down`);
-  const { config, errors, secrets } = loadLive(main);
+  const { config, errors, secrets, digest } = loadLive(main);
+  // The run was checked against the files as they were at `up`: a change is checked only by a new `up`.
+  const was = rec.digest || {};
+  const changed = was.live !== digest.live ? LIVE_FILE : was.env_file !== digest.env_file ? (config && config.env_file) || "the env_file" : null;
+  if (changed) throw new Error(`refused: ${changed} changed since up; run down and up again`);
   if (errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
   return { lock, rec, config, secrets };
 }
@@ -3219,7 +3234,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     state.instanceId = randomBytes(8).toString("hex");
     save();
     log(`fresh: instance ${state.instanceId}; store reset, every entry healthy, egress and the Docker runtime gate passed`);
-    return { runId, instanceId: state.instanceId, worktree: rec.worktree, ports: rec.ports, baseUrl: x.base_url };
+    return summaryOf(lock, state);
   } catch (e) {
     log(`${step}: ${e.message}`);
     await tearDown(main, state, { secrets, runner, log });
@@ -3254,6 +3269,23 @@ export async function renewRun(main, { runner = run, lookup = defaultLookup, say
     }
     throw e;
   }
+}
+
+/**
+ * What the orchestrator reads of a run, never run.json itself, and free of secrets: {runId, instanceId,
+ * deadline (epoch seconds), baseUrl, origins, ports, worktree}. `up` and `up --fresh` return it (the CLI
+ * prints it as their last line) and `status --json` repeats it.
+ */
+function summaryOf(lock, rec) {
+  return { runId: lock.runId, instanceId: rec.instanceId ?? null, deadline: lock.deadline, baseUrl: rec.baseUrl ?? null, origins: rec.origins ?? [], ports: rec.ports ?? {}, worktree: rec.worktree ?? null };
+}
+
+/** `status --json`: the running cycle's summary (summaryOf); every field empty when none runs. */
+export function statusJson(main) {
+  const lock = readLock(main);
+  if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null };
+  const rec = readRun(main);
+  return summaryOf(lock, rec && rec.runId === lock.runId ? rec : {});
 }
 
 /** `status`: the run id, deadline, instance, worktree, ports and each recorded group's state, as lines. */

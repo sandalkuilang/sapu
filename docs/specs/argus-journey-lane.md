@@ -542,7 +542,8 @@ defence in depth and not enforcement:
    inbound and not counted. A listing that cannot be trusted fails `up`: `lsof` exiting 1 with an
    error, or no listener of the run (the port of `base_url`, when the app serves it from the host and
    not through a port a Compose service publishes, which the Docker daemon serves) in the first
-   sample. Repeated at every `renew`.
+   sample, or no process of the run left to list at all while one should serve it (an empty listing
+   would pass anything). Repeated at every `renew`.
    Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
    docker:up`), over the window since `up` began (`since`: the daemon's own clock, `docker info`,
    read at step 3, so a second's tolerance is enough). The run's own objects carry the label
@@ -576,20 +577,53 @@ defence in depth and not enforcement:
     followed by a check that the browser's requests reached only the run's origins and
     `allow_origins` — any other origin (e.g. a redirect to the owner's own server) → refuse, naming
     it. The proving sessions are then closed.
-11. **Run files.** `.argus/live/run.json` (run id, instance id, process groups, stop records, ports,
-    origins, worktree, tokens, session names); a detached **reaper** started with the run id,
-    which runs `down` at the deadline unless `renew` moved it, and exits without acting when the lock
-    names another run.
+11. **Run files.** `.argus/live/run.json` gets its instance id; a detached **reaper**, started with
+    the run id as soon as run.json first exists (step 1), runs `down` at the deadline unless `renew`
+    moved it, and exits without acting when the lock names another run. `up` ends by printing the
+    run's **summary**, one line of JSON free of secrets — `{runId, instanceId, deadline, baseUrl,
+    origins, ports, worktree}` (`deadline` in epoch seconds) — and `status --json` repeats it: the
+    orchestrator reads that, never run.json.
+
+    **`run.json`** (mode 0600, under the gitignored `.argus/`; written from step 1 on, so a session that
+    dies mid-`up` leaves a record for the reaper and for recovery). Every write is a read-modify-write
+    under the run's lock claim (`down` above). This is its one schema:
+
+    | Key | Holds | Written by |
+    |---|---|---|
+    | `runId` | the run id | `up` step 1 |
+    | `digest` | `{live, env_file}`: sha256 of `.argus/live.json` and of the env_file as `up` read them | `up` step 1 |
+    | `reaper` | the reaper's pid | `up` step 1 (the reaper's start) |
+    | `ports` | `{<name>: port}` of every `{port:<name>}`: what pages and processes use | `up` step 3 |
+    | `internal` | `{<name>: port}` the run's own machinery uses (the proxy, phase 3): never in `ports` or the origins | `up` step 3; the proxy's start |
+    | `origins` | the run's origins (above), from `ports` only | `up` step 3 |
+    | `baseUrl` | `base_url`, expanded | `up` step 3 |
+    | `home` | the run's HOME | `up` step 3 |
+    | `env` | the instance environment, secret values included: stop records are replayed with it | `up` step 3 |
+    | `since` | the daemon's clock at step 3 (epoch ms; the local clock without a daemon) | `up` step 3 |
+    | `events` | the events follower's file, or null without a daemon | `up` step 3 |
+    | `worktree` | the worktree's absolute real path (null before it exists); the guard reads it | `up` step 4 |
+    | `composeServices`, `composePorts` | the Compose projects' service names, and the host ports they publish | `up` step 5 |
+    | `groups` | `[{name, pgid, started, cmdline, members: [{pid, started, cmdline}], exited}]`: every process group the run started (setup steps, the follower, `reset`, start entries), recorded as it starts; members and command lines re-read from `ps` at every write, secret values masked | every start; `up --fresh` drops those it stopped |
+    | `stops` | `[{name, cmd, cwd, env}]`: each start entry's stop, as `down` replays it (`cmd` holds variable references, never a secret value) | every start of an entry with `stop`; `up --fresh` |
+    | `instanceId` | set once `up` (or `up --fresh`) passed every step; null meanwhile | `up` step 11, `up --fresh` |
+    | `sessions`, tokens | the run's CLI sessions and their tokens (§9) | phase 3 |
+    | `closing` | true once a `down` sealed the record | `down` |
 
 **`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that + the
 same 15 min grace as the first deadline (so a short cycle can still renew), and
 appends `<run id> deadline <epoch>` to `sapu-live.log`; the cycle renews after each explorer returns and before each repro. Reaching the cap ends the cycle;
 candidates not yet reproduced are journalled `not reproduced: harness`.
 
-**`up --fresh`** (between repro runs) keeps the lock, worktree, dependencies, ports, proxy and reaper:
-it stops every `start` entry (running its `stop`), starts the `phase: store` entries, runs
-`store_check` and `reset`, starts the rest, runs `store_check` and the egress check again, and takes a
-new instance id. It makes no proving logins.
+**`up --fresh`** (between repro runs) keeps the lock, worktree, dependencies, ports, proxy, reaper,
+setup groups and events follower: it stops every `start` entry (running its `stop`), starts the
+`phase: store` entries, runs `store_check` and `reset`, starts the rest, runs `store_check`, the
+egress check and the Docker runtime gate again, takes a new instance id, and prints the summary. It
+makes no proving logins.
+
+`up --fresh` and `renew` refuse, leaving the run as it is for `down`, a cycle whose `up` did not finish
+(no instance id), whose deadline passed, that a `down` sealed, or whose `.argus/live.json` or env_file
+changed since `up` (`refused: .argus/live.json changed since up; run down and up again`: the run was
+checked against the files as they were; `down` reports such a change and tears down as recorded).
 
 **`down`** first seals `run.json` (every write of it is a read-modify-write under the run's lock
 claim, refused once the lock no longer names the run, once `down` sealed it, or once `down` removed
@@ -894,10 +928,11 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | `down` or recovery cannot remove something (a read-only module cache, a directory it may not write) | read-only trees are made writable first (symlinks not followed); what still cannot be removed is named in the report; `run.json`, the lock, the end line and the stale run's claim are finished anyway, so the next `up` is not blocked |
 | A recorded process group now runs something else (its pid reused by the owner's process) | not killed; named in the report |
 
-`run.json` (mode 0600, under the gitignored `.argus/`) holds the run's expanded environment, secret
-values included (an `env` value that names `${NAME}` holds the value): its stop records are replayed
-with exactly that environment. `down` and recovery remove it; shell fields keep only references
-(`ARGUS_SECRET_<NAME>`), and command lines recorded from `ps` are stored with secret values masked.
+`run.json` (§8 step 11) holds the run's expanded environment, secret values included (an `env` value
+that names `${NAME}` holds the value), so its stop records replay with exactly that environment; it is
+mode 0600 under the gitignored `.argus/`, and `down` and recovery remove it. Shell fields keep only
+references (`ARGUS_SECRET_<NAME>`), and command lines recorded from `ps` are stored with secret values
+masked.
 
 ## 13. Cost
 
@@ -1030,7 +1065,7 @@ Elsewhere:
 | `plugins/sapu/skills/argus/reference.md` | §4.1 note: UI journeys complement the HTTP rule; §9 state: `.argus/live/`, `journeys.json`, and a journey cycle's `run.log` fields (`fraud=-`) |
 | `plugins/sapu/skills/argus/standards.md` | Nielsen's ten heuristics; workflow-net soundness; the cognitive walkthrough |
 | `plugins/sapu/agents/ui-explorer.md` | new agent |
-| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `up --fresh`, `down`, `renew`, `status`, `slot`, `pw`, `intake`, `repro`, `map-check`, `scrub`, the filtering proxy |
+| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `up --fresh`, `down`, `renew`, `status [--json]`, `slot`, `pw`, `intake`, `repro`, `map-check`, `scrub`, the filtering proxy |
 | `plugins/sapu/scripts/sapu-merge.sh` | ` live=1` on gates-log lines overlapping `sapu-live.log`; excluded from flake proofs |
 | `plugins/sapu/scripts/sapu-contract.mjs` | `journey` in `SKILLS`; `labels.needsOwner` |
 | `plugins/sapu/scripts/sapu-guard.mjs` | §11 |
