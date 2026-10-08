@@ -601,6 +601,15 @@ could use them.
 - No subagent writes git's own files: a `.git` file or directory (and its content,
   e.g. `.git/hooks/`), `~/.gitconfig`, `~/.config/git/`, nor `git config --global`/`--system`/
   `--file <a git file>`.
+- No subagent writes a plugin agents run under, through the file tools, MCP tools or the Bash
+  write forms: the plugin's own folder (`CLAUDE_PLUGIN_ROOT`, and the guard's own plugin root, also
+  under `--plugin-dir`), Claude Code's plugin store (`<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/`:
+  every installed copy, every marketplace clone, `installed_plugins.json`, `known_marketplaces.json`),
+  the user settings there (`settings.json`, `settings.local.json`: hooks, `enabledPlugins`), and for a
+  marketplace whose source is a local directory its `.claude-plugin/` and every plugin source it
+  lists (that checkout's `.claude/worktrees/` excepted); removing a directory above one counts.
+  `claude plugin install|update|uninstall|enable|disable|marketplace add|remove|update` is refused
+  too; `list` and `validate` pass. A plugin changes through a PR to its own repo.
 - `.env` and `.env.local` (in any case) are never read, written, linked, or
   `source`d by a subagent (including through `Read`/`Write`/`Edit`, an attached input redirection
   like `cat<.env`, and `$'…'` quoting). `Grep`/`Glob` are refused when their `path` points at an env file

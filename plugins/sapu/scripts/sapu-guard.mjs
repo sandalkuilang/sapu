@@ -28,8 +28,10 @@
 // command acts on. A regex over the raw text was the first version and the review rounds showed
 // how it leaked; every leak they found is a test in sapu-guard.test.ts. Read/Write/Edit/
 // MultiEdit/NotebookEdit calls are checked by path: no env file (any letter case) is read or
-// written, no git file (`.git`, ~/.gitconfig, ~/.config/git/) and nothing in sapu's machine config
-// (~/.config/sapu/, whose loss lifts the scope lock) is written by any subagent, and a worker writes
+// written, no git file (`.git`, ~/.gitconfig, ~/.config/git/), nothing in sapu's machine config
+// (~/.config/sapu/, whose loss lifts the scope lock) and nothing of a plugin agents run under (its
+// folder, Claude Code's plugin store and user settings, a local marketplace's plugin sources:
+// pluginDirs) is written by any subagent, and a worker writes
 // nothing into the main checkout outside its `.claude/worktrees/` (symlinks resolved, so a
 // worktree's linked node_modules counts as <MAIN>). The same holds for the common Bash write
 // forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), with brace lists
@@ -84,7 +86,9 @@
 // and the program variables (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `PAGER`, …) are refused
 // only in front of git itself, not when exported earlier or given to a program that runs git; a git
 // config key names a program by the list in git-config(1) (GIT_CONFIG_PROGRAM), so a key a newer git
-// adds is unknown until it is listed. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// adds is unknown until it is listed. Plugins: `claude plugin` changes are refused, a plugin
+// manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
+// worktree makes that folder unwritable for the session's subagents too. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh api` contents/tarball at a pull ref, `git am`,
 // `git apply` (except --check/--stat), and `patch` (bare, via busybox/toybox or a shell's -c) fed by a
@@ -1000,6 +1004,8 @@ const BLOCK = {
   index: "low-level index and object commands (update-index, checkout-index, read-tree, replace) can hide changes from git status and diff. Use ordinary git commands in your own worktree.",
   gitFiles: "a write to git's own files (a `.git` file or directory, ~/.gitconfig, ~/.config/git/, git config --global/--system/--file) can switch off hooks or redirect git for every checkout.",
   machineConfig: "a write to sapu's machine config (~/.config/sapu/, or removing ~/.config or ~ that holds it) can lift the scope lock its owner set for every repo on this machine. Only the person at this machine edits it.",
+  pluginFiles:
+    "a write to a plugin agents run under — its folder (CLAUDE_PLUGIN_ROOT), Claude Code's plugin store (~/.claude/plugins/: every installed copy, marketplace clone and the install records), a local marketplace's plugin sources, or the user settings (~/.claude/settings.json: hooks, enabledPlugins) — or `claude plugin install|update|uninstall|enable|disable|marketplace …` changes the rules every agent runs under. Only the person at this machine installs or updates plugins; change a plugin through a PR to its own repo.",
   pushBase: (base) => `a push to the base branch (${base || "main"}), main or master, or with --all/--mirror: only the orchestrator's merge moves those. Push your own branch.`,
   prisma: "can drop data or write an unreviewed migration. Use `prisma migrate dev --create-only` and review the SQL.",
   nodeModules: "a whole-directory node_modules symlink makes every workspace package resolve to <MAIN>'s unedited source. Use the repo's worktree setup (.claude/sapu/worker.md).",
@@ -1157,6 +1163,62 @@ function isMachineConfigFile(p, replaces = false) {
   return machineConfigDirs().some((d) => inside(p, d) || (replaces && inside(d, p)));
 }
 
+/** This plugin's own folder, wherever it was loaded from (an installed copy, or `--plugin-dir`). */
+const OWN_PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * What the rules a subagent runs under come from, besides the contract: the active plugin's folder
+ * (CLAUDE_PLUGIN_ROOT, which Claude Code sets for the hook, and this script's own plugin root),
+ * Claude Code's plugin store (`<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/`: every installed copy,
+ * every marketplace clone, the install and marketplace records), its user settings (hooks,
+ * enabledPlugins, disableAllHooks), and for a marketplace whose source is a local directory
+ * (known_marketplaces.json) its `.claude-plugin/` and every plugin source it lists. Real paths too.
+ */
+let pluginCache = { key: null, dirs: [] };
+function pluginDirs() {
+  const cd = process.env.CLAUDE_CONFIG_DIR || (process.env.HOME ? path.join(process.env.HOME, ".claude") : "");
+  const key = `${cd}\0${process.env.CLAUDE_PLUGIN_ROOT ?? ""}`;
+  if (pluginCache.key === key) return pluginCache.dirs;
+  const out = [OWN_PLUGIN_ROOT];
+  if (process.env.CLAUDE_PLUGIN_ROOT) out.push(path.resolve(process.env.CLAUDE_PLUGIN_ROOT));
+  const readJson = (f) => {
+    try {
+      return JSON.parse(fs.readFileSync(f, "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  if (cd) {
+    const c = path.resolve(cd);
+    out.push(path.join(c, "plugins"), path.join(c, "settings.json"), path.join(c, "settings.local.json"));
+    const known = readJson(path.join(c, "plugins", "known_marketplaces.json"));
+    for (const m of known && typeof known === "object" ? Object.values(known) : []) {
+      for (const p of [m?.installLocation, m?.source?.path]) {
+        if (typeof p !== "string" || !p) continue;
+        let r = path.resolve(p);
+        try {
+          if (fs.statSync(r).isFile()) r = path.basename(path.dirname(r)) === ".claude-plugin" ? path.dirname(path.dirname(r)) : path.dirname(r);
+        } catch {
+          continue;
+        }
+        out.push(path.join(r, ".claude-plugin"));
+        const list = readJson(path.join(r, ".claude-plugin", "marketplace.json"))?.plugins;
+        for (const pl of Array.isArray(list) ? list : []) if (typeof pl?.source === "string") out.push(path.resolve(r, pl.source));
+      }
+    }
+  }
+  pluginCache = { key, dirs: [...new Set(out.flatMap((p) => [p, realPathOf(p)]))] };
+  return pluginCache.dirs;
+}
+
+/** A checkout's worktrees are not what a marketplace serves, even when a plugin's source is that checkout's root. */
+const inPluginDir = (p, d) => inside(p, d) && !inside(p, path.join(d, ".claude", "worktrees"));
+
+/** Does writing `p` change a plugin a subagent runs under? With `replaces`, a directory above one counts. */
+function isPluginFile(p, replaces = false) {
+  return pluginDirs().some((d) => inPluginDir(p, d) || (replaces && inside(d, p)));
+}
+
 const isGlob = (s) => /[*?[]/.test(s);
 
 /**
@@ -1186,11 +1248,14 @@ function protectedTarget(w, follow, tree = false) {
   if (w.glob) {
     if (w.glob.some((g) => globReaches(g, machineConfigDirs()))) return BLOCK.machineConfig;
     if (w.glob.some((g) => globReaches(g, gitHomePaths()) || g.split(path.sep).some((s) => isGlob(s) && globRegex(s).test(".git")))) return BLOCK.gitFiles;
+    const literal = (g) => g.split(path.sep).slice(0, g.split(path.sep).findIndex(isGlob)).join(path.sep);
+    if (w.glob.some((g) => pluginDirs().some((d) => globReaches(g, [d]) && !inside(literal(g), path.join(d, ".claude", "worktrees"))))) return BLOCK.pluginFiles;
   }
   const replaces = !follow || tree;
   if (isGitFile(w.abs) || isGitFile(w.real)) return BLOCK.gitFiles;
   if (isMachineConfigFile(w.abs, replaces) || isMachineConfigFile(w.real, replaces)) return BLOCK.machineConfig;
   if (replaces && gitHomePaths().some((x) => inside(x, w.abs) || inside(x, w.real))) return BLOCK.gitFiles;
+  if (isPluginFile(w.abs, replaces) || isPluginFile(w.real, replaces)) return BLOCK.pluginFiles;
   return null;
 }
 
@@ -1382,6 +1447,11 @@ function checkCommand(t, state, depth) {
     return null;
   }
   if (prog === "pkill" || prog === "killall") return BLOCK.kill;
+  // The claude CLI's plugin changes rewrite the plugin store; its reads (list, validate) are fine.
+  if (prog === "claude") {
+    const w = a.slice(1).filter((v) => !v.startsWith("-"));
+    if (/^plugins?$/.test(w[0] ?? "") && !/^(list|validate|help)$/.test(w[1] ?? "list") && !(w[1] === "marketplace" && /^(list|help)$/.test(w[2] ?? "list"))) return BLOCK.pluginFiles;
+  }
   if (prog === "sapu-merge.sh") return a.includes("--dry-run") ? null : BLOCK.orchestrator;
 
   if (prog === "git") {
@@ -1744,6 +1814,7 @@ export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONL
   if ([abs, real].some((p) => rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
   if (WRITE_TOOLS.has(tool) && (isGitFile(abs) || isGitFile(real))) return BLOCK.gitFiles;
   if (WRITE_TOOLS.has(tool) && (isMachineConfigFile(abs) || isMachineConfigFile(real))) return BLOCK.machineConfig;
+  if (WRITE_TOOLS.has(tool) && (isPluginFile(abs) || isPluginFile(real))) return BLOCK.pluginFiles;
   if (WRITE_TOOLS.has(tool) && main && inMain(real, main) && !(!worker && inStateDir(real, main))) return BLOCK.mainWrite(main);
   return null;
 }

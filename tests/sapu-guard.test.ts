@@ -1278,6 +1278,104 @@ describe("the remaining write paths to the machine config and git's files: brace
   });
 });
 
+describe("no subagent writes the plugins it runs under: their folders, Claude Code's plugin store, local marketplaces, user settings", () => {
+  const PF = /plugin/;
+  const cfg = join(root, "pf-claude");
+  const pluginRoot = join(root, "pf-cache/sapu/sapu/9.9.9");
+  const devmkt = join(root, "pf-devmkt");
+  const ownRoot = join(__dirname, "../plugins/sapu");
+  mkdirSync(join(pluginRoot, "scripts"), { recursive: true });
+  mkdirSync(join(cfg, "plugins/cache/sapu/sapu/9.9.9/scripts"), { recursive: true });
+  mkdirSync(join(devmkt, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(devmkt, "plugins/x/hooks"), { recursive: true });
+  mkdirSync(join(devmkt, ".claude/worktrees/w/plugins/x"), { recursive: true });
+  writeFileSync(join(devmkt, ".claude-plugin/marketplace.json"), JSON.stringify({ name: "dev", plugins: [{ name: "x", source: "./plugins/x" }, { name: "gh", source: { source: "github", repo: "o/r" } }] }));
+  writeFileSync(join(cfg, "plugins/known_marketplaces.json"), JSON.stringify({ dev: { source: { source: "directory", path: devmkt }, installLocation: devmkt }, broken: 5 }));
+  const env = (fn: () => void) => () => {
+    const saved = { cfg: process.env.CLAUDE_CONFIG_DIR, root: process.env.CLAUDE_PLUGIN_ROOT };
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    process.env.CLAUDE_PLUGIN_ROOT = pluginRoot;
+    try {
+      fn();
+    } finally {
+      for (const [k, v] of [["CLAUDE_CONFIG_DIR", saved.cfg], ["CLAUDE_PLUGIN_ROOT", saved.root]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+  const writes = [
+    `echo x >> ${pluginRoot}/scripts/sapu-guard.mjs`,
+    `sed -i '' s/a/b/ ${pluginRoot}/hooks/hooks.json`,
+    `rm -rf ${pluginRoot}`,
+    `ln -sf /tmp/evil ${pluginRoot}/scripts/x.mjs`,
+    `cp evil.mjs ${cfg}/plugins/cache/sapu/sapu/9.9.9/scripts/sapu-guard.mjs`,
+    `rm -rf ${cfg}/plugins/marketplaces/sapu`,
+    `echo '{}' > ${cfg}/plugins/installed_plugins.json`,
+    `tee ${cfg}/plugins/known_marketplaces.json < x.json`,
+    `echo '{"disableAllHooks": true}' > ${cfg}/settings.json`,
+    `rm -rf ${cfg}`,
+    `rm -rf ${cfg}/plug*`,
+    `cp -r x/ ${cfg}`,
+    `echo x > ${devmkt}/plugins/x/hooks/hooks.json`,
+    `echo x > ${devmkt}/.claude-plugin/marketplace.json`,
+    `rm -rf ${devmkt}`,
+    `echo x > ${ownRoot}/hooks/hooks.json`,
+    `mv x.mjs ${ownRoot}/scripts/sapu-guard.mjs`,
+  ];
+  it.each(writes.map((c) => [c]))(
+    "blocks %s, for a worker and for any other subagent",
+    (cmd) =>
+      env(() => {
+        expect(blocked(cmd)).toMatch(PF);
+        expect(check({ command: cmd, cwd: wt, main, rules, worker: false })).toMatch(PF);
+      })(),
+  );
+
+  it(
+    "the file tools and an MCP write refuse the same paths",
+    env(() => {
+      for (const f of [`${pluginRoot}/scripts/sapu-guard.mjs`, `${cfg}/plugins/cache/sapu/sapu/9.9.9/hooks/hooks.json`, `${cfg}/settings.json`, `${devmkt}/plugins/x/hooks/hooks.json`, `${ownRoot}/scripts/sapu-guard.mjs`]) {
+        for (const tool of ["Write", "Edit", "MultiEdit", "NotebookEdit"]) expect(checkFile({ tool, filePath: f, cwd: wt, main, rules, worker: false }), `${tool} ${f}`).toMatch(PF);
+        expect(checkFile({ tool: "Read", filePath: f, cwd: wt, main, rules })).toBeNull();
+      }
+      expect(checkOther({ tool: "mcp__filesystem__write_file", ti: { path: `${pluginRoot}/hooks/hooks.json`, content: "{}" }, here: wt, main, rules, worker: false })).toMatch(PF);
+    }),
+  );
+
+  it(
+    "reads ~/.claude when CLAUDE_CONFIG_DIR is not set",
+    env(() => {
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(blocked("echo x > ~/.claude/plugins/cache/sapu/sapu/1.0.0/scripts/sapu-guard.mjs")).toMatch(PF);
+      expect(blocked("echo x > ~/.claude/settings.json")).toMatch(PF);
+      expect(blocked("echo x > ~/.claude/agent-memory/qa/m.md")).toBeNull();
+    }),
+  );
+
+  it(
+    "refuses the claude CLI's plugin changes; its reads pass",
+    env(() => {
+      for (const c of ["claude plugin update sapu@sapu", "claude plugin install x@y --scope project", "claude plugin uninstall sapu@sapu", "claude plugin disable sapu@sapu", "claude plugin marketplace add ./x", "claude plugins enable x"]) expect(blocked(c), c).toMatch(PF);
+      for (const c of ["claude plugin list", "claude plugin validate plugins/sapu", "claude plugin marketplace list", "claude --version"]) expect(blocked(c), c).toBeNull();
+    }),
+  );
+
+  it.each([
+    [`cat ${pluginRoot}/scripts/sapu-guard.mjs`],
+    [`node ${pluginRoot}/scripts/sapu-contract.mjs show`],
+    [`cp ${pluginRoot}/skills/init/alias-template.md .claude/skills/x/SKILL.md`],
+    [`echo x > ${cfg}/agent-memory/qa/m.md`],
+    [`echo x > ${cfg}/projects/p/memory/a.md`],
+    [`echo x > ${cfg}/plugins-notes.txt`],
+    [`echo x > ${devmkt}/README.md`],
+    [`echo x > ${devmkt}/.claude/agent-memory/a.md`],
+    [`echo x > ${devmkt}/.claude/worktrees/w/plugins/x/a.js`],
+    [`rm -rf ${devmkt}/.claude/worktrees/w/plugins/*`],
+    [`echo x > ${ownRoot}-other/x`],
+  ])("allows %s", (cmd) => env(() => expect(blocked(cmd)).toBeNull())());
+});
+
 describe("round 4 — a parse error never lets a command through", () => {
   it.each([["exec >"], ["script -q"], ["> "], ["2>"], ["echo x >"]])("does not crash on %s", (cmd) => {
     expect(() => blocked(cmd)).not.toThrow();
