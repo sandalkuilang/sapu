@@ -90,7 +90,7 @@ describe("computeMetrics", () => {
     const m = computeMetrics([part(10, "u1"), part(900, "u2"), part(900, "u3")].join("\n"));
     expect(m.steps).toBe(1);
     expect(m.totalTokens).toBe(1_000 + 900);
-    expect(m.cost).toBeCloseTo((1_000 * 0.2 + 900 * 10) / 1e6, 9);
+    expect(m.cost).toBeCloseTo((1_000 * 0.1 + 900 * 10) / 1e6, 9);
   });
 
   it("reports tokens per PR as undefined, not zero, when nothing merged", () => {

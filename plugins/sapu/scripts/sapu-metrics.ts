@@ -60,7 +60,7 @@ export const WORSE_FACTOR = 1.5;
 export const PRICES: Record<string, { in: number; w5: number; w1: number; read: number; out: number }> = {
   fable: { in: 10, w5: 12.5, w1: 20, read: 0.25, out: 50 },
   opus: { in: 4, w5: 5, w1: 8, read: 0.2, out: 20 },
-  sonnet: { in: 2, w5: 2.5, w1: 4, read: 0.2, out: 10 },
+  sonnet: { in: 2, w5: 2.5, w1: 4, read: 0.1, out: 10 }, // Sonnet 5.5 cache reads: $0.10/MTok
   haiku: { in: 1, w5: 1.25, w1: 2, read: 0.1, out: 5 },
 };
 
