@@ -199,9 +199,9 @@ tracked); the owner may edit it:
 ## 7. The explorer: `sapu:ui-explorer`
 
 Agent file `plugins/sapu/agents/ui-explorer.md`: model opus, effort high, tools `Bash, Read,
-StructuredOutput`. Opus because judging a workflow is not mechanical. Its Bash runs only the
-wrapper; it reads only tracked code in the cycle's worktree, and searches it through the wrapper's
-`code` command (§9, §11).
+StructuredOutput` — limited both by that frontmatter and by the guard (§11). Opus because judging a
+workflow is not mechanical. Its Bash runs only the wrapper; it reads only code committed at HEAD in
+the cycle's worktree, and searches it through the wrapper's `code` command (§9, §11).
 
 **Charter:** `Explore journey <id> / as <roles and their allocated accounts> / with <goals per role,
 seed facts> / to discover <oracles>`, plus: its slot **token** (§9); `stop` (the goal state, or the
@@ -209,8 +209,10 @@ wrapper's budget); `## Key assumptions` (≤5, each with the observation that wo
 checked first — the cheap H2 checks); `prohibited` (from `live.prohibited`); `intended` (the
 `arid.md` lines that name this journey: behaviour the owner already ruled intended); the names and
 commands of the `start` entries (so "no worker" is decidable); up to two accepted journey findings per
-oracle from this repo's history as examples; `viewports`, `locales` and `settle_ms`. No URL,
-password, session name or file path: the wrapper supplies them.
+oracle from this repo's history as examples; `viewports`, `locales` and `settle_ms`; and two
+absolute paths: the wrapper's (the only program its Bash runs) and the run's worktree (where the code
+it Reads lives; `code files` and `code grep` print absolute paths inside it). No URL, password,
+session name or other path: the wrapper supplies them.
 
 **Goal first, code after.** For each step the explorer reaches the goal from the role's own
 navigation, without reading code for it first; it reads code only afterwards, to separate intended
@@ -456,7 +458,8 @@ The repo needs no Playwright of its own.
   runs a code string it did not build. Requests blocked this way are logged once and never become
   console-error candidates.
 
-**The wrapper**, `argus-live.mjs pw <token> <role>[#<n>] <command> [args]`, is the only way in:
+**The wrapper**, `argus-live.mjs pw <token> <role>[.<n>] <command> [args]`, is the only way in
+(`<role>.<n>` is the role's n-th allocated account; a plain word, so it needs no quoting):
 - **Token.** `argus-live.mjs slot <n>` mints a random token per explorer dispatch, recorded in
   `run.json` with its slot, journey and generation. The wrapper refuses an unknown or retired token,
   and a role or account outside that journey's allocation.
@@ -465,8 +468,10 @@ The repo needs no Playwright of its own.
   `up` copies to the slot's directory); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
   `screenshot`, `console`, `requests`, `request`, `response-body`; `resize`; `tab-list`,
   `tab-select`, `tab-close`; `dialog-accept`, `dialog-dismiss`; `code grep <pattern> [<pathspec>]` and
-  `code files [<pathspec>]` (`git grep` and `git ls-files` in the worktree: tracked files only, never
-  under `.argus/`, output fenced like page text); `login <user> <password>` (accounts
+  `code files [<pathspec>]` — fixed argv `git --literal-pathspecs -C <wt> grep -e <pattern> --
+  <pathspec>` and `git --literal-pathspecs -C <wt> ls-files -- <pathspec>`, no flag from the explorer:
+  tracked files only, any path under `.argus/` (compared without case) filtered out, each path printed
+  absolute inside the worktree, output fenced like page text; `login <user> <password>` (accounts
   the journey itself created); `trigger <name> [values…]`; `facts <marker>`; `mail`; `submit <json>`.
   Everything else is refused — `run-code`, `eval`, `route`, `unroute`, `network-state-set`,
   `state-*`, `cookie-set`, `*storage-set`, `attach`, `close-all`, `kill-all`, `list`, `show`,
@@ -479,7 +484,7 @@ The repo needs no Playwright of its own.
   replaces one placeholder (`{1}`, `{2}`…) and must match that placeholder's regex in `args` (default
   `^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$` — never a leading `-`), so a value read from a page can
   never become a command or an option.
-- **Sessions** are named `<run>-<slot>-<role>[#<n>]`; `anon` is never signed in.
+- **Sessions** are named `<run>-<slot>-<role>[.<n>]`; `anon` is never signed in.
 - **Login** (also used by `up`), with the role's own `login_url`, `logged_in` and optional
   `login_open` (a control to click first, for a login modal): open the login page fresh each time
   (CSRF tokens); fill the visible user field (`type=email`, else the text input before the
@@ -527,7 +532,7 @@ Argus's cycle, gates and issue template apply. Additions:
     { "as": "sales",    "expect": "visible", "target": { "text": "{{order}}" }, "final": "handoff" } ] }
 ```
 
-- **Steps.** `as` is a role or `<role>#<n>` (the n-th account SELECT allocated). Actions: `goto` (a
+- **Steps.** `as` is a role or `<role>.<n>` (the n-th account SELECT allocated). Actions: `goto` (a
   path on the role's origin), `click`, `dblclick`, `fill`, `select`, `check`, `uncheck`, `press`,
   `hover`, `go-back`, `reload`, `read` (+ `save`), `trigger`, `login`; `{ "parallel": [steps…] }`
   starts its steps together behind one barrier. Targets: `{role, name, exact?}`, `{label}`, `{text}`,
@@ -538,7 +543,7 @@ Argus's cycle, gates and issue template apply. Additions:
   `settle_ms`. `context` defaults to `live`'s viewport, locale and timezone.
 - **Literals only.** `{{marker}}` (unique per run) and `{{<saved name>}}` are substituted as literal
   values; the runner builds every CLI command and locator itself from the schema and runs it through
-  the wrapper's code paths (proxy, validation, sessions `<run>-r-<role>[#<n>]`).
+  the wrapper's code paths (proxy, validation, sessions `<run>-r-<role>[.<n>]`).
 - **Every state-changing step** (a submitting `click`/`dblclick`/`press`, `select`, `check`,
   `uncheck`, `trigger`, `login`) is followed by an `expect` proving its effect as the acting role sees
   it; a list without one is refused (exit 2).
@@ -638,17 +643,24 @@ as today.
 ## 11. Guard changes (`sapu-guard.mjs`)
 
 For `sapu:ui-explorer`:
+- **Tools** are limited twice: by the agent's frontmatter (`tools: Bash, Read, StructuredOutput`) and
+  by the guard, which allows StructuredOutput and refuses every tool it sees other than Bash and Read
+  — Agent, Task and Workflow included.
 - **Bash is an allowlist.** Each command is one or more `node <wrapper> pw …` invocations joined only
-  by `;`, `&&` or newlines, where `<wrapper>` is the guard's own plugin root's
-  `scripts/argus-live.mjs` (never a path from the prompt). Every argument is a single-quoted literal
-  or a bare word matching `[A-Za-z0-9._:/=@,+#-]+`; any `$`, backtick, `~`, `*`, `?`, `[` or `{`
-  outside single quotes, any environment prefix, pipe, redirection or substitution is refused. That
-  also closes `printenv`, `node -e`, `curl`, `gh` and git for it.
+  by `;`, `&&` or newlines, where `<wrapper>` is an absolute path whose real path is the guard's own
+  plugin root's `scripts/argus-live.mjs` (an unresolvable path is refused). Every argument is a
+  single-quoted literal (segments joined only by `\'`, the POSIX apostrophe idiom: `'O'\''Brien'`
+  is `O'Brien`; nothing else may follow a closing quote) or a plain word: a first character from
+  `[A-Za-z0-9./_-]`, then `[A-Za-z0-9._:/=@,+-]`, never `==` (a leading `-` is harmless to the shell;
+  option filtering is the wrapper's job). Any `$`, backtick, `~`, `*`, `?`, `[`, `{`, `#` or double
+  quote outside single quotes, any environment prefix, pipe, redirection or substitution is refused.
+  That also closes `printenv`, `node -e`, `curl`, `gh` and git for it.
 - **Read** is allowed only on a file whose real path (`realpath.native`) lies in the run's worktree
-  (from `.argus/live/run.json`), outside `.argus/` compared without case, and is tracked at HEAD
-  (`git ls-files`). Grep, Glob and every other tool are refused: ripgrep's `glob` overrides ignore
-  rules and a directory search reaches untracked files, so code search goes through the wrapper's
-  `code` command. Page content reaches the explorer only through the wrapper.
+  (from `.argus/live/run.json`), outside `.argus/` compared without case, and is committed at HEAD
+  (`git ls-tree HEAD` names exactly that path; a staged or untracked file is refused). Grep, Glob and
+  every other tool are refused: ripgrep's `glob` overrides ignore rules and a directory search
+  reaches untracked files, so code search goes through the wrapper's `code` command. Page content
+  reaches the explorer only through the wrapper.
 
 For every subagent: adding or removing `labels.needsOwner` on an existing issue or PR (`gh issue|pr
 edit`, `gh api` REST and GraphQL) and `gh label create|edit|delete|clone` on it are refused;

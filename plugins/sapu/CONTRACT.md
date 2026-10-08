@@ -565,11 +565,14 @@ could use them.
 - The needs-owner label (`labels.needsOwner`) is protected beside it: no subagent adds or removes it on
   an existing issue or PR, nor creates, edits, deletes or clones it. `gh issue create --label` with it
   stays allowed for non-worker subagents.
-- `sapu:ui-explorer` (the journey lane's explorer): its Bash runs only `node <plugin>/scripts/argus-live.mjs pw …`
-  with single-quoted or plain-word arguments (a plain word starts with a letter, digit, `.`, `/` or `_`,
-  and never contains `#` or `==`). Its only other tool is Read, of files tracked at HEAD in the live
-  run's worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in any case. It has no Grep, Glob or
-  other tool: code search comes through the wrapper.
+- `sapu:ui-explorer` (the journey lane's explorer): its tools are limited by its frontmatter (`tools:
+  Bash, Read, StructuredOutput`) and by the guard, which refuses every other tool it sees (Agent, Task
+  and Workflow included). Its Bash runs only `node <plugin>/scripts/argus-live.mjs pw …`, the wrapper
+  named by an absolute path whose real path is the plugin's own, with single-quoted arguments
+  (segments joined only by `\'`: `'O'\''Brien'`) or plain words (a first character from
+  `[A-Za-z0-9./_-]`, then `[A-Za-z0-9._:/=@,+-]`, never `==`; no `#` anywhere). Read is only of files
+  committed at HEAD in the live run's worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in
+  any case. It has no Grep or Glob: code search comes through the wrapper.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,

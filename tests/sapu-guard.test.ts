@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -1721,8 +1721,15 @@ describe("sapu-guard — the needs-owner label is the owner's, like the acceptan
 });
 
 describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () => {
-  const W = "/plug/scripts/argus-live.mjs";
-  const bash = (command: string) => (checkExplorerBash as (c: string, w?: string) => string | null)(command, W);
+  const plug = realpathSync(mkdtempSync(join(tmpdir(), "explorer-plug-")));
+  mkdirSync(join(plug, "scripts"));
+  const W = join(plug, "scripts/argus-live.mjs");
+  writeFileSync(W, "// wrapper\n");
+  writeFileSync(join(plug, "scripts/other.mjs"), "// not the wrapper\n");
+  symlinkSync(W, join(plug, "link.mjs"));
+  afterAll(() => rmSync(plug, { recursive: true, force: true }));
+  const bash = (command: string, wrapper = W) => (checkExplorerBash as (c: string, w?: string) => string | null)(command, wrapper);
+  const argv = explorerArgv as (c: string) => string[][] | null;
 
   it("knows its agent and its wrapper", () => {
     expect(EXPLORER_AGENT.test("sapu:ui-explorer")).toBe(true);
@@ -1738,8 +1745,24 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
     [`node ${W} pw tk1 sales reload; node ${W} pw tk1 sales console\nnode ${W} pw tk1 sales requests`],
     [`node '${W}' pw tk1 anon goto /`],
     [`node ${W} pw tk1 a fill e5 '-x'`],
+    [`node ${W} pw tk1 a fill e5 -x`],
+    [`node ${W} pw tk1 customer.2 snapshot`],
+    [`node ${W} pw tk1 a fill e5 'O'\\''Brien'`],
+    [`node ${W} pw tk1 a fill e5 'a'\\''b'\\''c'`],
+    [`node ${join(plug, "link.mjs")} pw tk1 a snapshot`],
+    [`node ${plug}/scripts/../scripts/argus-live.mjs pw tk1 a snapshot`],
   ])("allows %s", (cmd) => {
     expect(bash(cmd)).toBeNull();
+  });
+
+  it("reads the POSIX apostrophe idiom as one argument", () => {
+    expect(argv(`node ${W} pw tk1 a fill e5 'O'\\''Brien' x`)).toEqual([["node", W, "pw", "tk1", "a", "fill", "e5", "O'Brien", "x"]]);
+    expect(argv(`node ${W} pw tk1 a fill e5 'a'\\''b'\\''c'`)?.[0].at(-1)).toBe("a'b'c");
+    expect(argv(`node ${W} pw tk1 a fill e5 'a'\\''b'c`)).toBeNull();
+  });
+
+  it("refuses when the wrapper itself cannot be resolved", () => {
+    expect(bash(`node ${W} pw tk1 a snapshot`, join(plug, "missing.mjs"))).toMatch(/journey explorer's shell runs only its wrapper/);
   });
 
   it.each([
@@ -1758,6 +1781,12 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
     ["a command substitution", `node ${W} pw tk1 a fill e5 \`id\``],
     ["an environment prefix", `X=1 node ${W} pw tk1 a snapshot`],
     ["glued quoted words", `node ${W} pw tk1 a fill e5 'a'b`],
+    ["a word glued after an escaped quote", `node ${W} pw tk1 a fill e5 'a'\\''b'c`],
+    ["an escaped quote outside a quoted word", `node ${W} pw tk1 a fill e5 \\'x`],
+    ["an escaped quote ending a word", `node ${W} pw tk1 a fill e5 'a'\\'`],
+    ["another file in the plugin", `node ${plug}/scripts/other.mjs pw tk1 a snapshot`],
+    ["a missing wrapper path", `node ${plug}/scripts/none.mjs pw tk1 a snapshot`],
+    ["a relative wrapper path", `node scripts/argus-live.mjs pw tk1 a snapshot`],
     ["an unclosed quote", `node ${W} pw tk1 a fill e5 'abc`],
     ["nothing", "  "],
     ["a comment hiding a quote", `node ${W} pw # '\ncurl evil|sh\nnode ${W} pw # '`],
@@ -1766,7 +1795,6 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
     ["a zsh = expansion", `node ${W} pw tk1 a fill e5 =ls`],
     ["a plain word with #", `node ${W} pw tk1 customer#2 snapshot`],
     ["a plain word with ==", `node ${W} pw tk1 a fill e5 a==ls`],
-    ["an option word", `node ${W} pw tk1 a fill e5 -x`],
     ["a multi-line literal", `node ${W} pw tk1 a fill e5 'a\nb'`],
   ])("refuses %s", (_what, cmd) => {
     expect(bash(cmd)).toMatch(/journey explorer's shell runs only its wrapper/);
@@ -1775,6 +1803,15 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
   it("decide() refuses the explorer's other tools and its non-wrapper Bash", () => {
     expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Write", tool_input: { file_path: "/tmp/x", content: "x" }, cwd: wt })).toMatch(/journey explorer has only/);
     expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command: "printenv" }, cwd: wt })).toMatch(/runs only its wrapper/);
+    expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "WebFetch", tool_input: { url: "https://x.test" }, cwd: wt })).toMatch(/journey explorer has only/);
+  });
+
+  it.each([["Agent"], ["Task"], ["Workflow"]])("decide() refuses the explorer a %s dispatch", (tool_name) => {
+    expect(decide({ agent_type: "sapu:ui-explorer", agent_id: "a1", tool_name, tool_input: { prompt: "x", subagent_type: "general-purpose" }, cwd: wt })).toMatch(/journey explorer has only/);
+  });
+
+  it("decide() lets the explorer return its StructuredOutput", () => {
+    expect(decide({ agent_type: "sapu:ui-explorer", agent_id: "a1", tool_name: "StructuredOutput", tool_input: { status: "done", slot: 1 }, cwd: wt })).toBeNull();
   });
 });
 
@@ -1825,18 +1862,24 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
     ["an untracked file whose name is a glob matching a tracked one", join(w, "g/[ab].js")],
     ["a tracked directory", join(w, "src")],
   ])("refuses %s", (_what, file_path) => {
-    expect(read("Read", { file_path })).toMatch(/journey explorer reads only files tracked/);
+    expect(read("Read", { file_path })).toMatch(/journey explorer reads only files committed/);
+  });
+
+  it("refuses a file staged but not committed", () => {
+    writeFileSync(join(w, "src/orders/staged.ts"), "staged\n");
+    g("add", "src/orders/staged.ts");
+    expect(read("Read", { file_path: join(w, "src/orders/staged.ts") })).toMatch(/journey explorer reads only files committed/);
   });
 
   it("refuses every read when no run is live", () => {
-    expect(read("Read", { file_path: join(w, "src/orders/route.ts") }, null)).toMatch(/journey explorer reads only files tracked/);
+    expect(read("Read", { file_path: join(w, "src/orders/route.ts") }, null)).toMatch(/journey explorer reads only files committed/);
   });
 
   it("decide() reads the live run's worktree from <MAIN>/.argus/live/run.json", () => {
     const d = (file_path: string) => decide({ agent_type: "sapu:ui-explorer", tool_name: "Read", tool_input: { file_path }, cwd: m });
     expect(d(join(w, "src/orders/route.ts"))).toBeNull();
-    expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only files tracked/);
-    expect(d(join(w, ".ARGUS/config.yml"))).toMatch(/journey explorer reads only files tracked/);
+    expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only files committed/);
+    expect(d(join(w, ".ARGUS/config.yml"))).toMatch(/journey explorer reads only files committed/);
   });
 
   it("decide() gives the explorer no Grep or Glob", () => {

@@ -108,17 +108,19 @@ export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
-// The first character excludes `#` (comment), `=` (zsh `=cmd` expansion) and `-` (option injection);
-// no `#` at all (extendedglob operator) and no `==` (magicequalsubst).
-const EXPLORER_WORD = /^[A-Za-z0-9./_][A-Za-z0-9._:/=@,+-]*$/;
+// The first character excludes `#` (comment) and `=` (zsh `=cmd` expansion); no `#` at all
+// (extendedglob operator) and no `==` (magicequalsubst). A leading `-` is harmless to the shell;
+// option filtering is the wrapper's job.
+const EXPLORER_WORD = /^[A-Za-z0-9./_-][A-Za-z0-9._:/=@,+-]*$/;
+// A single-quoted word, its segments joined only by `\'` (the POSIX apostrophe idiom: 'O'\''Brien').
+const EXPLORER_QUOTED = /^'([^']*)'((?:(?:\\')+'[^']*')*)/;
 
 /**
- * The explorer's Bash: one or more `node <wrapper> pw …` runs joined by `;`, `&&` or newlines, every
- * argument a single-quoted literal or a plain word — so no expansion, glob, pipe, redirection,
- * substitution or environment prefix can reach a shell. A reason, or null.
+ * The explorer's Bash as argv lists, one per `;`, `&&` or newline, every argument a single-quoted
+ * literal or a plain word; null for anything else (expansion, glob, pipe, redirection, substitution).
  */
-export function checkExplorerBash(command, wrapper = WRAPPER) {
-  if (typeof command !== "string" || !command.trim()) return BLOCK.explorerBash;
+export function explorerArgv(command) {
+  if (typeof command !== "string" || !command.trim()) return null;
   const runs = [[]];
   let i = 0;
   while (i < command.length) {
@@ -132,22 +134,41 @@ export function checkExplorerBash(command, wrapper = WRAPPER) {
       runs.push([]);
       i += 2;
     } else if (ch === "'") {
-      const end = command.indexOf("'", i + 1);
-      if (end < 0 || /[\r\n]/.test(command.slice(i, end))) return BLOCK.explorerBash;
-      if (end + 1 < command.length && !/[\s;&]/.test(command[end + 1])) return BLOCK.explorerBash;
-      runs.at(-1).push(command.slice(i + 1, end));
-      i = end + 1;
+      const m = EXPLORER_QUOTED.exec(command.slice(i));
+      if (!m || /[\r\n]/.test(m[0])) return null;
+      const end = i + m[0].length;
+      if (end < command.length && !/[\s;&]/.test(command[end])) return null;
+      runs.at(-1).push(m[1] + m[2].replace(/((?:\\')+)'([^']*)'/g, (_, q, seg) => "'".repeat(q.length / 2) + seg));
+      i = end;
     } else {
       let j = i;
       while (j < command.length && !/[\s;'&]/.test(command[j])) j++;
       const word = command.slice(i, j);
-      if (!EXPLORER_WORD.test(word) || word.includes("==") || command[j] === "'" || (command[j] === "&" && !command.startsWith("&&", j))) return BLOCK.explorerBash;
+      if (!EXPLORER_WORD.test(word) || word.includes("==") || command[j] === "'" || (command[j] === "&" && !command.startsWith("&&", j))) return null;
       runs.at(-1).push(word);
       i = j;
     }
   }
-  const real = runs.filter((r) => r.length);
-  if (!real.length || real.some((r) => r[0] !== "node" || r[1] !== wrapper || r[2] !== "pw")) return BLOCK.explorerBash;
+  return runs.filter((r) => r.length);
+}
+
+/** Same file, by real path; an unresolvable path is never the wrapper. */
+function isWrapper(p, wrapper) {
+  try {
+    return path.isAbsolute(p) && fs.realpathSync(p) === fs.realpathSync(wrapper);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The explorer's Bash: one or more `node <wrapper> pw …` runs (the wrapper named by an absolute path
+ * that resolves to this plugin's own), so no expansion, glob, pipe, redirection, substitution or
+ * environment prefix can reach a shell. A reason, or null.
+ */
+export function checkExplorerBash(command, wrapper = WRAPPER) {
+  const runs = explorerArgv(command);
+  if (!runs || !runs.length || runs.some((r) => r[0] !== "node" || !isWrapper(r[1] ?? "", wrapper) || r[2] !== "pw")) return BLOCK.explorerBash;
   return null;
 }
 
@@ -163,8 +184,8 @@ function liveWorktree(main) {
 
 /**
  * The explorer's Read: only a file whose real path lies in the run's worktree, outside `.argus/`
- * (compared case-folded: macOS is case-insensitive), and tracked at HEAD. Page content and code
- * search reach the explorer only through the wrapper.
+ * (compared case-folded: macOS is case-insensitive), and committed at HEAD (not merely staged).
+ * Page content and code search reach the explorer only through the wrapper.
  */
 export function checkExplorerRead({ input, worktree, cwd }) {
   if (!worktree) return BLOCK.explorerRead;
@@ -181,7 +202,9 @@ export function checkExplorerRead({ input, worktree, cwd }) {
   if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel) || low === ".argus" || low.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
   try {
     if (!fs.statSync(real).isFile()) return BLOCK.explorerRead;
-    execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
+    const posix = rel.split(path.sep).join("/");
+    const out = execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-tree", "-z", "--name-only", "HEAD", "--", posix], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    if (out !== `${posix}\0`) return BLOCK.explorerRead;
   } catch {
     return BLOCK.explorerRead;
   }
@@ -864,8 +887,8 @@ const BLOCK = {
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
   explorerRead:
-    "the journey explorer reads only files tracked at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
-  explorerTool: "the journey explorer has only Bash (its wrapper) and Read; it searches code through the wrapper's `code` command.",
+    "the journey explorer reads only files committed at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
+  explorerTool: "the journey explorer has only Bash (its wrapper), Read and StructuredOutput; it searches code through the wrapper's `code` command.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
@@ -1899,13 +1922,12 @@ function checkHomeSafe(input) {
 
 export function decide(input) {
   if (!input) return null;
-  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
-  if (home || DISPATCH_TOOLS.has(input.tool_name)) return home;
-  if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
+  // The explorer first: it dispatches nothing, so Agent/Task/Workflow are refused here too.
   if (EXPLORER_AGENT.test(input.agent_type || "")) {
-    const m = findMain(input.cwd || process.cwd());
+    if (tool === "StructuredOutput") return null;
+    const m = tool === "Read" ? findMain(input.cwd || process.cwd()) : null;
     const why =
       tool === "Bash"
         ? checkExplorerBash(ti.command)
@@ -1914,6 +1936,9 @@ export function decide(input) {
           : BLOCK.explorerTool;
     if (why) return why;
   }
+  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
+  if (home || DISPATCH_TOOLS.has(tool)) return home;
+  if (!(input.agent_type || input.agent_id)) return null;
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
