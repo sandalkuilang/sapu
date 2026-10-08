@@ -203,7 +203,8 @@ Interfaces:
   must equal `store`. Then (defence in depth) every value in `env` and in every `start[].env` is
   read and must not reach what MAIN's env files name (`.env`, `.env.local`, the contract's
   `guard.envFiles`): a non-http service on the same host:port whatever its database (no opt-in; an
-  endpoint without host or port never matches; a single-label host in `composeServices` is exempt);
+  endpoint without host or port never matches, except a libpq or MySQL-family value with no host,
+  which is the local server on its default port; a single-label host in `composeServices` is exempt);
   an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
   `allow_origins`; a file or socket path equal to one they name, or any path inside MAIN. `X_HOST` +
   `X_PORT` are one endpoint, a bare instance `*PORT` a loopback one. Nor may it name a port or

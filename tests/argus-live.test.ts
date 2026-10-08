@@ -1414,8 +1414,28 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
     });
 
     describe("endpoints with no host or port, and file or socket paths", () => {
-      it.each(["postgres:///app_explore", "dbname=x user=app", "postgresql://app@/x?host=", "custom://localhost/x"])("%s has no host:port to match", async (v) => {
-        expect(await check(v, { files: "A=postgres:///app_dev\nB=dbname=app_dev\nC=custom://localhost/y\n" })).toBe("ok");
+      it.each(["custom://localhost/x", "custom:///x", "redis+unix:///tmp/none.sock"])("%s has no host:port to match", async (v) => {
+        expect(await check(v, { files: "A=custom://localhost/y\nB=custom:///y\n" })).toBe("ok");
+      });
+      describe("a libpq or MySQL-family value with no host names the local server on its default port", () => {
+        const files = "A=postgres:///app_dev\nB=mysql://owner@/app\n";
+        it.each([
+          "postgres://app@localhost:5432/x",
+          "postgres:///app_explore",
+          "dbname=x user=app",
+          "postgresql://app@/x?host=",
+          "postgresql:///x?host=/var/run/postgresql",
+          "postgresql+psycopg://app@localhost/x",
+          "mysql://app@127.0.0.1:3306/other",
+          "mariadb://app@/other",
+          "mysql2:///other",
+          "mysql+pymysql://app@localhost/other",
+        ])("%s is refused", async (v) => {
+          expect(await check(v, { files })).toMatch(/^refused: env\.X points at a service the repo's env files name/);
+        });
+        it.each(["postgres://app@localhost:41001/x", "postgresql:///x?host=/tmp/argus-pg&port=41001", "postgresql://app@/x?port=41001", "mysql://app@localhost:41002/x"])("%s is not", async (v) => {
+          expect(await check(v, { files })).toBe("ok");
+        });
       });
       it("a file or socket inside the repo is refused; one in the worktree is not", async () => {
         expect(await check((m: string) => ({ X: `sqlite:///${m}/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
@@ -1423,6 +1443,17 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
         expect(await check((m: string) => ({ DATA: `${m}/data` }) as never)).toMatch(/^refused: env\.DATA points into the main checkout/);
         expect(await check("file:./dev.db", { files: "DATABASE_URL=file:./dev.db\n" })).toBe("ok");
         expect(await check("sqlite:./data/app.db")).toBe("ok");
+      });
+      it("sqlite:/// with three slashes is a relative path (four make it absolute), resolved in the worktree", async () => {
+        expect(await check("sqlite:///./dev.db", { files: "DATABASE_URL=sqlite:///./dev.db\n" })).toBe("ok");
+        expect(await check("sqlite:///dev.db", { files: "DATABASE_URL=sqlite:///dev.db\n" })).toBe("ok");
+        expect(await check("sqlite+pysqlite:///db/app.sqlite3", { files: "DATABASE_URL=sqlite:///db/app.sqlite3\n" })).toBe("ok");
+        const dir = realpathSync(tempDir());
+        expect(await check(`sqlite:////${dir}/dev.db`, { files: `DATABASE_URL=sqlite:////${dir}/dev.db\n` })).toMatch(/^refused: env\.X points at a file or socket the repo's env files name/);
+        expect(await check(`sqlite:///${dir.slice(1)}/dev.db`, { files: `DATABASE_URL=sqlite:///${dir}/dev.db\n` })).toBe("ok");
+        const ctx = await ctxFor({ store_check: "echo app_explore" });
+        const intoMain = relative(ctx.worktree, join(ctx.main, "dev.db"));
+        expect(await message(checkStore({ ...ctx, env: { ...ctx.env, X: `sqlite:///${intoMain}` } }))).toMatch(/^refused: env\.X points into the main checkout/);
       });
       it("a socket or file the owner's env files name is refused, whatever the scheme spelling", async () => {
         const dir = realpathSync(tempDir());
@@ -1449,6 +1480,8 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       it("a bare *PORT with no host is a loopback endpoint", async () => {
         expect(await check({ REDIS_PORT: "6379" })).toMatch(/^refused: env\.REDIS_PORT points at a service/);
         expect(await check({ REDIS_PORT: "41005" })).toBe("ok");
+        // Even one only a Compose file reads (spec §8 step 6: rename it in the live env).
+        expect(await check({ POSTGRES_PORT: "5432" }, { compose: ["postgres"] })).toMatch(/^refused: env\.POSTGRES_PORT points at a service/);
       });
     });
 

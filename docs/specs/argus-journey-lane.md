@@ -415,18 +415,24 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    repo's env files name (read by the script, never printed):
    - a non-http service (postgres, mysql, redis, mongodb, amqp, …) on the same host and port,
      whatever its database, remote or local. There is no opt-in: the instance reaches such services
-     only through its own local ones. An endpoint with no host or no port never matches, and a
-     single-label host that is a service of the worktree's own Compose project is exempt;
+     only through its own local ones. An endpoint with no host or no port never matches — except
+     for libpq and MySQL-family values (`postgres:///app`, `dbname=app`, `mysql://u@/app`), whose
+     clients read a missing host (or a libpq socket directory) as the local server, so they are a
+     loopback endpoint on the default port — and a single-label host that is a service of the
+     worktree's own Compose project is exempt;
    - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is
      listed in `allow_origins`;
    - a file or socket (`sqlite:`, `file:`, `unix:`, `<scheme>+unix:`, a bare path) equal to one they
      name, or any path inside the repo's main checkout (the instance's relative paths resolve in its
-     worktree, the owner's in the main checkout).
+     worktree, the owner's in the main checkout; `sqlite:///rel` is relative and `sqlite:////abs`
+     absolute, as SQLAlchemy reads them).
 
    Hosts are compared canonically (lower case, one form per IP address, no trailing dot, every
    loopback address one name) with default ports filled in; `X_HOST` + `X_PORT` (and `PGHOST` +
    `PGPORT`) count as one endpoint on both sides, and an instance `*PORT` with no host beside it as a
-   loopback endpoint. Nor may a value name a port or database `guard.postgres` protects: URLs, `jdbc:`
+   loopback endpoint (so a bare `*PORT` holding a standard port, such as `POSTGRES_PORT=5432` read
+   only inside the Compose file, is refused when the owner's env files name that local port: rename
+   it in the live env, or give it its own port). Nor may a value name a port or database `guard.postgres` protects: URLs, `jdbc:`
    URLs, libpq `key=value` strings and bare port numbers are read, and a bare database name under a
    variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). Only
    then `reset`.

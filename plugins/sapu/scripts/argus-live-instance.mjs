@@ -776,23 +776,32 @@ function normHost(h) {
 
 /**
  * The path a file or socket value names (`sqlite:…`, `file:…`, `unix:…`, `<scheme>+unix:…`, or a bare
- * `/…`, `./…`, `../…` path), or null.
+ * `/…`, `./…`, `../…` path), or null. `sqlite:///rel` is relative and `sqlite:////abs` absolute
+ * (SQLAlchemy's reading: the third slash only ends the empty host).
  */
 function filePath(v) {
   const m = v.match(/^([a-z][a-z0-9+.-]*):(.*)$/i);
   if (m && (/^sqlite/i.test(m[1]) || /\+unix$/i.test(m[1]) || /^(file|unix)$/i.test(m[1]))) {
     let rest = m[2].replace(/[?#].*$/, "");
     if (rest.startsWith("//")) rest = rest.slice(2);
+    if (/^sqlite/i.test(m[1]) && m[2].startsWith("//")) rest = rest.replace(/^[^/]*\//, "");
     return decodeSafe(rest) || null;
   }
   return /^(\/|\.\.?\/)/.test(v) && !v.includes(":") ? v : null;
 }
 
 /**
+ * Schemes whose client reads a missing host as the local server (libpq: its default socket; MySQL:
+ * localhost), so an empty host, or a libpq socket directory, is a loopback endpoint on the default port.
+ */
+const LOCAL_BY_DEFAULT = new Set(["postgresql", "mysql", "mariadb"]);
+
+/**
  * A connection string as a service: {scheme, hosts: [{host, port}], full, ports, databases}, or null.
- * Understands URLs (`jdbc:` stripped; `postgres` = `postgresql`, `mongodb+srv` = `mongodb`) and libpq
- * DSNs (`host=… port=… dbname=…`). Hosts are normalised (`normHost`), default ports filled in, the
- * path percent-decoded; user, password and query are not part of the service.
+ * Understands URLs (`jdbc:` stripped; a `+driver` suffix dropped; `postgres` = `postgresql`, `mysql2` =
+ * `mysql`) and libpq DSNs (`host=… port=… dbname=…`). Hosts are normalised (`normHost`; an empty one
+ * is loopback for LOCAL_BY_DEFAULT schemes), default ports filled in, the path percent-decoded; user,
+ * password and the rest of the query are not part of the service.
  */
 function service(raw) {
   const v = String(raw).trim().replace(/^jdbc:/i, "");
@@ -802,7 +811,7 @@ function service(raw) {
   let databases = [];
   let extraPorts = [];
   if (url) {
-    scheme = url[1].toLowerCase().replace(/^postgres$/, "postgresql").replace(/^mongodb\+srv$/, "mongodb");
+    scheme = url[1].toLowerCase().replace(/\+.*$/, "").replace(/^postgres$/, "postgresql").replace(/^mysql2$/, "mysql");
     hosts = url[2].slice(url[2].lastIndexOf("@") + 1).split(",").map((h) => {
       const m = h.match(/^\[([^\]]*)\](?::(\d+))?$/) || h.match(/^([^:]*)(?::(\d+))?$/) || [null, h, undefined];
       return { host: m[1], port: m[2] ? Number(m[2]) : undefined };
@@ -812,7 +821,10 @@ function service(raw) {
     const q = new URLSearchParams((url[4] || "").slice(1));
     for (const k of ["dbname", "database"]) if (q.get(k)) databases.push(q.get(k));
     if (q.get("port")) extraPorts = q.get("port").split(",").map(Number);
-    if (q.get("host")) hosts.push(...q.get("host").split(",").map((h) => ({ host: h, port: undefined })));
+    const qHosts = (q.get("host") || "").split(",").filter(Boolean);
+    // With no host before the path, the query's host and port are the endpoint (libpq's `?host=/socket/dir`).
+    if (hosts.every((h) => !h.host)) hosts = (qHosts.length ? qHosts : [""]).map((h, i) => ({ host: h, port: hosts[i]?.port ?? hosts[0].port ?? extraPorts[i] ?? extraPorts[0] }));
+    else hosts.push(...qHosts.map((h) => ({ host: h, port: undefined })));
   } else if (/^[a-z_]+\s*=/i.test(v) && /\b(host|hostaddr|port|dbname)\s*=/i.test(v)) {
     const kv = {};
     for (const [, k, q1, bare] of v.matchAll(/([a-z_]+)\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S*))/gi)) kv[k.toLowerCase()] = q1 !== undefined ? q1.replace(/\\(.)/g, "$1") : bare;
@@ -821,7 +833,8 @@ function service(raw) {
     hosts = String(kv.host ?? kv.hostaddr ?? "").split(",").map((h, i) => ({ host: h, port: ports[i] ? Number(ports[i]) : ports[0] ? Number(ports[0]) : undefined }));
     if (kv.dbname) databases = [kv.dbname];
   } else return null;
-  hosts = hosts.map((h) => ({ host: normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
+  const local = (h) => LOCAL_BY_DEFAULT.has(scheme) && (!String(h).trim() || String(h).startsWith("/"));
+  hosts = hosts.map((h) => ({ host: local(h.host) ? "loopback" : normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
   const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
   return {
     scheme,
@@ -874,7 +887,8 @@ const NAMES_DATABASE = /(^PGDATABASE$|DATABASE|_DB$|_DB_NAME$|_DBNAME$)/i;
  * every `start` entry that sets its own. No value in those envs may reach what the repo's env files
  * name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here, never printed):
  * - a non-http service on the same host:port, whatever its database (no opt-in: the instance reaches
- *   such services only through its own); an endpoint with no host or no port never matches, and a
+ *   such services only through its own); an endpoint with no host or no port never matches (but a
+ *   libpq or MySQL-family value with no host is the local server: LOCAL_BY_DEFAULT), and a
  *   single-label host among `composeServices` (the worktree's own Compose project) is exempt;
  * - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
  *   `allow_origins`;
