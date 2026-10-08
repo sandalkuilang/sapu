@@ -107,8 +107,9 @@ export function validateLive(c) {
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
   if (has("compose_files")) {
     const v = c.compose_files;
-    const repoRelative = (p) => isStr(p) && !path.isAbsolute(p) && !p.includes("\\") && !p.split("/").includes("..");
-    need(Array.isArray(v) && v.length > 0 && v.every(repoRelative) && new Set(v).size === v.length, "compose_files must list one or more distinct repo-relative files (no absolute path, no ..)");
+    // No ":": the run joins the files into COMPOSE_FILE with it as the separator.
+    const repoRelative = (p) => isStr(p) && !path.isAbsolute(p) && !p.includes("\\") && !p.includes(":") && !p.split("/").includes("..");
+    need(Array.isArray(v) && v.length > 0 && v.every(repoRelative) && new Set(v).size === v.length, "compose_files must list one or more distinct repo-relative files (no absolute path, no .., no :)");
   }
   if (has("viewports")) need(Array.isArray(c.viewports) && c.viewports.every((v) => isInt(v, 1)), "viewports must be an array of positive widths");
   if (has("roles") && object(c.roles, "roles")) for (const [name, r] of Object.entries(c.roles)) role(name, r, errs);

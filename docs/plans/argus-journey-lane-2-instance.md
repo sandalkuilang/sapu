@@ -247,7 +247,8 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   `cliPluginsExtraDirs`); DOCKER_HOST = the owner's current context's socket (`docker context
   inspect`), refused unless `unix://`. Without docker, only DOCKER_CONFIG. `instanceEnv` and
   `startEntry` refuse DOCKER_CONFIG, DOCKER_HOST and DOCKER_CONTEXT in env, pass_env and an entry's env.
-  With `compose_files`, `instanceEnv` sets COMPOSE_FILE = the files joined with ":" (the instance's own
+  With `compose_files`, `instanceEnv` sets COMPOSE_FILE = the files joined with ":" and
+  COMPOSE_PATH_SEPARATOR = ":" (`validateLive` refuses a `:` in a listed file; the instance's own
   Compose commands read only the checked files, not a tracked override) and refuses COMPOSE_FILE or
   COMPOSE_PATH_SEPARATOR in env, pass_env or a start entry's env.
 - `export function checkCompose({worktree, env, ports, main, config, contract, secrets, runner})` →
@@ -281,7 +282,7 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
   `com.docker.compose.project=<COMPOSE_PROJECT_NAME>` (a volume may be a new anonymous one); such a
   container may mount only the run's volumes, join only its networks (or none), bind-mount nothing
   the Compose check refuses, not be privileged (`HostConfig.Privileged`), and publish only `ports`
-  (`HostConfig.PortBindings`; a random host port refused). Then `docker events --since <since - skew> --until <daemonNow>` (container,
+  (`HostConfig.PortBindings` and the live `NetworkSettings.Ports`; a random host port, and `HostConfig.PublishAllPorts` (`-P`), refused). Then `docker events --since <since - skew> --until <daemonNow>` (container,
   volume, network): a container action (create, start, restart, kill, stop, die, destroy, pause,
   unpause, update, rename, exec_create, exec_start, archive-path, extract-to-dir) on a container without the run's label, unless it
   is that container's own healthcheck exec (`Config.Healthcheck.Test`, CMD or CMD-SHELL), or a

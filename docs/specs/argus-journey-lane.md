@@ -353,7 +353,7 @@ to; `mail` prints `[{to, subject, text}]` as JSON; `allow_origins` are full orig
 from (a font CDN); `reserved_ports` are the repo's dev and E2E ports, never allocated; `fixtures` holds
 the files `upload` may use; each role may also set `base_url`, `login_url`, `logged_in`,
 `login_open`. An optional `compose_files` lists the Compose files the instance uses (paths from the
-repo's root, tracked, no `..`), in Compose's `-f` order: only those are checked (step 5), and the run
+repo's root, tracked, no `..` and no `:`), in Compose's `-f` order: only those are checked (step 5), and the run
 sets `COMPOSE_FILE` from them (step 3), so its own Compose commands read only those too.
 
 `confirmed` is the owner's statement, asked by `/sapu:init` in these words: `mocks` — every outbound
@@ -426,7 +426,8 @@ defence in depth and not enforcement:
    else: tcp, ssh). Private images are therefore pulled beforehand by the owner. Anything else a tool
    genuinely needs from the owner's home (an npm cache) is named in `pass_env`. `env`, `pass_env` and
    a start entry's env may not name `HOME`, `COMPOSE_PROJECT_NAME`, `DOCKER_CONFIG`, `DOCKER_HOST` or
-   `DOCKER_CONTEXT`. With `live.compose_files`, `COMPOSE_FILE` = those files joined with `:` (so a
+   `DOCKER_CONTEXT`. With `live.compose_files`, `COMPOSE_FILE` = those files joined with `:` (and
+   `COMPOSE_PATH_SEPARATOR` = `:`, whatever a tracked `.env` says; so a
    tracked `compose.override.yaml` beside them is not read), and none of them may set `COMPOSE_FILE`
    or `COMPOSE_PATH_SEPARATOR`.
 4. **Worktree.** A linked worktree at HEAD **outside** the repo (`$TMPDIR/sapu-live/<repo>-<run>`),
@@ -543,7 +544,7 @@ defence in depth and not enforcement:
    carry the label
    `com.docker.compose.project=<the run's project>` (a volume may instead be a new anonymous one); such
    a container may mount only the run's volumes, join only the run's networks (or none), bind-mount
-   nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a random one). And the daemon's events from then to its now (`docker events`) may hold no
+   nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a random one, nor every exposed port with `-P`; the ports asked for and the ones the daemon bound alike). And the daemon's events from then to its now (`docker events`) may hold no
    action on an object the run does not own: an exec (other than the container's own healthcheck),
    a copy in or out (`docker cp`), kill, stop, die, removal or other change of a container without
    the run's label, or the removal of

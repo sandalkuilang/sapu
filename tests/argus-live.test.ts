@@ -107,9 +107,9 @@ afterEach(() => {
 });
 
 describe("argus-live config — validateLive", () => {
-  it("compose_files, when present, lists repo-relative files: no absolute path, no .., at least one", () => {
+  it("compose_files, when present, lists repo-relative files: no absolute path, no .., no \":\" (COMPOSE_FILE's separator), at least one", () => {
     expect(errorsOf((c) => (c.compose_files = ["compose.yaml", "deploy/stack.yml"]))).toEqual([]);
-    for (const bad of [[], ["/srv/compose.yaml"], ["../x.yml"], ["a/../b.yml"], [""], "compose.yaml", ["a.yml", "a.yml"]]) {
+    for (const bad of [[], ["/srv/compose.yaml"], ["../x.yml"], ["a/../b.yml"], [""], "compose.yaml", ["a.yml", "a.yml"], ["a:b.yml"]]) {
       expect(errorsOf((c) => (c.compose_files = bad)).some((e) => e.startsWith("compose_files"))).toBe(true);
     }
   });
@@ -1943,6 +1943,10 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(instanceEnv({ ...base, config: { compose_files: ["compose.yaml", "deploy/stack.yml"] } }).COMPOSE_FILE).toBe("compose.yaml:deploy/stack.yml");
         expect(instanceEnv({ ...base, config: { env: {} } }).COMPOSE_FILE).toBeUndefined();
       });
+      it("COMPOSE_PATH_SEPARATOR is \":\" with it, so a tracked .env naming another separator cannot split the list elsewhere", () => {
+        expect(instanceEnv({ ...base, config: { compose_files: ["compose.yaml", "deploy/stack.yml"] } })).toMatchObject({ COMPOSE_FILE: "compose.yaml:deploy/stack.yml", COMPOSE_PATH_SEPARATOR: ":" });
+        expect(instanceEnv({ ...base, config: { env: {} } }).COMPOSE_PATH_SEPARATOR).toBeUndefined();
+      });
       it("compose_files together with COMPOSE_FILE or COMPOSE_PATH_SEPARATOR in env, pass_env or a start entry's env is refused", () => {
         const cf = { compose_files: ["compose.yaml"] };
         for (const k of ["COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"]) {
@@ -2044,6 +2048,21 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(run({ Privileged: true })).toMatch(/^refused: container argus-run1-db-1 is privileged$/);
       expect(run({ PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "5432" }] } })).toMatch(/^refused: container argus-run1-db-1 publishes host port 5432, which is not one of this run's ports$/);
       expect(run({ PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "" }] } })).toMatch(/^refused: container argus-run1-db-1 publishes container port 5432\/tcp on a random host port$/);
+    });
+
+    it("a run container started with -P (PublishAllPorts), or whose live bindings hold a port that is not the run's, is refused", () => {
+      const run = (hc: Obj, live: Obj | undefined) => {
+        const s = state();
+        s.containers[0].HostConfig = hc;
+        if (live !== undefined) s.containers[0].NetworkSettings.Ports = live;
+        return gate(s, { ports: { pg: 41001 } });
+      };
+      // As the daemon reports `docker run -P`: no PortBindings, the random ports only in NetworkSettings.Ports.
+      expect(run({ PublishAllPorts: true, PortBindings: {} }, { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "55002" }] })).toMatch(/^refused: container argus-run1-db-1 publishes every exposed port on a random host port \(-P\)$/);
+      expect(run({ PublishAllPorts: true, PortBindings: {} }, {})).toMatch(/^refused: container argus-run1-db-1 publishes every exposed port/);
+      expect(run({ PortBindings: {} }, { "80/tcp": [{ HostIp: "0.0.0.0", HostPort: "55002" }] })).toMatch(/^refused: container argus-run1-db-1 publishes host port 55002, which is not one of this run's ports$/);
+      // An exposed port nothing publishes (older daemons list it as null) and the run's own binding pass.
+      expect(run({ PortBindings: { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "41001" }] } }, { "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "41001" }], "6379/tcp": null })).toBe("ok");
     });
 
     it("a run container bind-mounting the main checkout is refused; one on none, or binding the worktree, passes", () => {

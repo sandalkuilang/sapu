@@ -465,8 +465,9 @@ const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME", "DOCKER_CONFIG", "DOCKER_HOST",
  * (when set), the `pass_env` names (when set), every `env` entry expanded, `COMPOSE_PROJECT_NAME =
  * argus-<runId>`, `HOME` = the run's home, and `docker` (dockerEnv's DOCKER_CONFIG and DOCKER_HOST).
  * No owner home, so no tool picks up the owner's cloud, Git or registry credentials. `env` and
- * `pass_env` may not name RUN_ENV. With `compose_files`, COMPOSE_FILE = those files joined with ":",
- * so the instance's own Compose commands read exactly the files checkCompose checked (not a tracked
+ * `pass_env` may not name RUN_ENV. With `compose_files`, COMPOSE_FILE = those files joined with ":"
+ * (and COMPOSE_PATH_SEPARATOR = ":", whatever a tracked .env says), so the instance's own Compose
+ * commands read exactly the files checkCompose checked (not a tracked
  * `compose.override.yaml` beside them); `env`, `pass_env` and a start entry's env may not then set
  * COMPOSE_FILE or COMPOSE_PATH_SEPARATOR.
  */
@@ -494,7 +495,11 @@ export function instanceEnv({ config, ports, secrets, runId, home, docker = {} }
   env.COMPOSE_PROJECT_NAME = `argus-${runId}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   env.HOME = home;
   for (const k of ["DOCKER_CONFIG", "DOCKER_HOST"]) if (typeof docker[k] === "string") env[k] = docker[k];
-  if (listed) env.COMPOSE_FILE = listed.join(":");
+  if (listed) {
+    // The separator too: a tracked .env naming another one would otherwise split the list elsewhere.
+    env.COMPOSE_FILE = listed.join(":");
+    env.COMPOSE_PATH_SEPARATOR = ":";
+  }
   return env;
 }
 
@@ -1548,7 +1553,8 @@ const PROJECT_LABEL = "com.docker.compose.project";
  * carry `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, a volume may instead be a new anonymous
  * one; and such a container may mount only the run's volumes (or new anonymous ones), join only the
  * run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and publish
- * only the run's `ports` (never a random one), whatever file or script started it. And the daemon's events
+ * only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike), whatever file or
+ * script started it. And the daemon's events
  * from `since` to its own now: a container action (CONTAINER_ACTIONS: an exec, kill, stop, die,
  * destroy…) on a container without the run's label, other than that container's own healthcheck exec,
  * or the removal of a volume or network neither named `<project>_…` nor created in the window, is
@@ -1601,7 +1607,10 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     if (!ours(c.Config && c.Config.Labels)) throw new Error(`refused: container ${name} was created or started during the cycle and is not of the run's Compose project ${project}`);
     const host = c.HostConfig || {};
     if (host.Privileged) throw new Error(`refused: container ${name} is privileged`);
-    for (const [target, binds] of Object.entries(host.PortBindings || {})) {
+    if (host.PublishAllPorts) throw new Error(`refused: container ${name} publishes every exposed port on a random host port (-P)`);
+    // What was asked (PortBindings) and what the daemon bound (NetworkSettings.Ports; null = exposed, not published).
+    const bindings = [host.PortBindings, c.NetworkSettings && c.NetworkSettings.Ports].flatMap((x) => Object.entries(x || {}));
+    for (const [target, binds] of bindings) {
       for (const b of binds || []) {
         const p = String((b && b.HostPort) || "");
         if (!p) throw new Error(`refused: container ${name} publishes container port ${target} on a random host port`);
