@@ -238,18 +238,33 @@ whose single-label hosts are then the instance's own; and it refuses a Compose p
 `external` network (its services could reach, or be reached as, the owner's).
 
 Interfaces (as built; the runner parameter is `runner`, like the rest of the module):
-- `export function checkCompose({worktree, env, ports, main, config, secrets, runner})` → the
-  project's service names (`[]` without a Compose file). First refuses any command of `config`
-  (setup, facts, mail, triggers, store_check, reset, start cmd/stop/health.cmd, role login commands)
-  that passes Compose `-p`, `-f`, `--project-directory` or `--env-file` before its subcommand. Then,
-  when the worktree has `compose.yaml`, `compose.yml`, `docker-compose.yaml` or
-  `docker-compose.yml` (or `env` or a tracked `.env` names `COMPOSE_FILE`), runs `docker compose
-  --profile * config --format json` (cwd worktree, env) and refuses: a project name other than
-  `COMPOSE_PROJECT_NAME`; `container_name`; a published host port (`ports[].published`, ranges
-  included) not among this run's ports, or none (random); `network_mode` `host` or `container:…`; a
-  bind mount inside MAIN (or holding it) or of the Docker socket; an `external` network or volume, or
-  one named outside `<project>_`. Docker missing or failing → refused, secrets masked, with the hint
-  to name `DOCKER_CONFIG` in `pass_env` (with HOME empty, docker cannot find its compose plugin).
+Threat model (spec §8): the config and the repo are the owner's, trusted; the checks catch
+misconfiguration and app defaults, not a malicious repo. Each check below is defence in depth.
+
+- `export function dockerEnv({home, runner, ownerEnv})` → `{DOCKER_CONFIG, DOCKER_HOST}` for
+  `instanceEnv({..., docker})`: `<home>/.docker` holding only links to the owner's
+  `cli-plugins/docker-*` and a config.json without auths/credsStore/currentContext (only
+  `cliPluginsExtraDirs`); DOCKER_HOST = the owner's current context's socket (`docker context
+  inspect`), refused unless `unix://`. Without docker, only DOCKER_CONFIG. `instanceEnv` and
+  `startEntry` refuse DOCKER_CONFIG, DOCKER_HOST and DOCKER_CONTEXT in env, pass_env and an entry's env.
+- `export function checkCompose({worktree, env, ports, main, config, contract, secrets, runner})` →
+  the service names of every project (`[]` without a Compose file). In order: (1) every command of
+  `config` (setup, facts, mail, triggers, store_check, reset, start cmd/stop/health.cmd, role login
+  commands) may not set or unset COMPOSE_*/DOCKER_*, run `docker` other than `docker compose`, or pass
+  Compose `-p`/`-f`/`--project-directory`/`--env-file` or a variable before its subcommand (quotes
+  and backslashes dropped first); (2) every Compose file (`git ls-files` matching
+  `(docker-)?compose[._-]*.y(a)ml` at any depth, plus default names at the root) may name no path
+  inside MAIN; (3) per directory, `docker compose -f <its files, Compose's order> --profile * config
+  --format json` (and at the root without `-f` when COMPOSE_FILE is set in env or a tracked .env),
+  refusing: another project name; `container_name`; a host port not the run's, or random;
+  `network_mode` host/bridge/container:; `pid`/`ipc`/`cgroup` host or container:, `uts`/`userns_mode`
+  host; `volumes_from` container:; `privileged`; `devices`; `cap_add` outside NET_BIND_SERVICE, CHOWN,
+  SETUID, SETGID, DAC_OVERRIDE, FOWNER; a bind mount or local-volume device inside MAIN (or holding
+  it), or a runtime/datastore socket or a directory holding one (outside the worktree); a secret or
+  config file or build context in MAIN; `extra_hosts` to the Docker host; an external network or
+  volume, or one named outside `<project>_`; and each service's environment, command and entrypoint
+  through checkStore's comparison as a container (loopback and paths its own; the Docker host
+  refused off the run's ports). Docker missing or failing → refused, secrets masked.
 - `export function groupPids(pgids, {runner})` → every pid in those groups (`ps -A -o pid= -o pgid=`,
   one command on macOS and Linux, instead of `pgrep -g` / `ps -g`).
 - `export function egressAllowed({config, env, ports})` → `host:port` strings: the run's ports on
@@ -327,13 +342,13 @@ Interfaces:
   `dns.lookup` (all addresses) and treats one that resolves only to loopback as `localhost`, so an
   alias such as `db.localtest.me` cannot slip past the loopback endpoint comparison (carried from
   the Task 5 review).
-- Wiring Task 6 (carried from it): step 5 calls `checkCompose({worktree, env, ports, main, config:
-  <expanded config>, secrets})` and stores its result as `ctx.composeServices` before
-  `bringUpStore(ctx)`, so both `checkStore` calls see it. Step 8, `upFresh` and `renew` (the CLI's)
-  call `checkEgress({pids: groupPids(<every recorded pgid, setup groups included>), allowed:
-  egressAllowed({config, env, ports})})`; a refusal → `down`. `up` step 2's "no `lsof`/`ss`" refusal
-  can reuse that message. `/sapu:init` (or the docs) should say that a repo whose live instance uses
-  Compose names `DOCKER_CONFIG` in `pass_env`.
+- Wiring Task 6 (carried from it): step 3 calls `dockerEnv({home})` right after `makeHome` and
+  passes its result to `instanceEnv({..., docker})` (a refusal there comes before step 5). Step 5
+  calls `checkCompose({worktree, env, ports, main, config: <expanded config>, contract, secrets})`
+  and stores its result as `ctx.composeServices` before `bringUpStore(ctx)`, so both `checkStore`
+  calls see it. Step 8, `upFresh` and `renew` (the CLI's) call `checkEgress({pids: groupPids(<every
+  recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports})})`; a refusal
+  → `down`. `up` step 2's "no `lsof`/`ss`" refusal can reuse that message.
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
   1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role
   hosts resolving to loopback via `dns.lookup`, `~/.playwright/cli.config.json` present, no

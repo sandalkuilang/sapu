@@ -454,15 +454,17 @@ export function makeHome(main, runId) {
 
 /** What every command inherits from the session: nothing that names an account or a credential. */
 const BASE_ENV = ["PATH", "USER", "SHELL", "TMPDIR", "LANG"];
-const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME"];
+/** Variables the run sets itself (or, DOCKER_CONTEXT, keeps unset): `env`, `pass_env` and a start entry's env may not name them. */
+const RUN_ENV = ["HOME", "COMPOSE_PROJECT_NAME", "DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT"];
 
 /**
  * The only environment any command of the instance gets: `PATH, USER, SHELL, TMPDIR, LANG, LC_*`
  * (when set), the `pass_env` names (when set), every `env` entry expanded, `COMPOSE_PROJECT_NAME =
- * argus-<runId>` and `HOME` = the run's empty home. No owner home, so no tool picks up the owner's
- * cloud, Git or registry credentials. `env` and `pass_env` may not name HOME or COMPOSE_PROJECT_NAME.
+ * argus-<runId>`, `HOME` = the run's home, and `docker` (dockerEnv's DOCKER_CONFIG and DOCKER_HOST).
+ * No owner home, so no tool picks up the owner's cloud, Git or registry credentials. `env` and
+ * `pass_env` may not name RUN_ENV.
  */
-export function instanceEnv({ config, ports, secrets, runId, home }) {
+export function instanceEnv({ config, ports, secrets, runId, home, docker = {} }) {
   runIdOk(runId);
   const env = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && (BASE_ENV.includes(k) || k.startsWith("LC_"))) env[k] = v;
@@ -476,7 +478,57 @@ export function instanceEnv({ config, ports, secrets, runId, home }) {
   }
   env.COMPOSE_PROJECT_NAME = `argus-${runId}`.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   env.HOME = home;
+  for (const k of ["DOCKER_CONFIG", "DOCKER_HOST"]) if (typeof docker[k] === "string") env[k] = docker[k];
   return env;
+}
+
+/**
+ * The run's Docker client (spec §8 step 3), so no docker command of the instance reads the owner's
+ * credentials or reaches anything but this machine's daemon: DOCKER_CONFIG = `<home>/.docker`, holding
+ * only links to the owner's CLI plugins (`<their DOCKER_CONFIG or ~/.docker>/cli-plugins/docker-*`) and
+ * a config.json without auths, credsStore or currentContext (only `cliPluginsExtraDirs` carried over);
+ * DOCKER_HOST = the local unix socket of the owner's current context (`docker context inspect`).
+ * Refused when that context is anything but a local unix socket. Without docker on PATH, only
+ * DOCKER_CONFIG. `ownerEnv` is the session's environment, in which the context is looked up.
+ */
+export function dockerEnv({ home, runner = run, ownerEnv = process.env }) {
+  const dir = path.join(home, ".docker");
+  const plugins = path.join(dir, "cli-plugins");
+  fs.mkdirSync(plugins, { recursive: true, mode: 0o700 });
+  const ownerCfg = ownerEnv.DOCKER_CONFIG || path.join(ownerEnv.HOME || os.homedir(), ".docker");
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(ownerCfg, "cli-plugins"));
+  } catch {
+    // no plugins of the owner's own
+  }
+  for (const name of names) if (/^docker-[A-Za-z0-9._-]+$/.test(name)) fs.symlinkSync(path.join(ownerCfg, "cli-plugins", name), path.join(plugins, name));
+  let extra;
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(ownerCfg, "config.json"), "utf8"));
+    if (Array.isArray(j.cliPluginsExtraDirs)) extra = j.cliPluginsExtraDirs.filter((d) => typeof d === "string");
+  } catch {
+    // no config of the owner's own
+  }
+  fs.writeFileSync(path.join(dir, "config.json"), `${JSON.stringify(extra ? { cliPluginsExtraDirs: extra } : {})}\n`, { mode: 0o600 });
+  const out = { DOCKER_CONFIG: dir };
+  const r = runner(["docker", "context", "inspect"], { env: ownerEnv, timeout: 30_000 });
+  if (r.error && r.error.code === "ENOENT") return out;
+  if (r.error || r.status !== 0) throw new Error(`refused: docker context inspect failed: ${tail((r.error && r.error.message) || r.stderr)}`);
+  let ctx;
+  try {
+    ctx = JSON.parse(r.stdout)[0];
+  } catch {
+    ctx = null;
+  }
+  const host = ctx && ctx.Endpoints && ctx.Endpoints.docker && ctx.Endpoints.docker.Host;
+  const m = typeof host === "string" && host.match(/^unix:\/\/(\/.+)$/);
+  if (!m) {
+    const scheme = typeof host === "string" ? host.split(":")[0] : "no host";
+    throw new Error(`refused: the docker context ${(ctx && ctx.Name) || "in use"} is not a local unix socket (${scheme}); the instance uses only this machine's daemon`);
+  }
+  out.DOCKER_HOST = `unix://${m[1]}`;
+  return out;
 }
 
 /**
@@ -882,6 +934,122 @@ function splitEndpoints(vars, { barePorts = false } = {}) {
 const NAMES_DATABASE = /(^PGDATABASE$|DATABASE|_DB$|_DB_NAME$|_DBNAME$)/i;
 
 /**
+ * Names and addresses by which a container reaches the Docker host, so the owner's services on it:
+ * Docker Desktop's and Podman's host names, Compose's `host-gateway`, the gateway of a Docker bridge
+ * network (`172.16-31.0.1`) and Docker Desktop's host network (`192.168.65.0/24`). A heuristic: a
+ * custom bridge subnet escapes it (spec §8, known limits).
+ */
+function dockerHost(h) {
+  const x = normHost(h);
+  return /^(host|gateway)\.docker\.internal$|^docker\.for\.(mac|win)\.(localhost|host\.internal)$|^host\.containers\.internal$|^host\.lima\.internal$|^host-gateway$/.test(x) || /^172\.(1[6-9]|2\d|3[01])\.0\.1$/.test(x) || /^192\.168\.65\.\d+$/.test(x);
+}
+
+/**
+ * What the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here,
+ * never printed): service endpoints, full http(s) URLs, and the real paths of files and sockets.
+ */
+function readOwner(main, contract) {
+  const guard = (contract && contract.guard) || {};
+  const o = { realMain: fs.realpathSync.native(main), files: [".env", ".env.local", ...(guard.envFiles ?? [])], endpoints: new Set(), full: new Set(), paths: new Set(), pg: guard.postgres || { ports: [], databases: [] } };
+  for (const f of o.files) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(main, f), "utf8");
+    } catch {
+      continue;
+    }
+    const vars = parseEnvFile(text);
+    for (const v of Object.values(vars)) {
+      const file = filePath(v.trim());
+      if (file) {
+        o.paths.add(resolveLink(path.resolve(o.realMain, file)));
+        continue;
+      }
+      const svc = service(v);
+      if (!svc) continue;
+      endpointsOf(svc.hosts).forEach((e) => o.endpoints.add(e));
+      o.full.add(svc.full);
+    }
+    for (const s of splitEndpoints(vars)) o.endpoints.add(`${s.host}:${s.port}`);
+  }
+  return o;
+}
+
+/**
+ * The comparison of `up` step 6 for one scope of values (refusals name `<label>.<key>`, never a value):
+ * `vars` is every variable in effect, `own` the ones this scope sets (defaults to `vars`). In a
+ * `container` scope (a Compose service's environment, command or entrypoint), loopback is the
+ * container's own and paths are the container's, so neither is compared; a host that is the Docker
+ * host (dockerHost) is refused unless on one of `runPorts`.
+ */
+function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], runPorts = [] }) {
+  const allowed = new Set();
+  for (const x of allowOrigins) {
+    try {
+      allowed.add(new URL(x).origin);
+    } catch {
+      // validateLive refuses a bad origin
+    }
+  }
+  const own = new Set(composeServices.map((x) => String(x).toLowerCase()));
+  const exempt = (host) => !host.includes(".") && !host.includes(":") && host !== "loopback" && own.has(host);
+  const reaches = `points at a service the repo's env files name (${o.files.join(", ")}); it would reach the owner's service`;
+  const ports = new Set(runPorts.map(Number));
+  const toHost = (key, h) => new Error(`refused: ${key} reaches the Docker host (${h}) on a port that is not the run's; the container would reach the owner's services`);
+  return (label, vars, { own: mine = vars, container = false } = {}) => {
+    for (const s of splitEndpoints(vars, { barePorts: !container })) {
+      if (!(s.key in mine)) continue;
+      const key = `${label}.${s.key}`;
+      if (container) {
+        if (s.host === "loopback") continue;
+        if (dockerHost(s.host) && !ports.has(s.port)) throw toHost(key, s.host);
+      }
+      if (endpointsOf([s], exempt).some((e) => o.endpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
+      if (!container && o.pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres protects`);
+    }
+    for (const [k, raw] of Object.entries(mine)) {
+      if (raw === null || raw === undefined) continue;
+      const key = `${label}.${k}`;
+      const v = String(raw).trim();
+      if (container && dockerHost(v)) throw toHost(key, normHost(v));
+      if (/^\d+$/.test(v)) {
+        if (!container && o.pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
+        continue;
+      }
+      if (!container && NAMES_DATABASE.test(k) && o.pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
+      const file = filePath(v);
+      if (file) {
+        if (container) continue;
+        const real = resolveLink(path.resolve(worktree, file));
+        if (real === null || within(o.realMain, real)) throw new Error(`refused: ${key} points into the main checkout`);
+        if (o.paths.has(real)) throw new Error(`refused: ${key} points at a file or socket the repo's env files name (${o.files.join(", ")})`);
+        continue;
+      }
+      const svc = service(v);
+      if (!svc) continue;
+      const hosts = container ? svc.hosts.filter((h) => h.host !== "loopback") : svc.hosts;
+      if (container) for (const h of hosts) if (dockerHost(h.host) && !ports.has(h.port)) throw toHost(key, h.host);
+      if (HTTP.has(svc.scheme)) {
+        let origin = null;
+        try {
+          origin = new URL(v).origin;
+        } catch {
+          origin = null;
+        }
+        const loopback = svc.hosts.length > 0 && svc.hosts.every((h) => h.host === "loopback");
+        const same = container ? hosts.length > 0 && o.full.has(svc.full) : o.full.has(svc.full) || (loopback && endpointsOf(svc.hosts).some((e) => o.endpoints.has(e)));
+        if (same && !allowed.has(origin)) throw new Error(`refused: ${key} ${reaches} (list its origin in allow_origins if it is meant to)`);
+      } else if (endpointsOf(hosts, exempt).some((e) => o.endpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
+      if (container) continue;
+      const port = svc.ports.find((p) => o.pg.ports.includes(p));
+      if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
+      const db = svc.databases.find((d) => o.pg.databases.includes(d));
+      if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
+    }
+  };
+}
+
+/**
  * The store checks of `up` steps 6 and 7 (defence in depth: `store_check` and the egress check are the
  * primary guards). The store must not be a database `guard.postgres` protects. `store_check` (shell,
  * worktree, bounded by `timeoutS`) must print `store` under the instance env and under the env of
@@ -913,84 +1081,8 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     const got = r.stdout.trim();
     if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}"${scope.where}, not the store "${config.store}"`);
   }
-  const realMain = fs.realpathSync.native(main);
-  const files = [".env", ".env.local", ...(guard.envFiles ?? [])];
-  const ownerEndpoints = new Set();
-  const ownerFull = new Set();
-  const ownerPaths = new Set();
-  for (const f of files) {
-    let text;
-    try {
-      text = fs.readFileSync(path.join(main, f), "utf8");
-    } catch {
-      continue;
-    }
-    const vars = parseEnvFile(text);
-    for (const v of Object.values(vars)) {
-      const file = filePath(v.trim());
-      if (file) {
-        ownerPaths.add(resolveLink(path.resolve(realMain, file)));
-        continue;
-      }
-      const svc = service(v);
-      if (!svc) continue;
-      endpointsOf(svc.hosts).forEach((e) => ownerEndpoints.add(e));
-      ownerFull.add(svc.full);
-    }
-    for (const s of splitEndpoints(vars)) ownerEndpoints.add(`${s.host}:${s.port}`);
-  }
-  const allowed = new Set();
-  for (const o of config.allow_origins ?? []) {
-    try {
-      allowed.add(new URL(o).origin);
-    } catch {
-      // validateLive refuses a bad origin
-    }
-  }
-  const own = new Set(composeServices.map((x) => String(x).toLowerCase()));
-  const exempt = (host) => !host.includes(".") && !host.includes(":") && host !== "loopback" && own.has(host);
-  const reaches = `points at a service the repo's env files name (${files.join(", ")}); it would reach the owner's service`;
-  for (const scope of scopes) {
-    for (const s of splitEndpoints(scope.env, { barePorts: true })) {
-      if (scope !== scopes[0] && !(s.key in scope.own)) continue;
-      const key = `${scope.label}.${s.key}`;
-      if (endpointsOf([s], exempt).some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
-      if (pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres protects`);
-    }
-    for (const [k, raw] of Object.entries(scope.own)) {
-      const key = `${scope.label}.${k}`;
-      const v = String(raw).trim();
-      if (/^\d+$/.test(v)) {
-        if (pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
-        continue;
-      }
-      if (NAMES_DATABASE.test(k) && pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
-      const file = filePath(v);
-      if (file) {
-        const real = resolveLink(path.resolve(worktree, file));
-        if (real === null || within(realMain, real)) throw new Error(`refused: ${key} points into the main checkout`);
-        if (ownerPaths.has(real)) throw new Error(`refused: ${key} points at a file or socket the repo's env files name (${files.join(", ")})`);
-        continue;
-      }
-      const svc = service(v);
-      if (!svc) continue;
-      if (HTTP.has(svc.scheme)) {
-        let origin = null;
-        try {
-          origin = new URL(v).origin;
-        } catch {
-          origin = null;
-        }
-        const loopback = svc.hosts.length > 0 && svc.hosts.every((h) => h.host === "loopback");
-        const same = ownerFull.has(svc.full) || (loopback && endpointsOf(svc.hosts).some((e) => ownerEndpoints.has(e)));
-        if (same && !allowed.has(origin)) throw new Error(`refused: ${key} ${reaches} (list its origin in allow_origins if it is meant to)`);
-      } else if (endpointsOf(svc.hosts, exempt).some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
-      const port = svc.ports.find((p) => pg.ports.includes(p));
-      if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
-      const db = svc.databases.find((d) => pg.databases.includes(d));
-      if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
-    }
-  }
+  const check = scopeChecker(readOwner(main, contract), { worktree, allowOrigins: config.allow_origins, composeServices });
+  for (const scope of scopes) check(scope.label, scope.env, { own: scope.own });
 }
 
 /** Runs one config command (`reset`) through the shell in the worktree, logged, bounded by `deadline`. */
@@ -1039,18 +1131,57 @@ export async function bringUpRest(ctx) {
   await checkStore(ctx);
 }
 
-/** The files `docker compose` reads by itself in a project directory. */
+/** The files `docker compose` reads by itself in a project directory, in the order it prefers them. */
 const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+/** A Compose file's name: `compose*.y*ml` or `docker-compose*.y*ml` (not `composer.yaml`). */
+const COMPOSE_NAME = /^(docker-)?compose([._-][^/]*)?\.ya?ml$/i;
 /** Compose's global flags that make a command read other files, or act on another project, than the check saw. */
 const COMPOSE_ESCAPES = new Set(["-p", "--project-name", "-f", "--file", "--project-directory", "--env-file"]);
 /** Compose's global flags that take a value (the next word, unless written `--flag=value`). */
 const COMPOSE_VALUED = new Set([...COMPOSE_ESCAPES, "--profile", "--ansi", "--parallel", "--progress"]);
+/** Capabilities a service may add: none of them reaches beyond its own container. */
+const CAPS_OK = new Set(["NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE", "FOWNER"]);
+/** Socket names of a container runtime or a datastore, wherever they lie. */
+const SOCKET_NAME = /^((docker|containerd|podman|containerd-shim[^/]*)\.sock|\.s\.PGSQL\.\d+|mysql[^/]*\.sock|mysqld[^/]*\.sock|redis[^/]*\.sock|mongodb-\d+\.sock|memcached[^/]*\.sock)$/i;
 
-/** A shell command's simple commands as word lists, quotes stripped: enough to find a flag, not a parser. */
+/**
+ * Where container runtimes and local datastores keep their sockets: a bind mount of one, or of a
+ * directory holding one, hands the container the owner's daemon or data.
+ */
+function knownSockets(env = {}) {
+  const home = process.env.HOME || os.homedir();
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const list = [
+    "/var/run/docker.sock", "/run/docker.sock", "/var/run/containerd/containerd.sock", "/run/containerd/containerd.sock",
+    "/var/run/podman/podman.sock", "/run/podman/podman.sock", `/run/user/${uid}/docker.sock`, `/run/user/${uid}/podman/podman.sock`,
+    `${home}/.docker/run/docker.sock`, `${home}/.docker/desktop/docker.sock`, `${home}/.colima/default/docker.sock`, `${home}/.rd/docker.sock`, `${home}/.orbstack/run/docker.sock`,
+    "/tmp/.s.PGSQL.5432", "/var/run/postgresql/.s.PGSQL.5432", "/run/postgresql/.s.PGSQL.5432", "/tmp/mysql.sock", "/var/run/mysqld/mysqld.sock", "/run/mysqld/mysqld.sock",
+    "/var/run/redis/redis.sock", "/run/redis/redis.sock", "/var/run/redis/redis-server.sock", "/run/redis/redis-server.sock",
+  ];
+  const m = String(env.DOCKER_HOST || "").match(/^unix:\/\/(\/.+)$/);
+  if (m) list.push(m[1]);
+  return [...new Set(list.flatMap((s) => [s, resolveLink(s)]).filter(Boolean))];
+}
+
+/**
+ * Why a host path a container would get (a bind mount, a local volume's device) is refused, or null:
+ * it lies inside <MAIN> or holds it, or (outside the worktree `root`) it is a container runtime or
+ * datastore socket or a directory holding one.
+ */
+function hostPathRefusal(source, { worktree, root, realMain, sockets }) {
+  const raw = path.resolve(worktree, String(source));
+  const real = resolveLink(raw);
+  if (real === null || within(realMain, real) || within(real, realMain)) return "a path inside the main checkout (or one holding it)";
+  if (within(root, real)) return null; // the run's own
+  if ([raw, real].some((p) => SOCKET_NAME.test(path.basename(p)) || sockets.some((s) => within(p, s)))) return "a container runtime or datastore socket, or a directory holding one";
+  return null;
+}
+
+/** A shell command's simple commands as word lists: enough to find a flag, not a parser. */
 const shellWords = (cmd) =>
   String(cmd)
     .split(/&&|\|\||[;&|\n()]/)
-    .map((s) => s.trim().split(/\s+/).filter(Boolean).map((w) => w.replace(/^(['"])(.*)\1$/, "$2")));
+    .map((s) => s.trim().split(/\s+/).filter(Boolean));
 
 /** Every command of the config, as [where, words[][]]: argv lists are one command each, shell fields split. */
 function commandsOf(config) {
@@ -1066,96 +1197,199 @@ function commandsOf(config) {
   return out;
 }
 
-/** The first COMPOSE_ESCAPES flag a `docker compose` / `docker-compose` call in `words` passes before its subcommand, or null. */
-function composeEscape(words) {
+/**
+ * Why one simple command (`raw` words) would run Docker past the check, or null: it sets or unsets a
+ * COMPOSE_* or DOCKER_* variable; it runs `docker` other than `docker compose`; or its `docker compose`
+ * / `docker-compose` passes COMPOSE_ESCAPES, or a variable, before the subcommand. Quotes and
+ * backslashes are dropped first, as the shell would.
+ */
+function dockerEscape(raw) {
+  const words = raw.map((w) => w.replace(/['"\\]/g, ""));
   const base = (w) => w.split("/").pop();
   for (let i = 0; i < words.length; i++) {
-    const b = base(words[i]);
-    if (b !== "docker-compose" && !(b === "compose" && words.slice(0, i).some((w) => base(w) === "docker"))) continue;
-    for (let j = i + 1; j < words.length && words[j].startsWith("-"); j++) {
+    const w = words[i];
+    const set = w.match(/^((?:COMPOSE|DOCKER)_[A-Za-z0-9_]*)=/);
+    if (set) return `sets ${set[1]}`;
+    if (w === "unset") {
+      const v = words.slice(i + 1).find((x) => /^(COMPOSE|DOCKER)_/.test(x));
+      if (v) return `unsets ${v}`;
+    }
+    let j;
+    if (base(w) === "docker-compose") j = i + 1;
+    else if (base(w) === "docker" && i + 1 < words.length) {
+      if (words[i + 1] !== "compose") return `runs docker ${words[i + 1]}; only docker compose runs under the check`;
+      j = i + 2;
+    } else continue;
+    for (; j < words.length; j++) {
+      if (/[$`]/.test(raw[j])) return "passes a variable where docker compose reads its flags";
       const t = words[j];
+      if (!t.startsWith("-")) break;
       const flag = /^-[pf]./.test(t) ? t.slice(0, 2) : t.split("=")[0];
-      if (COMPOSE_ESCAPES.has(flag)) return flag;
+      if (COMPOSE_ESCAPES.has(flag)) return `passes ${flag} to docker compose`;
       if (COMPOSE_VALUED.has(flag) && !t.includes("=")) j++;
     }
   }
   return null;
 }
 
+/** Every Compose file in the worktree: tracked at any depth (`git ls-files`), and the default names at its root. */
+function composeFiles(worktree, runner) {
+  const r = runner(["git", "-C", worktree, "ls-files", "-z"]);
+  if (r.error || r.status !== 0) throw new Error(`failed: git ls-files in ${worktree}: ${tail((r.error && r.error.message) || r.stderr)}`);
+  const tracked = r.stdout.split("\0").filter((f) => f && COMPOSE_NAME.test(path.posix.basename(f)));
+  const root = COMPOSE_FILES.filter((f) => fs.existsSync(path.join(worktree, f)));
+  return [...new Set([...tracked, ...root])];
+}
+
+/** A directory's Compose files in the order Compose merges them: default names, then overrides, then the rest. */
+const composeOrder = (a, b) => {
+  const rank = (f) => (COMPOSE_FILES.includes(f) ? COMPOSE_FILES.indexOf(f) : /^(docker-)?compose\.override\./i.test(f) ? 10 : 20);
+  return rank(a) - rank(b) || a.localeCompare(b);
+};
+
 /**
- * `up` step 5's Compose check. First, no command of `config` may pass Compose a project, file,
- * project directory or env file of its own (`-p`, `-f`, `--project-directory`, `--env-file`): the
- * check would not see what it runs. Then, when the worktree has a Compose file (or the env, or a
- * tracked `.env`, names COMPOSE_FILE), `docker compose --profile * config --format json` runs in the
- * worktree under the instance env (every profile, so no service hides from it) and the project must
- * share nothing by name with the owner's stack: it is named COMPOSE_PROJECT_NAME; no service sets
- * `container_name`, publishes a host port that is not one of this run's `ports` (a random one
- * included), uses `network_mode` host or `container:…`, bind-mounts a path inside the main checkout
- * (or one holding it) or the Docker socket; no network or volume is external or named outside the
- * project. Docker missing or failing is a refusal too. Returns the project's service names (checkStore's
- * `composeServices`: their single-label hosts are the instance's own), or [] without a Compose file.
+ * `up` step 5's Compose check (spec §8 step 5).
+ * 1. No command of `config` may set or unset a COMPOSE_* or DOCKER_* variable, run `docker` other than
+ *    `docker compose`, or pass Compose a project, file, project directory or env file of its own (or a
+ *    variable where its flags go): the check would not see what it runs.
+ * 2. Every Compose file — tracked at any depth, or a default name at the root — must name no path
+ *    inside <MAIN> (an `env_file`, `extends` or `include` Compose would read from the owner's checkout).
+ * 3. `docker compose -f <each file of a directory> --profile * config --format json` runs per
+ *    directory (and at the root with no `-f` when COMPOSE_FILE is set in `env` or a tracked `.env`), in
+ *    that directory under the instance env, and every project must share nothing with the owner's
+ *    stack: named COMPOSE_PROJECT_NAME; no `container_name`; only this run's ports published (never a
+ *    random one); no `network_mode` host, bridge or `container:`; no `pid`/`ipc`/`cgroup` host or
+ *    `container:`, no `uts`/`userns_mode` host; no `volumes_from` a container; not privileged, no
+ *    devices, no capability outside CAPS_OK; no bind mount or local volume device inside <MAIN> (or
+ *    holding it) or at a runtime or datastore socket (or a directory holding one); no secret, config or
+ *    build context read from <MAIN>; no `extra_hosts` to the Docker host; no network or volume external
+ *    or named outside the project; and each service's environment, command and entrypoint pass
+ *    checkStore's comparison (as a container: its loopback is its own, the Docker host is refused off
+ *    the run's ports).
+ * Docker missing or failing is a refusal. Returns the service names of every project (checkStore's
+ * `composeServices`), or [] without a Compose file.
  */
-export function checkCompose({ worktree, env, ports = {}, main, config = {}, secrets = {}, runner = run }) {
+export function checkCompose({ worktree, env, ports = {}, main, config = {}, contract = null, secrets = {}, runner = run }) {
   for (const [where, commands] of commandsOf(config)) {
     for (const words of commands) {
-      const flag = composeEscape(words);
-      if (flag) throw new Error(`refused: ${where} passes ${flag} to docker compose; the check sees only the files and project the env gives (COMPOSE_FILE, COMPOSE_PROFILES; COMPOSE_PROJECT_NAME is the run's): set them there`);
+      const why = dockerEscape(words);
+      if (why) throw new Error(`refused: ${where} ${why}; the check sees only the Compose files and project the env gives (COMPOSE_FILE, COMPOSE_PROFILES; COMPOSE_PROJECT_NAME, DOCKER_CONFIG and DOCKER_HOST are the run's)`);
     }
   }
-  let what = COMPOSE_FILES.filter((f) => fs.existsSync(path.join(worktree, f))).map((f) => `${f} is in the worktree`)[0];
-  if (!what && env.COMPOSE_FILE) what = "env names COMPOSE_FILE";
-  if (!what) {
-    let dotenv = {};
-    try {
-      dotenv = parseEnvFile(fs.readFileSync(path.join(worktree, ".env"), "utf8"));
-    } catch {
-      // no .env tracked
-    }
-    if (dotenv.COMPOSE_FILE) what = "the worktree's .env names COMPOSE_FILE";
-  }
-  if (!what) return [];
-  const why = `refused: ${what}, but docker compose config could not read it`;
-  const r = runner(["docker", "compose", "--profile", "*", "config", "--format", "json"], { cwd: worktree, env, timeout: 60_000 });
-  if (r.error || r.status !== 0) {
-    const said = tail(redact((r.error && r.error.message) || r.stderr || `exit ${r.status}`, secrets));
-    throw new Error(`${why}: ${said} (with HOME the run's empty one, docker finds its compose plugin through DOCKER_CONFIG: name DOCKER_CONFIG in pass_env)`);
-  }
-  let c;
-  try {
-    c = JSON.parse(r.stdout);
-  } catch {
-    c = null;
-  }
-  if (!c || typeof c !== "object" || Array.isArray(c)) throw new Error(`${why}: its output is not JSON`);
-  const project = env.COMPOSE_PROJECT_NAME;
-  if (c.name !== project) throw new Error(`refused: the Compose project is named ${c.name}, not ${project} (COMPOSE_PROJECT_NAME)`);
-  const runPorts = new Set(Object.values(ports).map(Number));
   const realMain = fs.realpathSync.native(main);
-  for (const [name, s] of Object.entries(c.services ?? {})) {
-    const svc = `refused: Compose service ${name}`;
-    if (s.container_name) throw new Error(`${svc} sets container_name (a fixed name collides with, or takes over, the owner's container)`);
-    const mode = String(s.network_mode ?? "");
-    if (mode === "host" || mode.startsWith("container:")) throw new Error(`${svc} uses network_mode ${mode} (it would share a network the run does not own)`);
-    for (const p of s.ports ?? []) {
-      if (p.published === undefined || p.published === null || p.published === "") throw new Error(`${svc} publishes container port ${p.target} on a random host port; publish one of this run's ports ({port:<name>})`);
-      const m = String(p.published).match(/^(\d+)(?:-(\d+))?$/);
-      if (!m) throw new Error(`${svc} publishes host port ${p.published}, which is not one of this run's ports`);
-      for (let n = Number(m[1]); n <= Number(m[2] ?? m[1]); n++) if (!runPorts.has(n)) throw new Error(`${svc} publishes host port ${n}, which is not one of this run's ports`);
-    }
-    for (const v of s.volumes ?? []) {
-      if (v.type !== "bind" || !v.source) continue;
-      const src = resolveLink(path.resolve(worktree, v.source));
-      if (src === null || within(realMain, src) || within(src, realMain)) throw new Error(`${svc} bind-mounts a path inside the main checkout (or one holding it)`);
-      if ([v.source, src].some((x) => /(^|\/)(docker|podman)\.sock$/.test(x))) throw new Error(`${svc} bind-mounts the Docker socket (the container could control the owner's containers)`);
+  const files = composeFiles(worktree, runner);
+  for (const f of files) {
+    const dir = path.dirname(path.join(worktree, f));
+    const text = fs.readFileSync(path.join(worktree, f), "utf8");
+    for (const m of text.matchAll(/(?:^|[\s:[,{"'=])((?:\/|\.\.?\/)[^\s"',\]}#]*)/gm)) {
+      if (/^\/\//.test(m[1])) continue; // the rest of a URL
+      const real = resolveLink(path.resolve(dir, m[1]));
+      if (real === null || within(realMain, real)) throw new Error(`refused: ${f} names a path inside the main checkout (Compose would read the owner's file)`);
     }
   }
-  for (const [kind, all] of [["network", c.networks], ["volume", c.volumes]]) {
-    for (const [name, x] of Object.entries(all ?? {})) {
-      if (x && x.external) throw new Error(`refused: Compose ${kind} ${name} is external (the project would use one it does not own)`);
-      if (x && x.name && !x.name.startsWith(`${project}_`)) throw new Error(`refused: Compose ${kind} ${name} is named ${x.name}, outside the project ${project}`);
+  const byDir = new Map();
+  for (const f of files) {
+    const d = path.posix.dirname(f);
+    byDir.set(d, [...(byDir.get(d) ?? []), path.posix.basename(f)]);
+  }
+  const runs = [...byDir].map(([d, names]) => {
+    const sorted = [...names].sort(composeOrder);
+    return { what: `${path.posix.join(d, sorted[0])} is in the worktree`, cwd: path.join(worktree, d), args: sorted.flatMap((n) => ["-f", n]) };
+  });
+  let dotenv = {};
+  try {
+    dotenv = parseEnvFile(fs.readFileSync(path.join(worktree, ".env"), "utf8"));
+  } catch {
+    // no .env tracked
+  }
+  if (env.COMPOSE_FILE || dotenv.COMPOSE_FILE) runs.push({ what: env.COMPOSE_FILE ? "env names COMPOSE_FILE" : "the worktree's .env names COMPOSE_FILE", cwd: worktree, args: [] });
+  if (!runs.length) return [];
+  const project = env.COMPOSE_PROJECT_NAME;
+  const runPorts = new Set(Object.values(ports).map(Number));
+  const sockets = knownSockets(env);
+  const at = { worktree, root: fs.realpathSync.native(worktree), realMain, sockets };
+  const projects = runs.map(({ what, cwd, args }) => {
+    const why = `refused: ${what}, but docker compose config could not read it`;
+    const r = runner(["docker", "compose", ...args, "--profile", "*", "config", "--format", "json"], { cwd, env, timeout: 60_000 });
+    if (r.error || r.status !== 0) throw new Error(`${why}: ${tail(redact((r.error && r.error.message) || r.stderr || `exit ${r.status}`, secrets))}`);
+    let c;
+    try {
+      c = JSON.parse(r.stdout);
+    } catch {
+      c = null;
+    }
+    if (!c || typeof c !== "object" || Array.isArray(c)) throw new Error(`${why}: its output is not JSON`);
+    if (c.name !== project) throw new Error(`refused: the Compose project is named ${c.name}, not ${project} (COMPOSE_PROJECT_NAME)`);
+    return { c, cwd };
+  });
+  const services = [...new Set(projects.flatMap(({ c }) => Object.keys(c.services ?? {})))];
+  const check = scopeChecker(readOwner(main, contract), { worktree, allowOrigins: config.allow_origins, composeServices: services, runPorts: [...runPorts] });
+  for (const { c, cwd } of projects) {
+    const local = { ...at, worktree: cwd };
+    for (const [name, s] of Object.entries(c.services ?? {})) {
+      const svc = `refused: Compose service ${name}`;
+      if (s.container_name) throw new Error(`${svc} sets container_name (a fixed name collides with, or takes over, the owner's container)`);
+      const mode = String(s.network_mode ?? "");
+      if (mode === "host" || mode === "bridge" || mode.startsWith("container:")) throw new Error(`${svc} sets network_mode ${mode} (it would share a network the run does not own)`);
+      for (const k of ["pid", "ipc", "cgroup", "uts", "userns_mode"]) {
+        const v = String(s[k] ?? "");
+        if (v === "host" || (["pid", "ipc", "cgroup"].includes(k) && v.startsWith("container:"))) throw new Error(`${svc} sets ${k} ${v} (it would share a namespace the run does not own)`);
+      }
+      for (const v of s.volumes_from ?? []) if (String(v).startsWith("container:")) throw new Error(`${svc} sets volumes_from ${v} (another container's data)`);
+      if (s.privileged) throw new Error(`${svc} is privileged (it could reach the host)`);
+      if (Array.isArray(s.devices) && s.devices.length) throw new Error(`${svc} maps host devices`);
+      for (const cap of s.cap_add ?? []) {
+        const n = String(cap).toUpperCase().replace(/^CAP_/, "");
+        if (!CAPS_OK.has(n)) throw new Error(`${svc} adds capability ${n} (allowed: ${[...CAPS_OK].join(", ")})`);
+      }
+      for (const p of s.ports ?? []) {
+        if (p.published === undefined || p.published === null || p.published === "") throw new Error(`${svc} publishes container port ${p.target} on a random host port; publish one of this run's ports ({port:<name>})`);
+        const m = String(p.published).match(/^(\d+)(?:-(\d+))?$/);
+        if (!m) throw new Error(`${svc} publishes host port ${p.published}, which is not one of this run's ports`);
+        for (let n = Number(m[1]); n <= Number(m[2] ?? m[1]); n++) if (!runPorts.has(n)) throw new Error(`${svc} publishes host port ${n}, which is not one of this run's ports`);
+      }
+      for (const v of s.volumes ?? []) {
+        const no = v.type === "bind" && v.source ? hostPathRefusal(v.source, local) : null;
+        if (no) throw new Error(`${svc} bind-mounts ${no}`);
+      }
+      const ctxs = s.build ? [s.build.context, ...Object.values(s.build.additional_contexts ?? {})] : [];
+      for (const x of ctxs) {
+        if (typeof x !== "string" || /^[a-z][a-z0-9+.-]*:/i.test(x)) continue; // a URL, git or another image
+        const real = resolveLink(path.resolve(cwd, x));
+        if (real === null || within(realMain, real)) throw new Error(`${svc} builds from a path inside the main checkout`);
+      }
+      for (const e of s.extra_hosts ?? []) {
+        const [h, ip] = String(e).split(/=|:(?=[^:]*$)/);
+        if (ip && (ip.trim() === "host-gateway" || dockerHost(ip))) throw new Error(`${svc} maps ${h} to the Docker host (${ip.trim()})`);
+      }
+      check(`compose.${name}.environment`, Object.fromEntries(Object.entries(s.environment ?? {}).filter(([, v]) => v !== null && v !== undefined)), { container: true });
+      for (const k of ["command", "entrypoint"]) {
+        const words = (Array.isArray(s[k]) ? s[k] : []).map(String);
+        // Each word, and what follows its first "=" (`--db=<url>`), under the word's index.
+        check(`compose.${name}.${k}`, { ...words }, { container: true });
+        check(`compose.${name}.${k}`, Object.fromEntries(words.map((w, i) => [i, w.slice(w.indexOf("=") + 1)]).filter(([i, v]) => v !== words[i])), { container: true });
+      }
+    }
+    for (const [kind, all] of [["network", c.networks], ["volume", c.volumes]]) {
+      for (const [name, x] of Object.entries(all ?? {})) {
+        if (x && x.external) throw new Error(`refused: Compose ${kind} ${name} is external (the project would use one it does not own)`);
+        if (x && x.name && !x.name.startsWith(`${project}_`)) throw new Error(`refused: Compose ${kind} ${name} is named ${x.name}, outside the project ${project}`);
+        const opts = (x && x.driver_opts) || {};
+        if (opts.device && (/\bbind\b/.test(String(opts.o ?? "")) || opts.type === "none")) {
+          const no = hostPathRefusal(opts.device, local);
+          if (no) throw new Error(`refused: Compose volume ${name} binds ${no}`);
+        }
+      }
+    }
+    for (const [kind, all] of [["secret", c.secrets], ["config", c.configs]]) {
+      for (const [name, x] of Object.entries(all ?? {})) {
+        if (!x || !x.file) continue;
+        const real = resolveLink(path.resolve(cwd, x.file));
+        if (real === null || within(realMain, real)) throw new Error(`refused: Compose ${kind} ${name} reads a file inside the main checkout`);
+      }
     }
   }
-  return Object.keys(c.services ?? {});
+  return services;
 }
 
 /** Every pid in the process groups `pgids` (`ps -A -o pid= -o pgid=`, the same on macOS and Linux). */

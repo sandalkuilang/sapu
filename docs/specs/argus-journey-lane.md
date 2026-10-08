@@ -369,6 +369,29 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
 `{port:<name>}` allocated this run on those URLs' hosts. `allow_origins` entries are full origins
 (`scheme://host:port`), never bare hosts.
 
+**Threat model.** `.argus/live.json` and the repo are the owner's own and trusted. The checks of
+`up`, `renew` and `down` exist to catch a misconfiguration, or an app default, that would make a cycle
+touch the owner's servers, services or data (a cache on its standard local port, a Compose file with a
+fixed container name or an external volume, an env value left pointing at the dev database); they are
+not a sandbox against a repo written to escape them. Known limits, each a reason the checks are
+defence in depth and not enforcement:
+- Static scans read what the config and the tracked Compose files say. A script they call (`npm run
+  docker:up`) is seen only through what it does: the Docker runtime gate (step 8) and the egress check.
+- Process groups bound every kill and every listing: a process that leaves its group (`setsid`, a
+  double fork) is neither killed nor listed.
+- The egress check samples (step 8): a connection opened and closed between two samples is not seen,
+  and processes inside containers are not listed (the Compose checks and the runtime gate stand in).
+- A host name in `env` or `allow_origins` stands for the addresses it resolves to when the check
+  runs; a name that rotates (DNS round robin, a CDN) may be refused for an address it took since, or
+  allowed for one it no longer has.
+- `allow_origins` is matched for every process of the run, not only for pages.
+- A container reaches the Docker host by names and addresses the checks know (`host.docker.internal`,
+  `host-gateway`, `172.16-31.0.1`, `192.168.65.0/24`); a custom bridge subnet escapes them.
+- The Docker runtime gate sees every container, volume and network created or started during the
+  cycle, the owner's included: one the owner starts meanwhile ends the cycle.
+- Nothing is enforced by the operating system. A sandbox that denies the instance every other
+  connection (`sandbox-exec` on macOS, a network namespace on Linux) is future work.
+
 **`argus-live.mjs up`** (no LLM; every step logged to `.argus/live/logs/`):
 1. **Lock.** Takes `.argus/live/lock.json` (run id, unique per run; deadline = start +
    `limits.max_cycle_minutes` + 15 min) and, before any setup or install, appends `<run id> start
@@ -386,12 +409,17 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    browser (the install command named); the pinned CLI not installable (offline, empty npm cache);
    neither `lsof` nor `ss` available.
 3. **Environment.** Every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the
-   names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, and `HOME` = an empty per-run
-   directory outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode
-   0700; a setup may link into it, e.g. a managed Python or a package store) — so no tool picks up
-   the owner's cloud, Git or registry credentials. Anything a tool genuinely needs from the owner's home
-   (an npm cache, a Docker config) is named in `pass_env`. `env` and `pass_env` may not name `HOME`
-   or `COMPOSE_PROJECT_NAME`.
+   names in `pass_env`, `env`, `COMPOSE_PROJECT_NAME=argus-<run>`, `HOME` = a per-run directory
+   outside the repo, beside the worktree (`$TMPDIR/sapu-live/<repo>-<run>.home`, mode 0700, empty but
+   for `.docker`; a setup may link into it, e.g. a managed Python or a package store) — so no tool
+   picks up the owner's cloud, Git or registry credentials — and the run's Docker client:
+   `DOCKER_CONFIG` = `<HOME>/.docker`, holding only links to the owner's Docker CLI plugins and a
+   `config.json` without `auths`, `credsStore` or `currentContext`, and `DOCKER_HOST` = the local unix
+   socket of the owner's current Docker context (refused before step 5 when that context is anything
+   else: tcp, ssh). Private images are therefore pulled beforehand by the owner. Anything else a tool
+   genuinely needs from the owner's home (an npm cache) is named in `pass_env`. `env`, `pass_env` and
+   a start entry's env may not name `HOME`, `COMPOSE_PROJECT_NAME`, `DOCKER_CONFIG`, `DOCKER_HOST` or
+   `DOCKER_CONTEXT`.
 4. **Worktree.** A linked worktree at HEAD **outside** the repo (`$TMPDIR/sapu-live/<repo>-<run>`),
    so no lookup that walks up the directory tree finds the repo's own `.env`. `$TMPDIR/sapu-live` is
    the user's own directory, mode 0700, never a symlink, and never inside the repo. `live.setup` runs
@@ -403,19 +431,33 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
 5. **Ports.** `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which
    `/sapu:init` fills with the repo's dev and E2E ports; `port_range` is required whenever a
    `{port:<name>}` is used); `{port:<name>=<n>}` fixes one, and a taken fixed port → refuse, naming
-   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse. When the worktree has a Compose file
-   (or the env, or a tracked `.env`, names `COMPOSE_FILE`), `docker compose --profile '*' config
-   --format json` (every profile, under step 3's environment) must describe a project that shares
-   nothing by name with the owner's stack, otherwise refuse: it is named `COMPOSE_PROJECT_NAME`; it
-   publishes only this run's ports (no random host port either) and names no `container_name`; no
-   service uses `network_mode` `host` or `container:…`, or bind-mounts a path inside the main
-   checkout (or one holding it) or the Docker socket; no network or volume is `external` or named
-   outside the project (a fixed host port, container, network or volume would collide with, or take
-   over, the owner's). Docker missing or failing is a refusal too (with `HOME` empty, docker finds
-   its compose plugin through `DOCKER_CONFIG`, which `pass_env` then names). No command of the
-   config may pass Compose `-p`, `-f`, `--project-directory` or `--env-file` before its subcommand:
-   the check would not see what it runs (the env's `COMPOSE_FILE` and `COMPOSE_PROFILES` do that).
-   The project's service names are the Compose services step 6 exempts.
+   the process holding it; one port fixed for two names, or one name fixed at two ports → refuse.
+   **Compose.** No command of the config (setup, `store_check`, `reset`, start `cmd`/`stop`/health
+   `cmd`, login commands, `facts`, `mail`, `triggers`) may set or unset a `COMPOSE_*` or `DOCKER_*`
+   variable (`X=… cmd`, `env X=…`, `export`, `unset`), run `docker` other than `docker compose`
+   (no `docker run`, `exec`, `rm`, `volume …`, `--context`), or pass Compose `-p`, `-f`,
+   `--project-directory`, `--env-file` or a variable where its flags go (quotes and backslashes read
+   as the shell reads them): the check would not see what it runs (the env's `COMPOSE_FILE` and
+   `COMPOSE_PROFILES` do that). Every Compose file of the worktree — tracked at any depth
+   (`compose*.y*ml`, `docker-compose*.y*ml`), or a default name at its root — must name no path
+   inside the main checkout (an `env_file`, `extends` or `include` read from the owner's checkout).
+   Then `docker compose -f <each such file of a directory> --profile '*' config --format json` runs
+   once per directory (and once at the root, with no `-f`, when the env or a tracked `.env` names
+   `COMPOSE_FILE`), in that directory under step 3's environment and with every profile, and each
+   project must share nothing with the owner's stack, otherwise refuse: it is named
+   `COMPOSE_PROJECT_NAME`; it publishes only this run's ports (no random host port either) and names
+   no `container_name`; no service sets `network_mode` `host`, `bridge` or `container:…`, `pid`,
+   `ipc` or `cgroup` `host` or `container:…`, `uts` or `userns_mode` `host`, or `volumes_from` a
+   container; none is `privileged`, maps `devices`, or adds a capability other than
+   `NET_BIND_SERVICE`, `CHOWN`, `SETUID`, `SETGID`, `DAC_OVERRIDE`, `FOWNER`; no bind mount or local
+   volume `device` (`o: bind`, `type: none`) lies inside the main checkout or holds it, or is a
+   container runtime or datastore socket (Docker, containerd, Podman, PostgreSQL, MySQL, Redis) or a
+   directory holding one (`/var/run`, `/run`, `~/.docker/run`, …), unless it lies in the worktree;
+   no secret or config `file` or build context is read from the main checkout; no `extra_hosts`
+   entry maps a name to the Docker host (`host-gateway`, a bridge gateway); no network or volume is
+   `external` or named outside the project. Each service's resolved `environment`, `command` and
+   `entrypoint` go through step 6's comparison as a container sees them (below). Docker missing or
+   failing is a refusal too. The projects' service names are the Compose services step 6 exempts.
 6. **Store.** Starts the `phase: store` entries (each in its own process group) and waits for their
    health. `store` must not be a database the contract's `guard.postgres` protects. Runs
    `store_check` under the instance environment and again under the environment of every `start`
@@ -445,6 +487,12 @@ like) are kept from the explorer by its frontmatter alone, which an engine test 
    URLs, libpq `key=value` strings and bare port numbers are read, and a bare database name under a
    variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). Only
    then `reset`.
+
+   The same comparison runs at step 5 over each Compose service's `environment`, `command` and
+   `entrypoint` (each word, and what follows its first `=`), as a container sees them: its loopback
+   and its paths are its own and are not compared, and a host that is the Docker host
+   (`host.docker.internal`, `gateway.docker.internal`, `host-gateway`, a bridge gateway such as
+   `172.17.0.1`) is refused unless on one of the run's ports.
 7. **Start.** Each remaining entry in its own process group. Refuse when an entry's health already
    answers before its command ran (a `url` that responds, a `cmd` that exits 0: something else serves
    there). Health = `{url}` answering, `{cmd}` exiting 0, or, when omitted, the process alive after
@@ -746,6 +794,8 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | `up` refuses or fails | the step and the tool's own error are quoted, every secret value masked; `down` runs; the cycle ends with that report (`/sapu:argus` chooses another lane); the owner's servers are untouched |
 | A `setup` command outlives the lock's deadline | it is killed; `failed: setup <cmd> timed out`; `down` runs |
 | Another cycle holds the lock | refuse, naming its run and deadline |
+| The owner's Docker context is not a local unix socket (tcp, ssh) | refuse before step 5, naming the context and its scheme only; `down` runs |
+| A Compose project, Compose file or config command would share something with the owner's stack, or run Docker past the check | refuse, naming the service, file or field and the rule; `down` runs |
 | The egress check finds a foreign endpoint | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |
 | Session lost mid-journey | the wrapper signs in once; failing again → a harness event (H2), not a candidate |

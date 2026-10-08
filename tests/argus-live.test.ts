@@ -19,6 +19,7 @@ import {
   checkCompose,
   checkEgress,
   checkStore,
+  dockerEnv,
   egressAllowed,
   groupPids,
   instanceEnv,
@@ -1577,19 +1578,30 @@ describe("argus-live instance — Compose and egress checks", () => {
 
   describe("Compose", () => {
     const PROJECT = "argus-run1";
-    /** A worktree with a Compose file, and a fake `docker` on PATH that records how it ran and prints `json`. */
-    const world = (json: unknown, { file = "compose.yaml" as string | null, status = 0, stderr = "" } = {}) => {
+    /**
+     * A git worktree stand-in holding Compose files (tracked unless `untracked`), and a fake `docker` on
+     * PATH that appends how it ran (cwd, project, args) to `ran` and prints `json`.
+     */
+    const world = (json: unknown, { files = ["compose.yaml"] as string[], untracked = [] as string[], status = 0, stderr = "" } = {}) => {
       const wt = realpathSync(tempDir());
       const main = realpathSync(tempDir());
       const bin = tempDir();
-      if (file) writeFileSync(join(wt, file), "services: {}\n");
+      execFileSync("git", ["-C", wt, "init", "-q"]);
+      for (const f of [...files, ...untracked]) {
+        mkdirSync(join(wt, f, ".."), { recursive: true });
+        writeFileSync(join(wt, f), "services: {}\n");
+      }
+      if (files.length) execFileSync("git", ["-C", wt, "add", ...files]);
       writeFileSync(join(bin, "out.json"), JSON.stringify(json));
       const docker = join(bin, "docker");
-      writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' "$PWD" "$COMPOSE_PROJECT_NAME" "$*" > ${JSON.stringify(join(bin, "ran"))}\nprintf '%s' ${JSON.stringify(stderr)} >&2\ncat ${JSON.stringify(join(bin, "out.json"))}\nexit ${status}\n`);
+      writeFileSync(docker, `#!/bin/sh\nprintf '%s|%s|%s\\n' "$PWD" "$COMPOSE_PROJECT_NAME" "$*" >> ${JSON.stringify(join(bin, "ran"))}\nprintf '%s' ${JSON.stringify(stderr)} >&2\ncat ${JSON.stringify(join(bin, "out.json"))}\nexit ${status}\n`);
       chmodSync(docker, 0o755);
       const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, COMPOSE_PROJECT_NAME: PROJECT };
-      return { wt, main, bin, env, ran: () => (existsSync(join(bin, "ran")) ? readFileSync(join(bin, "ran"), "utf8").trim().split("\n") : null), ports: { pg: 41001, web: 41002 } };
+      const set = (c: unknown) => writeFileSync(join(bin, "out.json"), JSON.stringify(c));
+      const ran = () => (existsSync(join(bin, "ran")) ? readFileSync(join(bin, "ran"), "utf8").trim().split("\n") : []);
+      return { wt, main, bin, env, set, ran, ports: { pg: 41001, web: 41002 } };
     };
+    type World = ReturnType<typeof world>;
     const good = (wt = "/w"): Obj => ({
       name: PROJECT,
       services: {
@@ -1602,96 +1614,195 @@ describe("argus-live instance — Compose and egress checks", () => {
             { type: "bind", source: "/etc/hosts", target: "/h", read_only: true, bind: {} },
             { type: "tmpfs", target: "/tmp" },
           ],
+          environment: { POSTGRES_DB: "app_explore", PGHOST: "localhost", PGPORT: "5432", N: null },
+          command: ["postgres", "-c", "listen_addresses=*"],
+          cap_add: ["CHOWN", "CAP_SETUID"],
           networks: { default: null },
         },
-        web: { image: "nginx", ports: [{ mode: "ingress", host_ip: "127.0.0.1", target: 80, published: "41002", protocol: "tcp" }] },
-        sidecar: { image: "busybox", network_mode: "service:db" },
+        web: {
+          image: "nginx",
+          ports: [{ mode: "ingress", host_ip: "127.0.0.1", target: 80, published: "41002", protocol: "tcp" }],
+          environment: { DATABASE_URL: "postgres://app@db:5432/app_explore", API: "http://localhost:8080/", HOST_API: "http://host.docker.internal:41002/" },
+          volumes_from: ["db"],
+        },
+        sidecar: { image: "busybox", network_mode: "service:db", pid: "service:db" },
       },
       networks: { default: { name: `${PROJECT}_default`, ipam: {} } },
-      volumes: { pgdata: { name: `${PROJECT}_pgdata` } },
+      volumes: { pgdata: { name: `${PROJECT}_pgdata` }, scratch: { name: `${PROJECT}_scratch`, driver: "local", driver_opts: { type: "none", o: "bind", device: `${wt}/scratch` } } },
+      secrets: { s1: { name: `${PROJECT}_s1`, file: `${wt}/secrets/s1` } },
+      configs: { c1: { name: `${PROJECT}_c1`, file: `${wt}/conf/c1` } },
     });
+    const compose = (w: World, over: Obj = {}) => message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main, ...over }));
 
     it("a compliant project passes, returns its service names, and docker ran in the worktree under the instance env, every profile included", () => {
       const w = world(null);
-      writeFileSync(join(w.bin, "out.json"), JSON.stringify(good(w.wt)));
+      w.set(good(w.wt));
       expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
-      expect(w.ran()).toEqual([w.wt, PROJECT, "compose --profile * config --format json"]);
+      expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f compose.yaml --profile * config --format json`]);
     });
 
-    it.each(["compose.yml", "docker-compose.yaml", "docker-compose.yml"])("%s is a Compose file too", (file) => {
-      const w = world(good(), { file });
-      expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main }))).toBe("ok");
-      expect(w.ran()).not.toBeNull();
+    it("every tracked Compose file is found at any depth and read per directory; an untracked one at the root too", () => {
+      const w = world(good(), { files: ["compose.override.yaml", "compose.yaml", "deploy/docker-compose.dev.yml", "deploy/compose-test.yml", "composer.yaml", "docs/compose.md"], untracked: ["docker-compose.yml"] });
+      expect(compose(w)).toBe("ok");
+      expect(w.ran().sort()).toEqual(
+        [
+          `${w.wt}|${PROJECT}|compose -f compose.yaml -f docker-compose.yml -f compose.override.yaml --profile * config --format json`,
+          `${w.wt}/deploy|${PROJECT}|compose -f compose-test.yml -f docker-compose.dev.yml --profile * config --format json`,
+        ].sort(),
+      );
     });
 
     it("no Compose file: nothing to check, docker never runs", () => {
-      const w = world(good(), { file: null });
+      const w = world(good(), { files: ["README.md"] });
       expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual([]);
-      expect(w.ran()).toBeNull();
+      expect(w.ran()).toEqual([]);
     });
 
-    it("COMPOSE_FILE in the env, or in a .env the worktree tracks, makes Compose read a file elsewhere: checked too", () => {
-      const w = world(good(), { file: null });
-      expect(checkCompose({ worktree: w.wt, env: { ...w.env, COMPOSE_FILE: "deploy/dev.yml" }, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
-      const v = world(good(), { file: null });
-      writeFileSync(join(v.wt, ".env"), "COMPOSE_FILE=deploy/dev.yml\n");
-      expect(checkCompose({ worktree: v.wt, env: v.env, ports: v.ports, main: v.main })).toEqual(["db", "web", "sidecar"]);
+    it("COMPOSE_FILE in the env, or in a .env the worktree tracks, is read as Compose reads it: at the root, with no -f", () => {
+      const w = world(good(), { files: [] });
+      expect(checkCompose({ worktree: w.wt, env: { ...w.env, COMPOSE_FILE: "elsewhere/dev.yml" }, ports: w.ports, main: w.main })).toEqual(["db", "web", "sidecar"]);
+      expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose --profile * config --format json`]);
+      const v = world(good(), { files: [] });
+      writeFileSync(join(v.wt, ".env"), "COMPOSE_FILE=elsewhere/dev.yml\n");
+      expect(compose(v)).toBe("ok");
+      expect(v.ran()).toHaveLength(1);
     });
 
+    it("a tracked Compose file that names a path inside the main checkout (env_file, extends, include, ...) is refused", () => {
+      const w = world(good());
+      writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    image: x\n    env_file: [${w.main}/.env]\n`);
+      expect(compose(w)).toBe("refused: compose.yaml names a path inside the main checkout (Compose would read the owner's file)");
+      writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    extends: { file: "${w.main}/base.yaml", service: base }\n`);
+      expect(compose(w)).toMatch(/^refused: compose\.yaml names a path inside the main checkout/);
+      writeFileSync(join(w.wt, "compose.yaml"), "services:\n  web:\n    image: x\n    volumes: [./data:/data, /var/lib/x:/y]\n    command: http://example.test/a\n");
+      expect(compose(w)).toBe("ok");
+    });
+
+    const SOCKETS = (home: string) => ["/var/run/docker.sock", "/var/run", "/run", "/", `${home}/.docker/run`, "/run/containerd/containerd.sock", "/srv/podman.sock", "/tmp/.s.PGSQL.5432", "/var/run/postgresql"];
     const refusals: [string, (c: Obj, main: string) => void, RegExp][] = [
       ["a host port outside the run", (c) => (c.services.db.ports[0].published = "5432"), /^refused: Compose service db publishes host port 5432, which is not one of this run's ports/],
       ["a published range reaching outside the run", (c) => (c.services.db.ports[0].published = "41001-41003"), /^refused: Compose service db publishes host port 41003/],
       ["a random host port", (c) => delete c.services.db.ports[0].published, /^refused: Compose service db publishes container port 5432 on a random host port/],
       ["a container_name", (c) => (c.services.web.container_name = "web"), /^refused: Compose service web sets container_name/],
-      ["the host's network", (c) => (c.services.web.network_mode = "host"), /^refused: Compose service web uses network_mode host/],
-      ["another container's network", (c) => (c.services.web.network_mode = "container:owner-db-1"), /^refused: Compose service web uses network_mode container:owner-db-1/],
+      ...(["host", "bridge", "container:owner-db-1"].map((m) => [`network_mode ${m}`, (c: Obj) => (c.services.web.network_mode = m), new RegExp(`^refused: Compose service web sets network_mode ${m}`)]) as [string, (c: Obj) => void, RegExp][]),
+      ...(["pid", "ipc", "cgroup", "uts", "userns_mode"].map((k) => [`${k}: host`, (c: Obj) => (c.services.web[k] = "host"), new RegExp(`^refused: Compose service web sets ${k} host`)]) as [string, (c: Obj) => void, RegExp][]),
+      ...(["pid", "ipc", "cgroup"].map((k) => [`${k}: container:`, (c: Obj) => (c.services.web[k] = "container:owner"), new RegExp(`^refused: Compose service web sets ${k} container:owner`)]) as [string, (c: Obj) => void, RegExp][]),
+      ["volumes_from another container", (c) => c.services.web.volumes_from.push("container:owner-db-1"), /^refused: Compose service web sets volumes_from container:owner-db-1/],
+      ["privileged", (c) => (c.services.web.privileged = true), /^refused: Compose service web is privileged/],
+      ["devices", (c) => (c.services.web.devices = [{ source: "/dev/fuse", target: "/dev/fuse", permissions: "rwm" }]), /^refused: Compose service web maps host devices/],
+      ["cap_add outside the allowlist", (c) => c.services.db.cap_add.push("NET_ADMIN"), /^refused: Compose service db adds capability NET_ADMIN/],
+      ["cap_add ALL", (c) => (c.services.web.cap_add = ["ALL"]), /^refused: Compose service web adds capability ALL/],
       ["an external network", (c) => (c.networks.ext = { name: "owner_net", external: true }), /^refused: Compose network ext is external/],
       ["a network named outside the project", (c) => (c.networks.ext = { name: "owner_net" }), /^refused: Compose network ext is named owner_net, outside the project argus-run1/],
       ["an external volume", (c) => (c.volumes.pgdata = { name: "owner_pgdata", external: true }), /^refused: Compose volume pgdata is external/],
       ["a volume named outside the project", (c) => (c.volumes.pgdata = { name: "owner_pgdata" }), /^refused: Compose volume pgdata is named owner_pgdata, outside the project argus-run1/],
       ["a project named otherwise", (c) => (c.name = "owner"), /^refused: the Compose project is named owner, not argus-run1/],
       ["a bind mount from the main checkout", (c, main) => c.services.db.volumes.push({ type: "bind", source: `${main}/data`, target: "/y", bind: {} }), /^refused: Compose service db bind-mounts a path inside the main checkout/],
-      ["the Docker socket", (c) => c.services.db.volumes.push({ type: "bind", source: "/var/run/docker.sock", target: "/var/run/docker.sock", bind: {} }), /^refused: Compose service db bind-mounts the Docker socket/],
+      ["a bind mount of a directory holding the main checkout", (c, main) => c.services.db.volumes.push({ type: "bind", source: join(main, ".."), target: "/y", bind: {} }), /^refused: Compose service db bind-mounts a path inside the main checkout \(or one holding it\)/],
+      ["a local volume bound to the main checkout", (c, main) => (c.volumes.scratch.driver_opts.device = `${main}/x`), /^refused: Compose volume scratch binds a path inside the main checkout/],
+      ["a local volume bound to /var/run", (c) => (c.volumes.scratch.driver_opts = { o: "bind,rw", device: "/var/run" }), /^refused: Compose volume scratch binds a container runtime or datastore socket/],
+      ["a secret file from the main checkout", (c, main) => (c.secrets.s1.file = `${main}/.env`), /^refused: Compose secret s1 reads a file inside the main checkout/],
+      ["a config file from the main checkout", (c, main) => (c.configs.c1.file = `${main}/conf`), /^refused: Compose config c1 reads a file inside the main checkout/],
+      ["a build context in the main checkout", (c, main) => (c.services.web.build = { context: main, dockerfile: "Dockerfile" }), /^refused: Compose service web builds from a path inside the main checkout/],
+      ["extra_hosts to the Docker host", (c) => (c.services.web.extra_hosts = ["host.docker.internal=host-gateway"]), /^refused: Compose service web maps host\.docker\.internal to the Docker host/],
+      ["extra_hosts to a bridge gateway", (c) => (c.services.web.extra_hosts = ["api:172.17.0.1"]), /^refused: Compose service web maps api to the Docker host/],
     ];
     it.each(refusals)("refuses %s", (_what, mutate, why) => {
       const w = world(null);
       const c = good(w.wt);
       mutate(c, w.main);
-      writeFileSync(join(w.bin, "out.json"), JSON.stringify(c));
-      expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main }))).toMatch(why);
+      w.set(c);
+      expect(compose(w)).toMatch(why);
     });
 
-    it("docker missing or failing is a refusal (fail closed), with the DOCKER_CONFIG hint and every secret masked", () => {
+    it.each(SOCKETS(process.env.HOME!))("refuses a bind mount of %s (a container runtime or datastore socket, or a directory holding one)", (src) => {
+      const w = world(null);
+      const c = good(w.wt);
+      c.services.db.volumes.push({ type: "bind", source: src, target: "/s", bind: {} });
+      w.set(c);
+      expect(compose(w)).toMatch(/^refused: Compose service db bind-mounts a (container runtime or datastore socket, or a directory holding one|path inside the main checkout)/);
+    });
+
+    describe("the containers' own environment, command and entrypoint are compared like the instance env", () => {
+      const owner = "DATABASE_URL=postgres://owner@db.internal.example:5432/app_dev\nCACHE=redis://cache.internal.example:6379\nLOCAL=postgres://owner@localhost:5432/app_dev\n";
+      const run = (mutate: (c: Obj) => void, files = owner) => {
+        const w = world(null);
+        writeFileSync(join(w.main, ".env"), files);
+        const c = good(w.wt);
+        mutate(c);
+        w.set(c);
+        return compose(w);
+      };
+      it("loopback in a container is the container's own; a service name of the project is exempt", () => {
+        expect(run(() => {})).toBe("ok");
+      });
+      it.each([
+        [(c: Obj) => (c.services.web.environment.X = "postgres://u@db.internal.example:5432/other"), /^refused: compose\.web\.environment\.X points at a service the repo's env files name/],
+        [(c: Obj) => (c.services.web.command = ["--cache", "redis://cache.internal.example:6379/2"]), /^refused: compose\.web\.command\.1 points at a service/],
+        [(c: Obj) => (c.services.web.entrypoint = ["run", "--db=postgres://x@db.internal.example:5432/y"]), /^refused: compose\.web\.entrypoint\.1 points at a service/],
+        [(c: Obj) => (c.services.web.environment.X = "postgres://u@host.docker.internal:5432/x"), /^refused: compose\.web\.environment\.X reaches the Docker host \(host\.docker\.internal\) on a port that is not the run's/],
+        [(c: Obj) => (c.services.web.environment.X = "http://172.17.0.1:3000/"), /^refused: compose\.web\.environment\.X reaches the Docker host \(172\.17\.0\.1\)/],
+        [(c: Obj) => Object.assign(c.services.web.environment, { REDIS_HOST: "gateway.docker.internal", REDIS_PORT: "6379" }), /^refused: compose\.web\.environment\.REDIS_HOST reaches the Docker host/],
+        [(c: Obj) => (c.services.web.environment.X = "host.docker.internal"), /^refused: compose\.web\.environment\.X reaches the Docker host/],
+      ])("%#: refused", (mutate, why) => {
+        expect(run(mutate as (c: Obj) => void)).toMatch(why as RegExp);
+      });
+    });
+
+    it("docker missing or failing is a refusal (fail closed), every secret masked", () => {
       const w = world(good());
       const empty = tempDir();
-      expect(message(() => checkCompose({ worktree: w.wt, env: { ...w.env, PATH: empty }, ports: w.ports, main: w.main }))).toMatch(
-        /^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*DOCKER_CONFIG in pass_env/,
-      );
+      expect(compose({ ...w, env: { ...w.env, PATH: `${empty}:/usr/bin:/bin` } })).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: /);
       const f = world(good(), { status: 1, stderr: "bad interpolation near s3cret" });
-      const m = message(() => checkCompose({ worktree: f.wt, env: f.env, ports: f.ports, main: f.main, secrets: { PW: "s3cret" } }));
+      const m = compose(f, { secrets: { PW: "s3cret" } });
       expect(m).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*bad interpolation near \*\*\*/);
       expect(m).not.toContain("s3cret");
-      const j = world("not json");
+      const j = world(good());
       writeFileSync(join(j.bin, "out.json"), "{oops");
-      expect(message(() => checkCompose({ worktree: j.wt, env: j.env, ports: j.ports, main: j.main }))).toMatch(/^refused: .*not JSON/);
+      expect(compose(j)).toMatch(/^refused: .*not JSON/);
     });
 
-    describe("Compose flags in the config's commands that would escape the check", () => {
+    describe("commands of the config that would run Docker past the check", () => {
       const cfg = (over: Obj): Obj => ({ setup: [], store_check: "true", reset: "true", start: [{ name: "backing", phase: "store", cmd: "docker compose up -d", stop: "docker compose down -v" }], ...over });
+      const at = (cmd: string) => ({ start: [{ name: "b", cmd }] });
       it.each([
         [{ start: [{ name: "backing", cmd: "docker compose up -d", stop: "docker compose -p owner down -v" }] }, /^refused: start\.backing\.stop passes -p to docker compose/],
-        [{ start: [{ name: "backing", cmd: "docker-compose --file=../x.yml up" }] }, /^refused: start\.backing\.cmd passes --file to docker compose/],
-        [{ start: [{ name: "b", cmd: "docker compose -powner up" }] }, /^refused: start\.b\.cmd passes -p to docker compose/],
+        [at("docker-compose --file=../x.yml up"), /^refused: start\.b\.cmd passes --file to docker compose/],
+        [at("docker compose -powner up"), /^refused: start\.b\.cmd passes -p to docker compose/],
+        [at("docker compose \\-p owner down"), /^refused: start\.b\.cmd passes -p to docker compose/],
+        [at('docker compose "-p" owner down'), /^refused: start\.b\.cmd passes -p to docker compose/],
+        [at("docker compose -\\-project-name=o down"), /^refused: start\.b\.cmd passes --project-name to docker compose/],
+        [at("docker compose $FLAGS up"), /^refused: start\.b\.cmd passes a variable where docker compose reads its flags/],
+        [at("docker compose `flags` up"), /^refused: start\.b\.cmd passes a variable where docker compose reads its flags/],
         [{ reset: "cd x && docker compose --project-directory /srv/app exec db reset" }, /^refused: reset passes --project-directory to docker compose/],
         [{ setup: [["docker", "compose", "--env-file", "/x/.env", "pull"]] }, /^refused: setup\[0\] passes --env-file to docker compose/],
         [{ start: [{ name: "b", cmd: "docker compose up -d", health: { cmd: "docker compose --project-name=o ps" } }] }, /^refused: start\.b\.health\.cmd passes --project-name to docker compose/],
+        [at("COMPOSE_PROJECT_NAME=owner docker compose down -v"), /^refused: start\.b\.cmd sets COMPOSE_PROJECT_NAME/],
+        [at("env COMPOSE_FILE=../x.yml docker compose up"), /^refused: start\.b\.cmd sets COMPOSE_FILE/],
+        [at("export DOCKER_HOST=tcp://10.0.0.1:2375; docker compose up"), /^refused: start\.b\.cmd sets DOCKER_HOST/],
+        [at("unset DOCKER_CONFIG; docker compose up"), /^refused: start\.b\.cmd unsets DOCKER_CONFIG/],
+        [at("docker run --rm -v pgdata:/d busybox"), /^refused: start\.b\.cmd runs docker run; only docker compose runs under the check/],
+        [at("docker volume rm owner_pgdata"), /^refused: start\.b\.cmd runs docker volume/],
+        [at("docker exec owner-db psql"), /^refused: start\.b\.cmd runs docker exec/],
+        [at("docker --context remote compose up"), /^refused: start\.b\.cmd runs docker --context/],
+        [at("sh -c 'docker rm -f owner-db'"), /^refused: start\.b\.cmd runs docker rm/],
+        [{ roles: { admin: { login: { command: "/usr/local/bin/docker exec db login" } } } }, /^refused: roles\.admin\.login\.command runs docker exec/],
+        [{ facts: { argv: ["docker", "exec", "db", "facts"] } }, /^refused: facts\.argv runs docker exec/],
       ])("%j is refused", (over, why) => {
-        const w = world(good(), { file: null });
-        expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main, config: cfg(over as Obj) }))).toMatch(why as RegExp);
+        const w = world(good(), { files: [] });
+        expect(compose(w, { config: cfg(over as Obj) })).toMatch(why as RegExp);
       });
-      it.each(["docker compose up -d && docker compose logs -f web", "docker compose --profile dev up -d", "docker compose exec -T db pg_isready -p 5432", "tail -f log; rm -f x"])("%s passes", (cmd) => {
-        const w = world(good(), { file: null });
-        expect(message(() => checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main, config: cfg({ start: [{ name: "b", cmd }] }) }))).toBe("ok");
+      it.each([
+        "docker compose up -d && docker compose logs -f web",
+        "docker compose --profile dev up -d",
+        "docker compose exec -T db pg_isready -p 5432",
+        "tail -f log; rm -f x",
+        "npm run docker:up",
+        "command -v docker && docker compose up",
+        "FOO=1 docker compose up",
+      ])("%s passes", (cmd) => {
+        const w = world(good(), { files: [] });
+        expect(compose(w, { config: cfg(at(cmd)) })).toBe("ok");
       });
     });
 
@@ -1702,6 +1813,53 @@ describe("argus-live instance — Compose and egress checks", () => {
       const ctx = { config: { store: "app_explore", store_check: "echo app_explore", start: [] }, env: { PATH: process.env.PATH!, DATABASE_URL: "postgres://app@db:5432/app_explore" }, worktree: w.wt, main: w.main, contract: null, timeoutS: 10, deadline: Math.floor(Date.now() / 1000) + 600 };
       expect(await message(checkStore({ ...ctx, composeServices }))).toBe("ok");
       expect(await message(checkStore(ctx))).toMatch(/^refused: env\.DATABASE_URL points at a service/);
+    });
+  });
+
+  describe("the run's Docker client", () => {
+    const owner = () => {
+      const cfg = tempDir();
+      mkdirSync(join(cfg, "cli-plugins"));
+      writeFileSync(join(cfg, "cli-plugins", "docker-compose"), "#!/bin/sh\n");
+      writeFileSync(join(cfg, "cli-plugins", "notes.txt"), "");
+      writeFileSync(join(cfg, "config.json"), JSON.stringify({ auths: { "registry.example.test": { auth: "c2VjcmV0" } }, credsStore: "desktop", currentContext: "remote", cliPluginsExtraDirs: ["/opt/docker/cli-plugins"] }));
+      return cfg;
+    };
+    const ctxJson = (host: string) => JSON.stringify([{ Name: "desktop-linux", Endpoints: { docker: { Host: host } } }]);
+    it("DOCKER_CONFIG holds only plugin links and a config without credentials; DOCKER_HOST is the context's local socket", () => {
+      const cfg = owner();
+      const home = tempDir();
+      const calls: Obj[] = [];
+      const runner = (argv: string[], opts: Obj) => (calls.push({ argv, env: opts.env }), { status: 0, stdout: ctxJson("unix:///tmp/run/docker.sock"), stderr: "" });
+      const d = dockerEnv({ home, runner, ownerEnv: { HOME: "/nowhere", DOCKER_CONFIG: cfg, PATH: "/usr/bin" } });
+      expect(d).toEqual({ DOCKER_CONFIG: join(home, ".docker"), DOCKER_HOST: "unix:///tmp/run/docker.sock" });
+      expect(calls[0].argv).toEqual(["docker", "context", "inspect"]);
+      expect(calls[0].env.DOCKER_CONFIG).toBe(cfg);
+      expect(JSON.parse(readFileSync(join(home, ".docker", "config.json"), "utf8"))).toEqual({ cliPluginsExtraDirs: ["/opt/docker/cli-plugins"] });
+      expect(statSync(join(home, ".docker", "config.json")).mode & 0o777).toBe(0o600);
+      expect(readdirSync(join(home, ".docker", "cli-plugins"))).toEqual(["docker-compose"]);
+      expect(realpathSync(join(home, ".docker", "cli-plugins", "docker-compose"))).toBe(realpathSync(join(cfg, "cli-plugins", "docker-compose")));
+    });
+    it.each(["tcp://10.0.0.5:2376", "ssh://user@build.example.test", "npipe:////./pipe/docker_engine"])("a context at %s is refused, naming only its scheme", (host) => {
+      const runner = () => ({ status: 0, stdout: ctxJson(host), stderr: "" });
+      const m = message(() => dockerEnv({ home: tempDir(), runner, ownerEnv: { HOME: tempDir() } }));
+      expect(m).toBe(`refused: the docker context desktop-linux is not a local unix socket (${host.split(":")[0]}); the instance uses only this machine's daemon`);
+    });
+    it("without docker on PATH, only DOCKER_CONFIG; a failing context inspect is refused", () => {
+      const home = tempDir();
+      const missing = () => ({ error: Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }) });
+      expect(dockerEnv({ home, runner: missing, ownerEnv: { HOME: tempDir() } })).toEqual({ DOCKER_CONFIG: join(home, ".docker") });
+      const failing = () => ({ status: 1, stdout: "", stderr: "context not found" });
+      expect(message(() => dockerEnv({ home: tempDir(), runner: failing, ownerEnv: { HOME: tempDir() } }))).toMatch(/^refused: docker context inspect failed: context not found/);
+    });
+    it("instanceEnv carries them, and refuses DOCKER_CONFIG, DOCKER_HOST or DOCKER_CONTEXT in env or pass_env", () => {
+      const base = { ports: {}, secrets: {}, runId: "20990101000000-0123abcd", home: "/h" };
+      const env = instanceEnv({ ...base, config: { env: {}, pass_env: [] }, docker: { DOCKER_CONFIG: "/h/.docker", DOCKER_HOST: "unix:///s.sock" } });
+      expect(env).toMatchObject({ DOCKER_CONFIG: "/h/.docker", DOCKER_HOST: "unix:///s.sock" });
+      for (const k of ["DOCKER_CONFIG", "DOCKER_HOST", "DOCKER_CONTEXT"]) {
+        expect(message(() => instanceEnv({ ...base, config: { env: { [k]: "x" } } }))).toBe(`refused: env may not set ${k}`);
+        expect(message(() => instanceEnv({ ...base, config: { pass_env: [k] } }))).toBe(`refused: pass_env may not name ${k}`);
+      }
     });
   });
 
