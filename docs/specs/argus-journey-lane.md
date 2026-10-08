@@ -473,10 +473,11 @@ defence in depth and not enforcement:
      worktree's own Compose project is exempt;
    - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is
      listed in `allow_origins`;
-   - a file or socket (`sqlite:`, `file:`, `unix:`, `<scheme>+unix:`, a bare path) equal to one they
-     name, or any path inside the repo's main checkout (the instance's relative paths resolve in its
-     worktree, the owner's in the main checkout; `sqlite:///rel` is relative and `sqlite:////abs`
-     absolute, as SQLAlchemy reads them).
+   - a file or socket (`sqlite:`, `jdbc:sqlite:`, `file:`, `unix:`, `<scheme>+unix:`, a bare path)
+     equal to one they name, or any path inside the repo's main checkout (the instance's relative
+     paths resolve in its worktree, the owner's in the main checkout; `file://<host>/p` is `/p`).
+     `sqlite:///x` is read both ways, relative (as SQLAlchemy reads it) and absolute (as others
+     do), on both sides, and refused when either reading hits.
 
    Hosts are compared canonically (lower case, one form per IP address, no trailing dot, every
    loopback address one name) with default ports filled in; `X_HOST` + `X_PORT` (and `PGHOST` +
@@ -485,8 +486,10 @@ defence in depth and not enforcement:
    only inside the Compose file, is refused when the owner's env files name that local port: rename
    it in the live env, or give it its own port). Nor may a value name a port or database `guard.postgres` protects: URLs, `jdbc:`
    URLs, libpq `key=value` strings and bare port numbers are read, and a bare database name under a
-   variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). Only
-   then `reset`.
+   variable that names a database (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). And
+   an instance value of the libpq or MySQL family must name its host and its port: one that leaves
+   either to the client's default (`postgres:///app`, `postgres://u@localhost/app`, `dbname=app`) would
+   reach whatever local server answers there, and is refused. Only then `reset`.
 
    The same comparison runs at step 5 over each Compose service's `environment`, `command` and
    `entrypoint` (each word, and what follows its first `=`), as a container sees them: its loopback
@@ -501,13 +504,23 @@ defence in depth and not enforcement:
    up -d`). Timeout `limits.live_health_timeout_s`, which also bounds each `store_check`; every health
    `cmd` and `store_check` runs in its own process group, killed once it returns. Then `store_check`
    again.
-8. **Egress check.** Lists the TCP connections of every process in the run's process groups (`lsof
-   -nP -a -iTCP -p <pids>`, or `ss`). A connection to an endpoint other than the run's ports, the
-   endpoints named in `env` and the start entries' env (a host name standing for every address it
-   resolves to), `allow_origins`, and another listener of those processes on loopback → `down` and
-   refuse, naming the process and the endpoint (a code default such as a cache on its standard
-   local port, pointing at the owner's). A connection the processes accepted is inbound and not
-   counted. Repeated at every `renew`.
+8. **Egress check.** Lists the connections of every process in the run's process groups, five
+   samples over a few seconds (and one sample between health tries in steps 6 and 7, so a
+   connection made while the app starts is seen too): TCP (`lsof -nP -a -iTCP -p <pids>`, or `ss`)
+   and unix sockets (`lsof -U`, or `ss -xp` on Linux). A TCP connection may reach only the run's
+   ports on loopback, another listener of those processes on loopback, a non-loopback endpoint named
+   in `env` or a start entry's env (a host name standing for every address it resolves to), a
+   non-loopback `allow_origins` origin, or an endpoint named by a `pass_env` variable (an
+   `HTTPS_PROXY`, loopback included: the owner chose to share it); a loopback endpoint the env names
+   but the run did not allocate is refused, since the owner's own dev servers listen there. A unix
+   socket outside the run's directories may not be a datastore's: a PostgreSQL, MySQL, Redis, MongoDB
+   or memcached socket name, a socket in such a server's default directory or in a directory the
+   owner's env files name for a socket, or any socket inside the main checkout. Anything else →
+   `down` and refuse, naming the process and the endpoint or socket (a code default such as a cache
+   on its standard local port, pointing at the owner's). A connection the processes accepted is
+   inbound and not counted. A listing that cannot be trusted fails `up`: `lsof` exiting 1 with an
+   error, or no listener of the run (the port of `base_url`, when the app serves it from the host)
+   in the first sample. Repeated at every `renew`.
    Then the **Docker runtime gate**, for what no static check can see (a script such as `npm run
    docker:up`): every container created or started, and every volume and network created, since `up`
    began (a few seconds earlier, for the daemon's clock) must carry the label
@@ -805,7 +818,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | The owner's Docker context is not a local unix socket (tcp, ssh) | refuse before step 5, naming the context and its scheme only; `down` runs |
 | A Compose project, Compose file or config command would share something with the owner's stack, or run Docker past the check | refuse, naming the service, file or field and the rule; `down` runs |
 | The Docker runtime gate finds a container, volume or network created or started during the cycle outside the run's project (or a run container on another's volume or network) | `down`; refuse, naming the object; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness`; at `down`, reported and the teardown goes on |
-| The egress check finds a foreign endpoint | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
+| The egress check finds a foreign endpoint or a datastore socket, or its listing cannot be trusted | `down`; refuse, naming process and endpoint; at a `renew`, the cycle ends and its candidates are journalled `not reproduced: harness` |
 | `map-check` drops every journey, or none is selectable | the cycle ends before `up`, listing the dropped journeys and their reasons |
 | Session lost mid-journey | the wrapper signs in once; failing again → a harness event (H2), not a candidate |
 | Login rate-limited or locked | a harness event; that account's journey stops for the cycle |

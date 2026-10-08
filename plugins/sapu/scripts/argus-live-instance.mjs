@@ -752,9 +752,10 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
  * Waits until `entry` is healthy: `{url}` answering 2xx, `{cmd}` exiting 0 (run like the entry, its
  * group killed after each try), or, without health, the process alive after `aliveAfterMs`. A process
  * that exits before then fails it (checked again after a health that answered), unless it exited 0
- * and the entry has `stop` (a detached starter). `timeoutS` bounds the wait.
+ * and the entry has `stop` (a detached starter). `timeoutS` bounds the wait. `egress` (a one-sample
+ * checkEgress, from `up`) runs between tries, so a connection made while the app starts is seen too.
  */
-export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync }) {
+export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000, worktree, env, secrets = {}, runner = runAsync, egress = async () => {} }) {
   const until = Date.now() + timeoutS * 1000;
   const exited = () => {
     const x = started.exit;
@@ -768,6 +769,7 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
       const x = exited();
       if (x) throw x;
       if (started.exit && entry.stop) return;
+      await egress();
       await sleep(50);
     }
     const x = exited();
@@ -796,6 +798,7 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
     if (x) throw x;
     if (ok) return;
     if (Date.now() >= until) throw timeout();
+    await egress();
     await sleep(250);
   }
 }
@@ -828,19 +831,27 @@ function normHost(h) {
 }
 
 /**
- * The path a file or socket value names (`sqlite:…`, `file:…`, `unix:…`, `<scheme>+unix:…`, or a bare
- * `/…`, `./…`, `../…` path), or null. `sqlite:///rel` is relative and `sqlite:////abs` absolute
- * (SQLAlchemy's reading: the third slash only ends the empty host).
+ * The paths a file or socket value may name (`sqlite:…`, `jdbc:sqlite:…`, `file:…`, `unix:…`,
+ * `<scheme>+unix:…`, or a bare `/…`, `./…`, `../…` path), or null. `sqlite:///x` has two readings —
+ * SQLAlchemy's, `x` relative (the third slash ends the empty host), and others', `/x` absolute — and
+ * both are returned, so a check refuses when either hits. `file://<host>/p` is `/p` (RFC 8089).
  */
-function filePath(v) {
+function filePaths(raw) {
+  const v = String(raw).trim().replace(/^jdbc:/i, "");
   const m = v.match(/^([a-z][a-z0-9+.-]*):(.*)$/i);
   if (m && (/^sqlite/i.test(m[1]) || /\+unix$/i.test(m[1]) || /^(file|unix)$/i.test(m[1]))) {
-    let rest = m[2].replace(/[?#].*$/, "");
-    if (rest.startsWith("//")) rest = rest.slice(2);
-    if (/^sqlite/i.test(m[1]) && m[2].startsWith("//")) rest = rest.replace(/^[^/]*\//, "");
-    return decodeSafe(rest) || null;
+    const rest = m[2].replace(/[?#].*$/, "");
+    let out;
+    if (!rest.startsWith("//")) out = [rest];
+    else if (/^sqlite/i.test(m[1])) {
+      const after = rest.slice(2).replace(/^[^/]*\/?/, "");
+      out = after.startsWith("/") ? [after] : [after, `/${after}`];
+    } else if (/^file$/i.test(m[1])) out = [rest.slice(2).replace(/^[^/]*/, "")];
+    else out = [rest.slice(2)];
+    out = out.map(decodeSafe).filter((p) => p && p !== "/");
+    return out.length ? out : null;
   }
-  return /^(\/|\.\.?\/)/.test(v) && !v.includes(":") ? v : null;
+  return /^(\/|\.\.?\/)/.test(v) && !v.includes(":") ? [v] : null;
 }
 
 /**
@@ -886,8 +897,11 @@ function service(raw) {
     hosts = String(kv.host ?? kv.hostaddr ?? "").split(",").map((h, i) => ({ host: h, port: ports[i] ? Number(ports[i]) : ports[0] ? Number(ports[0]) : undefined }));
     if (kv.dbname) databases = [kv.dbname];
   } else return null;
-  const local = (h) => LOCAL_BY_DEFAULT.has(scheme) && (!String(h).trim() || String(h).startsWith("/"));
-  hosts = hosts.map((h) => ({ host: local(h.host) ? "loopback" : normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
+  const bare = (h) => decodeSafe(String(h ?? "")).trim();
+  const localByDefault = LOCAL_BY_DEFAULT.has(scheme);
+  // A client left to its defaults: no host (the local server), or no port (the default one).
+  const implicit = localByDefault && hosts.some((h) => !bare(h.host) || h.port === undefined);
+  hosts = hosts.map((h) => ({ host: localByDefault && (!bare(h.host) || bare(h.host).startsWith("/")) ? "loopback" : normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
   const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
   return {
     scheme,
@@ -895,6 +909,7 @@ function service(raw) {
     full: `${scheme}://${hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",")}${path}`,
     ports: [...hosts.map((h) => h.port).filter((p) => p !== undefined), ...extraPorts],
     databases,
+    implicit,
   };
 }
 
@@ -960,9 +975,9 @@ function readOwner(main, contract) {
     }
     const vars = parseEnvFile(text);
     for (const v of Object.values(vars)) {
-      const file = filePath(v.trim());
-      if (file) {
-        o.paths.add(resolveLink(path.resolve(o.realMain, file)));
+      const files = filePaths(v);
+      if (files) {
+        for (const file of files) o.paths.add(resolveLink(path.resolve(o.realMain, file)));
         continue;
       }
       const svc = service(v);
@@ -1017,12 +1032,14 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
         continue;
       }
       if (!container && NAMES_DATABASE.test(k) && o.pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
-      const file = filePath(v);
-      if (file) {
+      const files = filePaths(v);
+      if (files) {
         if (container) continue;
-        const real = resolveLink(path.resolve(worktree, file));
-        if (real === null || within(o.realMain, real)) throw new Error(`refused: ${key} points into the main checkout`);
-        if (o.paths.has(real)) throw new Error(`refused: ${key} points at a file or socket the repo's env files name (${o.files.join(", ")})`);
+        for (const file of files) {
+          const real = resolveLink(path.resolve(worktree, file));
+          if (real === null || within(o.realMain, real)) throw new Error(`refused: ${key} points into the main checkout`);
+          if (o.paths.has(real)) throw new Error(`refused: ${key} points at a file or socket the repo's env files name (${o.files.join(", ")})`);
+        }
         continue;
       }
       const svc = service(v);
@@ -1045,6 +1062,7 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
       if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
       const db = svc.databases.find((d) => o.pg.databases.includes(d));
       if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
+      if (svc.implicit) throw new Error(`refused: ${key} leaves its host or port to the client's default (the local server's); name both`);
     }
   };
 }
@@ -1062,10 +1080,12 @@ function scopeChecker(o, { worktree, allowOrigins = [], composeServices = [], ru
  * - an http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
  *   `allow_origins`;
  * - a file or socket path equal to one they name, or any path inside <MAIN> (the instance's relative
- *   paths resolve in the worktree, the owner's in <MAIN>).
+ *   paths resolve in the worktree, the owner's in <MAIN>; `sqlite:///x` is read both ways, filePaths).
  * `X_HOST` + `X_PORT` count as one endpoint, and a bare `*PORT` as a loopback one. Nor may a value name
  * a port or database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number,
- * or a bare name under a variable that names a database). Refusals name the key, never a value.
+ * or a bare name under a variable that names a database), nor may a libpq or MySQL-family value leave
+ * its host or port to the client's default (the instance names both). Refusals name the key, never a
+ * value.
  */
 export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, composeServices = [], runner = runAsync }) {
   const guard = (contract && contract.guard) || {};
@@ -1476,28 +1496,36 @@ export function groupPids(pgids, { runner = run } = {}) {
 
 /**
  * The endpoints the run may connect to, as `host:port` (hosts as normHost writes them, names not
- * resolved): this run's `ports` on loopback, every endpoint `env` and each start entry's env name (a
- * URL or DSN, `X_HOST` + `X_PORT`, a bare `*PORT` on loopback), and each `allow_origins` origin.
+ * resolved): this run's `ports` on loopback; every non-loopback endpoint `env` and each start entry's
+ * env name (a URL or DSN, `X_HOST` + `X_PORT`), and each non-loopback `allow_origins` origin — a
+ * loopback endpoint is allowed only on the run's own ports, since the owner's dev servers listen there
+ * too; and every endpoint, loopback included, named by a variable `pass_env` passes from the owner's
+ * session (an `HTTPS_PROXY`), which the owner has chosen to share.
  */
 export function egressAllowed({ config = {}, env = {}, ports = {} }) {
   const out = new Set(Object.values(ports).map((p) => `loopback:${p}`));
-  for (const vars of [env, ...(config.start ?? []).map((e) => e.env ?? {})]) {
-    for (const s of splitEndpoints(vars, { barePorts: true })) out.add(`${s.host}:${s.port}`);
+  const named = (vars) => {
+    const list = splitEndpoints(vars).map((s) => `${s.host}:${s.port}`);
     for (const raw of Object.values(vars)) {
-      const v = String(raw).trim();
-      if (filePath(v)) continue;
-      const svc = service(v);
-      if (svc) endpointsOf(svc.hosts).forEach((e) => out.add(e));
+      if (raw === null || raw === undefined || filePaths(raw)) continue;
+      const svc = service(raw);
+      if (svc) list.push(...endpointsOf(svc.hosts));
     }
-  }
+    return list;
+  };
+  const remote = (e) => !e.startsWith("loopback:");
+  for (const vars of [env, ...(config.start ?? []).map((e) => e.env ?? {})]) named(vars).filter(remote).forEach((e) => out.add(e));
   for (const o of config.allow_origins ?? []) {
     try {
       const u = new URL(o);
-      out.add(`${normHost(u.hostname)}:${u.port || DEFAULT_PORTS[u.protocol.slice(0, -1)]}`);
+      const e = `${normHost(u.hostname)}:${u.port || DEFAULT_PORTS[u.protocol.slice(0, -1)]}`;
+      if (remote(e)) out.add(e);
     } catch {
       // validateLive refuses a bad origin
     }
   }
+  const passed = Object.fromEntries((config.pass_env ?? []).filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
+  named(passed).forEach((e) => out.add(e));
   return [...out];
 }
 
@@ -1519,6 +1547,13 @@ function endpointKey(host, port) {
     h = `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
   }
   return `${h}:${port}`;
+}
+
+/** lsof's verdict: exit 0, or exit 1 (nothing found, or a pid gone) with nothing but warnings on stderr. */
+function lsofOk(r) {
+  if (r.status === 0) return true;
+  if (r.status !== 1) return false;
+  return String(r.stderr || "").split("\n").every((l) => !l.trim() || /^lsof: WARNING/.test(l.trim()));
 }
 
 /** `lsof -F pcnT` output → [{pid, command, local, remote, listen}]. */
@@ -1560,8 +1595,7 @@ function parseSs(out, want) {
 function tcpSockets(pids, runner) {
   const l = runner(["lsof", "-nP", "-a", "-iTCP", "-p", pids.join(","), "-FpcnT"]);
   if (!l.error) {
-    // lsof exits 1 when it found nothing (or some pid is gone), with what it found on stdout.
-    if (l.status !== 0 && l.status !== 1) throw new Error(`failed: lsof exited ${l.status ?? l.signal}: ${tail(l.stderr)}`);
+    if (!lsofOk(l)) throw new Error(`failed: lsof exited ${l.status ?? l.signal}: ${tail(l.stderr)}`);
     return parseLsof(l.stdout || "");
   }
   if (l.error.code !== "ENOENT") throw new Error(`failed: lsof: ${l.error.message}`);
@@ -1572,18 +1606,121 @@ function tcpSockets(pids, runner) {
 }
 
 /**
- * `up` step 8 (and every `renew`): the TCP connections of every process in the run's process groups
- * (`pids`, from groupPids) may reach only `allowed` (egressAllowed's endpoints; a host name stands for
- * every address `lookup` gives it) or another listener of those processes on loopback. A connection
- * they accepted (its local port is one they listen on) is inbound, not egress. Anything else throws
- * `refused: <process> (<pid>) connects to <host:port>`; neither lsof nor ss → `refused: neither lsof nor
- * ss is available`. Known limit (spec §8): a process that left its group, or one inside a container,
- * is not listed.
+ * `lsof -nP -U -F pcdn` over every process → the unix-socket peers of `want` pids, as [{pid, command,
+ * path}]. macOS's lsof names a connected client only by its peer's address (`->0x…`), so the path comes
+ * from the socket whose own address (`d`) that is.
  */
-export async function checkEgress({ pids, allowed = [], runner = run, lookup = (h) => dns.promises.lookup(h, { all: true }) }) {
+function parseLsofUnix(out, want) {
+  const recs = [];
+  let pid;
+  let command;
+  let cur = null;
+  for (const line of out.split("\n")) {
+    const [tag, val] = [line[0], line.slice(1)];
+    if (tag === "p") pid = Number(val);
+    else if (tag === "c") command = val;
+    else if (tag === "f") recs.push((cur = { pid, command }));
+    else if (tag === "d" && cur) cur.addr = val;
+    else if (tag === "n" && cur) cur.name = val.replace(/ type=\S+$/, "");
+  }
+  const byAddr = new Map(recs.filter((r) => r.addr && r.name && r.name.startsWith("/")).map((r) => [r.addr, r.name]));
+  const out2 = [];
+  for (const r of recs) {
+    if (!want.has(r.pid) || !r.name || !r.name.startsWith("->")) continue;
+    const p = byAddr.get(r.name.slice(2));
+    if (p) out2.push({ pid: r.pid, command: r.command, path: p });
+  }
+  return out2;
+}
+
+/**
+ * `ss -xapH` → the unix-socket peers of `want` pids: a client's peer inode is the server socket's own
+ * inode, whose line names the path. Abstract names (`@…`) are not paths.
+ */
+function parseSsUnix(out, want) {
+  const lines = [];
+  for (const line of out.split("\n")) {
+    const m = line.trim().replace(/^u_(str|dgr|seq)\s+/, "").match(/^(\S+)\s+\d+\s+\d+\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)(.*)$/);
+    if (m) lines.push({ local: m[2], ino: m[3], peerIno: m[5], users: [...m[6].matchAll(/\("([^"]*)",pid=(\d+)/g)].map((u) => ({ command: u[1], pid: Number(u[2]) })) });
+  }
+  const byIno = new Map(lines.filter((l) => l.local.startsWith("/")).map((l) => [l.ino, l.local]));
+  const out2 = [];
+  for (const l of lines) {
+    const p = byIno.get(l.peerIno);
+    if (!p) continue;
+    for (const u of l.users) if (want.has(u.pid)) out2.push({ pid: u.pid, command: u.command, path: p });
+  }
+  return out2;
+}
+
+/** The unix-socket peers of `pids` (ss on Linux, lsof elsewhere, the other as a fallback); neither → refused. */
+function unixPeers(pids, runner) {
+  const want = new Set(pids);
+  for (const tool of process.platform === "linux" ? ["ss", "lsof"] : ["lsof", "ss"]) {
+    const r = tool === "lsof" ? runner(["lsof", "-nP", "-U", "-Fpcdn"]) : runner(["ss", "-xapH"]);
+    if (r.error && r.error.code === "ENOENT") continue;
+    if (r.error) throw new Error(`failed: ${tool}: ${r.error.message}`);
+    if (tool === "lsof") {
+      if (!lsofOk(r)) throw new Error(`failed: lsof exited ${r.status ?? r.signal}: ${tail(r.stderr)}`);
+      return parseLsofUnix(r.stdout || "", want);
+    }
+    if (r.status !== 0) throw new Error(`failed: ss exited ${r.status}: ${tail(r.stderr)}`);
+    return parseSsUnix(r.stdout || "", want);
+  }
+  throw new Error("refused: neither lsof nor ss is available");
+}
+
+/** Where local datastores keep their sockets by default. */
+const DATASTORE_SOCKET_DIRS = ["/var/run/postgresql", "/run/postgresql", "/var/run/mysqld", "/run/mysqld", "/var/run/redis", "/run/redis"];
+
+/** The directories the owner's env files name for sockets: a unix URL's or socket path's directory, a libpq socket directory. */
+function ownerSocketDirs(main, contract) {
+  const dirs = new Set();
+  if (!main) return dirs;
+  const realMain = fs.realpathSync.native(main);
+  const guard = (contract && contract.guard) || {};
+  for (const f of [".env", ".env.local", ...(guard.envFiles ?? [])]) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(main, f), "utf8");
+    } catch {
+      continue;
+    }
+    for (const [k, raw] of Object.entries(parseEnvFile(text))) {
+      const v = raw.trim();
+      const sock = /^([a-z][a-z0-9+.-]*\+)?unix:/i.test(v) || SOCKET_NAME.test(path.basename(v.replace(/[?#].*$/, "")));
+      for (const p of filePaths(v) ?? []) {
+        if (sock) dirs.add(resolveLink(path.dirname(path.resolve(realMain, p))));
+        else if (/HOST|SOCK/i.test(k) && p.startsWith("/")) dirs.add(resolveLink(p));
+      }
+      const q = v.match(/[?&]host=([^&#]+)/);
+      if (q && decodeSafe(q[1]).startsWith("/")) dirs.add(resolveLink(decodeSafe(q[1])));
+    }
+  }
+  dirs.delete(null);
+  return dirs;
+}
+
+const DATASTORE_SOCKET = /^(\.s\.PGSQL\.\d+|mysql[^/]*\.sock|mysqld[^/]*\.sock|redis[^/]*\.sock|mongodb-\d+\.sock|memcached[^/]*\.sock)$/i;
+
+/**
+ * `up` step 8 (and every `renew`): sampled `samples` times, `intervalMs` apart, the connections of every
+ * process in the run's process groups (`pids`, from groupPids):
+ * - TCP may reach only `allowed` (egressAllowed's endpoints; a host name stands for every address
+ *   `lookup` gives it) or another listener of those processes on loopback; a connection they accepted
+ *   (its local port is one they listen on) is inbound, not egress;
+ * - a unix socket outside `runDirs` may not be a datastore's: a PostgreSQL, MySQL, Redis, MongoDB or
+ *   memcached socket name, a socket in a datastore's default directory or in a directory the owner's env
+ *   files name for a socket, or any socket inside <MAIN> (`main`; its env files read through `contract`).
+ * On the first sample, when `expectListen` names ports, at least one must show as a listener of those
+ * processes, or the listing is not trusted. Throws `refused: <process> (<pid>) connects to <host:port>`
+ * or `… connects to the socket <path>`; neither lsof nor ss → `refused: neither lsof nor ss is
+ * available`; an lsof that exits 1 with an error → `failed: …`. Known limits (spec §8): a process that
+ * left its group or lives in a container is not listed, and a connection between two samples is not seen.
+ */
+export async function checkEgress({ pids, allowed = [], runner = run, lookup = (h) => dns.promises.lookup(h, { all: true }), samples = 5, intervalMs = 500, expectListen = [], runDirs = [], main, contract }) {
   const want = [...new Set((pids ?? []).filter((p) => Number.isInteger(p) && p > 0))];
   if (!want.length) return;
-  const sockets = tcpSockets(want, runner);
   const ok = new Set();
   for (const a of allowed) {
     const [h, p] = splitAddr(a);
@@ -1595,12 +1732,28 @@ export async function checkEgress({ pids, allowed = [], runner = run, lookup = (
       // a name that does not resolve here allows nothing more
     }
   }
-  const listening = new Set(sockets.filter((s) => s.listen).map((s) => splitAddr(s.local)[1]));
-  for (const s of sockets) {
-    if (s.listen || !s.remote || listening.has(splitAddr(s.local)[1])) continue;
-    const [h, p] = splitAddr(s.remote);
-    const key = endpointKey(h, p);
-    if (ok.has(key) || (key.startsWith("loopback:") && listening.has(p))) continue;
-    throw new Error(`refused: ${s.command} (${s.pid}) connects to ${s.remote}`);
+  const own = runDirs.map((d) => resolveLink(d)).filter(Boolean);
+  const realMain = main ? fs.realpathSync.native(main) : null;
+  const dirs = new Set([...DATASTORE_SOCKET_DIRS.map(resolveLink).filter(Boolean), ...ownerSocketDirs(main, contract)]);
+  const datastore = (p) => DATASTORE_SOCKET.test(path.basename(p)) || dirs.has(path.dirname(p)) || (realMain !== null && within(realMain, p));
+  for (let i = 0; i < samples; i++) {
+    if (i) await sleep(intervalMs);
+    const sockets = tcpSockets(want, runner);
+    const listening = new Set(sockets.filter((s) => s.listen).map((s) => splitAddr(s.local)[1]));
+    if (i === 0 && expectListen.length && !expectListen.some((p) => listening.has(String(p)))) {
+      throw new Error(`failed: the socket listing shows no listener of the run on ${expectListen.join(", ")}; it cannot be trusted`);
+    }
+    for (const s of sockets) {
+      if (s.listen || !s.remote || listening.has(splitAddr(s.local)[1])) continue;
+      const [h, p] = splitAddr(s.remote);
+      const key = endpointKey(h, p);
+      if (ok.has(key) || (key.startsWith("loopback:") && listening.has(p))) continue;
+      throw new Error(`refused: ${s.command} (${s.pid}) connects to ${s.remote}`);
+    }
+    for (const u of unixPeers(want, runner)) {
+      const real = resolveLink(u.path) ?? u.path;
+      if (own.some((d) => within(d, real))) continue;
+      if (datastore(real)) throw new Error(`refused: ${u.command} (${u.pid}) connects to the socket ${u.path}`);
+    }
   }
 }

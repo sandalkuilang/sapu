@@ -275,14 +275,28 @@ misconfiguration and app defaults, not a malicious repo. Each check below is def
 - `export function groupPids(pgids, {runner})` → every pid in those groups (`ps -A -o pid= -o pgid=`,
   one command on macOS and Linux, instead of `pgrep -g` / `ps -g`).
 - `export function egressAllowed({config, env, ports})` → `host:port` strings: the run's ports on
-  loopback, every endpoint `env` and each `start[].env` name (URL, DSN, `X_HOST` + `X_PORT`, bare
-  `*PORT`), each `allow_origins` origin.
-- `export async function checkEgress({pids, allowed, runner, lookup})`: `lsof -nP -a -iTCP -p <pids>
-  -FpcnT` (else `ss -tanpH`); a connection whose local port the processes listen on is inbound and
-  skipped; a host name in `allowed` stands for every address `lookup` (dns) gives it; a loopback
-  connection to another listener of the same processes is allowed; anything else → throws
-  `refused: <process> (<pid>) connects to <host:port>`. Missing both tools → throws `refused: neither
-  lsof nor ss is available`.
+  loopback (the only loopback endpoints allowed: the owner's dev servers listen there too); every
+  non-loopback endpoint `env` and each `start[].env` name (URL, DSN, `X_HOST` + `X_PORT`); each
+  non-loopback `allow_origins` origin; every endpoint, loopback included, a `pass_env` variable names
+  (an `HTTPS_PROXY`).
+- `export async function checkEgress({pids, allowed, runner, lookup, samples = 5, intervalMs = 500,
+  expectListen, runDirs, main, contract})`: each sample lists TCP (`lsof -nP -a -iTCP -p <pids>
+  -FpcnT`, else `ss -tanpH`) and unix sockets (`lsof -nP -U -Fpcdn` over every process, the client's
+  `->0x<addr>` matched to the socket whose `d` is that address; `ss -xapH` first on Linux, peer inode
+  to path). TCP: a connection whose local port the processes listen on is inbound and skipped; a
+  host name in `allowed` stands for every address `lookup` gives it; a loopback connection to
+  another listener of the same processes is allowed; anything else → `refused: <process> (<pid>)
+  connects to <host:port>`. Unix: a peer path outside `runDirs` that is a datastore socket (name,
+  default directory, a directory the owner's env files name for a socket, or inside MAIN) →
+  `refused: … connects to the socket <path>`. `lsof` exiting 1 with anything but warnings on stderr,
+  or (first sample) none of `expectListen` listening → `failed: …`. Missing both tools → `refused:
+  neither lsof nor ss is available`. `waitHealth({..., egress})` runs a one-sample check between
+  health tries.
+- Store comparison (Task 5's, carried here from the Task 6 review): `sqlite:///x` is read both ways
+  (relative and absolute) on both sides and refused when either hits; `jdbc:sqlite:` and
+  `file://<host>/p` are file values; a percent-encoded libpq socket directory is decoded first; an
+  instance libpq or MySQL-family value that leaves its host or port to the client's default is
+  refused.
 
 - [ ] Tests: a fake `docker` on `PATH` (a shell script in a temp dir printing JSON) — a published host
   port outside the run → refused; a `container_name` → refused; a compliant config → passes;
@@ -356,8 +370,10 @@ Interfaces:
   calls `checkCompose({worktree, env, ports, main, config: <expanded config>, contract, secrets})`
   and stores its result as `ctx.composeServices` before `bringUpStore(ctx)`, so both `checkStore`
   calls see it. Step 8, `upFresh` and `renew` (the CLI's) call `checkEgress({pids: groupPids(<every
-  recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports})})`; a refusal
-  → `down`. After each egress check (step 8, `upFresh`, `renew`), `checkDockerRuntime({since: <up's start,
+  recorded pgid, setup groups included>), allowed: egressAllowed({config, env, ports}), runDirs:
+  [worktree, home], main, contract, expectListen: [<base_url's port, when a start entry serves it>]})`;
+  a refusal → `down`. Every `waitHealth` of steps 6 and 7 gets `egress: () => checkEgress({...same,
+  pids: groupPids(<the groups so far>), samples: 1})`. After each egress check (step 8, `upFresh`, `renew`), `checkDockerRuntime({since: <up's start,
   epoch ms, recorded in run.json>, env, main, worktree})`; a refusal → `down`. `up` step 2's "no
   `lsof`/`ss`" refusal can reuse that message.
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):

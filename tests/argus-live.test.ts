@@ -1437,11 +1437,22 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
           "mariadb://app@/other",
           "mysql2:///other",
           "mysql+pymysql://app@localhost/other",
+          "postgresql://%2Fvar%2Frun%2Fpostgresql/other",
         ])("%s is refused", async (v) => {
           expect(await check(v, { files })).toMatch(/^refused: env\.X points at a service the repo's env files name/);
         });
-        it.each(["postgres://app@localhost:41001/x", "postgresql:///x?host=/tmp/argus-pg&port=41001", "postgresql://app@/x?port=41001", "mysql://app@localhost:41002/x"])("%s is not", async (v) => {
+        it.each(["postgres://app@localhost:41001/x", "postgresql:///x?host=/tmp/argus-pg&port=41001", "postgresql://%2Ftmp%2Fargus-pg:41001/x", "mysql://app@localhost:41002/x"])("%s is not", async (v) => {
           expect(await check(v, { files })).toBe("ok");
+        });
+        it.each([
+          "postgresql://app@/x?port=41001",
+          "mysql://app@:41002/x",
+          "dbname=x port=41001",
+          "postgres://app@localhost/app_explore",
+          "mysql://app@127.0.0.1/other",
+          "host=localhost dbname=x",
+        ])("in the instance env, %s leaves its host or port to the client's default and is refused", async (v) => {
+          expect(await check(v, { files: "" })).toBe("refused: env.X leaves its host or port to the client's default (the local server's); name both");
         });
       });
       it("a file or socket inside the repo is refused; one in the worktree is not", async () => {
@@ -1450,14 +1461,20 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
         expect(await check((m: string) => ({ DATA: `${m}/data` }) as never)).toMatch(/^refused: env\.DATA points into the main checkout/);
         expect(await check("file:./dev.db", { files: "DATABASE_URL=file:./dev.db\n" })).toBe("ok");
         expect(await check("sqlite:./data/app.db")).toBe("ok");
+        expect(await check((m: string) => ({ X: `jdbc:sqlite:${m}/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
+        expect(await check((m: string) => ({ X: `file://localhost${m}/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
+        expect(await check((m: string) => ({ X: `file://${m}/dev.db` }) as never)).toMatch(/^refused: env\.X points into the main checkout/);
       });
-      it("sqlite:/// with three slashes is a relative path (four make it absolute), resolved in the worktree", async () => {
-        expect(await check("sqlite:///./dev.db", { files: "DATABASE_URL=sqlite:///./dev.db\n" })).toBe("ok");
-        expect(await check("sqlite:///dev.db", { files: "DATABASE_URL=sqlite:///dev.db\n" })).toBe("ok");
-        expect(await check("sqlite+pysqlite:///db/app.sqlite3", { files: "DATABASE_URL=sqlite:///db/app.sqlite3\n" })).toBe("ok");
+      it("sqlite:///x is read both ways (relative, as SQLAlchemy does; absolute, as others do): refused when either reading hits", async () => {
+        const same = /^refused: env\.X points at a file or socket the repo's env files name/;
+        expect(await check("sqlite:///./dev.db", { files: "DATABASE_URL=sqlite:///./dev.db\n" })).toMatch(same);
+        expect(await check("sqlite:///dev.db", { files: "DATABASE_URL=sqlite:///dev.db\n" })).toMatch(same);
+        expect(await check("sqlite+pysqlite:///db/app.sqlite3", { files: "DATABASE_URL=sqlite:///db/app.sqlite3\n" })).toMatch(same);
         const dir = realpathSync(tempDir());
-        expect(await check(`sqlite:////${dir}/dev.db`, { files: `DATABASE_URL=sqlite:////${dir}/dev.db\n` })).toMatch(/^refused: env\.X points at a file or socket the repo's env files name/);
-        expect(await check(`sqlite:///${dir.slice(1)}/dev.db`, { files: `DATABASE_URL=sqlite:///${dir}/dev.db\n` })).toBe("ok");
+        expect(await check(`sqlite:////${dir}/dev.db`, { files: `DATABASE_URL=sqlite:////${dir}/dev.db\n` })).toMatch(same);
+        expect(await check(`sqlite:///${dir.slice(1)}/dev.db`, { files: `DATABASE_URL=sqlite:///${dir}/dev.db\n` })).toMatch(same);
+        expect(await check("sqlite:///./dev.db", { files: "DATABASE_URL=file:./dev.db\n" })).toBe("ok");
+        expect(await check("sqlite:///other.db", { files: "DATABASE_URL=sqlite:///dev.db\n" })).toBe("ok");
         const ctx = await ctxFor({ store_check: "echo app_explore" });
         const intoMain = relative(ctx.worktree, join(ctx.main, "dev.db"));
         expect(await message(checkStore({ ...ctx, env: { ...ctx.env, X: `sqlite:///${intoMain}` } }))).toMatch(/^refused: env\.X points into the main checkout/);
@@ -1941,6 +1958,7 @@ describe("argus-live instance — Compose and egress checks", () => {
   });
 
   describe("egress", () => {
+    const NODE = JSON.stringify(process.execPath);
     const freePort = () =>
       new Promise<number>((done) => {
         const s = createServer();
@@ -1949,14 +1967,16 @@ describe("argus-live instance — Compose and egress checks", () => {
           s.close(() => done(p));
         });
       });
-    const listen = (port = 0) =>
+    const listen = (port: number | string = 0) =>
       new Promise<number>((done, fail) => {
         const s = createServer((c) => c.on("error", () => {}));
         s.once("error", fail);
-        s.listen(port, "127.0.0.1", () => {
+        const ready = () => {
           servers.push(s);
-          done((s.address() as { port: number }).port);
-        });
+          done(typeof port === "string" ? 0 : (s.address() as { port: number }).port);
+        };
+        if (typeof port === "string") s.listen(port, ready);
+        else s.listen(port, "127.0.0.1", ready);
       });
     /** Starts the fixture app; returns its pids (the whole process group) once healthy. */
     const startApp = async (env: Record<string, string>, args = "") => {
@@ -1970,26 +1990,95 @@ describe("argus-live instance — Compose and egress checks", () => {
       await new Promise((r) => setTimeout(r, 300));
       return { wt, web, pids: groupPids([s.pgid]), entry, base };
     };
+    /** Starts `node -e <code>` as a run entry (alive after 300 ms); returns its pids and worktree. */
+    const startNode = async (code: string) => {
+      const wt = tempDir();
+      const entry = { name: "client", cmd: `exec ${NODE} -e ${JSON.stringify(`${code}; setInterval(() => {}, 1 << 30)`)}` };
+      const s = await startEntry(entry, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
+      await waitHealth(entry, s, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 300 });
+      return { wt, pids: groupPids([s.pgid]) };
+    };
 
     it("the fixture's cache fallback to a fixed local port is refused, naming the process and 46379", async () => {
       await listen(46379);
       const a = await startApp({});
       const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web } });
-      expect(await message(checkEgress({ pids: a.pids, allowed }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+      expect(await message(checkEgress({ pids: a.pids, allowed, samples: 1, expectListen: [a.web] }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
     });
 
     it("CACHE_URL pointing at a run port passes (the health request it answered is inbound, not egress)", async () => {
       const cache = await listen();
       const a = await startApp({ CACHE_URL: `tcp://127.0.0.1:${cache}` });
       const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web, cache } });
-      expect(await message(checkEgress({ pids: a.pids, allowed }))).toBe("ok");
+      expect(await message(checkEgress({ pids: a.pids, allowed, samples: 2, intervalMs: 100, expectListen: [a.web] }))).toBe("ok");
     });
 
-    it("an endpoint the env names is allowed even when it is not a run port; one it does not name is refused", async () => {
+    it("a loopback endpoint the env names but the run did not allocate is refused: loopback is allowed only on the run's ports", async () => {
       const cache = await listen();
       const a = await startApp({ CACHE_URL: `tcp://localhost:${cache}` });
-      expect(await message(checkEgress({ pids: a.pids, allowed: egressAllowed({ config: { start: [a.entry] }, env: a.base, ports: { web: a.web } }) }))).toBe("ok");
-      expect(await message(checkEgress({ pids: a.pids, allowed: [`loopback:${a.web}`] }))).toMatch(new RegExp(`^refused: node \\(\\d+\\) connects to 127\\.0\\.0\\.1:${cache}$`));
+      const allowed = egressAllowed({ config: { start: [a.entry] }, env: a.base, ports: { web: a.web } });
+      expect(await message(checkEgress({ pids: a.pids, allowed, samples: 1 }))).toMatch(new RegExp(`^refused: node \\(\\d+\\) connects to 127\\.0\\.0\\.1:${cache}$`));
+    });
+
+    it("a connection made after the first look is caught by a later sample", async () => {
+      await listen(46379);
+      const c = await startNode(`setTimeout(() => require("net").connect(46379, "127.0.0.1").on("error", () => {}), 800)`);
+      expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1 }))).toBe("ok");
+      expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 5, intervalMs: 500 }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
+    });
+
+    it("waitHealth runs the egress sample it is given while it waits", async () => {
+      const wt = tempDir();
+      const entry = { name: "w", cmd: `exec ${NODE} -e "setInterval(() => {}, 1 << 30)"` };
+      const s = await startEntry(entry, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
+      let n = 0;
+      await waitHealth(entry, s, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 400, egress: async () => void n++ });
+      expect(n).toBeGreaterThan(0);
+      const t = await startEntry({ ...entry, name: "w2" }, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
+      expect(await message(waitHealth({ ...entry, name: "w2" }, t, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 400, egress: async () => { throw new Error("refused: x (1) connects to 127.0.0.1:6379"); } }))).toBe("refused: x (1) connects to 127.0.0.1:6379");
+    });
+
+    describe("unix sockets", () => {
+      it("a connection to a datastore's socket outside the run is refused, naming it; one inside the run, or to another socket, passes", async () => {
+        const dir = realpathSync(tempDir());
+        const pg = join(dir, ".s.PGSQL.41999");
+        await listen(pg);
+        const c = await startNode(`require("net").connect(${JSON.stringify(pg)})`);
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1 }))).toMatch(new RegExp(`^refused: node \\(\\d+\\) connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runDirs: [dir] }))).toBe("ok");
+        const app = join(dir, "app.sock");
+        await listen(app);
+        const d = await startNode(`require("net").connect(${JSON.stringify(app)})`);
+        expect(await message(checkEgress({ pids: d.pids, allowed: [], samples: 1 }))).toBe("ok");
+      });
+
+      it("any socket in a directory the owner's env files name for a socket, or inside the main checkout, is refused", async () => {
+        const dir = realpathSync(tempDir());
+        const main = realpathSync(tempDir());
+        writeFileSync(join(main, ".env"), `REDIS_URL=unix://${dir}/redis-6379.sock\n`);
+        const other = join(dir, "x.sock");
+        await listen(other);
+        const c = await startNode(`require("net").connect(${JSON.stringify(other)})`);
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1 }))).toBe("ok");
+        expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, main }))).toMatch(/connects to the socket .*x\.sock$/);
+        const inMain = join(main, "app.sock");
+        await listen(inMain);
+        const d = await startNode(`require("net").connect(${JSON.stringify(inMain)})`);
+        expect(await message(checkEgress({ pids: d.pids, allowed: [], samples: 1, main }))).toMatch(/connects to the socket .*app\.sock$/);
+      });
+
+      it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {
+        const ssx = [
+          'u_str LISTEN 0 128 /var/run/postgresql/.s.PGSQL.5432 1000 * 0 users:(("postgres",pid=50,fd=5))',
+          'u_str ESTAB 0 0 /var/run/postgresql/.s.PGSQL.5432 1002 * 1001 users:(("postgres",pid=51,fd=9))',
+          'u_str ESTAB 0 0 * 1001 * 1002 users:(("node",pid=700,fd=21))',
+          'u_str ESTAB 0 0 * 1003 * 1004 users:(("node",pid=700,fd=22))',
+          'u_str ESTAB 0 0 @/containerd-shim/abc 1004 * 1003',
+        ].join("\n");
+        const runner = (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : argv.includes("-xapH") ? { status: 0, stdout: ssx, stderr: "" } : { status: 0, stdout: "", stderr: "" });
+        expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner }))).toBe("refused: node (700) connects to the socket /var/run/postgresql/.s.PGSQL.5432");
+        expect(await message(checkEgress({ pids: [701], allowed: [], samples: 1, runner }))).toBe("ok");
+      });
     });
 
     it("every process of the run's groups is listed, a grandchild included", async () => {
@@ -2004,7 +2093,16 @@ describe("argus-live instance — Compose and egress checks", () => {
     it("refuses when neither lsof nor ss is available", async () => {
       const empty = tempDir();
       const runner = (argv: string[], opts: Obj = {}) => run(argv, { ...opts, env: { PATH: empty } });
-      expect(await message(checkEgress({ pids: [process.pid], allowed: [], runner }))).toBe("refused: neither lsof nor ss is available");
+      expect(await message(checkEgress({ pids: [process.pid], allowed: [], runner, samples: 1 }))).toBe("refused: neither lsof nor ss is available");
+    });
+
+    it("a listing that cannot be trusted fails: lsof exiting 1 with an error, or no listener of the run in it", async () => {
+      const lsof = (stdout: string, status = 0, stderr = "") => (argv: string[]) => (argv[0] === "lsof" ? { status, stdout: argv.includes("-U") ? "" : stdout, stderr } : { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) });
+      expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner: lsof("", 1, "lsof: unsupported option -F\n") }))).toMatch(/^failed: lsof exited 1: lsof: unsupported option/);
+      expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, runner: lsof("", 1, "lsof: WARNING: can't stat() fuse file system /run/user/1/doc\n") }))).toBe("ok");
+      const listing = "p700\ncnode\nf20\nn127.0.0.1:41002\nTST=LISTEN\n";
+      expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, expectListen: [41002], runner: lsof(listing) }))).toBe("ok");
+      expect(await message(checkEgress({ pids: [700], allowed: [], samples: 1, expectListen: [41003], runner: lsof(listing) }))).toBe("failed: the socket listing shows no listener of the run on 41003; it cannot be trusted");
     });
 
     it("reads ss when lsof is missing, skipping listeners and connections to them", async () => {
@@ -2016,18 +2114,21 @@ describe("argus-live instance — Compose and egress checks", () => {
         'ESTAB 0 0 10.0.0.5:53003 [::ffff:93.184.216.34]:443 users:(("node",pid=700,fd=23))',
         'SYN-SENT 0 1 127.0.0.1:53004 127.0.0.1:6379 users:(("other",pid=999,fd=3))',
       ].join("\n");
-      const runner = (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("spawn lsof ENOENT"), { code: "ENOENT" }) } : { status: 0, stdout: ss, stderr: "" });
+      const ssOnly = (text: string) => (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("spawn lsof ENOENT"), { code: "ENOENT" }) } : argv.includes("-xapH") ? { status: 0, stdout: "", stderr: "" } : { status: 0, stdout: text, stderr: "" });
       const lookup = async (host: string) => (host === "api.example.test" ? [{ address: "93.184.216.34", family: 4 }] : []);
-      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001", "api.example.test:443"], runner, lookup }))).toBe("ok");
-      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001"], runner, lookup }))).toBe("refused: node (700) connects to [::ffff:93.184.216.34]:443");
-      const syn = ss.replace("pid=999", "pid=702");
-      const r2 = (argv: string[]) => (argv[0] === "lsof" ? { error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : { status: 0, stdout: syn, stderr: "" });
-      expect(await message(checkEgress({ pids: [702], allowed: ["loopback:41001", "loopback:41002", "api.example.test:443"], runner: r2, lookup }))).toBe("refused: other (702) connects to 127.0.0.1:6379");
+      const opts = { samples: 1, lookup };
+      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001", "api.example.test:443"], runner: ssOnly(ss), ...opts }))).toBe("ok");
+      expect(await message(checkEgress({ pids: [700, 701, 702], allowed: ["loopback:41001"], runner: ssOnly(ss), ...opts }))).toBe("refused: node (700) connects to [::ffff:93.184.216.34]:443");
+      expect(await message(checkEgress({ pids: [702], allowed: ["loopback:41001", "loopback:41002", "api.example.test:443"], runner: ssOnly(ss.replace("pid=999", "pid=702")), ...opts }))).toBe("refused: other (702) connects to 127.0.0.1:6379");
     });
 
-    it("an allow_origins origin and a URL's default port are allowed endpoints", () => {
-      const allowed = egressAllowed({ config: { allow_origins: ["https://fonts.example.test"], start: [{ name: "w", env: { API: "http://[::1]:41009/x" } }] }, env: { DB: "postgres:///app_explore", REDIS_HOST: "127.0.0.1", REDIS_PORT: "41003", SQLITE: "sqlite:///x.db" }, ports: { web: 41002 } });
-      expect([...allowed].sort()).toEqual(["fonts.example.test:443", "loopback:41002", "loopback:41003", "loopback:41009", "loopback:5432"].sort());
+    it("allowed endpoints: the run's ports on loopback, non-loopback endpoints the env names, allow_origins, and anything pass_env names", () => {
+      const allowed = egressAllowed({
+        config: { allow_origins: ["https://fonts.example.test", "http://localhost:3000"], start: [{ name: "w", env: { API: "http://[::1]:41009/x", PAY: "https://pay.example.test/v1" } }], pass_env: ["HTTPS_PROXY"] },
+        env: { DB: "postgres://app@localhost:5432/app_explore", REDIS_HOST: "127.0.0.1", REDIS_PORT: "41003", SQLITE: "sqlite:///x.db", MQ: "amqp://mq.example.test", HTTPS_PROXY: "http://127.0.0.1:8888" },
+        ports: { web: 41002 },
+      });
+      expect([...allowed].sort()).toEqual(["fonts.example.test:443", "loopback:41002", "loopback:8888", "mq.example.test:5672", "pay.example.test:443"].sort());
     });
   });
 });
