@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
 const GUARD = join(__dirname, "../plugins/sapu/scripts/sapu-guard.mjs");
@@ -1775,5 +1775,64 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
   it("decide() refuses the explorer's other tools and its non-wrapper Bash", () => {
     expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Write", tool_input: { file_path: "/tmp/x", content: "x" }, cwd: wt })).toMatch(/journey explorer has only/);
     expect(decide({ agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command: "printenv" }, cwd: wt })).toMatch(/runs only its wrapper/);
+  });
+});
+
+describe("sapu-guard — the journey explorer reads only tracked files of the run's worktree", () => {
+  const w = realpathSync(mkdtempSync(join(tmpdir(), "explorer-wt-")));
+  const g = (...a: string[]) => execFileSync("git", ["-C", w, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  g("init", "-q");
+  mkdirSync(join(w, "src/orders"), { recursive: true });
+  mkdirSync(join(w, ".argus"), { recursive: true });
+  writeFileSync(join(w, "src/orders/route.ts"), "export const x = 1;\n");
+  writeFileSync(join(w, ".argus/config.yml"), "test_accounts: {}\n");
+  g("add", "-A");
+  g("commit", "-qm", "init");
+  writeFileSync(join(w, "src/orders/untracked.ts"), "secret\n");
+  const outside = join(tmpdir(), "explorer-outside.txt");
+  writeFileSync(outside, "x\n");
+  symlinkSync(outside, join(w, "src/link.txt"));
+  const m = realpathSync(mkdtempSync(join(tmpdir(), "explorer-main-")));
+  execFileSync("git", ["init", "-q", m]);
+  mkdirSync(join(m, ".argus/live"), { recursive: true });
+  writeFileSync(join(m, ".argus/live/run.json"), JSON.stringify({ worktree: w }));
+  afterAll(() => {
+    rmSync(w, { recursive: true, force: true });
+    rmSync(m, { recursive: true, force: true });
+  });
+  const read = (tool: string, input: Record<string, string>, worktree: string | null = w) =>
+    (checkExplorerRead as (i: object) => string | null)({ tool, input, worktree, cwd: w });
+
+  it("allows a tracked file, and a Grep or Glob below the worktree root", () => {
+    expect(read("Read", { file_path: join(w, "src/orders/route.ts") })).toBeNull();
+    expect(read("Read", { file_path: "src/orders/route.ts" })).toBeNull();
+    expect(read("Grep", { pattern: "export", path: join(w, "src") })).toBeNull();
+    expect(read("Grep", { pattern: "export", path: join(w, "src/orders/route.ts") })).toBeNull();
+    expect(read("Glob", { pattern: "**/*.ts", path: join(w, "src/orders") })).toBeNull();
+  });
+
+  it.each([
+    ["an untracked file", "Read", { file_path: join(w, "src/orders/untracked.ts") }],
+    ["the tracked argus config", "Read", { file_path: join(w, ".argus/config.yml") }],
+    ["a file outside the worktree", "Read", { file_path: outside }],
+    ["a symlink leaving the worktree", "Read", { file_path: join(w, "src/link.txt") }],
+    ["a missing file", "Read", { file_path: join(w, "src/none.ts") }],
+    ["the worktree root as a Read", "Read", { file_path: w }],
+    ["a Grep of the worktree root (it holds .argus/)", "Grep", { pattern: "x", path: w }],
+    ["a Grep with no path", "Grep", { pattern: "x" }],
+    ["a Grep of .argus/", "Grep", { pattern: "x", path: join(w, ".argus") }],
+    ["a Glob climbing out", "Glob", { pattern: "../**", path: join(w, "src") }],
+  ])("refuses %s", (_what, tool, input) => {
+    expect(read(tool, input)).toMatch(/journey explorer reads only tracked files/);
+  });
+
+  it("refuses every read when no run is live", () => {
+    expect(read("Read", { file_path: join(w, "src/orders/route.ts") }, null)).toMatch(/journey explorer reads only tracked files/);
+  });
+
+  it("decide() reads the live run's worktree from <MAIN>/.argus/live/run.json", () => {
+    const d = (file_path: string) => decide({ agent_type: "sapu:ui-explorer", tool_name: "Read", tool_input: { file_path }, cwd: m });
+    expect(d(join(w, "src/orders/route.ts"))).toBeNull();
+    expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only tracked files/);
   });
 });

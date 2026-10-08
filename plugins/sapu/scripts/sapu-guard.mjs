@@ -151,6 +151,45 @@ export function checkExplorerBash(command, wrapper = WRAPPER) {
   return null;
 }
 
+/** The worktree of the live journey run (`<MAIN>/.argus/live/run.json`), real path, or null. */
+function liveWorktree(main) {
+  try {
+    const w = JSON.parse(fs.readFileSync(path.join(main, ".argus/live/run.json"), "utf8")).worktree;
+    return typeof w === "string" && w ? fs.realpathSync(w) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The explorer's Read, Grep and Glob: only paths whose real path lies in the run's worktree, outside
+ * `.argus/`; a Read only of a file tracked at HEAD; a Grep or Glob only of a path below the worktree
+ * root (the root holds `.argus/`). Page content reaches the explorer only through the wrapper.
+ */
+export function checkExplorerRead({ tool, input, worktree, cwd }) {
+  if (!worktree) return BLOCK.explorerRead;
+  const raw = tool === "Read" ? input.file_path : input.path;
+  if (typeof raw !== "string" || !raw) return BLOCK.explorerRead;
+  let real;
+  try {
+    real = fs.realpathSync(path.resolve(cwd, raw));
+  } catch {
+    return BLOCK.explorerRead;
+  }
+  const rel = path.relative(worktree, real);
+  if (rel === "") return BLOCK.explorerRead;
+  if (rel.startsWith("..") || path.isAbsolute(rel) || rel === ".argus" || rel.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
+  if (tool === "Read" || fs.statSync(real).isFile()) {
+    try {
+      execFileSync("git", ["-C", worktree, "ls-files", "--error-unmatch", "--", rel], { stdio: "ignore" });
+    } catch {
+      return BLOCK.explorerRead;
+    }
+  }
+  if (tool === "Glob" && typeof input.pattern === "string" && (/(^|\/)\.\.(\/|$)/.test(input.pattern) || input.pattern.startsWith("/"))) return BLOCK.explorerRead;
+  return null;
+}
+
 /**
  * Drop heredoc bodies (PR bodies, review files) — unless the heredoc feeds a shell, or its
  * terminator never comes (then the "body" is really more commands).
@@ -826,6 +865,8 @@ function denied(a, prog, deny, dir) {
 const BLOCK = {
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
+  explorerRead:
+    "the journey explorer reads only tracked files of the run's worktree, outside .argus/, and a Grep or Glob must name a path below the worktree root; page content comes through the wrapper.",
   explorerTool: "the journey explorer has only Bash (its wrapper), Read, Grep and Glob.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
@@ -1866,7 +1907,13 @@ export function decide(input) {
   const tool = input.tool_name;
   const ti = input.tool_input || {};
   if (EXPLORER_AGENT.test(input.agent_type || "")) {
-    const why = tool === "Bash" ? checkExplorerBash(ti.command) : BLOCK.explorerTool;
+    const m = findMain(input.cwd || process.cwd());
+    const why =
+      tool === "Bash"
+        ? checkExplorerBash(ti.command)
+        : tool === "Read" || SEARCH_TOOLS.has(tool)
+          ? checkExplorerRead({ tool, input: ti, worktree: m ? liveWorktree(m) : null, cwd: input.cwd || process.cwd() })
+          : BLOCK.explorerTool;
     if (why) return why;
   }
   const ctx = ctxCalls(tool, ti);
