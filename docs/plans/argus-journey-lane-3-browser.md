@@ -1294,6 +1294,27 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   - The fixture's `/orders/<id>` takes `?late=<ms>` (at most 20 000) for the `find` test; the CLI shim
     records the text of each `--filename` file it is given (the wrapper removes it after the call).
 
+- **Review of Tasks 8–10 (fixed after Task 11).**
+  - Masking: `secretForms`' list gave way to `secretPattern(v)`, one regular expression per secret that
+    takes each character in any encoding (as is, after a backslash, a C escape, `\uXXXX` in any case and
+    as a surrogate pair, `\xHH`, decimal, hex or named HTML entities with leading zeros, `%HH` of its
+    UTF-8 bytes in any case, `+` for a space, `/` for a backslash) mixed freely, or the whole value in
+    base64 (padded, unpadded, URL-safe; at least 8 characters). Go's, Python's and PHP's JSON, upper-case
+    entities and URL fragments are tests.
+  - TOTP steps are reserved in `<MAIN>/.git/sapu-totp.json` (`totpFile(main)`, exported; `.argus/live/`
+    without a `.git` directory), which outlives the run, so a cycle within 30 s of the last never reuses
+    a step.
+  - `checkUrl` compares WHATWG-serialised origins: a host spelled otherwise than a run origin
+    (`localhost.`) is refused; case and IP forms WHATWG folds are the same origin.
+  - A login's `error` reason is `error: playwright` everywhere outside a fence (run.json `loginFailed`,
+    `proveLogins`' refusals, `pw`'s `login: failed (error)`); the detail goes, masked, to
+    `logs/logins.log`. A `run-code` failure that ends a `pw` call prints `failed: the browser CLI's
+    run-code failed`.
+  - The token in the process list during a `pw` call is a known limit (spec §9 and §12).
+  - Nits: `slotLockWaitMs(settle_ms)` (15 × settle_ms + 420 s) bounds both `pw`'s and `handoffSlot`'s
+    wait for the slot's lock; `pw` reads the deadline from the lock again once it holds the slot's lock;
+    a handoff keeps `proxyBlocked` and `blockedReported`.
+
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
 `login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and

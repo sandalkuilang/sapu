@@ -743,7 +743,10 @@ repo needs no Playwright of its own.
 (`<role>.<n>` is the role's n-th allocated account; a plain word, so it needs no quoting):
 - **Token.** `argus-live.mjs slot <n>` mints a random token per explorer dispatch, recorded in
   `run.json` with its slot, journey and generation. The wrapper refuses an unknown or retired token,
-  and a role or account outside that journey's allocation.
+  and a role or account outside that journey's allocation. Known limit: the token is an argument of the
+  explorer's command line, so while a `pw` call runs any local user can read it in the process list;
+  the lane assumes a single-user development machine (on a shared host, another user could spend the
+  slot's budget, though never reach the CLI past the wrapper's checks).
 - **Commands allowed to the explorer:** `goto` and `tab-new`; `click`, `dblclick`, `fill`, `type`,
   `select`, `check`, `uncheck`, `hover`, `press`, `drag`; `upload` (files from `live.fixtures`, which
   `up` copies to the slot's directory); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
@@ -773,8 +776,9 @@ repo needs no Playwright of its own.
   password); if no password field is visible, submit and wait up to `settle_ms` for one (two-step
   forms); fill `input[type=password]` and submit; if a one-time-code field appears
   (`autocomplete=one-time-code`, else the single visible text input), fill an RFC 6238 code computed
-  with Node's own `crypto` — never a time step already used for that secret (recorded in
-  `.argus/live/<run>/totp.json` under a file lock, shared by every process), waiting for the next
+  with Node's own `crypto` — never a time step already used for that secret (recorded, as a hash of the
+  secret and its last step, in `<MAIN>/.git/sapu-totp.json` under a file lock, shared by every process
+  and kept across runs: a cycle starting within 30 s of the last one must not reuse a step), waiting for the next
   step when under 3 s remain. Success = `logged_in` visible within `settle_ms`. A failed login is
   never retried within a run (lockout); a 429 or a lockout message is a harness event.
   `login: {command}` runs per session open and must print a fresh storage state each time, which
@@ -784,7 +788,13 @@ repo needs no Playwright of its own.
   in once, reports `re-logged-in: <role>`, and does not repeat the command (it may have side effects).
 - **Output** from the page is fenced by `<<<PAGE-<nonce>` … `PAGE-<nonce>>>>` with a fresh random
   nonce per call (`PAGE-` inside page text is escaped); new console signals, the budget and loop
-  counters and harness events follow outside the fence.
+  counters and harness events follow outside the fence. Inside it every secret value (the env file's,
+  the role passwords and TOTP secrets, created accounts' passwords) is masked however the page or the
+  CLI encoded it: per character as is, backslash-escaped, `\uXXXX`, `\xHH`, an HTML entity, `%HH` of its
+  UTF-8 bytes or `+` for a space (so JavaScript's, Go's, Python's and PHP's JSON, HTML and URL forms
+  alike), or the whole value in base64. Outside it the wrapper prints only its own fixed words: a
+  login's failure is `rejected`, `rate-limited`, `no-login-form`, `no-totp-secret` or `error:
+  playwright`, Playwright's own text (which may quote the page) going to the run's `logs/logins.log`.
 
 Probed live with 0.1.22: headless start in about 4 s; named sessions isolated (cookies and
 localStorage); `state-save` → `state-load` across sessions; `console` and `requests` report JS errors
@@ -976,6 +986,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Goal cannot be reached | the permission checks say the role may not → not a candidate; they say it may → discoverability candidate |
 | A precondition is missing | created through the UI by a role allowed to, or by a `trigger`; otherwise the charter is re-scoped (argus's standing order) |
 | A browser session dies | the wrapper reopens it on the next command; the explorer resumes from its last trail step |
+| Another local user reads a slot's token from the process list while a `pw` call runs | a known limit (§9 "Token"): the lane assumes a single-user development machine |
 | An explorer returns `aborted`, hits `DEADLINE`, or returns nothing | its submitted trail and reason are journalled; its candidates still go through repro |
 | `up --fresh` fails in the repro phase | the remaining candidates are journalled `not reproduced: harness`, never dropped |
 | The session running the cycle dies | the reaper runs `down` at the deadline; the next `up` recovers anything left |

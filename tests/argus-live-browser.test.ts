@@ -330,8 +330,8 @@ describe("argus-live logins", () => {
     }
     const st = await stats(b);
     expect(st["POST /login/otp"]).toBe(1);
-    expect(existsSync(join(b.main, ".argus/live", b.runId, "totp.json"))).toBe(true);
-    expect(readFileSync(join(b.main, ".argus/live", b.runId, "totp.json"), "utf8")).not.toContain(RFC);
+    expect(existsSync(join(b.main, ".git/sapu-totp.json"))).toBe(true);
+    expect(readFileSync(join(b.main, ".git/sapu-totp.json"), "utf8")).not.toContain(RFC);
     expect(readdirSync(join(b.dir, ".playwright")).filter((f) => f.startsWith("run-"))).toEqual([]);
   }, 180_000);
 

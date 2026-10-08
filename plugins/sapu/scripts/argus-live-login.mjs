@@ -9,11 +9,11 @@ import path from "node:path";
 import { openSession, slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
 import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
-import { nonce } from "./argus-live-fence.mjs";
+import { clean, nonce } from "./argus-live-fence.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { redact, run, runAsync, sleep, tail, tempBeside, withFileLock } from "./argus-live-proc.mjs";
 import { canonicalOrigin, exactHost } from "./argus-live-proxy.mjs";
-import { readRun, updateRun } from "./argus-live-run.mjs";
+import { logsDir, readRun, updateRun } from "./argus-live-run.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -335,8 +335,31 @@ export function loginPlan(live, role) {
   return { url: new URL(r.login_url ?? live.login_url, base).href, base, open: r.login_open ?? live.login_open ?? null, loggedIn: r.logged_in ?? live.logged_in, settleMs: live.settle_ms ?? 10_000 };
 }
 
-/** The run's `totp.json`, beside its slot directories: every process of the run reserves its steps there. */
-const totpFile = (main, runId) => path.join(liveDir(main), runId, "totp.json");
+/**
+ * Where every process reserves its TOTP steps: `<MAIN>/.git/sapu-totp.json` (`{<16 hex of sha256(secret)>:
+ * lastStep}`, no secret), kept across runs, so a cycle starting within 30 s of the last never reuses a
+ * step the app saw (a refused code is never retried); `.argus/live/` when the checkout has no `.git` directory.
+ */
+export function totpFile(main) {
+  let dir = path.join(main, ".git");
+  try {
+    if (!fs.statSync(dir).isDirectory()) dir = liveDir(main);
+  } catch {
+    dir = liveDir(main);
+  }
+  return path.join(dir, "sapu-totp.json");
+}
+
+/** Appends `<account> <user>: <detail>` (cleaned: its secrets masked, controls replaced) to the run's `logs/logins.log`; never shown to the explorer. */
+function logDetail(main, runId, account, user, detail, secrets) {
+  try {
+    const dir = logsDir(main, runId);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(dir, "logins.log"), `${account} ${user}: ${clean(String(detail), { secrets }).replace(/\n/g, " ")}\n`, { mode: 0o600 });
+  } catch {
+    // the log is a convenience; the refusal stands
+  }
+}
 
 /** How long a stage may run: each of its waits is bounded by settle_ms, its actions by the CLI's timeouts. */
 const stageTimeout = (plan) => 4 * plan.settleMs + 60_000;
@@ -345,16 +368,17 @@ const stageTimeout = (plan) => 4 * plan.settleMs + 60_000;
 function reasonOf(r) {
   if (r.status429 || r.lockout) return "rate-limited";
   if (r.state === "no-form") return "no-login-form";
-  if (r.state === "error") return `error: ${r.error ?? "unknown"}`;
+  if (r.state === "error") return "error: playwright"; // Playwright's text may quote the page: its detail goes to the log
   return "rejected";
 }
 
 /**
  * Signs session `session` (account `account`, `<role>.<k>`) in as `user` (spec §9 "Login") by plan
  * `plan` (loginPlan): the credentials stage, then, when a one-time-code field shows, a code for a time
- * step reserved in the run's totp.json (reserveStep) → `{ok: true, origins}` or `{ok: false, reason,
- * origins}`, reason `rejected`, `rate-limited` (a 429 or a lockout text), `no-login-form`,
- * `no-totp-secret` or `error: <first line>`; `origins` = every origin the pages requested meanwhile. On
+ * step reserved in the repo's TOTP file (totpFile, reserveStep) → `{ok: true, origins}` or `{ok: false,
+ * reason, origins}`, reason `rejected`, `rate-limited` (a 429 or a lockout text), `no-login-form`,
+ * `no-totp-secret` or `error: playwright` (fixed words: Playwright's own text, which may quote the page,
+ * goes to the run's `logs/logins.log`, masked); `origins` = every origin the pages requested meanwhile. On
  * success the session's request and console lists are cleared (`requests --clear`, `console --clear`),
  * so the login's traffic never reaches the explorer. A failure is recorded in run.json
  * `loginFailed["<role>/<user>"]`, and a user found there is refused at once, with no browser work: a
@@ -377,13 +401,14 @@ export async function login({ main, runId, session, account, user, password, tot
   if (r.state === "otp") {
     if (!totpSecret) reason = "no-totp-secret";
     else {
-      const step = await reserveStep(totpFile(main, runId), totpSecret, { now, sleep: wait });
+      const step = await reserveStep(totpFile(main), totpSecret, { now, sleep: wait });
       r = await call("otp", { code: totp(totpSecret, step) });
       for (const o of r.origins ?? []) origins.add(o);
     }
   }
   if (!reason && r.state !== "in") reason = reasonOf(r);
   if (reason) {
+    if (r.state === "error") logDetail(main, runId, account, user, r.error ?? "unknown", { password, ...(totpSecret ? { totp: totpSecret } : {}) });
     updateRun(main, runId, (prev) => (prev ? { ...prev, loginFailed: { ...(prev.loginFailed ?? {}), [key]: reason } } : undefined), { create: false });
     return { ok: false, reason, origins: [...origins] };
   }
@@ -472,7 +497,8 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
         const state = await commandLogin({ role: a.role, live, env, worktree, secrets, origins, dir, runner: cliRunner });
         record = await openSession({ main, runId, slot: "up", account: a.account, js, home, storageState: state, runner, cliRunner });
         const p = await runCode({ js, session: record.name, cwd: dir, home, code: loginCode("probe", { url: plan.base, loggedIn: plan.loggedIn, settleMs: plan.settleMs }), timeoutMs: stageTimeout(plan), runner: cliRunner });
-        res = { ok: Boolean(p.in), reason: p.error ? `error: ${p.error}` : "rejected", origins: p.origins ?? [] };
+        if (p.error) logDetail(main, runId, a.account, "command", p.error, secrets);
+        res = { ok: Boolean(p.in), reason: p.error ? "error: playwright" : "rejected", origins: p.origins ?? [] };
       } else {
         record = await openSession({ main, runId, slot: "up", account: a.account, js, home, runner, cliRunner });
         res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner });
@@ -490,6 +516,11 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
       say(`login ${a.account}: proven`);
     } catch (e) {
       if (/^refused: /.test(e.message)) throw e;
+      // A run-code failure quotes Playwright, which may quote the page: fixed words here, the detail in the log.
+      if (/^failed: run-code: /.test(e.message)) {
+        logDetail(main, runId, a.account, a.user ?? "command", e.message, { ...secrets, ...(a.password ? { password: a.password } : {}) });
+        throw new Error(`refused: ${a.account} could not sign in (error: playwright)`);
+      }
       throw new Error(`refused: ${a.account} could not sign in (${redact(e.message.replace(/^failed: /, ""), secrets)})`);
     } finally {
       if (record) {

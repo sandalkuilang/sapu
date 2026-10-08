@@ -15,7 +15,7 @@ import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
 import { readRun, recordedSecrets } from "./argus-live-run.mjs";
-import { accountOf, readSlotState, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
+import { accountOf, readSlotState, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
@@ -156,7 +156,8 @@ export function parsePw(argv) {
 /**
  * A `goto`/`tab-new` argument → the absolute URL to open: a path (`^/(?![/\\])`, no control characters)
  * resolved on `base` (the account's role's base_url), or an `http:`/`https:` URL without credentials;
- * either way its origin, as the run's origin spells it (canonicalOrigin), must be one of `origins`. Else
+ * either way its origin, serialised (WHATWG), must be one of `origins` as they serialise: a host spelled
+ * otherwise (`localhost.`, `127.0.0.1` for `localhost`) is refused. Else
  * `refused: <arg> is outside the run's origins` — so `//host`, `/\host`, `javascript:`, `data:`,
  * `file:`, `view-source:` and `http://localhost:<port>@host` are refused.
  */
@@ -174,8 +175,9 @@ export function checkUrl(arg, { origins, base }) {
     throw refuse();
   }
   if ((u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password) throw refuse();
-  const allowed = new Set(origins.map(canonicalOrigin));
-  if (!allowed.has(canonicalOrigin(u.origin))) throw refuse();
+  // Spelled as a run origin spells it (WHATWG's serialisation: lower case, one form of an IP, a trailing dot kept), not merely the same host.
+  const allowed = new Set(origins.map((o) => new URL(o).origin));
+  if (!allowed.has(u.origin)) throw refuse();
   return u.href;
 }
 
@@ -291,23 +293,26 @@ export async function pw(main, argv, { cli = null, now = Date.now, runner = run,
   } catch (e) {
     return { code: 1, out: [e.message] };
   }
-  const { runId, slot, lock } = found;
+  const { runId, slot } = found;
   const dir = slotDir(main, runId, slot);
   let secrets = {};
   try {
-    return await withSlotLock(main, runId, slot, () => call({ main, argv, word, runId, slot, lock, dir, cli, now, runner, cliRunner, setSecrets: (s) => (secrets = s) }), { waitMs: 120_000 });
+    const settle = (loadLive(main).config ?? {}).settle_ms;
+    return await withSlotLock(main, runId, slot, () => call({ main, argv, word, runId, slot, dir, cli, now, runner, cliRunner, setSecrets: (s) => (secrets = s) }), { waitMs: slotLockWaitMs(settle) });
   } catch (e) {
-    const msg = redact(String((e && e.message) || e), secrets);
+    // A run-code failure quotes Playwright, which may quote the page: never printed outside a fence.
+    const msg = /^failed: run-code: /.test(String(e && e.message)) ? "failed: the browser CLI's run-code failed" : redact(String((e && e.message) || e), secrets);
     return { code: /^refused: /.test(msg) ? 1 : 2, out: [/^(refused|failed): /.test(msg) ? msg : `failed: ${msg}`] };
   }
 }
 
 /** The body of pw, under the slot's lock. */
-async function call({ main, argv, word, runId, slot, lock, dir, cli, now, runner, cliRunner, setSecrets }) {
+async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliRunner, setSecrets }) {
   // The token again, under the lock: a handoff may have retired it meanwhile.
-  const { rec: slotRec } = tokenSlot(main, argv[0]);
+  // The lock too: a renew may have moved the deadline while this call waited for the slot.
+  const { rec: slotRec, lock: lockNow } = tokenSlot(main, argv[0]);
   const isSubmit = word === "submit";
-  if (!isSubmit && lock.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
+  if (!isSubmit && lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
   const { config, errors, secrets: envSecrets } = loadLive(main);
   if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
   const rec = readRun(main);

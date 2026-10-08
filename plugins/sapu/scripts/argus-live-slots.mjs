@@ -108,9 +108,9 @@ function allocationKeys(accounts, live) {
 }
 
 /** A fresh slot state: no call yet. */
-const freshState = () => ({ calls: 0, loops: {}, sessions: {}, blockedOffset: 0, created: {} });
+const freshState = () => ({ calls: 0, loops: {}, sessions: {}, blockedOffset: 0, proxyBlocked: [], blockedReported: [], created: {} });
 
-/** The slot's state (`<dir>/state.json`): `{calls, loops, sessions, blockedOffset, created}`; a fresh one when there is none. */
+/** The slot's state (`<dir>/state.json`): `{calls, loops, sessions, blockedOffset, proxyBlocked, blockedReported, created}`; a fresh one when there is none. */
 export function readSlotState(dir) {
   try {
     const s = JSON.parse(fs.readFileSync(path.join(dir, "state.json"), "utf8"));
@@ -241,25 +241,32 @@ export async function handoffSlot(main, slot) {
   if (!rec.slots || !Object.hasOwn(rec.slots, n)) throw new Error(`refused: slot ${slot} was never minted`);
   const token = randomBytes(16).toString("hex");
   let entry = null;
-  await withSlotLock(main, lock.runId, slot, () => {
-    updateRun(
-      main,
-      lock.runId,
-      (prev) => {
-        const cur = prev && prev.slots && prev.slots[n];
-        if (!cur) throw new Error(`refused: slot ${slot} was never minted`);
-        if (cur.generation >= MAX_GENERATION) throw new Error(`refused: slot ${slot} already had two handoffs`);
-        entry = { ...cur, generation: cur.generation + 1, tokenHash: sha256(token), retired: [...(cur.retired ?? []), ...(cur.tokenHash ? [cur.tokenHash] : [])], submitted: false };
-        return { ...prev, slots: { ...prev.slots, [n]: entry } };
-      },
-      { create: false },
-    );
-    const dir = slotDir(main, lock.runId, slot);
-    const was = readSlotState(dir);
-    // A fresh budget and loop count; the sessions' state (signed in, last page, console seen) and the
-    // accounts the journey created carry over: the browsers stay open.
-    writeSlotState(dir, { ...freshState(), sessions: was.sessions, created: was.created, blockedOffset: was.blockedOffset });
-  });
+  const settle = (loadLive(main).config ?? {}).settle_ms;
+  await withSlotLock(
+    main,
+    lock.runId,
+    slot,
+    () => {
+      updateRun(
+        main,
+        lock.runId,
+        (prev) => {
+          const cur = prev && prev.slots && prev.slots[n];
+          if (!cur) throw new Error(`refused: slot ${slot} was never minted`);
+          if (cur.generation >= MAX_GENERATION) throw new Error(`refused: slot ${slot} already had two handoffs`);
+          entry = { ...cur, generation: cur.generation + 1, tokenHash: sha256(token), retired: [...(cur.retired ?? []), ...(cur.tokenHash ? [cur.tokenHash] : [])], submitted: false };
+          return { ...prev, slots: { ...prev.slots, [n]: entry } };
+        },
+        { create: false },
+      );
+      const dir = slotDir(main, lock.runId, slot);
+      const was = readSlotState(dir);
+      // A fresh budget and loop count; the sessions' state (signed in, last page, console seen), the
+      // accounts the journey created and the blocked origins already told carry over: the browsers stay open.
+      writeSlotState(dir, { ...freshState(), sessions: was.sessions, created: was.created, blockedOffset: was.blockedOffset, proxyBlocked: was.proxyBlocked, blockedReported: was.blockedReported });
+    },
+    { waitMs: slotLockWaitMs(settle) },
+  );
   return reply(slot, token, entry);
 }
 
@@ -297,6 +304,15 @@ export function accountOf(rec, word) {
   const account = word.includes(".") ? word : `${word}.1`;
   if (!rec || !rec.accounts || !Object.hasOwn(rec.accounts, account)) throw new Error(`refused: ${word} is not allocated to this slot`);
   return account;
+}
+
+/**
+ * How long a caller waits for a slot's lock: the longest a `pw` call holds it at `settleMs` (its CLI calls'
+ * bounds — the command and a find's waits, the observation, the console, a probe, a login's two stages and
+ * a TOTP step — with room to spare).
+ */
+export function slotLockWaitMs(settleMs) {
+  return 15 * (Number.isInteger(settleMs) ? settleMs : 10_000) + 420_000;
 }
 
 /**
