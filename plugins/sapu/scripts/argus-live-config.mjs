@@ -1,0 +1,255 @@
+// argus-live-config.mjs — the journey lane's live-instance config, `.argus/live.json` (spec §8):
+// load it and its `env_file`, validate its schema, expand `{port:<name>}`, `{port:<name>=<n>}` and
+// `${NAME}` in its strings.
+//
+// JSON, not YAML: the plugin has no dependencies. Unknown keys are errors at every level (a typo must
+// not silently drop a setting, as in the sapu contract). Secrets come only from `env_file`, never from
+// the process environment, and no error message ever holds a secret's value.
+import fs from "node:fs";
+import path from "node:path";
+
+export const LIVE_FILE = ".argus/live.json";
+/** Role names: no `.` (`<role>.<n>` names an account). */
+export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
+const RESERVED_ROLES = ["anon", "system"];
+const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
+const START_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+const TOP_KEYS = [
+  "setup", "services", "start", "base_url", "login_url", "logged_in", "env_file", "env", "pass_env", "store", "store_check", "reset",
+  "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
+  "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits",
+];
+const REQUIRED = ["start", "base_url", "login_url", "logged_in", "store", "store_check", "reset", "confirmed", "roles", "limits"];
+const LIMIT_KEYS = ["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"];
+const START_KEYS = ["name", "cmd", "phase", "stop", "env", "health"];
+const ROLE_KEYS = ["code_role", "users", "login", "base_url", "login_url", "logged_in", "login_open"];
+const USER_KEYS = ["user", "password", "totp_secret"];
+
+const isStr = (v) => typeof v === "string" && v.trim() !== "";
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const strArray = (v) => Array.isArray(v) && v.every((x) => typeof x === "string");
+const isInt = (v, min = 0, max = Number.MAX_SAFE_INTEGER) => Number.isInteger(v) && v >= min && v <= max;
+const isPort = (v) => isInt(v, 1, 65535);
+const isRegex = (s) => {
+  try {
+    new RegExp(s);
+    return typeof s === "string";
+  } catch {
+    return false;
+  }
+};
+
+/** Every schema error in `c` (empty = valid). */
+export function validateLive(c) {
+  if (!isObj(c)) return [`${LIVE_FILE} must be a JSON object`];
+  const errs = [];
+  const need = (cond, msg) => cond || errs.push(msg);
+  const unknown = (obj, where, allowed) => {
+    for (const k of Object.keys(obj)) if (!allowed.includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  };
+  /** `where` must be an object; reports and returns false when it is not. */
+  const object = (v, where) => need(isObj(v), `${where} must be an object`) === true;
+  const has = (k) => k in c;
+
+  unknown(c, LIVE_FILE, TOP_KEYS);
+  for (const k of REQUIRED) need(has(k), `${LIVE_FILE}: missing "${k}"`);
+
+  if (has("setup")) need(Array.isArray(c.setup) && c.setup.every((a) => strArray(a) && a.length > 0 && isStr(a[0])), "setup must be an array of argv lists (each a non-empty array of words)");
+  if (has("services") && object(c.services, "services")) {
+    for (const [name, s] of Object.entries(c.services)) {
+      if (!object(s, `services.${name}`)) continue;
+      unknown(s, `services.${name}`, ["env"]);
+      need(isStr(s.env), `services.${name}.env must name the env variable holding its address`);
+    }
+  }
+  if (has("start")) {
+    if (need(Array.isArray(c.start) && c.start.length > 0, "start must be a non-empty array of entries") === true) {
+      const seen = new Set();
+      c.start.forEach((e, i) => {
+        const where = `start[${i}]`;
+        if (!object(e, where)) return;
+        unknown(e, where, START_KEYS);
+        if (need(typeof e.name === "string" && START_NAME.test(e.name), `${where}.name must match ${START_NAME}`) === true) {
+          need(!seen.has(e.name), `duplicate start name "${e.name}"`);
+          seen.add(e.name);
+        }
+        need(isStr(e.cmd), `${where}.cmd must be a command`);
+        if ("phase" in e) need(e.phase === "store", `${where}.phase must be "store" (or be omitted)`);
+        if ("stop" in e) need(isStr(e.stop), `${where}.stop must be a command`);
+        if ("env" in e) need(isObj(e.env) && Object.values(e.env).every((v) => typeof v === "string"), `${where}.env must map names to strings`);
+        if ("health" in e) {
+          const h = e.health;
+          need(isObj(h) && Object.keys(h).length === 1 && (isStr(h.url) || isStr(h.cmd)), `${where}.health must be {"url": <url>} or {"cmd": <command>}`);
+        }
+      });
+    }
+  }
+  for (const k of ["base_url", "login_url", "logged_in", "store", "store_check", "reset"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  if (isStr(c.base_url)) localUrl(c.base_url, "base_url", errs);
+  if (has("env_file")) need(isStr(c.env_file), "env_file must be a path inside the repo");
+  if (has("env")) need(isObj(c.env) && Object.values(c.env).every((v) => typeof v === "string"), "env must map names to strings");
+  for (const k of ["pass_env", "locales", "prohibited"]) if (has(k)) need(strArray(c[k]), `${k} must be an array of strings`);
+  for (const k of ["facts", "mail"]) if (has(k)) command(c[k], k, errs);
+  if (has("triggers") && object(c.triggers, "triggers")) for (const [name, t] of Object.entries(c.triggers)) command(t, `triggers.${name}`, errs);
+  if (has("confirmed") && object(c.confirmed, "confirmed")) {
+    unknown(c.confirmed, "confirmed", ["mocks", "data"]);
+    need(c.confirmed.mocks === true, "confirmed.mocks must be true: every outbound integration runs in test or mock mode under env");
+    need(c.confirmed.data === true, "confirmed.data must be true: the data reset creates is synthetic");
+  }
+  if (has("allow_origins")) need(strArray(c.allow_origins) && c.allow_origins.every(isOrigin), "allow_origins must be an array of full origins (scheme://host[:port])");
+  if (has("port_range")) need(Array.isArray(c.port_range) && c.port_range.length === 2 && c.port_range.every(isPort) && c.port_range[0] <= c.port_range[1], "port_range must be [low, high], ports 1-65535, low <= high");
+  if (has("reserved_ports")) need(Array.isArray(c.reserved_ports) && c.reserved_ports.every(isPort), "reserved_ports must be an array of ports");
+  for (const k of ["login_spacing_ms", "settle_ms"]) if (has(k)) need(isInt(c[k]), `${k} must be a non-negative integer`);
+  for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  if (has("viewports")) need(Array.isArray(c.viewports) && c.viewports.every((v) => isInt(v, 1)), "viewports must be an array of positive widths");
+  if (has("roles") && object(c.roles, "roles")) for (const [name, r] of Object.entries(c.roles)) role(name, r, errs);
+  if (has("limits") && object(c.limits, "limits")) {
+    unknown(c.limits, "limits", LIMIT_KEYS);
+    need("max_cycle_minutes" in c.limits, 'limits: missing "max_cycle_minutes"');
+    for (const k of LIMIT_KEYS) if (k in c.limits) need(isInt(c.limits[k], 1), `limits.${k} must be a positive integer`);
+  }
+  placeholders(c, "", errs);
+  return errs;
+}
+
+function command(v, where, errs) {
+  if (!isObj(v)) return errs.push(`${where} must be {"argv": [<words>], "args": [<regex>]}`);
+  for (const k of Object.keys(v)) if (!["argv", "args"].includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  if (!(strArray(v.argv) && v.argv.length > 0 && isStr(v.argv[0]))) errs.push(`${where}.argv must be a non-empty array of words`);
+  if ("args" in v && !(Array.isArray(v.args) && v.args.every(isRegex))) errs.push(`${where}.args must be an array of valid regexes`);
+}
+
+function role(name, r, errs) {
+  const where = `roles.${name}`;
+  if (!ROLE_NAME.test(name)) return errs.push(`${where}: a role name must match ${ROLE_NAME} (no ".": <role>.<n> names an account)`);
+  if (name === "system") return errs.push(`${where}: "system" is reserved`);
+  if (!isObj(r)) return errs.push(`${where} must be an object`);
+  if (name === "anon") {
+    if (Object.keys(r).length) errs.push(`${where}: "anon" is reserved for the signed-out visitor and must be {}`);
+    return;
+  }
+  for (const k of Object.keys(r)) if (!ROLE_KEYS.includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  if (("users" in r) === ("login" in r)) errs.push(`${where} must sign in by "users" or by "login", exactly one`);
+  if ("users" in r) {
+    if (!(Array.isArray(r.users) && r.users.length > 0)) errs.push(`${where}.users must be a non-empty array of {user, password, totp_secret?}`);
+    else
+      r.users.forEach((u, i) => {
+        const w = `${where}.users[${i}]`;
+        if (!isObj(u)) return errs.push(`${w} must be {user, password, totp_secret?}`);
+        for (const k of Object.keys(u)) if (!USER_KEYS.includes(k)) errs.push(`${w}: unknown key "${k}"`);
+        if (!isStr(u.user)) errs.push(`${w}.user must be a non-empty string`);
+        if (!isStr(u.password)) errs.push(`${w}.password must be a non-empty string`);
+        if ("totp_secret" in u && !isStr(u.totp_secret)) errs.push(`${w}.totp_secret must be a non-empty string`);
+      });
+  }
+  if ("login" in r && !(isObj(r.login) && Object.keys(r.login).join() === "command" && isStr(r.login.command))) errs.push(`${where}.login must be {"command": <command>}`);
+  for (const k of ["code_role", "login_url", "logged_in", "login_open"]) if (k in r && !isStr(r[k])) errs.push(`${where}.${k} must be a non-empty string`);
+  if ("base_url" in r) {
+    if (!isStr(r.base_url)) errs.push(`${where}.base_url must be a non-empty string`);
+    else localUrl(r.base_url, `${where}.base_url`, errs);
+  }
+}
+
+/**
+ * An http(s) URL whose host is not a non-loopback address. A host name is resolved by `up`, which
+ * refuses one that does not resolve to loopback; here only a literal address can be judged.
+ */
+function localUrl(raw, where, errs) {
+  let u;
+  try {
+    u = new URL(raw.replace(/\{port:[^}]*\}/g, "1").replace(/\$\{[^}]*\}/g, "x"));
+  } catch {
+    return errs.push(`${where} must be an absolute http(s) URL`);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return errs.push(`${where} must be an absolute http(s) URL`);
+  const h = u.hostname;
+  const literal = /^\d+\.\d+\.\d+\.\d+$/.test(h) || h.startsWith("[");
+  if (literal && !(/^127\./.test(h) || h === "[::1]")) errs.push(`${where} must name a loopback host (the instance never reaches another machine): ${h}`);
+}
+
+function isOrigin(s) {
+  try {
+    const u = new URL(s);
+    return /^https?:$/.test(u.protocol) && u.origin === s;
+  } catch {
+    return false;
+  }
+}
+
+/** Every `{port:` in every string must be `{port:<name>}` or `{port:<name>=<port>}`. */
+function placeholders(v, where, errs) {
+  if (typeof v === "string") {
+    for (const m of v.matchAll(/\{port:([^}]*)\}?/g)) {
+      const [name, fixed] = m[1].split("=");
+      const ok = m[0].endsWith("}") && PORT_NAME.test(name) && (fixed === undefined || (/^\d+$/.test(fixed) && isPort(Number(fixed))));
+      if (!ok) errs.push(`${where || LIVE_FILE}: bad placeholder "${m[0]}" (write {port:<name>} or {port:<name>=<port>}, <name> matching ${PORT_NAME})`);
+    }
+  } else if (Array.isArray(v)) v.forEach((x, i) => placeholders(x, `${where}[${i}]`, errs));
+  else if (isObj(v)) for (const [k, x] of Object.entries(v)) placeholders(x, where ? `${where}.${k}` : k, errs);
+}
+
+/**
+ * `value` with `{port:<name>}` → `ports[name]`, `{port:<name>=<n>}` → n (recorded in `ports`), and
+ * `${NAME}` → `secrets[NAME]`, in one pass (a substituted value is never expanded again). Anything
+ * else is left as it is. Throws `unset NAME` (the name only) for an unknown secret, and on a port name
+ * not allocated.
+ */
+export function expand(value, { ports = {}, secrets = {} } = {}) {
+  return value.replace(/\{port:([a-z][a-z0-9_-]*)(?:=(\d+))?\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, port, fixed, secret) => {
+    if (secret !== undefined) {
+      if (!Object.hasOwn(secrets, secret)) throw new Error(`unset ${secret}`);
+      return secrets[secret];
+    }
+    if (fixed !== undefined) {
+      const n = Number(fixed);
+      if (Object.hasOwn(ports, port) && ports[port] !== n) throw new Error(`port ${port} is fixed at ${n} but was given ${ports[port]}`);
+      ports[port] = n;
+      return String(n);
+    }
+    if (!Object.hasOwn(ports, port)) throw new Error(`port ${port} was not allocated`);
+    return String(ports[port]);
+  });
+}
+
+/** `KEY=value` lines; `#` comments, blank lines, `export ` and matching outer quotes allowed. */
+export function parseEnvFile(text) {
+  const out = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!m) continue;
+    let v = m[2];
+    const q = v[0];
+    const close = q === '"' || q === "'" ? v.indexOf(q, 1) : -1;
+    out[m[1]] = close > 0 ? v.slice(1, close) : v.replace(/(^|\s+)#.*$/, "");
+  }
+  return out;
+}
+
+/** {config, errors, secrets} from `<main>/.argus/live.json` and `<main>/<env_file>`. Never throws. */
+export function loadLive(main) {
+  const file = path.join(main, LIVE_FILE);
+  let config;
+  try {
+    config = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    const why = e && e.code === "ENOENT" ? "is missing (/sapu:init writes it)" : e instanceof SyntaxError ? `is not valid JSON: ${e.message}` : `cannot be read: ${e.message}`;
+    return { config: null, errors: [`${LIVE_FILE} ${why}`], secrets: {} };
+  }
+  const errors = validateLive(config);
+  let secrets = {};
+  if (isObj(config) && isStr(config.env_file)) {
+    const rel = config.env_file;
+    const abs = path.resolve(main, rel);
+    const up = path.relative(main, abs);
+    if (path.isAbsolute(rel) || up === ".." || up.startsWith(`..${path.sep}`)) errors.push(`env_file must be a path inside the repo: ${rel}`);
+    else {
+      try {
+        secrets = parseEnvFile(fs.readFileSync(abs, "utf8"));
+      } catch (e) {
+        errors.push(`env_file ${rel} ${e && e.code === "ENOENT" ? "is missing" : "cannot be read"}`);
+      }
+    }
+  }
+  return { config, errors, secrets };
+}
