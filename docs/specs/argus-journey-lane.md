@@ -395,7 +395,15 @@ defence in depth and not enforcement:
   touches an object that existed before the cycle (other than a container's own healthcheck) ends the
   cycle, the owner's own work on the same daemon included — and so does a sweep's gate that started a
   container before the cycle and stops it during it. A new object that is not the run's passes unless
-  it touches the owner's state (step 8).
+  it touches the owner's state (step 8). An owner's container that its restart policy restarts during
+  the cycle, and a Docker daemon restart (which restarts containers and ends the events follower), end
+  the cycle too; a container that only exits by itself (`die`) does not.
+- A container gone by the time the gate lists (`docker run --rm`) is seen through its events alone:
+  its volume mounts are there (`volume mount` names the container), its bind mounts are not, so a
+  transient container that bind-mounts the owner's checkout or a socket is not seen.
+- The testcontainers reaper (image `testcontainers/ryuk*`, or any container labelled
+  `org.testcontainers=true`) may bind-mount the Docker socket: a container carrying that label is
+  exempt from the socket rule whatever it runs (every other rule still applies to it).
 - Unix-socket peers are named by `lsof` and, on macOS, by `netstat -an -f unix` (which also shows the
   sockets of servers other users run; its addresses are the ones lsof prints; a netstat that fails
   there fails the check), or by `ss -xp` on Linux; a Linux without `ss` is blind to unix-socket peers
@@ -559,18 +567,20 @@ defence in depth and not enforcement:
    container of the run may mount only the run's volumes, join only the run's networks (or none),
    bind-mount nothing step 5 refuses, run unprivileged, and publish only the run's ports (never a
    random one, nor every exposed port with `-P`; the ports asked for and the ones the daemon bound
-   alike). What is not the run's falls under the **owner-state rule**, so a cycle can run beside a
-   sapu sweep whose gates use the same daemon: an object that existed before `since` and is not the
-   run's may not be touched — not started, and no action on it in the daemon's events (an exec other
-   than the container's own healthcheck, a copy in or out with `docker cp`, kill, stop, die, removal or
-   other change of a container; the removal of a volume or network); an object created during the
-   cycle that is not the run's (a sweep's gate container, say) is refused only when it touches the
-   owner's state — a container that mounts a volume that existed before `since`, joins a network that
-   existed before `since` (the default `bridge` and `none` aside; `host` included), bind-mounts a path
-   inside the main checkout (a linked worktree inside it, such as a sweep's under `.claude/worktrees/`,
-   is not the main checkout) or a container runtime or datastore socket or a directory holding one, or
-   is privileged; a volume whose device binds such a path. What such an object does to itself is its
-   own. The events come from the run's **events follower**, started at step 3 when a daemon answers:
+   alike). What is not the run's falls under the **owner-state rule**, so a cycle can run beside a sapu
+   sweep whose gates use the same daemon: an object that existed before `since` and is not the run's
+   may not be touched — not started, and no action on it in the daemon's events (an exec other than the
+   container's own healthcheck, a copy in or out with `docker cp`, kill, stop, removal or other change
+   of a container — not `die` alone, a container ending by itself; the removal of a volume or network);
+   an object created during the cycle that is not the run's (a sweep's gate container, say) is refused
+   only when it touches the owner's state — a container that mounts a volume that existed before
+   `since` (listed, or by a `volume mount` event, which also shows a container removed since), joins a
+   network that existed before `since` (the default `bridge` and `none` aside; `host` included),
+   bind-mounts a path inside the main checkout (a linked worktree inside it, such as a sweep's under
+   `.claude/worktrees/`, is not the main checkout) or a container runtime or datastore socket or a
+   directory holding one (the testcontainers reaper aside: "Beside a sapu sweep"), or is privileged; a
+   volume whose device binds such a path. What such an object does to itself is its own. The events
+   come from the run's **events follower**, started at step 3 when a daemon answers:
    `docker events --since <since> --format '{{json .}}'` in its own recorded process group, writing
    `<logs>/docker-events.jsonl` (the daemon replays only its last 256 events to a later `--since`, so
    only a follower sees a long cycle whole); the gate reads that file, then catches up with `docker
@@ -594,7 +604,7 @@ defence in depth and not enforcement:
 
     **`run.json`** (mode 0600, under the gitignored `.argus/`; written from step 1 on, so a session that
     dies mid-`up` leaves a record for the reaper and for recovery). Every write is a read-modify-write
-    under the run's lock claim (`down` above). This is its one schema:
+    under the run's lock claim (`down` below). This is its one schema:
 
     | Key | Holds | Written by |
     |---|---|---|
@@ -631,7 +641,9 @@ makes no proving logins.
 `up --fresh` and `renew` refuse, leaving the run as it is for `down`, a cycle whose `up` did not finish
 (no instance id), whose deadline passed, that a `down` sealed, or whose `.argus/live.json` or env_file
 changed since `up` (`refused: .argus/live.json changed since up; run down and up again`: the run was
-checked against the files as they were; `down` reports such a change and tears down as recorded).
+checked against the files as they were; `down` reports such a change and tears down as recorded,
+its output masked with the env_file's values as `up` read them, recovered from run.json, as well as
+with those now).
 
 **`down`** first seals `run.json` (every write of it is a read-modify-write under the run's lock
 claim, refused once the lock no longer names the run, once `down` sealed it, or once `down` removed
@@ -665,7 +677,10 @@ ledger (neither half of a red-then-green proof), and a red gate's verdict line a
 beside a journey cycle)`. `limits.max_parallel_journeys` bounds the load. On a shared Docker daemon,
 the runtime gate's owner-state rule (step 8) lets a sweep's gates create, use and remove their own
 containers, volumes and networks during the cycle; only what touches objects older than the cycle, or
-the owner's volumes, networks, checkout or sockets, ends it.
+the owner's volumes, networks, checkout or sockets, ends it. A sweep whose tests use testcontainers
+runs its reaper (Ryuk: image `testcontainers/ryuk*`, label `org.testcontainers=true`), which
+bind-mounts the Docker socket to remove its own session's containers: the gate exempts it from the
+socket rule alone.
 
 ## 9. Browser driver and wrapper
 

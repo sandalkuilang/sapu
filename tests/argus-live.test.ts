@@ -10,7 +10,7 @@ import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { expand, expandConfig, loadLive, parseEnvFile, portNames, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import {
   allocatePorts,
@@ -37,6 +37,7 @@ import {
   renew,
   renewRun,
   run,
+  runAsync,
   runSetup,
   staleRecords,
   startEntry,
@@ -321,6 +322,14 @@ describe("argus-live config — expand", () => {
 
   it("leaves everything else alone", () => {
     expect(expand("{1} $HOME ${ not} {port:}", {})).toBe("{1} $HOME ${ not} {port:}");
+  });
+
+  it("secretsIn recovers the ${NAME} values an expanded string holds, or null when it is not the template's expansion", () => {
+    expect(secretsIn("postgres://app:${DB_PW}@localhost:{port:pg}/app_explore", "postgres://app:p@ss.w0rd@localhost:41001/app_explore")).toEqual({ DB_PW: "p@ss.w0rd" });
+    expect(secretsIn("${A}-${A}:{port:x=5432}", "v(1)-v(1):5432")).toEqual({ A: "v(1)" });
+    expect(secretsIn("${A}-${A}", "v1-v2")).toBeNull();
+    expect(secretsIn("redis://localhost:{port:redis}", "redis://localhost:41002")).toEqual({});
+    expect(secretsIn("x${A}", "y1")).toBeNull();
   });
 });
 
@@ -1198,6 +1207,72 @@ describe("argus-live instance — processes, health, store", () => {
     const failing = { name: "broken", cmd: "exit 4", stop: "true" };
     const s3 = await startEntry(failing, { ...w.ctx, groups });
     await expect(waitHealth(failing, s3, { ...w.ctx, aliveAfterMs: 1000 })).rejects.toThrow(/^failed: broken exited \(code 4\)/);
+  });
+
+  it("an entry's stop record is pushed before its group: a seal refusing the group's write never loses the stop", async () => {
+    const w = await world();
+    const stops: Obj[] = [];
+    const sealed: Obj[] = [];
+    // As up's recording array behaves once a down sealed run.json: the push lands in memory, the write is refused.
+    sealed.push = (...xs: Obj[]) => {
+      Array.prototype.push.apply(sealed, xs);
+      for (const g of xs) groups.push(g as { name: string; pgid: number });
+      throw new Error("refused: cycle x is being torn down; run.json not written");
+    };
+    const entry = { name: "svc", cmd: `exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"`, stop: "true" };
+    await expect(startEntry(entry, { ...w.ctx, groups: sealed, stops })).rejects.toThrow(/being torn down/);
+    expect(stops.map((s) => s.name)).toEqual(["svc"]);
+    expect(sealed.map((g) => g.name)).toEqual(["svc"]);
+  });
+
+  it("runAsync: an onStart that throws kills the group at once and resolves with its error; the step's record is not marked exited before the process exits", async () => {
+    const t0 = Date.now();
+    let pgid = 0;
+    const r = await runAsync([process.execPath, "-e", "setInterval(() => {}, 1 << 30)"], {
+      onStart: (p: number) => {
+        pgid = p;
+        groups.push({ name: "onstart", pgid: p });
+        throw new Error("refused: sealed");
+      },
+    });
+    expect(r.error.message).toBe("refused: sealed");
+    expect(r.exited).toBeFalsy();
+    expect(Date.now() - t0).toBeLessThan(5000);
+    const gone = async () => {
+      const end = Date.now() + 5000;
+      for (;;) {
+        try {
+          process.kill(-pgid, 0);
+        } catch {
+          return true;
+        }
+        if (Date.now() > end) return false;
+        await new Promise((d) => setTimeout(d, 50));
+      }
+    };
+    expect(await gone()).toBe(true);
+    // A setup step whose group could not be recorded (a down sealed run.json): failed, its record not marked exited.
+    const wt = tempDir();
+    const recorded: Obj[] = [];
+    recorded.push = (...xs: Obj[]) => {
+      Array.prototype.push.apply(recorded, xs);
+      for (const g of xs) groups.push(g as { name: string; pgid: number });
+      throw new Error("refused: cycle x is being torn down; run.json not written");
+    };
+    const done = await runSetup(wt, { setup: [[process.execPath, "-e", "setInterval(() => {}, 1 << 30)"]] }, { PATH: process.env.PATH! }, { main: wt, deadline: Math.floor(Date.now() / 1000) + 600, groups: recorded, log: join(wt, "setup.log") }).then(
+      () => "ok",
+      (e: Error) => e.message,
+    );
+    expect(done).toMatch(/^failed: setup .*: refused: cycle x is being torn down/);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].exited).toBeUndefined();
+    pgid = recorded[0].pgid;
+    expect(await gone()).toBe(true);
+  });
+
+  it("an exited process marks its runAsync result exited", async () => {
+    const r = await runAsync([process.execPath, "-e", ""], {});
+    expect(r).toMatchObject({ status: 0, exited: true });
   });
 
   it("no health: alive after the wait passes; a health cmd passes once it exits 0", async () => {
@@ -2135,6 +2210,46 @@ describe("argus-live instance — Compose and egress checks", () => {
         s.containers[2].Mounts.push({ Type: "bind", Source: join(main, "data") });
         expect(check()).toMatch(/^refused: container gate-db-1, .* bind-mounts a path inside the main checkout/);
       });
+      it("a transient container, gone by now, that mounted a volume that existed before the cycle is refused from its mount event; a mount of a new volume, or by a run container, passes", () => {
+        const s = state();
+        s.events.push(
+          ev("volume", "mount", `${P}_pgdata`, { container: "c1", destination: "/var/lib/postgresql/data", driver: "local" }, 11),
+          // `docker run --rm -v gate_tmp:/data …`: created, mounted, removed within the cycle.
+          ev("container", "create", "c8", { name: "gate-tmp" }, 22),
+          ev("volume", "create", "gate_tmp", { driver: "local" }, 22),
+          ev("volume", "mount", "gate_tmp", { container: "c8", destination: "/data", driver: "local" }, 22),
+          ev("container", "destroy", "c8", { name: "gate-tmp" }, 23),
+          ev("volume", "destroy", "gate_tmp", { driver: "local" }, 23),
+        );
+        expect(gate(s)).toBe("ok");
+        const mounted = (volume: string) => {
+          const t = state();
+          t.events.push(ev("container", "create", "c8", { name: "gate-tmp" }, 22), ev("volume", "mount", volume, { container: "c8", destination: "/data", driver: "local" }, 22), ev("container", "destroy", "c8", { name: "gate-tmp" }, 23));
+          return gate(t);
+        };
+        expect(mounted("owner_pgdata")).toBe("refused: during the cycle, container gate-tmp, which is not of the run's Compose project argus-run1, mounted volume owner_pgdata, which existed before it and is not the run's");
+        expect(mounted("old_anon")).toMatch(/^refused: during the cycle, container gate-tmp, .* mounted volume old_anon, which existed before it/);
+        expect(mounted(`${P}_pgdata`)).toBe("ok");
+      });
+      it("the testcontainers reaper (image testcontainers/ryuk*, or label org.testcontainers=true) may bind-mount the Docker socket, and nothing more", () => {
+        const sock = [{ Type: "bind", Source: "/var/run/docker.sock" }];
+        const reaper = (Image: string, Labels: Obj, over: Obj = {}) => {
+          const s = state();
+          s.containers.push(sweep({ Name: "/testcontainers-ryuk-1", Config: { Image, Labels }, Mounts: sock, ...over }));
+          return gate(s);
+        };
+        for (const image of ["testcontainers/ryuk:0.11.0", "docker.io/testcontainers/ryuk:0.5.1", "testcontainers/ryuk@sha256:0123"]) expect(reaper(image, {})).toBe("ok");
+        expect(reaper("example/agent:1", { "org.testcontainers": "true" })).toBe("ok");
+        expect(reaper("example/agent:1", { "org.testcontainers": "false" })).toMatch(/^refused: container testcontainers-ryuk-1, .* bind-mounts a container runtime or datastore socket/);
+        expect(reaper("testcontainers/ryuk:0.11.0", {}, { HostConfig: { Privileged: true } })).toMatch(/^refused: container testcontainers-ryuk-1, .* is privileged$/);
+        expect(reaper("testcontainers/ryuk:0.11.0", {}, { Mounts: [...sock, { Type: "volume", Name: "owner_pgdata" }] })).toMatch(/^refused: container testcontainers-ryuk-1, .* mounts volume owner_pgdata, which existed before the cycle$/);
+      });
+      it("the testcontainers reaper binding the main checkout is still refused", () => {
+        const main = realpathSync(tempDir());
+        const s = state();
+        s.containers.push(sweep({ Config: { Image: "testcontainers/ryuk:0.11.0", Labels: { "org.testcontainers": "true" } }, Mounts: [{ Type: "bind", Source: join(main, "data") }] }));
+        expect(message(() => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P }, main, worktree: realpathSync(tempDir()), runner: fake(s) }))).toMatch(/^refused: container gate-db-1, .* bind-mounts a path inside the main checkout/);
+      });
       it("a new volume that binds the main checkout is refused; any other new volume or network passes", () => {
         const main = realpathSync(tempDir());
         const s = state();
@@ -2192,7 +2307,7 @@ describe("argus-live instance — Compose and egress checks", () => {
     it.each([
       ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1$/],
       ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
-      ...(["kill", "stop", "die", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
+      ...(["kill", "stop", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
       ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's$/],
       ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
       ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's$/],
@@ -2202,6 +2317,14 @@ describe("argus-live instance — Compose and egress checks", () => {
       const s = state();
       s.events.push(event as Obj);
       expect(gate(s)).toMatch(why as RegExp);
+    });
+
+    it("a die alone (the owner's container crashing by itself) is not an action on it; a kill or stop before it still is", () => {
+      const s = state();
+      s.events.push(ev("container", "die", "c0", { [LABEL]: "owner", name: "owner-db", exitCode: "137" }));
+      expect(gate(s)).toBe("ok");
+      s.events.push(ev("container", "kill", "c0", { [LABEL]: "owner", name: "owner-db", signal: "9" }, 19));
+      expect(gate(s)).toMatch(/^refused: during the cycle, docker kill hit container owner-db/);
     });
 
     it("an exec that is the container's own healthcheck is not an action on it (CMD and CMD-SHELL forms)", () => {
@@ -3649,5 +3772,22 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       const grep = spawnSync("grep", ["-rl", PW, join(main, ".argus/live")], { encoding: "utf8" });
       expect(grep.stdout).toBe(""); // no log, report or record left under .argus/live names it
     }, 120000);
+
+    it("down masks the env_file's values as they were at up too: an edited env_file does not unmask the old ones", async () => {
+      const { main } = repo((c) => {
+        c.env.DB_URL = "postgres://app:${PW}@127.0.0.1:{port:cache}/app_explore";
+        c.start[1].stop = 'echo "token $APP_SECRET in $DB_URL"; exit 3';
+      });
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      expect(cli(main, ["up"], env).code).toBe(0);
+      reapers.push(runJson(main).reaper);
+      writeFileSync(join(main, ".argus/live.env"), "PW=n3w-v4lue-Zx81\n");
+      const d = cli(main, ["down"], env);
+      expect(d.code).toBe(0);
+      expect(d.out).toMatch(/^stop web exited 3: token \*\*\* in postgres:\/\/app:\*\*\*@127\.0\.0\.1:\d+\/app_explore$/m);
+      expect(d.out).not.toContain(PW);
+      expect(balanced(main)).toBe(true);
+      expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+    }, 60000);
   });
 });

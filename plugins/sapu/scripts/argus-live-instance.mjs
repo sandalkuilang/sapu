@@ -21,7 +21,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expand, expandConfig, LIVE_FILE, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, portNames, secretEnv } from "./argus-live-config.mjs";
+import { expand, expandConfig, LIVE_FILE, loadLive, MAX_CYCLE_MINUTES, parseEnvFile, portNames, secretEnv, secretsIn } from "./argus-live-config.mjs";
 import { findMain, loadContract } from "./sapu-contract.mjs";
 
 /** `<yyyymmddhhmmss>-<8 hex>` (UTC): unique per run, and safe on a log line and in a file name. */
@@ -662,10 +662,12 @@ const DRAIN_MS = 200;
 
 /**
  * The async runner: `argv` without a shell, detached into its own process group (pgid = pid, handed
- * to `onStart` before anything is awaited). On `timeoutMs` the whole group gets SIGKILL; with
- * `killAfter`, so does whatever the group left running once it exits. With `capture`, stdout is
- * collected (up to 1 MiB) until it closes or `DRAIN_MS` after the exit → {status, signal, timedOut,
- * error, stdout}.
+ * to `onStart` before anything is awaited). An `onStart` that throws (its group could not be recorded:
+ * a `down` sealed run.json) gets the group SIGKILL at once and resolves with that error: nothing is left
+ * running that no record names. On `timeoutMs` the whole group gets SIGKILL; with `killAfter`, so does
+ * whatever the group left running once it exits. With `capture`, stdout is collected (up to 1 MiB) until
+ * it closes or `DRAIN_MS` after the exit → {status, signal, timedOut, error, stdout, exited}, `exited`
+ * true only when the process exited (so a caller marks its record exited only then).
  */
 export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore", "ignore"], capture = false, killAfter = false, onStart = () => {} } = {}) {
   return new Promise((done) => {
@@ -690,7 +692,13 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
     child.once("error", (e) => finish({ error: e }));
     if (capture) child.stdout.on("data", (d) => stdout.length < 1 << 20 && (stdout += d));
     if (!child.pid) return;
-    onStart(child.pid);
+    try {
+      onStart(child.pid);
+    } catch (e) {
+      killGroup(child.pid);
+      finish({ error: e });
+      return;
+    }
     if (timeoutMs !== undefined) {
       timer = setTimeout(() => {
         timedOut = true;
@@ -698,8 +706,8 @@ export function runAsync(argv, { cwd, env, timeoutMs, stdio = ["ignore", "ignore
       }, Math.max(0, timeoutMs));
     }
     child.once("exit", (status, signal) => {
-      if (!capture) return finish({ status, signal });
-      const drained = () => finish({ status, signal });
+      if (!capture) return finish({ status, signal, exited: true });
+      const drained = () => finish({ status, signal, exited: true });
       if (child.stdout.closed || child.stdout.readableEnded) return drained();
       child.stdout.once("close", drained);
       setTimeout(drained, DRAIN_MS);
@@ -747,7 +755,7 @@ export async function runSetup(worktree, config, env, { main = findMain(worktree
       });
     } finally {
       fs.closeSync(fd);
-      if (record) record.exited = true; // the step returned: its leader is gone, a daemon it left is not
+      if (record && r && r.exited) record.exited = true; // its leader is gone, a daemon it left is not
     }
     const out = () => tail(redact(readFrom(log, from), secrets));
     if (r.timedOut) {
@@ -823,8 +831,9 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
   started.pid = started.pgid = child.pid;
   record = { name: entry.name, pgid: child.pid, started: startTime(child.pid), cmdline: started.cmdline };
   if (started.exit) record.exited = true;
-  groups.push(record);
+  // The stop first: a `down` sealing run.json between the two writes then still replays it.
   if (entry.stop) stops.push({ name: entry.name, cmd: entry.stop, cwd: worktree, env: { ...env, ...(entry.env ?? {}) } });
+  groups.push(record);
   return started;
 }
 
@@ -1279,7 +1288,7 @@ async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {},
     });
   } finally {
     fs.closeSync(fd);
-    if (record) record.exited = true;
+    if (record && r && r.exited) record.exited = true;
   }
   if (r.timedOut) throw new Error(`failed: ${name} timed out (the cycle's deadline)`);
   if (r.error) throw new Error(`failed: ${name}: ${redact(r.error.message, secrets)}`);
@@ -1349,15 +1358,15 @@ function dockerRunDirs() {
 /**
  * Why a host path a container would get (a bind mount, a local volume's device) is refused, or null:
  * it lies inside <MAIN> (outside the `exempt` directories: linked worktrees, which are not the main
- * checkout) or holds it, or (outside the worktree `root`) it is a container runtime or datastore socket
- * or a directory holding one.
+ * checkout) or holds it, or (outside the worktree `root`, and unless `socketsOk`) it is a container
+ * runtime or datastore socket or a directory holding one.
  */
-function hostPathRefusal(source, { worktree, root, realMain, sockets, exempt = [] }) {
+function hostPathRefusal(source, { worktree, root, realMain, sockets, exempt = [], socketsOk = false }) {
   const raw = path.resolve(worktree, String(source));
   const real = resolveLink(raw);
   const inMain = real !== null && within(realMain, real) && !exempt.some((d) => within(d, real));
   if (real === null || inMain || within(real, realMain)) return "a path inside the main checkout (or one holding it)";
-  if (within(root, real)) return null; // the run's own
+  if (within(root, real) || socketsOk) return null; // the run's own, or a socket the caller allows
   const runDirs = dockerRunDirs();
   const runtime = (p) => SOCKET_NAME.test(path.basename(p)) || sockets.some((s) => within(p, s)) || runDirs.some((d) => within(p, d) || (within(d, p) && p.endsWith(".sock")));
   if ([raw, real].some(runtime)) return "a container runtime or datastore socket, or a directory holding one";
@@ -1656,8 +1665,23 @@ export function daemonNow({ env, runner = run }) {
   return Number.isFinite(t) ? t : null;
 }
 
-/** Container actions on an object the run does not own that the gate refuses (an exec, a stop, a removal, a `docker cp`…). */
-const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop", "die", "destroy", "pause", "unpause", "update", "rename", "exec_create", "exec_start", "archive-path", "extract-to-dir"]);
+/**
+ * Container actions on an object the run does not own that the gate refuses (an exec, a stop, a removal,
+ * a `docker cp`…). Not `die`: a deliberate end comes as kill, stop or destroy, and a `die` alone is a
+ * container ending by itself (the owner's crashing during the cycle).
+ */
+const CONTAINER_ACTIONS = new Set(["create", "start", "restart", "kill", "stop", "destroy", "pause", "unpause", "update", "rename", "exec_create", "exec_start", "archive-path", "extract-to-dir"]);
+
+/**
+ * True for the testcontainers reaper (Ryuk: image `testcontainers/ryuk*`, or the label
+ * `org.testcontainers=true`): it bind-mounts the Docker socket to remove its own session's containers,
+ * so a sweep whose tests use testcontainers can run beside a cycle. It is exempt from the socket rule
+ * alone.
+ */
+function testcontainersReaper(c) {
+  const config = (c && c.Config) || {};
+  return /^([^/]+\/)*testcontainers\/ryuk[^/]*$/.test(String(config.Image ?? "")) || (config.Labels || {})["org.testcontainers"] === "true";
+}
 
 /** The command line a container's healthcheck execs, as `docker events` spells it, or null. */
 function healthcheckCmd(c) {
@@ -1754,13 +1778,15 @@ function linkedWorktrees(main, realMain, runner) {
  *   publish only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike).
  * - An object that existed before `since` and is not the run's (the owner's state) may not be touched:
  *   a container of it started during the cycle, or any action on it in the daemon's events
- *   (CONTAINER_ACTIONS: an exec — other than its own healthcheck —, kill, stop, die, removal, a copy in
- *   or out…; the removal of a volume or network).
+ *   (CONTAINER_ACTIONS: an exec — other than its own healthcheck —, kill, stop, removal, a copy in or
+ *   out…; the removal of a volume or network).
  * - An object created during the cycle that is not the run's (a sapu sweep's gate, beside the cycle) is
  *   refused only when it touches the owner's state: a container that mounts a volume that existed before
- *   `since`, joins a network that did (the default bridge and none aside), bind-mounts the main checkout
- *   (a linked worktree inside it is not the main checkout) or a container runtime or datastore socket, or
- *   is privileged; a volume whose device binds such a path. What it does to itself is its own.
+ *   `since` (listed, or a `volume mount` event, which also shows a container gone by now), joins a
+ *   network that did (the default bridge and none aside), bind-mounts the main checkout (a linked
+ *   worktree inside it is not the main checkout) or a container runtime or datastore socket (the
+ *   testcontainers reaper aside: testcontainersReaper), or is privileged; a volume whose device binds
+ *   such a path. What it does to itself is its own.
  * The events: what the follower (`eventsFile`, startEventsFollower) wrote, however long ago, then a
  * catch-up from the last event it saw (`docker events --since <last> --until <daemon now>`); without a
  * follower, the window from `since`. A `follower` group (its run.json record) that no longer runs leaves
@@ -1832,7 +1858,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       for (const m of c.Mounts ?? []) {
         const v = m.Type === "volume" ? volumeByName.get(m.Name) : null;
         if (m.Type === "volume" && (!v || !recent(v.CreatedAt))) throw new Error(`${why} mounts volume ${m.Name}, which existed before the cycle`);
-        const no = m.Type === "bind" ? hostPathRefusal(m.Source, forOthers()) : null;
+        const no = m.Type === "bind" ? hostPathRefusal(m.Source, { ...forOthers(), socketsOk: testcontainersReaper(c) }) : null;
         if (no) throw new Error(`${why} bind-mounts ${no}`);
       }
       for (const n of Object.keys((c.NetworkSettings && c.NetworkSettings.Networks) || {})) {
@@ -1887,11 +1913,29 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   const byId = new Map(containers.map((c) => [c.Id, c]));
   // New during the cycle: created in the window (its create event), or listed with a recent creation time.
   const createdNow = new Set([...events.filter((e) => e.Action === "create").map((e) => e.Actor && e.Actor.ID), ...containers.filter((c) => recent(c.Created)).map((c) => c.Id)]);
+  // The run's containers, and every container's name, from the listing and from the events (a container
+  // gone by now, `docker run --rm`, is in the events alone; container events carry its labels).
+  const runContainers = new Set(containers.filter((c) => ours(c.Config && c.Config.Labels)).map((c) => c.Id));
+  const nameOf = new Map(containers.map((c) => [c.Id, String(c.Name || c.Id).replace(/^\//, "")]));
+  for (const e of events) {
+    const a = (e.Type === "container" && e.Actor && e.Actor.Attributes) || {};
+    if (a[PROJECT_LABEL] === project) runContainers.add(e.Actor.ID);
+    if (a.name && !nameOf.has(e.Actor.ID)) nameOf.set(e.Actor.ID, a.name);
+  }
   for (const e of events) {
     const id = (e.Actor && e.Actor.ID) || "";
     const a = (e.Actor && e.Actor.Attributes) || {};
     const action = String(e.Action || "");
     const verb = action.split(":")[0].trim();
+    if (e.Type === "volume" && verb === "mount" && !runContainers.has(a.container)) {
+      // A container that is not the run's mounted a volume (one gone by now is seen here alone): refused
+      // when the volume existed before `since` and is not the run's. One removed since is judged by name.
+      const v = volumeByName.get(id);
+      const old = v ? !recent(v.CreatedAt) : !createdNow.has(id);
+      const runs = v ? volumeOk(v) : String(id).startsWith(`${project}_`);
+      if (old && !runs) throw new Error(`refused: during the cycle, container ${nameOf.get(a.container) ?? a.container ?? "(unnamed)"}, which is not of the run's Compose project ${project}, mounted volume ${id}, which existed before it and is not the run's`);
+      continue;
+    }
     if (e.Type === "container") {
       if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project || createdNow.has(id)) continue;
       if (verb.startsWith("exec_") && action.slice(action.indexOf(":") + 1).trim() === healthcheckCmd(byId.get(id))) continue;
@@ -2301,6 +2345,39 @@ function readRun(main) {
   }
   if (!rec || typeof rec !== "object" || typeof rec.runId !== "string" || !RUN_ID.test(rec.runId)) throw new Error(`refused: ${runPath(main)} is not a run record`);
   return rec;
+}
+
+/**
+ * The env_file's values as `up` read them, recovered from run.json (its `env`, and each stop record's,
+ * hold the expanded values): for each value whose template in `config` (`env`, a start entry's `env`)
+ * names `${NAME}`, the value NAME had (secretsIn), or the whole recorded value when the template no
+ * longer matches it. Keyed `up:…`, so they never stand for a variable. The CLI and the reaper mask with
+ * these as well as the env_file's values now: an env_file edited since `up` does not unmask the values a
+ * stop replays with. {} without a readable run.json or a config.
+ */
+export function recordedSecrets(main, config) {
+  let rec;
+  try {
+    rec = readRun(main);
+  } catch {
+    rec = null;
+  }
+  if (!rec || !config || typeof config !== "object") return {};
+  const out = {};
+  const take = (templates, recorded, where) => {
+    for (const [k, t] of Object.entries(templates ?? {})) {
+      const v = recorded && recorded[k];
+      if (typeof t !== "string" || !/\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(t) || typeof v !== "string") continue;
+      const found = secretsIn(t, v);
+      if (!found) out[`up:${where}.${k}`] = v;
+      else for (const [n, x] of Object.entries(found)) out[`up:${where}.${k}:${n}`] = x;
+    }
+  };
+  take(config.env, rec.env, "env");
+  for (const e of Array.isArray(config.start) ? config.start : []) {
+    for (const s of (rec.stops ?? []).filter((x) => x && e && x.name === e.name)) take({ ...(config.env ?? {}), ...(e.env ?? {}) }, s.env, `start.${e.name}.env`);
+  }
+  return out;
 }
 
 /** Writes run.json whole (beside, then renamed into place), mode 0600: its stop records carry the run's env. Only updateRun calls it. */
@@ -2883,7 +2960,8 @@ export async function reap(main, runId, { pollMs = 60_000 } = {}) {
   say("the deadline passed: down");
   // From here on a SIGTERM (another `down` signalling the reaper) must not stop it between the lock's claim and its removal.
   process.on("SIGTERM", () => say("SIGTERM ignored: down is under way"));
-  const { secrets } = loadLive(main);
+  const live = loadLive(main);
+  const secrets = { ...recordedSecrets(main, live.config), ...live.secrets };
   try {
     const { report } = await down(main, { runId, secrets });
     for (const line of report) say(line);

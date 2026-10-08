@@ -482,6 +482,17 @@ As built (phase-end review):
 - Step 2 also refuses a `services.<n>.env` variable the instance env does not set, and a machine where
   this process's start time cannot be read; on Linux start times are the boot ticks of
   `/proc/<pid>/stat` (`procStartTicks`), compared exactly.
+- The runtime gate also reads `volume mount` events: a container that is not the run's (one removed
+  since included, `docker run --rm`) mounting a volume that existed before `since` and is not the
+  run's is refused. The testcontainers reaper (image `testcontainers/ryuk*`, label
+  `org.testcontainers=true`) is exempt from the socket rule alone (`testcontainersReaper`). `die` is
+  no longer a refused action: kill, stop and destroy cover the deliberate ones.
+- `startEntry` records an entry's stop before its group, so a seal between the two writes keeps the
+  stop. `runAsync` kills the group at once and resolves with the error when `onStart` throws (its
+  record could not be written), and reports `exited` only once the process exited; `runSetup` and
+  `runStep` mark a record `exited` only then.
+- The CLI and the reaper mask output with the env_file's values as `up` read them, recovered from
+  run.json (`recordedSecrets`, `secretsIn`), as well as with its values now.
 
 ## Self-review
 

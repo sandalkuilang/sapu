@@ -419,6 +419,32 @@ export function expandConfig(config, { ports = {}, secrets = {} } = {}) {
 }
 
 /**
+ * The `${NAME}` values `value` holds where `template` (a non-shell config string) names them, as
+ * `{NAME: value}` — `{}` when the template names none, null when `value` is not an expansion of it.
+ * `{port:<name>}` stands for any number. Used to recover the env_file's values as `up` read them from
+ * the values run.json recorded.
+ */
+export function secretsIn(template, value) {
+  if (typeof template !== "string" || typeof value !== "string") return null;
+  const names = [];
+  let re = "";
+  let last = 0;
+  for (const m of template.matchAll(/\{port:[a-z][a-z0-9_-]*(?:=\d+)?\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+    re += template.slice(last, m.index).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+    if (m[1] === undefined) re += "\\d+";
+    else if (names.includes(m[1])) re += `\\k<s${names.indexOf(m[1])}>`;
+    else {
+      re += `(?<s${names.length}>[\\s\\S]+?)`;
+      names.push(m[1]);
+    }
+    last = m.index + m[0].length;
+  }
+  re += template.slice(last).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  const hit = new RegExp(`^${re}$`).exec(value);
+  return hit ? Object.fromEntries(names.map((n, i) => [n, hit.groups[`s${i}`]])) : null;
+}
+
+/**
  * The ports the config asks for, before anything is expanded: `names` = every `{port:<name>}` in
  * every string, in order of first appearance; `fixed` = `{name: n}` for each `{port:<name>=<n>}`
  * (a fixed name is not in `names`). A name fixed at two different ports, and a port fixed for two

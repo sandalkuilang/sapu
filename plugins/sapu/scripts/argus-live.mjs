@@ -13,9 +13,9 @@
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
-// output carries a value of the env file: every line is masked with them.
+// output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import { loadLive } from "./argus-live-config.mjs";
-import { down, readLock, reap, redact, renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
+import { down, readLock, reap, recordedSecrets, redact, renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -24,7 +24,9 @@ if (!main) {
   process.stderr.write("failed: not inside a git repository\n");
   process.exit(2);
 }
-const { secrets } = loadLive(main);
+// The env_file's values now, and as `up` read them (recorded in run.json): an edited env_file unmasks neither.
+const live = loadLive(main);
+const secrets = { ...recordedSecrets(main, live.config), ...live.secrets };
 const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json]";
 
