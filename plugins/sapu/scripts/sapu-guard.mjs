@@ -75,8 +75,10 @@
 // elsewhere: tampering-grade, two deliberate steps). Bash writes are recognised only in the forms above: not `dd of=`,
 // `rsync`, `tar -C`, `unzip -d`, `curl -o`, `touch`, `truncate`, `mkdir`, `chmod`,
 // `find -delete`, nor files written by the programs a command runs. `HOME=`/`XDG_CONFIG_HOME=`
-// are refused only in front of git itself, not when exported earlier or given to a program that
-// runs git. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// and the program variables (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `PAGER`, …) are refused
+// only in front of git itself, not when exported earlier or given to a program that runs git; a git
+// config key names a program by the list in git-config(1) (GIT_CONFIG_PROGRAM), so a key a newer git
+// adds is unknown until it is listed. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh api` contents/tarball at a pull ref, `git am`,
 // `git apply` (except --check/--stat), and `patch` (bare, via busybox/toybox or a shell's -c) fed by a
@@ -600,6 +602,70 @@ const RUN_ALIASES = { "run-script": "run", rum: "run", urn: "run" };
  * one, an fsmonitor hook, an ssh command, an external diff.
  */
 const GIT_CONFIG_DANGER = /^(core\.hookspath|alias\.|include\.|includeif\.|filter\.|core\.attributesfile|core\.fsmonitor|core\.sshcommand|diff\.external)/i;
+/**
+ * The other git config keys whose value is a program git runs (git-config(1)): pager, editors,
+ * askpass, proxy and alternate-refs commands, credential helpers (`credential.<url>.helper` too),
+ * gpg programs, diff/merge drivers and textconv, difftool/mergetool/browser/man/guitool commands,
+ * config hooks (`hook.*`), trailer, tar, sendemail and imap commands, upload-pack and gc hooks.
+ * `submodule.<name>.update` runs only a `!command`; `protocol[.ext].allow` lets an `ext::` URL run one.
+ */
+const GIT_CONFIG_PROGRAM = /^(core\.(pager|editor|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|interactive\.difffilter|credential\.(.+\.)?helper|gpg\.((.+\.)?program|ssh\.defaultkeycommand)|diff\..+\.(textconv|command)|merge\..+\.driver|(difftool|mergetool|browser|man)\..+\.(cmd|path)|guitool\..+\.cmd|hook\..+|trailer\..+\.(cmd|command)|tar\..+\.command|sendemail\.(smtpserver|tocmd|cccmd|headercmd)|imap\.tunnel|instaweb\.httpd|uploadpack\.packobjectshook|gc\.recentobjectshook)$/i;
+/** The variables git reads for the same programs (a protocol list naming `ext`, a command directory). */
+const GIT_PROGRAM_ENV = /^(GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|PAGER|EDITOR|VISUAL|GIT_EXEC_PATH|GIT_ALLOW_PROTOCOL)=([\s\S]*)$/;
+/** A value that runs nothing worth checking: a no-op program, a boolean (`pager.<cmd>`), or empty (resets a helper list). */
+const GIT_NOOP = /^(|true|false|:|cat|yes|no|on|off|0|1)$/i;
+
+/**
+ * Does setting git config `key` to `value` make git run a program? `value` undefined = unknown (a
+ * config-file write, `--config-env`, or a value the shell builds): only the value tells a no-op apart.
+ */
+function gitConfigRuns(key, value) {
+  if (/^submodule\..+\.update$/i.test(key)) return value === undefined || value.trimStart().startsWith("!");
+  if (/^protocol\.(ext\.)?allow$/i.test(key)) return value === undefined || !/^never$/i.test(value.trim());
+  return GIT_CONFIG_PROGRAM.test(key) && (value === undefined || !GIT_NOOP.test(value.trim()));
+}
+
+/** Does `NAME=value` in front of git hand it a program to run? A value the shell builds is unknown. */
+function gitEnvRuns(tok) {
+  const m = GIT_PROGRAM_ENV.exec(tok.v);
+  if (!m) return false;
+  if (m[1] === "GIT_EXEC_PATH") return true;
+  if (m[1] === "GIT_ALLOW_PROTOCOL") return tok.dyn || /(^|:)ext(:|$)/.test(m[2]);
+  return tok.dyn || !GIT_NOOP.test(m[2].trim());
+}
+
+/**
+ * The commands a git command hands to a shell through its options: `rebase -x|--exec`, `bisect run`,
+ * `submodule foreach`, `filter-branch --*-filter`, `difftool -x|--extcmd`, `grep -O|--open-files-in-pager`,
+ * `--upload-pack`/`--receive-pack`/`--exec` (`ls-remote -u`). Each is {text} (a shell string) or
+ * {argv} (words run as a command). `rest` is the argv after the subcommand.
+ */
+function gitOptionCommands(sub, rest) {
+  const out = [];
+  const a = rest.map((x) => x.v);
+  if (sub === "bisect" && a[0] === "run") return a.length > 1 ? [{ argv: rest.slice(1) }] : [];
+  if (sub === "submodule" && a[0] === "foreach") {
+    let k = 1;
+    while (k < a.length && a[k].startsWith("-")) k++;
+    return k < a.length ? [{ text: a.slice(k).join(" ") }] : [];
+  }
+  const long = ["--exec", "--upload-pack", "--receive-pack", "--extcmd", "--open-files-in-pager"];
+  if (sub === "filter-branch") long.push("--env-filter", "--tree-filter", "--index-filter", "--parent-filter", "--msg-filter", "--commit-filter", "--tag-name-filter");
+  const short = { rebase: "-x", difftool: "-x", "ls-remote": "-u" }[sub];
+  for (let k = 0; k < a.length; k++) {
+    const v = a[k];
+    if (v === "--") break;
+    const eq = v.indexOf("=");
+    const name = eq > 0 ? v.slice(0, eq) : v;
+    if (v.startsWith("--") && long.includes(name)) {
+      if (eq > 0) out.push({ text: v.slice(eq + 1) });
+      else if (name !== "--open-files-in-pager" && k + 1 < a.length) out.push({ text: a[++k] });
+    } else if (short && v === short && k + 1 < a.length) out.push({ text: a[++k] });
+    else if (short && v.startsWith(short) && v.length > 2) out.push({ text: v.slice(2) });
+    else if (sub === "grep" && v.startsWith("-O") && v.length > 2) out.push({ text: v.slice(2) });
+  }
+  return out;
+}
 /** Git config that redirects where git pushes or fetches: a remote's url/pushurl/push refspec, a url rewrite. */
 const GIT_REMOTE_CONFIG = /^(remote\.|url\.|push\.)/i;
 /** Environment that swaps the config file git reads (and with it hooksPath, aliases, includes). */
@@ -916,6 +982,8 @@ const BLOCK = {
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
   noVerify: "--no-verify, commit -n, or git config that changes the hook path, defines an alias, includes a config file or runs code (filter.*, core.fsmonitor, core.sshCommand, core.attributesFile, diff.external) — via -c, --config-env, GIT_CONFIG_* or git config — can skip the hook gate or hide changes. Fix what the hook reports.",
+  gitProgram:
+    "this names a program git runs (core.pager, core.editor, sequence.editor, credential.helper, gpg.program, a merge/diff driver or textconv, pager.<cmd>, hook.*, … through -c, --config-env or git config; or GIT_PAGER, GIT_EDITOR, GIT_SEQUENCE_EDITOR, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EXTERNAL_DIFF, PAGER, EDITOR … in front of git): code the guard cannot check. For one command only a no-op value passes (true, false, :, cat, or empty — GIT_EDITOR=true, -c core.pager=cat); a config file takes none, since every worktree and the orchestrator read it.",
   force: "plain force push (--force, -f, +refspec). Use --force-with-lease, and only on a branch whose commits are all yours.",
   remote: "git config or `git remote` that redirects where git pushes or fetches (remote.*, url.*) is the orchestrator's: every worktree shares it. Push your own branch to origin.",
   gitHome: "HOME=/XDG_CONFIG_HOME= in front of git swaps the config git reads (hooks path, aliases, includes). Run git with the environment it has.",
@@ -1227,10 +1295,17 @@ function checkCommand(t, state, depth) {
     };
     for (const e of t.slice(0, at)) {
       if (GIT_HOME_ENV.test(e.v)) return BLOCK.gitHome;
+      if (gitEnvRuns(e)) return BLOCK.gitProgram;
       const m = /^GIT_(DIR|WORK_TREE)=(.*)$/.exec(e.v);
       if (m) dir = target({ v: m[2], dyn: e.dyn }, m[1] === "DIR");
     }
-    const configRisk = (kv) => (GIT_CONFIG_DANGER.test(kv) ? BLOCK.noVerify : GIT_REMOTE_CONFIG.test(kv) ? BLOCK.remote : null);
+    // `-c key=value` (a key alone is a boolean); `--config-env` reads the value from a variable: unknown.
+    const configRisk = (kv, known) => {
+      if (GIT_CONFIG_DANGER.test(kv)) return BLOCK.noVerify;
+      if (GIT_REMOTE_CONFIG.test(kv)) return BLOCK.remote;
+      const eq = kv.indexOf("=");
+      return gitConfigRuns(eq < 0 ? kv : kv.slice(0, eq), !known ? undefined : eq < 0 ? "" : kv.slice(eq + 1)) ? BLOCK.gitProgram : null;
+    };
     while (i < argv.length && argv[i].v.startsWith("-")) {
       const v = argv[i].v;
       const long = /^--(git-dir|work-tree)(=(.*))?$/.exec(v);
@@ -1241,11 +1316,11 @@ function checkCommand(t, state, depth) {
         dir = target(long[2] ? { v: long[3], dyn: argv[i].dyn } : argv[i + 1], long[1] === "git-dir");
         i += long[2] ? 1 : 2;
       } else if (v === "-c" || v === "--config-env") {
-        const risk = configRisk(argv[i + 1]?.v ?? "");
+        const risk = configRisk(argv[i + 1]?.v ?? "", v === "-c" && argv[i + 1] && !argv[i + 1].dyn);
         if (risk) return risk;
         i += 2;
       } else if (v.startsWith("--config-env=")) {
-        const risk = configRisk(v.slice("--config-env=".length));
+        const risk = configRisk(v.slice("--config-env=".length), false);
         if (risk) return risk;
         i++;
       } else i++;
@@ -1273,6 +1348,12 @@ function checkCommand(t, state, depth) {
       }
       if (!reads && rest.some((v) => /^(alias\..|include\.path$|includeif\.|filter\..|core\.(attributesfile|fsmonitor|sshcommand)$|diff\.external$)/i.test(v))) return BLOCK.noVerify;
       if (!reads && rest.some((v) => /^(remote\..+\..|url\..+\..|push\..)/i.test(v))) return BLOCK.remote;
+      // A config file keeps the program for every later git command, of every worktree: no value passes.
+      if (!reads && rest.some((v) => gitConfigRuns(v, undefined))) return BLOCK.gitProgram;
+    }
+    for (const c of gitOptionCommands(sub, argv.slice(i + 1))) {
+      const r = c.argv ? checkCommand(c.argv, { ...state, dir: here }, depth + 1) : checkText(c.text, here, state.main, rules, depth + 1);
+      if (r) return r;
     }
     if (sub === "remote" && ["add", "set-url", "set-branches", "set-head", "rename", "remove", "rm", "prune", "update"].includes(rest[0])) return BLOCK.remote;
     const flags = rest.filter((v, k) => v.startsWith("-") && !skip.has(i + 1 + k)).map(longName);

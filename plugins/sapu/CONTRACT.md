@@ -622,4 +622,22 @@ could use them.
   `diff.external` (through `git -c`, `--config-env`, or `git config` writes),
   and the env `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_GLOBAL`/
   `GIT_CONFIG_SYSTEM`.
+- No subagent hands git a program the guard cannot check. The config keys git-config(1) runs as a
+  program — `core.pager`, `core.editor`, `sequence.editor`, `core.askPass`, `core.gitProxy`,
+  `core.alternateRefsCommand`, `pager.<cmd>`, `interactive.diffFilter`, `credential[.<url>].helper`,
+  `gpg[.<format>].program`, `gpg.ssh.defaultKeyCommand`, `diff.<driver>.textconv|command`,
+  `merge.<driver>.driver`, `difftool|mergetool|browser|man.<tool>.cmd|path`, `guitool.<name>.cmd`,
+  `hook.*`, `trailer.<key>.cmd|command`, `tar.<format>.command`, `sendemail.smtpServer|toCmd|ccCmd|headerCmd`,
+  `imap.tunnel`, `instaweb.httpd`, `uploadpack.packObjectsHook`, `gc.recentObjectsHook`,
+  `submodule.<name>.update` with a `!command`, and `protocol[.ext].allow` other than `never` (an
+  `ext::` URL runs a command) — are refused through `git -c`, `--config-env`, `GIT_CONFIG_*` and
+  `git config` writes, and so are the variables git reads for them in front of `git`: `GIT_PAGER`,
+  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`,
+  `GIT_EXTERNAL_DIFF`, `GIT_PROXY_COMMAND`, `PAGER`, `EDITOR`, `VISUAL`, `GIT_EXEC_PATH`, and
+  `GIT_ALLOW_PROTOCOL` naming `ext`. For one command a no-op value passes (`true`, `false`, `:`,
+  `cat`, a boolean, or empty: `GIT_EDITOR=true`, `-c core.pager=cat`); a config-file write takes no
+  value at all, since every worktree and the orchestrator read that file. A command git hands to a
+  shell through an option — `rebase -x|--exec`, `bisect run`, `submodule foreach`, `filter-branch
+  --*-filter`, `difftool -x|--extcmd`, `grep -O|--open-files-in-pager`, `--upload-pack`,
+  `--receive-pack`, `--exec` — is checked like that command run in Bash.
 - nemesis's safety floor (host floor: the resolved address must be loopback, or a private address the owner attested as dev; a public address is always refused; test resources ≠ `guard.postgres`; rate limit; no persistence/backdoor; kill switch; only low-privilege test accounts) lives in the nemesis engine — a profile can only narrow it, never loosen it.

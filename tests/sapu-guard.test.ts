@@ -1224,7 +1224,152 @@ describe("round 5 — git config that runs code or hides changes", () => {
     expect(blocked(cmd)).toMatch(/hook gate|runs code/);
   });
 
-  it.each([["git config --get filter.lfs.clean"], ["git -c core.editor=vim commit -m x"], ["git config core.fsmonitor"]])("allows %s", (cmd) => {
+  it.each([["git config --get filter.lfs.clean"], ["git -c core.editor=true commit -m x"], ["git config core.fsmonitor"]])("allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+  });
+});
+
+describe("git config, variables and options that name a program git runs", () => {
+  const PROGRAM = /names a program git runs/;
+  it.each([
+    // the keys git-config(1) runs as a program, in `git -c`
+    ["git -c merge.ours.driver=/tmp/x merge feat/x"],
+    ["git -c credential.helper='!f() { cat; }; f' push origin feat/x"],
+    ["git -c credential.https://github.com.helper=/tmp/h push origin feat/x"],
+    ["git -c gpg.program=/tmp/x commit -S -m x"],
+    ["git -c gpg.ssh.program=/tmp/x commit -S -m x"],
+    ["git -c gpg.ssh.defaultKeyCommand=/tmp/x commit -S -m x"],
+    ["git -c diff.pdf.textconv=/tmp/x diff"],
+    ["git -c diff.pdf.command=/tmp/x diff"],
+    ["git -c core.pager='less -R' log"],
+    ['git -c core.pager=\'sh -c "rm -rf ~"\' log'],
+    ["git -c sequence.editor='sed -i s/pick/drop/' rebase -i HEAD~3"],
+    ["git -c core.editor=vim commit"],
+    ["git -c core.askPass=/tmp/x fetch"],
+    ["git -c core.gitProxy=/tmp/x fetch"],
+    ["git -c core.alternateRefsCommand=/tmp/x fetch"],
+    ["git -c pager.log=/tmp/x log"],
+    ["git -c interactive.diffFilter=/tmp/x add -p"],
+    ["git -c difftool.x.cmd=/tmp/x difftool"],
+    ["git -c mergetool.x.path=/tmp/x mergetool"],
+    ["git -c uploadpack.packObjectsHook=/tmp/x fetch"],
+    ["git -c gc.recentObjectsHook=/tmp/x gc"],
+    ["git -c hook.lint.command=/tmp/x -c hook.lint.event=pre-commit commit -m x"],
+    ["git -c trailer.sign.command=/tmp/x commit -m x"],
+    ["git -c tar.tgz.command=/tmp/x archive --format=tgz HEAD"],
+    ["git -c sendemail.toCmd=/tmp/x send-email x.patch"],
+    ["git -c imap.tunnel=/tmp/x imap-send"],
+    ["git -c browser.x.cmd=/tmp/x help -w log"],
+    ["git -c submodule.lib.update='!/tmp/x' submodule update"],
+    ["git -c protocol.ext.allow=always submodule update"],
+    ["git -c protocol.allow=always submodule update"],
+    ["GIT_EXEC_PATH=/tmp/x git difftool"],
+    // a value the guard cannot read, or one read from the environment
+    ['git -c core.pager="$P" log'],
+    ["git --config-env=core.pager=P log"],
+    ["git --config-env core.editor=E commit"],
+    // written into a config file: every worktree and the orchestrator read it, so not even a no-op
+    ["git config merge.ours.driver true"],
+    ["git config credential.helper store"],
+    ["git config gpg.program /tmp/x"],
+    ["git config diff.pdf.textconv pdftotext"],
+    ["git config core.pager cat"],
+    ["git config sequence.editor vim"],
+    ["git config set core.editor vim"],
+    ["git config --local core.editor vim"],
+    ["git config --worktree core.pager less"],
+    ["git config --unset credential.helper"],
+    ["git config --replace-all hook.lint.command /tmp/x"],
+    // the variables git reads for the same programs, in front of git
+    ["GIT_PAGER='less -R' git log"],
+    ["GIT_EDITOR=vim git commit"],
+    ["GIT_SEQUENCE_EDITOR='sed -i s/pick/drop/' git rebase -i HEAD~2"],
+    ["GIT_SSH_COMMAND='ssh -i k' git push origin feat/x"],
+    ["GIT_SSH=/tmp/x git fetch"],
+    ["GIT_ASKPASS=/tmp/x git push origin feat/x"],
+    ["SSH_ASKPASS=/tmp/x git push origin feat/x"],
+    ["GIT_EXTERNAL_DIFF=/tmp/x git diff"],
+    ["GIT_PROXY_COMMAND=/tmp/x git fetch"],
+    ["GIT_ALLOW_PROTOCOL=file:ext git submodule update"],
+    ["env PAGER=/tmp/x git log"],
+    ["EDITOR=/tmp/x git commit"],
+    ["VISUAL=/tmp/x git commit"],
+    ['GIT_EDITOR="$E" git commit'],
+  ])("blocks %s", (cmd) => {
+    expect(blocked(cmd)).toMatch(PROGRAM);
+    expect(check({ command: cmd, cwd: wt, main, rules, worker: false })).toMatch(PROGRAM);
+  });
+
+  it.each([
+    ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=/tmp/x git log"],
+    ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=/tmp/x git push origin feat/x"],
+    ["GIT_CONFIG_PARAMETERS=\"'gpg.program'='/tmp/x'\" git commit -S -m x"],
+    ["git -c alias.st='!sh -c x' st"],
+    ["git config alias.st '!sh -c x'"],
+    ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.st GIT_CONFIG_VALUE_0='!x' git st"],
+    ["git -c core.sshCommand='ssh -i k' fetch"],
+  ])("still blocks the ones the hook-gate rule already holds: %s", (cmd) => {
+    expect(blocked(cmd)).toMatch(/hook gate/);
+  });
+
+  it.each([
+    // an option whose value git runs as a command is judged like that command
+    ["git rebase -x 'gh pr merge 1' HEAD~2", /orchestrator merges/],
+    ["git rebase --exec='git push --force origin feat/x' HEAD~1", /force push/],
+    ["git rebase -x'git stash' HEAD~1", /stash/],
+    ["git bisect run sh -c 'gh pr merge 1'", /orchestrator merges/],
+    ["git submodule foreach 'git stash'", /stash/],
+    ["git submodule foreach --recursive git stash", /stash/],
+    ["git fetch --upload-pack='rm -rf ~/.config/sapu' origin", /machine config/],
+    ["git push --receive-pack='gh pr merge 1' origin feat/x", /orchestrator merges/],
+    ["git push --exec='gh pr merge 1' origin feat/x", /orchestrator merges/],
+    ["git ls-remote -u 'gh pr merge 1' origin", /orchestrator merges/],
+    ["git archive --remote=origin --exec='gh pr merge 1' HEAD", /orchestrator merges/],
+    ["git difftool -x 'cat .env'", /env files/],
+    ["git difftool --extcmd='cat .env'", /env files/],
+    ["git filter-branch --tree-filter 'rm -rf ~/.config/sapu' HEAD", /machine config/],
+    ["git grep --open-files-in-pager='gh pr merge 1' x", /orchestrator merges/],
+    ["git grep -O'gh pr merge 1' x", /orchestrator merges/],
+  ])("judges the command an option hands git: %s", (cmd, why) => {
+    expect(blocked(cmd)).toMatch(why);
+  });
+
+  it.each([
+    // a no-op value, for one command
+    ["git -c core.pager=cat log"],
+    ["git -c core.editor=true commit --amend --no-edit"],
+    ["git -c sequence.editor=: rebase -i HEAD~2"],
+    ["git -c credential.helper= push origin feat/x"],
+    ["git -c pager.log=false log"],
+    ["git -c gpg.program= log"],
+    ["GIT_EDITOR=true git rebase --continue"],
+    ["GIT_PAGER=cat git log"],
+    ["GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash HEAD~3"],
+    ["PAGER= git log"],
+    // keys that run nothing
+    ["git -c color.ui=never log"],
+    ["git -c user.name=x -c user.email=x@y commit -m x"],
+    ["git -c protocol.file.allow=always submodule update"],
+    ["git -c submodule.lib.update=checkout submodule update"],
+    ["git -c core.quotePath=false status"],
+    ["git config user.name 'A B'"],
+    // reads
+    ["git config core.pager"],
+    ["git config --get credential.helper"],
+    ["git config --get-regexp '^diff\\.'"],
+    ["git config --list"],
+    ["git config get core.editor"],
+    // the options' commands that are fine to run
+    ["git rebase -x 'npm test' HEAD~3"],
+    ["git bisect run npm test"],
+    ["git submodule foreach git status"],
+    ["git grep -O x"],
+    ["git fetch origin"],
+    ["git log --format=%H -n 1"],
+    // a variable that only reads like one, or set for another program
+    ["GIT_TRACE=1 git status"],
+    ["PAGER=/tmp/x man git"],
+  ])("allows %s", (cmd) => {
     expect(blocked(cmd)).toBeNull();
   });
 });
