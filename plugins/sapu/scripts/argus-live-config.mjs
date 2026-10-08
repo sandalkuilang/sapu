@@ -114,6 +114,7 @@ export function validateLive(c) {
     if (isInt(c.limits.max_cycle_minutes, 1)) need(c.limits.max_cycle_minutes <= MAX_CYCLE_MINUTES, `limits.max_cycle_minutes must be at most ${MAX_CYCLE_MINUTES}`);
   }
   placeholders(c, "", errs);
+  shellFields(c, [], errs);
   try {
     if (portNames(c).names.length && !has("port_range")) errs.push("port_range is required whenever a {port:<name>} is used");
   } catch (e) {
@@ -187,6 +188,17 @@ function isOrigin(s) {
   }
 }
 
+/** Every shell field's `${NAME}` must stand where the shell running it expands it. */
+function shellFields(v, at, errs) {
+  if (typeof v === "string") {
+    if (isShellField(at)) {
+      const where = at.map((k, i) => (typeof k === "number" ? `[${k}]` : i ? `.${k}` : k)).join("");
+      for (const p of shellSecretProblems(v)) errs.push(`${where}: ${p}`);
+    }
+  } else if (Array.isArray(v)) v.forEach((x, i) => shellFields(x, [...at, i], errs));
+  else if (isObj(v)) for (const [k, x] of Object.entries(v)) shellFields(x, [...at, k], errs);
+}
+
 /** Every `{port:` in every string must be `{port:<name>}` or `{port:<name>=<port>}`, every `${` a `${NAME}`. */
 function placeholders(v, where, errs) {
   if (typeof v === "string") {
@@ -234,15 +246,20 @@ function isShellField(at) {
   return /^(store_check|reset|start\.\d+\.(cmd|stop|health\.cmd)|roles\.[^.]+\.login\.command)$/.test(k);
 }
 
+/** Why `${NAME}` cannot stand where it stands in a shell field, and what to write instead. */
+const misplaced = (name, context) =>
+  `\${${name}} ${context === "'" ? "inside single quotes" : "in a heredoc"} is not expanded by the shell that runs this field; write "$${secretVar(name)}" where the inner shell reads it (and pass it into a container by name: -e ${secretVar(name)})`;
+
 /**
- * A shell field expanded: `{port:…}` as everywhere, but `${NAME}` becomes a reference to the variable
- * `ARGUS_SECRET_<NAME>`, quoted for where it stands (`"${…}"` outside quotes, `${…}` inside double
- * quotes, `'"${…}"'` inside single quotes), so the shell reads the value as data from that command's
- * environment (`secretEnv`) and it never appears in a command line. Throws `unset NAME` like `expand`.
+ * Walks a shell field, tracking quotes and heredocs, and hands each `${NAME}` to `onSecret(name,
+ * context)` (context: null outside quotes, '"' inside double quotes, "'" inside single quotes, "<<"
+ * after a heredoc operator), which returns its replacement. `{port:…}` is expanded from `ports` (copied
+ * as it is when `ports` is null); everything else is copied.
  */
-export function expandShell(value, { ports = {}, secrets = {} } = {}) {
+function scanShell(value, { ports = null, onSecret }) {
   let out = "";
   let quote = null;
+  let heredoc = false;
   for (let i = 0; i < value.length; ) {
     const c = value[i];
     if (c === "\\" && quote !== "'") {
@@ -256,18 +273,22 @@ export function expandShell(value, { ports = {}, secrets = {} } = {}) {
       i++;
       continue;
     }
+    if (quote === null && value.startsWith("<<", i)) {
+      const n = value.startsWith("<<<", i) ? 3 : 2;
+      if (n === 2) heredoc = true;
+      out += value.slice(i, i + n);
+      i += n;
+      continue;
+    }
     const secret = value.slice(i).match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/);
     if (secret) {
-      const name = secret[1];
-      if (!Object.hasOwn(secrets, name) || secrets[name] === "") throw new Error(`unset ${name}`);
-      const ref = `\${${secretVar(name)}}`;
-      out += quote === '"' ? ref : quote === "'" ? `'"${ref}"'` : `"${ref}"`;
+      out += onSecret(secret[1], heredoc ? "<<" : quote);
       i += secret[0].length;
       continue;
     }
     const port = value.slice(i).match(/^\{port:[a-z][a-z0-9_-]*(?:=\d+)?\}/);
     if (port) {
-      out += expand(port[0], { ports });
+      out += ports === null ? port[0] : expand(port[0], { ports });
       i += port[0].length;
       continue;
     }
@@ -277,10 +298,46 @@ export function expandShell(value, { ports = {}, secrets = {} } = {}) {
   return out;
 }
 
+/** The `${NAME}` placements in a shell field the shell would not expand (empty = fine). */
+export function shellSecretProblems(value) {
+  const problems = [];
+  scanShell(value, {
+    onSecret: (name, context) => {
+      if (context === "'" || context === "<<") problems.push(misplaced(name, context));
+      return "";
+    },
+  });
+  return problems;
+}
+
+/**
+ * A shell field expanded: `{port:…}` as everywhere, but `${NAME}` becomes a reference to the variable
+ * `ARGUS_SECRET_<NAME>` (`"${…}"` outside quotes, `${…}` inside double quotes), so the shell reads
+ * the value as data from that command's environment (`secretEnv`) and it is never written into the
+ * command text. `${NAME}` inside single quotes or a heredoc is refused (the shell running the field
+ * would not expand it there). A `$ARGUS_SECRET_<NAME>` the owner wrote for an inner shell must name a
+ * set secret. Throws `unset NAME` like `expand`.
+ */
+export function expandShell(value, { ports = {}, secrets = {} } = {}) {
+  const need = (name) => {
+    if (!Object.hasOwn(secrets, name) || secrets[name] === "") throw new Error(`unset ${name}`);
+  };
+  for (const [, name] of value.matchAll(/\$\{?ARGUS_SECRET_([A-Za-z_][A-Za-z0-9_]*)/g)) need(name);
+  return scanShell(value, {
+    ports,
+    onSecret: (name, context) => {
+      if (context === "'" || context === "<<") throw new Error(`refused: ${misplaced(name, context)}`);
+      need(name);
+      const ref = `\${${secretVar(name)}}`;
+      return context === '"' ? ref : `"${ref}"`;
+    },
+  });
+}
+
 /** The environment a shell field needs: `ARGUS_SECRET_<NAME>=<value>` for each secret it references. */
 export function secretEnv(cmd, secrets = {}) {
   const env = {};
-  for (const [, name] of String(cmd ?? "").matchAll(/\$\{ARGUS_SECRET_([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+  for (const [, name] of String(cmd ?? "").matchAll(/\$\{?ARGUS_SECRET_([A-Za-z_][A-Za-z0-9_]*)/g)) {
     if (Object.hasOwn(secrets, name)) env[secretVar(name)] = secrets[name];
   }
   return env;

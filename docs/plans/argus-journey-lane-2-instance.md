@@ -200,11 +200,14 @@ Interfaces:
   refuses a `store` that `guard.postgres` protects; runs `store_check` (shell, cwd worktree, bounded
   by `timeoutS`, its group killed after, stdout read until the process exits plus a short drain)
   under `env` and again under each start entry's own env → each trimmed stdout must equal `store`;
-  every value in `env` and in every `start[].env` is read as a service (URL, `jdbc:` URL, libpq DSN)
-  and must not reach a service MAIN's env files name (`.env`, `.env.local`, the contract's
-  `guard.envFiles`; the same loopback endpoint, or the same scheme, endpoint and path) nor name a
-  port or database `guard.postgres` protects (bare port numbers and bare database names too) → else
-  throws `refused: …` naming the key only.
+  every value in `env` and in every `start[].env` is read as a service (URL, `jdbc:` URL, libpq DSN,
+  `X_HOST` + `X_PORT`) and must not reach a service MAIN's env files name (`.env`, `.env.local`, the
+  contract's `guard.envFiles`): a non-http scheme on the same host:port whatever its database; an
+  http(s) URL equal up to its query, or on the same loopback endpoint, unless its origin is in
+  `allow_origins`. Nor may it name a port or database `guard.postgres` protects (bare port numbers;
+  bare database names only under `PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`) → else
+  throws `refused: …` naming the key only. Hosts are compared by name (loopback aliases merged);
+  resolving a host name to loopback is `up`'s job (Task 8).
 - `export async function bringUpStore(ctx)` / `bringUpRest(ctx)`: the order inside `up` — store-phase
   entries (started and healthy one by one) → `checkStore` → `reset` (its group recorded too); then
   the remaining entries → health → `checkStore` again. Every group lands in `ctx.groups` as it starts.
@@ -294,6 +297,10 @@ Interfaces:
 ### Task 8: `up`, `up --fresh`, `status`, the CLI, and the guard seam
 
 Interfaces:
+- Before `checkStore` compares services, `up` resolves each host name in the env values with
+  `dns.lookup` (all addresses) and treats one that resolves only to loopback as `localhost`, so an
+  alias such as `db.localtest.me` cannot slip past the loopback endpoint comparison (carried from
+  the Task 5 review).
 - `export async function up(main, {fresh: false})` in spec §8's order, minus steps 9–10 (phase 3):
   1 lock (recover a stale one first), 2 refusals (config errors, unset `${NAME}`, `base_url` and role
   hosts resolving to loopback via `dns.lookup`, `~/.playwright/cli.config.json` present, no

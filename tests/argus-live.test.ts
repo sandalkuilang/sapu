@@ -195,6 +195,15 @@ describe("argus-live config — validateLive", () => {
     expect(errorsOf((c) => (c.env.X = "$PW and ${_PW_2}"))).toEqual([]);
   });
 
+  it("refuses ${NAME} in a shell field where the shell would not expand it: single quotes, a heredoc", () => {
+    const single = errorsOf((c) => (c.reset = "sh -c 'psql -c \"${PW}\"'"));
+    expect(single.some((e) => e.includes("reset") && e.includes("inside single quotes") && e.includes('"$ARGUS_SECRET_PW"'))).toBe(true);
+    expect(errorsOf((c) => (c.start[0].cmd = "cat <<EOF > f\n${PW}\nEOF")).some((e) => e.includes("start[0].cmd") && e.includes("heredoc"))).toBe(true);
+    expect(errorsOf((c) => (c.roles.admin.login.command = "x '${PW}'")).some((e) => e.includes("roles.admin.login.command"))).toBe(true);
+    expect(errorsOf((c) => (c.reset = `sh -c 'echo "$ARGUS_SECRET_PW"' && echo "\${PW}" \${PW}`))).toEqual([]);
+    expect(errorsOf((c) => (c.setup = [["sh", "-c", "'${PW}'"]]))).toEqual([]);
+  });
+
   it("requires port_range whenever a {port:<name>} is used (a fixed port alone needs none)", () => {
     expect(errorsOf((c) => delete c.port_range).some((e) => e.includes("port_range is required"))).toBe(true);
     const c = example();
@@ -1265,7 +1274,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       const raw = {
         store: "s",
         store_check: "echo ${PW}",
-        reset: `x "${"${PW}"}" '${"${PW}"}'`,
+        reset: `x "${"${PW}"}" \${PW} 'lit' sh -c 'echo "$ARGUS_SECRET_PW"'`,
         setup: [["tool", "--pw", "${PW}"]],
         env: { DB: "postgres://u:${PW}@localhost/x" },
         start: [{ name: "w", cmd: "run ${PW}", stop: "stop ${PW}", env: { K: "${PW}" }, health: { cmd: "check ${PW}" } }],
@@ -1274,18 +1283,20 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       };
       const c = expandConfig(raw, { ports: {}, secrets: { PW: VALUE } });
       expect(c.store_check).toBe('echo "${ARGUS_SECRET_PW}"');
-      expect(c.reset).toBe(`x "\${ARGUS_SECRET_PW}" ''"\${ARGUS_SECRET_PW}"''`);
+      expect(c.reset).toBe(`x "\${ARGUS_SECRET_PW}" "\${ARGUS_SECRET_PW}" 'lit' sh -c 'echo "$ARGUS_SECRET_PW"'`);
       expect(c.start[0]).toMatchObject({ cmd: 'run "${ARGUS_SECRET_PW}"', stop: 'stop "${ARGUS_SECRET_PW}"', env: { K: VALUE }, health: { cmd: 'check "${ARGUS_SECRET_PW}"' } });
       expect(c.roles.admin.login.command).toBe('login "${ARGUS_SECRET_PW}"');
       expect(c.setup[0][2]).toBe(VALUE);
       expect(c.facts.argv[1]).toBe(VALUE);
       expect(c.env.DB).toBe(`postgres://u:${VALUE}@localhost/x`);
       expect(() => expandConfig({ reset: "x ${NOPE}" }, { secrets: {} })).toThrow(/unset NOPE/);
+      expect(() => expandConfig({ reset: "sh -c 'x $ARGUS_SECRET_NOPE'" }, { secrets: {} })).toThrow(/unset NOPE/);
+      expect(() => expandConfig({ reset: "x '${PW}'" }, { secrets: { PW: "v" } })).toThrow(/^refused: .*inside single quotes/);
     });
 
     it("the shell receives the value as data: no injection, every quoting context, and no value in the recorded cmdline", async () => {
       const ctx = await ctxFor();
-      const raw = { name: "w", cmd: `printf '%s' \${PW} > out1; printf '%s' "<\${PW}>" > out2; printf '%s' 'x\${PW}y' > out3` };
+      const raw = { name: "w", cmd: `printf '%s' \${PW} > out1; printf '%s' "<\${PW}>" > out2; sh -c 'printf "%s" "x$ARGUS_SECRET_PW"y > out3'` };
       const entry = expandConfig({ start: [raw] }, { secrets: { PW: VALUE } }).start[0];
       const s = await startEntry(entry, { ...ctx, secrets: { PW: VALUE } });
       for (let i = 0; i < 100 && !s.exit; i++) await new Promise((r) => setTimeout(r, 20));
@@ -1316,10 +1327,10 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
 
   describe("4. env values are compared as services", () => {
     const owner = "DATABASE_URL=postgres://owner:x@localhost:5432/app_dev?sslmode=disable\nREDIS_URL=redis://localhost:6379/0\n";
-    const check = async (v: string, contract: unknown = null) => {
-      const ctx = await ctxFor();
-      writeFileSync(join(ctx.main, ".env"), owner);
-      return message(checkStore({ ...ctx, contract, env: { ...ctx.env, X: v } }));
+    const check = async (v: string | Record<string, string>, { contract = null as unknown, files = owner, allow = [] as string[] } = {}) => {
+      const ctx = await ctxFor({ store_check: "echo app_explore", allow_origins: allow });
+      writeFileSync(join(ctx.main, ".env"), files);
+      return message(checkStore({ ...ctx, contract, env: { ...ctx.env, ...(typeof v === "string" ? { X: v } : v) } }));
     };
     it.each([
       "postgresql://app:y@127.0.0.1/other",
@@ -1329,22 +1340,77 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       "host='127.0.0.1' dbname=x",
       "redis://127.0.0.1:6379/3",
       "redis://LOCALHOST",
+      "redis://localhost.:6379",
     ])("%s reaches the owner's local service", async (v) => {
       expect(await check(v)).toMatch(/^refused: env\.X points at a service the repo's env files name/);
     });
     it.each(["postgres://app@localhost:41001/app_explore", "redis://127.0.0.1:41002", "https://fonts.example.com/css", "plain words"])("%s does not", async (v) => {
       expect(await check(v)).toBe("ok");
     });
+    describe("a datastore is the same server whatever its database; http(s) keeps its path", () => {
+      const remote = [
+        "DATABASE_URL=postgres://u:p@db.internal.example:5432/app_dev",
+        "MYSQL_URL=mysql://db.internal.example/app",
+        "CACHE_URL=rediss://cache.internal.example:6379/0",
+        "MONGO_URL=mongodb://mongo.internal.example/app",
+        "AMQP_URL=amqp://mq.internal.example/vhost",
+        "API=https://api.example.com/v1",
+      ].join("\n");
+      it.each([
+        "postgres://app@db.internal.example:5432/app_explore",
+        "postgresql://app@DB.Internal.Example.:5432/other",
+        "jdbc:postgresql://db.internal.example:5432/x",
+        "host=db.internal.example port=5432 dbname=x",
+        "host=db.internal.example dbname=x",
+        "mysql://db.internal.example:3306/other",
+        "mariadb://db.internal.example/other",
+        "redis://cache.internal.example:6379/2",
+        "mongodb://mongo.internal.example:27017/other",
+        "amqps://mq.internal.example:5672/other",
+        "https://api.example.com/v1",
+      ])("%s is refused", async (v) => {
+        expect(await check(v, { files: remote })).toMatch(/^refused: env\.X points at a service the repo's env files name/);
+      });
+      it.each(["postgres://app@db2.internal.example:5432/app_dev", "https://api.example.com/v2", "redis://cache.internal.example:6380/0"])("%s is not", async (v) => {
+        expect(await check(v, { files: remote })).toBe("ok");
+      });
+      it("an http(s) origin listed in allow_origins is the owner's explicit opt-in", async () => {
+        expect(await check("https://api.example.com/v1", { files: remote, allow: ["https://api.example.com:443"] })).toBe("ok");
+        expect(await check("postgres://app@db.internal.example:5432/x", { files: remote, allow: ["https://db.internal.example:5432"] })).toMatch(/^refused/);
+      });
+    });
+
+    describe("host and port given apart are one endpoint", () => {
+      it.each([
+        [{ REDIS_HOST: "127.0.0.1", REDIS_PORT: "6379" }, "env.REDIS_HOST"],
+        [{ PGHOST: "localhost" }, "env.PGHOST"],
+        [{ PGHOST: "localhost.", PGPORT: "5432" }, "env.PGHOST"],
+        [{ DB_HOST: "::1", DB_PORT: "5432" }, "env.DB_HOST"],
+      ])("%j is refused", async (vars, key) => {
+        expect(await check(vars as Record<string, string>)).toMatch(new RegExp(`^refused: ${(key as string).replace(".", "\\.")} points at a service the repo's env files name`));
+      });
+      it("the owner's own split variables name endpoints too", async () => {
+        const files = "PGHOST=localhost\nPGPORT=55432\nCACHE_HOST=cache.internal.example\nCACHE_PORT=6390\n";
+        expect(await check("postgres://app@127.0.0.1:55432/x", { files })).toMatch(/^refused: env\.X points at/);
+        expect(await check("redis://cache.internal.example:6390", { files })).toMatch(/^refused: env\.X points at/);
+        expect(await check({ REDIS_HOST: "127.0.0.1", REDIS_PORT: "41003" }, { files })).toBe("ok");
+      });
+    });
+
     const guard = { guard: { envFiles: [], postgres: { ports: [6543], databases: ["app_dev"] } } };
+    it.each(["PGDATABASE", "MAIN_DB", "APP_DATABASE", "APP_DB_NAME", "X_DBNAME"])("a bare protected database name under %s is refused", async (key) => {
+      expect(await check({ [key]: "app_dev" }, { contract: guard })).toMatch(new RegExp(`^refused: env\\.${key} names database app_dev`));
+    });
+    it.each(["PGUSER", "APP_NAME", "X"])("a bare app_dev under %s is not a database name", async (key) => {
+      expect(await check({ [key]: "app_dev" }, { contract: guard })).toBe("ok");
+    });
     it.each([
-      ["app_dev", /names database app_dev/],
       ["jdbc:postgresql://localhost:41001/app%5Fdev", /names database app_dev/],
       ["host=localhost port=41001 dbname=app_dev", /names database app_dev/],
       ["host=localhost port=6543 dbname=x", /names port 6543/],
       ["jdbc:postgresql://localhost:6543/x", /names port 6543/],
     ])("%s is a protected database or port", async (v, why) => {
-      const ctx = await ctxFor();
-      expect(await message(checkStore({ ...ctx, contract: guard, env: { ...ctx.env, X: v as string } }))).toMatch(why as RegExp);
+      expect(await check(v as string, { contract: guard })).toMatch(why as RegExp);
     });
   });
 

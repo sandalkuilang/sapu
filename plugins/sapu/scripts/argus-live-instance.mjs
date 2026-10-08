@@ -749,6 +749,7 @@ export async function waitHealth(entry, started, { timeoutS, aliveAfterMs = 5000
 
 /** Default ports, so `redis://localhost` and `redis://127.0.0.1:6379` name the same service. */
 const DEFAULT_PORTS = { postgresql: 5432, mysql: 3306, mariadb: 3306, redis: 6379, rediss: 6379, mongodb: 27017, amqp: 5672, amqps: 5671, http: 80, https: 443, smtp: 25, smtps: 465, memcached: 11211, nats: 4222 };
+const HTTP = new Set(["http", "https"]);
 const isLoopback = (h) => h === "" || h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1" || h === "0.0.0.0" || h === "::";
 const decodeSafe = (x) => {
   try {
@@ -757,12 +758,17 @@ const decodeSafe = (x) => {
     return x;
   }
 };
+/** A host as compared: lower case, no trailing dot, every loopback alias one name. */
+const normHost = (h) => {
+  const x = decodeSafe(String(h)).trim().toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+  return isLoopback(x) ? "loopback" : x;
+};
 
 /**
- * A connection string as a service: {loopback, endpoint, full, ports, databases} or null.
- * Understands URLs (`jdbc:` stripped, `postgres` = `postgresql`), and libpq DSNs (`host=… port=…
- * dbname=…`). Hosts are lower-cased and loopback aliases merged, default ports filled in, the path
- * percent-decoded; user, password and query are not part of the service.
+ * A connection string as a service: {scheme, endpoints: ["host:port"], loopback, full, ports,
+ * databases}, or null. Understands URLs (`jdbc:` stripped; `postgres` = `postgresql`, `mongodb+srv`
+ * = `mongodb`) and libpq DSNs (`host=… port=… dbname=…`). Hosts are normalised (`normHost`), default
+ * ports filled in, the path percent-decoded; user, password and query are not part of the service.
  */
 function service(raw) {
   const v = String(raw).trim().replace(/^jdbc:/i, "");
@@ -772,52 +778,78 @@ function service(raw) {
   let databases = [];
   let extraPorts = [];
   if (url) {
-    scheme = url[1].toLowerCase().replace(/^postgres$/, "postgresql");
+    scheme = url[1].toLowerCase().replace(/^postgres$/, "postgresql").replace(/^mongodb\+srv$/, "mongodb");
+    if (scheme === "file") return null;
     hosts = url[2].slice(url[2].lastIndexOf("@") + 1).split(",").map((h) => {
       const m = h.match(/^\[([^\]]*)\](?::(\d+))?$/) || h.match(/^([^:]*)(?::(\d+))?$/) || [null, h, undefined];
-      return { host: decodeSafe(m[1]).toLowerCase(), port: m[2] ? Number(m[2]) : undefined };
+      return { host: m[1], port: m[2] ? Number(m[2]) : undefined };
     });
     const segment = url[3].split("/").filter(Boolean)[0];
     if (segment) databases.push(decodeSafe(segment));
     const q = new URLSearchParams((url[4] || "").slice(1));
     for (const k of ["dbname", "database"]) if (q.get(k)) databases.push(q.get(k));
     if (q.get("port")) extraPorts = q.get("port").split(",").map(Number);
-    if (q.get("host")) hosts.push(...q.get("host").split(",").map((h) => ({ host: h.toLowerCase(), port: undefined })));
+    if (q.get("host")) hosts.push(...q.get("host").split(",").map((h) => ({ host: h, port: undefined })));
   } else if (/^[a-z_]+\s*=/i.test(v) && /\b(host|hostaddr|port|dbname)\s*=/i.test(v)) {
     const kv = {};
     for (const [, k, q1, bare] of v.matchAll(/([a-z_]+)\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S*))/gi)) kv[k.toLowerCase()] = q1 !== undefined ? q1.replace(/\\(.)/g, "$1") : bare;
     scheme = "postgresql";
     const ports = String(kv.port ?? "").split(",");
-    hosts = String(kv.host ?? kv.hostaddr ?? "").split(",").map((h, i) => ({ host: h.toLowerCase(), port: ports[i] ? Number(ports[i]) : ports[0] ? Number(ports[0]) : undefined }));
+    hosts = String(kv.host ?? kv.hostaddr ?? "").split(",").map((h, i) => ({ host: h, port: ports[i] ? Number(ports[i]) : ports[0] ? Number(ports[0]) : undefined }));
     if (kv.dbname) databases = [kv.dbname];
   } else return null;
-  hosts = hosts.map((h) => ({ host: isLoopback(h.host) ? "loopback" : h.host, port: h.port ?? DEFAULT_PORTS[scheme] }));
-  const where = hosts.map((h) => `${h.host}:${h.port ?? ""}`).sort().join(",");
+  hosts = hosts.map((h) => ({ host: normHost(h.host), port: h.port ?? DEFAULT_PORTS[scheme] }));
+  const endpoints = hosts.map((h) => `${h.host}:${h.port ?? ""}`);
   const path = url ? decodeSafe(url[3]).replace(/\/+$/, "") : databases[0] ? `/${databases[0]}` : "";
   return {
+    scheme,
+    endpoints,
     loopback: hosts.every((h) => h.host === "loopback"),
-    endpoint: where,
-    full: `${scheme}://${where}${path}`,
+    full: `${scheme}://${[...endpoints].sort().join(",")}${path}`,
     ports: [...hosts.map((h) => h.port).filter((p) => p !== undefined), ...extraPorts],
     databases,
   };
 }
 
 /**
+ * Endpoints given as separate variables sharing a prefix: `X_HOST` + `X_PORT`, `PGHOST` + `PGPORT`
+ * (libpq's default 5432 when PGPORT is unset) → [{key, endpoint, port}].
+ */
+function splitEndpoints(vars) {
+  const out = [];
+  for (const [key, raw] of Object.entries(vars)) {
+    const m = key.match(/^(.*?)(_?)HOST$/i);
+    if (!m || !m[1]) continue;
+    const host = String(raw).trim();
+    if (!host || /[/=\s]/.test(host.replace(/,/g, ""))) continue;
+    const portRaw = vars[`${m[1]}${m[2]}PORT`] ?? vars[`${m[1]}${m[2] ? "" : "_"}PORT`];
+    const port = /^\d+$/.test(String(portRaw ?? "").trim()) ? Number(String(portRaw).trim()) : /^PG$/i.test(m[1]) ? 5432 : undefined;
+    if (port === undefined) continue;
+    for (const h of host.split(",")) out.push({ key, endpoint: `${normHost(h)}:${port}`, port });
+  }
+  return out;
+}
+
+/** Variable names that hold a database name (`PGDATABASE`, `*_DB`, `*DATABASE*`, `*_DB_NAME`, `*_DBNAME`). */
+const NAMES_DATABASE = /(^PGDATABASE$|DATABASE|_DB$|_DB_NAME$|_DBNAME$)/i;
+
+/**
  * The store checks of `up` steps 6 and 7. The store must not be a database `guard.postgres` protects.
  * `store_check` (shell, worktree, bounded by `timeoutS`) must print `store` under the instance env
- * and under the env of every `start` entry that sets its own. No value in those envs may point at a
- * service the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read
- * here, never printed) — the same local endpoint, or the same service and database anywhere — nor
- * name a port or database `guard.postgres` protects (a URL, `jdbc:` URL, libpq DSN, a bare port
- * number or a bare database name). Refusals name the key, never a value.
+ * and under the env of every `start` entry that sets its own. No value in those envs may reach a
+ * service the repo's env files name (`.env`, `.env.local`, the contract's `guard.envFiles`; read here,
+ * never printed): a datastore (any non-http scheme) on the same host:port whatever its database, an
+ * http(s) URL equal up to its query (or on the same loopback endpoint) unless its origin is in
+ * `allow_origins`; host and port given apart count as one endpoint. Nor may a value name a port or
+ * database `guard.postgres` protects (in a URL, `jdbc:` URL, libpq DSN, a bare port number, or a bare
+ * name under a variable that names a database). Refusals name the key, never a value.
  */
 export async function checkStore({ config, env, worktree, main, contract, secrets = {}, deadline, timeoutS = 120, runner = runAsync }) {
   const guard = (contract && contract.guard) || {};
   const pg = guard.postgres || { ports: [], databases: [] };
   if (pg.databases.includes(config.store)) throw new Error(`refused: the store "${config.store}" is a database guard.postgres protects`);
-  const scopes = [{ label: "env", where: "", env }];
-  for (const e of config.start ?? []) if (e.env && Object.keys(e.env).length) scopes.push({ label: `start.${e.name}.env`, where: ` under the env of start entry ${e.name}`, env: { ...env, ...e.env } });
+  const scopes = [{ label: "env", where: "", env, own: env }];
+  for (const e of config.start ?? []) if (e.env && Object.keys(e.env).length) scopes.push({ label: `start.${e.name}.env`, where: ` under the env of start entry ${e.name}`, env: { ...env, ...e.env }, own: e.env });
   for (const scope of scopes) {
     const left = Math.min(timeoutS * 1000, msLeft(deadline, "checkStore"));
     const r = await shellOnce(config.store_check, { cwd: worktree, env: scope.env, secrets, timeoutMs: Math.max(0, left), capture: true, runner });
@@ -827,7 +859,8 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     if (got !== config.store) throw new Error(`refused: store_check printed "${redact(got.slice(0, 80), secrets)}"${scope.where}, not the store "${config.store}"`);
   }
   const files = [".env", ".env.local", ...(guard.envFiles ?? [])];
-  const owners = [];
+  const ownerEndpoints = new Set();
+  const ownerFull = new Set();
   for (const f of files) {
     let text;
     try {
@@ -835,30 +868,56 @@ export async function checkStore({ config, env, worktree, main, contract, secret
     } catch {
       continue;
     }
-    for (const v of Object.values(parseEnvFile(text))) {
+    const vars = parseEnvFile(text);
+    for (const v of Object.values(vars)) {
       const svc = service(v);
-      if (svc) owners.push(svc);
+      if (!svc) continue;
+      svc.endpoints.forEach((e) => ownerEndpoints.add(e));
+      ownerFull.add(svc.full);
+    }
+    for (const s of splitEndpoints(vars)) ownerEndpoints.add(s.endpoint);
+  }
+  const allowed = new Set();
+  for (const o of config.allow_origins ?? []) {
+    try {
+      allowed.add(new URL(o).origin);
+    } catch {
+      // validateLive refuses a bad origin
     }
   }
-  const values = [];
-  for (const [k, v] of Object.entries(env)) values.push([`env.${k}`, v]);
-  for (const e of config.start ?? []) for (const [k, v] of Object.entries(e.env ?? {})) values.push([`start.${e.name}.env.${k}`, v]);
-  for (const [key, raw] of values) {
-    const v = String(raw).trim();
-    if (/^\d+$/.test(v)) {
-      if (pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
-      continue;
+  const reaches = `points at a service the repo's env files name (${files.join(", ")}); it would reach the owner's service`;
+  for (const scope of scopes) {
+    for (const s of splitEndpoints(scope.env)) {
+      if (scope !== scopes[0] && !(s.key in scope.own) && !Object.keys(scope.own).some((k) => /PORT$/i.test(k))) continue;
+      const key = `${s.key in scope.own ? scope.label : "env"}.${s.key}`;
+      if (ownerEndpoints.has(s.endpoint)) throw new Error(`refused: ${key} ${reaches}`);
+      if (pg.ports.includes(s.port)) throw new Error(`refused: ${key} names port ${s.port}, which guard.postgres protects`);
     }
-    if (pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
-    const svc = service(v);
-    if (!svc) continue;
-    if (owners.some((o) => (svc.loopback && o.loopback && o.endpoint === svc.endpoint) || o.full === svc.full)) {
-      throw new Error(`refused: ${key} points at a service the repo's env files name (${files.join(", ")}); it would reach the owner's service`);
+    for (const [k, raw] of Object.entries(scope.own)) {
+      const key = `${scope.label}.${k}`;
+      const v = String(raw).trim();
+      if (/^\d+$/.test(v)) {
+        if (pg.ports.includes(Number(v))) throw new Error(`refused: ${key} names port ${v}, which guard.postgres protects`);
+        continue;
+      }
+      if (NAMES_DATABASE.test(k) && pg.databases.includes(v)) throw new Error(`refused: ${key} names database ${v}, which guard.postgres protects`);
+      const svc = service(v);
+      if (!svc) continue;
+      if (HTTP.has(svc.scheme)) {
+        let origin = null;
+        try {
+          origin = new URL(v).origin;
+        } catch {
+          origin = null;
+        }
+        const same = ownerFull.has(svc.full) || (svc.loopback && svc.endpoints.some((e) => ownerEndpoints.has(e)));
+        if (same && !allowed.has(origin)) throw new Error(`refused: ${key} ${reaches} (list its origin in allow_origins if it is meant to)`);
+      } else if (svc.endpoints.some((e) => ownerEndpoints.has(e))) throw new Error(`refused: ${key} ${reaches}`);
+      const port = svc.ports.find((p) => pg.ports.includes(p));
+      if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
+      const db = svc.databases.find((d) => pg.databases.includes(d));
+      if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
     }
-    const port = svc.ports.find((p) => pg.ports.includes(p));
-    if (port !== undefined) throw new Error(`refused: ${key} names port ${port}, which guard.postgres protects`);
-    const db = svc.databases.find((d) => pg.databases.includes(d));
-    if (db !== undefined) throw new Error(`refused: ${key} names database ${db}, which guard.postgres protects`);
   }
 }
 
