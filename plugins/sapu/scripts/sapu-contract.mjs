@@ -1792,9 +1792,9 @@ function textAt(root, ref, file) {
  * finds the tree it tests this way tests <MAIN>, not the PR's worktree.
  */
 const SELF_LOCATING = [
-  // the makefile's own path (`lastword`/`firstword` of it, or the list inside abspath/realpath/dir),
-  // not a help target that only greps `$(MAKEFILE_LIST)`
-  [/\b(?:lastword|firstword)\s+\$[({]MAKEFILE_LIST[)}]|\$\((?:abspath|realpath|dir)\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
+  // the makefile's own path (`lastword`/`firstword` of it, `$(word $(words …),…)`, or the list inside
+  // abspath/realpath/dir or a shell's dirname/realpath/readlink), not a help target that only greps it
+  [/\b(?:lastword|firstword|words)\s+\$[({]MAKEFILE_LIST[)}]|\$\((?:abspath|realpath|dir|shell\s+(?:dirname|realpath|readlink))\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
   [/\b(justfile_directory|justfile|source_directory|source_file)\s*\(\s*\)/, (m) => `${m[1]}()`],
   [/\bBASH_SOURCE\b/, "${BASH_SOURCE}"],
   [/\$\{0[%#:]/, (m) => m[0]],

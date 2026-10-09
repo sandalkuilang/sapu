@@ -2259,7 +2259,8 @@ function ghApiWrite(M, argv, rules) {
   // REST state_reason not_planned, built by the shell, or read from a file.
   if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
   const fields = ghFields(argv);
-  const labelField = (f) => /^labels(\[\])?=/i.test(f.v);
+  // `labels=`, `labels[]=`, and an import's `issue[labels][]=`
+  const labelField = (f) => /^(?:labels|[^=[]*\[labels\])(\[\])?=/i.test(f.v);
   // a field whose name the shell builds (`-f "$K=x"`) may be labels or state_reason
   const dynKey = (f) => f.dyn && (!f.v.includes("=") || /[$`]/.test(f.v.slice(0, f.v.indexOf("="))));
   // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,

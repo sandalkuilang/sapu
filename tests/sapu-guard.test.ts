@@ -3086,6 +3086,14 @@ describe("sapu-guard — gh api routes match in any letter case, and an issue im
     expect(reviewer("gh api -X POST repos/o/r/import/issues -f title=t", gated)).toMatch(/agentFiledNeedsAcceptance/);
   });
 
+  it("reads an import's labels where the import API takes them (issue[labels][])", () => {
+    expect(reviewer("gh api -X POST repos/o/r/import/issues -f 'issue[title]=t' -f 'issue[labels][]=sapu:agent-filed'", gated)).toBeNull();
+    expect(reviewer("gh api -X POST repos/o/r/import/issues -f 'issue[title]=t' -f 'issue[labels][]=bug'", gated)).toMatch(/agentFiledNeedsAcceptance/);
+    expect(reviewer("gh api -X POST repos/o/r/import/issues -f 'issue[labels][]=sapu:agent-filed' -f 'issue[labels][]=sapu:accepted'", gated)).toMatch(/acceptance label/);
+    expect(reviewer('gh api -X POST repos/o/r/import/issues -f \'issue[labels][]=sapu:agent-filed\' -f "issue[labels][]=$L"', gated)).toMatch(/acceptance label/);
+    expect(blocked("gh api -X PATCH repos/o/r/issues/8 -f 'issue[labels][]=bug'")).toMatch(/agent-filed label/);
+  });
+
   it.each([
     ["gh api REPOS/o/r/ISSUES -f title=t", /files no issues/],
     ["gh api -X POST Repos/o/r/Import/Issues -f title=t", /files no issues/],

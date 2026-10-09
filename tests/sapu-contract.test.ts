@@ -2099,6 +2099,9 @@ describe("gate.merge self-location: the idioms that find the tree, not a file me
     ["MK := $(lastword $(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
     ["ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword ${MAKEFILE_LIST}))))\n"],
     ["ROOT := $(realpath $(dir $(MAKEFILE_LIST)))\n"],
+    ["MK := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
+    ["ROOT := $(shell dirname $(MAKEFILE_LIST))\n"],
+    ["ROOT := $(shell cd $(shell dirname $(realpath $(MAKEFILE_LIST))) && pwd)\n"],
   ])("warns on a makefile that finds its own place: %s", (text) => {
     expect(warn("make gate", text)).toMatch(/finds the tree from its own location \(\$\(MAKEFILE_LIST\)\)/);
   });
@@ -2106,6 +2109,7 @@ describe("gate.merge self-location: the idioms that find the tree, not a file me
   it("does not warn on the common help target, which only greps the makefiles", () => {
     const help = "help:\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = \":.*?## \"}; {printf \"%s\\n\", $$1}'\ngate: ## run the gate\n\tnpm test\n";
     expect(warn("make gate", help)).toBeNull();
+    expect(warn("make gate", "lint:\n\t$(shell grep -c TODO $(MAKEFILE_LIST))\ngate:\n\tnpm test\n")).toBeNull();
   });
 
   it("warns on Perl's FindBin", () => {

@@ -317,8 +317,9 @@ signed merge or rebase, and apply a review suggestion by hand instead of with "C
 returns the snapshot the verdict is decided on: author, labels, the body's edit history
 (`userContentEdits`, deleted revisions included, and `lastEditedAt`/`editor`), the first page of the
 label and title timeline, and the title and body. The rest of the timeline is paged, with a light
-timeline-only query, whenever the agent-filed label is not on the issue now (to find whether it ever
-was; trusted authors included), and for an outsider's issue that carries the acceptance label; a
+timeline-only query, under `agentFiledNeedsAcceptance` whenever the agent-filed label is not on the
+issue now (to find whether it ever was; trusted authors included; without the setting the author
+decides and no history is read for it), and for an outsider's issue that carries the acceptance label; a
 timeline that cannot be read whole (more than 50 pages of 100 events, or a page GitHub does not
 return) refuses the issue. Trusted when the
 author's id is in the set, or when all of these hold: it carries the acceptance label now; the
