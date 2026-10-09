@@ -763,3 +763,27 @@ Refs #53
 - **Names across tasks:** `configProblems` (T1, used by `up` and `check`); `live <cmd>` shorthand (T4, T5,
   T8); `frontmatter`, `fenced` (T3, used by T4–T8); `TOP_KEYS`, `LIMIT_KEYS`, `ROLE_KEYS` exported in T7
   where first imported.
+
+---
+
+## As built (phase 5)
+
+- **Task 1.** `guard.envFiles` holds file names, never paths (the contract refuses a `/`), and the guard
+  matches a file by its base name without case (`compileRules(contract).envFiles`, the `.env` floor
+  included), so the tests' contract lists `live.env`, and `check` asks that set for `env_file`'s base name.
+  `check` reads the contract in the working tree (`loadContract(main, {workingTree: true})`): init runs it
+  on its draft before anything is committed, as it runs `sapu-contract.mjs show --working-tree`. Its fault
+  lines go to stderr (the CLI's refusals do), the `live: ok` line to stdout; `accounts` counts a users role's
+  users and a login-command role as one (`anon` none), as `up` proves them. `configProblems` takes `loaded`
+  (loadLive's answer) so `up` checks the file it already read, and keeps checking a file with schema
+  errors, leaving out a throw those errors already explain. `validateLive` already refuses a literal address
+  off loopback (`base_url must name a loopback host`), so the CLI's base-URL fault uses a `.invalid` host
+  (RFC 2606: it never resolves), and the `lookup` seam is tested on `configProblems` directly.
+- **Task 2.** The probe (a fixture cycle, slot 2 holding `buyer.1` on `/orders/new`, the pinned CLI's `show
+  --port 0` under the run's `cliEnv`) gave **outcome A**: from the run's directory and from slot 2's alike,
+  the dashboard's `sessions` event listed the slot's session (its title the session name) and its `tabs`
+  event the page; a `pw` call on slot 2 answered while it ran; after SIGINT to the CLI's process group (what
+  Ctrl-C sends) no process whose HOME is the run's browser HOME remained. SIGINT to the CLI's pid alone
+  leaves its `dashboardApp.js` child running. `show` runs from the run's directory through `showDashboard`
+  (`-cli.mjs`, beside `runCli`, which prepares the same TMPDIR and sockets directory), and is refused unless
+  run.json names the lock's run and records its browser (a cycle still at step 1 or 2, or a map run, has none).

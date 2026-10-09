@@ -13,7 +13,7 @@ import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, lon
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { sessionName, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { CLASSES, classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -2607,5 +2607,43 @@ describe("argus-live check", () => {
   it("the usage line names check", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     expect(r.stderr).toContain(" | check | ");
+  });
+});
+
+describe("argus-live show", () => {
+  it("show runs the CLI's dashboard in the run's browser environment and writes nothing", () => {
+    const t = liveRun();
+    const { shim, calls } = makeShim();
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js: shim, channel: "chrome" } });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true }); // as up's step 1 leaves it (its logs)
+    const runFile = join(t.main, ".argus/live/run.json");
+    const before = readFileSync(runFile, "utf8");
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: t.main, encoding: "utf8" });
+    expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({ code: 0, out: "ok show\n", err: "" });
+    const [call, ...more] = calls();
+    expect(more).toEqual([]);
+    expect(call.argv).toEqual(["show", "--port", "0"]);
+    const home = join(t.home, "browser");
+    expect(call.env.HOME).toBe(home);
+    expect(call.env.TMPDIR).toBe(join(home, "tmp"));
+    expect(call.env.PWTEST_SOCKETS_DIR).toBe(socketsDir(home));
+    expect(realpathSync(call.cwd)).toBe(realpathSync(join(t.main, ".argus/live", t.runId)));
+    expect(readFileSync(runFile, "utf8")).toBe(before);
+  }, 30_000);
+
+  it("show is refused without a running cycle", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });
+    expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({ code: 1, out: "", err: "refused: no journey cycle is running\n" });
+    // A cycle still starting (no browser yet) or a map run has no session to show.
+    const t = liveRun();
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: null });
+    const early = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: t.main, encoding: "utf8" });
+    expect(early.status).toBe(1);
+    expect(early.stderr).toBe("refused: no journey cycle is running\n");
+  }, 30_000);
+
+  it("the usage line names show", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    expect(r.stderr).toContain(" | show | ");
   });
 });

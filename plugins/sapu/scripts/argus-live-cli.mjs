@@ -68,6 +68,24 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
   return { code: r.status ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: Boolean(r.timedOut) };
 }
 
+/**
+ * `argus-live.mjs show`: the CLI's dashboard on the run's sessions for an owner who wants to watch — `show
+ * --port 0` (a blocking http server on a free localhost port; it prints its URL) under cliEnv(home), from
+ * `cwd` (the run's directory), stdio inherited, until the owner stops it. Probed with the pinned CLI: from
+ * the run's directory it lists every session of the run's browser HOME, `pw` keeps answering while it
+ * runs, and Ctrl-C (SIGINT to the terminal's process group) ends the CLI and its dashboard process both.
+ * Nothing is recorded in run.json: it is the owner's own process. Returns the CLI's exit status.
+ */
+export function showDashboard({ js, home, cwd, runner = run }) {
+  const tmp = path.join(home, "tmp");
+  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
+  ownDir(SOCKETS_ROOT);
+  ownDir(socketsDir(home));
+  const r = runner([process.execPath, js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: "inherit" });
+  if (r.error) throw new Error(`failed: the browser CLI could not run: ${r.error.message}`);
+  return r.status ?? 1;
+}
+
 /** An account word as sessions carry it: `<role>.<k>`. */
 const ACCOUNT = /^[a-z][a-z0-9_-]*\.[1-9][0-9]?$/;
 

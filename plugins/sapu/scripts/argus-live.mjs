@@ -15,6 +15,9 @@
 //                                1), else live: ok — <r> roles, <a> accounts, <s> start entries. Reads the working
 //                                tree's contract (an init draft); takes no lock, starts and writes nothing, prints
 //                                no value
+//   argus-live.mjs show          the browser CLI's dashboard on the running cycle's sessions, for an owner who
+//                                wants to watch (showDashboard): its URL printed, blocking until Ctrl-C; refused:
+//                                no journey cycle is running without a cycle whose browser is up. Writes nothing
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -104,17 +107,18 @@
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
+import { showDashboard } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { drift } from "./argus-live-drift.mjs";
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, selectJourneys, visitJourney, writeJourneys } from "./argus-live-map.mjs";
 import { configProblems, renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
-import { readLock } from "./argus-live-lock.mjs";
+import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { redact, run } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { minimize, redTestFile, repro, runOnce, savedValues } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
-import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
@@ -134,7 +138,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -288,6 +292,12 @@ try {
     const roles = Object.values(r.config.roles);
     const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
     print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
+  } else if (cmd === "show" && !args.length) {
+    // The owner's window on the run's browsers: only once up has a browser for them (never a map run's).
+    const lock = readLock(main);
+    const rec = lock && readRun(main);
+    if (!rec || rec.runId !== lock.runId || !rec.browser || typeof rec.browser.js !== "string" || typeof rec.home !== "string") throw new Error("refused: no journey cycle is running");
+    process.exit(showDashboard({ js: rec.browser.js, home: path.join(rec.home, "browser"), cwd: path.join(liveDir(main), lock.runId) }));
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);
