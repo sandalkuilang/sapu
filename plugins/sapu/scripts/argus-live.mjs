@@ -17,7 +17,9 @@
 //                                no value
 //   argus-live.mjs show          the browser CLI's dashboard on the running cycle's sessions, for an owner who
 //                                wants to watch (showDashboard): its URL printed, blocking until Ctrl-C; refused:
-//                                no journey cycle is running without a cycle whose browser is up. Writes nothing
+//                                no journey cycle is running without a cycle whose browser is up, and on a lock past
+//                                its deadline; a missing run directory is named. SIGINT, SIGTERM and SIGHUP end the
+//                                CLI's whole process group (its dashboard too). Writes nothing
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -106,6 +108,7 @@
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
+import fs from "node:fs";
 import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
 import { showDashboard } from "./argus-live-cli.mjs";
@@ -298,7 +301,10 @@ try {
     const lock = readLock(main);
     const rec = lock && readRun(main);
     if (!rec || rec.runId !== lock.runId || !rec.browser || typeof rec.browser.js !== "string" || typeof rec.home !== "string") throw new Error("refused: no journey cycle is running");
-    process.exit(showDashboard({ js: rec.browser.js, home: browserHome(rec), cwd: path.join(liveDir(main), lock.runId) }));
+    if (lock.deadline <= Math.floor(Date.now() / 1000)) throw new Error(`refused: cycle ${lock.runId}'s lock is past its deadline: no journey cycle is running`);
+    const cwd = path.join(liveDir(main), lock.runId);
+    if (!fs.existsSync(cwd)) throw new Error(`refused: the run's directory ${path.relative(main, cwd)} is missing`);
+    process.exit(await showDashboard({ js: rec.browser.js, home: browserHome(rec), cwd }));
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);

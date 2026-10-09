@@ -3,6 +3,7 @@
 // closed by name, then its daemon and browser killed by identity). It sits below argus-live-run.mjs in
 // the module DAG, since the teardown there closes sessions; installing the CLI and the per-slot config
 // are argus-live-browser.mjs's.
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -73,17 +74,41 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
  * --port 0` (a blocking http server on a free localhost port; it prints its URL) under cliEnv(home), from
  * `cwd` (the run's directory), stdio inherited, until the owner stops it. Probed with the pinned CLI: from
  * the run's directory it lists every session of the run's browser HOME, `pw` keeps answering while it
- * runs, and Ctrl-C (SIGINT to the terminal's process group) ends the CLI and its dashboard process both.
- * Nothing is recorded in run.json: it is the owner's own process. Returns the CLI's exit status.
+ * runs, and SIGINT to its process group ends the CLI and its dashboard process both (to the CLI's pid
+ * alone it leaves the dashboard running). So the CLI leads a process group of its own, and SIGINT,
+ * SIGTERM and SIGHUP to this process (Ctrl-C, a kill, a closed terminal) go to that whole group, as does a
+ * SIGTERM once the CLI ended (a dashboard it left). Nothing is recorded in run.json: it is the owner's own
+ * process. Resolves to the CLI's exit status.
  */
-export function showDashboard({ js, home, cwd, runner = run }) {
+export function showDashboard({ js, home, cwd }) {
   const tmp = path.join(home, "tmp");
   fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
   ownDir(SOCKETS_ROOT);
   ownDir(socketsDir(home));
-  const r = runner([process.execPath, js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: "inherit" });
-  if (r.error) throw new Error(`failed: the browser CLI could not run: ${r.error.message}`);
-  return r.status ?? 1;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: "inherit", detached: true });
+    const group = (sig) => {
+      try {
+        process.kill(-child.pid, sig);
+      } catch {
+        // the group is gone
+      }
+    };
+    const forward = Object.fromEntries(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => [s, () => group(s)]));
+    for (const [s, f] of Object.entries(forward)) process.on(s, f);
+    const done = () => {
+      for (const [s, f] of Object.entries(forward)) process.off(s, f);
+      group("SIGTERM");
+    };
+    child.on("error", (e) => {
+      done();
+      reject(new Error(`failed: the browser CLI could not run: ${e.message}`));
+    });
+    child.on("exit", (code) => {
+      done();
+      resolve(code ?? 1);
+    });
+  });
 }
 
 /** An account word as sessions carry it: `<role>.<k>`. */

@@ -2719,6 +2719,42 @@ describe("argus-live show", () => {
     expect(early.stderr).toBe("refused: no journey cycle is running\n");
   }, 30_000);
 
+  it("show is refused on a stale lock and, clearly, without the run's directory", () => {
+    const t = liveRun();
+    const { shim } = makeShim();
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js: shim, channel: "chrome" } });
+    rmSync(join(t.main, ".argus/live", t.runId), { recursive: true, force: true });
+    const missing = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: t.main, encoding: "utf8" });
+    expect({ code: missing.status, err: missing.stderr }).toEqual({ code: 1, err: `refused: the run's directory .argus/live/${t.runId} is missing\n` });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+    setLock(t.main, { runId: t.runId, start: now() - 7200, deadline: now() - 60 });
+    const stale = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: t.main, encoding: "utf8" });
+    expect({ code: stale.status, err: stale.stderr }).toEqual({ code: 1, err: `refused: cycle ${t.runId}'s lock is past its deadline: no journey cycle is running\n` });
+  }, 30_000);
+
+  it("a SIGTERM or SIGHUP to show ends the CLI and the dashboard it started, leaving no process behind", async () => {
+    for (const sig of ["SIGTERM", "SIGHUP"] as const) {
+      const t = liveRun();
+      const dir = tempDir();
+      const pids = join(dir, "pids");
+      // Stands in for the CLI's show: it starts a dashboard child in its own process group, as the CLI does, and blocks.
+      const js = join(dir, "show-cli.cjs");
+      writeFileSync(js, `const { spawn } = require("node:child_process");\nconst c = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });\nrequire("node:fs").writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, c.pid]));\nsetInterval(() => {}, 1000);\n`);
+      writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+      mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+      const show = spawn(process.execPath, [ARGUS_LIVE, "show"], { cwd: t.main, stdio: "ignore" });
+      expect(await until(() => existsSync(pids) && readFileSync(pids, "utf8").length > 0, 10_000)).toBe(true);
+      const [cli, dashboard] = JSON.parse(readFileSync(pids, "utf8")) as number[];
+      try {
+        show.kill(sig);
+        expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000), sig).toBe(true);
+        expect(await until(() => !alive(cli) && !alive(dashboard), 10_000), sig).toBe(true);
+      } finally {
+        for (const p of [cli, dashboard]) if (alive(p)) process.kill(p, "SIGKILL");
+      }
+    }
+  }, 60_000);
+
   it("the usage line names show", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     expect(r.stderr).toContain(" | show | ");

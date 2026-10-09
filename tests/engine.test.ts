@@ -973,6 +973,8 @@ describe("the journey lane's engine text", () => {
 
   it("/sapu:journey offers the dashboard", () => {
     expect(read(JOURNEY)).toContain("`live show`");
+    // It reads the lock of the directory it runs in: the owner's terminal starts anywhere.
+    expect(read(JOURNEY)).toContain("`cd <main checkout> && node <real path> show`");
   });
 
   it("argus SKILL.md grows only by its pointer and the lane in SELECT", () => {

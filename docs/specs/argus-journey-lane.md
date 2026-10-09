@@ -88,7 +88,10 @@ engine, two doors.
 | `/sapu:journey <id> [<id>…]` | one cycle on the named journeys (argus prints what they displaced) |
 
 One invocation = one bounded cycle; a whole-catalog pass is that many invocations. Each run prints
-the command that opens the CLI's live session dashboard, for an owner who wants to watch.
+the command that opens the CLI's live session dashboard, for an owner who wants to watch: `cd <main
+checkout> && node <real path>/argus-live.mjs show`. `show` is refused without a cycle whose browser is
+up, on a lock past its deadline, and (named) without the run's directory; the CLI leads a process group
+of its own, and a SIGINT, SIGTERM or SIGHUP to `show` ends that whole group, its dashboard included.
 
 ### Entry points, policy, versions
 

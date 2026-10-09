@@ -871,3 +871,8 @@ Refs #53
   journeys.md's ORIENT stops only on a lock without it: after a reboot or a dead reaper the cycle goes on
   to the `up` that takes the lock over and recovers it, where it used to stop at step 1 for ever.
   `BUDGETS["skills/argus/journeys.md"]` is 12 500 (it was 12 000).
+- **Phase-end review (QA).** `show` spawns the CLI as the leader of its own process group and sends SIGINT,
+  SIGTERM and SIGHUP to that group (and a SIGTERM once the CLI ended), so a kill or a closed terminal no
+  longer orphans `playwright-cli.js show` and `dashboardApp.js`; it is refused on a lock past its deadline,
+  and names a missing run directory instead of spawnSync's ENOENT. `/sapu:journey` prints it as `cd <main
+  checkout> && node <real path> show`.

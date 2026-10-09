@@ -26,7 +26,7 @@ Run it from the main session only, never inside `/sapu:inspector` or a subagent:
 
 One invocation = one bounded cycle; a pass over the whole catalog is that many invocations. The report's catalog line is `map-check`'s own (`catalog: <k> journeys, <d> dropped`).
 
-**Watching.** Once `live up` printed its summary, print for the owner the command that opens the browser CLI's dashboard on this cycle's sessions, `live show` written out with the plugin's real path (`realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`), to run in a terminal of their own: it blocks until Ctrl-C. Never run it yourself.
+**Watching.** Once `live up` printed its summary, print for the owner the command that opens the browser CLI's dashboard on this cycle's sessions, `live show` written out as `cd <main checkout> && node <real path> show` (the real path from `realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`: it reads the lock of the directory it runs in), to run in a terminal of their own: it blocks until Ctrl-C. Never run it yourself.
 
 ## The report
 
