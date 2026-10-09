@@ -886,7 +886,7 @@ const GIT_HOME_ENV = /^(HOME|XDG_CONFIG_HOME)=/;
 /** Environment that injects git config into every git command. */
 const GIT_CONFIG_ENV = /^GIT_CONFIG_(COUNT|KEY_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
 // Programs that name files without reading them: a credential file may be listed, never read.
-const LISTERS = new Set(["ls", "tree", "stat", "du", "eza", "exa", "lsd", "test", "[", "realpath", "readlink", "dirname", "basename", "cd", "pushd"]);
+const LISTERS = new Set(["ls", "tree", "stat", "du", "eza", "exa", "lsd", "test", "[", "realpath", "readlink", "dirname", "basename", "cd", "pushd", "echo", "printf"]);
 const SCRIPT_EXT = /\.(sh|js|mjs|cjs|ts|mts|cts|py)$/;
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

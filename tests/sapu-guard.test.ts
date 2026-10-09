@@ -3349,6 +3349,8 @@ describe("sapu-guard — gh config's token, brace and default forms of the hosts
     ["ls ~/.config/gh"],
     ["ls -la ~/.config/gh/"],
     ["ls ~/.config/gh/hosts.yml"],
+    ["echo ~/.config/gh/hosts.yml"],
+    ["printf '%s\\n' ~/.config/gh/hosts.yml"],
     ["cat test/fixtures/gh/hosts.yml"],
     ["cat fixtures/gh/hosts.yml"],
     ['echo "gh/hosts.yml" >> notes.txt'],
