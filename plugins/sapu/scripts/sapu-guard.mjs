@@ -98,8 +98,9 @@
 // `npx @anthropic-ai/claude-code`, and after an option's value), and so is a mutating git command in
 // a plugin folder or a checkout holding one; a plugin manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
 // worktree makes that folder unwritable for the session's subagents too. The journey lane's script
-// (argus-live.mjs) is known by its name, the real file behind a path, or a shell-built name a verb of
-// it follows: a copy under another name, or an interpreter's own code importing it, is not. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// (argus-live.mjs) is known as an interpreter's first operand or a file its option loads (-r, --import),
+// by its name, the real file behind a path, or a shell-built name a verb of it or a built word follows:
+// a copy under another name, or an interpreter's own code importing it, is not. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
 // contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via

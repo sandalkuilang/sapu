@@ -1501,11 +1501,16 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 
 For every subagent, the lane's script itself (`argus-live.mjs`) is the orchestrator's: only its reads
 `status`, `status --json` and `check` pass, every word after the script literal (a redirection aside),
-and the explorer's `pw` (above). Any other verb is refused, however the script is reached: its name in
-any case or the real file behind a path (a symlink of another name), by its path or through an
-interpreter past its options, behind env prefixes, wrappers (`env`, `exec`, `nice`, `xargs`) and
-`sh -c`; a script name the shell builds whole (`node "$S" up`, `node $(…) up`) counts as the script
-when one of its verbs follows. `map-check --list` rewrites `.argus/journeys.json`, so it is not a read.
+and the explorer's `pw` (above). Any other verb is refused when the script is reached by its name in
+any case or the real file behind a path (a symlink of another name), by its path, through an
+interpreter as its first operand past its options and their values, or loaded by an interpreter's
+option (`-r`, `--import`, spaced or after `=`), behind env prefixes, wrappers (`env`, `exec`, `nice`,
+`xargs`) and `sh -c`; a script name or a loaded file the shell builds whole (`node "$S" up`, `node $(…)
+up`, `node --import=$S x up`) counts as the script when one of its verbs, or any word the shell
+builds, follows. Only the first operand is the script: `node --test a.test.mjs argus-live.mjs` and
+eslint over the file pass, and `node --check` runs nothing. Not caught (a guard LIMIT): a copy of the
+script under another name, or an interpreter's own code that imports it (`node -e`). `map-check
+--list` rewrites `.argus/journeys.json`, so it is not a read.
 
 ## 12. Errors
 

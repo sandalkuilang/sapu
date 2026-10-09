@@ -832,8 +832,12 @@ could use them.
   `pw` (above). Every other verb (`up`, `down`, `renew`, `slot`, `repro`, `scrub`, `intake`, `select`,
   `visit`, `map-check` with or without `--list` or `--merge`, which rewrites the map, …) is refused, by
   the script's name in any case or the real file behind a path, run by its path or by an interpreter
-  past its options, behind env prefixes, wrappers and `sh -c`; a script name the shell builds whole
-  (`node "$S" up`) counts as the script when one of its verbs follows.
+  as its first operand past its options and their values, or loaded by an option (`-r`, `--import`),
+  behind env prefixes, wrappers and `sh -c`; a script name or a loaded file the shell builds whole
+  (`node "$S" up`, `node --import=$S x up`) counts as the script when one of its verbs, or any word the
+  shell builds, follows. A later operand is an argument (`node --test a.test.mjs argus-live.mjs`), and
+  `node --check` runs nothing. Not caught (a guard LIMIT): a copy of the script under another name, or
+  an interpreter's own code that imports it (`node -e`).
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,
