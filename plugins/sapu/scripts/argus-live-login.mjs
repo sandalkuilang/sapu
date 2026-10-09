@@ -6,7 +6,7 @@
 import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openSession, slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
+import { openSession, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
 import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
 import { clean, nonce } from "./argus-live-fence.mjs";
@@ -253,8 +253,13 @@ const STAGES = {
 `,
   // After an explorer's command: the signals every page buffered (drained), logged_in on the current
   // page (null without a target), its URL and aria snapshot (the wrapper hashes them), the tab count.
+  // The signal script is evaluated again in every page first (it installs once per document): a popup a
+  // link opened (target=_blank rel=opener) never ran the init script, and is watched from here on.
   observe: `  const signals = [];
   for (const pg of ctx.pages()) {
+    try {
+      await pg.evaluate(${JSON.stringify(SIGNAL_SCRIPT)});
+    } catch (e) {}
     try {
       signals.push(...(await pg.evaluate(() => {
         const b = window.__argusSignals || [];
@@ -373,6 +378,21 @@ function reasonOf(r) {
 }
 
 /**
+ * Where the failed logins of the configured accounts are kept: run.json `loginFailed` (`{"<role>/<user>":
+ * reason}`) of run `runId` → `{get(key) → reason | null, set(key, reason)}`. Only the wrapper's own logins
+ * of configured accounts write it; an account the explorer created keeps its failures in its slot.
+ */
+export function runFailures(main, runId) {
+  return {
+    get: (key) => {
+      const rec = readRun(main);
+      return rec && rec.runId === runId && rec.loginFailed && Object.hasOwn(rec.loginFailed, key) ? rec.loginFailed[key] : null;
+    },
+    set: (key, reason) => updateRun(main, runId, (prev) => (prev ? { ...prev, loginFailed: { ...(prev.loginFailed ?? {}), [key]: reason } } : undefined), { create: false }),
+  };
+}
+
+/**
  * Signs session `session` (account `account`, `<role>.<k>`) in as `user` (spec §9 "Login") by plan
  * `plan` (loginPlan): the credentials stage, then, when a one-time-code field shows, a code for a time
  * step reserved in the repo's TOTP file (totpFile, reserveStep) → `{ok: true, origins}` or `{ok: false,
@@ -380,17 +400,16 @@ function reasonOf(r) {
  * `no-totp-secret` or `error: playwright` (fixed words: Playwright's own text, which may quote the page,
  * goes to the run's `logs/logins.log`, masked); `origins` = every origin the pages requested meanwhile. On
  * success the session's request and console lists are cleared (`requests --clear`, `console --clear`),
- * so the login's traffic never reaches the explorer. A failure is recorded in run.json
- * `loginFailed["<role>/<user>"]`, and a user found there is refused at once, with no browser work: a
- * failed login is never retried within a run (lockouts). A CLI that fails (the session gone) throws
- * `failed: …` and records nothing.
+ * so the login's traffic never reaches the explorer. A failure is recorded in `failures` under
+ * `"<role>/<user>"` (by default runFailures: run.json `loginFailed`, the configured accounts'), and a user
+ * found there is refused at once, with no browser work: a failed login is never retried within a run
+ * (lockouts). A CLI that fails (the session gone) throws `failed: …` and records nothing.
  */
-export async function login({ main, runId, session, account, user, password, totpSecret = null, plan, js, home, cwd, runner = runAsync, now = Date.now, sleep: wait = sleep }) {
+export async function login({ main, runId, session, account, user, password, totpSecret = null, plan, js, home, cwd, runner = runAsync, now = Date.now, sleep: wait = sleep, failures = runFailures(main, runId) }) {
   runIdOk(runId);
   const role = String(account).split(".")[0];
   const key = `${role}/${user}`;
-  const rec = readRun(main);
-  const known = rec && rec.runId === runId && rec.loginFailed && Object.hasOwn(rec.loginFailed, key) ? rec.loginFailed[key] : null;
+  const known = failures.get(key);
   if (known) return { ok: false, reason: known, origins: [] };
   const timeoutMs = stageTimeout(plan);
   const call = (stage, payload) => runCode({ js, session, cwd, home, code: loginCode(stage, { ...payload, loggedIn: plan.loggedIn, settleMs: plan.settleMs }), timeoutMs, runner });
@@ -409,7 +428,7 @@ export async function login({ main, runId, session, account, user, password, tot
   if (!reason && r.state !== "in") reason = reasonOf(r);
   if (reason) {
     if (r.state === "error") logDetail(main, runId, account, user, r.error ?? "unknown", { password, ...(totpSecret ? { totp: totpSecret } : {}) });
-    updateRun(main, runId, (prev) => (prev ? { ...prev, loginFailed: { ...(prev.loginFailed ?? {}), [key]: reason } } : undefined), { create: false });
+    failures.set(key, reason);
     return { ok: false, reason, origins: [...origins] };
   }
   for (const args of [["requests", "--clear"], ["console", "--clear"]]) await runCli({ js, session, args, cwd, home, timeoutMs: 30_000, runner });

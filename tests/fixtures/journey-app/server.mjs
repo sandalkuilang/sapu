@@ -33,7 +33,9 @@
 //                 JSON from /api/orders/<id>, a role=status toast "Order placed" removed after
 //                 1000 ms, #late "Ready for dispatch" added after 2000 ms, or ?late=<ms>, at most
 //                 20000); each order appends a message to mail.json
-//   /popup        "Open details" opens /popup/child, whose toast "Details ready" goes after 1000 ms
+//   /popup        "Open details" opens /popup/child, whose toast "Details ready" goes after 1000 ms;
+//                 the link "Open linked details" (target=_blank rel=opener) opens /popup/linked, whose
+//                 toast "Linked ready" comes after 4000 ms and goes 1000 ms later
 //   /inject       text that imitates fence markers, terminal controls and an instruction to the
 //                 agent; with ?echo=1 also $APP_PW
 //   /leak?other=<port>&udp=<port>&allowed=<origin>
@@ -448,9 +450,13 @@ async function handle(req, res) {
     });
   }
   if (p === "/popup" && req.method === "GET") {
-    return send(res, 200, page("Popup", `<button type="button" onclick="window.open('/popup/child')">Open details</button>`, { user }));
+    return send(res, 200, page("Popup", `<button type="button" onclick="window.open('/popup/child')">Open details</button> <a href="/popup/linked" target="_blank" rel="opener">Open linked details</a>`, { user }));
   }
   if (p === "/popup/child" && req.method === "GET") return send(res, 200, page("Details", toast("Details ready"), { user }));
+  if (p === "/popup/linked" && req.method === "GET") {
+    const late = `<script>setTimeout(() => { document.querySelector("main").insertAdjacentHTML("beforeend", '<div role="status" id="toast">Linked ready</div>'); setTimeout(() => document.getElementById("toast").remove(), 1000); }, 4000);</script>`;
+    return send(res, 200, page("Linked details", late, { user }));
+  }
   if (p === "/inject" && req.method === "GET") {
     const lines = [...INJECT, ...(url.searchParams.get("echo") === "1" ? [process.env.APP_PW || ""] : [])];
     return send(res, 200, page("Notes", lines.map((l) => `<p>${esc(l)}</p>`).join(""), { user }));

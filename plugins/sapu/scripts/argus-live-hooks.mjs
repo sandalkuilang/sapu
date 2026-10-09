@@ -117,12 +117,17 @@ export function codeCommand(sub, args, { worktree, runner = run }) {
   if (sub === "files") {
     for (const p of out.split("\0")) if (p && !argusPath(p)) lines.push(path.join(worktree, p));
   } else {
-    // -z: `HEAD:<path>\0<line>\0<text>\n` per match.
-    for (const rec of out.split("\n")) {
-      const [file, line, ...text] = rec.split("\0");
-      if (!file || line === undefined) continue;
-      const p = file.replace(/^HEAD:/, "");
-      if (!argusPath(p)) lines.push(`${path.join(worktree, p)}:${line}:${text.join("\0")}`);
+    // -z: `HEAD:<path>\0<line>\0<text>\n` per match. Read in that order: a path may hold a newline (never
+    // a NUL), the text a NUL (never a newline), so splitting on either first would misread the other.
+    for (let i = 0; i < out.length; ) {
+      const a = out.indexOf("\0", i);
+      const b = a < 0 ? -1 : out.indexOf("\0", a + 1);
+      if (b < 0) break;
+      const c = out.indexOf("\n", b + 1);
+      const end = c < 0 ? out.length : c;
+      const p = out.slice(i, a).replace(/^HEAD:/, "");
+      if (p && !argusPath(p)) lines.push(`${path.join(worktree, p)}:${out.slice(a + 1, b)}:${out.slice(b + 1, end)}`);
+      i = end + 1;
     }
   }
   return { code: 0, text: lines.join("\n") };

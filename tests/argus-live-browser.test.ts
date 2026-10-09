@@ -532,6 +532,17 @@ describe("argus-live pw in Chrome", () => {
     expect(`${fenced(popup)}\n${fenced(later)}`).toContain("signal status: Details ready");
   }, 180_000);
 
+  it("a popup a link opened (target=_blank rel=opener) is watched from the next observation on", async () => {
+    const t = await pwRun();
+    await t.call("buyer.1", "goto", "/popup");
+    const opened = await t.call("buyer.1", "click", "getByRole('link', { name: 'Open linked details' })");
+    expect(opened.code).toBe(0);
+    const next = await t.call("buyer.1", "tab-list");
+    await new Promise((ok) => setTimeout(ok, 6000)); // its toast came and went meanwhile
+    const later = await t.call("buyer.1", "tab-list");
+    expect([opened, next, later].map(fenced).join("\n")).toContain("signal status: Linked ready");
+  }, 180_000);
+
   it("re-login after expiry, the command not repeated; a page without the header is not a lost session", async () => {
     const t = await pwRun();
     await t.call("buyer.1", "goto", "/no-header");
@@ -632,15 +643,17 @@ describe("argus-live pw in Chrome", () => {
     await t.call("buyer.1", "goto", "/");
     const bad = await t.call("buyer.1", "login", "buyer9@example.test", "Pw-9");
     expect(bad.out).toEqual(["calls 2/120", "login: failed (rejected)"]);
-    const good = await t.call("buyer.1", "login", "buyer2@example.test", PW);
-    expect(good.out).toEqual(["calls 3/120", "login: ok"]);
+    // A configured user is the wrapper's: refused. clerk2 is an app account the config does not list.
+    expect(await t.call("buyer.1", "login", "buyer2@example.test", PW)).toEqual({ code: 1, out: ["refused: login takes an account the journey created, never a configured user", "calls 3/120"] });
+    const good = await t.call("buyer.1", "login", "clerk2@example.test", PW);
+    expect(good.out).toEqual(["calls 4/120", "login: ok"]);
     await t.call("buyer.1", "goto", "/");
-    expect(fenced(await t.call("buyer.1", "snapshot"))).toContain("Signed in as buyer2@example.test");
+    expect(fenced(await t.call("buyer.1", "snapshot"))).toContain("Signed in as clerk2@example.test");
     expect((await fetch(`${t.base}/__test/expire`, { method: "POST", headers: control })).status).toBe(200);
     expect(outside(await t.call("buyer.1", "goto", "/orders/new"))).toContain("re-logged-in: buyer.1");
     await t.call("buyer.1", "goto", "/");
     const after = fenced(await t.call("buyer.1", "snapshot"));
-    expect(after).toContain("Signed in as buyer2@example.test");
+    expect(after).toContain("Signed in as clerk2@example.test");
     expect(after).not.toContain(PW);
   }, 180_000);
 });

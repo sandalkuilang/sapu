@@ -19,6 +19,9 @@ const MARKER = /^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$/;
 /** The longest free-text string kept, and the largest return taken. */
 const TEXT_CAP = 500;
 const JSON_CAP = 256 * 1024;
+/** How deep a repro step's objects and arrays may nest (the step itself is level 1), and the shape of its keys. */
+const REPRO_DEPTH = 8;
+const REPRO_KEY = /^[A-Za-z0-9_-]{1,40}$/;
 
 /** A free-text string capped at 500 characters (`…` appended; a surrogate pair never split). */
 const cap = (s) => {
@@ -82,12 +85,26 @@ export function validateReturn(obj, { journey, accounts, outFiles }) {
       keys(x, allowed, at);
       return fn(x, at);
     });
-  /** A repro: at most 100 objects whose leaves are strings, numbers or booleans (phase 4 validates its steps). */
-  const leaves = (v, at) => {
+  /**
+   * A repro: at most 100 objects whose leaves are strings, numbers or booleans, nested at most REPRO_DEPTH
+   * levels, their keys REPRO_KEY's shape (phase 4 validates its steps).
+   */
+  const leaves = (v, at, depth = 1) => {
     if (typeof v === "string") return cap(v);
     if (typeof v === "number" || typeof v === "boolean") return v;
-    if (Array.isArray(v)) return v.map((x, i) => leaves(x, `${at}[${i}]`));
-    if (isObj(v)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, leaves(x, `${at}.${k}`)]));
+    if ((Array.isArray(v) || isObj(v)) && depth > REPRO_DEPTH) {
+      err(`${at} nests deeper than ${REPRO_DEPTH} levels`);
+      return null;
+    }
+    if (Array.isArray(v)) return v.map((x, i) => leaves(x, `${at}[${i}]`, depth + 1));
+    if (isObj(v)) {
+      const entries = Object.entries(v);
+      if (entries.some(([k]) => !REPRO_KEY.test(k))) {
+        err(`${at} has a key that is not a short plain word (${REPRO_KEY.source})`);
+        return null;
+      }
+      return Object.fromEntries(entries.map(([k, x]) => [k, leaves(x, `${at}.${k}`, depth + 1)]));
+    }
     err(`${at} must hold only strings, numbers and booleans`);
     return null;
   };

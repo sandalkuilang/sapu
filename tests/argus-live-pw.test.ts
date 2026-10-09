@@ -36,6 +36,8 @@ import { intake } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
+import { codeCommand } from "../plugins/sapu/scripts/argus-live-hooks.mjs";
+// @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 
 type Obj = Record<string, any>;
@@ -1787,6 +1789,34 @@ describe("argus-live pw — refusals and limits", () => {
     expect(lines(await t.call("buyer.1", "find", "Ready now")).at(-1)).toBe("calls 2/120");
   });
 
+  it("find whose retry fails reports the CLI's error, not found", async () => {
+    const t = pwRun((c) => (c.settle_ms = 1200));
+    // The first find matches nothing, every later one fails (exit 1); every other command goes to the shim.
+    const flaky = join(tempDir(), "flaky.mjs");
+    writeFileSync(
+      flaky,
+      `import fs from "node:fs";
+const cmd = process.argv.slice(2).find((a) => !a.startsWith("-"));
+if (cmd === "find") {
+  const n = ${JSON.stringify(`${flaky}.n`)};
+  const seen = fs.existsSync(n);
+  fs.writeFileSync(n, "1");
+  if (seen) {
+    process.stdout.write("### Error\\nError: the page went away\\n");
+    process.exit(1);
+  }
+  process.stdout.write('### Result\\nNo matches found for "Ready".\\n');
+  process.exit(0);
+}
+await import(${JSON.stringify(t.shim)});
+`,
+    );
+    const r = await pw(t.main, [t.token, "buyer.1", "find", "Ready"], { cli: flaky });
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toContain("Error: the page went away");
+    expect(r.out.slice(1)).toEqual(["calls 1/120"]);
+  });
+
   it("console errors are reported once each; blocked requests become one blocked line per origin, never console errors", async () => {
     const t = pwRun();
     t.answer(
@@ -1823,6 +1853,42 @@ describe("argus-live pw — refusals and limits", () => {
     expect(r.out.at(-1)).toBe("re-logged-in: buyer.1");
     expect(t.calls().filter((c) => c.argv.includes("run-code")).at(-1)!.code).toContain('"user":"buyer8@example.test"');
     expect(await t.call("anon", "login", "a@example.test", "x")).toEqual({ code: 1, out: ["refused: anon is never signed in", "calls 4/120"] });
+  });
+
+  it("an explorer's login never names a configured user, and a created account's failure stays in its slot", async () => {
+    const t = pwRun();
+    // Slot 2 holds buyer2, its session open and signed in.
+    const m2 = mintSlot(t.main, { slot: 2, journey: "order-to-cash", accounts: { "buyer.1": "buyer2@example.test" } });
+    const dir2 = slotDir(t.main, t.runId, 2);
+    const me = { pid: process.pid, pgid: process.pid, started: startTime(process.pid) };
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, sessions: [...prev.sessions, { name: sessionName(t.runId, 2, "buyer.1"), slot: 2, account: "buyer.1", cwd: dir2, home: join(t.home, "browser"), daemon: me, browser: null }] }));
+    writeSlotState(dir2, { ...readSlotState(dir2), sessions: { "buyer.1": { signedIn: true } } });
+    // Another slot's user, the slot's own, another role's, spelled otherwise: refused before any browser work, never echoed.
+    for (const [i, u] of ["buyer2@example.test", "buyer1@example.test", "clerk1@example.test", " Buyer2@Example.TEST "].entries()) {
+      const r = await t.call("buyer.1", "login", u, "guess");
+      expect(r, u).toEqual({ code: 1, out: ["refused: login takes an account the journey created, never a configured user", `calls ${i + 1}/120`] });
+    }
+    expect(t.calls()).toEqual([]);
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+    // A created account's failure: kept in the slot's state.json, never in run.json, never retried.
+    t.queue({ state: "failed", status429: false, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "login", "buyer9@example.test", "x")).out).toEqual(["calls 5/120", "login: failed (rejected)"]);
+    expect(readSlotState(t.dir).createdFailed).toEqual({ "buyer/buyer9@example.test": "rejected" });
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+    const stages = t.calls().length;
+    expect((await t.call("buyer.1", "login", "buyer9@example.test", "y")).out).toEqual(["calls 6/120", "login: failed (rejected)"]);
+    expect(t.calls()).toHaveLength(stages);
+    // Both slots' journeys go on.
+    expect((await pw(t.main, [m2.token, "buyer.1", "goto", "/"], { cli: t.shim })).out[0]).toMatch(/^<<<PAGE-/);
+    expect((await t.call("buyer.1", "goto", "/")).out[0]).toMatch(/^<<<PAGE-/);
+    // A created account that worked, then failed a re-login: HARNESS from its slot's record, run.json untouched.
+    t.queue({ state: "in", status429: false, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "login", "buyer8@example.test", "Pw-8")).out).toEqual(["calls 8/120", "login: ok"]);
+    t.queue({ signals: [], loggedIn: false, url: "x", aria: "y", tabs: 1 }, { in: false, origins: [] }, { state: "failed", status429: false, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "click", "e5")).out.at(-1)).toBe("harness: login failed");
+    expect(readSlotState(t.dir).createdFailed).toEqual({ "buyer/buyer9@example.test": "rejected", "buyer/buyer8@example.test": "rejected" });
+    expect((await t.call("buyer.1", "goto", "/")).out[0]).toBe("HARNESS: buyer.1 cannot sign in this cycle; submit status aborted");
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
   });
 
   it("a login's error is told outside any fence in fixed words; its detail goes to the run's log, masked", async () => {
@@ -1919,6 +1985,17 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     expect(body(r)).toBe(`${t.wt}/src/app.js:2:export function createOrder() {}`);
     expect(r.out[1]).toBe("calls 1/120");
     expect(body(await t.call("code", "grep", "nothing-matches-this"))).toBe("");
+  });
+
+  it("code grep reads a path holding a newline exactly: under .argus it is dropped, as code files drops it", () => {
+    const wt = tempDir();
+    const g = (...a: string[]) => execFileSync("git", ["-C", wt, ...a], { encoding: "utf8" });
+    g("init", "-q");
+    const blob = execFileSync("git", ["-C", wt, "hash-object", "-w", "--stdin"], { input: "leakToken = 1\n", encoding: "utf8" }).trim();
+    for (const p of [".argus/x\nsrc/leak.txt", "src/a\nb.txt"]) g("update-index", "--add", "--cacheinfo", `100644,${blob},${p}`);
+    g("-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "x");
+    expect(codeCommand("grep", ["leakToken"], { worktree: wt })).toEqual({ code: 0, text: `${wt}/src/a\nb.txt:1:leakToken = 1` });
+    expect(codeCommand("files", [], { worktree: wt })).toEqual({ code: 0, text: `${wt}/src/a\nb.txt` });
   });
 
   it("code grep's pattern is never an option; code files takes a literal pathspec inside the worktree", async () => {
@@ -2029,6 +2106,36 @@ describe("argus-live submit and intake", () => {
     expect((await t.send(t.token, "{not json")).out[0]).toBe("refused: return: not JSON");
     expect(returnsOf(t)).toEqual([]);
     expect(tokenSlot(t.main, t.token).slot).toBe(1);
+  });
+
+  it("submit bounds a repro: at most 8 levels deep, keys short plain words; one error each", async () => {
+    const t = submitRun();
+    const nest = (n: number): unknown => (n === 0 ? 1 : { a: nest(n - 1) });
+    const withRepro = (repro: unknown) => JSON.stringify(good({ candidates: [{ ...good().candidates[0], repro: [repro] }] }));
+    const cases: [string, RegExp][] = [
+      [withRepro(nest(9)), /^refused: return: candidates\[0\]\.repro\[0\](\.a){8} nests deeper than 8 levels$/],
+      // As deep as 256 KB allows: an error, never a crash.
+      [withRepro(nest(1)).replace('{"a":1}', `${"[".repeat(100_000)}${"]".repeat(100_000)}`), /^refused: return: candidates\[0\]\.repro\[0\] must be an object; candidates\[0\]\.repro\[0\](\[0\]){8} nests deeper than 8 levels$/],
+      [withRepro({ ["k".repeat(41)]: 1 }), /^refused: return: candidates\[0\]\.repro\[0\] has a key that is not a short plain word \(\^\[A-Za-z0-9_-\]\{1,40\}\$\)$/],
+      [withRepro({ ok: { "a b": 1 } }), /^refused: return: candidates\[0\]\.repro\[0\]\.ok has a key that is not a short plain word /],
+    ];
+    for (const [json, re] of cases) {
+      const r = await t.send(t.token, json);
+      expect(r.code, String(re)).toBe(1);
+      expect(r.out).toHaveLength(1);
+      expect(r.out[0]).toMatch(re);
+    }
+    expect(returnsOf(t)).toEqual([]);
+    expect((await t.send(t.token, withRepro(nest(8)))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+  });
+
+  it("submit needs only the slot: an invalid .argus/live.json does not block it", async () => {
+    const t = submitRun();
+    writeFileSync(join(t.main, ".argus/live.json"), "{not json");
+    expect((await pw(t.main, [t.token, "code", "files"])).out[0]).toMatch(/^failed: \.argus\/live\.json: /);
+    expect((await t.send(t.token, { ...good(), status: "bogus" })).out[0]).toMatch(/^refused: return: status must be one of/);
+    expect(await t.send(t.token, good())).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 status done"] });
+    expect(readRun(t.main).slots["1"]).toMatchObject({ submitted: true, tokenHash: null });
   });
 
   it("submit caps every free-text field at 500 characters", async () => {

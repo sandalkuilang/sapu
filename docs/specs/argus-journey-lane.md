@@ -246,6 +246,8 @@ responses. **Absence is never instant:** anything judged missing is waited for u
 **Short-lived signals** (toasts, `role=status`/`alert`, `aria-live` regions, Notification calls) are
 captured by an init script installed in every page and popup, which logs each to the console; the
 wrapper reports the new ones after every command, so a toast gone before the next snapshot is seen.
+A popup a link opened (`target=_blank rel=opener`) gets the script at the next command's observation:
+what it signalled before that is not seen (a known limit).
 
 **Token discipline.** Read the page with `find` or `snapshot --depth=<n>` first and a full snapshot
 only when needed; several `pw` calls per Bash call; screenshots only as evidence for a candidate.
@@ -758,7 +760,8 @@ repo needs no Playwright of its own.
   -e <pattern> HEAD -- <pathspec>` and `git --literal-pathspecs -C <wt> ls-tree -z -r --name-only HEAD
   -- <pathspec>`, no flag from the explorer: HEAD's tree only (as the explorer's Read sees blobs at HEAD), any path under `.argus/` (compared without case) filtered out, each path printed
   absolute inside the worktree, output fenced like page text; `login <user> <password>` (accounts
-  the journey itself created); `trigger <name> [values…]`; `facts <marker>`; `mail`; `submit <json>`.
+  the journey itself created: a user of `roles.*.users`, in any slot, is refused, and a created account's
+  failure is kept in its slot, never in run.json's `loginFailed`); `trigger <name> [values…]`; `facts <marker>`; `mail`; `submit <json>`.
   Everything else is refused — `run-code`, `eval`, `route`, `unroute`, `network-state-set`,
   `state-*`, `cookie-set`, `*storage-set`, `attach`, `close-all`, `kill-all`, `list`, `show`,
   `install*` — as are the flags `-s`/`--session`, `--config`, `--browser`, `--cdp`, `--profile`,

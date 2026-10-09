@@ -1347,6 +1347,27 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
   - Spec §7 updated: `returns/<slot>.<generation>.json`, the retirement, and `submit` past BUDGET and
     DEADLINE.
 
+- **Review of Tasks 11–13 (fixed).**
+  - `pw … login <user> <password>`: a user of any role's `users` (any slot's, compared trimmed and
+    without case) is refused (`refused: login takes an account the journey created, never a configured
+    user`, the value never echoed); a created account's failures go to the slot's state.json
+    `createdFailed["<role>/<user>"]` (its HARNESS check and its no-retry read it there), so run.json
+    `loginFailed` is written only by the wrapper's logins of configured accounts. `login()` takes
+    `failures` (`{get, set}`; default `runFailures(main, runId)`, exported). The Chrome test's created
+    account is now `clerk2@example.test`, an app account the config does not list.
+  - `code grep` reads `git grep -z`'s records in order (path to NUL, line to NUL, text to newline), so a
+    path holding a newline is one path and one under `.argus/` is dropped, as `code files` drops it.
+  - `submit`: a repro nests at most 8 levels (`… nests deeper than 8 levels`) and its keys match
+    `^[A-Za-z0-9_-]{1,40}$`, both validation errors (`refused: return: …`); `submit` is handled before
+    `.argus/live.json` is read, so a broken config never blocks a return.
+  - `find`: a retry the CLI failed prints its error in the fence and no `found`/`not found` line.
+  - Signals: the `observe` stage evaluates `SIGNAL_SCRIPT` again in every page before draining. The
+    script now watches the current document on every evaluation and wraps `window.open`/`Notification`
+    once per window (probed: a `target=_blank rel=opener` popup keeps its about:blank window, where the
+    init script ran and set the installed flag, so the old early return skipped its real document).
+    Known limit: such a popup is watched from the next call's observation on; a signal it raised and
+    removed before that is lost. The fixture's `/popup` has the link, `/popup/linked` the late toast.
+
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level
 `login_open`; the ranges of `settle_ms`, `login_spacing_ms`, `viewports` and

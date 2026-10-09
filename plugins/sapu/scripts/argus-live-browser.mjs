@@ -202,11 +202,12 @@ export function slotDir(main, runId, slot) {
  * a toast gone before the next snapshot is still seen. Probed: Chrome runs init scripts in a popup's first
  * document (about:blank) but not in the page it then navigates to, which keeps that window; so the script
  * also wraps window.open and watches the popup's document from the opener once it is no longer about:blank
- * (same origin only: a cross-origin popup is outside the run anyway).
+ * (same origin only: a cross-origin popup is outside the run anyway). A popup a link opened (target=_blank
+ * rel=opener) has no such hook: `pw`'s observation evaluates this script again in every page (each
+ * evaluation watches the current document once; the wrappers go on once per window), so it is watched from
+ * the next call on, and a signal it raised before that is not seen.
  */
 export const SIGNAL_SCRIPT = `(() => {
-  if (window.__argusSignalsInstalled) return;
-  window.__argusSignalsInstalled = true;
   const kindOf = (el) => {
     if (!el || el.nodeType !== 1) return null;
     const role = el.getAttribute("role");
@@ -264,7 +265,11 @@ export const SIGNAL_SCRIPT = `(() => {
     }).observe(doc.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["role", "aria-live"] });
     return true;
   };
+  // Every evaluation watches the current document (once per document); the wrappers below go on once per
+  // window: a popup keeps the window of its about:blank, where the init script ran, for its next document.
   if (!watch(window)) document.addEventListener("DOMContentLoaded", () => watch(window));
+  if (window.__argusSignalsInstalled) return;
+  window.__argusSignalsInstalled = true;
   const nativeOpen = window.open;
   if (typeof nativeOpen === "function") {
     window.open = function (...args) {
