@@ -722,7 +722,9 @@ defence in depth and not enforcement:
     origins, ports, worktree}` (`deadline` in epoch seconds) — and `status --json` repeats it with
     `mode` (`map` for an `up --map` run, else `live`; null when no cycle runs) and
     `slots`, each slot's `{journey, generation, calls, max, submitted, retired}` (`retired`: it holds
-    no live token; `status` marks such a slot ` retired`): the orchestrator reads that, never run.json.
+    no live token; `status` marks such a slot ` retired`), and `stale: true` once the lock's deadline
+    has passed (the next `up` takes it over and recovers it, so journeys.md's ORIENT goes on): the
+    orchestrator reads that, never run.json.
     `status` prints `mode: map` for a map run and a map slot as `slot <n>: map generation <g> calls
     <c>/<max>`.
 

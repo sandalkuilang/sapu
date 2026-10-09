@@ -867,3 +867,7 @@ Refs #53
   imported the run module).
 - **Phase-end review.** argus-live-config.mjs's key lists are frozen, `REQUIRED` is exported with them,
   and engine.test pins live.md's `Required:` line to it, in order.
+- **Phase-end review (QA).** `status --json` adds `stale: true` once the lock's deadline has passed, and
+  journeys.md's ORIENT stops only on a lock without it: after a reboot or a dead reaper the cycle goes on
+  to the `up` that takes the lock over and recovers it, where it used to stop at step 1 for ever.
+  `BUDGETS["skills/argus/journeys.md"]` is 12 500 (it was 12 000).

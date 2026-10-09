@@ -567,7 +567,7 @@ const BUDGETS: Record<string, number> = {
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 15_500,
-  "skills/argus/journeys.md": 12_000,
+  "skills/argus/journeys.md": 12_500,
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_000,
   "skills/journey/live.md": 14_500,
@@ -898,6 +898,12 @@ describe("the journey lane's engine text", () => {
     }
     return steps;
   };
+
+  it("ORIENT stops only on a live lock: a stale one goes on to the up that recovers it", () => {
+    const orient = cycleSteps().get(1)!.replace(/\s+/g, " ");
+    expect(orient).toContain("`runId` not null and no `stale: true`");
+    expect(orient).toMatch(/`stale: true`[^.]*goes on: `up` recovers it/);
+  });
 
   it("every argus-live command journeys.md names is one the CLI has", () => {
     const known = cliCommands();

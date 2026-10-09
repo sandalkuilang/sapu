@@ -23,7 +23,8 @@
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
 //                                generation, calls, submitted, retired) and the number of browser sessions
 //   argus-live.mjs status --json the running cycle's summary, as up prints it, and `slots`, each slot's
-//                                {journey, generation, calls, max, submitted, retired} (fields null when none)
+//                                {journey, generation, calls, max, submitted, retired} (fields null when none);
+//                                stale: true once the lock's deadline passed (the next up takes it over)
 //   argus-live.mjs reap <runId>  internal: the reaper `up` starts; runs `down` at the lock's deadline
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run

@@ -3085,6 +3085,21 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
   });
 });
 
+describe("argus-live status --json — a stale lock", () => {
+  it("says stale once the lock's deadline passed (the up that recovers it would take it over), and not before", () => {
+    const main = committed();
+    mkdirSync(join(main, ".argus/live"), { recursive: true });
+    const runId = "20000101000000-0123abcd";
+    setLock(main, { runId, start: now() - 7200, deadline: now() - 60 });
+    expect(statusJson(main)).toMatchObject({ runId, stale: true });
+    const cli = spawnSync(process.execPath, [join(__dirname, "../plugins/sapu/scripts/argus-live.mjs"), "status", "--json"], { cwd: main, encoding: "utf8" });
+    expect(JSON.parse(cli.stdout.trim())).toMatchObject({ runId, stale: true });
+    setLock(main, { runId, start: now() - 60, deadline: now() + 600 });
+    expect(statusJson(main)).toMatchObject({ runId });
+    expect("stale" in statusJson(main)).toBe(false);
+  }, 30_000);
+});
+
 describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
   const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");

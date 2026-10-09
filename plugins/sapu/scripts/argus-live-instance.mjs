@@ -602,7 +602,9 @@ export function statusJson(main) {
   if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, mode: null, slots: {} };
   const rec = readRun(main);
   const mine = rec && rec.runId === lock.runId ? rec : {};
-  return { ...summaryOf(lock, mine), mode: mine.mode === "map" ? "map" : "live", slots: slotStates(main, lock.runId, mine) };
+  // A lock past its deadline is one the next up takes over (and recovers): its cycle is not running.
+  const stale = lock.deadline <= Math.floor(Date.now() / 1000) ? { stale: true } : {};
+  return { ...summaryOf(lock, mine), mode: mine.mode === "map" ? "map" : "live", slots: slotStates(main, lock.runId, mine), ...stale };
 }
 
 /**
