@@ -1698,3 +1698,13 @@ Interfaces:
   `tokenSlot` answers `mode` `map` or `explore`. `status` prints a map slot as `slot <n>: map generation …`, and
   `status --json` gives `mode: null` when no cycle runs. The guard seam and the map-run Read tests pass at once:
   the guard needed no change (no RED to see).
+- **Task 17.** `select` reads `.argus/live.json` as it stands (refused without it) and checks every role's users
+  for `${` before anything is scored. `cycles_since_visit` is at least 1 (a journey visited this cycle scores
+  as one cycle ago). A role no free account serves, or one the configuration lacks, is the `why` of the
+  first role (in the steps' order) the journey could not get; a second account for a `claim: true` role is
+  taken only from a users role, never `anon` or a login-command role (whose numbers past `.1` `slot` refuses).
+  `picks[].accounts` is `{"<role>.<k>": user | null}` (parseAccounts' shape), in the steps' role order, and the
+  CLI writes it as the list `slot --accounts` takes; a journey whose anchor commits git cannot count scores
+  with 0. The CLI takes `--cycle` as a whole number from 1 and `--flagged`/`--ids` as comma lists of
+  kebab-case ids; an id the map lacks is refused (`refused: select: no journey <id> in .argus/journeys.json`).
+  The `wait` and `displaced` lines are printed before the `no journey is selectable` refusal.

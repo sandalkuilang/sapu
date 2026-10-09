@@ -19,7 +19,7 @@ import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-confi
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
-import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
+import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, score, selectJourneys, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
 import { renewRun, up, upMap } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1838,5 +1838,116 @@ describe("argus-live map mode", () => {
   it("the usage line names map mode", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     for (const u of ["up [--fresh|--map]", "slot <n> --map", "map-check [--list|--merge <slot>]"]) expect(r.stderr, u).toContain(u);
+  }, 30_000);
+});
+
+describe("argus-live select", () => {
+  const ROLES = {
+    anon: {},
+    buyer: { users: [{ user: "buyer1@example.test", password: "pw" }, { user: "buyer2@example.test", password: "pw" }] },
+    clerk: { users: [{ user: "clerk1@example.test", password: "pw" }] },
+    admin: { login: { command: "true" } },
+  };
+  /** mapRepo with select's .argus/live.json (buyer with two users, clerk with one, admin by login command) and `journeys` as the map. */
+  const selectRepo = (journeys: Obj[], { roles = ROLES as Obj, limits = {} as Obj } = {}) => {
+    const t = mapRepo();
+    writeFileSync(join(t.main, ".argus/live.json"), JSON.stringify({ roles, triggers: { settle: { argv: ["true"] } }, limits: { max_cycle_minutes: 30, ...limits } }));
+    t.map(journeys);
+    const cli = (...args: string[]) => {
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "select", ...args], { cwd: t.main, encoding: "utf8" });
+      return { code: r.status, out: r.stdout.trimEnd().split("\n").filter(Boolean), err: r.stderr };
+    };
+    return { ...t, cli };
+  };
+  const ANON = { role: "anon", route: "/orders/new", goal: "look", sources: BUY.sources };
+
+  it("the score", () => {
+    expect(score({ money: true, lastCycle: 90 }, { cycle: 100, flagged: [], commits: 2 })).toBe(60);
+    expect(score({ id: "b" }, { cycle: 100, flagged: [], commits: 0 })).toBe(100);
+    expect(score({ id: "a", money: true, lastCycle: 90 }, { cycle: 100, flagged: ["a"], commits: 2 })).toBe(120);
+    // A journey visited this cycle still counts one cycle since its visit.
+    expect(score({ lastCycle: 100 }, { cycle: 100, flagged: [], commits: 0 })).toBe(1);
+    const t = selectRepo([]);
+    const head = gitIn(t.main, "rev-parse", "HEAD");
+    t.map([journey("a", [BUY], { money: true, lastCycle: 90, lastHead: head }), journey("b", [ANON])]);
+    for (const n of [1, 2]) {
+      appendFileSync(join(t.main, "src/routes/orders.js"), `// change ${n}\n`);
+      commitAll(t.main, `orders ${n}`);
+    }
+    writeFileSync(join(t.main, "README.md"), "not an anchor\n");
+    commitAll(t.main, "readme");
+    const r = selectJourneys(t.main, { cycle: 100 });
+    expect(r.picks.map((p: Obj) => [p.id, p.score])).toEqual([["b", 100], ["a", 60]]);
+    expect(selectJourneys(t.main, { cycle: 100, flagged: ["a"] }).picks.map((p: Obj) => [p.id, p.score])).toEqual([["a", 120], ["b", 100]]);
+  }, 30_000);
+
+  it("a global journey is selected alone, or waits", () => {
+    const t = selectRepo([journey("g", [ANON], { global: true }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
+    expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
+      picks: [{ id: "g", score: 100, accounts: { "anon.1": null } }],
+      waits: [{ id: "n", score: 50, why: "global journey selected alone" }, { id: "m", score: 40, why: "global journey selected alone" }, { id: "o", score: 30, why: "global journey selected alone" }],
+      displaced: [],
+    });
+    t.map([journey("g", [ANON], { global: true, lastCycle: 90 }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
+    expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
+      picks: [{ id: "n", score: 50, accounts: { "anon.1": null } }, { id: "m", score: 40, accounts: { "anon.1": null } }],
+      waits: [{ id: "o", score: 30, why: "limit 2 reached" }, { id: "g", score: 10, why: "a global journey waits for a cycle of its own" }],
+      displaced: [],
+    });
+  });
+
+  it("no account serves two journeys; a journey waits when its accounts cannot be allocated", () => {
+    const t = selectRepo([journey("x", [BUY, APPROVE]), journey("y", [BUY, APPROVE])]);
+    const r = t.cli("--cycle", "3");
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toEqual(["select x score 3 accounts buyer.1=buyer1@example.test,clerk.1=clerk1@example.test", "wait y score 3 (no free account for clerk)"]);
+  }, 30_000);
+
+  it("a claim step gets a second account when one is free", () => {
+    const claim = { ...BUY, claim: true };
+    const t = selectRepo([journey("c", [claim, SETTLE, ANON]), journey("d", [BUY], { lastCycle: 1 })], { limits: { max_parallel_journeys: 3 } });
+    const r = selectJourneys(t.main, { cycle: 3 });
+    expect(r.picks).toEqual([{ id: "c", score: 3, accounts: { "buyer.1": "buyer1@example.test", "buyer.2": "buyer2@example.test", "anon.1": null } }]);
+    expect(r.waits).toEqual([{ id: "d", score: 2, why: "no free account for buyer" }]);
+    // Ranked after a journey holding buyer1, the claim journey gets the one buyer left.
+    t.map([journey("c", [claim], { lastCycle: 1 }), journey("d", [BUY])]);
+    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 3, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 2, accounts: { "buyer.1": "buyer2@example.test" } }]);
+  });
+
+  it("a login-command role serves one journey a cycle", () => {
+    const ADMIN = { ...APPROVE, role: "admin" };
+    const t = selectRepo([journey("p", [ADMIN]), journey("q", [ADMIN])]);
+    expect(t.cli("--cycle", "1").out).toEqual(["select p score 1 accounts admin.1", "wait q score 1 (no free account for admin)"]);
+  }, 30_000);
+
+  it("explicit ids print what they displaced", () => {
+    const t = selectRepo([journey("a", [ANON]), journey("b", [ANON], { lastCycle: 1 }), journey("c", [ANON], { lastCycle: 2 })]);
+    const r = t.cli("--cycle", "4", "--ids", "c,a");
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toEqual(["select c score 2 accounts anon.1", "select a score 4 accounts anon.1", "displaced b score 3"]);
+    expect(t.cli("--cycle", "4", "--ids", "zz").err).toBe("refused: select: no journey zz in .argus/journeys.json\n");
+    expect(t.cli("--cycle", "4", "--flagged", "b").out).toEqual(["select b score 6 accounts anon.1", "select a score 4 accounts anon.1", "wait c score 2 (limit 2 reached)"]);
+    for (const bad of [[], ["--cycle", "0"], ["--cycle", "x"], ["--cycle", "1", "--ids"]]) expect(t.cli(...bad).code, bad.join(" ")).toBe(1);
+  }, 30_000);
+
+  it("users must be literal", () => {
+    const t = selectRepo([journey("x", [BUY])], { roles: { ...ROLES, buyer: { users: [{ user: "buyer1@example.test", password: "pw" }, { user: "${BUYER_USER}", password: "pw" }] } } });
+    const r = t.cli("--cycle", "1");
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err).toBe("refused: roles.buyer.users[1].user must be written literally for select\n");
+  }, 30_000);
+
+  it("no journey is selectable", () => {
+    const t = selectRepo([journey("x", [{ ...BUY, role: "auditor" }])]);
+    const r = t.cli("--cycle", "1");
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual(["wait x score 1 (no free account for auditor)"]);
+    expect(r.err).toBe("refused: no journey is selectable\n");
+  }, 30_000);
+
+  it("the usage line names select", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    expect(r.stderr).toContain(" | select --cycle <n> [--flagged <id>,…] [--ids <id>,…]");
   }, 30_000);
 });

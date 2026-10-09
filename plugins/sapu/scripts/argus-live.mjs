@@ -71,6 +71,11 @@
 //                                merge the newest map map slot <slot> returned (the lock's run, else the newest run
 //                                directory) into .argus/journeys.json, stamped with the commit that run's worktree
 //                                was built at (after down too), then map-check as above
+//   argus-live.mjs select --cycle <n> [--flagged <id>,…] [--ids <id>,…]
+//                                SELECT (spec §6): the journeys ranked by score for argus's cycle <n> (--flagged: the
+//                                ids the newest momus report flagged), or the --ids given, in order: select <id>
+//                                score <s> accounts <the list slot --accounts takes>, wait <id> score <s> (<why>),
+//                                displaced <id> score <s>; exit 1 refused: no journey is selectable with no pick
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -78,7 +83,7 @@
 import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
-import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, writeJourneys } from "./argus-live-map.mjs";
+import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, selectJourneys, writeJourneys } from "./argus-live-map.mjs";
 import { renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
@@ -105,7 +110,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -194,6 +199,22 @@ try {
     print(`refresh: ${why.length ? why.join("; ") : "none"}`);
     if (args[0] === "--list") for (const line of catalog(main)) print(line);
     if (!r.kept.length) throw new Error("refused: no journey is selectable");
+  } else if (cmd === "select") {
+    const opts = {};
+    const IDS = /^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$/;
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i];
+      if (a === "--cycle" && i + 1 < args.length && opts.cycle === undefined && /^[1-9][0-9]{0,8}$/.test(args[i + 1])) opts.cycle = Number(args[++i]);
+      else if ((a === "--flagged" || a === "--ids") && i + 1 < args.length && opts[a] === undefined && IDS.test(args[i + 1])) opts[a] = args[++i].split(",");
+      else throw new Error(`refused: ${usage}`);
+    }
+    if (opts.cycle === undefined) throw new Error(`refused: ${usage}`);
+    const r = selectJourneys(main, { cycle: opts.cycle, flagged: opts["--flagged"] ?? [], ids: opts["--ids"] ?? null });
+    const list = (accounts) => Object.entries(accounts).map(([a, u]) => (u === null ? a : `${a}=${u}`)).join(",");
+    for (const p of r.picks) print(`select ${p.id} score ${p.score} accounts ${list(p.accounts)}`);
+    for (const w of r.waits) print(`wait ${w.id} score ${w.score} (${w.why})`);
+    for (const d of r.displaced) print(`displaced ${d.id} score ${d.score}`);
+    if (!r.picks.length) throw new Error("refused: no journey is selectable");
   } else if (cmd === "up" && args.length === 1 && args[0] === "--map") print(JSON.stringify(await upMap(main, { say: print })));
   else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {

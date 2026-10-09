@@ -1,7 +1,8 @@
 // argus-live-map.mjs — the journey map, `.argus/journeys.json` (spec §6): `map-check` keeps only journeys
 // whose every step is anchored in HEAD's code (decision 21), names the map's refresh triggers and prints
 // the catalog. It reads the configuration and git, never a run, and starts nothing. The map an explorer
-// returns in map mode is checked against its schema (validateMap) and merged into the file (mergeMap).
+// returns in map mode is checked against its schema (validateMap) and merged into the file (mergeMap). SELECT
+// ranks the journeys and allocates their accounts (score, selectJourneys).
 import fs from "node:fs";
 import path from "node:path";
 import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
@@ -312,4 +313,129 @@ export function catalog(main) {
   const dropped = map.dropped ?? [];
   if (dropped.length) out.push("dropped:", ...dropped.map((x) => `  ${x.id}: ${x.reason}`));
   return out;
+}
+
+/** How many journeys a cycle runs at once when `limits.max_parallel_journeys` is not set. */
+const MAX_PARALLEL = 2;
+
+/**
+ * A journey's SELECT score (spec §6, decision 22): `cycles_since_visit × exposure × (1 + commits)`, with
+ * `cycles_since_visit = cycle − lastCycle` (`cycle` when never visited) and at least 1, exposure 2 for a
+ * money journey, doubled again when the momus report flagged it (`flagged`, ids), `commits` the commits
+ * touching its anchor files since its last visit.
+ */
+export function score(j, { cycle, flagged = [], commits = 0 }) {
+  const since = Math.max(1, cycle - (Number.isInteger(j.lastCycle) ? j.lastCycle : 0));
+  return since * (j.money ? 2 : 1) * (flagged.includes(j.id) ? 2 : 1) * (1 + commits);
+}
+
+/** The commits touching journey `j`'s anchor files in `lastHead..HEAD` (0 without lastHead, or when git cannot tell). */
+function commitsSince(main, j, runner) {
+  if (typeof j.lastHead !== "string" || !/^[0-9a-f]{4,64}$/.test(j.lastHead)) return 0;
+  const files = [...new Set(j.steps.flatMap((s) => (s.sources ?? []).map((a) => a.file)).filter(repoPath))];
+  if (!files.length) return 0;
+  const r = runner(["git", "-C", main, "rev-list", "--count", `${j.lastHead}..HEAD`, "--", ...files]);
+  const n = Number(String(r.stdout ?? "").trim());
+  return r.status === 0 && Number.isInteger(n) ? n : 0;
+}
+
+/**
+ * `.argus/live.json`'s roles for SELECT: each users role's users, which must be literal (select prints the
+ * account lists `slot` takes); refused without the file or with a `${` in a user.
+ */
+function selectRoles(main) {
+  const { config, errors } = loadLive(main);
+  if (!isObj(config)) throw new Error(`refused: ${errors[0] ?? "no .argus/live.json"}`);
+  const roles = isObj(config.roles) ? config.roles : {};
+  for (const [r, role] of Object.entries(roles)) {
+    for (const [i, u] of (isObj(role) && Array.isArray(role.users) ? role.users : []).entries()) {
+      if (isObj(u) && typeof u.user === "string" && u.user.includes("${")) throw new Error(`refused: roles.${r}.users[${i}].user must be written literally for select`);
+    }
+  }
+  const max = config.limits && Number.isInteger(config.limits.max_parallel_journeys) ? config.limits.max_parallel_journeys : MAX_PARALLEL;
+  return { roles, max };
+}
+
+/**
+ * Journey `j`'s accounts from what is still free (`used`: users roles' `<role>/<user>` and login-command
+ * roles' `<role>/command` taken this cycle) → `{accounts}` (`{"<role>.<k>": user | null}`, the roles in their
+ * steps' order) or `{role}` the first role with no free account. First pass one account per role a step
+ * names (`system` none; `anon.1` without a user; a login-command role's `.1`, once per cycle); second pass
+ * a second account of a users role a `claim: true` step names, when one is free.
+ */
+function allocate(j, roles, used) {
+  const order = [...new Set(j.steps.map((s) => s.role).filter((r) => r !== "system"))];
+  const claims = new Set(j.steps.filter((s) => s.claim === true).map((s) => s.role));
+  const taken = new Set();
+  const per = {};
+  const freeUser = (r) => (roles[r].users ?? []).map((u) => isObj(u) && u.user).find((u) => typeof u === "string" && !used.has(`${r}/${u}`) && !taken.has(`${r}/${u}`));
+  for (const r of order) {
+    const role = isObj(roles[r]) ? roles[r] : null;
+    if (r === "anon" && role) per[r] = [null];
+    else if (role && role.login) {
+      if (used.has(`${r}/command`)) return { role: r };
+      taken.add(`${r}/command`);
+      per[r] = [null];
+    } else {
+      const u = role ? freeUser(r) : undefined;
+      if (u === undefined) return { role: r };
+      taken.add(`${r}/${u}`);
+      per[r] = [u];
+    }
+  }
+  for (const r of order) {
+    if (!claims.has(r) || r === "anon" || roles[r].login) continue;
+    const u = freeUser(r);
+    if (u !== undefined) (taken.add(`${r}/${u}`), per[r].push(u));
+  }
+  for (const k of taken) used.add(k);
+  const accounts = {};
+  for (const r of order) per[r].forEach((u, i) => (accounts[`${r}.${i + 1}`] = u));
+  return { accounts };
+}
+
+/**
+ * SELECT (spec §6, decision 22): the map's journeys scored (score) and taken in rank order (score, then id),
+ * or in the order of `ids` when given → `{picks: [{id, score, accounts}], waits: [{id, score, why}], displaced:
+ * [{id, score}]}`. A global journey first is selected alone (the rest wait: `global journey selected alone`);
+ * a later one waits (`a global journey waits for a cycle of its own`); otherwise up to
+ * `limits.max_parallel_journeys` (default 2) journeys (`limit <max> reached`), each with accounts no other
+ * pick holds (`no free account for <role>`). With `ids`, the picks of the score's own ranking that are not
+ * picked are `displaced`. Refused: an id the map does not hold, a user not written literally.
+ */
+export function selectJourneys(main, { cycle, flagged = [], ids = null, runner = run }) {
+  const { roles, max } = selectRoles(main);
+  const map = readJourneys(main);
+  const all = (map ? map.journeys : []).map((j) => ({ j, score: score(j, { cycle, flagged, commits: commitsSince(main, j, runner) }) }));
+  const ranked = [...all].sort((a, b) => b.score - a.score || (a.j.id < b.j.id ? -1 : a.j.id > b.j.id ? 1 : 0));
+  const pass = (list) => {
+    const picks = [];
+    const waits = [];
+    const used = new Set();
+    let alone = false;
+    for (const { j, score: s } of list) {
+      const wait = (why) => waits.push({ id: j.id, score: s, why });
+      if (alone) wait("global journey selected alone");
+      else if (j.global && picks.length) wait("a global journey waits for a cycle of its own");
+      else if (picks.length >= max) wait(`limit ${max} reached`);
+      else {
+        const a = allocate(j, roles, used);
+        if (a.role) wait(`no free account for ${a.role}`);
+        else {
+          picks.push({ id: j.id, score: s, accounts: a.accounts });
+          alone = Boolean(j.global);
+        }
+      }
+    }
+    return { picks, waits };
+  };
+  if (ids === null) return { ...pass(ranked), displaced: [] };
+  const chosen = ids.map((id) => {
+    const x = all.find((y) => y.j.id === id);
+    if (!x) throw new Error(`refused: select: no journey ${id} in ${JOURNEYS_FILE}`);
+    return x;
+  });
+  const mine = pass(chosen);
+  const picked = new Set(mine.picks.map((p) => p.id));
+  return { ...mine, displaced: pass(ranked).picks.filter((p) => !picked.has(p.id)).map(({ id, score: s }) => ({ id, score: s })) };
 }
