@@ -1798,3 +1798,25 @@ Interfaces:
     looks for every part too, and the hits of one value's parts that overlap or touch are one hit. 200
     ledger values of 4096 characters against a 64 KB body take about 0.3 to 0.6 s (every pattern compiled
     took over 5 s for the first parts alone).
+  - *Last scrub review (owner).* Detection (`leakFinder` and the separator-stripped check) looks for
+    windows of 64 characters, one every 32 (`detectParts`), so any run of 95 characters of a value
+    (64 + 32 − 1) is found wherever it starts; a 256-character part (16 of overlap) missed a middle or tail
+    shorter than some 495. Masking keeps the 256-character parts. `holds` lists every 8 characters of the
+    text once, so a window's base64 or hex is searched for only when its first and last 8 occur: 200 values
+    of 4096 characters against a 64 KB body take about 0.3 s warm, 0.9 s cold, 0.6 s when the body also
+    needs a decoded pass. A digits-only value under a name ending in a unit or limit word (`UNIT_NAME`:
+    `TIMEOUT`, `TTL`, `AGE`, `EXPIRES(_IN)`, `EXPIRY`, `MIN`, `MAX`, `LIMIT`, `LEN(GTH)`, `SIZE`, `COUNT`,
+    `PORT`, `RETRIES`, `INTERVAL`, `DAYS`, `HOURS`, `MINUTES`, `SECONDS`, `MS`) is configuration at any
+    length, and `0`/`1` are switch words. `SECRET_KEY` became `secretName`: the long words still match
+    anywhere in a name (`DBPASSWORD`, `JSESSIONID`, `PHPSESSID`, `csrftoken` would be lost to whole words
+    alone), while `auth`, `oauth`, `authn`, `authz`, `sid`, `sig`, `pin` and `pwd` match only as a whole
+    word (split at non-alphanumerics and camelCase), so `SIGNAL_TIMEOUT`, `CONSIDER_RETRIES` and `AUTHOR` are
+    plain; `pin` (`ADMIN_PIN` in a repo env file or the environment) and `pwd` are new, and so are
+    `signature`, `authorization` and `private_key`, which the old substrings or nothing covered. `…_PWD`
+    left the place names. The separator strip reads code points (a tag character, U+E0000–U+E007F, is
+    two code units), and `secretHits` also searches the text after one and two rounds of decoding `%HH`
+    runs and HTML entities (`%2541`, `&amp;#65;`). Defanging reads an attribute's name in any case
+    (`SRC=`), slashes as `&#47;`, `&#x2F;` or `&sol;`, and a link's or reference definition's target on
+    the line after its `](` or `]:`. `visit` refuses a `--filed` URL holding any `Cc` or `Cf` character
+    (U+0085, U+009B, U+202E). In the env file a word stays a secret under any name (`AUTHOR=jane`
+    refuses `jane`): only a switch word or a plain number is exempt there.

@@ -20,7 +20,7 @@ import { drift } from "../plugins/sapu/scripts/argus-live-drift.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
+import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, secretName, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, score, selectJourneys, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1542,6 +1542,36 @@ describe("argus-live scrub", () => {
     expect(ms).toBeLessThan(3000);
   }, 30_000);
 
+  it("any run of 95 or more characters of a 4096-character secret is found wherever it starts (windows of 64 every 32)", () => {
+    const v = longSecret(MAX_SECRET, "window");
+    const secrets = [{ cls: "cookie", v }];
+    for (const n of [95, 96, 128, 300, 494]) {
+      // The head, the tail, and every alignment to the windows (32 offsets in a row) at two places in the middle.
+      const offsets = [0, v.length - n, ...Array.from({ length: 32 }, (_, k) => [1000 + k, v.length - n - 600 - k]).flat()];
+      const missed = offsets.filter((o) => {
+        const hits = secretHits(`blob ${v.slice(o, o + n)} end`, secrets);
+        return !hits.length || hits.some((h: Obj) => h.cls !== "cookie");
+      });
+      expect(missed, `${n} characters`).toEqual([]);
+    }
+  }, 30_000);
+
+  it("a secret split by astral format characters, or URL- or entity-encoded twice, is refused", () => {
+    const secrets = [{ cls: "cookie", v: SCRUB.cookie }];
+    const tag = String.fromCodePoint(0xe0020);
+    const pct = (s: string) => [...Buffer.from(s)].map((b) => `%${b.toString(16).padStart(2, "0")}`).join("");
+    const forms: [string, string][] = [
+      ["tag characters", [...SCRUB.cookie].join(tag)],
+      ["one tag character", `${SCRUB.cookie.slice(0, 7)}${String.fromCodePoint(0xe0001)}${SCRUB.cookie.slice(7)}`],
+      ["URL-encoded twice", pct(SCRUB.cookie).replace(/%/g, "%25")],
+      ["entities twice", [...SCRUB.cookie].map((c) => `&amp;#${c.codePointAt(0)};`).join("")],
+      ["URL- then entity-encoded", pct(SCRUB.cookie).replace(/%/g, "&#37;")],
+    ];
+    for (const [what, text] of forms) expect(secretHits(`see ${text} here`, secrets), what).toEqual([{ line: 1, col: 5, cls: "cookie" }]);
+    // Decoding twice finds nothing new in a clean text.
+    expect(secretHits("100%2525 &amp;amp; %41 &#65;", secrets)).toEqual([]);
+  });
+
   it("a 6-character secret inside base64 after 4 or 5 other bytes is refused, and a near miss is not", async () => {
     const t = scrubRun();
     const short = "Qz7k2W";
@@ -1613,6 +1643,69 @@ describe("argus-live scrub", () => {
     for (const k of ["PWD", "OLDPWD", "INIT_CWD", "TMPDIR", "SESSION_COUNT", "AUTH_ENABLED", "XDG_CONFIG_HOME", "WORKSPACE_LOCATION", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT"]) expect(classes, k).not.toContain(`environment variable ${k}`);
   });
 
+  it("a number under a unit or limit name, a 0 or 1, and a name that only holds a secret word's letters are configuration; a secret stays one, in every source", async () => {
+    const t = scrubRun();
+    const sources: [string, (k: string, v: string) => Obj][] = [
+      ["env file", (k, v) => (writeFileSync(join(t.main, ".argus/live.env"), `APP_SECRET=${SCRUB.envFile}\n${k}=${v}\n`), SCRUB_ENV)],
+      ["repo env file", (k, v) => (writeFileSync(join(t.main, ".env"), `${k}=${v}\n`), SCRUB_ENV)],
+      ["environment variable", (k, v) => ({ ...SCRUB_ENV, [k]: v })],
+    ];
+    const kept: [string, string, string?][] = [
+      ["SESSION_TIMEOUT", "3600"],
+      ["TOKEN_TTL", "900"],
+      ["AUTH_MAX_AGE", "86400"],
+      ["PASSWORD_MIN_LENGTH", "12"],
+      ["SECRET_ROTATION_DAYS", "30"],
+      ["JWT_EXPIRES_IN", "604800"],
+      ["KEY_SIZE", "2048"],
+      ["AUTH_PORT", "8080"],
+      ["SESSION_COOKIE_SECURE", "1", "Step 1"],
+      ["SIGNAL_TIMEOUT", "30"],
+      ["AUTHOR", "jane"],
+    ];
+    const refused: [string, string][] = [
+      ["ADMIN_PIN", "73914826"],
+      ["API_TOKEN", "4815162342108"],
+      ["SERVICE_TOKEN", "99887766554433"],
+      ["AUTH_PIN", "4815"],
+      ["CLAUDE_CODE_OAUTH_TOKEN", "oat01-Qw3rTy9Uiop2Asdf"],
+      ["DB_PASSWORD", "ab1cd"],
+      ["API_TOKEN", "x9k2m"],
+    ];
+    for (const [source, put] of sources) {
+      for (const [k, v, body] of kept) {
+        // The env file holds the run's own secrets: every value but a switch word or a number it reads as configuration.
+        if (source === "env file" && !/^[0-9]+$/.test(v)) continue;
+        const env = put(k, v);
+        expect(await t.run("x", t.body(`${body ?? `took ${v} here`}\n`), {}, env), `${source} ${k}=${v}`).toMatchObject({ code: 0 });
+      }
+      for (const [k, v] of refused) {
+        const env = put(k, v);
+        const cls = source === "environment variable" ? `environment variable ${k}` : source;
+        expect(await t.run("x", t.body(`v ${v} end\n`), {}, env), `${source} ${k}=${v}`).toEqual({ code: 1, out: [`body 1:3 ${cls}`, REFUSED(1)] });
+      }
+      writeFileSync(join(t.main, ".argus/live.env"), `APP_SECRET=${SCRUB.envFile}\n`);
+      writeFileSync(join(t.main, ".env"), `DB_PASSWORD=${SCRUB.repoEnv}\n`);
+    }
+    // In the env file a word is a secret under any name.
+    writeFileSync(join(t.main, ".argus/live.env"), `APP_SECRET=${SCRUB.envFile}\nAUTHOR=jane\n`);
+    expect(await t.run("x", t.body("by jane\n"))).toEqual({ code: 1, out: ["body 1:4 env file", REFUSED(1)] });
+  }, 60_000);
+
+  it("a secret name holds a long secret word anywhere, or a short one as a whole word", () => {
+    for (const n of ["DB_PASSWORD", "DBPASSWORD", "JSESSIONID", "PHPSESSID", "csrftoken", "connect.sid", "express:sess.sig", "authToken", "X-Auth", "AUTH_PIN", "ADMIN_PIN", "MYSQL_PWD", "API_KEY", "apiKey", "PRIVATE_KEY", "CLIENT_SECRET", "ACCESS_TOKEN", "SessionId", "Authorization", "OAUTH_STATE"]) expect(secretName(n), n).toBe(true);
+    for (const n of ["SIGNAL_TIMEOUT", "CONSIDER_RETRIES", "AUTHOR", "SIDEBAR", "SPINNER", "KEY_SIZE", "PORT", "CLAUDE_CODE_ENTRYPOINT"]) expect(secretName(n), n).toBe(false);
+  });
+
+  it("a value under a name ending in PWD is a secret (MYSQL_PWD, DB_PWD), while the shell's PWD stays exempt", async () => {
+    const t = scrubRun();
+    writeFileSync(join(t.main, ".env"), "DB_PWD=hunter22\n");
+    const env = { ...SCRUB_ENV, MYSQL_PWD: "Xk9_mQ2vL7pR4tW8", PWD: t.main };
+    expect(await t.run("x", t.body("v Xk9_mQ2vL7pR4tW8 end\n"), {}, env)).toEqual({ code: 1, out: ["body 1:3 environment variable MYSQL_PWD", REFUSED(1)] });
+    expect(await t.run("x", t.body("v hunter22 end\n"), {}, env)).toEqual({ code: 1, out: ["body 1:3 repo env file", REFUSED(1)] });
+    expect(await t.run("x", t.body(`built in ${t.main}\n`), {}, env)).toMatchObject({ code: 0 });
+  });
+
   it("protocol-relative links and images are defanged too", () => {
     const md = "a [x](//evil.test/a) b ![](//evil.test/p.png) <img src=//evil.test/i.png> <img src=\"//evil.test/q\"> <a href='//evil.test/r'>r</a>";
     const d = defang(md);
@@ -1635,10 +1728,26 @@ describe("argus-live scrub", () => {
       ["see HTTPS://evil.test/z.", "see `HTTPS://evil.test/z`."],
       ["see Http://evil.test/z", "see `Http://evil.test/z`"],
       ["see https:\\/\\/evil.test/z", "see `https:\\/\\/evil.test/z`"],
+      // Upper-case attribute names, entity-encoded slashes, and a target on the line after its opener.
+      ["<img SRC=//evil.test/i.png>", "<img SRC=`//evil.test/i.png`>"],
+      ['<a HREF="//evil.test/r">r</a>', '<a HREF="`//evil.test/r`">r</a>'],
+      ['<img SrcSet="//evil.test/a.png 1x">', '<img SrcSet="`//evil.test/a.png` 1x">'],
+      ["<video POSTER=//evil.test/v.png>", "<video POSTER=`//evil.test/v.png`>"],
+      ["[x](&#47;&#47;evil.test/a)", "[x](`&#47;&#47;evil.test/a`)"],
+      ["[x](&#x2F;&#x2f;evil.test/a)", "[x](`&#x2F;&#x2f;evil.test/a`)"],
+      ["[x](&sol;&sol;evil.test/a)", "[x](`&sol;&sol;evil.test/a`)"],
+      ["<img src=&#47;&#47;evil.test/i.png>", "<img src=`&#47;&#47;evil.test/i.png`>"],
+      ["see https:&#47;&#47;evil.test/z", "see `https:&#47;&#47;evil.test/z`"],
+      ["[x](\n//evil.test/a)", "[x](\n`//evil.test/a`)"],
+      ["[x](  \n  <//evil.test/a>)", "[x](  \n  <`//evil.test/a`>)"],
+      ["[1]:\n//evil.test/r", "[1]:\n`//evil.test/r`"],
+      ["  [p]: \n &#47;&#47;evil.test/p.png", "  [p]: \n `&#47;&#47;evil.test/p.png`"],
     ];
     for (const [md, want] of cases) expect(defang(md), md).toEqual({ text: want, defanged: (want.match(/`/g) ?? []).length / 2, cut: 0 });
     // The run's own app stays linked, whatever the scheme's case; prose with slashes stays.
     expect(defang("open HTTP://localhost:3000/x and a [1] note: // not a link").text).toBe("open HTTP://localhost:3000/x and a [1] note: // not a link");
+    // A line after one that opens no target, a slash entity in prose, and a target two lines down stay.
+    expect(defang("a note\n//not-a-link\nx &#47;&#47; y\n[x](\n\n//evil.test/a)").text).toBe("a note\n//not-a-link\nx &#47;&#47; y\n[x](\n\n//evil.test/a)");
   });
 });
 
@@ -2409,7 +2518,7 @@ describe("argus-live visit", () => {
     expect(visit("order-to-cash", "--cycle", "5").code).toBe(0);
     expect(t.read().journeys[0]).toMatchObject({ lastCycle: 5, lastHead: head, filed: [] });
     const kept = readFileSync(t.file, "utf8");
-    for (const args of [["nope", "--cycle", "1"], ["refund"], ["refund", "--cycle", "0"], ["refund", "--cycle", "x"], ["refund", "--cycle", "2", "--filed", "https://evil.test/x"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r\u001b[2J/issues/9"], ["refund", "--cycle", "2", "--filed", "https://git\u001bhub.com/o/r/issues/9"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r/issues/9\u007f"], ["refund", "--cycle", "2", "--cycle", "3"], ["Bad Id", "--cycle", "2"]]) {
+    for (const args of [["nope", "--cycle", "1"], ["refund"], ["refund", "--cycle", "0"], ["refund", "--cycle", "x"], ["refund", "--cycle", "2", "--filed", "https://evil.test/x"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r\u001b[2J/issues/9"], ["refund", "--cycle", "2", "--filed", "https://git\u001bhub.com/o/r/issues/9"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r/issues/9\u007f"], ["refund", "--cycle", "2", "--filed", "https://git\u0085hub.com/o/r/issues/9"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r\u009b2J/issues/9"], ["refund", "--cycle", "2", "--filed", "https://github.com/o/r\u202e/issues/9"], ["refund", "--cycle", "2", "--filed", "https://git\u202ehub.com/o/r/issues/9"], ["refund", "--cycle", "2", "--cycle", "3"], ["Bad Id", "--cycle", "2"]]) {
       const r = visit(...args);
       expect(r.code, args.join(" ")).toBe(1);
       expect(r.err, args.join(" ")).toMatch(/^refused: /);

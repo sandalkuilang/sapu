@@ -63,6 +63,13 @@ function base64Forms(bytes) {
 export const PATTERN_CHARS = 256;
 /** How far a long value's parts overlap: each encoding of one part meets the next part's, so a long value is masked whole. */
 const PATTERN_OVERLAP = 16;
+/**
+ * The characters of one window a leak is looked for by (leakFinder), and how far the next window starts:
+ * any run of DETECT_CHARS + DETECT_STRIDE - 1 (95) characters of a value holds a whole window, wherever
+ * it starts, so a middle or tail that long is found. Masking (secretPatterns) keeps PATTERN_CHARS parts.
+ */
+const DETECT_CHARS = 64;
+const DETECT_STRIDE = 32;
 
 /**
  * Thrown for a secret's pattern that could not be built or run, with a fixed message: the engine's own quotes
@@ -84,15 +91,21 @@ function compile(source, flags) {
   }
 }
 
-/** `v` cut into parts of PATTERN_CHARS characters, each overlapping the next by PATTERN_OVERLAP, the last ending at `v`'s end. */
-export function secretParts(v) {
+/**
+ * `v` cut into parts of `size` characters, one starting every `step` (by default PATTERN_CHARS each,
+ * overlapping the next by PATTERN_OVERLAP), the last ending at `v`'s end; `v` itself when no longer.
+ */
+export function secretParts(v, { size = PATTERN_CHARS, step = PATTERN_CHARS - PATTERN_OVERLAP } = {}) {
   const chars = [...v];
-  if (chars.length <= PATTERN_CHARS) return [v];
+  if (chars.length <= size) return [v];
   const out = [];
-  for (let i = 0; i + PATTERN_CHARS < chars.length; i += PATTERN_CHARS - PATTERN_OVERLAP) out.push(chars.slice(i, i + PATTERN_CHARS).join(""));
-  out.push(chars.slice(-PATTERN_CHARS).join(""));
+  for (let i = 0; i + size < chars.length; i += step) out.push(chars.slice(i, i + size).join(""));
+  out.push(chars.slice(-size).join(""));
   return out;
 }
+
+/** `v` cut into the windows a leak is looked for by: DETECT_CHARS characters, one every DETECT_STRIDE. */
+export const detectParts = (v) => secretParts(v, { size: DETECT_CHARS, step: DETECT_STRIDE });
 
 /** `v` and, when it holds `%HH` that decode, `v` decoded (a cookie recorded URL-encoded, `s%3A…`, shown as `s:…`). */
 function variants(v) {
@@ -114,8 +127,8 @@ function partPattern(p) {
   return compile([...base64Forms(bytes).map(reEscape), ...hexForm(bytes), [...p].map(charPattern).join("")].join("|"), "g");
 }
 
-/** `v`'s parts (secretParts), and those of `v` URL-decoded (variants), once each. */
-const allParts = (v) => [...new Set(variants(String(v)).flatMap(secretParts))];
+/** `v`'s parts (`cut`: secretParts, or detectParts), and those of `v` URL-decoded (variants), once each. */
+const allParts = (v, cut = secretParts) => [...new Set(variants(String(v)).flatMap((x) => cut(x)))];
 
 /**
  * The regular expressions for every form a secret value takes in what the CLI prints, whatever language
@@ -207,35 +220,64 @@ function spelledGrams(t) {
   return grams;
 }
 
+/** How many characters of a string `holds` looks up before searching the text for it. */
+const PROBE = 8;
+
+/**
+ * A quick test over `text` → `(s) => boolean`, false only when `text` cannot hold `s` (its first or last
+ * PROBE characters occur nowhere in it), else `text.includes(s)`: every PROBE characters of the text are
+ * listed once, so most strings are ruled out without a search.
+ */
+export function holds(text) {
+  let probes = null;
+  return (s) => {
+    if (s.length >= PROBE) {
+      if (!probes) {
+        probes = new Set();
+        for (let i = 0; i + PROBE <= text.length; i += 1) probes.add(text.slice(i, i + PROBE));
+      }
+      if (!probes.has(s.slice(0, PROBE)) || !probes.has(s.slice(-PROBE))) return false;
+    }
+    return text.includes(s);
+  };
+}
+
 /**
  * A finder over `text` → `(v) => [index]`: where secret `v` occurs in `text`, sorted — the start of each
- * run of matches of its parts (secretPatterns: every part, of the value and of it URL-decoded), overlapping
- * and touching ones merged (mergedSpans: a whole long value is one) — the same as running every part's
- * pattern, without compiling most of them: a part's pattern runs only when its base64 or hex is in
+ * run of matches of its windows (detectParts, of the value and of it URL-decoded, each window's pattern
+ * spelled as secretPatterns spells a part: so any run of 95 characters of the value, in any of its
+ * encodings, is found), overlapping and touching ones merged (mergedSpans: a whole long value is one) —
+ * the same as running every window's pattern, without compiling most of them: a window's pattern runs only when its base64 or hex is in
  * the text, or when the text may spell every GRAM characters of it (spelledGrams; a match spells all of
- * them, so a part that fails this has none), or when it is shorter than GRAM or holds a lone surrogate
+ * them, so a window that fails this has none), or when it is shorter than GRAM or holds a lone surrogate
  * (UTF-8 cannot carry one: charPattern's `%HH` then spells U+FFFD). A pattern that cannot be built or run
  * throws a PatternError.
  */
 export function leakFinder(text) {
   const t = String(text ?? "");
-  const lower = t.toLowerCase();
+  const inText = holds(t);
+  const inLower = holds(t.toLowerCase());
+  const folds = new Map();
+  const folded = (ch) => {
+    if (!folds.has(ch)) folds.set(ch, fold(ch));
+    return folds.get(ch);
+  };
   let grams = null;
   const spelled = (p) => {
-    const f = [...p].map(fold);
+    const f = [...p].map(folded);
     grams ??= spelledGrams(t);
     for (let k = 0; k + GRAM <= f.length; k += 1) if (!grams.has(f.slice(k, k + GRAM).join(""))) return false;
     return true;
   };
   return (v) => {
     const found = [];
-    for (const p of allParts(v)) {
+    for (const p of allParts(v, detectParts)) {
       const bytes = Buffer.from(p, "utf8");
       const maybe =
         [...p].length < GRAM ||
         /[\uD800-\uDFFF]/.test(p.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")) ||
-        base64Forms(bytes).some((b) => t.includes(b)) ||
-        (bytes.length >= 4 && lower.includes(bytes.toString("hex"))) ||
+        base64Forms(bytes).some(inText) ||
+        (bytes.length >= 4 && inLower(bytes.toString("hex"))) ||
         spelled(p);
       if (maybe) found.push(...spans(partPattern(p), t, { overlapping: false }));
     }

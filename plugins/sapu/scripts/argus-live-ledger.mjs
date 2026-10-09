@@ -6,7 +6,7 @@
 // refuses an issue by, which says where a secret is and never what it is.
 import fs from "node:fs";
 import path from "node:path";
-import { leakFinder, mergedSpans, PatternError, secretParts } from "./argus-live-fence.mjs";
+import { detectParts, holds, leakFinder, mergedSpans, PatternError } from "./argus-live-fence.mjs";
 import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { logsDir } from "./argus-live-run.mjs";
 
@@ -14,8 +14,24 @@ import { logsDir } from "./argus-live-run.mjs";
 export const MIN_SECRET = 6;
 /** Every value is cut to this many characters: a prefix still finds its own leak. */
 export const MAX_SECRET = 4096;
-/** A cookie, storage key or JSON key whose name says it holds a secret. */
-export const SECRET_KEY = /password|passwd|secret|token|auth|session|sid|jwt|bearer|api[-_]?key|credential|sig|cookie/i;
+/** Words that say a secret wherever they stand in a name, inside another word too (`DBPASSWORD`, `JSESSIONID`, `PHPSESSID`, `csrftoken`). */
+const SECRET_WORD = /password|passwd|secret|token|session|sessid|credential|cookie|bearer|signature|authorization|jwt|api[-_]?key|private[-_]?key/i;
+/** Short words that say a secret only as a whole word of a name (`connect.sid`, `AUTH_PIN`, `MYSQL_PWD`), never inside one (`SIGNAL`, `CONSIDER`, `AUTHOR`). */
+const SECRET_TOKEN = /^(?:o?auth[nz]?|sid|sig|pin|pwd)s?$/i;
+/**
+ * A cookie, storage key, JSON key or variable whose name says it holds a secret: it holds a SECRET_WORD, or
+ * one of its words — split at anything but a letter or digit and where camelCase turns (`authToken`,
+ * `SessionId`) — is a SECRET_TOKEN.
+ */
+export function secretName(name) {
+  const s = String(name);
+  if (SECRET_WORD.test(s)) return true;
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .some((w) => SECRET_TOKEN.test(w));
+}
 /** A JSON key whose value is never an id the run saw, however id-like. */
 export const SEEN_SKIP_KEY = /token|secret|key|pass|session|auth|csrf|cookie|bearer|value|jwt|credential|sig|signature|code|otp|nonce/i;
 /** A path segment after one of these names a one-time secret (`/password-reset/<x>`, `/verify-email/<x>`), never an id. */
@@ -71,9 +87,9 @@ const cookiePairs = (text) =>
 /**
  * A drain's values → the ledger's entries `[{c, v}]`: from `cookies` (`{name, value, httpOnly, secure}`,
  * the context's) and the `cookie` pairs of a Cookie header or the first pair of a Set-Cookie value, a
- * value whose name matches SECRET_KEY, that is flagged HttpOnly or Secure (its Set-Cookie attributes, or
+ * value whose name is a secretName, that is flagged HttpOnly or Secure (its Set-Cookie attributes, or
  * the context's cookie of that name) or that is highEntropy; from `storage` (`{key, value}`), a value
- * whose key matches SECRET_KEY or that is highEntropy — a JSON object or array never whole, each string
+ * whose key is a secretName or that is highEntropy — a JSON object or array never whole, each string
  * leaf by the same rule under its own key; from `headers` (`[name, value]`), Authorization and
  * Proxy-Authorization whole and without their scheme word, every `*-token` value whole. Classes: `cookie`
  * (the context's), `header` (a header's, cookie pairs included), `storage`. Each value cut to MAX_SECRET;
@@ -89,7 +105,7 @@ export function ledgerEntries({ cookies = [], storage = [], headers = [] } = {})
     out.push({ c, v });
   };
   const flagged = new Set((Array.isArray(cookies) ? cookies : []).filter((k) => k && (k.httpOnly || k.secure)).map((k) => k.name));
-  const cookieLike = (name, value, flag) => SECRET_KEY.test(String(name)) || flag || flagged.has(name) || highEntropy(value);
+  const cookieLike = (name, value, flag) => secretName(name) || flag || flagged.has(name) || highEntropy(value);
   for (const k of Array.isArray(cookies) ? cookies : []) if (k && typeof k.value === "string" && cookieLike(k.name, k.value, k.httpOnly || k.secure)) add("cookie", k.value);
   const storageLike = (key, value) => {
     const leaves = jsonLeaves(value);
@@ -97,7 +113,7 @@ export function ledgerEntries({ cookies = [], storage = [], headers = [] } = {})
       for (const [k, x] of leaves) storageLike(k, x);
       return;
     }
-    if (SECRET_KEY.test(String(key)) || highEntropy(value)) add("storage", value);
+    if (secretName(key) || highEntropy(value)) add("storage", value);
   };
   for (const s of Array.isArray(storage) ? storage : []) if (s && typeof s.value === "string") storageLike(s.key, s.value);
   for (const h of Array.isArray(headers) ? headers : []) {
@@ -243,17 +259,65 @@ export function readSeen(main, runId) {
 const SEPARATOR = /[\s\p{P}\p{S}\p{Cf}]/u;
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
-/** `text` without the characters `drop` matches → `{text, at}`, `at[i]` the index in `text` of the i-th kept character. */
+/**
+ * `text` without the characters `drop` matches, tested a code point at a time (a tag character, U+E0001,
+ * is two code units) → `{text, at}`, `at[i]` the index in `text` of the kept code unit `i`.
+ */
 function stripped(text, drop) {
   let out = "";
   const at = [];
-  for (let i = 0; i < text.length; i++) {
-    if (drop.test(text[i])) continue;
-    out += text[i];
-    at.push(i);
+  for (let i = 0; i < text.length; ) {
+    const ch = String.fromCodePoint(text.codePointAt(i));
+    if (!drop.test(ch)) {
+      out += ch;
+      for (let k = 0; k < ch.length; k++) at.push(i + k);
+    }
+    i += ch.length;
   }
   return { text: out, at };
 }
+
+const NAMED_CODES = { quot: 34, amp: 38, lt: 60, gt: 62, apos: 39 };
+/** One `%HH` run, or one HTML entity: what decodedOnce reads. */
+const ENCODED = /(?:%[0-9A-Fa-f]{2})+|&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|(quot|amp|lt|gt|apos));/g;
+
+/**
+ * `text` with each `%HH` run (valid UTF-8; else left as is) and each HTML entity (decimal, hex, or `&quot;`,
+ * `&amp;`, `&lt;`, `&gt;`, `&apos;`) decoded once → `{text, at}`, each decoded character placed at its run's
+ * or entity's first character: one round of a double encoding (`%2541` → `%41`, `&amp;#65;` → `&#65;`).
+ */
+function decodedOnce(text) {
+  let out = "";
+  const at = [];
+  const keep = (s, from) => {
+    out += s;
+    for (let k = 0; k < s.length; k++) at.push(from + k);
+  };
+  let last = 0;
+  for (const m of text.matchAll(ENCODED)) {
+    keep(text.slice(last, m.index), last);
+    let d = m[0];
+    if (m[0][0] === "%") {
+      const bytes = Buffer.from(m[0].replace(/%/g, ""), "hex");
+      const s = bytes.toString("utf8");
+      if (Buffer.from(s, "utf8").equals(bytes)) d = s;
+    } else {
+      const cp = m[3] ? NAMED_CODES[m[3]] : m[1] ? Number(m[1]) : parseInt(m[2], 16);
+      if (cp <= 0x10ffff) d = String.fromCodePoint(cp);
+    }
+    if (d === m[0]) keep(d, m.index);
+    else {
+      out += d;
+      for (let k = 0; k < d.length; k++) at.push(m.index);
+    }
+    last = m.index + m[0].length;
+  }
+  keep(text.slice(last), last);
+  return { text: out, at };
+}
+
+/** How many rounds of decodedOnce a text is also searched after: a value encoded twice is found. */
+const DECODE_ROUNDS = 2;
 
 /** `text` with each run of `%HH` decoded (as UTF-8) and `+` read as a space → `{text, at}` (each decoded character placed at its run's first character). */
 function urlDecoded(text) {
@@ -291,11 +355,13 @@ const tokenPattern = (v) =>
 /**
  * Where `secrets` (`[{cls, v}]`) occur in `text` → `[{line, col, cls}]` (1-based), sorted by line,
  * column and class, distinct. Empty values are ignored; a value of a class in LEDGER_CLASSES counts only
- * at MIN_SECRET or more. A value of MIN_SECRET or more is found by any part of it in any of its encodings
- * (leakFinder: secretPatterns' every part, base64 and hex included, so a long value's middle or tail alone
- * is found) or, the text and the value each stripped of SEPARATOR, by any part of the stripped value as a
- * substring (the stripped value MIN_SECRET or more; a shorter one is matched as a short value is); in either
- * form, parts that overlap or touch are one hit (a whole long value is one). A shorter value is found only as a whole token:
+ * at MIN_SECRET or more. The text is searched as it is and after each of DECODE_ROUNDS rounds of
+ * decodedOnce (a value URL- or entity-encoded twice). A value of MIN_SECRET or more is found by any window
+ * of it in any of its encodings (leakFinder: every run of 95 characters holds a window, base64 and hex
+ * included, so a long value's middle or tail alone is found) or, the text and the value each stripped of
+ * SEPARATOR, by any window (detectParts) of the stripped value as a substring (the stripped value
+ * MIN_SECRET or more; a shorter one is matched as a short value is); in either form, windows that overlap
+ * or touch are one hit (a whole long value is one). A shorter value is found only as a whole token:
  * raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with SEPARATOR between
  * its characters — never as a part of a longer word. A hit in a stripped or decoded form is placed at its
  * first character in `text`. A pattern that cannot be built or run throws a PatternError `refused: scrub: a
@@ -310,35 +376,48 @@ export function secretHits(text, secrets) {
     const col = index - (before.lastIndexOf("\n") + 1) + 1;
     hits.set(`${line}\0${col}\0${cls}`, { line, col, cls });
   };
-  const short = (v, cls) => {
-    for (const i of matchIndexes(tokenPattern(v), t)) place(i, cls);
-    const dec = urlDecoded(t);
-    for (const i of matchIndexes(tokenPattern(v), dec.text)) place(dec.at[i], cls);
-    const b64 = Buffer.from(v, "utf8").toString("base64");
-    for (const form of new Set([b64, b64.replace(/=+$/, ""), Buffer.from(v, "utf8").toString("base64url")])) {
-      for (const i of matchIndexes(new RegExp(`(?<![\\p{L}\\p{N}])${reEscape(form)}(?![\\p{L}\\p{N}])`, "gu"), t)) place(i, cls);
-    }
-  };
-  const flat = stripped(t, SEPARATOR);
-  const find = leakFinder(t);
-  for (const s of Array.isArray(secrets) ? secrets : []) {
-    if (!s || typeof s.v !== "string" || s.v === "") continue;
-    const v = s.v.slice(0, MAX_SECRET);
-    if (LEDGER_CLASSES.includes(s.cls) && v.length < MIN_SECRET) continue;
-    try {
-      if (v.length < MIN_SECRET) {
-        short(v, s.cls);
-        continue;
+  // The text, then each round decoded once more while that changes it; `at` maps a view's index to `t`'s.
+  const views = [{ text: t, at: null }];
+  for (let k = 0; k < DECODE_ROUNDS; k++) {
+    const last = views.at(-1);
+    const d = decodedOnce(last.text);
+    if (d.text === last.text) break;
+    views.push({ text: d.text, at: last.at ? d.at.map((i) => last.at[i]) : d.at });
+  }
+  for (const view of views) {
+    const vt = view.text;
+    const put = (i, cls) => place(view.at ? view.at[i] : i, cls);
+    const short = (v, cls) => {
+      for (const i of matchIndexes(tokenPattern(v), vt)) put(i, cls);
+      const dec = urlDecoded(vt);
+      for (const i of matchIndexes(tokenPattern(v), dec.text)) put(dec.at[i], cls);
+      const b64 = Buffer.from(v, "utf8").toString("base64");
+      for (const form of new Set([b64, b64.replace(/=+$/, ""), Buffer.from(v, "utf8").toString("base64url")])) {
+        for (const i of matchIndexes(new RegExp(`(?<![\\p{L}\\p{N}])${reEscape(form)}(?![\\p{L}\\p{N}])`, "gu"), vt)) put(i, cls);
       }
-      for (const i of find(v)) place(i, s.cls);
-      const sv = stripped(v, SEPARATOR).text;
-      if (sv.length >= MIN_SECRET) {
-        const found = [];
-        for (const part of secretParts(sv)) for (let i = flat.text.indexOf(part); i >= 0; i = flat.text.indexOf(part, i + 1)) found.push([i, i + part.length]);
-        for (const [i] of mergedSpans(found)) place(flat.at[i], s.cls);
-      } else if (sv) short(sv, s.cls);
-    } catch {
-      throw new PatternError(`refused: scrub: a ${s.cls} value could not be checked; nothing is filed`);
+    };
+    const flat = stripped(vt, SEPARATOR);
+    const inFlat = holds(flat.text);
+    const find = leakFinder(vt);
+    for (const s of Array.isArray(secrets) ? secrets : []) {
+      if (!s || typeof s.v !== "string" || s.v === "") continue;
+      const v = s.v.slice(0, MAX_SECRET);
+      if (LEDGER_CLASSES.includes(s.cls) && v.length < MIN_SECRET) continue;
+      try {
+        if (v.length < MIN_SECRET) {
+          short(v, s.cls);
+          continue;
+        }
+        for (const i of find(v)) put(i, s.cls);
+        const sv = stripped(v, SEPARATOR).text;
+        if (sv.length >= MIN_SECRET) {
+          const found = [];
+          for (const part of detectParts(sv)) for (let i = inFlat(part) ? flat.text.indexOf(part) : -1; i >= 0; i = flat.text.indexOf(part, i + 1)) found.push([i, i + part.length]);
+          for (const [i] of mergedSpans(found)) put(flat.at[i], s.cls);
+        } else if (sv) short(sv, s.cls);
+      } catch {
+        throw new PatternError(`refused: scrub: a ${s.cls} value could not be checked; nothing is filed`);
+      }
     }
   }
   return [...hits.values()].sort((a, b) => a.line - b.line || a.col - b.col || (a.cls < b.cls ? -1 : a.cls > b.cls ? 1 : 0));

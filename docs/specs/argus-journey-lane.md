@@ -206,8 +206,8 @@ tracked); the owner may edit it:
   optionally `#issuecomment-<n>`), appended in order, once each. Nothing else changes. It prints
   `visited <id>: last cycle <n>, last head <sha12>, filed <k>` (`k` the URLs `filed` now holds).
   Refused: no `.argus/journeys.json`, an id that is not kebab-case or not in the map, a `--filed`
-  that is not such a URL or holds a control character (an ESC would reach the catalog), a HEAD that
-  cannot be read.
+  that is not such a URL or holds a control character, C0 or C1, or an invisible format character
+  (an ESC or a CSI would reach the catalog; U+202E reverses the text), a HEAD that cannot be read.
 - **`map-check`** (no LLM, no lock, starts nothing) drops a journey at its first failing check, in
   this order, printing `dropped <id>: <reason>` (steps and anchors numbered from 1):
   - the id is kebab-case (`id is not kebab-case`) and not an earlier journey's (`duplicate id`: the
@@ -1282,10 +1282,15 @@ account (class `created password`, from `pw` or a repro). The drains record, as 
 `Authorization` and `Proxy-Authorization` values whole and without their scheme word, every `*-token`
 value whole, and a `Cookie` header's pairs and a `Set-Cookie` value's first pair; as class `cookie`,
 the context's cookies; as class `storage`, `localStorage`/`sessionStorage` items. A cookie only when
-its name matches `SECRET_KEY` = `/password|passwd|secret|token|auth|session|sid|jwt|bearer|api[-_]?key|credential|sig|cookie/i`,
+its name is a secret name — it holds `password`, `passwd`, `secret`, `token`, `session`, `sessid`,
+`credential`, `cookie`, `bearer`, `signature`, `authorization`, `jwt`, `api[-_]?key` or
+`private[-_]?key` anywhere (any case: `JSESSIONID`, `PHPSESSID`, `csrftoken`), or one of its words, split
+at anything but a letter or digit and where camelCase turns, is `auth`, `oauth`, `authn`, `authz`,
+`sid`, `sig`, `pin` or `pwd` (a plural too: `connect.sid`, `authToken`, `AUTH_PIN`, `MYSQL_PWD`; never
+`SIGNAL`, `CONSIDER` or `AUTHOR`) —,
 it is flagged HttpOnly or Secure, or its value is high-entropy (at least 16 characters, at least three
 of lower case, upper case, digit and other, no whitespace); a storage item only when its key matches
-`SECRET_KEY` or its value is high-entropy — a value that parses as a JSON object or array never whole,
+a secret name or its value is high-entropy — a value that parses as a JSON object or array never whole,
 each string leaf by the same rule under its own key. Every value is cut to its first 4096 characters;
 a value of these three classes shorter than 6 is not recorded (it would refuse every issue; `pw`'s
 fence still masks it). Nothing is lost silently: the markers `incomplete` (`<session> passed <capBytes>
@@ -1339,36 +1344,44 @@ Then, against the run it named:
 - **Refuses the issue** when the title, the body or a label holds a secret. Classes:
   - the ledger's: `cookie`, `header`, `storage`, `created password`;
   - `env file`: every value of `env_file`, now and as `up` read it (the owner declared them secrets),
-    at any length, but a switch word (`true`, `false`, `yes`, `no`, `on`, `off`, in any case) or a
-    short plain number: digits only, under 6 characters, under a name `SECRET_KEY` does not match
-    (`PORT=3000` stays; `ADMIN_PIN=73914826` and `DB_PASSWORD=1234` are secrets);
+    at any length, but a switch word (`true`, `false`, `yes`, `no`, `on`, `off`, in any case, `0`, `1`)
+    or a plain number: digits only, at any length under a name that ends in a unit or limit word
+    (`TIMEOUT`, `TTL`, `AGE`, `EXPIRES`, `EXPIRES_IN`, `EXPIRY`, `MIN`, `MAX`, `LIMIT`, `LEN`, `LENGTH`,
+    `SIZE`, `COUNT`, `PORT`, `RETRIES`, `INTERVAL`, `DAYS`, `HOURS`, `MINUTES`, `SECONDS` or `MS`, the
+    whole name or after `_`, any case), else under 6 characters under a name that is no secret name
+    (`PORT=3000`, `SESSION_TIMEOUT=3600` and `JWT_EXPIRES_IN=604800` stay; `ADMIN_PIN=73914826` and
+    `DB_PASSWORD=1234` are secrets);
   - `repo env file` (the owner's `.env`, `.env.local` and `guard.envFiles`) and `environment variable
     <NAME>`: sources that mix configuration with secrets, so only what is secret-like. Never a value
-    under 4 characters, a switch word or a short plain number (as for `env file`: a number of 6 digits
-    or more, or one under a `SECRET_KEY` name, is judged as any value), nor a variable named `PWD`,
+    under 4 characters, a switch word or a plain number (as for `env file`: any other number, 6 digits
+    or more or under a secret name, is judged as any value), nor a variable named `PWD`,
     `OLDPWD`, `INIT_CWD`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `PATH`, `SHELL`, `USER`, `USERNAME`,
     `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TERM*`, `XDG_*_HOME` or `SSH_AUTH_SOCK`, nor a
-    `CLAUDE_CODE_*` variable whose name `SECRET_KEY` does not match (names compared exactly, upper
+    `CLAUDE_CODE_*` variable whose name is no secret name (names compared exactly, upper
     case: `CLAUDE_CODE_OAUTH_TOKEN` is judged, `CLAUDE_CODE_ENTRYPOINT` never); otherwise a value whose
-    name matches `SECRET_KEY`, or a high-entropy value that is not an absolute path under a name that
-    does not end in a place word (`DIR`, `PATH`, `HOME`, `PWD`, `CWD`, `ROOT` or `PREFIX`, the whole
-    name or after `_`, any case). An absolute path starts `/`, `~/` or `C:\` and has at least two
+    name is a secret name, or a high-entropy value that is not an absolute path under a name that
+    does not end in a place word (`DIR`, `PATH`, `HOME`, `CWD`, `ROOT` or `PREFIX`, the whole name or
+    after `_`, any case; `…_PWD` is a password's name, `MYSQL_PWD`). An absolute path starts `/`, `~/` or `C:\` and has at least two
     non-empty segments of path characters (letters, digits, `_`, `.`, `@`, `~`, `,`, `-`), never a `+`
     or `=`: a base64 value that starts with `/` is judged by its entropy. Claude Code's own
     `CLAUDE_CODE_CHILD_SESSION=1` would otherwise refuse every issue holding a lone `1`;
   - `role password` and `TOTP secret`: `.argus/live.json`'s roles, expanded.
 
   Empty values are ignored. The separators below are whitespace, punctuation, symbols and invisible
-  format characters (Unicode `Cf`: a soft hyphen, a zero-width space, a word joiner). A value of 6
-  characters or more is found in every encoding `pw`'s fence masks (§9 "Output": either case, hex,
-  base64 at any byte offset, URL-decoded too), or when the text and the value, each stripped of
-  separators, contain it. A value longer than 256 characters is found by any of its 256-character
-  parts (§9 "Output"), so its middle or its tail alone is found too; hits of parts that overlap or
-  touch are one hit, so a whole value is one. Most parts' patterns are never built: one pass over the
-  text lists every 4 characters it may spell in any mix of those encodings, and a part is matched only
-  when the text may spell each 4 of its characters, or holds its base64 or hex (200 values of 4096
-  characters against a 64 KB text take well under 3 s). Known limit: a piece shorter than a whole part
-  (at the text's edge) matches no part. A shorter value — or one
+  format characters (Unicode `Cf`, read a code point at a time: a soft hyphen, a zero-width space, a
+  word joiner, a tag character). The text is searched as it is and after one and two rounds of decoding
+  each `%HH` run and HTML entity once (`%2541` → `%41` → `A`, `&amp;#65;` → `&#65;` → `A`), so a value
+  encoded twice is found too. A value of 6 characters or more is found in every encoding `pw`'s fence
+  masks (§9 "Output": either case, hex, base64 at any byte offset, URL-decoded too), or when the text
+  and the value, each stripped of separators, contain it. Detection looks for windows of the value, 64
+  characters long, one starting every 32 characters (the last ending at the value's end): any run of 95
+  characters or more of a value (64 + 32 − 1) holds a whole window wherever it starts, so its middle or
+  its tail alone is found; a value of 64 characters or fewer is one window. Hits of windows that overlap
+  or touch are one hit, so a whole value is one. Most windows' patterns are never built: one pass over
+  the text lists every 4 characters it may spell in any mix of those encodings, and a window is matched
+  only when the text may spell each 4 of its characters, or holds its base64 or hex (200 values of 4096
+  characters against a 64 KB text take about 0.3 to 0.9 s). Known limit: a piece shorter than 95
+  characters of a value longer than 64 may hold no whole window and is not found. A shorter value — or one
   under 6 once stripped of separators — is found only as a whole token, not preceded or followed by a
   letter or digit: raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with
   separators between its characters, never as part of a longer word. So a ledger-class value is never
@@ -1385,11 +1398,13 @@ Then, against the run it named:
   (record ids such as cuid or ULID stay readable).
 - **Defangs**, outside fenced blocks and code spans as CommonMark reads them, by wrapping in
   backticks: every `http(s)` URL whose host is not loopback, its scheme in any case (`HTTPS://`) and its
-  slashes escaped or not (`https:\/\/`; trailing punctuation left outside), a `www.` host, a
-  protocol-relative target where GitHub would follow it, its slashes escaped or not (`\/\/host`) — a
-  link's or an image's (`[x](//host/…)`, `[x](<//host/…>)`, `![x](//host/…)`), a reference
-  definition's (`[1]: //host/…`) and an HTML `src=`, `href=`, `poster=` or `srcset=` value
-  (`src="//host/…"`, every candidate of a srcset) —,
+  slashes escaped, entity-encoded or not (`https:\/\/`, `https:&#47;&#47;`; trailing punctuation left
+  outside), a `www.` host, a protocol-relative target where GitHub would follow it, its slashes the same
+  (`\/\/host`, `&#47;&#47;host`, `&#x2F;&#x2F;host`, `&sol;&sol;host`) — a link's or an image's
+  (`[x](//host/…)`, `[x](<//host/…>)`, `![x](//host/…)`), a reference definition's (`[1]: //host/…`),
+  either on the line after its `](` or `]:` too, and an HTML `src=`, `href=`, `poster=` or `srcset=`
+  value, the attribute's name in any case (`src="//host/…"`, `SRC=//host/…`, every candidate of a
+  srcset) —,
   `owner/repo#<n>`, `GH-<n>`, `#<n>` (not after `&`, an HTML entity) and `@user` or `@org/team`, each
   with the backslashes right before it; a bare `//host` in prose is left as it is. A backtick run with no
   closer on its line, or a span holding a `|` (a GFM table splits there), is escaped instead, so no span
@@ -1750,7 +1765,7 @@ Elsewhere:
 | `plugins/sapu/scripts/argus-live-classes.mjs` | new leaf: §10's class and severity table, `classify` |
 | `plugins/sapu/scripts/argus-live-redtest.mjs` | new: the generated Playwright RED test |
 | `plugins/sapu/scripts/argus-live-scrub.mjs` | new: `scrub` (`scrubRun`, the run it checks; `scrubSecrets`), the screenshot verdict's writer and reader, redaction and defanging |
-| `plugins/sapu/scripts/argus-live-fence.mjs` | `secretPatterns` built part by part (256-character parts overlapping by 16), case-folded, hex, base64 at any byte offset and URL-decoded; `leakFinder`, which finds every part of a value while building only the patterns the text may hold; `mergedSpans`; `PatternError`, whose fixed words replace the engine's message |
+| `plugins/sapu/scripts/argus-live-fence.mjs` | `secretPatterns` built part by part (256-character parts overlapping by 16), case-folded, hex, base64 at any byte offset and URL-decoded; `leakFinder`, which finds every 64-character window of a value (one every 32: any 95-character run) while building only the patterns the text may hold; `holds`; `mergedSpans`; `PatternError`, whose fixed words replace the engine's message |
 | `plugins/sapu/scripts/argus-live-map.mjs` | new: the journey map (`validateMap`, `map-check`, refresh reasons, the catalog, `mergeMap`), SELECT (`score`, `selectJourneys`), PERSIST (`visitJourney`) |
 | `plugins/sapu/scripts/argus-live-drift.mjs` | new: doc drift by author time (§5) |
 | `vitest.config.ts` | excludes `tests/fixtures/**` (the golden RED test is a Playwright spec) and `.claude/**` |

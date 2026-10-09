@@ -143,8 +143,11 @@ export function mergeMap(prev, value, { head }) {
   return { ...before, head, roots: value.roots, dropped: before.dropped ?? [], journeys };
 }
 
-/** An issue or comment URL as `scrub` prints it after `filed:`: no whitespace and no control character (an ESC would reach the catalog). */
-const ISSUE_URL = /^https?:\/\/[^\s\x00-\x1f\x7f/]+\/[^\s\x00-\x1f\x7f]+\/issues\/[0-9]+(?:#issuecomment-[0-9]+)?$/;
+/**
+ * An issue or comment URL as `scrub` prints it after `filed:`: no whitespace, no control character (C0 or
+ * C1: an ESC or a CSI would reach the catalog) and no invisible format character (U+202E reverses the text).
+ */
+const ISSUE_URL = /^https?:\/\/[^\s\p{Cc}\p{Cf}/]+\/[^\s\p{Cc}\p{Cf}]+\/issues\/[0-9]+(?:#issuecomment-[0-9]+)?$/u;
 
 /**
  * PERSIST (spec §6): `map` with journey `id`'s `lastCycle` set to `cycle`, `lastHead` to `head` and the issue

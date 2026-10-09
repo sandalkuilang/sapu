@@ -12,7 +12,7 @@ import path from "node:path";
 import { expand, LIVE_FILE, loadLive } from "./argus-live-config.mjs";
 import { PatternError } from "./argus-live-fence.mjs";
 import { normHost, ownerEnvFiles } from "./argus-live-endpoints.mjs";
-import { highEntropy, MIN_SECRET, readLedger, readSeen, SECRET_KEY, secretHits } from "./argus-live-ledger.mjs";
+import { highEntropy, MIN_SECRET, readLedger, readSeen, secretHits, secretName } from "./argus-live-ledger.mjs";
 import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run, tempBeside, within } from "./argus-live-proc.mjs";
 import { readRun, recordedSecrets, worktreeHeadFile } from "./argus-live-run.mjs";
@@ -21,21 +21,23 @@ import { loadContract, resolvePolicy } from "./sapu-contract.mjs";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** A switch word: configuration, never a secret, under any name. */
-const SWITCH = /^(?:true|false|yes|no|on|off)$/i;
+const SWITCH = /^(?:true|false|yes|no|on|off|0|1)$/i;
+/** A name that says its number is a unit or a limit (`SESSION_TIMEOUT`, `JWT_EXPIRES_IN`, `KEY_SIZE`, `AUTH_PORT`): the whole name or after `_`, any case. */
+const UNIT_NAME = /(?:^|_)(?:TIMEOUT|TTL|AGE|EXPIRES(?:_IN)?|EXPIRY|MIN|MAX|LIMIT|LEN(?:GTH)?|SIZE|COUNT|PORT|RETRIES|INTERVAL|DAYS|HOURS|MINUTES|SECONDS|MS)$/i;
 /**
- * A value that is configuration, never a secret, in any source: a switch word, or a number (digits only)
- * shorter than MIN_SECRET under a name that does not match SECRET_KEY. A longer number, or one named as a
- * secret (`ADMIN_PIN=73914826`, `API_TOKEN=4815`), is judged as any other value.
+ * A value that is configuration, never a secret, in any source: a switch word (`0` and `1` too), a number
+ * (digits only) of any length under a UNIT_NAME, or one shorter than MIN_SECRET under a name that is no
+ * secretName. Any other number (`ADMIN_PIN=73914826`, `API_TOKEN=4815`) is judged as any other value.
  */
-const plainValue = (name, v) => SWITCH.test(v) || (/^[0-9]+$/.test(v) && v.length < MIN_SECRET && !SECRET_KEY.test(name));
+const plainValue = (name, v) => SWITCH.test(v) || (/^[0-9]+$/.test(v) && (UNIT_NAME.test(name) || (v.length < MIN_SECRET && !secretName(name))));
 /** Environment variables that say where and who, never a secret: the shell's, the terminal's, the locale's, XDG's homes, the SSH agent's socket. */
 const PLAIN_ENV = /^(?:PWD|OLDPWD|INIT_CWD|HOME|TMPDIR|TMP|TEMP|PATH|SHELL|USER|USERNAME|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM[A-Z_]*|XDG_[A-Z_]+_HOME|SSH_AUTH_SOCK)$/;
-/** Claude Code's own variables (`CLAUDE_CODE_CHILD_SESSION=1`): exempt only under a name SECRET_KEY does not match (never `CLAUDE_CODE_OAUTH_TOKEN`). */
+/** Claude Code's own variables (`CLAUDE_CODE_CHILD_SESSION=1`): exempt only under a name that is no secretName (never `CLAUDE_CODE_OAUTH_TOKEN`). */
 const CLAUDE_CODE_ENV = /^CLAUDE_CODE_[A-Z0-9_]*$/;
 /** A variable that says where or who (PLAIN_ENV), or Claude Code's own one whose name says no secret. */
-const plainEnv = (name) => PLAIN_ENV.test(name) || (CLAUDE_CODE_ENV.test(name) && !SECRET_KEY.test(name));
-/** A name that says its value is a place (`…_DIR`, `…_PATH`, `…_HOME`, `…_PWD`, `…_CWD`, `…_ROOT`, `…_PREFIX`): never judged by its entropy. */
-const PATH_NAME = /(?:^|_)(?:DIR|PATH|HOME|PWD|CWD|ROOT|PREFIX)$/i;
+const plainEnv = (name) => PLAIN_ENV.test(name) || (CLAUDE_CODE_ENV.test(name) && !secretName(name));
+/** A name that says its value is a place (`…_DIR`, `…_PATH`, `…_HOME`, `…_CWD`, `…_ROOT`, `…_PREFIX`): never judged by its entropy. `…_PWD` is a password (`MYSQL_PWD`). */
+const PATH_NAME = /(?:^|_)(?:DIR|PATH|HOME|CWD|ROOT|PREFIX)$/i;
 /**
  * An absolute path (`/…`, `~/…`, `C:\…`) of at least two non-empty segments of path characters, never a `+`
  * or `=`: never judged by its entropy. A base64 value that starts with `/` is no path.
@@ -47,14 +49,14 @@ const MIXED_MIN = 4;
 /**
  * A source that mixes configuration with secrets (a repo env file, the environment) gives only what is
  * secret-like: never a value under MIXED_MIN characters, a switch word or a short plain number (plainValue),
- * nor a variable of plainEnv; else a SECRET_KEY name, or a highEntropy value that is no path (ABS_PATH) under
+ * nor a variable of plainEnv; else a secretName, or a highEntropy value that is no path (ABS_PATH) under
  * no place's name (PATH_NAME). A short one is then a whole token: Claude Code's `CLAUDE_CODE_CHILD_SESSION=1`
  * would refuse every issue holding a lone `1`.
  */
 const secretLike = (name, v) => {
   const [n, s] = [String(name), String(v)];
   if (s.length < MIXED_MIN || plainValue(n, s) || plainEnv(n)) return false;
-  return SECRET_KEY.test(n) || (!PATH_NAME.test(n) && !ABS_PATH.test(s) && highEntropy(s));
+  return secretName(n) || (!PATH_NAME.test(n) && !ABS_PATH.test(s) && highEntropy(s));
 };
 
 /**
@@ -182,14 +184,15 @@ export function redactIds(text, seen) {
 
 /**
  * What GitHub would turn into a notification, a cross-reference or a link: an `http(s)` URL in any case
- * (`HTTPS://`), its slashes escaped or not (`https:\/\/`), or a `www.` host (its trailing punctuation left
- * out); a protocol-relative target, its slashes escaped or not (`\/\/host`), where GitHub follows it: a link's
- * or image's (`[x](//host…)`, `[x](<//host…>)`, `![](//host…)`), a reference definition's (`[1]: //host…`)
- * and an HTML `src=`, `href=`, `poster=` or `srcset=` value (every candidate of a srcset);
+ * (`HTTPS://`), its slashes escaped, entity-encoded or not (`https:\/\/`, `https:&#47;&#47;`), or a `www.`
+ * host (its trailing punctuation left out); a protocol-relative target, its slashes the same (`\/\/host`,
+ * `&#47;&#47;host`, `&sol;&sol;host`), where GitHub follows it: a link's or image's (`[x](//host…)`,
+ * `[x](<//host…>)`, `![](//host…)`), a reference definition's (`[1]: //host…`) and an HTML `src=`, `href=`,
+ * `poster=` or `srcset=` value, the attribute's name in any case (every candidate of a srcset);
  * `owner/repo#<n>`, `GH-<n>`, `#<n>` and an `@user` or `@org/team` mention — each with the backslashes
  * right before it, which a code span then holds.
  */
-const LIVE = /(\\*)((?:[hH][tT]{2}[pP][sS]?:(?:\\?\/){2}|\bwww\.)[^\s<>"'`]+|(?<=\]\(\s*<?|^ {0,3}\[[^\]\n]+\]:\s*<?|\b(?:src|href|poster)\s*=\s*["']?|\bsrcset\s*=\s*["']?(?:[^"'<>]*,\s*)?)(?:\\?\/){2}[^\s<>"'`)]+|\b[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+#[0-9]+|\bGH-[0-9]+\b|(?<!&)#[0-9]+|(?<![A-Za-z0-9_.+\-/])@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?)/g;
+const LIVE = /(\\*)((?:[hH][tT]{2}[pP][sS]?:(?:\\?\/|&#0*47;|&#[xX]0*2[fF];|&sol;){2}|\bwww\.)[^\s<>"'`]+|(?<=\]\(\s*<?|^ {0,3}\[[^\]\n]+\]:\s*<?|\b(?:[sS][rR][cC]|[hH][rR][eE][fF]|[pP][oO][sS][tT][eE][rR])\s*=\s*["']?|\b[sS][rR][cC][sS][eE][tT]\s*=\s*["']?(?:[^"'<>]*,\s*)?)(?:\\?\/|&#0*47;|&#[xX]0*2[fF];|&sol;){2}[^\s<>"'`)]+|\b[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+#[0-9]+|\bGH-[0-9]+\b|(?<!&)#[0-9]+|(?<![A-Za-z0-9_.+\-/])@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?)/g;
 
 /** A URL's host is loopback (the run's own app): such a link stays. */
 const loopbackUrl = (u) => {
@@ -205,9 +208,15 @@ const loopbackUrl = (u) => {
  * A code span is a backtick run closed by a run of the same length on the same line (CommonMark); a run
  * escaped by a backslash opens none. A run with no closer on its line, and a span holding a `|` (GFM
  * splits a table row there, span or not), are escaped instead: no span then crosses a line or a cell, so
- * what is code here is code on GitHub too.
+ * what is code here is code on GitHub too. `opened`: the line before ended a link's `](` or a reference
+ * definition's `]:` (OPENS_TARGET), so a target at this line's start is that link's.
  */
-function defangLine(line) {
+function defangLine(line, { opened = false } = {}) {
+  if (opened) {
+    // The line before opened a target (OPENS_TARGET): read this one as its continuation, then drop the `](`.
+    const d = defangLine(`](${line}`);
+    return { text: d.text.slice(2), n: d.n };
+  }
   let n = 0;
   const plain = (s) =>
     s.replace(LIVE, (m, slashes, token) => {
@@ -256,6 +265,8 @@ function defangLine(line) {
   return { text: out + plain(line.slice(last)), n };
 }
 
+/** A line that ends where a link destination may start on the next line (CommonMark): after a link's `](` or a reference definition's `]:`. */
+const OPENS_TARGET = /(?:\]\(|^ {0,3}\[[^\]]+\]:)\s*$/;
 /** A fence's opening line (CommonMark): up to three spaces, three or more backticks or tildes, an info string. */
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 /** A fenced block left whole: the generated test and the repro. */
@@ -265,7 +276,8 @@ const FENCE_LINES = 20;
 
 /**
  * Markdown `md` defanged (decision 17) → `{text, defanged, cut}`: outside fenced blocks and code spans,
- * as CommonMark reads them (defangLine), every live token wrapped in backticks but a loopback URL; a
+ * as CommonMark reads them (defangLine), every live token wrapped in backticks but a loopback URL (a link
+ * target on the line after its `](` or `]:` too); a
  * fenced block (an opening run of 3+ backticks or tildes, a backtick fence's info string holding none,
  * closed by the same character at least as long, else open to the end) is left whole when its info
  * string is `ts`, `typescript` or `json`, and otherwise keeps its first 20 lines and `… <k> lines cut`.
@@ -275,14 +287,17 @@ export function defang(md) {
   const out = [];
   let defanged = 0;
   let cut = 0;
+  let opened = false;
   for (let i = 0; i < lines.length; i++) {
     const m = FENCE_OPEN.exec(lines[i]);
     if (!m || (m[1][0] === "`" && m[2].includes("`"))) {
-      const d = defangLine(lines[i]);
+      const d = defangLine(lines[i], { opened });
+      opened = OPENS_TARGET.test(lines[i]);
       defanged += d.n;
       out.push(d.text);
       continue;
     }
+    opened = false;
     const close = new RegExp(`^ {0,3}${m[1][0]}{${m[1].length},} *$`);
     let j = i + 1;
     while (j < lines.length && !close.test(lines[j])) j += 1;
