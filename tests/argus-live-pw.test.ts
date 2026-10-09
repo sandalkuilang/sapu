@@ -8,7 +8,7 @@ import { createServer as createHttpServer } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, committed, example, freePort, git, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -862,6 +862,20 @@ describe("argus-live fences and targets", () => {
     for (const b of bodies) expect(clean(`<${b}>`, { secrets: { PW } }), b).toMatch(/^<(\{"pw": ?"\*\*\*"\}|\*\*\*)>$/);
     // Unrelated text is left alone: a prefix of the value, another word.
     expect(clean("Pa and Pa\"ss and pass", { secrets: { PW } })).toBe("Pa and Pa\"ss and pass");
+  });
+
+  it("a secret thousands of characters long is masked whole in its every form, and no pattern ever fails on it", () => {
+    for (const n of [3000, 4096]) {
+      const v = longSecret(n);
+      const text = [`a ${v} b`, `url ${encodeURIComponent(v)}`, `json "${JSON.stringify(v).slice(1, -1)}"`, `b64 ${Buffer.from(v).toString("base64")}`, `twice ${v}${v}.`].join("\n");
+      expect(() => clean(text, { secrets: { V: v } }), String(n)).not.toThrow();
+      const out = clean(text, { secrets: { V: v } });
+      expect(out, String(n)).toBe(["a *** b", "url ***", 'json "***"', "b64 ***", "twice ***."].join("\n"));
+      expect(partsIn(out, v)).toEqual([]);
+      // The widest characters too: a pattern spells out at most a bounded part of a value.
+      const wide = "\u{1f600}é%".repeat(Math.ceil(n / 3)).slice(0, n);
+      expect(clean(`x ${wide} y`, { secrets: { W: wide } })).toBe("x *** y");
+    }
   });
 
   it("only real marker shapes are defused: business ids starting PAGE- or RETURN- stay as they are", () => {
@@ -2387,6 +2401,21 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     // A hook that fails: its exit code outside the fence.
     expect((await t.call("facts", "ORD-9")).out.slice(1)).toEqual(["calls 5/120", "exit 1"]);
   }, 30_000);
+
+  it("an env_file value thousands of characters long is masked in pw's output, and no pattern error prints it", async () => {
+    for (const n of [3000, 4096]) {
+      const t = await hookRun();
+      const v = longSecret(n, "pem");
+      writeFileSync(join(t.main, ".argus/live.env"), `PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-pw-Kx7q\nAPP_KEY=${v}\n`);
+      writeFileSync(join(t.wt, "src/key.txt"), `appKey ${v}\n`);
+      execFileSync("git", ["-C", t.wt, "add", "src/key.txt"]);
+      execFileSync("git", ["-C", t.wt, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "key"]);
+      const r = await t.call("code", "grep", "appKey");
+      expect(r.code, String(n)).toBe(0);
+      expect(body(r)).toBe(`${t.wt}/src/key.txt:1:appKey ***`);
+      expect(partsIn(r.out.join("\n"), v)).toEqual([]);
+    }
+  }, 60_000);
 
   it("a hook that hangs is killed with its group", async () => {
     const t = await hookRun((c) => (c.settle_ms = 100));

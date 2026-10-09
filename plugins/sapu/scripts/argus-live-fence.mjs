@@ -41,29 +41,125 @@ function charPattern(ch) {
 }
 
 /**
- * One regular expression for every form a secret value takes in what the CLI prints, whatever language
- * escaped it: each character in any of its encodings (charPattern: JSON from JavaScript, Go's `&`,
- * Python's `ä`, PHP's `\/`, HTML entities, URL and form encoding, mixed freely), or the whole value
- * in base64 (padded, unpadded, URL-safe) when that is at least 8 characters long.
+ * `bytes` in base64 (standard and URL-safe) as they read inside a longer text, from byte offset 0, 1 and 2
+ * of a group (`base64("user:" + pw)`): only the characters no byte but the value's makes; the whole value
+ * padded and unpadded too.
  */
-export function secretPattern(v) {
-  const b64 = Buffer.from(v, "utf8").toString("base64");
-  const whole = [...new Set([b64, b64.replace(/=+$/, ""), Buffer.from(v, "utf8").toString("base64url")])].filter((b) => b.length >= 8).map(reEscape);
-  return new RegExp([...whole, [...v].map(charPattern).join("")].join("|"), "g");
+function base64Forms(bytes) {
+  const out = [bytes.toString("base64"), bytes.toString("base64").replace(/=+$/, "")];
+  for (const o of [0, 1, 2]) {
+    const s = Buffer.concat([Buffer.alloc(o), bytes]).toString("base64");
+    out.push(s.slice(Math.ceil((8 * o) / 6), Math.floor((8 * (o + bytes.length)) / 6)));
+  }
+  return out.flatMap((b) => [b, b.replace(/\+/g, "-").replace(/\//g, "_")]);
+}
+
+/** The most characters of a value one pattern spells out: some 2700 overflow the engine's stack. */
+export const PATTERN_CHARS = 256;
+/** How far a long value's parts overlap: each encoding of one part meets the next part's, so a long value is masked whole. */
+const PATTERN_OVERLAP = 16;
+
+/**
+ * Thrown for a secret's pattern that could not be built or run, with a fixed message: the engine's own quotes
+ * the pattern, which spells the value out.
+ */
+export class PatternError extends Error {
+  constructor(message = "failed: a secret's pattern could not be built") {
+    super(message);
+    this.name = "PatternError";
+  }
+}
+
+/** `new RegExp(source, flags)`, or a PatternError (never the engine's message). */
+function compile(source, flags) {
+  try {
+    return new RegExp(source, flags);
+  } catch {
+    throw new PatternError();
+  }
+}
+
+/** `v` cut into parts of PATTERN_CHARS characters, each overlapping the next by PATTERN_OVERLAP, the last ending at `v`'s end. */
+function parts(v) {
+  const chars = [...v];
+  if (chars.length <= PATTERN_CHARS) return [v];
+  const out = [];
+  for (let i = 0; i + PATTERN_CHARS < chars.length; i += PATTERN_CHARS - PATTERN_OVERLAP) out.push(chars.slice(i, i + PATTERN_CHARS).join(""));
+  out.push(chars.slice(-PATTERN_CHARS).join(""));
+  return out;
+}
+
+/**
+ * The regular expressions for every form a secret value takes in what the CLI prints, whatever language
+ * escaped it, one per part of it (a value of more than PATTERN_CHARS characters is matched part by part,
+ * the parts overlapping: a prefix still finds the leak, and every part is masked): each character in any of
+ * its encodings (charPattern: JSON from JavaScript, Go's `&`, Python's `ä`, PHP's `\/`, HTML
+ * entities, URL and form encoding, mixed freely), or the part in base64 (padded, unpadded, URL-safe, at
+ * any byte offset: base64Forms; a long value's parts start at any offset of its base64) when that is at
+ * least 8 characters long. `prefix`: the first part only (enough to find a leak, not to mask one).
+ * A pattern that cannot be built throws a PatternError.
+ */
+export function secretPatterns(v, { prefix = false } = {}) {
+  const all = parts(String(v));
+  return (prefix ? all.slice(0, 1) : all).map((p) => {
+    const literal = [...new Set(base64Forms(Buffer.from(p, "utf8")))].filter((b) => b.length >= 8).map(reEscape);
+    return compile([...literal, [...p].map(charPattern).join("")].join("|"), "g");
+  });
 }
 
 /** A fence marker's shape: `PAGE-`/`RETURN-` before a 32-hex nonce, or an opening `<<<PAGE-`/`<<<RETURN-`. */
 const MARKER = /(<<<(?:PAGE|RETURN))-|(PAGE|RETURN)-(?=[0-9a-f]{32}(?![0-9a-f]))/g;
 
+/** What `clean` gives instead of a text it could not mask: never the text. */
+export const WITHHELD = "*** (withheld: a secret's pattern could not be run)";
+
+/**
+ * Every match of global `re` in `text` as `[start, end)`, overlapping ones too (a periodic value's part
+ * also matches inside the part before it); a pattern that fails to run throws a PatternError.
+ */
+function spans(re, text) {
+  const out = [];
+  try {
+    re.lastIndex = 0;
+    for (let m = re.exec(text); m; m = re.exec(text)) {
+      if (m[0] !== "") out.push([m.index, m.index + m[0].length]);
+      re.lastIndex = m.index + 1;
+    }
+  } catch {
+    throw new PatternError();
+  }
+  return out;
+}
+
+/** `text` with every match of every value's patterns (secretPatterns) → `***`, overlapping and touching matches as one. */
+function maskValues(text, values) {
+  const found = values.flatMap((v) => secretPatterns(v).flatMap((re) => spans(re, text))).sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let at = 0;
+  for (let i = 0; i < found.length; ) {
+    let [start, end] = found[i];
+    for (i += 1; i < found.length && found[i][0] <= end; i += 1) end = Math.max(end, found[i][1]);
+    out += `${text.slice(at, start)}***`;
+    at = end;
+  }
+  return out + text.slice(at);
+}
+
 /**
  * Page-derived `text` made safe to fence: every non-empty secret value, in any of its forms
- * (secretPattern), → `***` (the longest value first); `\r\n` → `\n`; a marker shape's hyphen → U+2011 (no text can
- * open or close a fence, while a business id such as `RETURN-42` stays as it is); and every C0 or C1
- * control (and DEL) other than `\n` and `\t` → U+FFFD (no terminal escape survives).
+ * (secretPatterns), → `***` (overlapping and touching matches as one; a value inside another is masked
+ * with it); `\r\n` → `\n`; a marker shape's hyphen → U+2011 (no text can open or close a fence, while a
+ * business id such as `RETURN-42` stays as it is); and every C0 or C1 control (and DEL) other than `\n`
+ * and `\t` → U+FFFD (no terminal escape survives). A pattern that cannot be built or run → WITHHELD.
  */
 export function clean(text, { secrets = {} } = {}) {
-  const values = [...new Set(Object.values(secrets).filter((v) => typeof v === "string" && v !== ""))].sort((a, b) => b.length - a.length);
-  let out = values.reduce((t, v) => t.replace(secretPattern(v), "***"), String(text ?? ""));
+  const values = [...new Set(Object.values(secrets).filter((v) => typeof v === "string" && v !== ""))];
+  let out;
+  try {
+    out = maskValues(String(text ?? ""), values);
+  } catch {
+    return WITHHELD;
+  }
   out = out.replace(/\r\n/g, "\n").replace(MARKER, (_m, open, bare) => `${open || bare}${NB_HYPHEN}`);
   return out.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "�");
 }

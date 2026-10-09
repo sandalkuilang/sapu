@@ -595,7 +595,7 @@ describe("argus-live repro — one run", () => {
       const sidBody = join(bodies, "sid.md");
       writeFileSync(sidBody, `Cancelling twice.\n\nThe session was sid=${sid} then.\n`);
       const scrubSid = () => {
-        const s = c.cli("scrub", "--title", "Cancel releases stock twice", "--body", sidBody);
+        const s = c.cli("scrub", "--ref", ref, "--title", "Cancel releases stock twice", "--body", sidBody);
         expect(s.code, s.err).toBe(1);
         const out = s.out.trimEnd().split("\n");
         expect(out.some((l) => /^body 3:\d+ cookie$/.test(l)), s.out).toBe(true);
@@ -607,7 +607,7 @@ describe("argus-live repro — one run", () => {
       c.env.PATH = `${gh.dir}:${c.env.PATH}`;
       const clean = join(bodies, "clean.md");
       writeFileSync(clean, "A cancelled order puts its stock back twice.\n");
-      const filed = c.cli("scrub", "--title", "Cancel releases stock twice", "--body", clean, "--attach", shot, "--create", "--label", "bug");
+      const filed = c.cli("scrub", "--ref", ref, "--title", "Cancel releases stock twice", "--body", clean, "--attach", shot, "--create", "--label", "bug");
       expect(filed.code, `${filed.out} ${filed.err}`).toBe(0);
       expect(filed.out.trimEnd().split("\n")).toEqual(["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: Cancel releases stock twice", `attach: .argus/live/${runId}/1/out/${png[0]}`, "filed: https://github.com/o/r/issues/9"]);
       const create = gh.calls().find((x) => x.argv[0] === "issue")!;
@@ -633,7 +633,7 @@ describe("argus-live repro — one run", () => {
       scrubSid();
       const after = join(bodies, "after.md");
       writeFileSync(after, "A cancelled order puts its stock back twice.\n");
-      expect(c.cli("scrub", "--title", "Cancel releases stock twice", "--body", after).code).toBe(0);
+      expect(c.cli("scrub", "--ref", ref, "--title", "Cancel releases stock twice", "--body", after).code).toBe(0);
 
       // No stdout (but the mint's) and no file left under the run holds the role password or the slot token.
       const forms = [PW, encodeURIComponent(PW), new URLSearchParams({ p: PW }).toString().slice(2), JSON.stringify(PW).slice(1, -1)];

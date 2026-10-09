@@ -151,15 +151,16 @@ function runLog(main, runId, file, secrets, say) {
 
 /**
  * The commit `worktree` was built at (`git rev-parse HEAD` in it), also kept in worktreeHeadFile (0600), which
- * `down` leaves → the sha (decision 20: `map-check --merge` stamps it, after `down` too).
+ * `down` leaves, with the run's `mode` (`map` for `up --map`: scrub tells a map run by it after `down`) → the
+ * sha (decision 20: `map-check --merge` stamps it, after `down` too).
  */
-function recordWorktreeHead(main, runId, worktree, runner) {
+function recordWorktreeHead(main, runId, worktree, runner, mode = "explore") {
   const r = runner(["git", "-C", worktree, "rev-parse", "HEAD"]);
   const head = r.status === 0 ? String(r.stdout).trim() : "";
   if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error(`failed: the worktree's commit cannot be read: ${String(r.stderr || (r.error && r.error.message) || "").trim().slice(0, 200)}`);
   const file = worktreeHeadFile(main, runId);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.renameSync(tempBeside(file, `${JSON.stringify({ worktreeHead: head })}\n`, 0o600), file);
+  fs.renameSync(tempBeside(file, `${JSON.stringify({ worktreeHead: head, mode })}\n`, 0o600), file);
   return head;
 }
 
@@ -393,7 +394,7 @@ export async function upMap(main, { runner = run, say = () => {} } = {}) {
     step = "4 worktree";
     state.worktree = makeWorktree(main, runId, { runner });
     save();
-    state.worktreeHead = recordWorktreeHead(main, runId, state.worktree, runner);
+    state.worktreeHead = recordWorktreeHead(main, runId, state.worktree, runner, "map");
     save();
     log(`step 4 worktree: ${state.worktree} at ${state.worktreeHead}; map mode: no setup, store, app, proxy or logins; reaper ${reaper}`);
     return { runId, mode: "map", deadline: lock.deadline, worktree: state.worktree };

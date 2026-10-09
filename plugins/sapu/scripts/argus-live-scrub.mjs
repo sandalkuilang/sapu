@@ -10,11 +10,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { expand, LIVE_FILE, loadLive } from "./argus-live-config.mjs";
+import { PatternError } from "./argus-live-fence.mjs";
 import { normHost, ownerEnvFiles } from "./argus-live-endpoints.mjs";
 import { highEntropy, MIN_SECRET, readLedger, readSeen, SECRET_KEY, secretHits } from "./argus-live-ledger.mjs";
-import { lastRun, liveDir } from "./argus-live-lock.mjs";
+import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run, tempBeside, within } from "./argus-live-proc.mjs";
-import { recordedSecrets } from "./argus-live-run.mjs";
+import { readRun, recordedSecrets, worktreeHeadFile } from "./argus-live-run.mjs";
 import { loadContract, resolvePolicy } from "./sapu-contract.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -70,6 +71,68 @@ export function scrubSecrets(main, { runId, env = process.env } = {}) {
   if (ledger.incomplete !== null) return { secrets, refusal: `refused: scrub: the run's secret ledger is incomplete (${ledger.incomplete}); nothing from this run is filed` };
   for (const e of ledger.entries) if (e.c !== "incomplete") add(e.c, "ledger", e.v);
   return { secrets, refusal: null };
+}
+
+/** A candidate's reference: `<slot>.<generation>.<k>`. */
+export const REF = /^([1-9][0-9]?)\.([1-9])\.([1-9][0-9]?)$/;
+
+/** Candidate `ref`'s two-of-two verdict in run `runId` (its `verdict.json`): `reproduced`, `intermittent`, …, or `never run`. */
+export function verdictOf(main, runId, ref) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(liveDir(main), runId, "repro", ref, "verdict.json"), "utf8"));
+    return v && typeof v.verdict === "string" && /^[a-z-]{1,20}$/.test(v.verdict) ? v.verdict : "never run";
+  } catch {
+    return "never run";
+  }
+}
+
+/** Run `runId` was a map run (`up --map`): run.json says so while it names the run, else the worktree record `down` keeps. */
+function mapRun(main, runId) {
+  let rec = null;
+  try {
+    rec = readRun(main);
+  } catch {
+    rec = null;
+  }
+  if (rec && rec.runId === runId) return rec.mode === "map";
+  try {
+    return JSON.parse(fs.readFileSync(worktreeHeadFile(main, runId), "utf8")).mode === "map";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The run an issue is checked against (decision 14): `run` as named, else the one run whose records hold
+ * candidate `ref` → `{runId}` or `{refusal}`. Never the newest run: text from one run checked against
+ * another's ledger would let the first run's secrets through. Refused: neither named, a malformed id or
+ * ref, a ref no run or more than one run holds (`--run` then says which), a ref whose `verdict.json` is not
+ * `reproduced` (two of two), a run with no directory here, a map run (it drained no session).
+ */
+export function scrubRun(main, { run = null, ref = null } = {}) {
+  const no = (why) => ({ refusal: `refused: scrub: ${why}; nothing is filed` });
+  if (run === null && ref === null) return no("name the run (--run <runId>) or the candidate (--ref <slot>.<generation>.<k>)");
+  if (run !== null && !RUN_ID.test(String(run))) return no("--run takes a run id");
+  if (ref !== null && !REF.test(String(ref))) return no("--ref takes <slot>.<generation>.<k>");
+  let runId = run;
+  if (ref !== null && runId === null) {
+    let names = [];
+    try {
+      names = fs.readdirSync(liveDir(main)).filter((n) => RUN_ID.test(n) && fs.existsSync(path.join(liveDir(main), n, "repro", ref)));
+    } catch {
+      names = [];
+    }
+    if (!names.length) return no(`no run here reproduced candidate ${ref}`);
+    if (names.length > 1) return no(`candidate ${ref} was reproduced in more than one run; name it with --run <runId> too`);
+    runId = names[0];
+  }
+  if (!fs.existsSync(path.join(liveDir(main), runId))) return no(`no run ${runId} here`);
+  if (ref !== null) {
+    const word = verdictOf(main, runId, ref);
+    if (word !== "reproduced") return no(`candidate ${ref} of run ${runId} did not reproduce two of two (${word})`);
+  }
+  if (mapRun(main, runId)) return { refusal: `refused: scrub: run ${runId} is a map run (up --map): it drained no session and keeps no secret ledger; nothing from it is filed` };
+  return { runId };
 }
 
 /**
@@ -205,14 +268,21 @@ export function defang(md) {
 /**
  * `secretHits` on the title, the body and each label (gh puts a label on the issue as given) → the refusal's
  * lines, `<title|body> <line>:<col> <class>` and `label <i> <class>` (1-based), then the count; none → [].
+ * A value that could not be checked → its PatternError's one line, `refused: scrub: a <class> value could not
+ * be checked; nothing is filed`, never an error's own message.
  */
 function refusalLines(title, body, secrets, labels = []) {
-  const hits = [...secretHits(title, secrets).map((h) => ({ ...h, where: "title" })), ...secretHits(body, secrets).map((h) => ({ ...h, where: "body" }))];
-  const lines = hits.map((h) => `${h.where} ${h.line}:${h.col} ${h.cls}`);
-  labels.forEach((l, i) => {
-    for (const h of secretHits(String(l), secrets)) lines.push(`label ${i + 1} ${h.cls}`);
-  });
-  return lines.length ? [...lines, `refused: scrub: ${lines.length} secret(s) in the issue; nothing is filed`] : [];
+  try {
+    const hits = [...secretHits(title, secrets).map((h) => ({ ...h, where: "title" })), ...secretHits(body, secrets).map((h) => ({ ...h, where: "body" }))];
+    const lines = hits.map((h) => `${h.where} ${h.line}:${h.col} ${h.cls}`);
+    labels.forEach((l, i) => {
+      for (const h of secretHits(String(l), secrets)) lines.push(`label ${i + 1} ${h.cls}`);
+    });
+    return lines.length ? [...lines, `refused: scrub: ${lines.length} secret(s) in the issue; nothing is filed`] : [];
+  } catch (e) {
+    // Only a PatternError's fixed words: an engine's own message quotes its pattern, which spells a value out.
+    return [e instanceof PatternError ? e.message : "refused: scrub: the issue could not be checked; nothing is filed"];
+  }
 }
 
 /** Where a screenshot's verdict lies: beside it, `<name>.verdict.json`. */
@@ -222,14 +292,22 @@ const verdictFile = (png) => png.replace(/\.png$/, ".verdict.json");
  * Writes the verdict of screenshot `png` of run `runId` beside it (0600): `{t, sha256, passed, reasons}`
  * (decision 18; `sha256` of the PNG's bytes as written), from `shot` (the login stage's answer, read after
  * the call's drain; null when it failed). Reasons: `secret` (the text holds a scrub secret, scrubSecrets
- * refused — a gone or incomplete ledger —, a frame could not be read, the stage failed or the call's drain
- * did not run, `drained` false), `password-field`, `one-time-code-field`, `error-page`. Never the text →
+ * refused — a gone or incomplete ledger —, a value could not be checked, a frame could not be read, the stage
+ * failed or the call's drain did not run, `drained` false), `password-field`, `one-time-code-field`, `error-page`. Never the text →
  * the verdict.
  */
 export function writeVerdict(main, runId, png, shot, { drained = true, env = process.env } = {}) {
   const { secrets, refusal } = scrubSecrets(main, { runId, env });
   const reasons = [];
-  if (!shot || !drained || refusal || shot.unread || secretHits(String(shot.text ?? ""), secrets).length) reasons.push("secret");
+  let secret = !shot || !drained || refusal || shot.unread;
+  if (!secret) {
+    try {
+      secret = secretHits(String(shot.text ?? ""), secrets).length > 0;
+    } catch {
+      secret = true; // a value that could not be checked: the page may show it
+    }
+  }
+  if (secret) reasons.push("secret");
   if (shot && shot.password) reasons.push("password-field");
   if (shot && shot.otp) reasons.push("one-time-code-field");
   if (shot && shot.error) reasons.push("error-page");
@@ -303,9 +381,10 @@ const shownPath = (main, file) => {
 const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
 
 /**
- * `argus-live.mjs scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment
- * <n>]` → `{code, out}`. The run is the lock's, else the newest run directory (a run that is down is read
- * the same way). scrubSecrets' refusal → that line (exit 1); a secret in the title, the body or a label as
+ * `argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file>
+ * [--attach <png>…] [--create [--label <l>…] | --comment <n>]` → `{code, out}`. The run is the one named, or
+ * the one whose candidate `ref` reproduced two of two (scrubRun; a run that is down is read the same way);
+ * its refusal, then scrubSecrets', → that line (exit 1); a secret in the title, the body or a label as
  * given → one line per hit, `<title|body> <line>:<col> <class>` or `label <i> <class>`, then `refused:
  * scrub: <k> secret(s) in the issue; nothing is filed` (exit 1, the file untouched, no gh run; never a value, never the text around it); else
  * both redacted (redactIds, the run's seen ids) and defanged, `scrub: ok; redacted <n>, defanged <n>, cut
@@ -318,9 +397,10 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
  * exit); none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2). gh's
  * own output is never printed.
  */
-export async function scrub(main, { title, bodyFile, attach = [], create = false, labels = [], comment = null } = {}, { env = process.env, gh = "gh", runner = run } = {}) {
-  const runId = lastRun(main);
-  if (!runId) return { code: 1, out: ["refused: scrub: no journey cycle has run here; nothing is filed"] };
+export async function scrub(main, { run: named = null, ref = null, title, bodyFile, attach = [], create = false, labels = [], comment = null } = {}, { env = process.env, gh = "gh", runner = run } = {}) {
+  const which = scrubRun(main, { run: named, ref });
+  if (which.refusal) return { code: 1, out: [which.refusal] };
+  const { runId } = which;
   const t = String(title ?? "");
   if (/[\r\n]/.test(t)) return { code: 1, out: ["refused: scrub: a title is one line"] };
   const { secrets, refusal } = scrubSecrets(main, { runId, env });

@@ -47,12 +47,16 @@
 //                                stopped fixpoint|budget, confirmed yes|no; min.json when confirmed
 //   argus-live.mjs repro <slot>.<generation>.<k> --test
 //                                write the candidate's Playwright RED test (from min.json when minimize confirmed
-//                                it, else its whole repro) to red.spec.ts in its records: red test: <absolute path>
+//                                it, else its whole repro) to red.spec.ts in its records: red test: <absolute path>;
+//                                refused unless its verdict.json says reproduced (two of two)
 //   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
 //                                a journey finding's class, labels and starting severity (spec §10's table):
 //                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
-//   argus-live.mjs scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>]
-//                                the last check before an issue is filed (spec §10 "Scrub"): a secret the run saw
+//   argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…]
+//                   [--create [--label <l>…] | --comment <n>]
+//                                the last check before an issue is filed (spec §10 "Scrub"), against the run named
+//                                (--ref: the run whose candidate reproduced two of two; refused otherwise, and for a
+//                                map run or a run whose ledger is gone, incomplete or damaged): a secret the run saw
 //                                or the configuration holds, in any encoding, refuses it — one <title|body>
 //                                <line>:<col> <class> or label <i> <class> line per hit, never the value (exit 1,
 //                                no gh run); else long tokens the run never saw redacted, mentions, references and
@@ -114,7 +118,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -176,7 +180,8 @@ try {
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       const value = i + 1 < args.length;
-      if (a === "--title" && value && once("title")) opts.title = args[++i];
+      if ((a === "--run" || a === "--ref") && value && once(a)) opts[a] = args[++i];
+      else if (a === "--title" && value && once("title")) opts.title = args[++i];
       else if (a === "--body" && value && once("body")) opts.body = args[++i];
       else if (a === "--attach" && value) opts.attach.push(path.resolve(args[++i]));
       else if (a === "--label" && value && /^[^\s,][^\u0000-\u001f,]{0,49}$/.test(args[i + 1])) opts.labels.push(args[++i]);
@@ -186,7 +191,7 @@ try {
     }
     if (opts.title === undefined || opts.body === undefined || (opts.create && opts.comment !== undefined) || (opts.labels.length && !opts.create)) throw new Error(`refused: ${usage}`);
     // Its lines are the wrapper's own: classes and places, never a value (decision 17); gh's output is never printed.
-    const r = await scrub(main, { title: opts.title, bodyFile: path.resolve(opts.body), attach: opts.attach, create: Boolean(opts.create), labels: opts.labels, comment: opts.comment ?? null });
+    const r = await scrub(main, { run: opts["--run"] ?? null, ref: opts["--ref"] ?? null, title: opts.title, bodyFile: path.resolve(opts.body), attach: opts.attach, create: Boolean(opts.create), labels: opts.labels, comment: opts.comment ?? null });
     for (const line of r.out) print(line);
     process.exit(r.code);
   } else if (cmd === "map-check" && (args.length === 0 || (args.length === 1 && args[0] === "--list") || (args.length === 2 && args[0] === "--merge"))) {

@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realp
 import { stripTypeScriptTypes } from "node:module";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
+import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, partsIn, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -41,7 +41,7 @@ import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
-import { defang, redactIds, scrub, scrubSecrets } from "../plugins/sapu/scripts/argus-live-scrub.mjs";
+import { defang, redactIds, scrub, scrubSecrets, writeVerdict } from "../plugins/sapu/scripts/argus-live-scrub.mjs";
 // @ts-expect-error — plain ESM script without types
 import { configuredUser, drainSessions, maskSecrets, sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -104,7 +104,7 @@ describe("argus-live modules — the DAG", () => {
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
     expect(g.get("argus-live-repro")).toContain("argus-live-redtest");
     // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
-    expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
+    expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-fence", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
     // The journey map reads the configuration and git, nothing of a run.
     expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
@@ -415,6 +415,7 @@ describe("argus-live ledger", () => {
     await down(u.main, { runId: u.runId, graceMs: 1000 });
     expect(readLedger(u.main, u.runId).incomplete).toBe(`${u.runId}-1-buyer.1 closed undrained`);
   }, 30_000);
+
 });
 
 describe("argus-live repro sessions", () => {
@@ -1081,6 +1082,13 @@ describe("argus-live generated RED test", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "repro.json"), JSON.stringify({ ref: t.refs[0], repro: EXAMPLE() }));
     const cli = () => spawnSync(process.execPath, [ARGUS_LIVE, "repro", t.refs[0], "--test"], { cwd: t.main, encoding: "utf8" });
+    // A RED test only for what reproduced two of two.
+    for (const v of [null, { runs: [3, 0], verdict: "intermittent" }]) {
+      if (v) writeFileSync(join(dir, "verdict.json"), JSON.stringify(v));
+      const no = cli();
+      expect([no.status, no.stderr]).toEqual([1, `refused: repro: ${t.refs[0]} did not reproduce two of two (${v ? v.verdict : "never run"}); repro ${t.refs[0]} first\n`]);
+    }
+    writeFileSync(join(dir, "verdict.json"), JSON.stringify({ runs: [3, 3], verdict: "reproduced" }));
     const r = cli();
     expect(r.status, r.stderr).toBe(0);
     const file = join(realpathSync(dir), "red.spec.ts");
@@ -1176,7 +1184,7 @@ const scrubRun = () => {
     writeFileSync(file, text);
     return file;
   };
-  const run = (title: string, file: string, opts: Obj = {}, env: Obj = SCRUB_ENV) => scrub(t.main, { title, bodyFile: file, ...opts }, { env, ...(opts.gh ? { gh: opts.gh } : {}) });
+  const run = (title: string, file: string, opts: Obj = {}, env: Obj = SCRUB_ENV) => scrub(t.main, { run: t.runId, title, bodyFile: file, ...opts }, { env, ...(opts.gh ? { gh: opts.gh } : {}) });
   return { ...t, body, run };
 };
 
@@ -1207,7 +1215,7 @@ describe("argus-live scrub", () => {
     expect(leaked(r.out.join("\n"), Object.values(SCRUB))).toEqual([]);
     expect(readFileSync(file, "utf8")).toBe(text);
     // Through the CLI too: neither stdout nor stderr holds any recorded secret, in any form.
-    const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--title", `T ${SCRUB.role}`, "--body", file], { cwd: t.main, encoding: "utf8", env: { ...SCRUB_ENV, PATH: process.env.PATH! } });
+    const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--run", t.runId, "--title", `T ${SCRUB.role}`, "--body", file], { cwd: t.main, encoding: "utf8", env: { ...SCRUB_ENV, PATH: process.env.PATH! } });
     expect(cli.status).toBe(1);
     expect(cli.stdout.trimEnd().split("\n")).toEqual(["title 1:3 role password", "body 3:7 cookie", REFUSED(2)]);
     expect(leaked(`${cli.stdout}\n${cli.stderr}`, Object.values(SCRUB))).toEqual([]);
@@ -1308,6 +1316,76 @@ describe("argus-live scrub", () => {
     expect((await t.run("x", t.body("a clean body\n"))).code).toBe(0);
     expect(await t.run("x", t.body(`the cookie ${SCRUB.cookie}\n`))).toEqual({ code: 1, out: ["body 1:12 cookie", REFUSED(1)] });
   });
+
+  it("scrub checks the run it is told, never the newest: a later up's run leaves the earlier one unfileable", async () => {
+    const t = scrubRun();
+    const file = t.body(`the cookie ${SCRUB.cookie}\n`);
+    // No run named: refused before anything is read.
+    expect(await scrub(t.main, { title: "x", bodyFile: file }, { env: SCRUB_ENV })).toEqual({ code: 1, out: ["refused: scrub: name the run (--run <runId>) or the candidate (--ref <slot>.<generation>.<k>); nothing is filed"] });
+    expect(await scrub(t.main, { run: "x", title: "x", bodyFile: file }, { env: SCRUB_ENV })).toEqual({ code: 1, out: ["refused: scrub: --run takes a run id; nothing is filed"] });
+    expect(await scrub(t.main, { run: `${"1".repeat(14)}-0123abcd`, title: "x", bodyFile: file }, { env: SCRUB_ENV })).toEqual({ code: 1, out: [`refused: scrub: no run ${"1".repeat(14)}-0123abcd here; nothing is filed`] });
+    // The next up: a newer run with a ledger of its own, this run's dropped.
+    rmSync(join(t.main, ".argus/live/lock.json"));
+    const later = `${"9".repeat(14)}-0123abcd`;
+    appendLedger(t.main, later, [{ c: "cookie", v: "LaterCookie_4471" }]);
+    dropLedgers(t.main, { keep: later });
+    expect(await t.run("x", file)).toEqual({ code: 1, out: ["refused: scrub: the run's secret ledger is gone (a later up removed it); nothing from this run is filed"] });
+    expect(readFileSync(file, "utf8")).toBe(`the cookie ${SCRUB.cookie}\n`);
+    // The later run is checked against its own ledger only when it is named.
+    expect(await t.run("x", t.body("LaterCookie_4471\n"), { run: later })).toEqual({ code: 1, out: ["body 1:1 cookie", REFUSED(1)] });
+  });
+
+  it("with --ref, scrub files only a candidate that reproduced two of two, in the run that reproduced it", async () => {
+    const t = scrubRun();
+    const file = t.body("clean\n");
+    const verdict = (runId: string, ref: string, v: Obj | null) => {
+      const dir = join(t.main, ".argus/live", runId, "repro", ref);
+      mkdirSync(dir, { recursive: true });
+      if (v) writeFileSync(join(dir, "verdict.json"), JSON.stringify(v));
+    };
+    const byRef = (ref: string, extra: Obj = {}) => scrub(t.main, { ref, title: "x", bodyFile: file, ...extra }, { env: SCRUB_ENV });
+    expect(await byRef("1.1")).toEqual({ code: 1, out: ["refused: scrub: --ref takes <slot>.<generation>.<k>; nothing is filed"] });
+    expect(await byRef("1.1.1")).toEqual({ code: 1, out: ["refused: scrub: no run here reproduced candidate 1.1.1; nothing is filed"] });
+    verdict(t.runId, "1.1.1", null);
+    expect(await byRef("1.1.1")).toEqual({ code: 1, out: [`refused: scrub: candidate 1.1.1 of run ${t.runId} did not reproduce two of two (never run); nothing is filed`] });
+    for (const word of ["intermittent", "not-reproduced", "harness"]) {
+      verdict(t.runId, "1.1.1", { runs: [3, 0], verdict: word });
+      expect(await byRef("1.1.1"), word).toEqual({ code: 1, out: [`refused: scrub: candidate 1.1.1 of run ${t.runId} did not reproduce two of two (${word}); nothing is filed`] });
+    }
+    verdict(t.runId, "1.1.1", { runs: [3, 3], verdict: "reproduced" });
+    expect(await byRef("1.1.1")).toMatchObject({ code: 0 });
+    expect((await byRef("1.1.1", { bodyFile: t.body(`the cookie ${SCRUB.cookie}\n`) })).out).toEqual(["body 1:12 cookie", REFUSED(1)]);
+    // Another run holding the same ref: the ref no longer names one run, unless --run says which.
+    const other = `${"1".repeat(14)}-0123abcd`;
+    verdict(other, "1.1.1", { runs: [3, 3], verdict: "reproduced" });
+    expect(await byRef("1.1.1")).toEqual({ code: 1, out: ["refused: scrub: candidate 1.1.1 was reproduced in more than one run; name it with --run <runId> too; nothing is filed"] });
+    expect(await byRef("1.1.1", { run: t.runId })).toMatchObject({ code: 0 });
+    expect(await byRef("1.1.1", { run: other })).toEqual({ code: 1, out: ["refused: scrub: the run's secret ledger is gone (a later up removed it); nothing from this run is filed"] });
+  });
+
+  it("a ledger or env_file value thousands of characters long is refused by its class, and no output holds any part of it", async () => {
+    for (const n of [3000, 4096]) {
+      const t = scrubRun();
+      const v = { storage: longSecret(n, "storage"), cookie: longSecret(n, "cookie"), env: longSecret(n, "env") };
+      appendLedger(t.main, t.runId, [{ c: "storage", v: v.storage }, { c: "cookie", v: v.cookie }]);
+      writeFileSync(join(t.main, ".argus/live.env"), `APP_SECRET=${SCRUB.envFile}\nAPP_KEY=${v.env}\n`);
+      for (const [cls, value] of [["storage", v.storage], ["cookie", v.cookie], ["env file", v.env]]) {
+        const file = t.body(`blob ${value} end\n`);
+        const r = await t.run("A title", file);
+        expect(r, `${n} ${cls}`).toEqual({ code: 1, out: [`body 1:6 ${cls}`, REFUSED(1)] });
+        const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--run", t.runId, "--title", "A title", "--body", file], { cwd: t.main, encoding: "utf8", env: { ...SCRUB_ENV, PATH: process.env.PATH! } });
+        expect([cli.status, cli.stdout], `${n} ${cls}`).toEqual([1, `body 1:6 ${cls}\n${REFUSED(1)}\n`]);
+        for (const x of Object.values(v)) expect(partsIn(`${cli.stdout}\n${cli.stderr}\n${r.out.join("\n")}`, x)).toEqual([]);
+      }
+      // pw's screenshot verdict reads the same ledger: a long value fails nothing, and the verdict says secret.
+      const png = join(t.main, ".argus/live", t.runId, "1/out/page-1.png");
+      mkdirSync(dirname(png), { recursive: true });
+      writeFileSync(png, "png");
+      expect(writeVerdict(t.main, t.runId, png, { text: `page ${v.storage}` }, { env: SCRUB_ENV })).toMatchObject({ passed: false, reasons: ["secret"] });
+      expect(writeVerdict(t.main, t.runId, png, { text: "a clean page" }, { env: SCRUB_ENV })).toMatchObject({ passed: true, reasons: [] });
+    }
+  }, 120_000); // spawned CLIs over long values
+
 });
 
 describe("argus-live scrub — attachments and filing", () => {
@@ -1440,20 +1518,20 @@ describe("argus-live scrub — attachments and filing", () => {
     const secret = Object.values(SCRUB);
     const b = t.body(`Seen ids ck9a8b7c6d5e4f3g2h1i0j9k8 and sk_li\u0076e_51HxYzAbCdEfGh1234567890; see https://evil.example/x\n`);
     const env = { ...SCRUB_ENV, PATH: `${t.g.dir}:${process.env.PATH}` };
-    const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--title", "Order fails for @octocat", "--body", b, "--attach", png, "--create", "--label", "bug"], { cwd: t.main, encoding: "utf8", env });
+    const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--run", t.runId, "--title", "Order fails for @octocat", "--body", b, "--attach", png, "--create", "--label", "bug"], { cwd: t.main, encoding: "utf8", env });
     expect(cli.status, cli.stderr).toBe(0);
     expect(cli.stdout.trimEnd().split("\n")).toEqual(["scrub: ok; redacted 2, defanged 2, cut 0 line(s)", "title: Order fails for `@octocat`", `attach: ${t.shown("1/out/page-1.png")}`, `filed: ${URL9}`]);
     expect(leaked(`${cli.stdout}\n${cli.stderr}\n${JSON.stringify(t.g.calls())}`, secret)).toEqual([]);
     // A refusal through the CLI: no gh, and none of it in the output either.
     const g0 = t.g.calls().length;
     const bad = t.body(`raw ${SCRUB.header}, url ${SCRUB_FORMS.url(SCRUB.storage)}, b64 ${SCRUB_FORMS.base64(SCRUB.made)}, spaced ${SCRUB_FORMS.spaced(SCRUB.envFile)}\n`);
-    const refused = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--title", `t ${SCRUB.gh}`, "--body", bad, "--create"], { cwd: t.main, encoding: "utf8", env });
+    const refused = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--run", t.runId, "--title", `t ${SCRUB.gh}`, "--body", bad, "--create"], { cwd: t.main, encoding: "utf8", env });
     expect(refused.status).toBe(1);
     expect(refused.stdout.trimEnd().split("\n")).toHaveLength(6);
     expect(leaked(`${refused.stdout}\n${refused.stderr}`, secret)).toEqual([]);
     expect(t.g.calls()).toHaveLength(g0);
     // The CLI's own refusals.
-    for (const args of [["--title", "t", "--body", bad, "--label", "bug"], ["--title", "t", "--body", bad, "--create", "--comment", "9"], ["--title", "t", "--body", bad, "--comment", "x"]]) {
+    for (const args of [["--run", t.runId, "--title", "t", "--body", bad, "--label", "bug"], ["--run", t.runId, "--title", "t", "--body", bad, "--create", "--comment", "9"], ["--run", t.runId, "--title", "t", "--body", bad, "--comment", "x"], ["--title", "t", "--body", bad], ["--run", "x", "--title", "t", "--body", bad], ["--ref", "1.1", "--title", "t", "--body", bad]]) {
       expect(spawnSync(process.execPath, [ARGUS_LIVE, "scrub", ...args], { cwd: t.main, encoding: "utf8", env }).status, args.join(" ")).toBe(1);
     }
   }, 30_000); // five spawned CLIs
@@ -1727,6 +1805,10 @@ describe("argus-live map mode", () => {
     const d = spawnCli(t.main, "down");
     expect(d.code, d.err).toBe(0);
     expect(existsSync(summary.worktree)).toBe(false);
+    // A map run drained no session and keeps no ledger: scrub says so, after down too.
+    const body = join(tempDir(), "body.md");
+    writeFileSync(body, "clean\n");
+    expect(spawnCli(t.main, "scrub", "--run", summary.runId, "--title", "t", "--body", body)).toMatchObject({ code: 1, out: `refused: scrub: run ${summary.runId} is a map run (up --map): it drained no session and keeps no secret ledger; nothing from it is filed\n` });
     const log = readFileSync(join(t.main, ".git/sapu-live.log"), "utf8").trim().split("\n");
     expect(log.filter((l) => l.startsWith(`${summary.runId} start `))).toHaveLength(1);
     expect(log.filter((l) => l.startsWith(`${summary.runId} end `))).toHaveLength(1);
@@ -2045,3 +2127,4 @@ describe("argus-live doc drift", () => {
     expect(usage.stderr).toContain(" | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]");
   }, 30_000);
 });
+

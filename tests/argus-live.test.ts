@@ -3559,9 +3559,9 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const r = await up(main, opts());
     const rec = runJson(main);
     reapers.push(rec.reaper);
-    // Step 4 records the worktree's commit, and keeps a copy that down leaves (map-check --merge reads it).
+    // Step 4 records the worktree's commit, and keeps a copy that down leaves (map-check --merge reads it), with the run's mode (scrub tells a map run by it).
     expect(rec.worktreeHead).toBe(git(rec.worktree, "rev-parse", "HEAD"));
-    expect(JSON.parse(readFileSync(join(main, ".argus/live", rec.runId, "worktree.json"), "utf8"))).toEqual({ worktreeHead: rec.worktreeHead });
+    expect(JSON.parse(readFileSync(join(main, ".argus/live", rec.runId, "worktree.json"), "utf8"))).toEqual({ worktreeHead: rec.worktreeHead, mode: "explore" });
     const want = { runId: rec.runId, instanceId: rec.instanceId, deadline: readLock(main).deadline, baseUrl: `http://localhost:${rec.ports.web}`, origins: rec.origins, ports: rec.ports, worktree: rec.worktree };
     expect(r).toEqual(want);
     expect(Object.keys(r)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);

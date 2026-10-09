@@ -1714,3 +1714,22 @@ Interfaces:
   all-zero commit (`uncommitted lines`); a range starting past the file's end, or a file HEAD lacks, fails git
   (`no history`), while an end past it is clipped by git. The doc's range is read first, then each code range,
   and the first that is undecidable gives the `why`. The CLI exits 0 for every verdict.
+- **Phase-end review fixes.** The phase-end QA and architect reviews, each item as the owner decided it:
+  - *A secret thousands of characters long (QA, critical).* A pattern spelling out some 2700 characters
+    overflowed the regex engine's stack, and its error quoted the pattern, which spells the value out (scrub's
+    exit 2, pw's `failed:` line). `-fence.mjs` now builds a value's patterns from parts of at most
+    `PATTERN_CHARS` (256) characters overlapping by 16 (`secretPatterns(v, {prefix})`): scrub finds a leak by
+    the first part (a prefix still finds it), `clean` masks every part, merging the spans of every match
+    (overlapping ones too) into one `***`. Building or running a pattern throws a `PatternError` with fixed
+    words; `secretHits` turns it into `refused: scrub: a <class> value could not be checked; nothing is filed`,
+    `refusalLines` prints only that, `writeVerdict` counts it as `secret`, and `clean` gives `WITHHELD`, never
+    the text. A part of a long value shorter than a part, at a page's edge, is not masked; a whole value is.
+  - *Scrub names its run (architect, critical).* `scrub` takes `--run <runId>` or `--ref
+    <slot>.<generation>.<k>` (both to pin a ref to a run) and never the newest run (`scrubRun`): a ref names
+    the one run whose records hold it (none, or more than one, is refused), a run with no directory here is
+    refused, and so is a map run (`run <id> is a map run (up --map): it drained no session and keeps no secret
+    ledger`; `up --map` now writes `mode: "map"` into `worktree.json`, which `down` keeps, and `up` `mode:
+    "explore"`). Attachments are judged in that run. The orchestrator gets the run id from `up`'s summary.
+  - *Filed only at two of two (architect).* With `--ref`, scrub refuses unless the candidate's `verdict.json`
+    says `reproduced` (`did not reproduce two of two (<verdict>|never run)`), and so does `repro --test`;
+    `REF` and `verdictOf` live in `-scrub.mjs`, which `-repro.mjs` imports (scrub sits below it).

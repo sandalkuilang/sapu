@@ -2,6 +2,7 @@
 // leaves it before its run files, small process and timing helpers, and the runs the Chrome suites
 // drive (the fixture app, the run's proxy, slot 1) with the cleanup each of their tests ends with.
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Server as HttpServer } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
@@ -129,6 +130,19 @@ export const until = async (ok: () => boolean, ms: number) => {
 
 /** Now in epoch seconds, as the lock records times. */
 export const now = () => Math.floor(Date.now() / 1000);
+
+/** A secret `n` characters long, letters, digits, `-` and `_` in no repeating order (a session blob, a PEM line). */
+export const longSecret = (n: number, seed = "s") =>
+  Array.from({ length: Math.ceil(n / 43) }, (_, i) => createHash("sha256").update(`${seed}${i}`).digest("base64url"))
+    .join("")
+    .slice(0, n);
+
+/** The parts of `v` (every 12-character window) that `text` holds: a leak of any part of a long value. */
+export const partsIn = (text: string, v: string) => {
+  const out: string[] = [];
+  for (let i = 0; i + 12 <= v.length; i += 1) if (text.includes(v.slice(i, i + 12))) out.push(v.slice(i, i + 12));
+  return out;
+};
 
 export const setLock = (main: string, lock: { runId: string; start: number; deadline: number }) => writeFileSync(join(main, ".argus/live/lock.json"), `${JSON.stringify(lock)}\n`);
 

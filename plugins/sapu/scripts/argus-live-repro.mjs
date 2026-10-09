@@ -21,13 +21,12 @@ import { checkUrl } from "./argus-live-origin.mjs";
 import { run, runAsync, sleep, tempBeside } from "./argus-live-proc.mjs";
 import { redTest } from "./argus-live-redtest.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
+import { REF, verdictOf } from "./argus-live-scrub.mjs";
 import { CAP_BYTES, configuredUser, keepDrain, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { readSlotState, slotLockWaitMs, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { CLICKS, parseRepro, provingExpect, reductions, stepCode, substitute } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
 
-/** A candidate's reference: `<slot>.<generation>.<k>`. */
-const REF = /^([1-9][0-9]?)\.([1-9])\.([1-9][0-9]?)$/;
 /** What a failed expectation may say it observed (decision 8): enums and integers only. */
 const OBSERVED = /^(absent|hidden|visible|disabled|differs|errors:\d+|count:\d+)$/;
 /** The expectation kinds the browser judges (the others run through runHook, or read the error buffer). */
@@ -617,12 +616,14 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
 
 /**
  * Candidate `ref`'s RED test (spec §10 "Issue body additions") written to `red.spec.ts` (0600) in its
- * records → the file's absolute path: from `min.json` when the last minimize confirmed it, else from the
+ * records → the file's absolute path, only once its `verdict.json` says reproduced (two of two): from `min.json` when the last minimize confirmed it, else from the
  * whole list `repro.json` holds (refused without one), parsed against the slot's allocation, its journey
  * the slot's, its oracle the final's, `SETTLE` the run's settle_ms.
  */
 export function redTestFile(main, ref) {
-  const { slotRec, dir } = reproRef(main, ref);
+  const { runId, slotRec, dir } = reproRef(main, ref);
+  const word = verdictOf(main, runId, ref);
+  if (word !== "reproduced") throw new Error(`refused: repro: ${ref} did not reproduce two of two (${word}); repro ${ref} first`);
   const read = (f) => {
     try {
       return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
