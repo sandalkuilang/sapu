@@ -2603,6 +2603,82 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
   });
 });
 
+describe("sapu-guard — a subagent runs only the journey lane script's reads", () => {
+  const plug = realpathSync(mkdtempSync(join(tmpdir(), "live-cli-plug-")));
+  mkdirSync(join(plug, "scripts"));
+  const L = join(plug, "scripts/argus-live.mjs");
+  writeFileSync(L, "// the lane's script\n");
+  symlinkSync(L, join(plug, "live.mjs"));
+  afterAll(() => rmSync(plug, { recursive: true, force: true }));
+  const REVIEWER = "senior-dev-team:senior-qa-analyst";
+  const sub = (command: string, agent_type = REVIEWER) => decide({ agent_id: "a1", agent_type, tool_name: "Bash", tool_input: { command }, cwd: wt });
+  const REFUSED = /journey lane's script \(argus-live\.mjs\) is the orchestrator's/;
+
+  it.each([
+    ["up", `node ${L} up`],
+    ["up --map", `node ${L} up --map`],
+    ["down", `node ${L} down`],
+    ["renew", `node ${L} renew`],
+    ["slot", `node ${L} slot 2 --journey j1 --accounts buyer.1`],
+    ["repro", `node ${L} repro 2.1.1 --minimize`],
+    ["scrub", `node ${L} scrub --run r1 --title t --body b.md --create`],
+    ["submit, through pw", `node ${L} pw tk1 submit '{}'`],
+    ["pw, the explorer's own", `node ${L} pw tk1 customer snapshot`],
+    ["intake", `node ${L} intake 2`],
+    ["classify", `node ${L} classify --oracle dead-end`],
+    ["select", `node ${L} select --cycle 3`],
+    ["drift", `node ${L} drift --doc a.md:1-2 --code b.js:1-2`],
+    ["visit", `node ${L} visit j1 --cycle 3`],
+    ["show", `node ${L} show`],
+    ["map-check, which rewrites the map", `node ${L} map-check`],
+    ["map-check --list, which rewrites the map too", `node ${L} map-check --list`],
+    ["map-check --merge", `node ${L} map-check --merge 1`],
+    ["reap", `node ${L} reap r1`],
+    ["proxy", `node ${L} proxy r1`],
+    ["status with a word more", `node ${L} status --json x`],
+    ["node options", `node --no-warnings --stack-size=4000 ${L} up`],
+    ["node --", `node -- ${L} down`],
+    ["an environment prefix", `FOO=1 node ${L} up`],
+    ["env", `env FOO=1 node ${L} down`],
+    ["exec, nice and time", `exec nice time node ${L} renew`],
+    ["sh -c", `sh -c 'node ${L} up'`],
+    ["bash -lc", `bash -lc "node ${L} renew"`],
+    ["the script run by its path", `${L} up`],
+    ["a relative path", `node scripts/argus-live.mjs up`],
+    ["after a cd", `cd ${plug}/scripts && node ./argus-live.mjs down`],
+    ["the plugin root variable", `node "\${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" up`],
+    ["a symlink of another name", `node ${join(plug, "live.mjs")} up`],
+    ["a dot-dot path", `node ${plug}/scripts/../scripts/argus-live.mjs down`],
+    ["another letter case", `node ${plug}/scripts/ARGUS-LIVE.mjs up`],
+    ["bun", `bun ${L} up`],
+    ["a verb the shell builds", `node ${L} $VERB`],
+    ["a status the shell builds", `node ${L} status $FLAG`],
+    ["a verb xargs appends", `echo up | xargs node ${L}`],
+    ["a script name a substitution builds", `node $(echo ${L}) up`],
+    ["a script name a variable holds", `node "$S" down`],
+    ["a script name backticks build", `node \`echo x\` scrub --run r1 --title t --body b.md --create`],
+    ["a redirection after the verb", `node ${L} up > /dev/null 2>&1`],
+  ])("refuses a subagent %s", (_what, cmd) => {
+    expect(sub(cmd)).toMatch(REFUSED);
+    expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
+  });
+
+  it.each([[`node ${L} status`], [`node ${L} status --json`], [`node ${L} check`], [`node "\${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" status --json`], [`cd ${plug}/scripts && node argus-live.mjs check`], [`node ${L} status --json 2>/dev/null`], [`node ${L} status --json | head -1`], [`node ${L}-notes.md up`], [`node "$D/build.js" up`], [`node $(which tsc) --build`]])("lets a subagent run %s", (cmd) => {
+    expect(sub(cmd)).toBeNull();
+  });
+
+  it("lets the explorer run its pw through the plugin's wrapper, and nothing else of it", () => {
+    const explorer = (command: string) => decide({ agent_id: "a1", agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command }, cwd: wt });
+    expect(explorer(`node ${WRAPPER} pw tk1 customer snapshot`)).toBeNull();
+    expect(explorer(`node ${WRAPPER} pw tk1 submit '{"status":"done"}'`)).toBeNull();
+    expect(explorer(`node ${WRAPPER} up`)).toMatch(/journey explorer's shell runs only its wrapper/);
+  });
+
+  it("leaves the main session alone", () => {
+    expect(decide({ tool_name: "Bash", tool_input: { command: `node ${L} up` }, cwd: wt })).toBeNull();
+  });
+});
+
 describe("sapu-guard — the journey explorer reads only tracked files of the run's worktree", () => {
   const w = realpathSync(mkdtempSync(join(tmpdir(), "explorer-wt-")));
   const g = (...a: string[]) => execFileSync("git", ["-C", w, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });

@@ -1487,6 +1487,14 @@ tool whose reason field carries not planned or any of whose fields names `closeI
 backticks) is refused like the owner's own. A plain `gh issue close` (completed) and prose saying
 "not planned" stay allowed. `/sapu:init` adds `env_file`'s name to the contract's `guard.envFiles`.
 
+For every subagent, the lane's script itself (`argus-live.mjs`) is the orchestrator's: only its reads
+`status`, `status --json` and `check` pass, every word after the script literal (a redirection aside),
+and the explorer's `pw` (above). Any other verb is refused, however the script is reached: its name in
+any case or the real file behind a path (a symlink of another name), by its path or through an
+interpreter past its options, behind env prefixes, wrappers (`env`, `exec`, `nice`, `xargs`) and
+`sh -c`; a script name the shell builds whole (`node "$S" up`, `node $(…) up`) counts as the script
+when one of its verbs follows. `map-check --list` rewrites `.argus/journeys.json`, so it is not a read.
+
 ## 12. Errors
 
 | Event | Response |

@@ -97,7 +97,9 @@
 // adds is unknown until it is listed. Plugins: `claude plugin` changes are refused (also run as
 // `npx @anthropic-ai/claude-code`, and after an option's value), and so is a mutating git command in
 // a plugin folder or a checkout holding one; a plugin manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
-// worktree makes that folder unwritable for the session's subagents too. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// worktree makes that folder unwritable for the session's subagents too. The journey lane's script
+// (argus-live.mjs) is known by its name, the real file behind a path, or a shell-built name a verb of
+// it follows: a copy under another name, or an interpreter's own code importing it, is not. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
 // contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via
@@ -182,6 +184,10 @@ export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
+/** What any subagent may run of the journey lane's script (argus-live.mjs): its reads, which write nothing. */
+const LIVE_READS = [["status"], ["status", "--json"], ["check"]];
+/** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */
+const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy"]);
 // The first character excludes `#` (comment) and `=` (zsh `=cmd` expansion); no `#` at all
 // (extendedglob operator) and no `==` (magicequalsubst). A leading `-` is harmless to the shell;
 // option filtering is the wrapper's job.
@@ -1246,6 +1252,39 @@ function denied(a, prog, deny, dir) {
   return null;
 }
 
+/**
+ * A word naming the journey lane's script: by its name in any case, by the real file behind a path (a
+ * symlink), or a word the shell builds that names it anywhere (`$(echo …/argus-live.mjs)`).
+ */
+function isLiveCli(w, dir) {
+  if (bare(w.v).toLowerCase() === "argus-live.mjs" || (w.dyn && /argus-live\.mjs/i.test(w.v))) return true;
+  if (w.dyn || dir === UNKNOWN || !w.v.includes("/")) return false;
+  return path.basename(realpathOrSelf(path.resolve(dir, w.v))).toLowerCase() === "argus-live.mjs";
+}
+
+/**
+ * The journey lane's script run by its path or by an interpreter (its first operand, past the
+ * interpreter's options), with words other than LIVE_READS — or `pw` for the explorer — after it: the
+ * refusal. Every later word must be literal: a verb the shell or xargs fills in may be any verb.
+ */
+function liveCliRun(all, dir, explorer) {
+  const argv = withoutRedirects(all);
+  if (!argv.length) return null;
+  const interp = INTERPRETERS.has(bare(argv[0].v));
+  const k = isLiveCli(argv[0], dir) ? 0 : interp ? argv.findIndex((w, i) => i > 0 && !w.v.startsWith("-") && isLiveCli(w, dir)) : -1;
+  if (k < 0) {
+    // A script name the shell builds whole (`node "$S" up`, `node $(…) up`): unknown, so a verb of the script after it refuses it.
+    const op = interp ? argv.findIndex((w, i) => i > 0 && !w.v.startsWith("-")) : -1;
+    const built = op > 0 && argv[op].dyn && !/^[\w.-]+\.[cm]?[jt]sx?$/i.test(bare(argv[op].v));
+    return built && LIVE_VERBS.has(argv[op + 1]?.v) ? BLOCK.liveCli : null;
+  }
+  const rest = argv.slice(k + 1);
+  if (rest.some((w) => w.dyn)) return BLOCK.liveCli;
+  const words = rest.map((w) => w.v);
+  if (explorer && words[0] === "pw") return null;
+  return LIVE_READS.some((r) => r.length === words.length && r.every((v, i) => v === words[i])) ? null : BLOCK.liveCli;
+}
+
 /** GraphQL's inline enum; a variable counts only as exactly NOT_PLANNED. */
 const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
 /** "not planned" in any spelling gh and GitHub take: not_planned, NOT_PLANNED, "Not Planned", not-planned. */
@@ -1257,6 +1296,8 @@ const BLOCK = {
   explorerRead:
     "the journey explorer reads only files committed at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
   explorerTool: "the journey explorer has only Bash (its wrapper), Read and StructuredOutput; it searches code through the wrapper's `code` command.",
+  liveCli:
+    "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`), every word literal, and the journey explorer only `pw` through its wrapper.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
@@ -1969,6 +2010,8 @@ function checkCommand(t, state, depth) {
     if (p > 0 && !/^(list|validate|help)$/.test(w[1] ?? "list") && !(w[1] === "marketplace" && /^(list|help)$/.test(w[2] ?? "list"))) return BLOCK.pluginFiles;
   }
   if (prog === "sapu-merge.sh") return a.includes("--dry-run") ? null : BLOCK.orchestrator;
+  const live = liveCliRun(argv, here, state.explorer);
+  if (live) return live;
 
   if (prog === "git") {
     let i = 1;
@@ -2478,7 +2521,7 @@ function checkText(text, dir, base, depth) {
   // fresh shell's `cd -` stays where it is (bash ignores an inherited OLDPWD, zsh starts it at $PWD).
   // POSIXLY_CORRECT anywhere in the text (an env prefix, an export) or inherited from the guard's own environment
   const posix = !!base.posix || "POSIXLY_CORRECT" in process.env || /\bPOSIXLY_CORRECT\b/.test(text);
-  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix };
+  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix, explorer: !!base.explorer };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
@@ -2538,13 +2581,14 @@ function checkText(text, dir, base, depth) {
 }
 
 /**
- * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>, worker?: boolean, resolve?: Function}} input
+ * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>, worker?: boolean, resolve?: Function, explorer?: boolean}} input
  * `resolve` (scopeResolver) makes each command judged by the repo it touches; without it, `main`/`rules` judge all.
+ * `explorer`: the journey explorer, whose `pw` through the lane's script passes (checkExplorerBash judged its form).
  * @returns {string|null} the reason to block, or null to allow
  */
-export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null }) {
+export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null, explorer = false }) {
   if (typeof command !== "string" || !command.trim()) return null;
-  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve }, 0);
+  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve, explorer }, 0);
 }
 
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -3133,7 +3177,7 @@ export function decide(input) {
     const reason = checkOther({ tool, ti, here, main, rules, worker, resolve });
     if (reason) return `${reason} (${tool}, judged by its name and fields like Bash/Read/Write)`;
   } else if (tool === "Bash") {
-    const reason = check({ command: ti.command, cwd, main, rules, worker, resolve });
+    const reason = check({ command: ti.command, cwd, main, rules, worker, resolve, explorer: EXPLORER_AGENT.test(input.agent_type || "") });
     // A ladder worker's canary also proves the step budget counts it (agent_id present, counter writable).
     if (reason === BLOCK.canary && worker) return `${reason} Step budget: report step_budget: "${stepProbe({ main, agentId: input.agent_id })}".`;
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;

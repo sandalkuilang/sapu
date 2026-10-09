@@ -842,3 +842,9 @@ Refs #53
   committed-contract note took it past.
 - **Phase-end review.** forge's priority ladder (`skills/forge/reference.md`) skips `<labels.needsOwner>`
   as sapu's B2 does, pinned in engine.test beside B2's pin.
+- **Phase-end review.** The guard keeps the lane's script to the orchestrator: a subagent runs only
+  `status`, `status --json` and `check` (every word after the script literal; a redirection is not a
+  word), the explorer also `pw`. `map-check --list` is not on that list although the review named it:
+  the CLI's own header says map-check rewrites `.argus/journeys.json`. The script is known by its name in
+  any case, the real file behind a path, or, for a script name the shell builds whole (`node "$S" up`), by
+  one of its verbs following it; a copy under another name or an interpreter's own import is a LIMIT.

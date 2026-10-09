@@ -827,6 +827,13 @@ could use them.
   worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in
   any case. A map run's worktree (`up --map`) is the live run's too: the map agent reads there. It
   has no Grep or Glob: code search comes through the wrapper.
+- The journey lane's script (`argus-live.mjs`) is the orchestrator's. A subagent runs only its reads,
+  `status`, `status --json` and `check`, every word after the script literal; the explorer also its
+  `pw` (above). Every other verb (`up`, `down`, `renew`, `slot`, `repro`, `scrub`, `intake`, `select`,
+  `visit`, `map-check` with or without `--list` or `--merge`, which rewrites the map, …) is refused, by
+  the script's name in any case or the real file behind a path, run by its path or by an interpreter
+  past its options, behind env prefixes, wrappers and `sh -c`; a script name the shell builds whole
+  (`node "$S" up`) counts as the script when one of its verbs follows.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,
