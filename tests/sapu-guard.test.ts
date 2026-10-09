@@ -2440,6 +2440,61 @@ describe("sapu-guard — deliberate-agent bypasses closed where cheap and precis
   });
 
   it.each([
+    // the option NAME built by xargs or the shell, the owner label literal
+    ["echo --remove-label | xargs -I Z gh issue edit 1 Z sapu:agent-filed"],
+    ["echo --add-label | xargs -J % gh pr edit 1 % sapu:accepted"],
+    ["gh issue edit 1 $O sapu:accepted"],
+    ['gh pr edit 1 "$O" argus:needs-owner'],
+    ["gh issue edit 1 `echo --add-label` sapu:accepted"],
+    ['gh issue edit 1 "$(echo --add-label)" sapu:accepted'],
+    ["gh issue edit 1 $(echo --add-label) sapu:accepted"],
+    ["gh issue edit 1 $(a) $(b) sapu:accepted"],
+  ])("refuses %s: a word the shell or xargs builds beside a literal owner label", (cmd) => {
+    expect(reviewer(cmd)).toMatch(/acceptance label/);
+    expect(blocked(cmd)).toMatch(/acceptance label/);
+  });
+
+  it.each([
+    // xargs options that take a value: the word after them is not the program
+    ["xargs -a f gh pr merge 1"],
+    ["xargs -E x gh pr merge 1"],
+    ["xargs --arg-file f gh pr merge 1"],
+    ["xargs --arg-file=f gh pr merge 1"],
+    ["xargs -d , gh pr merge 1"],
+    ["xargs -0n1 -P 4 gh pr merge"],
+    ["xargs -S 255 -R 2 -I {} gh pr merge {}"],
+    ["xargs --max-args 1 gh pr merge"],
+    ["xargs --process-slot-var S gh pr merge 1"],
+    ["xargs -e gh pr merge 1"],
+    ["xargs -i gh pr merge {}"],
+    ["xargs -- gh pr merge 1"],
+    // an option the guard does not know: read both as a flag and as taking the next word
+    ["xargs -K x gh pr merge 1"],
+    ["xargs --frobnicate gh pr merge 1"],
+    ["xargs --frobnicate=1 x gh pr merge 1"],
+  ])("refuses %s: xargs's options are read with their values", (cmd) => {
+    expect(blocked(cmd)).toMatch(/only the orchestrator merges/);
+  });
+
+  it("judges a command an unquoted substitution cuts as a whole, the substitution a built word", () => {
+    expect(blocked("git -C $(pwd) commit -m x")).toBe(blocked('git -C "$(pwd)" commit -m x'));
+    expect(blocked("git -C $(pwd) commit -m x")).toMatch(/cannot be told/);
+    expect(reviewer("gh issue edit $(echo 1) --add-label bug")).toBeNull();
+    expect(reviewer("cd $(git rev-parse --show-toplevel) && git status")).toBeNull();
+    expect(reviewer("echo $(date) > out.txt")).toBeNull();
+  });
+
+  it.each([
+    ["gh issue edit 1 --add-label bug --body \"$B\""],
+    ["git ls-files -z | xargs -0 -n 50 wc -l"],
+    ["xargs -a list.txt grep -l TODO"],
+    ["xargs -K x grep foo"],
+    ["printf '%s\\n' a b | xargs -P 4 -I {} echo {}"],
+  ])("still allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
+  });
+
+  it.each([
     ["echo 8 | xargs -I{} gh issue edit {} --add-label bug"],
     ["patch --dry-run -p1 -i pr.diff"],
     ["tar xzf vendor.tgz"],

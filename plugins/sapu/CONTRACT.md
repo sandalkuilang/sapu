@@ -770,7 +770,8 @@ could use them.
   one of gh's own commands (an alias, an extension) is refused.
 - The acceptance label (`labels.accepted`): no subagent applies or removes it (`gh issue|pr edit
   --add-label/--remove-label`, also with a label the shell or `xargs` builds — `$VAR`, `$( )`, backticks, an `xargs -I` replace string — that
-  the guard cannot read; a non-GET `gh api` naming it; a label write whose `--input` or `-F …=@file`
+  the guard cannot read, and with any such built word beside the literal label, which can be the
+  option name (`gh issue edit 1 $O sapu:accepted`); a non-GET `gh api` naming it; a label write whose `--input` or `-F …=@file`
   body cannot be read, a query string or fragment on the route ignored), creates, edits, renames into
   it or deletes it (`gh label create|edit|delete`), clones labels (`gh label clone`), or runs a GraphQL
   label mutation (in a GraphQL tool's query, or in any MCP field holding a mutation document).

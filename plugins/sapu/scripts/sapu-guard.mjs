@@ -106,7 +106,9 @@
 // interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
 // interpreter writes, and a label an interpreter or a file-reading program supplies (`gh issue edit
 // --add-label` with a word from `xargs` without a replace string is refused only when the option's
-// value itself is missing; one from `-I`/`-J`/`--replace` is refused as not literal).
+// value itself is missing; one from `-I`/`-J`/`--replace` is refused as not literal, and in `gh
+// issue|pr edit` any word the shell or xargs builds — `$O`, `$( )` quoted or not, a replace string —
+// beside a literal owner label is refused, since it can be the option name).
 // The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
@@ -123,7 +125,10 @@
 // worker files no issue by any of those routes. A not-planned close (`gh issue close -r`, REST state_reason,
 // GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
-// known one by one; an unknown option that takes a value can hide the program after it. An
+// known one by one; an unknown option that takes a value can hide the program after it — except
+// xargs's (BSD and GNU, read as getopt reads them), where an unknown option is judged both as a flag
+// and as taking the next word. A command an unquoted `$( )` or backtick cuts is judged once more
+// whole, the substitution a word the shell builds. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
 // (non-2 exit) — the canary is what catches a dead guard. A subagent is known by the hook input's
 // agent_id (SCOPE): a ladder worker or the explorer keeps the floor by its agent_type alone, but any
@@ -440,8 +445,20 @@ const UV_VALUE_OPTS = /^(--with|--with-editable|--with-requirements|--extra|--gr
 /** Package-manager options that take a value before the subcommand (`pnpm --filter api exec …`). */
 const PM_VALUE_OPTS = /^(--filter|-F|-C|--dir|--prefix|-w|--workspace|--cwd)$/;
 
-/** Peel env assignments and wrappers; returns the index of the real program in the command. */
-function programIndex(t) {
+// xargs's options (BSD/macOS and GNU): taking a value, taking one only glued (`-i{}`, `--eof=x`), none.
+const XARGS_SHORT_VALUE = "adEIJLnPRSs";
+const XARGS_SHORT_OPTIONAL = "eil";
+const XARGS_SHORT_FLAG = "0oprtx";
+const XARGS_LONG_VALUE = new Set(["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"]);
+const XARGS_LONG_OPTIONAL = new Set(["eof", "replace", "max-lines"]);
+const XARGS_LONG_FLAG = new Set(["null", "interactive", "no-run-if-empty", "verbose", "exit", "show-limits", "version", "help", "open-tty"]);
+
+/**
+ * Peel env assignments and wrappers; returns the index of the real program in the command. `alts`,
+ * when given, collects the index of each wrapper option the guard does not know (an xargs option):
+ * read here as a flag, it may instead take the next word as its value.
+ */
+function programIndex(t, alts = null) {
   let i = 0;
   while (i < t.length) {
     const v = path.basename(t[i].v);
@@ -488,13 +505,44 @@ function programIndex(t) {
     } else if (v === "xargs") {
       i++;
       let rep = null;
-      while (i < t.length && t[i].v.startsWith("-")) {
+      // xargs's options as getopt reads them (BSD and GNU): a short option taking a value takes the
+      // rest of its word or the next word, short options bundle (`-0n1`), a long one takes `=value`
+      // or the next word (the optional ones only `=value`), `--` ends them. An option not known may
+      // or may not take the next word: both readings are judged (alts, checkCommand).
+      while (i < t.length && t[i].v.startsWith("-") && t[i].v !== "-") {
         const o = t[i].v;
-        if (/^-[IJ]$/.test(o)) rep = t[i + 1]?.v ?? null;
-        else if (/^-[IJ]./.test(o)) rep = o.slice(2);
-        else if (o === "-i" || o === "--replace") rep = "{}";
-        else if (/^(?:-i|--replace=)./.test(o)) rep = o.replace(/^(?:-i|--replace=)/, "");
-        i += /^-[IJndPLs]$/.test(o) ? 2 : 1;
+        if (o === "--") {
+          i++;
+          break;
+        }
+        let used = 1;
+        if (o.startsWith("--")) {
+          const eq = o.indexOf("=");
+          const name = o.slice(2, eq < 0 ? undefined : eq);
+          if (XARGS_LONG_VALUE.has(name)) used = eq < 0 ? 2 : 1;
+          else if (XARGS_LONG_OPTIONAL.has(name)) {
+            if (name === "replace") rep = eq < 0 ? "{}" : o.slice(eq + 1);
+          } else if (!XARGS_LONG_FLAG.has(name) || eq >= 0) alts?.push(i);
+        } else {
+          for (let k = 1; k < o.length; k++) {
+            const ch = o[k];
+            if (XARGS_SHORT_VALUE.includes(ch)) {
+              const val = k < o.length - 1 ? o.slice(k + 1) : (t[i + 1]?.v ?? null);
+              if (k === o.length - 1) used = 2;
+              if (ch === "I" || ch === "J") rep = val;
+              break;
+            }
+            if (XARGS_SHORT_OPTIONAL.includes(ch)) {
+              if (ch === "i") rep = k < o.length - 1 ? o.slice(k + 1) : "{}";
+              break;
+            }
+            if (!XARGS_SHORT_FLAG.includes(ch)) {
+              alts?.push(i);
+              break;
+            }
+          }
+        }
+        i += used;
       }
       // xargs puts what it reads in place of its replace string: such a word is not a literal.
       if (rep) for (let k = i; k < t.length; k++) if (t[k].v.includes(rep)) t[k] = { ...t[k], dyn: true };
@@ -1527,7 +1575,13 @@ function checkCommand(t, state, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   const values = t.map((x) => x.v);
   if (values.includes("sapu-guard-canary")) return BLOCK.canary;
-  const at = programIndex(t);
+  const alts = [];
+  const at = programIndex(t, alts);
+  // An unknown wrapper option read the other way too: taking the next word as its value.
+  for (const k of alts) {
+    const r = checkCommand([...t.slice(0, k), ...t.slice(k + 2)], state, depth + 1);
+    if (r) return r;
+  }
   const here = envChdir(t, at, state.dir) ?? state.dir;
   // The repo this command runs in, and its contract (TOUCHED REPO in decide()); without a resolver,
   // or where the place cannot be told, the scope the caller gave.
@@ -1795,6 +1849,9 @@ function checkCommand(t, state, depth) {
     const tailT = i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]);
     // A label or reason the shell builds cannot be read: refused like the owner's own.
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {
+      // An option name the shell or xargs builds (`$O sapu:accepted`, `xargs -I Z … Z <label>`) beside
+      // a literal owner label could be --add-label or --remove-label.
+      if (tailT.some((x) => x.dyn) && tailT.some((x) => !x.dyn && namesLabel(x.v, L))) return BLOCK.acceptLabel;
       for (let j = 0; j < tailT.length; j++) {
         const m = /^--(add|remove)-label(?:=([\s\S]*))?$/.exec(tailT[j].v);
         const val = m && optionValue(tailT, j, m[2] === undefined ? null : `=${m[2]}`);
@@ -2057,6 +2114,19 @@ function checkText(text, dir, base, depth) {
     fromNet = c.post === "|" && (NET_FETCHERS.has(bare(c.toks.slice(programIndex(c.toks))[0]?.v ?? "")) || (fromNet && c.pre === "|"));
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
+    // A command an unquoted $( ) or backtick cuts (`gh issue edit 1 $(…) <label>`) goes on after the
+    // substitution: it is judged once more whole, each substitution a word the shell builds.
+    if (c.post === "(") {
+      const built = { v: "", dyn: true };
+      const whole = [...c.toks, built];
+      for (let k = cmds.indexOf(c) + 1; k < cmds.length && (cmds[k].pre === "(" || cmds[k].pre === ")"); k++) {
+        if (cmds[k].pre !== ")") continue;
+        whole.push(...cmds[k].toks);
+        if (cmds[k].post === "(") whole.push(built);
+      }
+      const r = checkCommand(whole, { ...state }, depth);
+      if (r) return r;
+    }
     // A cd in a background job runs in a subshell: the parent does not move. In a pipeline it
     // depends on the shell (bash: every element is a subshell; zsh: the last runs in this shell),
     // so a cd there leaves the directory unknowable: what follows is judged fail-closed.
