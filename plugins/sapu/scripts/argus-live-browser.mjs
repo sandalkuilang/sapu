@@ -112,21 +112,30 @@ function npmError(stderr) {
 const maskCredentials = (url) => url.replace(/^([a-z][a-z0-9+.-]*:)?\/\/\S*@/i, "$1//***@");
 
 /**
- * `text` with secret values and URL credentials masked. Each URL-shaped word holding `@` is parsed: masked
- * only when it names a user or a password (a scoped package's path, `/@playwright%2fcli`, keeps its host);
- * one that does not parse (a password holding `/` breaks the authority) is masked whole (maskCredentials).
+ * A URL-shaped word holding `@` that surely names no user or password: it parses without either, its
+ * authority (the text after `//` up to the first `/`, `?`, `#` or `\`) holds neither `@` nor `:` (a
+ * password of digits followed by `/`, `#` or `?` parses as a port, its `@` landing in the path, the query
+ * or the fragment), every `@` starts a path segment (a scoped package, `/@playwright%2fcli`), and no
+ * other URL (`//`) follows in it (a `?next=https://u:p@host`).
  */
-const masked = (text, secrets) =>
-  redact(text, secrets).replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/\S*/gi, (url) => {
-    if (!url.includes("@")) return url;
-    try {
-      const u = new URL(url);
-      if (!u.username && !u.password) return url;
-    } catch {
-      // not a URL the parser reads: masked as one that holds credentials
-    }
-    return maskCredentials(url);
-  });
+function credentialFree(url) {
+  try {
+    const u = new URL(url);
+    if (u.username || u.password) return false;
+  } catch {
+    return false;
+  }
+  const rest = url.slice(url.indexOf("//") + 2);
+  const authority = rest.split(/[/?#\\]/)[0];
+  return !/[@:]/.test(authority) && !rest.includes("//") && [...rest.matchAll(/@/g)].every((m) => rest[m.index - 1] === "/");
+}
+
+/**
+ * `text` with secret values and URL credentials masked: each URL-shaped word holding `@` is masked
+ * (maskCredentials) unless it is surely credential-free (credentialFree), so a scoped package's URL keeps
+ * its host.
+ */
+const masked = (text, secrets) => redact(text, secrets).replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/\S*/gi, (url) => (url.includes("@") && !credentialFree(url) ? maskCredentials(url) : url));
 
 /**
  * The pinned CLI, installed when missing or not intact → {dir, js}. `<root>` (cliCacheRoot) is this
@@ -400,9 +409,28 @@ export function writeSlotConfig(dir, cfg) {
 /** `{pid, pgid, started}` of a process-table row. */
 const identity = (p) => (p ? { pid: p.pid, pgid: p.pgid, started: p.started } : null);
 
-/** run.json `sessions` with `record` in place of the one of its name (appended when there is none); null drops that name. */
+/**
+ * run.json `sessions` with `record` in place of the one of its name (appended when there is none); null
+ * drops that name. An explorer slot's record (a numbered slot) is refused while run.json has no instance
+ * id: an `up --fresh` under way closes the explorers' sessions, and one recorded after that pass would
+ * outlive it. An opened one (its daemon known) is refused too when its pending record is gone: that pass
+ * dropped it, then may have finished.
+ */
 function putSession(main, runId, name, record) {
-  return updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: [...(prev.sessions ?? []).filter((x) => !x || x.name !== name), ...(record ? [record] : [])] } : undefined), { create: false });
+  return updateRun(
+    main,
+    runId,
+    (prev) => {
+      if (!prev) return undefined;
+      const sessions = prev.sessions ?? [];
+      if (record && typeof record.slot === "number") {
+        if (!prev.instanceId) throw new Error(`refused: cycle ${runId} has no instance (an up --fresh is under way); the session ${name} is not recorded`);
+        if (record.daemon && !sessions.some((x) => x && x.name === name)) throw new Error(`refused: the session ${name} was closed while it opened (an up --fresh); not recorded`);
+      }
+      return { ...prev, sessions: [...sessions.filter((x) => !x || x.name !== name), ...(record ? [record] : [])] };
+    },
+    { create: false },
+  );
 }
 
 /**
@@ -416,7 +444,8 @@ function putSession(main, runId, name, record) {
  * leads a process group of its own); each recorded by {pid, pgid, started}, which the teardown's kills
  * ask first. An `open` that fails or times out, or a daemon not in ps, closes the session by name and
  * sweeps what it left (sweepSessions), drops the record, and throws; run.json gone or sealed before
- * `open` throws with nothing started.
+ * `open`, or an explorer slot's run without an instance id (putSession), throws with nothing started; a
+ * record refused once `open` returned closes the session it names and drops the pending one.
  */
 export async function openSession({ main, runId, slot, account, js, home, storageState = null, runner = run, cliRunner = runAsync, timeoutMs = 60_000 }) {
   const dir = slotDir(main, runId, slot);
@@ -468,7 +497,13 @@ export async function openSession({ main, runId, slot, account, js, home, storag
   try {
     putSession(main, runId, name, record);
   } catch (e) {
+    // Refused (an up --fresh, a down): the session just opened is closed, and its pending record dropped.
     await closeSessions([record], { js, runner, cliRunner, graceMs: 3000 });
+    try {
+      putSession(main, runId, name, null);
+    } catch {
+      // sealed or gone: the teardown closes what the record names
+    }
     throw e;
   }
   return record;

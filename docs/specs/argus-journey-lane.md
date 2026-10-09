@@ -693,8 +693,9 @@ recorded and SIGKILL after 10 s, stops the proxy, closes the run's CLI sessions 
 `close-all`: other projects share the CLI) and kills by identity what they leave, removes its own
 worktree (`--force` on that worktree only) and its HOME (read-only trees made writable first), removes
 each slot's secrets and CLI state (`.playwright/`, `state.json`, `lock`, `totp.json`) under that
-slot's lock, waiting at most 10 s for a `pw` call still holding it (every writer of those files
-re-checks run.json first, so one that outlives the wait writes nothing), keeps `out/`, `files/`,
+slot's lock, waiting at most 10 s for a `pw` call still holding it (every writer of those files —
+a `slot` mint, a handoff, a `pw` call — holds that lock and re-checks run.json under it just before it
+writes, so one that outlives the wait writes nothing), keeps `out/`, `files/`,
 `returns/` and `logs/` (evidence for the owner and the repro), kills the reaper last, removes `run.json` and the
 lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset. A step
 that fails is reported and the next one runs: `run.json`, the lock and the end line are always
@@ -828,7 +829,10 @@ as 0.1.22 reads them:
 - **Sessions** are named `<run>-<slot>-<role>.<k>`, always with the account's number (an explorer's
   bare `<role>` is `<role>.1`); `anon` is never signed in. Each is recorded in run.json `sessions`
   before `open` runs, as `{name, slot, account, cwd, home, daemon, browser}`, the daemon and the
-  browser (Chrome's root, which leads a process group of its own) each `{pid, pgid, started}`. The
+  browser (Chrome's root, which leads a process group of its own) each `{pid, pgid, started}`. An
+  explorer slot's session is recorded only while run.json has an instance id, and its opened record
+  only while its pending one is still there: one an `up --fresh` began under is closed again by its
+  opener, never left past that run's close pass. The
   teardown closes each by name (`close`, in its own cwd and HOME), kills what still runs as recorded
   by identity, then sweeps what no record names: daemons of the run by name, orphaned browsers by HOME.
 - **The wrapper's own browser code** (the login stages, the probe and the observation) comes from

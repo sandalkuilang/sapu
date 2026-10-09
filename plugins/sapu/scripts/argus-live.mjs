@@ -73,7 +73,7 @@ try {
     }
     if (Number.isNaN(n)) throw new Error("refused: a slot is a number from 1 to 99");
     if (opts.handoff && Object.keys(opts).length === 1) printMasked(JSON.stringify(await handoffSlot(main, n)));
-    else if (!opts.handoff && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
+    else if (!opts.handoff && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(await mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
     else throw new Error(`refused: ${usage}`);
   }
   else if (cmd === "intake" && args.length === 1) {

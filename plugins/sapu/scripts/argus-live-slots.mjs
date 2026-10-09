@@ -171,16 +171,28 @@ function copyFixtures(worktree, fixtures, dir, runner) {
   }
 }
 
-/** The slot's directory, made ready for its sessions: the CLI config and signal script (writeSlotConfig) and the fixtures. */
-function prepareSlot(main, rec, slot, live, runner) {
+/**
+ * The slot's directory, made ready for its sessions: the CLI config and signal script (writeSlotConfig) and
+ * the fixtures, under the slot's lock with the run re-checked there (stillLive), so a `down`, which takes
+ * that lock before it removes the slot's files, never runs between the check and the writes.
+ */
+async function prepareSlot(main, rec, slot, live, runner) {
   const port = rec.internal && rec.internal.proxy;
   const channel = rec.browser && rec.browser.channel;
   if (!Number.isInteger(port) || typeof channel !== "string") throw new Error(`refused: cycle ${rec.runId} has no proxy or browser recorded (its up did not reach step 9)`);
   const dir = slotDir(main, rec.runId, slot);
-  stillLive(main, rec.runId);
-  writeSlotConfig(dir, slotConfig({ dir, origins: rec.origins ?? [], allowOrigins: rec.allowOrigins ?? [], proxyPort: port, live, chrome: { channel } }));
-  copyFixtures(rec.worktree, live.fixtures, dir, runner);
-  writeSlotState(dir, freshState(), { main, runId: rec.runId });
+  await withSlotLock(
+    main,
+    rec.runId,
+    slot,
+    () => {
+      stillLive(main, rec.runId);
+      writeSlotConfig(dir, slotConfig({ dir, origins: rec.origins ?? [], allowOrigins: rec.allowOrigins ?? [], proxyPort: port, live, chrome: { channel } }));
+      copyFixtures(rec.worktree, live.fixtures, dir, runner);
+      writeSlotState(dir, freshState(), { main, runId: rec.runId });
+    },
+    { waitMs: slotLockWaitMs(live.settle_ms) },
+  );
   return dir;
 }
 
@@ -200,9 +212,9 @@ const reply = (slot, token, s) => ({ slot, token, generation: s.generation, jour
  * submitted: false}`. Refused: no running cycle with an instance; a slot minted already (`--handoff`); a
  * journey id that is not kebab-case; an account the config does not allow (allocationKeys); an account
  * that serves another slot of the run (`refused: <user> already serves slot <m>`). The slot's directory
- * gets its CLI config, its fixtures and a fresh state.json.
+ * gets its CLI config, its fixtures and a fresh state.json, under the slot's lock (prepareSlot).
  */
-export function mintSlot(main, { slot, journey, accounts }, { runner = run } = {}) {
+export async function mintSlot(main, { slot, journey, accounts }, { runner = run } = {}) {
   if (!Number.isInteger(slot) || slot < 1 || slot > 99) throw new Error("refused: a slot is a number from 1 to 99");
   if (typeof journey !== "string" || !JOURNEY.test(journey)) throw new Error(`refused: ${JSON.stringify(String(journey))} is not a journey id (kebab-case)`);
   const { lock, rec } = cycle(main);
@@ -226,7 +238,7 @@ export function mintSlot(main, { slot, journey, accounts }, { runner = run } = {
     { create: false },
   );
   try {
-    prepareSlot(main, rec, slot, live, runner);
+    await prepareSlot(main, rec, slot, live, runner);
   } catch (e) {
     // A slot that cannot be prepared is not minted: its allocation is given back.
     try {

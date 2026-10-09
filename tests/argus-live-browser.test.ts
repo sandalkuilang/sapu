@@ -25,7 +25,7 @@ import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+import { runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { blockedSince, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -90,7 +90,8 @@ const listen = <T extends Server | HttpServer>(s: T) => {
 /**
  * A run as `up` leaves it once step 9 ran: the lock, worktree and HOME, the fixture app on `web`
  * (started with startEntry and recorded), run.json with its origins and `allowOrigins`, the run's proxy,
- * and slot 1's directory with its CLI config. `down` runs after the test.
+ * and slot 1's directory with its CLI config; run.json holds an instance id, as once `up` finished (an
+ * explorer slot's session is recorded only then). `down` runs after the test.
  */
 const browserRun = async ({ allowOrigins = [] as string[], app = {} as Record<string, string> } = {}) => {
   process.env.TMPDIR = tempDir();
@@ -110,7 +111,7 @@ const browserRun = async ({ allowOrigins = [] as string[], app = {} as Record<st
   await waitHealth(entry, started, { timeoutS: 20, worktree: r.wt, env: {}, upstream });
   expect(upstream).toEqual({ [String(web)]: "127.0.0.1" });
   const origins = [`http://localhost:${web}`];
-  writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, home: r.home, origins, allowOrigins, upstream, groups, env: r.env, browser: { js: cli.js, channel: chrome.channel } });
+  writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, home: r.home, origins, allowOrigins, upstream, groups, env: r.env, browser: { js: cli.js, channel: chrome.channel }, instanceId: "0123456789abcdef" });
   // As up's recording array: each group in run.json as soon as it is pushed.
   const recorded: Obj[] = [];
   recorded.push = (g: Obj) => (updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, g] })), Array.prototype.push.call(recorded, g));
@@ -240,6 +241,37 @@ describe("argus-live browser — sessions and network layers", () => {
     expect(readRun(b.main).sessions).toEqual([]);
     await down(b.main, { runId: b.runId, graceMs: 2000 });
     expect(existsSync(socketsDir(b.home))).toBe(false); // no record names that HOME any more: the run's own browser HOME does
+  }, 120_000);
+
+  it("an explorer's session is not opened while the run has no instance, and one an up --fresh began under is closed and not recorded", async () => {
+    const b = await browserRun();
+    const ps = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n");
+    const daemonOf = (name: string) => ps().filter((l) => l.includes(`cliDaemon.js ${name}`));
+    // An up --fresh begins while the session opens: run.json loses its instance before the record is written.
+    const name = `${b.runId}-1-buyer.1`;
+    const freshMeanwhile = async (argv: string[], o: Obj) => {
+      const r = await runAsync(argv, o);
+      if (argv.includes("open")) updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, instanceId: null }));
+      return r;
+    };
+    await expect(openSession({ main: b.main, runId: b.runId, slot: 1, account: "buyer.1", js: cli.js, home: b.home, cliRunner: freshMeanwhile })).rejects.toThrow(/^refused: cycle .* has no instance/);
+    expect(await until(() => daemonOf(name).length === 0, 15_000)).toBe(true);
+    expect(readRun(b.main).sessions).toEqual([]);
+    // While it has none, nothing opens.
+    await expect(b.open("anon.1")).rejects.toThrow(/^refused: cycle .* has no instance/);
+    expect(daemonOf(`${b.runId}-1-anon.1`)).toEqual([]);
+    expect(readRun(b.main).sessions).toEqual([]);
+    // An up --fresh that closed the pending record and finished while the session opened: closed too.
+    updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, instanceId: "fedcba9876543210" }));
+    const clerk = `${b.runId}-1-clerk.1`;
+    const freshDone = async (argv: string[], o: Obj) => {
+      const r = await runAsync(argv, o);
+      if (argv.includes("open")) updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, sessions: (prev.sessions ?? []).filter((x: Obj) => x.name !== clerk) }));
+      return r;
+    };
+    await expect(openSession({ main: b.main, runId: b.runId, slot: 1, account: "clerk.1", js: cli.js, home: b.home, cliRunner: freshDone })).rejects.toThrow(/closed while it opened/);
+    expect(await until(() => daemonOf(clerk).length === 0, 15_000)).toBe(true);
+    expect(readRun(b.main).sessions).toEqual([]);
   }, 120_000);
 
   it("down sweeps a daemon of the run that no record names, and its browser", async () => {
@@ -474,7 +506,7 @@ describe("argus-live pw in Chrome", () => {
     writeFileSync(join(b.main, ".argus/live.json"), JSON.stringify(c));
     writeFileSync(join(b.main, ".argus/live.env"), `PW='${PW}'\nTOTP=${b.appEnv.APP_TOTP}\n`);
     updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, instanceId: "0123456789abcdef", ports: { web: b.web } }));
-    const m = mintSlot(b.main, { slot: 1, journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test", "clerk.1": "clerk1@example.test", "anon.1": null } });
+    const m = await mintSlot(b.main, { slot: 1, journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test", "clerk.1": "clerk1@example.test", "anon.1": null } });
     const call = (...args: string[]) => pw(b.main, [m.token, ...args]);
     const stats = async () => (await (await fetch(`${b.base}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
     return { ...b, token: m.token, call, stats };

@@ -1434,6 +1434,18 @@ agree on a closing run`, each with its test:
 - **H — probes.** After a re-login probe `pw` prints `probed: <role.k>` outside the fence and appends
   `{slot, account, url, start, end}` to `logs/probes.jsonl`. Live-checked in Chrome: a page without
   the header (`/no-header`) probes once and logs it.
+- **I — the re-review's three minors**, built in `fix(sapu): argus-live masks a URL's userinfo whatever
+  its port-like digits, mints slots under their lock, and drops a session opened across up --fresh`:
+  (1) F let `https://u:1234/abc@host` through (the digits parse as a port, no username): a URL holding
+  `@` now keeps its host only when it parses with no user or password, its authority (up to `/`, `?`,
+  `#` or `\`) holds neither `@` nor `:`, every `@` starts a path segment and no second `//` follows;
+  tests cover `/`, `#` and `?` after the digits, `/@`, a `?next=` URL, and the scoped package.
+  (2) `mintSlot` (now async) prepares the slot under `withSlotLock`, re-checking run.json there; test: a
+  mint waiting on the slot's lock while a `down` seals the run writes nothing, and no slot file is left.
+  (3) `putSession` refuses an explorer slot's record while run.json has no instance id, and an opened
+  record whose pending one is gone; `openSession` then closes the session and drops the pending record.
+  Tests (Chrome): an open across a cleared instance id, one whose pending record an `up --fresh` dropped,
+  and an open while no instance exists leave no daemon and no record.
 - Also tested: `up` with a wrong password exits 1 at step 10 (`refused: buyer.1 could not sign in
   (rejected)`), leaving no proxy, no `cliDaemon.js <run>-up-` process, no HOME or worktree, and a
   balanced `sapu-live.log`.
