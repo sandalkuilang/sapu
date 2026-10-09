@@ -26,9 +26,9 @@ export const CAP_BYTES = 4 * 2 ** 20;
 /**
  * Keeps a drain of session `session` (the observe stage's `secrets`): its secret-like values in the run's
  * ledger, `incomplete` (`<session> passed <capBytes> bytes`) when its hook overflowed, and its ids in
- * `seen.jsonl`.
+ * `seen.jsonl`. The repro runner keeps its step templates' drains through it too.
  */
-function keepDrain(main, runId, session, drained, capBytes) {
+export function keepDrain(main, runId, session, drained, capBytes) {
   const s = drained && typeof drained === "object" ? drained : {};
   appendLedger(main, runId, [...ledgerEntries(s), ...(s.overflow ? [{ c: "incomplete", v: `${session} passed ${capBytes} bytes` }] : [])]);
   appendSeen(main, runId, seenIds(s));

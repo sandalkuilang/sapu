@@ -61,7 +61,7 @@ const EXPECTS = {
 };
 /** Decision 6: the steps that always change state, and those that do when the page sent a request other than GET or HEAD meanwhile. */
 const ALWAYS_CHANGES = ["select", "check", "uncheck", "trigger", "login"];
-const CLICKS = ["click", "dblclick", "press"];
+export const CLICKS = ["click", "dblclick", "press"];
 /** What `system` may do: the role-free hooks, run through runHook. */
 const HOOKED = ["trigger", "fact-equals", "mail"];
 /** The five target kinds a repro may name (decision 5), and every key a target may hold. */
@@ -447,25 +447,25 @@ const ACTION = `  const step = async () => {
 
 /**
  * An expectation, polled every 200 ms in the page up to settle_ms, held at the first success (decision 11)
- * → `{held, observed, detail?}`, `observed` (decision 8) `absent`, `hidden`, `visible`, `disabled`,
+ * → `{held, observed, shown?, detail?}`, `observed` (decision 8) `absent`, `hidden`, `visible`, `disabled`,
  * `differs`, `count:<k>`, or `error` when the last poll threw (a strict-mode violation, a page gone): the
- * runner never counts that as reproduced. `no-error` only drains: the runner judges the account's errors.
+ * runner never counts that as reproduced. `shown` is what the page showed (the URL, the count, the text). `no-error` only drains: the runner judges the account's errors.
  */
 const EXPECT = `  const judge = async () => {
     if (P.kind === "url") {
       const u = new URL(page.url());
-      return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs" };
+      return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
     }
     const L = T(page);
     const n = await L.count();
-    if (P.kind === "count") return n === P.value ? { held: true } : { held: false, observed: "count:" + n };
+    if (P.kind === "count") return n === P.value ? { held: true } : { held: false, observed: "count:" + n, shown: n };
     if (P.kind === "hidden") return n === 0 || !(await L.isVisible()) ? { held: true } : { held: false, observed: "visible" };
     if (n === 0) return { held: false, observed: "absent" };
     const shown = await L.isVisible();
     if (P.kind === "visible") return shown ? { held: true } : { held: false, observed: "hidden" };
     if (P.kind === "enabled") return shown && (await L.isEnabled()) ? { held: true } : { held: false, observed: shown ? "disabled" : "hidden" };
     const text = P.kind === "value-equals" ? await L.inputValue({ timeout: 1000 }) : (await L.innerText({ timeout: 1000 })).trim();
-    return (P.kind === "text-contains" ? text.includes(P.value) : text === P.value) ? { held: true } : { held: false, observed: "differs" };
+    return (P.kind === "text-contains" ? text.includes(P.value) : text === P.value) ? { held: true } : { held: false, observed: "differs", shown: text.slice(0, 500) };
   };
   const step = async () => {
     if (P.kind === "no-error") return { held: true, observed: null };

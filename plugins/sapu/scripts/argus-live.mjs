@@ -25,6 +25,10 @@
 //                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed
 //   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
 //                                enums and counts, then the return whole in a RETURN nonce fence
+//   argus-live.mjs repro <slot>.<generation>.<k> --once
+//                                one run of candidate <k>'s repro on a fresh instance (spec §10): a line per
+//                                step in the wrapper's own words, what the page showed in a nonce fence,
+//                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2)
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -35,6 +39,7 @@ import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
+import { runOnce } from "./argus-live-repro.mjs";
 import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
@@ -54,7 +59,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n>";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> --once";
 
 try {
   // down and the reaper drain every session into the run's secret ledger before they close it.
@@ -82,6 +87,10 @@ try {
     if (!/^[1-9][0-9]?$/.test(args[0])) throw new Error("refused: a slot is a number from 1 to 99");
     // The return is fenced and masked as it is printed; masking whole lines again would cut the nonce.
     for (const line of intake(main, Number(args[0]), { secrets })) printMasked(line);
+  } else if (cmd === "repro" && args.length === 2 && args[1] === "--once") {
+    // Each line is printed as it is made, already in the wrapper's words or fenced and masked (decision 8).
+    const r = await runOnce(main, args[0], { say: printMasked });
+    process.exit(r.code);
   } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });

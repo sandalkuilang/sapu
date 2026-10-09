@@ -439,6 +439,55 @@ async function removeRunSecrets(main, runId, note, slotWaitMs) {
   }
 }
 
+/**
+ * Removes every file under the repro runner's `r/out/traces/` of run `runId` that no record of a run that
+ * exited 2 names (`repro/<ref>/run-<i>.json` with `exit: 2`, its `traces` relative to that directory): a
+ * run that exited 0 or 3 needs no diagnosis, an H2 run keeps its traces, local only (decision 13). The
+ * records are read as JSON; an unreadable one names nothing.
+ */
+export function pruneTraces(main, runId) {
+  runIdOk(runId);
+  const root = path.join(liveDir(main), runId);
+  const traces = path.join(root, "r", "out", "traces");
+  const keep = new Set();
+  let refs = [];
+  try {
+    refs = fs.readdirSync(path.join(root, "repro"), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    refs = [];
+  }
+  for (const ref of refs) {
+    let runs = [];
+    try {
+      runs = fs.readdirSync(path.join(root, "repro", ref)).filter((f) => /^run-\d+\.json$/.test(f));
+    } catch {
+      runs = [];
+    }
+    for (const f of runs) {
+      try {
+        const r = JSON.parse(fs.readFileSync(path.join(root, "repro", ref, f), "utf8"));
+        if (r && r.exit === 2 && Array.isArray(r.traces)) for (const t of r.traces) if (typeof t === "string") keep.add(path.normalize(t));
+      } catch {
+        // unreadable: it names nothing
+      }
+    }
+  }
+  const walk = (rel) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(path.join(traces, rel), { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(rel, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (!keep.has(p)) fs.rmSync(path.join(traces, p), { force: true });
+    }
+  };
+  walk("");
+}
+
 /** Runs one teardown step; an error is noted and the teardown goes on. */
 export async function guarded(what, note, fn) {
   try {
@@ -533,9 +582,11 @@ const TEARDOWN = [
     await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });
     for (const h of homes) removeSockets(h);
   }],
+  // Its sessions are closed by now: the repro runs' traces are pruned to those of runs that exited 2.
   ["the run's directories", async (t) => {
     removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
     await removeRunSecrets(t.main, t.runId, t.note, t.slotWaitMs ?? 10_000);
+    await guarded("the repro traces", t.note, () => pruneTraces(t.main, t.runId));
   }],
   // Last of the processes: the reaper, unless it is this process (its own `down`).
   ["the reaper", (t) => (t.rec ? stopReaper(t.rec.reaper, t.runId, t.runner, t.note) : undefined)],

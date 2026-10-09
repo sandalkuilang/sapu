@@ -591,7 +591,9 @@ describe("journey-app fixture — browser side", () => {
     expect(page).toContain("<h1>Inbox</h1>");
     expect(page).toContain(`<li data-testid="inbox-item">${one} <form method="post" action="/orders/${one}/claim"><button type="submit">Claim</button></form></li>`);
     expect(await inbox(clerk1)).toEqual([one]);
+    expect((await clerk1.get("/inbox/rows")).text).toBe(`<ul><li data-testid="inbox-item">${one} <form method="post" action="/orders/${one}/claim"><button type="submit">Claim</button></form></li></ul>`);
     expect((await buyer.get("/inbox")).status).toBe(403);
+    expect((await buyer.get("/inbox/rows")).status).toBe(403);
     expect(await clerk1.post(`/orders/${one}/claim`, {})).toMatchObject({ status: 303, location: `/orders/${one}` });
     const second = await t.as("clerk2@example.test").post(`/orders/${one}/claim`, {});
     expect(second.status).toBe(409);

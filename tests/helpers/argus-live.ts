@@ -19,7 +19,7 @@ import { pw } from "../../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, updateRun, writeRunFiles } from "../../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
-import { mintSlot } from "../../plugins/sapu/scripts/argus-live-slots.mjs";
+import { mintSlot, parseAccounts } from "../../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { makeHome, makeWorktree, startEntry, waitHealth } from "../../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -377,15 +377,23 @@ export const fixtureProcs = (mark: string) =>
  * spawns `argus-live.mjs` in the repo, as the orchestrator and the explorer's Bash run it, under a fresh
  * HOME holding the pinned CLI and a docker whose daemon is not running. `mark` (an argument the app
  * ignores) marks the file's fixture processes (fixtureProcs): other test files run the fixture at the
- * same time. `data` is the app's DATA_DIR.
+ * same time. `data` is the app's DATA_DIR. With `repro` (the repro runner's cycle): `buyer` has buyer1 and
+ * buyer2, `clerk` clerk1 (TOTP) and clerk2, settle_ms is 3000, the app's mail is a hook too, and its
+ * seeded defects are read from a file `defects(...names)` writes (none at first).
  */
-export const appCycle = ({ clerk = true, mark }: { clerk?: boolean; mark: string }) => {
+export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolean; mark: string; repro?: boolean }) => {
   const NODE = process.execPath;
   const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)} ${mark}${args ? ` ${args}` : ""}`;
   const main = tempDir();
   const data = join(tempDir(), "app_explore");
+  const defectsFile = join(tempDir(), "defects");
+  writeFileSync(defectsFile, "");
   const roles: Obj = { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } };
   if (clerk) roles.clerk = { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] };
+  if (repro) {
+    roles.buyer.users.push({ user: "buyer2@example.test", password: "${APP_PW}" });
+    roles.clerk.users.push({ user: "clerk2@example.test", password: "${APP_PW}" });
+  }
   const config = {
     start: [
       { name: "cache", phase: "store", cmd: app(), env: { PORT: "{port:cache}" }, health: { url: "http://127.0.0.1:{port:cache}/health" } },
@@ -396,18 +404,19 @@ export const appCycle = ({ clerk = true, mark }: { clerk?: boolean; mark: string
     logged_in: "getByRole('button', { name: 'Account' })",
     env_file: ".argus/live.env",
     services: { cache: { env: "CACHE_URL" } },
-    env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "control-7" },
+    env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "control-7", ...(repro ? { DEFECTS_FILE: defectsFile } : {}) },
     pass_env: [],
     store: "app_explore",
     store_check: app("--which-store"),
     reset: app("--reset"),
     facts: { argv: [NODE, SERVER, "--facts", "{1}"] },
+    ...(repro ? { mail: { argv: [NODE, SERVER, "--mail"] } } : {}),
     triggers: { settle: { argv: [NODE, SERVER, "--trigger", "settle", "{1}"] } },
     confirmed: { mocks: true, data: true },
     allow_origins: [],
     port_range: [41000, 41999],
     reserved_ports: [],
-    settle_ms: 5000,
+    settle_ms: repro ? 3000 : 5000,
     roles,
     limits: { max_cycle_minutes: 30, live_health_timeout_s: 20 },
   };
@@ -446,6 +455,22 @@ export const appCycle = ({ clerk = true, mark }: { clerk?: boolean; mark: string
     const starts = lines.filter((l) => / start /.test(l)).map((l) => l.split(" ")[0]);
     return starts.length > 0 && starts.every((r) => lines.filter((l) => l.startsWith(`${r} end `)).length === 1);
   };
-  return { main, data, outs, cli, runJson, up: upNow, slot, balanced };
+  /** The app's request counts (`/__test/stats`) on the running cycle's web port. */
+  const stats = async () => (await (await fetch(`http://localhost:${runJson().ports.web}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
+  const defects = (...names: string[]) => writeFileSync(defectsFile, names.join(","));
+  return { main, data, outs, cli, runJson, up: upNow, slot, balanced, stats, defects };
+};
+
+/**
+ * Slot `slot` minted for journey order-to-cash with `accounts` (`<role>.<k>=<user>|<role>.<k>,…`) and a
+ * return submitted through it holding one candidate per repro of `repros` (its oracle the last step's
+ * `final`) → the candidates' refs (`<slot>.1.<k>`), as `repro` takes them.
+ */
+export const candidate = async (main: string, { slot, accounts, repros }: { slot: number; accounts: string; repros: Obj[][] }) => {
+  const m = await mintSlot(main, { slot, journey: "order-to-cash", accounts: parseAccounts(accounts) });
+  const ret = { journey: "order-to-cash", status: "done", candidates: repros.map((repro) => ({ claim: "a seeded defect", oracle: repro.at(-1)!.final, repro })) };
+  const r = await pw(main, [m.token, "submit", JSON.stringify(ret)]);
+  expect(r.out, "submit").toEqual([`submitted: slot ${slot} generation 1 status done`]);
+  return repros.map((_, k) => `${slot}.1.${k + 1}`);
 };
 

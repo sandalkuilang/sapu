@@ -43,7 +43,8 @@
 //                 data-testid=claim rows. A refused action answers 409 with the order page and an alert
 //   /inbox        a clerk's actionable orders (placed or approved), one data-testid=inbox-item row each
 //                 holding the id and a "Claim" button (POST /orders/<id>/claim; a second claim → 409
-//                 "Already claimed by <user>")
+//                 "Already claimed by <user>"); the page asks /inbox/rows every 500 ms and shows the
+//                 rows anew when they changed, as an inbox that is kept up to date
 //   /stock        signed in: data-testid=stock, the widgets in stock
 //   /signup       Email + Password + "Sign up": a buyer account ($DATA_DIR/accounts.json) that signs
 //                 in through /login like any other, "Welcome <email>"; an email of a configured or
@@ -402,6 +403,14 @@ function defects() {
   }
 }
 
+/** The inbox's rows: the actionable orders, each with its Claim button, as the defects on now list them. */
+function inboxRows() {
+  const on = defects();
+  const listed = (o) => !on.has("missing-handoff") && (!on.has("delayed-handoff") || Date.now() - (o.placedAt || 0) >= 2000) && (["placed", "approved"].includes(o.status) || (on.has("orphaned") && o.status === "cancelled"));
+  const rows = readJson("orders.json", []).filter(listed).map((o) => `<li data-testid="inbox-item">${esc(o.id)} <form method="post" action="/orders/${o.id}/claim"><button type="submit">Claim</button></form></li>`);
+  return rows.length ? `<ul>${rows.join("")}</ul>` : "<p>Nothing to do.</p>";
+}
+
 /** Order <id>'s page for `user`: its number, facts, note, claims and the actions their role may take now; `alert` a refusal. */
 function orderPage(order, user, { placed = false, delay = 2000, alert = "" } = {}) {
   const id = order.id;
@@ -551,11 +560,13 @@ async function handle(req, res) {
   if (p === "/inbox" && req.method === "GET") {
     return signedIn(() => {
       if (account(user)?.role !== "clerk") return send(res, 403, page("Inbox", "<p role=\"alert\">Clerks only.</p>", { user }));
-      const on = defects();
-      const listed = (o) => !on.has("missing-handoff") && (!on.has("delayed-handoff") || Date.now() - (o.placedAt || 0) >= 2000) && (["placed", "approved"].includes(o.status) || (on.has("orphaned") && o.status === "cancelled"));
-      const rows = readJson("orders.json", []).filter(listed).map((o) => `<li data-testid="inbox-item">${esc(o.id)} <form method="post" action="/orders/${o.id}/claim"><button type="submit">Claim</button></form></li>`);
-      return send(res, 200, page("Inbox", rows.length ? `<ul>${rows.join("")}</ul>` : "<p>Nothing to do.</p>", { user }));
+      const rows = inboxRows();
+      const refresh = `<script>let last = ${js(rows)}; setInterval(async () => { const r = await fetch("/inbox/rows"); if (!r.ok) return; const h = await r.text(); if (h !== last) { last = h; document.getElementById("rows").innerHTML = h; } }, 500);</script>`;
+      return send(res, 200, page("Inbox", `<div id="rows">${rows}</div>${refresh}`, { user }));
     });
+  }
+  if (p === "/inbox/rows" && req.method === "GET") {
+    return signedIn(() => (account(user)?.role === "clerk" ? send(res, 200, inboxRows()) : send(res, 403, "")));
   }
   if (p === "/stock" && req.method === "GET") return signedIn(() => send(res, 200, page("Stock", `<p>Widgets in stock: <span data-testid="stock">${stock()}</span></p>`, { user })));
   if (p === "/signup" && req.method === "GET") {

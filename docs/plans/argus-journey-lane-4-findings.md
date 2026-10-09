@@ -1542,3 +1542,44 @@ Interfaces:
   instance, which that file's harness brings up; the findings file holds slot `r` itself, the
   instance-id rule and `down`. `openSession`'s, `sessionName`'s and the teardown's slot-file pass
   comments name slot `r`.
+- **Task 6.** `--facts` prints `{status, quantity, stock, claims}`, so phase 3's facts tests read the two
+  new fields too. A refused order action (cancel, claim, approve, ship) answers 409 with the order page
+  and an alert, so a proving expect on the order number holds in both variants; cancel is the order's
+  buyer's, claim, approve and ship a clerk's (403 otherwise), `/inbox` a clerk's (403), and ship needs
+  `approved` (409). Approve's hidden `rendered` field is sent, never read: the fixed variant checks the
+  order itself. `/signup` does not sign the browser in. Task 8 gave the inbox `/inbox/rows` and a 500 ms
+  refresh of its rows (shown anew only when they changed): on a static inbox page an expectation's poll
+  cannot see a handoff that lands 2000 ms after the order, so the delayed-handoff test would prove nothing.
+- **Task 7.** `-steps.mjs` imports, beyond the plan's four, `-session.mjs` (`configuredUser`),
+  `-slots.mjs` (`accountOf`) and `-origin.mjs` (`BLOCKED_ERROR`), all to its left in the DAG; the DAG
+  test pins that list and that it reaches neither `pw` nor `instance`. A context fault reads `refused:
+  repro: context: <reason>`. A parallel group's members are numbered as steps and carry `group`
+  (1-based). Reasons the plan did not word: `the last step must be an expect naming its oracle (final)`,
+  `final is not an oracle`, `save takes a name (…, not marker)`, `press takes a key (…)`, `<kind> takes
+  <fields>`, `count takes a target and a whole number`, `url takes a path (/…)`, and a trigger's own
+  `trigger changes state: an expect must follow before the next state-changing step`; a trigger's literal
+  values meet its regexes before any browser work, in `fillArgv`'s words. `provingExpect(steps, n,
+  changed)` and `CLICKS` are exported (the runner and `reductions` share them). Every answer of a step
+  template leaves through `finish`, which drains, a throw included (the test pins that structure); an
+  expectation also answers `shown` (what the page showed: the URL, the count, the text) and `observed:
+  "error"` when its last poll threw (a strict-mode violation), which the runner never counts as
+  reproduced. Phase 3's target-shape regex cannot hold a `}` inside a quoted name, so the DSL test's copy
+  lets the options hold JSON strings.
+- **Task 8.** Probe (the pinned CLI, the local Chrome): `tracing-start` and `tracing-stop` write
+  `trace-<ms>.trace`, `.network` and `.stacks`, `resources/<sha1>.<ext>` and
+  `screencast/page@<id>-<ms>.jpeg` under `<outputDir>/traces/`; a step template's click on a form that
+  POSTs answered `changed: true, method: "POST"`, a count expectation `observed: "count:1", shown: 1`, a
+  text-equals `held`. `run-<i>.json` also holds `changed` (the click-family steps that changed state,
+  minimize's input, decision 10), and `traces` names the run's new files plus every `resources/` file
+  (a resource is written once and shared by later traces); `pruneTraces` runs in the teardown's "the
+  run's directories" step, so `TEARDOWN_STEPS` is unchanged. A ref `reproRef` refuses is thrown as a
+  refusal (the CLI's exit 1), not a HARNESS; a `fresh` that throws without a step is `HARNESS: failed:
+  <message>`. The CLI prints each line as it is made (`say`). The runner holds slot `r`'s lock for the
+  whole run. A failing step of a signed-in account checks the session first (`observe`, then a probe):
+  gone → `HARNESS: step <n> <role.k> lost its session`; a hook that failed at an open → `HARNESS: step
+  <n> <role.k> hook failed`; any other failed action → `HARNESS: step <n> <action> failed
+  (timeout|error)`. `keepDrain` is exported from `-session.mjs`. The tests run each repro as a candidate
+  of one return (`candidate(main, {slot, accounts, repros})` → the refs; one cycle per test) through the
+  CLI, with `appCycle({repro: true})`; `clerk.1` is clerk2 and `clerk.2` clerk1, so only the claim race
+  waits for a TOTP step. The delayed-handoff run opens the clerk's inbox before the order is placed (and
+  shares the viewport test's cycle); the trace test and the `down` test are one test.
