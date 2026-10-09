@@ -3,14 +3,21 @@
 // saw or the configuration holds — in any encoding the matcher knows, naming where and never what —,
 // redacts every other long letter-and-digit token the run never saw as an id, and defangs mentions,
 // references and outside links outside code. It reads only files a `down` keeps (the run's ledger and
-// seen ids, the configuration), so a run that is down is scrubbed the same way.
+// seen ids, the configuration), so a run that is down is scrubbed the same way. A screenshot's verdict is
+// written here when `pw` takes it and read here when scrub decides whether to attach it; the issue is
+// filed through `gh`, never a shell.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { expand, LIVE_FILE, loadLive } from "./argus-live-config.mjs";
 import { normHost, ownerEnvFiles } from "./argus-live-endpoints.mjs";
 import { highEntropy, MIN_SECRET, readLedger, readSeen, SECRET_KEY, secretHits } from "./argus-live-ledger.mjs";
-import { lastRun } from "./argus-live-lock.mjs";
+import { lastRun, liveDir } from "./argus-live-lock.mjs";
+import { run, tempBeside, within } from "./argus-live-proc.mjs";
 import { recordedSecrets } from "./argus-live-run.mjs";
-import { loadContract } from "./sapu-contract.mjs";
+import { loadContract, resolvePolicy } from "./sapu-contract.mjs";
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /**
  * A source that mixes configuration with secrets gives only what is secret-like: a SECRET_KEY name or a
@@ -201,16 +208,110 @@ function refusalLines(title, body, secrets) {
   return hits.length ? [...hits.map((h) => `${h.where} ${h.line}:${h.col} ${h.cls}`), `refused: scrub: ${hits.length} secret(s) in the issue; nothing is filed`] : [];
 }
 
+/** Where a screenshot's verdict lies: beside it, `<name>.verdict.json`. */
+const verdictFile = (png) => png.replace(/\.png$/, ".verdict.json");
+
 /**
- * `argus-live.mjs scrub --title <t> --body <file>` → `{code, out}`. The run is the lock's, else the newest
- * run directory (a run that is down is read the same way). scrubSecrets' refusal → that line (exit 1); a
- * secret in the title or the body as given → one line per hit, `<title|body> <line>:<col> <class>`, then
- * `refused: scrub: <k> secret(s) in the issue; nothing is filed` (exit 1, the file untouched; never a
- * value, never the text around it); else both redacted (redactIds, the run's seen ids) and defanged, the
- * body file rewritten in place, `scrub: ok; redacted <n>, defanged <n>, cut <n> line(s)` and `title: <the
- * scrubbed title>` (exit 0).
+ * Writes the verdict of screenshot `png` of run `runId` beside it (0600): `{t, sha256, passed, reasons}`
+ * (decision 18; `sha256` of the PNG's bytes as written), from `shot` (the login stage's answer, read after
+ * the call's drain; null when it failed). Reasons: `secret` (the text holds a scrub secret, scrubSecrets
+ * refused — a gone or incomplete ledger —, a frame could not be read, the stage failed or the call's drain
+ * did not run, `drained` false), `password-field`, `one-time-code-field`, `error-page`. Never the text →
+ * the verdict.
  */
-export async function scrub(main, { title, bodyFile } = {}, { env = process.env } = {}) {
+export function writeVerdict(main, runId, png, shot, { drained = true, env = process.env } = {}) {
+  const { secrets, refusal } = scrubSecrets(main, { runId, env });
+  const reasons = [];
+  if (!shot || !drained || refusal || shot.unread || secretHits(String(shot.text ?? ""), secrets).length) reasons.push("secret");
+  if (shot && shot.password) reasons.push("password-field");
+  if (shot && shot.otp) reasons.push("one-time-code-field");
+  if (shot && shot.error) reasons.push("error-page");
+  const v = { t: Date.now(), sha256: sha256(fs.readFileSync(png)), passed: reasons.length === 0, reasons };
+  fs.renameSync(tempBeside(verdictFile(png), JSON.stringify(v), 0o600), verdictFile(png));
+  return v;
+}
+
+/** A verdict's reason, as scrub names it. */
+const REASON_WORDS = { secret: "a secret on the page", "password-field": "a password field", "one-time-code-field": "a one-time-code field", "error-page": "an error page" };
+
+/** `gh --version`'s answer is 2.99 or later (`--attach`). */
+const ghAttaches = (version) => {
+  const m = /(\d+)\.(\d+)/.exec(String(version ?? ""));
+  return Boolean(m) && (Number(m[1]) > 2 || (Number(m[1]) === 2 && Number(m[2]) >= 99));
+};
+
+/**
+ * May `file` be attached to an issue of run `runId` (decision 18)? → `{attach: true, file: <its real
+ * path>}` or `{attach: false, reason}`, the first that fails of: `gh older than 2.99`, `public repository`
+ * (`visibility` not PRIVATE or INTERNAL), `traces none` (the policy), `a trace, never attached` (any file
+ * under a `traces/` directory), `not a screenshot of this run` (not a regular `.png` right in a slot's
+ * `out/` of the run, by its real path), `no verdict recorded`, `the screenshot changed after its verdict`
+ * (its bytes no longer hash to the verdict's sha256), then the verdict's own reason.
+ */
+export function attachVerdict(main, runId, file, { ghVersion, visibility, traces }) {
+  const no = (reason) => ({ attach: false, reason });
+  if (!ghAttaches(ghVersion)) return no("gh older than 2.99");
+  if (visibility !== "PRIVATE" && visibility !== "INTERNAL") return no("public repository");
+  if (traces === "none") return no("traces none");
+  const given = path.resolve(String(file));
+  let real = null;
+  let root = null;
+  try {
+    real = fs.realpathSync(given);
+    root = fs.realpathSync(path.join(liveDir(main), runId));
+  } catch {
+    // gone: not a screenshot of this run
+  }
+  if ([given, real].some((p) => p && p.split(path.sep).includes("traces"))) return no("a trace, never attached");
+  const rel = real && root && within(root, real) ? path.relative(root, real).split(path.sep).join("/") : null;
+  if (!rel || !/^(?:[1-9][0-9]*|r|up)\/out\/[^/]+\.png$/.test(rel) || !fs.lstatSync(given).isFile()) return no("not a screenshot of this run");
+  let v = null;
+  try {
+    v = JSON.parse(fs.readFileSync(verdictFile(real), "utf8"));
+  } catch {
+    v = null;
+  }
+  if (!v || typeof v !== "object" || typeof v.sha256 !== "string" || typeof v.passed !== "boolean" || !Array.isArray(v.reasons)) return no("no verdict recorded");
+  if (sha256(fs.readFileSync(real)) !== v.sha256) return no("the screenshot changed after its verdict");
+  if (!v.passed || v.reasons.length) return no(REASON_WORDS[v.reasons.find((r) => Object.hasOwn(REASON_WORDS, r))] ?? REASON_WORDS.secret);
+  return { attach: true, file: real };
+}
+
+/** `p`'s real path, else `p` resolved (gone). */
+const realOr = (p) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+
+/** A file as scrub names it, in its lines and in the issue: its path from MAIN (else its base name), every character outside a path's plain ones as `_`. */
+const shownPath = (main, file) => {
+  const [root, p] = [realOr(main), realOr(String(file))];
+  return (within(root, p) ? path.relative(root, p) : path.basename(p)).replace(/[^A-Za-z0-9._/+@-]/g, "_");
+};
+
+/** An issue or comment URL in gh's stdout. */
+const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
+
+/**
+ * `argus-live.mjs scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment
+ * <n>]` → `{code, out}`. The run is the lock's, else the newest run directory (a run that is down is read
+ * the same way). scrubSecrets' refusal → that line (exit 1); a secret in the title or the body as given →
+ * one line per hit, `<title|body> <line>:<col> <class>`, then `refused: scrub: <k> secret(s) in the issue;
+ * nothing is filed` (exit 1, the file untouched, no gh run; never a value, never the text around it); else
+ * both redacted (redactIds, the run's seen ids) and defanged, `scrub: ok; redacted <n>, defanged <n>, cut
+ * <n> line(s)` and `title: <the scrubbed title>`. Each `attach` → `attach: <name>` or `local: <name>
+ * (<reason>)` (attachVerdict; gh's version from `gh --version`, the visibility from `gh repo view`, `traces`
+ * from the contract's policy), the local ones named in a `Local evidence:` line appended to the body (once).
+ * The body file is rewritten in place. With `create`: `gh issue create --title … --body-file <file>
+ * [--label <l>]… [--attach <png>]…`; with `comment`: `gh issue comment <n> --body-file <file> [--attach
+ * <png>]…`; an issue URL in gh's stdout → `filed: <url>` / `commented: <url>` (exit 0, whatever gh's
+ * exit); none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2). gh's
+ * own output is never printed.
+ */
+export async function scrub(main, { title, bodyFile, attach = [], create = false, labels = [], comment = null } = {}, { env = process.env, gh = "gh", runner = run } = {}) {
   const runId = lastRun(main);
   if (!runId) return { code: 1, out: ["refused: scrub: no journey cycle has run here; nothing is filed"] };
   const t = String(title ?? "");
@@ -230,9 +331,35 @@ export async function scrub(main, { title, bodyFile } = {}, { env = process.env 
   const rb = redactIds(body, seen);
   const dt = defang(rt.text);
   const db = defang(rb.text);
+  const out = [`scrub: ok; redacted ${rt.count + rb.count}, defanged ${dt.defanged + db.defanged}, cut ${db.cut} line(s)`, `title: ${dt.text}`];
+  // Attachments: what may leave as a file, by its verdict and the repo's; the rest stays local, named.
+  const attached = [];
+  const local = [];
+  if (attach.length) {
+    const ask = (argv) => {
+      const r = runner([gh, ...argv], { cwd: main, env });
+      return r.status === 0 ? String(r.stdout ?? "").trim() : null;
+    };
+    const at = { ghVersion: ask(["--version"]), visibility: ask(["repo", "view", "--json", "visibility", "--jq", ".visibility"]), traces: resolvePolicy(loadContract(main).contract ?? null).traces };
+    for (const f of attach) {
+      const v = attachVerdict(main, runId, f, at);
+      if (v.attach) attached.push(v.file);
+      else local.push(shownPath(main, f));
+      out.push(v.attach ? `attach: ${shownPath(main, f)}` : `local: ${shownPath(main, f)} (${v.reason})`);
+    }
+  }
+  let text = db.text;
+  const evidence = `Local evidence: ${local.map((p) => `\`${p}\``).join(", ")}`;
+  if (local.length && !text.split("\n").includes(evidence)) text = `${text.replace(/\n+$/, "")}\n\n${evidence}\n`;
   // What is filed is checked as well as what was given: nothing a rewrite made may carry a secret either.
-  const made = refusalLines(dt.text, db.text, secrets);
+  const made = refusalLines(dt.text, text, secrets);
   if (made.length) return { code: 1, out: made };
-  fs.writeFileSync(bodyFile, db.text);
-  return { code: 0, out: [`scrub: ok; redacted ${rt.count + rb.count}, defanged ${dt.defanged + db.defanged}, cut ${db.cut} line(s)`, `title: ${dt.text}`] };
+  fs.writeFileSync(bodyFile, text);
+  if (!create && comment === null) return { code: 0, out };
+  const files = attached.flatMap((f) => ["--attach", f]);
+  const argv = create ? ["issue", "create", "--title", dt.text, "--body-file", bodyFile, ...labels.flatMap((l) => ["--label", l]), ...files] : ["issue", "comment", String(comment), "--body-file", bodyFile, ...files];
+  const r = runner([gh, ...argv], { cwd: main, env });
+  const url = ISSUE_URL.exec(String(r.stdout ?? ""));
+  if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`] };
+  return { code: 2, out: [...out, `failed: gh issue ${create ? "create" : "comment"} exited ${r.status ?? "on a signal"} before printing an issue URL`] };
 }

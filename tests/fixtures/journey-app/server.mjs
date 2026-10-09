@@ -56,6 +56,7 @@
 //                 load and goes 300 ms later: gone before any command after the click can look
 //   /inject       text that imitates fence markers, terminal controls and an instruction to the
 //                 agent; with ?echo=1 also $APP_PW
+//   /frame        a page whose only content is an iframe of /inject (with ?echo=1, of /inject?echo=1)
 //   /leak?other=<port>&udp=<port>&allowed=<origin>
 //                 tries an outside fetch and WebSocket, WebRTC to a loopback UDP port, a fetch and a
 //                 WebSocket to another loopback port, and a fetch from <allowed>; one #results line each
@@ -63,7 +64,8 @@
 //   /no-header    signed in, without the header
 //   /storage      signed in: sets localStorage.jwt (32 hex) and localStorage.theme ("dark-mode-on"),
 //                 fetches /api/me with the first bearer, /api/reset/<x> and /api/items/<id>, and
-//                 /api/me again 2000 ms after load with the second bearer; nothing of it is rendered.
+//                 /api/me again 2000 ms after load with the second bearer; nothing of it is rendered
+//                 but, with ?show=1, the second bearer once that fetch answered.
 //                 Both bearers and the jwt are 32 random hex chosen at the app's start, kept in
 //                 $DATA_DIR/bearer.json ({bearers: [first, second], jwt}) for the tests to read
 //   /api/me, /api/reset/<x>, /api/items/<id>
@@ -606,6 +608,10 @@ async function handle(req, res) {
     const lines = [...INJECT, ...(url.searchParams.get("echo") === "1" ? [process.env.APP_PW || ""] : [])];
     return send(res, 200, page("Notes", lines.map((l) => `<p>${esc(l)}</p>`).join(""), { user }));
   }
+  if (p === "/frame" && req.method === "GET") {
+    const src = url.searchParams.get("echo") === "1" ? "/inject?echo=1" : "/inject";
+    return send(res, 200, page("Framed notes", `<iframe title="Notes" src="${src}" width="600" height="300"></iframe>`, { user }));
+  }
   if (p === "/leak" && req.method === "GET") return send(res, 200, page("Leak", leakPage(url.searchParams), { user }));
   if (p === "/upload" && req.method === "GET") {
     return signedIn(() =>
@@ -620,7 +626,7 @@ const me = (b) => fetch("/api/me", { headers: { authorization: "Bearer " + b } }
 me(${js(first)});
 fetch("/api/reset/rk7b6a5c4d3e2f1g0h9i8j7k6");
 fetch("/api/items/ck9a8b7c6d5e4f3g2h1i0j9k8");
-setTimeout(() => me(${js(second)}), 2000);`;
+setTimeout(() => me(${js(second)})${url.searchParams.get("show") === "1" ? `.then(() => document.querySelector("main").insertAdjacentHTML("beforeend", "<p>Second: " + ${js(second)} + "</p>"))` : ""}, 2000);`;
       return send(res, 200, page("Storage", `<p>Stored.</p><script>${script}</script>`, { user }));
     });
   }

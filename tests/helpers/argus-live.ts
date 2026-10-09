@@ -475,3 +475,37 @@ export const candidate = async (main: string, { slot, accounts, repros }: { slot
   return repros.map((_, k) => `${slot}.1.${k + 1}`);
 };
 
+
+/**
+ * A stand-in for `gh`: an executable named `gh` in its own directory (put it first on PATH, or pass its
+ * path), never the network. Each call appends `{argv, body, attached}` as one JSON line to `<gh>.calls`:
+ * `body` the `--body-file`'s text at that moment, `attached` each `--attach` file's bytes (latin1), so a
+ * test can scan everything gh was given. It answers `--version`, `repo view` and `issue create|comment`
+ * as `set({version, visibility, create, comment})` says (`create`/`comment`: `{out, code}`); by default
+ * gh 2.102.0, a PRIVATE repo, and an issue URL with exit 0.
+ */
+export const fakeGh = () => {
+  const dir = tempDir();
+  const gh = join(dir, "gh");
+  writeFileSync(
+    gh,
+    `#!${process.execPath}
+const fs = require("node:fs");
+const self = __filename;
+const argv = process.argv.slice(2);
+const at = (flag) => argv.flatMap((a, i) => (a === flag && i + 1 < argv.length ? [argv[i + 1]] : []));
+const read = (f, enc) => { try { return fs.readFileSync(f, enc); } catch { return null; } };
+fs.appendFileSync(self + ".calls", JSON.stringify({ argv, body: at("--body-file").map((f) => read(f, "utf8"))[0] ?? null, attached: at("--attach").map((f) => read(f.replace(/#.*$/, ""), "latin1")) }) + "\\n");
+const a = Object.assign({ version: "gh version 2.102.0 (stable)", visibility: "PRIVATE", create: { out: "https://github.com/o/r/issues/9\\n", code: 0 }, comment: { out: "https://github.com/o/r/issues/9#issuecomment-77\\n", code: 0 } }, JSON.parse(read(self + ".answers", "utf8") || "{}"));
+if (argv[0] === "--version") { process.stdout.write(a.version + "\\n"); process.exit(0); }
+if (argv[0] === "repo" && argv[1] === "view") { process.stdout.write(a.visibility + "\\n"); process.exit(0); }
+if (argv[0] === "issue" && (argv[1] === "create" || argv[1] === "comment")) { process.stdout.write(a[argv[1]].out); process.exit(a[argv[1]].code); }
+process.stderr.write("fake gh: unknown call\\n");
+process.exit(4);
+`,
+  );
+  chmodSync(gh, 0o755);
+  const calls = (): Obj[] => (existsSync(`${gh}.calls`) ? readFileSync(`${gh}.calls`, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const set = (answers: Obj) => writeFileSync(`${gh}.answers`, JSON.stringify(answers));
+  return { gh, dir, calls, set };
+};

@@ -2,11 +2,12 @@
 // origins, the session driver (the CLI shim standing in for @playwright/cli), and later the repro DSL, the
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, ARGUS_LIVE, cleanTemps, committed, example, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
+import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -92,8 +93,9 @@ describe("argus-live modules — the DAG", () => {
     // The generated RED test reads targets and oracles only; the runner above it writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
     expect(g.get("argus-live-repro")).toContain("argus-live-redtest");
-    // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records.
-    expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-ledger", "argus-live-lock", "argus-live-run"]);
+    // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
+    expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
+    expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -1291,4 +1293,140 @@ describe("argus-live scrub", () => {
     expect((await t.run("x", t.body("a clean body\n"))).code).toBe(0);
     expect(await t.run("x", t.body(`the cookie ${SCRUB.cookie}\n`))).toEqual({ code: 1, out: ["body 1:12 cookie", REFUSED(1)] });
   });
+});
+
+describe("argus-live scrub — attachments and filing", () => {
+  const PNG = Buffer.from("89504e470d0a1a0a0000000d4948445200000001", "hex");
+  const URL9 = "https://github.com/o/r/issues/9";
+  const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+  /** A run as scrub reads it, a fake gh, and `shot(rel)`: a screenshot at `rel` under the run's directory (or `abs`) with the verdict pw writes beside it. */
+  const filing = () => {
+    const t = scrubRun();
+    const g = fakeGh();
+    const shot = (rel: string, verdict: Obj | null = { passed: true, reasons: [] }, at = join(t.main, ".argus/live", t.runId, rel)) => {
+      mkdirSync(dirname(at), { recursive: true });
+      writeFileSync(at, PNG);
+      if (verdict) writeFileSync(at.replace(/\.png$/, ".verdict.json"), JSON.stringify({ t: Date.now(), sha256: sha(PNG), ...verdict }), { mode: 0o600 });
+      return at;
+    };
+    const file = (opts: Obj, body = "A clean body.\n") => {
+      const b = t.body(body);
+      return { b, done: t.run("A title", b, { create: true, gh: g.gh, ...opts }) };
+    };
+    return { ...t, g, shot, file, shown: (rel: string) => `.argus/live/${t.runId}/${rel}` };
+  };
+  const creates = (g: ReturnType<typeof fakeGh>) => g.calls().filter((c) => c.argv[0] === "issue");
+
+  it("a screenshot whose every condition holds is attached, and gh files the rewritten body", async () => {
+    const t = filing();
+    const png = t.shot("1/out/page-1.png");
+    const { b, done } = t.file({ attach: [png] }, "Seen by @octocat.\n");
+    expect(await done).toEqual({ code: 0, out: ["scrub: ok; redacted 0, defanged 1, cut 0 line(s)", "title: A title", `attach: ${t.shown("1/out/page-1.png")}`, `filed: ${URL9}`] });
+    const [c] = creates(t.g);
+    expect(c.argv).toEqual(["issue", "create", "--title", "A title", "--body-file", b, "--attach", realpathSync(png)]);
+    expect(c.body).toBe("Seen by `@octocat`.\n");
+    expect(c.attached).toEqual([PNG.toString("latin1")]);
+    expect(t.g.calls().map((x) => x.argv.slice(0, 2).join(" "))).toEqual(["--version", "repo view", "issue create"]);
+  });
+
+  const reasons: [string, (t: ReturnType<typeof filing>) => { file: string; shown: string }][] = [
+    ["gh older than 2.99", (t) => (t.g.set({ version: "gh version 2.98.1 (stable)" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
+    ["public repository", (t) => (t.g.set({ visibility: "PUBLIC" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
+    [
+      "traces none",
+      (t) => {
+        const c = JSON.parse(readFileSync(join(__dirname, "../.claude/sapu.json"), "utf8"));
+        mkdirSync(join(t.main, ".claude"), { recursive: true });
+        writeFileSync(join(t.main, ".claude/sapu.json"), JSON.stringify({ ...c, policy: { traces: "none" } }));
+        spawnSync("git", ["-C", t.main, "add", ".claude/sapu.json"]);
+        spawnSync("git", ["-C", t.main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract"]);
+        return { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") };
+      },
+    ],
+    ["a trace, never attached", (t) => ({ file: t.shot("r/out/traces/page-1.png"), shown: t.shown("r/out/traces/page-1.png") })],
+    ["not a screenshot of this run", (t) => ({ file: t.shot("", undefined, join(tempDir(), "page-1.png")), shown: "page-1.png" })],
+    ["no verdict recorded", (t) => ({ file: t.shot("1/out/page-1.png", null), shown: t.shown("1/out/page-1.png") })],
+    [
+      "the screenshot changed after its verdict",
+      (t) => {
+        const file = t.shot("1/out/page-1.png");
+        writeFileSync(file, Buffer.concat([PNG, Buffer.from([0])]));
+        return { file, shown: t.shown("1/out/page-1.png") };
+      },
+    ],
+    ["a secret on the page", (t) => ({ file: t.shot("1/out/page-1.png", { passed: false, reasons: ["secret"] }), shown: t.shown("1/out/page-1.png") })],
+    ["a password field", (t) => ({ file: t.shot("1/out/page-1.png", { passed: false, reasons: ["password-field"] }), shown: t.shown("1/out/page-1.png") })],
+    ["a one-time-code field", (t) => ({ file: t.shot("r/out/page-2.png", { passed: false, reasons: ["one-time-code-field"] }), shown: t.shown("r/out/page-2.png") })],
+    ["an error page", (t) => ({ file: t.shot("1/out/page-1.png", { passed: false, reasons: ["error-page"] }), shown: t.shown("1/out/page-1.png") })],
+  ];
+  for (const [reason, make] of reasons) {
+    it(`a screenshot is attached only when every condition holds: ${reason}`, async () => {
+      const t = filing();
+      const { file, shown } = make(t);
+      const { b, done } = t.file({ attach: [file] });
+      const r = await done;
+      expect(r).toEqual({ code: 0, out: ["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: A title", `local: ${shown} (${reason})`, `filed: ${URL9}`] });
+      expect(readFileSync(b, "utf8")).toBe(`A clean body.\n\nLocal evidence: \`${shown}\`\n`);
+      expect(creates(t.g).map((c) => c.argv)).toEqual([["issue", "create", "--title", "A title", "--body-file", b]]);
+    });
+  }
+
+  it("a non-zero gh exit after the URL counts as filed", async () => {
+    const t = filing();
+    t.g.set({ create: { out: `Creating issue in o/r\n\n${URL9}\n`, code: 1 } });
+    expect((await t.file({}).done).out.at(-1)).toBe(`filed: ${URL9}`);
+    t.g.set({ create: { out: "", code: 1 } });
+    expect(await t.file({}).done).toEqual({ code: 2, out: ["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: A title", "failed: gh issue create exited 1 before printing an issue URL"] });
+    // A comment is filed through gh issue comment, its URL told the same way.
+    const { b, done } = t.file({ create: false, comment: "9" });
+    expect((await done).out.at(-1)).toBe(`commented: ${URL9}#issuecomment-77`);
+    expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", b]);
+  });
+
+  it("the needs-owner label goes through create", async () => {
+    const t = filing();
+    expect((await t.file({ labels: ["argus:needs-owner", "bug"] }).done).code).toBe(0);
+    const argv = creates(t.g)[0].argv;
+    expect(argv.slice(argv.indexOf("--label"))).toEqual(["--label", "argus:needs-owner", "--label", "bug"]);
+  });
+
+  it("a body scrubbed again names its local evidence once", async () => {
+    const t = filing();
+    const png = t.shot("1/out/page-1.png", null);
+    const b = t.body("A clean body.\n");
+    for (let i = 0; i < 2; i++) expect((await t.run("A title", b, { attach: [png], gh: t.g.gh })).code).toBe(0);
+    expect(readFileSync(b, "utf8")).toBe(`A clean body.\n\nLocal evidence: \`${t.shown("1/out/page-1.png")}\`\n`);
+  });
+
+  it("a refused scrub runs no gh", async () => {
+    const t = filing();
+    const png = t.shot("1/out/page-1.png");
+    const r = await t.file({ attach: [png], labels: ["bug"] }, `the cookie ${SCRUB.cookie}\n`).done;
+    expect(r.code).toBe(1);
+    expect(t.g.calls()).toEqual([]);
+  });
+
+  it("nothing scrub printed or gave gh holds a recorded secret, in any form, through the CLI too", async () => {
+    const t = filing();
+    const png = t.shot("1/out/page-1.png");
+    const secret = Object.values(SCRUB);
+    const b = t.body(`Seen ids ck9a8b7c6d5e4f3g2h1i0j9k8 and sk_li\u0076e_51HxYzAbCdEfGh1234567890; see https://evil.example/x\n`);
+    const env = { ...SCRUB_ENV, PATH: `${t.g.dir}:${process.env.PATH}` };
+    const cli = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--title", "Order fails for @octocat", "--body", b, "--attach", png, "--create", "--label", "bug"], { cwd: t.main, encoding: "utf8", env });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout.trimEnd().split("\n")).toEqual(["scrub: ok; redacted 2, defanged 2, cut 0 line(s)", "title: Order fails for `@octocat`", `attach: ${t.shown("1/out/page-1.png")}`, `filed: ${URL9}`]);
+    expect(leaked(`${cli.stdout}\n${cli.stderr}\n${JSON.stringify(t.g.calls())}`, secret)).toEqual([]);
+    // A refusal through the CLI: no gh, and none of it in the output either.
+    const g0 = t.g.calls().length;
+    const bad = t.body(`raw ${SCRUB.header}, url ${SCRUB_FORMS.url(SCRUB.storage)}, b64 ${SCRUB_FORMS.base64(SCRUB.made)}, spaced ${SCRUB_FORMS.spaced(SCRUB.envFile)}\n`);
+    const refused = spawnSync(process.execPath, [ARGUS_LIVE, "scrub", "--title", `t ${SCRUB.gh}`, "--body", bad, "--create"], { cwd: t.main, encoding: "utf8", env });
+    expect(refused.status).toBe(1);
+    expect(refused.stdout.trimEnd().split("\n")).toHaveLength(6);
+    expect(leaked(`${refused.stdout}\n${refused.stderr}`, secret)).toEqual([]);
+    expect(t.g.calls()).toHaveLength(g0);
+    // The CLI's own refusals.
+    for (const args of [["--title", "t", "--body", bad, "--label", "bug"], ["--title", "t", "--body", bad, "--create", "--comment", "9"], ["--title", "t", "--body", bad, "--comment", "x"]]) {
+      expect(spawnSync(process.execPath, [ARGUS_LIVE, "scrub", ...args], { cwd: t.main, encoding: "utf8", env }).status, args.join(" ")).toBe(1);
+    }
+  }, 30_000); // five spawned CLIs
 });

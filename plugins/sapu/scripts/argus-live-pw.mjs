@@ -17,6 +17,7 @@ import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mj
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince } from "./argus-live-proxy.mjs";
 import { readRun } from "./argus-live-run.mjs";
+import { writeVerdict } from "./argus-live-scrub.mjs";
 import { configuredUser, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
@@ -206,6 +207,15 @@ function checkArg(kind, value, { origins, base, files }) {
 
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
+/** The PNG files right in a slot's `out/` (a screenshot the CLI wrote is one of them). */
+function pngsIn(dir) {
+  try {
+    return new Set(fs.readdirSync(path.join(dir, "out"), { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith(".png")).map((e) => e.name));
+  } catch {
+    return new Set();
+  }
+}
+
 /**
  * One explorer call (spec §9): `argv` = `[token, <role>[.<k>] | <role-free command>, …]` → `{code, out}`
  * (`out` the lines to print). In order: the token (tokenSlot: unknown or retired is refused and counts
@@ -220,7 +230,9 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * again every 500 ms up to settle_ms, `found|not found after <ms> ms`); the observation (the state hash
  * the loop rule reads, the hook's drain kept in the run's secret ledger — the account `drained: false`
  * in its state from the session's first use in the call until then —, the signals of every page, the console's new errors and warnings, the origins the
- * run blocked that a page named, once per slot as `blocked: <origin>`; logged_in gone from the page and
+ * run blocked that a page named, once per slot as `blocked: <origin>`; after a `screenshot`, each PNG it
+ * wrote gets its verdict beside it, read after that drain (writeVerdict: the `shot` stage over every frame;
+ * never printed); logged_in gone from the page and
  * from a probe tab at the role's base_url → signed in again once, `re-logged-in: <role.k>`, the command not
  * repeated; every probe told as `probed: <role.k>` and logged to `logs/probes.jsonl`); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
  * <c>/<max>`, `loop <n>/3` and the wrapper's own events. `login <user> <password>` signs the session in as
@@ -387,6 +399,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   }
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
+  const shotsBefore = p.cmd === "screenshot" ? pngsIn(dir) : null;
   let res = await d.cli(args);
   const events = [...opening];
   // The browser is gone (it crashed, or was closed): the session opens again and signs in; the command is not run.
@@ -412,6 +425,17 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const pageLines = [];
   const { o, events: observed } = await d.observe();
   events.push(...observed);
+  // A screenshot's verdict, read after that drain and written beside it (decision 18); nothing of it is printed.
+  if (shotsBefore && res.code === 0) {
+    const taken = [...pngsIn(dir)].filter((f) => !shotsBefore.has(f));
+    let shot = null;
+    try {
+      if (taken.length) shot = await d.stage("shot", {});
+    } catch {
+      shot = null; // unread: the verdict says secret
+    }
+    for (const f of taken) writeVerdict(main, runId, path.join(dir, "out", f), shot, { drained: Boolean(o) });
+  }
   if (o && typeof o === "object") {
     for (const x of Array.isArray(o.signals) ? o.signals : []) if (x && typeof x.text === "string") pageLines.push(`signal ${String(x.kind ?? "")}: ${x.text}`);
   }

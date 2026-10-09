@@ -1645,3 +1645,18 @@ Interfaces:
   line, or a span holding a `|` (a GFM table splits there), is escaped with backslashes, so no span crosses
   a line, a block or a cell and what is code here is code on GitHub too; the backslashes right before a
   token go inside its span. The header comment and the usage line name `scrub` from this task on.
+- **Task 13.** The verdict's writer is `writeVerdict` in `-scrub.mjs` beside `attachVerdict` (one module holds
+  the verdict's shape), and `pw` imports it; `pw` finds the PNGs a `screenshot` wrote by listing the slot's
+  `out/` before and after the command. The `shot` stage also answers `unread` (a frame it could not read);
+  that, a failed `shot` stage and an observation that did not drain each count as `secret`. `attachVerdict`
+  also answers the screenshot's real path, which gh gets as `--attach`; "a slot's `out/`" is a regular `.png`
+  right in `<slot>/out/` of the run by its real path (a symlink given is not), and a repo whose visibility
+  `gh repo view` could not tell counts as `public repository`. `gh --version` and `gh repo view` run only when
+  something is to be attached. A file is named (in `attach:`/`local:` and in `Local evidence:`, each in a code
+  span) by its real path from MAIN, else its base name, any character outside a plain path's as `_`; the
+  `Local evidence:` line is appended once (a second scrub of the same body does not double it). The CLI takes
+  `--label` only with `--create` (a label of at most 50 characters, no comma or control) and `--comment` as an
+  issue number, never both flags. `fakeGh()` is an executable `gh` in its own directory (the CLI test puts it
+  first on PATH) that also records the `--body-file`'s text and each `--attach` file's bytes when called, so
+  the tests scan everything gh received. The Chrome verdict test is one `it` on one `pwBrowserRun` (about
+  35 s); with the `shot` stage moved before the call's drain it fails at `/storage?show=1`, as it should.

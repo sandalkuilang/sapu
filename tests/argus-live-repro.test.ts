@@ -3,6 +3,7 @@
 // ledger, the repro runner, minimize, screenshot verdicts and the end-to-end cycle.
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -207,6 +208,52 @@ describe("argus-live ledger in Chrome", () => {
     expect(readLedger(t.main, t.runId).entries).toContainEqual({ c: "created password", v: "Secret-pw-1" });
     expect(readRun(t.main).loginFailed).toEqual(before);
   }, 180_000);
+});
+
+describe("argus-live screenshot verdicts", () => {
+  it("each screenshot gets a verdict at capture time, after its call's drain, over every frame, hashed, holding no page text", async () => {
+    const t = await pwBrowserRun();
+    const out = join(t.dir, "out");
+    /** `account`'s screenshot through pw → the PNG it wrote and the verdict beside it. */
+    const shoot = async (account: string) => {
+      const before = new Set(existsSync(out) ? readdirSync(out) : []);
+      const r = await t.call(account, "screenshot");
+      expect(r.code, r.out.join("\n")).toBe(0);
+      expect(r.out.join("\n")).not.toMatch(/verdict|secret|password-field/);
+      const png = readdirSync(out).filter((f) => f.endsWith(".png") && !before.has(f));
+      expect(png).toHaveLength(1);
+      const file = join(out, png[0].replace(/\.png$/, ".verdict.json"));
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      return { png: join(out, png[0]), raw: readFileSync(file, "utf8"), v: JSON.parse(readFileSync(file, "utf8")) };
+    };
+    const shots = [];
+    expect((await t.call("buyer.1", "goto", "/inject?echo=1")).code).toBe(0);
+    shots.push(await shoot("buyer.1"));
+    expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["secret"] });
+    expect((await t.call("anon.1", "goto", "/login")).code).toBe(0);
+    shots.push(await shoot("anon.1"));
+    expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["password-field"] });
+    expect((await t.call("buyer.1", "goto", "/orders/new")).code).toBe(0);
+    shots.push(await shoot("buyer.1"));
+    expect(shots.at(-1)!.v).toMatchObject({ passed: true, reasons: [] });
+    expect(shots.at(-1)!.v.sha256).toBe(createHash("sha256").update(readFileSync(shots.at(-1)!.png)).digest("hex"));
+    // The env file's value only inside an iframe: every frame is read.
+    expect((await t.call("buyer.1", "goto", "/frame?echo=1")).code).toBe(0);
+    shots.push(await shoot("buyer.1"));
+    expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["secret"] });
+    // The second bearer reaches the ledger only through the screenshot call's own drain, before its verdict.
+    expect((await t.call("buyer.1", "goto", "/storage?show=1")).code).toBe(0);
+    const second = JSON.parse(readFileSync(join(t.appEnv.DATA_DIR, "bearer.json"), "utf8")).bearers[1];
+    expect((readLedger(t.main, t.runId)?.entries ?? []).map((e: Obj) => e.v)).not.toContain(second);
+    await sleep(3000);
+    shots.push(await shoot("buyer.1"));
+    expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["secret"] });
+    for (const s of shots) {
+      expect(Object.keys(s.v).sort()).toEqual(["passed", "reasons", "sha256", "t"]);
+      expect(s.raw).not.toContain("Quantity");
+      expect(Buffer.byteLength(s.raw)).toBeLessThanOrEqual(200);
+    }
+  }, 300_000);
 });
 
 describe("argus-live repro — one run", () => {

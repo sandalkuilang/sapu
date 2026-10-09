@@ -377,6 +377,43 @@ const STAGES = {
   } catch (e) {}
   return { signals, loggedIn: loggedIn ? await visible(loggedIn(page)) : null, url: page.url(), aria, tabs: ctx.pages().length, secrets: await drain(ctx) };
 `,
+  // After an explorer's screenshot, once the call drained (decision 18): the text a scrub verdict reads —
+  // every frame's body text (iframes included), then every input, textarea and select value of each, one
+  // per line —, whether a visible password or one-time-code field is in any frame, whether the page is an
+  // error page (its document's status 400 or more, or a chrome-error: page), and whether a frame could not
+  // be read (its text then unknown). Never shown: the wrapper only judges it.
+  shot: `  const lines = [];
+  let password = false;
+  let otp = false;
+  let unread = false;
+  for (const f of page.frames()) {
+    try {
+      const r = await f.evaluate(() => {
+        const shown = (el) => {
+          const s = getComputedStyle(el);
+          return el.getClientRects().length > 0 && s.visibility !== "hidden" && s.display !== "none";
+        };
+        const fields = [...document.querySelectorAll("input, textarea, select")];
+        return {
+          text: document.body ? document.body.innerText : "",
+          values: fields.map((el) => String(el.value ?? "")),
+          password: fields.some((el) => el.type === "password" && shown(el)),
+          otp: fields.some((el) => String(el.getAttribute("autocomplete") || "").toLowerCase() === "one-time-code" && shown(el)),
+        };
+      });
+      lines.push(r.text, ...r.values);
+      password = password || r.password;
+      otp = otp || r.otp;
+    } catch (e) {
+      unread = true;
+    }
+  }
+  let status = 0;
+  try {
+    status = await page.evaluate(() => (performance.getEntriesByType("navigation")[0] || {}).responseStatus || 0);
+  } catch (e) {}
+  return { text: lines.join("\\n"), password, otp, error: status >= 400 || page.url().startsWith("chrome-error:"), unread };
+`,
 };
 
 /** `(pg) => <targetCode>` for a target string the config holds (parseTarget's forms, never a ref), or `null`. */
@@ -386,14 +423,14 @@ function targetFn(s) {
 }
 
 /**
- * The code of login stage `stage` (`credentials`, `otp`, `probe`, `hook`, `observe`) for `payload`
+ * The code of login stage `stage` (`credentials`, `otp`, `probe`, `hook`, `observe`, `shot`) for `payload`
  * (`url`, `user`, `password`, `code`, `settleMs`, the hook's `runOrigins` (as `URL.origin` spells them),
  * `signals` and `capBytes`, and the target strings `loggedIn` and `open`): the text of an `async page =>
  * {…}` function. The payload enters as `const P = <JSON>;` only; `loggedIn` and `open` also become `(pg)
  * => <targetCode>` functions. A stage returns plain JSON: credentials and otp `{state:
  * "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?}`, probe `{in, origins}`,
  * hook `{installed}` (false when the context had it), observe `{signals, loggedIn, url, aria, tabs,
- * secrets}` (`secrets` the drain).
+ * secrets}` (`secrets` the drain), shot `{text, password, otp, error, unread}`.
  */
 export function loginCode(stage, payload) {
   if (!Object.hasOwn(STAGES, stage)) throw new Error(`failed: no login stage ${stage}`);
