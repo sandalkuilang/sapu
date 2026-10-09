@@ -1,10 +1,12 @@
 // Helpers shared by the argus-live test files: temp directories, a committed repo, a run as `up`
 // leaves it before its run files, and small process and timing helpers.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// @ts-expect-error — plain ESM script without types
+import { cliCacheRoot, cliInstallDir, ensureCli } from "../../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { makeHome, makeWorktree } from "../../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -116,6 +118,29 @@ export const until = async (ok: () => boolean, ms: number) => {
 export const now = () => Math.floor(Date.now() / 1000);
 
 export const setLock = (main: string, lock: { runId: string; start: number; deadline: number }) => writeFileSync(join(main, ".argus/live/lock.json"), `${JSON.stringify(lock)}\n`);
+
+/** A docker whose context is a local socket and whose daemon is not running: a run's Docker steps have nothing to look at. */
+export const fakeDocker = () => {
+  const bin = tempDir();
+  writeFileSync(
+    join(bin, "docker"),
+    `#!/bin/sh\nif [ "$1" = context ]; then echo '[{"Name":"default","Endpoints":{"docker":{"Host":"unix:///nonexistent/docker.sock"}}}]'; exit 0; fi\necho "Cannot connect to the Docker daemon at unix:///nonexistent/docker.sock. Is the docker daemon running?" >&2\nexit 1\n`,
+  );
+  chmodSync(join(bin, "docker"), 0o755);
+  return bin;
+};
+
+/**
+ * A fresh HOME for a spawned `argus-live.mjs up`, holding a copy of the pinned CLI where ensureCli looks
+ * under it (cliCacheRoot): step 2 finds it intact instead of installing it again from an empty npm cache.
+ */
+export const homeWithCli = () => {
+  const home = tempDir();
+  const root = cliCacheRoot({ home, env: {} });
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  cpSync(ensureCli().dir, cliInstallDir({ root }), { recursive: true, verbatimSymlinks: true });
+  return home;
+};
 
 /** A run as `up` leaves it before its run files: the lock, a worktree, a HOME, a setup log. */
 export const liveRun = () => {

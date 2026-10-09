@@ -21,7 +21,7 @@ import { accountOf, readSlotState, slotLockWaitMs, tokenSlot, withSlotLock, writ
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
-const DEFAULT_CALLS = 120;
+export const DEFAULT_CALLS = 120;
 /** The same command on the same state this many times is a loop. */
 const LOOP_AT = 3;
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */

@@ -8,7 +8,7 @@ import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, committed, example, freePort, git, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, homeWithCli, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -21,8 +21,6 @@ import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, make
 import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { procStartTicks, run, runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
-// @ts-expect-error — plain ESM script without types
-import { startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
 // @ts-expect-error — plain ESM script without types
 import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -3125,7 +3123,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       logged_in: "getByRole('button', { name: 'Account' })",
       env_file: ".argus/live.env",
       services: { cache: { env: "CACHE_URL" } },
-      env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_SECRET: "${PW}" },
+      // APP_PW: the fixture's password for every account, so up's proving login of buyer.1 (step 10) signs in.
+      env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_SECRET: "${PW}", APP_PW: "${PW}" },
       pass_env: [],
       store: "app_explore",
       store_check: app("--which-store"),
@@ -3172,7 +3171,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     reapers.push(rec.reaper);
     expect(rec).toMatchObject({ runId: r.runId, worktree: r.worktree, instanceId: expect.stringMatching(/^[0-9a-f]{16}$/) });
     expect(Object.keys(rec.ports).sort()).toEqual(["cache", "web"]);
-    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["cache", "reset", "web"]);
+    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["cache", "reset", "web", "proxy"]);
     expect(rec.origins).toContain(`http://localhost:${rec.ports.web}`);
     // Where each loopback health URL answered: the proxy connects a loopback name there (never by a lookup).
     expect(rec.upstream).toEqual({ [String(rec.ports.cache)]: "127.0.0.1", [String(rec.ports.web)]: "127.0.0.1" });
@@ -3180,7 +3179,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(alive(rec.reaper)).toBe(true);
     expect(readFileSync(join(data, "seed.json"), "utf8")).toContain("seeded");
     expect((await fetch(`http://127.0.0.1:${rec.ports.web}/health`)).status).toBe(200);
-    expect(lines.map((l) => l.split(":")[0])).toEqual(["step 1 lock", "step 2 refusals", "step 3 environment", "step 4 worktree", "step 5 Compose", "step 6 store", "step 7 start", "step 8 egress", "step 11 run files"]);
+    expect(lines.map((l) => l.split(":")[0])).toEqual(["step 1 lock", "step 2 refusals", "step 3 environment", "step 4 worktree", "step 5 Compose", "step 6 store", "step 7 start", "step 8 egress", "step 9 proxy", "login buyer.1", "step 10 logins", "step 11 run files"]);
     // Every step is logged to the run's logs, no secret value among them.
     const upLog = readFileSync(join(main, ".argus/live", r.runId, "logs", "up.log"), "utf8");
     expect(upLog.trim().split("\n")).toHaveLength(lines.length);
@@ -3386,7 +3385,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     reapers.push(rec.reaper);
     const follower = rec.groups.find((g: Obj) => g.name === "docker-events");
     reapers.push(follower.pgid);
-    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["docker-events", "cache", "reset", "web"]);
+    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["docker-events", "cache", "reset", "web", "proxy"]);
     expect(rec.events).toBe(join(main, ".argus/live", r.runId, "logs", "docker-events.jsonl"));
     expect(readFileSync(rec.events, "utf8")).toContain('"Action":"connect"');
     expect(await message(renewRun(main, { runner: run }))).toBe("ok");
@@ -3431,8 +3430,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const { main } = repo();
     const r = await up(main, opts());
     reapers.push(runJson(main).reaper);
-    const groups: Obj[] = [];
-    const proxy = await startProxy(main, r.runId, { groups });
+    // The proxy up started at step 9.
+    const proxy = { pid: runJson(main).groups.find((g: Obj) => g.internal).pgid, port: runJson(main).internal.proxy };
     reapers.push(proxy.pid);
     const { shim, calls } = makeShim();
     const standIn = () => {
@@ -3452,7 +3451,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     if (process.getuid!() === 0) throw new Error("run the suite as a user, not root: this test signals a process of root's that must survive it");
     const rootPid = Number(execFileSync("ps", ["-U", "0", "-o", "pid="], { encoding: "utf8" }).split("\n").map((l) => l.trim()).find((l) => Number(l) > 1));
     const stuck = { ...record(2, "clerk.1"), daemon: { pid: rootPid, pgid: rootPid, started: startTime(rootPid) }, browser: null };
-    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, ...groups], sessions: [explorer, proving, stuck], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [explorer, proving, stuck], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
     await up(main, opts({ fresh: true }));
     const fresh = runJson(main);
     expect(alive(proxy.pid)).toBe(true);
@@ -3476,7 +3475,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const want = { runId: rec.runId, instanceId: rec.instanceId, deadline: readLock(main).deadline, baseUrl: `http://localhost:${rec.ports.web}`, origins: rec.origins, ports: rec.ports, worktree: rec.worktree };
     expect(r).toEqual(want);
     expect(Object.keys(r)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);
-    expect(rec.internal).toEqual({});
+    expect(rec.internal).toEqual({ proxy: expect.any(Number) });
+    expect(Object.values(rec.ports)).not.toContain(rec.internal.proxy);
     expect(rec.baseUrl).toBe(want.baseUrl);
     expect(await statusJson(main)).toEqual(want);
     const f = await up(main, opts({ fresh: true }));
@@ -3626,7 +3626,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     };
     it("an up that did not finish (killed in step 4): up --fresh and renew refuse (exit 1), down cleans up", async () => {
       const { main } = repo((c) => (c.setup = [["sleep", "30"]]));
-      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
       const child = spawn(NODE, [CLI, "up"], { cwd: main, env, stdio: "ignore" });
       const inSetup = () => {
         try {
@@ -3655,7 +3655,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
 
     it("up, status, a second up (refused: exit 1), renew, down; a failing up exits 2; no output or log holds a secret value", async () => {
       const { main } = repo();
-      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
       const outs: string[] = [];
       const go = (args: string[]) => {
         const r = cli(main, args, env);
@@ -3705,7 +3705,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
         c.env.DB_URL = "postgres://app:${PW}@127.0.0.1:{port:cache}/app_explore";
         c.start[1].stop = 'echo "token $APP_SECRET in $DB_URL"; exit 3';
       });
-      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: tempDir(), TMPDIR: tmp };
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
       expect(cli(main, ["up"], env).code).toBe(0);
       reapers.push(runJson(main).reaper);
       writeFileSync(join(main, ".argus/live.env"), "PW=n3w-v4lue-Zx81\n");

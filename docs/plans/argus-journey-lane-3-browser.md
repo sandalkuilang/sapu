@@ -968,7 +968,7 @@ Interfaces:
   …` (exit codes of decision 20; never prints the token); `intake <n>`; `proxy <runId>` (internal). The
   usage line lists them.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   `tests/argus-live-pw.test.ts`, describe "argus-live up — the browser refusals and the guard seam":
   - "up refuses without a Chrome-family browser, naming the install command" (a `findChrome` that
     answers null through the `up` seam) → exit 1, the message, an `end` line, no worktree.
@@ -993,8 +993,8 @@ Interfaces:
   - "up --fresh closes the explorer sessions, retires the token and keeps the proxy".
   - "the egress check passes with the proxy recorded and Chrome outside the run's groups": `renew`
     after the slot's calls → exit 0.
-- [ ] **Step 2–4:** run (FAIL), implement, run both files and the suite (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live up starts the proxy and proves every login; slot, pw and intake on the CLI`.
+- [x] **Step 2–4:** run (FAIL), implement, run both files and the suite (PASS).
+- [x] **Step 5: Commit** `feat(sapu): argus-live up starts the proxy and proves every login; slot, pw and intake on the CLI`.
 
 ---
 
@@ -1367,6 +1367,28 @@ Facts probed live on this machine (macOS, Google Chrome) with the pinned CLI, an
     init script ran and set the installed flag, so the old early return skipped its real document).
     Known limit: such a popup is watched from the next call's observation on; a signal it raised and
     removed before that is lost. The fixture's `/popup` has the link, `/popup/linked` the late toast.
+
+- **Task 14.** The CLI's `slot`, `pw`, `intake` and `proxy` already existed (Tasks 5, 9, 10, 13); the guard
+  passed every explorer command line unchanged (`checkExplorerBash` and `explorerArgv` untouched; the
+  seam test also feeds each parsed argv to `parsePw`). Changes against the task text:
+  - Step 2 runs `ensureCli({runner, realMain, secrets})` **before** `findChrome`, so the install command a
+    missing browser is told names a CLI that is installed. The seam is `up(main, {findChrome})`.
+    run.json `browser: {js, channel}` is written at step 2 (the CLI path from ensureCli, the channel from
+    findChrome; the browser's path is not recorded). The step-2 log line stays `step 2 refusals: none`.
+  - Step 3 creates `<HOME>/browser` (0700) in `up`, not in `makeHome` (which still requires an empty HOME).
+  - Step 9 writes `allowOrigins` (`x.allow_origins`, expanded) to run.json before `startProxy` (serveProxy
+    reads it once, at start), then `internal: {proxy: <port>}` into `up`'s own state too, so `up`'s later
+    writes keep it. Its error step is `9 proxy`.
+  - Step 10 passes `say: log`, so `up` prints and logs `login <role>.<k>: proven` per account before
+    `step 10 logins: <k> account(s) proven`. Its error step is `10 logins`.
+  - `status` lists slots after the groups (calls from the slot's state.json; `<max>` is
+    `limits.explorer_pw_calls` or `DEFAULT_CALLS`, now exported by `-pw.mjs`), then `sessions: <k>` on
+    every status of a recorded run. The usage line still leaves out the internal `reap` and `proxy`.
+  - Tests: `tests/argus-live.test.ts`'s `up` config sets `APP_PW` (its proving login of buyer.1 now runs in
+    Chrome), its step and group lists hold steps 9 and 10 and the `proxy` group, and the `up --fresh`
+    proxy test uses `up`'s own proxy. Spawned `up`s use `homeWithCli()` (a fresh HOME holding a copy of the
+    pinned CLI; helpers also gained `fakeDocker`). The suite now opens Chrome in `tests/argus-live.test.ts`
+    too, so the concurrent-calls test in `tests/argus-live-pw.test.ts` got a 30 s timeout.
 
 Spec edits these tasks add (for the coordinator, beside the decisions above; the §8 ones are folded
 in with Task 5): §8 — top-level

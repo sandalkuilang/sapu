@@ -9,7 +9,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from "nod
 import { createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { alive, cleanTemps, freePort, liveRun, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, fakeDocker, freePort, homeWithCli, liveRun, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -656,6 +656,234 @@ describe("argus-live pw in Chrome", () => {
     expect(after).toContain("Signed in as clerk2@example.test");
     expect(after).not.toContain(PW);
   }, 180_000);
+});
+
+describe("argus-live — a cycle end to end", () => {
+  const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
+  const NODE = process.execPath;
+  /** Marks this describe's fixture processes: other test files run the fixture at the same time. */
+  const MARK = "--from=argus-live-cycle-tests";
+  const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)} ${MARK}${args ? ` ${args}` : ""}`;
+  const ours = () =>
+    execFileSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "command="], { encoding: "utf8" })
+      .split("\n")
+      .filter((l) => l.includes(SERVER) && l.includes(MARK));
+  afterEach(() => {
+    // Whatever a failed assertion left of this describe's fixture app.
+    for (const l of ours()) {
+      try {
+        process.kill(Number(l.trim().split(/\s+/)[0]), "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
+  });
+  const TOTP = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+  const PLACE = "getByRole('button', { name: 'Place order' })";
+
+  /**
+   * The fixture as the repo's app: a store-phase `cache` and the `web` app on `{port:web}`, the app's
+   * facts and settle trigger as hooks, `buyer` signing in with a password and (unless `clerk` is false)
+   * `clerk` with a TOTP code too; `.argus/live.json` tracked, its env file (APP_PW, APP_TOTP) not. `cli`
+   * spawns `argus-live.mjs` in the repo, as the orchestrator and the explorer's Bash run it, under a fresh
+   * HOME holding the pinned CLI and a docker whose daemon is not running.
+   */
+  const cycle = ({ clerk = true } = {}) => {
+    const main = tempDir();
+    const data = join(tempDir(), "app_explore");
+    const roles: Obj = { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } };
+    if (clerk) roles.clerk = { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] };
+    const config = {
+      start: [
+        { name: "cache", phase: "store", cmd: app(), env: { PORT: "{port:cache}" }, health: { url: "http://127.0.0.1:{port:cache}/health" } },
+        { name: "web", cmd: app(), env: { PORT: "{port:web}" }, health: { url: "http://localhost:{port:web}/health" } },
+      ],
+      base_url: "http://localhost:{port:web}",
+      login_url: "/login",
+      logged_in: "getByRole('button', { name: 'Account' })",
+      env_file: ".argus/live.env",
+      services: { cache: { env: "CACHE_URL" } },
+      env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "control-7" },
+      pass_env: [],
+      store: "app_explore",
+      store_check: app("--which-store"),
+      reset: app("--reset"),
+      facts: { argv: [NODE, SERVER, "--facts", "{1}"] },
+      triggers: { settle: { argv: [NODE, SERVER, "--trigger", "settle", "{1}"] } },
+      confirmed: { mocks: true, data: true },
+      allow_origins: [],
+      port_range: [41000, 41999],
+      reserved_ports: [],
+      settle_ms: 5000,
+      roles,
+      limits: { max_cycle_minutes: 30, live_health_timeout_s: 20 },
+    };
+    execFileSync("git", ["-C", main, "init", "-q"]);
+    mkdirSync(join(main, ".argus"));
+    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
+    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(config, null, 2)}\n`);
+    execFileSync("git", ["-C", main, "add", "."]);
+    execFileSync("git", ["-C", main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+    writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\n`);
+    const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tempDir() };
+    const outs: string[] = [];
+    const cli = (...args: string[]) => {
+      const r = spawnSync(NODE, [CLI, ...args], { cwd: main, env, encoding: "utf8", timeout: 240_000 });
+      outs.push(r.stdout, r.stderr);
+      return { code: r.status, out: r.stdout, err: r.stderr };
+    };
+    const runJson = () => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
+    /** `up`, exit 0, its summary (the last line); `down` runs after the test whatever it asserted. */
+    const upNow = () => {
+      const u = cli("up");
+      expect(u.code, u.err).toBe(0);
+      const summary = JSON.parse(u.out.trim().split("\n").at(-1)!);
+      runIds.add(summary.runId);
+      cleanups.push(() => down(main, { runId: summary.runId, graceMs: 2000 }));
+      return { u, summary };
+    };
+    /** Slot `n`'s token, minted through the CLI. */
+    const slot = (n: number, accounts: string) => {
+      const s = cli("slot", String(n), "--journey", "order-to-cash", "--accounts", accounts);
+      expect(s.code, s.err).toBe(0);
+      return JSON.parse(s.out).token as string;
+    };
+    const balanced = () => {
+      const lines = readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
+      const starts = lines.filter((l) => / start /.test(l)).map((l) => l.split(" ")[0]);
+      return starts.length > 0 && starts.every((r) => lines.filter((l) => l.startsWith(`${r} end `)).length === 1);
+    };
+    return { main, outs, cli, runJson, up: upNow, slot, balanced };
+  };
+
+  it("up proves every login, a slot drives the app, intake reads the return, and down leaves nothing", async () => {
+    const c = cycle();
+    const { u, summary } = c.up();
+    const runId = summary.runId as string;
+    expect(Object.keys(summary)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);
+    const rec = c.runJson();
+    const upLog = readFileSync(join(c.main, ".argus/live", runId, "logs/up.log"), "utf8");
+    expect(upLog.split("\n").map((l) => l.split(":")[0])).toEqual(["step 1 lock", "step 2 refusals", "step 3 environment", "step 4 worktree", "step 5 Compose", "step 6 store", "step 7 start", "step 8 egress", "step 9 proxy", "login buyer.1", "login clerk.1", "step 10 logins", "step 11 run files", ""]);
+    expect(upLog).toContain(`\nstep 9 proxy: 127.0.0.1:${rec.internal.proxy}\n`);
+    expect(upLog).toContain("\nstep 10 logins: 2 account(s) proven\n");
+    expect(u.out).toContain("step 10 logins: 2 account(s) proven\n");
+    // What the wrapper and the teardown read: the CLI and the browser, the proxy as an internal group, the expanded allow_origins.
+    expect(rec.browser).toEqual({ js: expect.stringMatching(/\/playwright-cli\.js$/), channel: chrome.channel });
+    expect(rec.allowOrigins).toEqual([]);
+    expect(rec.groups.filter((g: Obj) => g.internal)).toMatchObject([{ name: "proxy", internal: true }]);
+    expect(rec.sessions).toEqual([]); // the proving logins' sessions are closed
+    expect(statSync(join(rec.home, "browser")).mode & 0o777).toBe(0o700);
+
+    const token = c.slot(1, "buyer.1=buyer1@example.test,clerk.1=clerk1@example.test");
+    const pw = (...args: string[]) => c.cli("pw", token, ...args);
+    expect(pw("buyer.1", "goto", "/orders/new").code).toBe(0);
+    expect(pw("buyer.1", "fill", "getByLabel('Quantity')", "2").code).toBe(0);
+    const placed = pw("buyer.1", "click", PLACE);
+    expect(placed.code).toBe(0);
+    expect(placed.out).toMatch(/^<<<PAGE-[0-9a-f]{32}$[\s\S]*^signal status: Order placed$[\s\S]*^PAGE-[0-9a-f]{32}>>>$/m);
+    expect(pw("trigger", "settle", "ORD-1").code).toBe(0);
+    const facts = pw("facts", "ORD-1");
+    expect(facts.code).toBe(0);
+    expect(facts.out).toContain('"status":"paid"');
+    expect(pw("clerk.1", "goto", "/").code).toBe(0);
+    expect(pw("clerk.1", "snapshot").out).toContain('button "Account"');
+    const ret = {
+      journey: "order-to-cash",
+      status: "done",
+      roles: ["buyer.1", "clerk.1"],
+      steps: [{ role: "buyer.1", action: `click ${PLACE}`, locator: PLACE, saw: "Order placed", off_goal: false }, { role: "system", action: "trigger settle ORD-1", locator: "", saw: "paid", off_goal: false }],
+      created: ["ORD-1"],
+      candidates: [{ claim: "the order is paid once settled", oracle: "status-coherence", roles: ["buyer.1"], observed: "paid", expected: "paid" }],
+      coverage: { "status-coherence": "held" },
+    };
+    const sub = pw("submit", JSON.stringify(ret));
+    expect(sub.code, sub.out).toBe(0);
+    expect(sub.out).toContain("submitted: slot 1 generation 1 status done");
+    expect(c.cli("status").out).toMatch(/^slot 1: journey order-to-cash generation 1 calls \d+\/120 submitted$/m);
+    const read = c.cli("intake", "1");
+    expect(read.code, read.err).toBe(0);
+    const lines = read.out.trimEnd().split("\n");
+    expect(lines[0]).toBe("slot 1 generation 1 journey order-to-cash status done steps 2 candidates 1 coverage status-coherence=held");
+    expect(lines[1]).toMatch(/^<<<RETURN-[0-9a-f]{32}$/);
+    expect(lines.at(-1)).toMatch(/^RETURN-[0-9a-f]{32}>>>$/);
+    expect(read.out).toContain("the order is paid once settled");
+
+    // What down must end: the proxy, and each explorer session's daemon and browser root.
+    const now = c.runJson();
+    expect(now.sessions.map((s: Obj) => s.account).sort()).toEqual(["buyer.1", "clerk.1"]);
+    const pids = [now.groups.find((g: Obj) => g.internal).pgid, ...now.sessions.flatMap((s: Obj) => [s.daemon.pid, s.browser.pid])];
+    const d = c.cli("down");
+    expect(d.code, d.err).toBe(0);
+    expect(await until(() => pids.every((p) => !alive(p)), 10_000)).toBe(true);
+    const ps = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n");
+    expect(ps.filter((l) => l.includes(runId))).toEqual([]);
+    expect(ours()).toEqual([]);
+    expect(existsSync(rec.worktree)).toBe(false);
+    expect(existsSync(rec.home)).toBe(false);
+    expect(existsSync(join(c.main, ".argus/live/run.json"))).toBe(false);
+    expect(c.balanced()).toBe(true);
+    // The token is printed by `slot` alone; neither it nor the password is in any other output or any file the run left.
+    const slotOut = c.outs.findIndex((o) => o.includes(token));
+    c.outs.forEach((o, i) => {
+      expect(o).not.toContain(PW);
+      if (i !== slotOut) expect(o).not.toContain(token);
+    });
+    const runDir = join(c.main, ".argus/live", runId);
+    for (const f of readdirSync(runDir, { recursive: true }) as string[]) {
+      const p = join(runDir, f);
+      if (!statSync(p).isFile()) continue;
+      const body = readFileSync(p, "utf8");
+      expect(body, f).not.toContain(PW);
+      expect(body, f).not.toContain(token);
+    }
+  }, 300_000);
+
+  it("up --fresh closes the explorer sessions, retires the token and keeps the proxy", async () => {
+    const c = cycle({ clerk: false });
+    const { summary } = c.up();
+    const token = c.slot(1, "buyer.1=buyer1@example.test");
+    expect(c.cli("pw", token, "buyer.1", "goto", "/").code).toBe(0);
+    const before = c.runJson();
+    const session = before.sessions.find((s: Obj) => s.slot === 1);
+    const proxy = before.groups.find((g: Obj) => g.internal);
+    const f = c.cli("up", "--fresh");
+    expect(f.code, f.err).toBe(0);
+    expect(await until(() => !alive(session.daemon.pid) && !alive(session.browser.pid), 10_000)).toBe(true);
+    const after = c.runJson();
+    expect(after.sessions).toEqual([]);
+    expect(after.slots["1"]).toMatchObject({ tokenHash: null });
+    expect(after.internal).toEqual(before.internal);
+    expect(after.groups.filter((g: Obj) => g.internal).map((g: Obj) => g.pgid)).toEqual([proxy.pgid]);
+    expect(alive(proxy.pgid)).toBe(true);
+    const late = c.cli("pw", token, "buyer.1", "goto", "/");
+    expect(late.code).toBe(1);
+    expect(late.out).toContain("retired token");
+    // The kept proxy still carries a new slot's browser to the reset instance.
+    const next = c.slot(2, "anon.1");
+    const go = c.cli("pw", next, "anon", "goto", "/");
+    expect(go.code, go.out).toBe(0);
+    expect(go.out).toContain(`- Page URL: ${summary.baseUrl}/`);
+    expect(c.cli("down").code).toBe(0);
+    expect(await until(() => !alive(proxy.pgid), 10_000)).toBe(true);
+  }, 300_000);
+
+  it("the egress check passes with the proxy recorded and Chrome outside the run's groups", async () => {
+    const c = cycle({ clerk: false });
+    c.up();
+    const token = c.slot(1, "buyer.1=buyer1@example.test");
+    expect(c.cli("pw", token, "buyer.1", "goto", "/orders/new").code).toBe(0);
+    expect(c.cli("pw", token, "buyer.1", "snapshot").code).toBe(0);
+    const rec = c.runJson();
+    const browser = rec.sessions[0].browser;
+    expect(rec.groups.map((g: Obj) => g.pgid)).not.toContain(browser.pgid);
+    const r = c.cli("renew");
+    expect(r.code, `${r.out}${r.err}`).toBe(0);
+    const st = c.cli("status").out;
+    expect(st).toMatch(/^proxy \(pgid \d+\): running$/m);
+    expect(st).toMatch(/^slot 1: journey order-to-cash generation 1 calls 2\/120$/m);
+    expect(st).toMatch(/^sessions: 1$/m);
+    expect(c.cli("down").code).toBe(0);
+  }, 300_000);
 });
 
 /** No CLI daemon or browser of a run of this file outlives its test (whatever the test asserted): only this file's runs' sessions. */

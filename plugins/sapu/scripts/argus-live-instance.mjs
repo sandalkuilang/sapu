@@ -2,11 +2,12 @@
 // repo's app per cycle, which never touches the owner's servers, services or data.
 //
 // This module brings it up: ports, the worktree, HOME and environment, setup, the store phase, start
-// and health, and `up`, `up --fresh`, `renew` and `status`. Its parts, each importing only the ones
-// before it: argus-live-proc.mjs (processes) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint
-// comparison) → -docker.mjs (Compose, the runtime gate) and -egress.mjs (the egress check), and
-// -cli.mjs (the browser CLI's calls and sessions) → -run.mjs (run.json, teardown) → -browser.mjs and
-// -proxy.mjs → this module; -fence.mjs and -targets.mjs are leaves.
+// and health, the proxy and the proving logins, and `up`, `up --fresh`, `renew` and `status`. Its parts,
+// each importing only the ones before it: argus-live-proc.mjs (processes) → -lock.mjs (lock, live log) →
+// -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose, the runtime gate) and -egress.mjs (the
+// egress check), and -cli.mjs (the browser CLI's calls and sessions) → -run.mjs (run.json, teardown) →
+// -browser.mjs, -proxy.mjs and -slots.mjs → -login.mjs → -pw.mjs → this module; -fence.mjs and
+// -targets.mjs are leaves.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
@@ -16,8 +17,12 @@ import https from "node:https";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { ensureCli, findChrome, slotDir } from "./argus-live-browser.mjs";
 import { closeSessions, sessionAlive } from "./argus-live-cli.mjs";
-import { retireAll } from "./argus-live-slots.mjs";
+import { proveLogins } from "./argus-live-login.mjs";
+import { startProxy } from "./argus-live-proxy.mjs";
+import { DEFAULT_CALLS } from "./argus-live-pw.mjs";
+import { readSlotState, retireAll } from "./argus-live-slots.mjs";
 import { expand, expandConfig, LIVE_FILE, loadLive, portNames, secretEnv } from "./argus-live-config.mjs";
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed, portHolder } from "./argus-live-egress.mjs";
@@ -613,18 +618,21 @@ async function tearDown(main, state, { secrets, runner, log }) {
 }
 
 /**
- * `argus-live.mjs up` (spec §8, steps 1-8 and 11): 1 the lock (and recovery of stale runs, then run.json
+ * `argus-live.mjs up` (spec §8, steps 1-11): 1 the lock (and recovery of stale runs, then run.json
  * and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
  * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss, no
- * process identity (start times), a `services` variable the instance env does not set);
- * 3 the environment (ports, HOME, the run's Docker client, `since` and the events follower); 4 the worktree and setup; 5 the Compose
+ * process identity (start times), a `services` variable the instance env does not set, the pinned CLI
+ * not installable (ensureCli), no Chrome-family browser) and run.json `browser: {js, channel}`;
+ * 3 the environment (ports, HOME and its `browser/` HOME for the CLI, the run's Docker client, `since` and the events follower); 4 the worktree and setup; 5 the Compose
  * check; 6 the store phase, checkStore and reset; 7 the other entries and checkStore again; 8 the egress
- * check and the Docker runtime gate; 11 the instance id. Any refusal or failure after the lock → `down`
- * (an end line) and the error rethrown, tagged with its `step`. Ports are allocated at step 3: every
- * command's environment names them. `say` gets one line per step; `runner`, `lookup` and `ownerHome`
- * are test seams. Returns the run's summary (summaryOf).
+ * check and the Docker runtime gate; 9 the proxy (run.json `allowOrigins`, its internal group and
+ * `internal.proxy`); 10 one proving login per configured account (proveLogins); 11 the instance id. Any
+ * refusal or failure after the lock → `down` (an end line) and the error rethrown, tagged with its
+ * `step`. Ports are allocated at step 3: every command's environment names them. `say` gets one line per
+ * step (and per proven account); `runner`, `lookup`, `ownerHome` and `findChrome` are test seams.
+ * Returns the run's summary (summaryOf).
  */
-export async function up(main, { fresh = false, runner = run, lookup = defaultLookup, ownerHome = os.homedir(), say = () => {} } = {}) {
+export async function up(main, { fresh = false, runner = run, lookup = defaultLookup, ownerHome = os.homedir(), findChrome: locateChrome = findChrome, say = () => {} } = {}) {
   if (fresh) return upFresh(main, { runner, lookup, say });
   const { config, errors, secrets, digest } = loadLive(main);
   const max = config && config.limits && config.limits.max_cycle_minutes;
@@ -695,6 +703,12 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
       const set = (Object.hasOwn(config.env ?? {}, k) && config.env[k] !== "") || ((config.pass_env ?? []).includes(k) && Boolean(process.env[k]));
       if (!set) throw new Error(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
     }
+    // The browser side: the pinned CLI first, so the install command a missing browser is told names a CLI that exists.
+    const cli = ensureCli({ runner, realMain: fs.realpathSync.native(main), secrets });
+    const chrome = locateChrome();
+    if (!chrome) throw new Error(`refused: no Chrome-family browser (Google Chrome or Microsoft Edge) is installed; install Google Chrome, or run: node ${cli.js} install-browser chrome`);
+    state.browser = { js: cli.js, channel: chrome.channel };
+    save();
     log("step 2 refusals: none");
 
     step = "3 environment";
@@ -704,6 +718,9 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     state.origins = originsOf(x, ports);
     state.baseUrl = x.base_url;
     state.home = makeHome(main, runId);
+    // The browser CLI's own HOME (cliEnv): its profiles, caches and temp files stay apart from what setup writes.
+    const browserHome = path.join(state.home, "browser");
+    fs.mkdirSync(browserHome, { mode: 0o700 });
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
     // The daemon's clock through the run's own client (its context checked by dockerEnv just now);
@@ -739,6 +756,19 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     await ctx.fullEgress();
     checkDockerRuntime({ ...gateOf(state, state.groups), main, runner });
     log("step 8 egress: the run's processes reach only what the run allows; the Docker runtime gate passed");
+
+    step = "9 proxy";
+    // Recorded before the proxy starts: it reads its allowed origins from run.json once, at start.
+    state.allowOrigins = x.allow_origins ?? [];
+    save();
+    const proxy = await startProxy(main, runId, { groups: state.groups });
+    state.internal = { ...state.internal, proxy: proxy.port };
+    save();
+    log(`step 9 proxy: 127.0.0.1:${proxy.port}`);
+
+    step = "10 logins";
+    const proven = await proveLogins(main, runId, { live: x, secrets, origins: state.origins, allowOrigins: state.allowOrigins, js: cli.js, home: browserHome, proxyPort: proxy.port, chrome, env: state.env, worktree: state.worktree, runner, say: log });
+    log(`step 10 logins: ${proven} account(s) proven`);
 
     step = "11 run files";
     state.instanceId = randomBytes(8).toString("hex");
@@ -888,7 +918,11 @@ export function statusJson(main) {
   return summaryOf(lock, rec && rec.runId === lock.runId ? rec : {});
 }
 
-/** `status`: the run id, deadline, instance, worktree, ports and each recorded group's state, as lines. */
+/**
+ * `status`: the run id, deadline, instance, worktree, ports, each recorded group's state, each slot
+ * (`slot <n>: journey <id> generation <g> calls <c>/<max>[ submitted]`, the calls from its state.json)
+ * and the number of recorded CLI sessions, as lines.
+ */
 export async function status(main, { runner = run } = {}) {
   const lock = readLock(main);
   if (!lock) return ["no journey cycle is running"];
@@ -907,5 +941,13 @@ export async function status(main, { runner = run } = {}) {
     const state = !table ? "unknown" : !now.length ? "gone" : sameGroup(g, now) ? "running" : "gone (its pid is another process's)";
     out.push(`${g.name} (pgid ${g.pgid}): ${state}`);
   }
+  const { config } = loadLive(main);
+  const max = (config && config.limits && config.limits.explorer_pw_calls) || DEFAULT_CALLS;
+  for (const [n, s] of Object.entries(rec.slots ?? {})) {
+    if (!s || !/^[1-9][0-9]?$/.test(n)) continue;
+    const { calls } = readSlotState(slotDir(main, lock.runId, Number(n)));
+    out.push(`slot ${n}: journey ${s.journey} generation ${s.generation} calls ${calls}/${max}${s.submitted ? " submitted" : ""}`);
+  }
+  out.push(`sessions: ${(rec.sessions ?? []).length}`);
   return out;
 }

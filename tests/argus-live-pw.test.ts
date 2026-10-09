@@ -26,7 +26,7 @@ import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFil
 // @ts-expect-error — plain ESM script without types
 import { base32Decode, login, loginCode, loginPlan, reserveStep, runCode, totp, totpFile } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { makeHome, makeWorktree, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
 import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -39,6 +39,8 @@ import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 import { codeCommand } from "../plugins/sapu/scripts/argus-live-hooks.mjs";
 // @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
+// @ts-expect-error — plain ESM script without types
+import { checkExplorerBash, explorerArgv, WRAPPER } from "../plugins/sapu/scripts/sapu-guard.mjs";
 
 type Obj = Record<string, any>;
 
@@ -1910,7 +1912,7 @@ await import(${JSON.stringify(t.shim)});
     expect(results.map((r) => r.code)).toEqual(Array(10).fill(0));
     expect(readSlotState(t.dir).calls).toBe(10);
     expect(results.map((r) => lines(r).at(-1)).sort()).toEqual(Array.from({ length: 10 }, (_, i) => `calls ${i + 1}/120`).sort());
-  });
+  }, 30_000); // ten calls serialized by the slot's lock, each spawning the shim: past 5 s while the suite's browser tests load the machine
 
   it("the CLI's pw runs the run's browser CLI, exits by decision 20, and the token appears in no output, log or file", async () => {
     const t = pwRun();
@@ -2191,5 +2193,68 @@ describe("argus-live submit and intake", () => {
     expect(r.stdout).toContain(`RETURN‑${guess}`);
     expect(r.stdout).not.toContain(t.token);
     expect(spawnSync(process.execPath, [CLI, "intake", "x"], { cwd: t.main, encoding: "utf8" }).status).toBe(1);
+  });
+});
+
+describe("argus-live up — the browser refusals and the guard seam", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
+  });
+  /** Every run the live log starts has exactly one end line. */
+  const balanced = (main: string) => {
+    const lines = readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
+    const starts = lines.filter((l) => / start /.test(l)).map((l) => l.split(" ")[0]);
+    return starts.length > 0 && starts.every((r) => lines.filter((l) => l.startsWith(`${r} end `)).length === 1);
+  };
+  const failure = (p: Promise<unknown>) => p.then(() => null, (e: Error & { step?: string }) => e);
+  /** The refused `up` left nothing: no lock, no worktree beside the main checkout, one end line. */
+  const nothingLeft = (main: string) => {
+    expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+    expect(git(main, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree "))).toHaveLength(1);
+    expect(balanced(main)).toBe(true);
+  };
+
+  it("up refuses without a Chrome-family browser, naming the install command", async () => {
+    const main = liveRepo();
+    const e = await failure(up(main, { ownerHome: tempDir(), findChrome: () => null }));
+    expect(e!.message).toBe(`refused: no Chrome-family browser (Google Chrome or Microsoft Edge) is installed; install Google Chrome, or run: node ${ensureCli().js} install-browser chrome`);
+    expect(e!.step).toBe("2 refusals");
+    nothingLeft(main);
+  }, 60_000);
+
+  it("up refuses when the pinned CLI cannot be installed", async () => {
+    const main = liveRepo();
+    const { ownerEnv, calls } = fakeNpm({ fail: "npm error 404 Not Found - GET https://registry.npmjs.org/playwright-core" });
+    // An empty cache under a fresh HOME: the install runs, through the npm first on PATH.
+    process.env.PATH = ownerEnv.PATH;
+    process.env.HOME = tempDir();
+    delete process.env.XDG_CACHE_HOME;
+    const e = await failure(up(main, { ownerHome: tempDir() }));
+    expect(e!.message).toBe("refused: the pinned browser CLI (@playwright/cli 0.1.22) cannot be installed: npm error 404 Not Found - GET https://registry.npmjs.org/playwright-core");
+    expect(e!.step).toBe("2 refusals");
+    expect(calls()).toEqual(["ci --ignore-scripts --no-audit --no-fund --prefer-offline"]);
+    nothingLeft(main);
+  }, 60_000);
+
+  it("the explorer's real command lines pass the guard", () => {
+    const t = "0123456789abcdef0123456789abcdef";
+    const run = `node ${WRAPPER} pw ${t}`;
+    const passes: [string, string[][]][] = [
+      [`${run} buyer.1 click 'getByRole('\\''button'\\'', { name: '\\''Place order'\\'' })'`, [["buyer.1", "click", "getByRole('button', { name: 'Place order' })"]]],
+      [`${run} buyer.1 goto /orders/new && ${run} buyer.1 snapshot --depth=4`, [["buyer.1", "goto", "/orders/new"], ["buyer.1", "snapshot", "--depth=4"]]],
+      [`${run} submit '{"journey":"order-to-cash","status":"done"}'`, [["submit", '{"journey":"order-to-cash","status":"done"}']]],
+      [`${run} trigger settle ORD-1`, [["trigger", "settle", "ORD-1"]]],
+      [`${run} code grep 'O'\\''Brien'`, [["code", "grep", "O'Brien"]]],
+    ];
+    for (const [line, argvs] of passes) {
+      expect(checkExplorerBash(line), line).toBeNull();
+      // What the shell hands the wrapper is what the wrapper accepts.
+      const runs = explorerArgv(line);
+      expect(runs.map((r: string[]) => r.slice(4))).toEqual(argvs);
+      for (const r of runs) expect(() => parsePw(r.slice(3)), line).not.toThrow();
+    }
+    for (const line of [`node ${WRAPPER} slot 1 --handoff`, `node ${WRAPPER} intake 1`, `node ${WRAPPER} up`, `${run} buyer.1 goto / && node ${WRAPPER} down`]) expect(checkExplorerBash(line), line).not.toBeNull();
   });
 });
