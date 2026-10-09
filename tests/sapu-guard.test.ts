@@ -2836,9 +2836,15 @@ describe("sapu-guard — closing an issue as not planned is the owner's ruling",
     ["gh api -X PATCH 'repos/o/r/issues/5#top' -F body=@b.md"],
     ["gh api -X PATCH repos/o/r/issues/5 -Fbody=@b.md"],
     ["gh api -X PATCH repos/o/r/issues/5 --field=body=@b.md"],
-  ])("refuses %s: an issue write whose body it cannot read is the ruling's", (cmd) => {
-    expect(reviewer(cmd)).toMatch(RULING);
-    expect(blocked(cmd)).toMatch(RULING);
+  ])("refuses %s: an issue write whose body it cannot read, naming the way to edit a body", (cmd) => {
+    for (const r of [reviewer(cmd), blocked(cmd)]) {
+      expect(r).toMatch(/^the guard cannot read this issue write's body/);
+      expect(r).toContain("`gh issue edit <n> --body-file <file>`");
+    }
+  });
+
+  it("lets a subagent edit an issue's body with gh issue edit --body-file", () => {
+    expect(reviewer("gh issue edit 5 --body-file b.md")).toBeNull();
   });
 
   it("keeps the label reason for an unreadable label write, a query string included", () => {

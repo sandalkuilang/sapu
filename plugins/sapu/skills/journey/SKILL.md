@@ -11,7 +11,7 @@ A door, not a methodology: a journey cycle is an argus cycle ([SKILL.md](${CLAUD
 
 **Step 1** is argus's: read the profile `<profiles>/argus.md` (missing → stop and tell the user to run `/sapu:init`). No `.argus/live.json` → stop and tell the user to run `/sapu:init` with the journey lane enabled.
 
-Run it from the main session only, never inside `/sapu:inspector` or a subagent: the cycle dispatches agents of its own.
+Run it from the main session only, never inside `/sapu:inspector` or a subagent: the cycle dispatches agents of its own. The orchestrator never removes `labels.needsOwner` (default `argus:needs-owner`) and never closes an issue as not planned: both are the owner's rulings.
 
 **`live <cmd>`** below stands for `node "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" <cmd>`, run from the main checkout. `live up`, `live repro` and `live down` run in the background, as journeys.md says.
 

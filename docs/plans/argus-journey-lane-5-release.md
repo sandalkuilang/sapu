@@ -848,3 +848,8 @@ Refs #53
   the CLI's own header says map-check rewrites `.argus/journeys.json`. The script is known by its name in
   any case, the real file behind a path, or, for a script name the shell builds whole (`node "$S" up`), by
   one of its verbs following it; a copy under another name or an interpreter's own import is a LIMIT.
+- **Phase-end review.** sapu's and `/sapu:journey`'s SKILL.md say the orchestrator never removes
+  `labels.needsOwner` and never closes an issue as not planned (the guard only sees subagents), so the docs
+  keep "no agent". `BUDGETS["skills/sapu/SKILL.md"]` is 40 336, its size with that sentence (it was 40 222).
+  The guard's refusal of an issue write whose body it cannot read now says so and names `gh issue edit <n>
+  --body-file <file>`, rather than calling it a not-planned close.

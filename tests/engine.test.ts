@@ -485,6 +485,11 @@ describe("issue and PR text reaches an agent only through the trust commands", (
     expect(skill).toContain("gh pr list --head <branch> --json number,isCrossRepository");
   });
 
+  it("the orchestrator never removes the needs-owner label nor closes an issue as not planned: the owner's rulings", () => {
+    const RULE = /never removes `labels\.needsOwner`[^.]*and never closes an issue as not planned/;
+    for (const f of ["skills/sapu/SKILL.md", "skills/journey/SKILL.md"]) expect(readFileSync(join(PLUGIN, f), "utf8"), f).toMatch(RULE);
+  });
+
   it("the filing skills never copy an outsider's text into an issue they file (it would be the owner's, and trusted)", () => {
     for (const s of ["argus", "nemesis", "momus"]) expect(readFileSync(join(PLUGIN, `skills/${s}/SKILL.md`), "utf8"), s).toMatch(/never copy[^.\n]*outsider/i);
   });
@@ -557,7 +562,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 40_222,
+  "skills/sapu/SKILL.md": 40_336,
   "skills/sapu/subagent-brief.md": 14_000,
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,

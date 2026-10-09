@@ -1315,6 +1315,8 @@ const BLOCK = {
     "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `gh config get oauth_token`, `git credential …`/`git-credential-*`, gh's hosts.yml, git's ~/.git-credentials or ~/.config/git/credentials) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
   ownerRuling:
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
+  issueBody:
+    "the guard cannot read this issue write's body (`--input <file>`, `-F <field>=@<file>`), so it could close the issue as not planned, the owner's ruling. Edit an issue's body with `gh issue edit <n> --body-file <file>`.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
   agentFiled: (label) =>
@@ -2463,7 +2465,7 @@ function ghApiWrite(M, argv, rules) {
   if (a.some((v) => namesLabel(v, creates ? rules.accepted : L))) return BLOCK.acceptLabel;
   const unread = a.some((v) => /^--input(=|$)/.test(v)) || fields.some((f) => f.file);
   if ((unread || fields.some((f) => f.dyn)) && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
-  if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.ownerRuling;
+  if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.issueBody;
   return null;
 }
 
