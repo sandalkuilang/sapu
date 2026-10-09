@@ -670,6 +670,15 @@ describe("profile sections", () => {
     expect(readFileSync(join(PLUGIN, "skills/init/SKILL.md"), "utf8")).toContain("profiles --list");
   });
 
+  // In <MAIN> the agent-memory dir is a real directory, so a .gitignore pattern ending in `/`
+  // passes `git check-ignore` there yet leaves the worktree's link untracked: init cannot test it.
+  it("init excludes each linked agent-memory dir in .git/info/exclude unconditionally, never after a check-ignore", () => {
+    const line = readFileSync(join(PLUGIN, "skills/init/SKILL.md"), "utf8").split("\n").find((l) => l.includes("`worktree.symlinkDirectories` gains")) ?? "";
+    expect(line).toContain("`/<dir>`");
+    expect(line).toMatch(/always add/i);
+    expect(line).not.toMatch(/`git check-ignore -q <dir>` passes/);
+  });
+
   // The reverse direction: every section a skill or a workflow cites from a profile exists in
   // PROFILE_SECTIONS for that profile, so a renamed or misspelled heading never reaches an agent as
   // a lookup that cannot resolve. A citation is `profile §X` or `profile('s) \`## X\``, where a bare

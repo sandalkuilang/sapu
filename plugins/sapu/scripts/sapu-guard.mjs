@@ -118,7 +118,11 @@
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
 // known one by one; an unknown option that takes a value can hide the program after it. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
-// (non-2 exit) — the canary is what catches a dead guard.
+// (non-2 exit) — the canary is what catches a dead guard. A subagent is known by the hook input's
+// agent_id (SCOPE): a ladder worker or the explorer keeps the floor by its agent_type alone, but any
+// other agent_type without an agent_id reads as a `--agent` main session, the orchestrator, so a host
+// that dropped agent_id for those subagents would leave them unguarded (not yet probed live; the
+// worker canary proves agent_id only for the ladder).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -2279,7 +2283,8 @@ const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 // which closes this at the source (/sapu:init writes it into .claude/settings.local.json); (2) it
 // never dispatches from one; (3) no subagent but a sapu worker (which may not write into <MAIN>)
 // writes agent memory into one (init also links .claude/agent-memory into new worktrees through
-// worktree.symlinkDirectories, when that directory is untracked and ignored as a link). A session
+// worktree.symlinkDirectories, when that directory is untracked, and excludes the link in
+// .git/info/exclude). A session
 // whose project directory is a worktree (a desktop worktree session) is left alone. Subagents never
 // carry a cd over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
 // From the hooks and tools references, not probed live: agent_id marks a subagent and agent_type

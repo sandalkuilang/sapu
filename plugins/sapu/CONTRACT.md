@@ -676,7 +676,8 @@ could use them.
   subagents spawned by other subagents (`Agent` is not a way around it), and never to the
   orchestrator (the main session: its hook input has no `agent_id`; one started with `--agent` carries
   `agent_type` alone and is still the orchestrator, while a ladder worker's or the explorer's
-  `agent_type` alone keeps the floor). A canary in every worker proves it is live.
+  `agent_type` alone keeps the floor; any other subagent is known by `agent_id` only, so a host that
+  dropped it would leave that subagent unguarded — not yet probed live). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
   hand-off reminder at `tuning.stepBudget.soft` tool calls, every `every` up to `hard`, every
   `everyLate` after (§Tuning); the re-issued call passes. The count
