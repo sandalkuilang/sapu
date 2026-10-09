@@ -1325,7 +1325,7 @@ a segment after one matching `/reset|verify|invite|magic|token|confirm|activate|
 value starting `eyJ`.
 
 **Scrub, before every `gh issue create` and `comment`:** `argus-live.mjs scrub (--run <runId> | --ref
-<slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] |
+<slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] |
 --comment <n>]` (`--run` and `--ref` may also be given together). It reads only what `down` keeps (the run's ledger and seen ids, the configuration), so
 a run that is down is scrubbed the same way. It checks the run it is told, never the newest: text from
 one run checked against another's ledger would let the first run's secrets through. `--run <runId>`

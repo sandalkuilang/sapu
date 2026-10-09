@@ -95,8 +95,10 @@ export const COMMANDS = {
  * a command off the allowlist, any other flag (`-s`, `--session`, `--config`, `--filename`, …), a flag
  * value that does not fit, a wrong number of arguments.
  */
+const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]";
+
 export function parsePw(argv) {
-  if (!Array.isArray(argv) || argv.length < 2) throw new Error("refused: pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]");
+  if (!Array.isArray(argv) || argv.length < 2) throw new Error(`refused: ${PW_USAGE}`);
   const token = argv[0];
   const roleFree = ROLE_FREE.includes(argv[1]);
   const account = roleFree ? null : argv[1];
@@ -104,7 +106,13 @@ export function parsePw(argv) {
   const rest = argv.slice(roleFree ? 2 : 3);
   if (typeof cmd !== "string" || !Object.hasOwn(COMMANDS, cmd) || Boolean(COMMANDS[cmd].roleFree) !== roleFree) {
     if (!roleFree && cmd !== undefined && Object.hasOwn(COMMANDS, cmd)) throw new Error(`refused: ${cmd} takes no role (pw <token> ${cmd} …)`);
-    throw new Error(`refused: ${cmd === undefined ? "no command given; that" : /^[a-z][a-z0-9-]{0,40}$/.test(cmd) ? cmd : "that"} is not an explorer command`);
+    if (cmd === undefined) {
+      // One word after the token: an account with no command, or a command the explorer does not have (`show`).
+      const w = argv[1];
+      if (/^[a-z][a-z0-9_-]*\.[1-9][0-9]?$/.test(w)) throw new Error(`refused: no command follows ${w}: ${PW_USAGE}`);
+      throw new Error(`refused: ${/^[a-z][a-z0-9_-]{0,40}$/.test(w) ? w : "that word"} is not an explorer command, and no command follows it as an account: ${PW_USAGE}`);
+    }
+    throw new Error(`refused: ${/^[a-z][a-z0-9-]{0,40}$/.test(cmd) ? cmd : "that"} is not an explorer command`);
   }
   const spec = COMMANDS[cmd];
   const flags = [];

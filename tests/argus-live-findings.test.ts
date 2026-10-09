@@ -2790,6 +2790,11 @@ describe("argus-live show", () => {
     }
   }, 60_000);
 
+  it("the usage line shows that scrub takes --run, --ref or both", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    expect(r.stderr).toContain(" | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t>");
+  });
+
   it("the usage line names show", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     expect(r.stderr).toContain(" | show | ");

@@ -884,3 +884,7 @@ Refs #53
   retried with each found name filled), none when the env file itself is at fault; no lookup of a literal
   address the schema already refused; with no contract, that is the line; the missing-file line no longer
   repeats the file's name. This supersedes the writer's "`check` names the first empty one only".
+- **Phase-end review (QA nits).** The usage line writes scrub's run as `(--run <runId> | --ref
+  <slot>.<generation>.<k> | both)`, as its doc comment and the spec say. `pw <token> <word>` with nothing
+  after it now says either that no command follows the account or that the word is no explorer command
+  (`pw <token> show`), with pw's usage, instead of "no command given; that is not an explorer command".
