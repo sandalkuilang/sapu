@@ -592,6 +592,17 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
   };
 }
 
+/**
+ * The keys of run.json `up` and `up --fresh` write (spec §8 step 11's table): every other key has its own
+ * writer — `reaper` (startReaper), `internal` (startProxy, step 9), `sessions` (openSession, the logins,
+ * `up --fresh`'s closes), `slots` (slot, submit, retireAll), `loginFailed` (login), `closing` (down) — and
+ * is kept as it stands, as is a key this version does not know.
+ */
+const UP_KEYS = ["runId", "instanceId", "worktree", "home", "ports", "upstream", "origins", "baseUrl", "env", "since", "events", "digest", "composeServices", "composePorts", "groups", "stops", "browser", "allowOrigins"];
+
+/** `state`'s UP_KEYS (those it holds): what `up` and `up --fresh` write of it. */
+const upOwned = (state) => Object.fromEntries(UP_KEYS.filter((k) => Object.hasOwn(state, k)).map((k) => [k, state[k]]));
+
 /** A logger for one run: each line (secret values masked) to `say` and to `<logs>/<file>`. */
 function runLog(main, runId, file, secrets, say) {
   return (line) => {
@@ -607,10 +618,21 @@ function runLog(main, runId, file, secrets, say) {
   };
 }
 
-/** After a refusal or failure: `down` from the in-memory run, its report logged; the original error is what counts. */
+/**
+ * After a refusal or failure: `down` from the in-memory run — run.json's keys as they stand (the sessions
+ * and slots other writers recorded meanwhile) under `state`'s own (the groups and stops this process
+ * started, even one whose save was refused) — its report logged; the original error is what counts.
+ */
 async function tearDown(main, state, { secrets, runner, log }) {
+  let onDisk = null;
   try {
-    const { report } = await down(main, { runId: state.runId, record: state, secrets, runner });
+    onDisk = readRun(main);
+  } catch {
+    onDisk = null;
+  }
+  const record = { ...(onDisk && onDisk.runId === state.runId ? onDisk : {}), ...state };
+  try {
+    const { report } = await down(main, { runId: state.runId, record, secrets, runner });
     for (const l of report) log(`down: ${l}`);
   } catch (e) {
     log(`down: ${e.message}`);
@@ -645,11 +667,12 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, internal: {}, upstream: {}, origins: [], baseUrl: null, env: null, since: null, events: null, digest, composeServices: [], composePorts: [] };
-  // Only the first write creates run.json: a later one finding it gone means a `down` removed it.
+  const state = { runId, instanceId: null, worktree: null, home: null, ports: {}, upstream: {}, origins: [], baseUrl: null, env: null, since: null, events: null, digest, composeServices: [], composePorts: [] };
+  // Only the first write creates run.json: a later one finding it gone means a `down` removed it. Each
+  // writes up's own keys only (upOwned), merged over the record as it stands.
   let created = false;
   const save = () => {
-    writeRunFiles(main, state, { runner, secrets, create: !created });
+    writeRunFiles(main, upOwned(state), { runner, secrets, create: !created });
     created = true;
   };
   state.groups = recordingArray(save);
@@ -761,9 +784,8 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     // Recorded before the proxy starts: it reads its allowed origins from run.json once, at start.
     state.allowOrigins = x.allow_origins ?? [];
     save();
+    // startProxy records its group and writes run.json `internal.proxy`, the port's one writer.
     const proxy = await startProxy(main, runId, { groups: state.groups });
-    state.internal = { ...state.internal, proxy: proxy.port };
-    save();
     log(`step 9 proxy: 127.0.0.1:${proxy.port}`);
 
     step = "10 logins";
@@ -802,18 +824,20 @@ function current(main) {
 }
 
 /**
- * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; stops
- * every `start` entry (its stop replayed, its group stopped; setup groups, the events follower and the
- * proxy stay), closes every explorer's CLI session and retires every slot's token, then the store phase,
- * checkStore, reset, the other entries, checkStore, the egress check and the runtime gate again, and a
- * new instance id. Any refusal or failure → `down`, and the error rethrown.
+ * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; retires
+ * every slot's token and clears the instance id first (from then on `pw` refuses every call but
+ * `submit`), stops every `start` entry (its stop replayed, its group stopped; setup groups, the events
+ * follower and the proxy stay), closes every explorer's CLI session, then the store phase, checkStore,
+ * reset, the other entries, checkStore, the egress check and the runtime gate again, and a new instance
+ * id. It writes only up's keys of run.json (UP_KEYS). Any refusal or failure → `down`, and the error
+ * rethrown.
  */
 export async function upFresh(main, { runner = run, lookup = defaultLookup, say = () => {} } = {}) {
   const { lock, rec, config, secrets } = current(main);
   const runId = lock.runId;
   const log = runLog(main, runId, "up.log", secrets, say);
-  const state = { ...rec };
-  const save = () => writeRunFiles(main, state, { runner, secrets, create: false });
+  const state = upOwned(rec);
+  const save = () => writeRunFiles(main, upOwned(state), { runner, secrets, create: false });
   // Setup groups (a daemon a setup left), the events follower and the run's own helpers (`internal`:
   // the proxy) live as long as the run.
   const kept = (rec.groups ?? []).filter((g) => g && (/^setup\[\d+\]$/.test(g.name) || g.name === FOLLOWER || g.internal));
@@ -822,6 +846,11 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
   let step = "fresh: stop";
   try {
     const note = (l) => log(`fresh: ${l}`);
+    // The explorers belong to the instance being reset: their tokens retire before anything closes, so
+    // no call of theirs reopens a session once it is closed.
+    retireAll(main, runId);
+    state.instanceId = null;
+    save();
     for (const s of [...(rec.stops ?? [])].reverse()) {
       await guarded(`stop ${s && s.name}`, note, () => replayStop(s, { secrets, asyncRunner: runAsync, timeoutMs: 120_000, logs: logsDir(main, runId), note }));
     }
@@ -836,19 +865,15 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const g of alive) note(`${g.name} (pgid ${g.pgid}) still runs after the stop; kept in the record for down`);
     state.groups = recordingArray(save, [...kept, ...alive]);
     state.stops = recordingArray(save);
-    // The explorers' sessions and tokens belong to the instance being reset: closed and retired. The
-    // proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
-    const explorers = (rec.sessions ?? []).filter((x) => x && typeof x.slot === "number");
+    // The explorers' sessions are closed, as run.json holds them now (one a call opened before its token
+    // retired included). The proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
+    const explorers = ((readRun(main) ?? {}).sessions ?? []).filter((x) => x && typeof x.slot === "number");
     await closeSessions(explorers, { js: rec.browser?.js ?? null, runner, note });
     // Only those now gone leave the record (one still running stays for down); re-read under the
     // run's claim, so a session recorded meanwhile is kept, and never written back from this snapshot.
     const closed = new Set(explorers.filter((x) => !sessionAlive(x, runner)).map((x) => x.name));
     for (const x of explorers.filter((y) => !closed.has(y.name))) note(`CLI session ${x.name} still runs after its close; kept in the record for down`);
     updateRun(main, runId, (prev) => (prev ? { ...prev, sessions: (prev.sessions ?? []).filter((x) => !x || !closed.has(x.name)) } : undefined), { create: false });
-    delete state.sessions;
-    retireAll(main, runId);
-    delete state.slots;
-    state.instanceId = null;
     save();
     log("fresh: every start entry stopped");
     const contract = contractOf(main);
@@ -910,18 +935,39 @@ function summaryOf(lock, rec) {
   return { runId: lock.runId, instanceId: rec.instanceId ?? null, deadline: lock.deadline, baseUrl: rec.baseUrl ?? null, origins: rec.origins ?? [], ports: rec.ports ?? {}, worktree: rec.worktree ?? null };
 }
 
-/** `status --json`: the running cycle's summary (summaryOf); every field empty when none runs. */
+/**
+ * Each minted slot of run.json `rec` → `{"<n>": {journey, generation, calls, max, submitted, retired}}`:
+ * the calls from its state.json, `max` the budget (`limits.explorer_pw_calls`), `retired` when it holds no
+ * live token (`tokenHash: null`: submitted, or retired by `up --fresh`).
+ */
+function slotStates(main, runId, rec) {
+  const { config } = loadLive(main);
+  const max = (config && config.limits && config.limits.explorer_pw_calls) || DEFAULT_CALLS;
+  const out = {};
+  for (const [n, s] of Object.entries(rec.slots ?? {})) {
+    if (!s || !/^[1-9][0-9]?$/.test(n)) continue;
+    const { calls } = readSlotState(slotDir(main, runId, Number(n)));
+    out[n] = { journey: s.journey, generation: s.generation, calls, max, submitted: Boolean(s.submitted), retired: !s.tokenHash };
+  }
+  return out;
+}
+
+/**
+ * `status --json`: the running cycle's summary (summaryOf) and `slots`, each slot's state (slotStates:
+ * what the orchestrator reads of its explorers); every field empty when none runs.
+ */
 export function statusJson(main) {
   const lock = readLock(main);
-  if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null };
+  if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, slots: {} };
   const rec = readRun(main);
-  return summaryOf(lock, rec && rec.runId === lock.runId ? rec : {});
+  const mine = rec && rec.runId === lock.runId ? rec : {};
+  return { ...summaryOf(lock, mine), slots: slotStates(main, lock.runId, mine) };
 }
 
 /**
  * `status`: the run id, deadline, instance, worktree, ports, each recorded group's state, each slot
- * (`slot <n>: journey <id> generation <g> calls <c>/<max>[ submitted]`, the calls from its state.json)
- * and the number of recorded CLI sessions, as lines.
+ * (`slot <n>: journey <id> generation <g> calls <c>/<max>[ submitted][ retired]`, slotStates) and the
+ * number of recorded CLI sessions, as lines.
  */
 export async function status(main, { runner = run } = {}) {
   const lock = readLock(main);
@@ -941,12 +987,8 @@ export async function status(main, { runner = run } = {}) {
     const state = !table ? "unknown" : !now.length ? "gone" : sameGroup(g, now) ? "running" : "gone (its pid is another process's)";
     out.push(`${g.name} (pgid ${g.pgid}): ${state}`);
   }
-  const { config } = loadLive(main);
-  const max = (config && config.limits && config.limits.explorer_pw_calls) || DEFAULT_CALLS;
-  for (const [n, s] of Object.entries(rec.slots ?? {})) {
-    if (!s || !/^[1-9][0-9]?$/.test(n)) continue;
-    const { calls } = readSlotState(slotDir(main, lock.runId, Number(n)));
-    out.push(`slot ${n}: journey ${s.journey} generation ${s.generation} calls ${calls}/${max}${s.submitted ? " submitted" : ""}`);
+  for (const [n, s] of Object.entries(slotStates(main, lock.runId, rec))) {
+    out.push(`slot ${n}: journey ${s.journey} generation ${s.generation} calls ${s.calls}/${s.max}${s.submitted ? " submitted" : ""}${s.retired ? " retired" : ""}`);
   }
   out.push(`sessions: ${(rec.sessions ?? []).length}`);
   return out;

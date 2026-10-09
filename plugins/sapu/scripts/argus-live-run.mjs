@@ -9,7 +9,7 @@ import { closeSessions, removeSockets, sweepSessions } from "./argus-live-cli.mj
 import { LIVE_FILE, loadLive, secretEnv, secretsIn } from "./argus-live-config.mjs";
 import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
-import { processTable, readFrom, redact, refreshGroups, run, runAsync, sleep, sleepSync, stopRecordedGroups, tail, tempBeside, within } from "./argus-live-proc.mjs";
+import { processTable, readFrom, redact, refreshGroups, run, runAsync, sleep, sleepSync, stopRecordedGroups, tail, tempBeside, withFileLock, within } from "./argus-live-proc.mjs";
 
 // ---------------------------------------------------------------------------------------------------
 // Run files, reaper, down and recovery (spec §8 steps 1 and 11, `down`). `run.json` is the record every
@@ -135,12 +135,14 @@ export function updateRun(main, runId, fn, { waitMs = 2000, sealed = false, crea
 }
 
 /**
- * Writes `<MAIN>/.argus/live/run.json` whole from `state` (its keys and their writers: spec §8 step 11),
- * through updateRun. The `reaper` pid of an earlier write is kept unless `state` names one. `worktree` is
- * the absolute path the guard reads (null until it exists). Groups go through refreshGroups —
- * `/bin/sh -c <one command>` execs that command, so what ps shows is what `down` and recovery can match;
- * without ps they stay as recorded. `create: false` (every write of `up` after its first) refuses to
- * write a run.json a `down` removed.
+ * Writes the keys of `state` into `<MAIN>/.argus/live/run.json` (spec §8 step 11's table names each key's
+ * one writer), through updateRun: merged over the record as it stands, so every key `state` does not
+ * hold — another owner's (`sessions`, `slots`, `loginFailed`, `reaper`, `internal`, `closing`) or one
+ * this version does not know — is kept as written. `up` and `up --fresh` pass only the keys they own
+ * (UP_KEYS). `worktree` is the absolute path the guard reads (null until it exists). Groups go through
+ * refreshGroups — `/bin/sh -c <one command>` execs that command, so what ps shows is what `down` and
+ * recovery can match; without ps they stay as recorded. `create: false` (every write of `up` after its
+ * first) refuses to write a run.json a `down` removed.
  */
 export function writeRunFiles(main, state, { runner = run, secrets = {}, create = true } = {}) {
   runIdOk(state.runId);
@@ -152,21 +154,10 @@ export function writeRunFiles(main, state, { runner = run, secrets = {}, create 
   } catch {
     table = null; // the command lines stay as recorded: `down` and recovery then kill fewer groups, never more
   }
-  const groups = refreshGroups(state.groups ?? [], table, secrets);
-  updateRun(
-    main,
-    state.runId,
-    (prev) => {
-      const reaper = state.reaper !== undefined ? state.reaper : prev ? prev.reaper : undefined;
-      // Sessions, slots and failed logins are written through updateRun by their own owners (openSession,
-      // mintSlot, login): a state that does not hold them keeps them.
-      const sessions = state.sessions ?? (prev && prev.sessions) ?? [];
-      const kept = {};
-      for (const k of ["slots", "loginFailed"]) if (state[k] === undefined && prev && prev[k] !== undefined) kept[k] = prev[k];
-      return { ...state, ...kept, worktree: wt, ports: state.ports ?? {}, internal: state.internal ?? {}, origins: state.origins ?? [], groups, stops: state.stops ?? [], sessions, ...(reaper === undefined ? {} : { reaper }) };
-    },
-    { create },
-  );
+  const own = { ...state };
+  if (Object.hasOwn(state, "groups")) own.groups = refreshGroups(state.groups ?? [], table, secrets);
+  if (Object.hasOwn(state, "worktree")) own.worktree = wt;
+  updateRun(main, state.runId, (prev) => ({ worktree: null, ports: {}, origins: [], groups: [], stops: [], sessions: [], ...(prev ?? {}), ...own }), { create });
 }
 
 /**
@@ -411,8 +402,11 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
  * slot directory (`<n>/`, `up/`) its `.playwright/` (configs, a storage state), `state.json` (counters,
  * created accounts' passwords), `lock` and `totp.json`; and the run's `totp.json`. `out/`, `files/`,
  * `returns/` and `logs/` stay (evidence for the owner and the repro). Symlinks are removed, never followed.
+ * Each slot's files go under its lock (withFileLock on `<slot>/lock`, waiting at most `slotWaitMs`), so a
+ * `pw` call or a handoff still writing finishes first; a lock still held after that is noted and the files
+ * go anyway (those writers re-check run.json before they write, slots.mjs liveSlot).
  */
-function removeRunSecrets(main, runId, note) {
+async function removeRunSecrets(main, runId, note, slotWaitMs) {
   const dir = path.join(liveDir(main), runId);
   let entries;
   try {
@@ -431,7 +425,15 @@ function removeRunSecrets(main, runId, note) {
   remove(path.join(dir, "totp.json"));
   for (const e of entries) {
     if (!e.isDirectory() || ["logs", "returns"].includes(e.name)) continue;
-    for (const f of [".playwright", "state.json", "lock", "totp.json"]) remove(path.join(dir, e.name, f));
+    const clear = () => {
+      for (const f of [".playwright", "state.json", "lock", "totp.json"]) remove(path.join(dir, e.name, f));
+    };
+    try {
+      await withFileLock(path.join(dir, e.name, "lock"), clear, { waitMs: slotWaitMs });
+    } catch (err) {
+      note(`slot ${e.name}: ${err.message}; its files removed without its lock`);
+      clear();
+    }
   }
 }
 
@@ -491,7 +493,7 @@ async function replayRecorded(s, t) {
  * The teardown's steps in spec §8's order, shared by `down` and recovery: one list (the proxy, then the
  * CLI sessions by name, come after the process groups). Each runs
  * guarded: a failure is noted and the next step runs. `t` = {main, runId, rec, mode: "down" | "recover",
- * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh, note}.
+ * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh, note}.
  */
 const TEARDOWN = [
   // `down` only: a finding is reported, never stops the teardown.
@@ -512,9 +514,9 @@ const TEARDOWN = [
     await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });
     for (const h of homes) removeSockets(h);
   }],
-  ["the run's directories", (t) => {
+  ["the run's directories", async (t) => {
     removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
-    removeRunSecrets(t.main, t.runId, t.note);
+    await removeRunSecrets(t.main, t.runId, t.note, t.slotWaitMs ?? 10_000);
   }],
   // Last of the processes: the reaper, unless it is this process (its own `down`).
   ["the reaper", (t) => (t.rec ? stopReaper(t.rec.reaper, t.runId, t.runner, t.note) : undefined)],
@@ -539,9 +541,10 @@ async function teardown(t) {
  * lock's claim (only the `down` that removes the lock writes the end line). A step that fails is reported
  * and the next one runs. Returns {report: [lines]} (secret values masked). Throws only when the lock still
  * names the run and another process holds its claim (claimBusy, after waiting `claimWaitMs` for a live
- * holder): the teardown is done by then, and the lock and its end line wait for the owner.
+ * holder): the teardown is done by then, and the lock and its end line wait for the owner. `slotWaitMs`
+ * bounds the wait for each slot's lock before its files go (removeRunSecrets).
  */
-export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000 } = {}) {
+export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000, slotWaitMs = 10_000 } = {}) {
   runIdOk(runId);
   const report = [];
   const note = (line) => report.push(redact(line, secrets));
@@ -563,7 +566,7 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     if (now.digest.live !== rec.digest.live) note(`${LIVE_FILE} changed since up: down works from run.json as recorded`);
     if (now.digest.env_file !== rec.digest.env_file) note(`${(now.config && now.config.env_file) || "the env_file"} changed since up: the stops were replayed with its values as they are now`);
   }
-  await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, refresh: Boolean(record), note });
+  await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh: Boolean(record), note });
   await releaseLock(main, runId, claimWaitMs, () => {
     // Synchronous: the end line is written before the claim is released.
     try {

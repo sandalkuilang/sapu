@@ -16,8 +16,8 @@ import { submit } from "./argus-live-return.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince, canonicalOrigin } from "./argus-live-proxy.mjs";
-import { readRun, recordedSecrets } from "./argus-live-run.mjs";
-import { accountOf, readSlotState, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
+import { logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
+import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, stillLive, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
@@ -266,6 +266,20 @@ function secretsOf(main, config, live, state) {
 
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
+/**
+ * Appends one re-login probe to the run's `logs/probes.jsonl` (0600): `{slot, account, url, start, end}`
+ * (epoch ms), so the probe tab's request to the role's base_url is told apart from the page's own.
+ */
+function logProbe(main, runId, entry) {
+  try {
+    const logs = logsDir(main, runId);
+    fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(logs, "probes.jsonl"), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  } catch {
+    // the `probed:` line still tells it
+  }
+}
+
 /** True when `u` is a user of some role of the expanded config `live`, compared trimmed and without case. */
 function configuredUser(live, u) {
   const norm = (x) => String(x).trim().toLowerCase();
@@ -275,7 +289,8 @@ function configuredUser(live, u) {
 /**
  * One explorer call (spec §9): `argv` = `[token, <role>[.<k>] | <role-free command>, …]` → `{code, out}`
  * (`out` the lines to print). In order: the token (tokenSlot: unknown or retired is refused and counts
- * nothing); under the slot's lock: the deadline (`DEADLINE: submit status aborted`, all but `submit`),
+ * nothing); the run live (refuseNotLive: an `up --fresh` under way or a `down` sealing it is refused, all
+ * but `submit`, counting nothing); under the slot's lock: the deadline (`DEADLINE: submit status aborted`, all but `submit`),
  * the budget (`BUDGET: submit status handoff` past `limits.explorer_pw_calls`, all but `submit`; else the
  * call is counted, refusals included); the grammar and every argument (parsePw, accountOf, checkUrl, …);
  * an account whose login failed this run (`HARNESS: …`); the loop rule (the same command on the same
@@ -286,11 +301,12 @@ function configuredUser(live, u) {
  * the loop rule reads, the signals of every page, the console's new errors and warnings, the origins the
  * run blocked that a page named, once per slot as `blocked: <origin>`; logged_in gone from the page and
  * from a probe tab at the role's base_url → signed in again once, `re-logged-in: <role.k>`, the command not
- * repeated); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
+ * repeated; every probe told as `probed: <role.k>` and logged to `logs/probes.jsonl`); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
  * <c>/<max>`, `loop <n>/3` and the wrapper's own events. `login <user> <password>` signs the session in as
  * an account the journey created (`login: ok` or `login: failed (<reason>)`; kept in state.json
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
- * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. `submit` is handled before
+ * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
+ * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
  * the config is read (it needs only the slot). The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
@@ -305,6 +321,13 @@ export async function pw(main, argv, { cli = null, now = Date.now, runner = run,
     return { code: 1, out: [e.message] };
   }
   const { runId, slot } = found;
+  if (word !== "submit") {
+    try {
+      refuseNotLive(found.run, runId);
+    } catch (e) {
+      return { code: 1, out: [e.message] };
+    }
+  }
   const dir = slotDir(main, runId, slot);
   let secrets = {};
   try {
@@ -332,6 +355,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
       return { code: 1, out: [e.message] };
     }
   }
+  refuseNotLive(readRun(main), runId);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
   const { config, errors, secrets: envSecrets } = loadLive(main);
   if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
@@ -342,8 +366,9 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const secrets = secretsOf(main, config, live, state);
   setSecrets(secrets);
   if (state.calls >= max) return { code: 1, out: ["BUDGET: submit status handoff"] };
+  const ifLive = { main, runId }; // each write of the slot's state re-checks the run (stillLive)
   state.calls += 1;
-  writeSlotState(dir, state);
+  writeSlotState(dir, state, ifLive);
   const counter = `calls ${state.calls}/${max}`;
   const refused = (e) => {
     if (!/^refused: /.test(e.message)) throw e;
@@ -404,7 +429,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     },
     set: (key, reason) => {
       const cur = readSlotState(dir);
-      writeSlotState(dir, { ...cur, createdFailed: { ...(cur.createdFailed ?? {}), [key]: reason } });
+      writeSlotState(dir, { ...cur, createdFailed: { ...(cur.createdFailed ?? {}), [key]: reason } }, ifLive);
     },
   };
   const c0 = credentials();
@@ -417,7 +442,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const key = sha256(JSON.stringify([account, p.cmd, p.flags, p.positionals, st.lastState ?? null]));
   const seen = (state.loops[key] ?? 0) + 1;
   state.loops = { ...state.loops, [key]: seen };
-  writeSlotState(dir, state);
+  writeSlotState(dir, state, ifLive);
   if (seen >= LOOP_AT) return { code: 1, out: ["LOOP: submit status handoff", counter] };
 
   const js = cli ?? (rec.browser && rec.browser.js);
@@ -428,6 +453,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const stage = (which, payload) => runCode({ js, session: name, cwd: dir, home, code: loginCode(which, payload), timeoutMs: 4 * plan.settleMs + 60_000, runner: cliRunner });
   /** Opens the session (a login-command role's with a fresh storage state, which signs it in) → its record. */
   const open = async () => {
+    stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
     let storageState = null;
     if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
     const s = await openSession({ main, runId, slot, account, js, home, storageState, runner, cliRunner });
@@ -442,7 +468,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   };
   const save = (extra = {}) => {
     const after = readSlotState(dir);
-    writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: st } });
+    writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: st } }, ifLive);
   };
 
   // The session: opened on first use and signed in, invisibly (anon never is).
@@ -536,12 +562,18 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // Re-login: logged_in gone from the page while the account was signed in, and gone from a probe tab at
   // its base_url too (a page without the header is not a lost session). The command is not repeated.
   if (o && o.loggedIn === false && role !== "anon" && st.signedIn) {
-    let gone = false;
+    // The probe tab's request is the wrapper's: told outside the fence and logged with its times.
+    const start = Date.now();
+    let probe = null;
     try {
-      gone = !(await stage("probe", { url: plan.base, loggedIn: plan.loggedIn, settleMs: plan.settleMs })).in;
+      probe = await stage("probe", { url: plan.base, loggedIn: plan.loggedIn, settleMs: plan.settleMs });
     } catch {
-      events.push("harness: probe failed");
+      probe = null;
     }
+    events.push(`probed: ${account}`);
+    logProbe(main, runId, { slot, account, url: plan.base, start, end: Date.now() });
+    if (!probe) events.push("harness: probe failed");
+    const gone = Boolean(probe) && !probe.in;
     if (gone) {
       st.signedIn = false;
       let ok = false;

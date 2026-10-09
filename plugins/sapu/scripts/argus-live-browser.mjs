@@ -108,8 +108,25 @@ function npmError(stderr) {
   return (said.pop() || lines.pop() || "").slice(0, 300);
 }
 
-/** `text` with secret values and URL credentials masked (`scheme://<anything>@` up to the last `@`, so a password holding `/` or `@` goes too). */
-const masked = (text, secrets) => redact(text, secrets).replace(/([a-z][a-z0-9+.-]*:)?\/\/\S*@/gi, "$1//***@");
+/** A URL's credentials masked: `scheme://<anything>@` up to the last `@`, so a password holding `/` or `@` goes too. */
+const maskCredentials = (url) => url.replace(/^([a-z][a-z0-9+.-]*:)?\/\/\S*@/i, "$1//***@");
+
+/**
+ * `text` with secret values and URL credentials masked. Each URL-shaped word holding `@` is parsed: masked
+ * only when it names a user or a password (a scoped package's path, `/@playwright%2fcli`, keeps its host);
+ * one that does not parse (a password holding `/` breaks the authority) is masked whole (maskCredentials).
+ */
+const masked = (text, secrets) =>
+  redact(text, secrets).replace(/(?:[a-z][a-z0-9+.-]*:)?\/\/\S*/gi, (url) => {
+    if (!url.includes("@")) return url;
+    try {
+      const u = new URL(url);
+      if (!u.username && !u.password) return url;
+    } catch {
+      // not a URL the parser reads: masked as one that holds credentials
+    }
+    return maskCredentials(url);
+  });
 
 /**
  * The pinned CLI, installed when missing or not intact → {dir, js}. `<root>` (cliCacheRoot) is this

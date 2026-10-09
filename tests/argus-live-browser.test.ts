@@ -545,7 +545,10 @@ describe("argus-live pw in Chrome", () => {
 
   it("re-login after expiry, the command not repeated; a page without the header is not a lost session", async () => {
     const t = await pwRun();
-    await t.call("buyer.1", "goto", "/no-header");
+    // The page lacks the header: a probe tab asks the base_url, told outside the fence and logged with its times.
+    const noHeader = await t.call("buyer.1", "goto", "/no-header");
+    expect(outside(noHeader)).toContain("probed: buyer.1");
+    expect(readFileSync(join(logsDir(t.main, t.runId), "probes.jsonl"), "utf8")).toMatch(/^\{"slot":1,"account":"buyer\.1","url":"http:\/\/localhost:\d+\/?","start":\d+,"end":\d+\}$/m);
     const plain = await t.call("buyer.1", "snapshot");
     expect(fenced(plain)).toContain("No header here.");
     expect(outside(plain).filter((l) => /re-logged-in|harness/.test(l))).toEqual([]);
@@ -799,7 +802,9 @@ describe("argus-live — a cycle end to end", () => {
     const sub = pw("submit", JSON.stringify(ret));
     expect(sub.code, sub.out).toBe(0);
     expect(sub.out).toContain("submitted: slot 1 generation 1 status done");
-    expect(c.cli("status").out).toMatch(/^slot 1: journey order-to-cash generation 1 calls \d+\/120 submitted$/m);
+    // The return retired the token: status says so, and status --json carries it for the orchestrator.
+    expect(c.cli("status").out).toMatch(/^slot 1: journey order-to-cash generation 1 calls \d+\/120 submitted retired$/m);
+    expect(JSON.parse(c.cli("status", "--json").out).slots["1"]).toEqual({ journey: "order-to-cash", generation: 1, calls: expect.any(Number), max: 120, submitted: true, retired: true });
     const read = c.cli("intake", "1");
     expect(read.code, read.err).toBe(0);
     const lines = read.out.trimEnd().split("\n");

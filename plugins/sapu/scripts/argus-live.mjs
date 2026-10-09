@@ -8,8 +8,9 @@
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
-//                                generation, calls, submitted) and the number of browser sessions
-//   argus-live.mjs status --json the running cycle's summary, as up prints it (fields null when none)
+//                                generation, calls, submitted, retired) and the number of browser sessions
+//   argus-live.mjs status --json the running cycle's summary, as up prints it, and `slots`, each slot's
+//                                {journey, generation, calls, max, submitted, retired} (fields null when none)
 //   argus-live.mjs reap <runId>  internal: the reaper `up` starts; runs `down` at the lock's deadline
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run

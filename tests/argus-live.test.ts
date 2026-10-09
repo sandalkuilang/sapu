@@ -3451,8 +3451,14 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     if (process.getuid!() === 0) throw new Error("run the suite as a user, not root: this test signals a process of root's that must survive it");
     const rootPid = Number(execFileSync("ps", ["-U", "0", "-o", "pid="], { encoding: "utf8" }).split("\n").map((l) => l.trim()).find((l) => Number(l) > 1));
     const stuck = { ...record(2, "clerk.1"), daemon: { pid: rootPid, pgid: rootPid, started: startTime(rootPid) }, browser: null };
-    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [explorer, proving, stuck], browser: { js: shim, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    // The CLI as up --fresh calls it: each close notes the slot's token hash as run.json holds it then.
+    const seen = join(tempDir(), "hash-at-close");
+    const cli = join(tempDir(), "cli.mjs");
+    writeFileSync(cli, `import fs from "node:fs";\nconst rec = JSON.parse(fs.readFileSync(${JSON.stringify(join(main, ".argus/live/run.json"))}, "utf8"));\nfs.appendFileSync(${JSON.stringify(seen)}, JSON.stringify(rec.slots["1"].tokenHash) + "\\n");\nawait import(${JSON.stringify(shim)});\n`);
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [explorer, proving, stuck], browser: { js: cli, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
     await up(main, opts({ fresh: true }));
+    // The tokens retire first: no explorer call can reopen a session after its close.
+    expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual(["null", "null"]);
     const fresh = runJson(main);
     expect(alive(proxy.pid)).toBe(true);
     expect(fresh.groups.filter((g: Obj) => g.internal).map((g: Obj) => g.pgid)).toEqual([proxy.pid]);
@@ -3466,9 +3472,76 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(await until(() => !alive(proxy.pid) && !alive(proving.daemon.pid), 5000)).toBe(true);
   }, 90000);
 
+  it("up and up --fresh write only up's keys of run.json: another owner's keys, and one this version does not know, survive them", async () => {
+    const { main } = repo();
+    // Written by another owner while up runs (after its first writes, before its last).
+    const r = await up(
+      main,
+      opts({
+        say: (l: string) => {
+          if (/^step 9 proxy/.test(l)) updateRun(main, readLock(main).runId, (prev: Obj) => ({ ...prev, future: { by: "another owner" }, loginFailed: { "clerk/c@example.test": "rejected" } }));
+        },
+      }),
+    );
+    reapers.push(runJson(main).reaper);
+    expect(runJson(main)).toMatchObject({ future: { by: "another owner" }, loginFailed: { "clerk/c@example.test": "rejected" }, instanceId: r.instanceId });
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    const f = await up(
+      main,
+      opts({
+        fresh: true,
+        say: (l: string) => {
+          if (/^fresh: every start entry stopped/.test(l)) updateRun(main, r.runId, (prev: Obj) => ({ ...prev, later: 2, loginFailed: { "clerk/c@example.test": "rate-limited" } }));
+        },
+      }),
+    );
+    const rec = runJson(main);
+    expect(rec).toMatchObject({ future: { by: "another owner" }, later: 2, loginFailed: { "clerk/c@example.test": "rate-limited" }, instanceId: f.instanceId });
+    expect(rec.slots["1"]).toMatchObject({ tokenHash: null, retired: ["a".repeat(64)] });
+    // One writer for the proxy's port: startProxy, at step 9.
+    expect(rec.internal).toEqual({ proxy: expect.any(Number) });
+    await down(main, { runId: r.runId, runner: noDocker });
+    expect(balanced(main)).toBe(true);
+  }, 90000);
+
+  it("an up --fresh that fails tears down the sessions run.json holds, those recorded while it ran too", async () => {
+    const { main } = repo();
+    const r = await up(main, opts());
+    reapers.push(runJson(main).reaper);
+    const standIn = () => {
+      const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+      reapers.push(p.pid!);
+      return { pid: p.pid!, pgid: p.pid!, started: startTime(p.pid!) };
+    };
+    const cwd = join(main, ".argus/live", r.runId, "1");
+    mkdirSync(cwd, { recursive: true });
+    const late = { name: sessionName(r.runId, 1, "buyer.1"), slot: 1, account: "buyer.1", cwd, home: tempDir(), daemon: null as Obj | null, browser: null as Obj | null };
+    const cachePort = runJson(main).ports.cache;
+    const e = await message(
+      up(
+        main,
+        opts({
+          fresh: true,
+          say: (l: string) => {
+            if (!/^fresh: every start entry stopped/.test(l)) return;
+            // A session recorded meanwhile, and something else serving the store's port: the store phase is refused.
+            Object.assign(late, { daemon: standIn(), browser: standIn() });
+            updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [...(prev.sessions ?? []), late] }));
+            const s = createServer((c) => c.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", () => c.destroy())).listen(cachePort, "127.0.0.1");
+            servers.push(s);
+          },
+        }),
+      ),
+    );
+    expect(e).toMatch(/^refused: something already serves http:\/\/127\.0\.0\.1:\d+\/health \(cache\)$/);
+    for (const p of [late.daemon!.pid, late.browser!.pid]) expect(await until(() => !alive(p), 5000)).toBe(true);
+    expect(existsSync(join(main, ".argus/live/run.json"))).toBe(false);
+    expect(balanced(main)).toBe(true);
+  }, 90000);
+
   it("up and up --fresh return the summary the orchestrator reads (never run.json), which statusJson repeats; internal ports stay out of ports and origins", async () => {
     const { main } = repo();
-    expect(await statusJson(main)).toEqual({ runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null });
+    expect(await statusJson(main)).toEqual({ runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, slots: {} });
     const r = await up(main, opts());
     const rec = runJson(main);
     reapers.push(rec.reaper);
@@ -3478,12 +3551,13 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(rec.internal).toEqual({ proxy: expect.any(Number) });
     expect(Object.values(rec.ports)).not.toContain(rec.internal.proxy);
     expect(rec.baseUrl).toBe(want.baseUrl);
-    expect(await statusJson(main)).toEqual(want);
+    // status --json: the summary and each slot's state (none minted yet).
+    expect(await statusJson(main)).toEqual({ ...want, slots: {} });
     const f = await up(main, opts({ fresh: true }));
     expect(f).toEqual({ ...want, instanceId: runJson(main).instanceId });
     // A port of the run's own (the proxy's, phase 3) lives in `internal`: never in ports or origins.
     writeRunFiles(main, { ...runJson(main), internal: { proxy: 41999 } });
-    expect(await statusJson(main)).toEqual({ ...want, instanceId: f.instanceId });
+    expect(await statusJson(main)).toEqual({ ...want, instanceId: f.instanceId, slots: {} });
     await down(main, { runId: r.runId, runner: noDocker });
     expect(balanced(main)).toBe(true);
   }, 60000);
@@ -3653,6 +3727,21 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(balanced(main)).toBe(true);
     }, 60000);
 
+    it("up with a wrong password is refused at step 10 (exit 1) and leaves nothing: no proxy, no CLI daemon, no HOME or worktree", async () => {
+      const { main } = repo((c) => (c.roles.buyer.users[0].password = "not-the-password"));
+      const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
+      const r = cli(main, ["up"], env);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/^refused: buyer\.1 could not sign in \(rejected\) \(up step 10 logins\)$/m);
+      const runId = logOf(main)[0].split(" ")[0];
+      const ps = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n");
+      expect(await until(() => !ps().some((l) => l.includes(`argus-live.mjs proxy ${runId}`) || l.includes(`cliDaemon.js ${runId}-up-`)), 5000)).toBe(true);
+      expect(await until(() => fixtureProcesses().length === 0, 5000)).toBe(true);
+      expect(readdirSync(join(realpathSync(tmp), "sapu-live"))).toEqual([]);
+      expect(existsSync(join(main, ".argus/live/run.json"))).toBe(false);
+      expect(balanced(main)).toBe(true);
+    }, 90000);
+
     it("up, status, a second up (refused: exit 1), renew, down; a failing up exits 2; no output or log holds a secret value", async () => {
       const { main } = repo();
       const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
@@ -3676,7 +3765,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(st.out).toContain(runId);
       const sj = go(["status", "--json"]);
       expect(sj.code).toBe(0);
-      expect(JSON.parse(sj.out)).toEqual(summary);
+      expect(JSON.parse(sj.out)).toEqual({ ...summary, slots: {} });
       const again = go(["up"]);
       expect(again.code).toBe(1);
       expect(again.out).toMatch(new RegExp(`^refused: cycle ${runId} holds the lock until `, "m"));

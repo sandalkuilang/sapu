@@ -26,7 +26,7 @@ import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFil
 // @ts-expect-error — plain ESM script without types
 import { base32Decode, login, loginCode, loginPlan, reserveStep, runCode, totp, totpFile } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { makeHome, makeWorktree, status, statusJson, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
 import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -183,6 +183,12 @@ describe("argus-live browser — the pinned CLI", () => {
     const root = tempDir();
     const npm = fakeNpm({ fail: "npm ERR! 401 https://user:t0k/en@9x@registry.example.test/pkg s3cret-v" });
     expect(() => ensureCli({ root, ownerEnv: npm.ownerEnv, secrets: { TOKEN: "s3cret-v" } })).toThrow(/cannot be installed: npm ERR! 401 https:\/\/\*\*\*@registry\.example\.test\/pkg \*\*\*$/);
+  });
+
+  it("ensureCli keeps the host of a scoped package's URL: only a URL that holds credentials is masked", () => {
+    const root = tempDir();
+    const npm = fakeNpm({ fail: "npm error 404 Not Found - GET https://registry.npmjs.org/@playwright%2fcli - Not found" });
+    expect(() => ensureCli({ root, ownerEnv: npm.ownerEnv })).toThrow(/cannot be installed: npm error 404 Not Found - GET https:\/\/registry\.npmjs\.org\/@playwright%2fcli - Not found$/);
   });
 
   it("ensureCli refuses a CLI whose --version is not the pinned one", () => {
@@ -1112,6 +1118,8 @@ describe("argus-live teardown — proxy and CLI sessions", () => {
       writeFileSync(join(dir, rel), text);
     };
     for (const f of ["1/.playwright/cli.config.json", "1/.playwright/signals.js", "1/state.json", "1/lock", "1/out/page.yml", "1/files/receipt.txt", "up/.playwright/cli.config.json", "up/out/page.yml", "returns/1.1.json", "totp.json", "logs/up.log"]) put(f);
+    // The slot's lock as a call that is gone left it (its holder's start time is not this process's): down takes it over.
+    put("1/lock", JSON.stringify({ pid: process.pid, started: "Mon Jan 1 00:00:00 2001" }));
     writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, origins: [], groups: [], env: r.env });
     await down(r.main, { runId: r.runId, graceMs: 1000 });
     const left = (execFileSync("find", [dir, "-type", "f"], { encoding: "utf8" }) as string).trim().split("\n").map((f) => f.slice(dir.length + 1)).sort();
@@ -1473,6 +1481,21 @@ describe("argus-live slots and tokens", () => {
     expect(Object.values(readRun(r.main).slots).map((s: any) => s.tokenHash)).toEqual([null, null]);
   });
 
+  it("status marks a retired slot; status --json carries each slot's state for the orchestrator", async () => {
+    const r = cycle(repo());
+    mintSlot(r.main, { slot: 1, journey: "j", accounts: buyer });
+    mintSlot(r.main, { slot: 2, journey: "k", accounts: { "clerk.1": "clerk1@example.test" } });
+    const two = slotDir(r.main, r.runId, 2);
+    writeSlotState(two, { ...readSlotState(two), calls: 7 });
+    updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, slots: { ...prev.slots, 1: { ...prev.slots[1], tokenHash: null, retired: [prev.slots[1].tokenHash], submitted: true } } }));
+    const lines = await status(r.main);
+    expect(lines.filter((l: string) => l.startsWith("slot "))).toEqual(["slot 1: journey j generation 1 calls 0/120 submitted retired", "slot 2: journey k generation 1 calls 7/120"]);
+    expect(statusJson(r.main).slots).toEqual({
+      1: { journey: "j", generation: 1, calls: 0, max: 120, submitted: true, retired: true },
+      2: { journey: "k", generation: 1, calls: 7, max: 120, submitted: false, retired: false },
+    });
+  });
+
   it("the CLI mints and hands off a slot, printing one JSON line, and refuses a malformed call", () => {
     const r = cycle(repo());
     // Every hex digit as an env-file value: the token line is never masked (it holds no secret).
@@ -1505,7 +1528,7 @@ describe("argus-live pw — refusals and limits", () => {
   });
   const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
   const BASE = "http://localhost:41002";
-  const OUTSIDE = /^(calls \d+\/\d+|loop \d\/3|re-logged-in: [a-z][a-z0-9_-]*\.\d+|session-reopened: [a-z][a-z0-9_-]*\.\d+|(found|not found) after \d+ ms|truncated \d+ characters|harness: [a-z -]+)$/;
+  const OUTSIDE = /^(calls \d+\/\d+|loop \d\/3|re-logged-in: [a-z][a-z0-9_-]*\.\d+|probed: [a-z][a-z0-9_-]*\.\d+|session-reopened: [a-z][a-z0-9_-]*\.\d+|(found|not found) after \d+ ms|truncated \d+ characters|harness: [a-z -]+)$/;
 
   /**
    * A cycle with slot 1 holding buyer.1 and anon.1, the CLI shim as the run's browser CLI, and both
@@ -1721,6 +1744,44 @@ describe("argus-live pw — refusals and limits", () => {
     expect(t.commands().filter((c) => c[0] === "click")).toHaveLength(3);
   });
 
+  it("pw is refused while the run is not live (an up --fresh under way, a down sealing it); submit is not, and nothing is counted", async () => {
+    const t = pwRun();
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, instanceId: null }));
+    expect(await t.call("buyer.1", "goto", "/")).toEqual({ code: 1, out: [`refused: cycle ${t.runId} has no instance (its up did not finish)`] });
+    expect((await t.call("submit", "{}")).out[0]).not.toMatch(/has no instance/);
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, instanceId: "0123456789abcdef", closing: true }), { sealed: true });
+    expect(await t.call("anon", "goto", "/")).toEqual({ code: 1, out: [`refused: cycle ${t.runId} is being torn down`] });
+    expect(t.calls()).toEqual([]);
+    expect(readSlotState(t.dir).calls).toBe(0);
+  });
+
+  it("a down while a call is in flight leaves no slot state or CLI config: the call re-checks the run before it writes", async () => {
+    const t = pwRun();
+    const mark = join(tempDir(), "in-goto");
+    // A CLI whose goto takes a while: the down runs meanwhile, without waiting for the slot's lock.
+    const slow = join(tempDir(), "slow.mjs");
+    writeFileSync(slow, `import fs from "node:fs";\nconst cmd = process.argv.slice(2).find((a) => !a.startsWith("-"));\nif (cmd === "goto") {\n  fs.writeFileSync(${JSON.stringify(mark)}, "1");\n  await new Promise((ok) => setTimeout(ok, 1500));\n}\nawait import(${JSON.stringify(t.shim)});\n`);
+    const call = pw(t.main, [t.token, "buyer.1", "goto", "/"], { cli: slow });
+    expect(await until(() => existsSync(mark), 10000)).toBe(true);
+    await down(t.main, { runId: t.runId, graceMs: 500, slotWaitMs: 100 });
+    const r = await call;
+    expect(r.code).toBe(1);
+    for (const f of ["state.json", ".playwright", "lock"]) expect(existsSync(join(t.dir, f)), f).toBe(false);
+  });
+
+  it("down takes each slot's lock before it removes the slot's files", async () => {
+    const t = pwRun();
+    // A holder that writes the slot's state late, without re-checking: the down waits for it.
+    const held = withSlotLock(t.main, t.runId, 1, async () => {
+      await new Promise((ok) => setTimeout(ok, 500));
+      writeFileSync(join(t.dir, "state.json"), "{}\n");
+    });
+    await new Promise((ok) => setTimeout(ok, 50));
+    await down(t.main, { runId: t.runId, graceMs: 500, slotWaitMs: 5000 });
+    await held;
+    expect(existsSync(join(t.dir, "state.json"))).toBe(false);
+  });
+
   it("DEADLINE: past the lock's deadline every call but submit answers DEADLINE", async () => {
     const t = pwRun();
     const lock = JSON.parse(readFileSync(join(t.main, ".argus/live/lock.json"), "utf8"));
@@ -1760,16 +1821,22 @@ describe("argus-live pw — refusals and limits", () => {
     const plain = await t.call("buyer.1", "goto", "/no-header");
     expect(plain.code).toBe(0);
     expect(lines(plain).filter((l) => /re-logged-in|harness/.test(l))).toEqual([]);
+    // The probe tab's request is the wrapper's, not the page's: told outside the fence, its time in the run's logs.
+    expect(lines(plain).slice(-2)).toEqual(["calls 1/120", "probed: buyer.1"]);
     expect(stages()).toBe(2);
+    const probes = () => readFileSync(join(logsDir(t.main, t.runId), "probes.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(probes()).toEqual([{ slot: 1, account: "buyer.1", url: `${BASE}/`, start: expect.any(Number), end: expect.any(Number) }]);
+    expect(probes()[0].end).toBeGreaterThanOrEqual(probes()[0].start);
     // The probe lacks it too: signed in once more, reported outside the fence, the click not run again.
     t.queue(page(false), { in: false, origins: [] }, { state: "in", status429: false, lockout: false, origins: [] });
     const lost = await t.call("buyer.1", "click", "e5");
-    expect(lines(lost).slice(-2)).toEqual(["calls 2/120", "re-logged-in: buyer.1"]);
+    expect(lines(lost).slice(-3)).toEqual(["calls 2/120", "probed: buyer.1", "re-logged-in: buyer.1"]);
+    expect(probes()).toHaveLength(2);
     expect(t.commands().filter((c) => c[0] === "click")).toHaveLength(1);
     expect(t.commands().slice(-2)).toEqual([["requests", "--clear"], ["console", "--clear"]]);
     // The login fails: a harness event now, HARNESS from the next call on.
     t.queue(page(false), { in: false, origins: [] }, { state: "failed", status429: false, lockout: false, origins: [] });
-    expect(lines(await t.call("buyer.1", "click", "e6")).slice(-2)).toEqual(["calls 3/120", "harness: login failed"]);
+    expect(lines(await t.call("buyer.1", "click", "e6")).slice(-3)).toEqual(["calls 3/120", "probed: buyer.1", "harness: login failed"]);
     expect((await t.call("buyer.1", "goto", "/")).out[0]).toBe("HARNESS: buyer.1 cannot sign in this cycle; submit status aborted");
     // anon is never probed.
     const before = stages();

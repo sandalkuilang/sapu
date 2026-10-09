@@ -41,6 +41,23 @@ function cycle(main, now = Date.now()) {
 }
 
 /**
+ * Refuses unless run.json `rec` holds cycle `runId` live — named, not sealed by a `down`, with an instance
+ * id (an `up --fresh` under way has none) — in cycle()'s words. `pw` asks it of every call but `submit`.
+ */
+export function refuseNotLive(rec, runId) {
+  if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
+  if (!rec.instanceId) throw new Error(`refused: cycle ${runId} has no instance (its up did not finish)`);
+}
+
+/**
+ * refuseNotLive on run.json as it stands now. Every writer of a slot's files asks it just before it
+ * writes: a `down` removes those files (removeRunSecrets), and a write after that would leave them behind.
+ */
+export function stillLive(main, runId) {
+  refuseNotLive(readRun(main), runId);
+}
+
+/**
  * `<role>.<k>=<user>|<role>.<k>,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
  * word that is not `<role>.<k>`, an account named twice, or an empty list is refused.
  */
@@ -121,8 +138,13 @@ export function readSlotState(dir) {
   return freshState();
 }
 
-/** Writes the slot's state whole (beside, then renamed into place), mode 0600: `created` holds the passwords of accounts the journey made. */
-export function writeSlotState(dir, s) {
+/**
+ * Writes the slot's state whole (beside, then renamed into place), mode 0600: `created` holds the
+ * passwords of accounts the journey made. With `live` ({main, runId}), only while the run is still live
+ * (stillLive), else `refused: …` and nothing written.
+ */
+export function writeSlotState(dir, s, live = null) {
+  if (live) stillLive(live.main, live.runId);
   const file = path.join(dir, "state.json");
   fs.renameSync(tempBeside(file, `${JSON.stringify(s)}\n`, 0o600), file);
 }
@@ -155,9 +177,10 @@ function prepareSlot(main, rec, slot, live, runner) {
   const channel = rec.browser && rec.browser.channel;
   if (!Number.isInteger(port) || typeof channel !== "string") throw new Error(`refused: cycle ${rec.runId} has no proxy or browser recorded (its up did not reach step 9)`);
   const dir = slotDir(main, rec.runId, slot);
+  stillLive(main, rec.runId);
   writeSlotConfig(dir, slotConfig({ dir, origins: rec.origins ?? [], allowOrigins: rec.allowOrigins ?? [], proxyPort: port, live, chrome: { channel } }));
   copyFixtures(rec.worktree, live.fixtures, dir, runner);
-  writeSlotState(dir, freshState());
+  writeSlotState(dir, freshState(), { main, runId: rec.runId });
   return dir;
 }
 
@@ -263,7 +286,7 @@ export async function handoffSlot(main, slot) {
       const was = readSlotState(dir);
       // A fresh budget and loop count; the sessions' state (signed in, last page, console seen), the
       // accounts the journey created and the blocked origins already told carry over: the browsers stay open.
-      writeSlotState(dir, { ...freshState(), sessions: was.sessions, created: was.created, blockedOffset: was.blockedOffset, proxyBlocked: was.proxyBlocked, blockedReported: was.blockedReported });
+      writeSlotState(dir, { ...freshState(), sessions: was.sessions, created: was.created, blockedOffset: was.blockedOffset, proxyBlocked: was.proxyBlocked, blockedReported: was.blockedReported }, { main, runId: lock.runId });
     },
     { waitMs: slotLockWaitMs(settle) },
   );
@@ -271,7 +294,8 @@ export async function handoffSlot(main, slot) {
 }
 
 /**
- * The slot a token belongs to → `{runId, slot, rec, lock}` (`rec` its run.json `slots` entry). The
+ * The slot a token belongs to → `{runId, slot, rec, lock, run}` (`rec` its run.json `slots` entry, `run`
+ * run.json as read). The
  * token's sha256 is compared with each slot's current hash by timingSafeEqual. A retired token →
  * `refused: retired token`; anything else (not 32 lower-case hex, another run's, no cycle) →
  * `refused: unknown token`.
@@ -287,7 +311,7 @@ export function tokenSlot(main, token) {
   let retired = false;
   for (const [n, s] of Object.entries(rec.slots)) {
     if (!s) continue;
-    if (same(s.tokenHash)) return { runId: lock.runId, slot: Number(n), rec: s, lock };
+    if (same(s.tokenHash)) return { runId: lock.runId, slot: Number(n), rec: s, lock, run: rec };
     if ((s.retired ?? []).some(same)) retired = true;
   }
   if (retired) throw new Error("refused: retired token");
