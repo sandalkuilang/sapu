@@ -8,6 +8,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
@@ -24,7 +25,7 @@ import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, led
 // @ts-expect-error — plain ESM script without types
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, score, selectJourneys, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
-import { renewRun, up, upMap } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { configProblems, renewRun, up, upMap } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
 import { readLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -2525,4 +2526,86 @@ describe("argus-live visit", () => {
     }
     expect(readFileSync(t.file, "utf8")).toBe(kept);
   }, 30_000);
+});
+
+describe("argus-live check", () => {
+  /** The env file's values: none may reach check's output. */
+  const VALUES = { DB_PW: "dbpass-Value-4417", PW: "Customer-Pw-9921", SALES_TOTP: "JBSWY3DPEHPK3PXP" };
+  /**
+   * A committed repo holding `example()` (changed by `over`) as .argus/live.json, an .argus/live.env setting
+   * every name it uses, and a contract (in the working tree, as /sapu:init drafts it) whose guard.envFiles
+   * holds that env file's name (`envFiles` to change it).
+   */
+  const checkRepo = (over: (c: Obj) => void = () => {}, { envFiles = ["live.env"] } = {}) => {
+    const main = committed();
+    const c = example();
+    over(c);
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
+    writeFileSync(join(main, ".argus/live.env"), Object.entries(VALUES).map(([k, v]) => `${k}=${v}\n`).join(""));
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles } }));
+    return main;
+  };
+  const check = (main: string) => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "check"], { cwd: main, encoding: "utf8", env: { PATH: process.env.PATH!, HOME: tempDir() } });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+  const noValue = (text: string) => {
+    for (const v of Object.values(VALUES)) expect(text).not.toContain(v);
+  };
+  const FAULTS: [string, (c: Obj) => void, { envFiles?: string[] }, RegExp][] = [
+    ["an unknown top key", (c) => (c.bogus = 1), {}, /^refused: \.argus\/live\.json: .*unknown key "bogus"/],
+    ["an unset name", (c) => (c.env.EXTRA = "${MISSING}"), {}, /^refused: \$\{MISSING\} is unset \(\.argus\/live\.env gives it no value\)$/],
+    // .invalid never resolves (RFC 2606): no answer is not loopback only. A literal address the schema refuses itself.
+    ["a base_url off loopback", (c) => (c.base_url = "http://shop.invalid:{port:web}"), {}, /^refused: base_url names shop\.invalid, which does not resolve to loopback only/],
+    ["a service variable nothing sets", (c) => (c.services.search = { env: "SEARCH_URL" }), {}, /^refused: services\.search\.env names SEARCH_URL, which the instance env does not set/],
+    ["an env file the guard does not cover", () => {}, { envFiles: [] }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
+  ];
+
+  it("check passes the example config and starts nothing", () => {
+    const main = checkRepo();
+    const r = check(main);
+    expect(r).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\n", err: "" });
+    expect(existsSync(join(main, ".argus/live"))).toBe(false);
+  }, 30_000);
+
+  it("check names every fault up would refuse, and never a value", async () => {
+    for (const [what, over, opts, line] of FAULTS) {
+      const r = check(checkRepo(over, opts));
+      expect(r.code, what).toBe(1);
+      expect(r.out, what).toBe("");
+      const lines = r.err.trim().split("\n");
+      expect(lines, what).toHaveLength(1);
+      expect(lines[0], what).toMatch(line);
+      noValue(r.out + r.err);
+    }
+    const all = check(checkRepo((c) => FAULTS.forEach(([, over]) => over(c)), { envFiles: [] }));
+    expect(all.code).toBe(1);
+    const lines = all.err.trim().split("\n");
+    expect(lines).toHaveLength(FAULTS.length);
+    FAULTS.forEach(([what, , , line], i) => expect(lines[i], what).toMatch(line));
+    noValue(all.out + all.err);
+    // The lookup seam: a host that resolves anywhere but loopback is the same fault.
+    const host = checkRepo((c) => (c.base_url = "http://shop.example.test:{port:web}"));
+    const p = await configProblems(host, { lookup: async () => [{ address: "10.0.0.5", family: 4 }] });
+    expect(p.problems).toEqual(["refused: base_url names shop.example.test, which does not resolve to loopback only (the instance serves this machine alone)"]);
+    expect((await configProblems(host, { lookup: async () => [{ address: "127.0.0.1", family: 4 }] })).problems).toEqual([]);
+  }, 60_000);
+
+  it("up refuses with check's words", async () => {
+    for (const over of [FAULTS[0][1], FAULTS[1][1]]) {
+      const main = checkRepo(over);
+      const first = check(main).err.split("\n")[0];
+      const e = await up(main).then(() => null, (x: Error & { step?: string }) => x);
+      expect(e!.message).toBe(first);
+      expect(e!.step).toBe("2 refusals");
+      expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
+    }
+  }, 60_000);
+
+  it("the usage line names check", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    expect(r.stderr).toContain(" | check | ");
+  });
 });

@@ -8,6 +8,13 @@
 //   argus-live.mjs up --map      map mode (decision 20): the lock and a worktree at HEAD, nothing started (no
 //                                setup, store, app, proxy, HOME or logins); its summary {runId, mode, deadline,
 //                                worktree} last. up --fresh and renew refuse it
+//   argus-live.mjs check         verify .argus/live.json as up would before it touches anything (configProblems:
+//                                the schema, an unset ${NAME} by name, base URLs resolving to loopback only, a services
+//                                variable the instance env does not set), and that the contract's guard.envFiles
+//                                covers its env_file (as the guard matches it): one refused: … line per fault (exit
+//                                1), else live: ok — <r> roles, <a> accounts, <s> start entries. Reads the working
+//                                tree's contract (an init draft); takes no lock, starts and writes nothing, prints
+//                                no value
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -100,7 +107,7 @@ import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { drift } from "./argus-live-drift.mjs";
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, selectJourneys, visitJourney, writeJourneys } from "./argus-live-map.mjs";
-import { renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
+import { configProblems, renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact, run } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
@@ -112,6 +119,7 @@ import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
+import { compileRules } from "./sapu-guard.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 const main = findMain(process.cwd());
@@ -126,7 +134,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -268,7 +276,19 @@ try {
     print(r.verdict === "doc-newer" ? "doc-newer → class B(a)" : `${r.verdict === "code-newer" ? "code-newer" : `undecidable (${r.why})`} → needs-owner`);
   } else if (cmd === "up" && args.length === 1 && args[0] === "--map") print(JSON.stringify(await upMap(main, { say: print })));
   else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
-  else if (cmd === "renew" && !args.length) {
+  else if (cmd === "check" && !args.length) {
+    // up's own configuration checks, then the contract: the guard must keep every agent out of the env file.
+    const r = await configProblems(main);
+    const problems = [...r.problems];
+    const c = loadContract(main, { workingTree: true });
+    if (!c.contract && !c.missing) problems.push(`refused: ${c.error}`);
+    else if (r.config && typeof r.config.env_file === "string" && !compileRules(c.contract ?? null).envFiles.has(path.basename(r.config.env_file).toLowerCase())) problems.push(`refused: env_file ${r.config.env_file} is not in the contract's guard.envFiles (/sapu:init adds it)`);
+    for (const p of problems) process.stderr.write(`${redact(p, secrets)}\n`);
+    if (problems.length) process.exit(1);
+    const roles = Object.values(r.config.roles);
+    const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
+    print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
+  } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);
   } else if (cmd === "down" && !args.length) {

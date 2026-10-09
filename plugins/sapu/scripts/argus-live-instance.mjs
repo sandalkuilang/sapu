@@ -188,10 +188,51 @@ async function tearDown(main, state, { secrets, runner, log }) {
 }
 
 /**
+ * The configuration checks `up` makes before it touches anything, in step 2's words and order, shared with
+ * `argus-live.mjs check` (init's verification of a draft): `loadLive`'s errors as one line; the first `${NAME}`
+ * the env file leaves unset; each `base_url` or `roles.<r>.base_url` whose host does not resolve to loopback
+ * only; each `services.<n>.env` neither `env` nor a set `pass_env` name gives the instance. A file with
+ * schema errors is still checked for the rest, so `check` names every fault at once; a throw the schema
+ * errors already explain is left out. Reads files and resolves hosts, nothing else: no lock, no process,
+ * no write, no value in a problem. `loaded` (loadLive's answer) lets `up` check the file it already read;
+ * `lookup` is a test seam. Returns {config, secrets, digest, problems}.
+ */
+export async function configProblems(main, { lookup = defaultLookup, loaded = loadLive(main) } = {}) {
+  const { config, errors, secrets, digest } = loaded;
+  const problems = errors.length ? [`refused: ${LIVE_FILE}: ${errors.join("; ")}`] : [];
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!isObj(config)) return { config, secrets, digest, problems };
+  try {
+    const { names } = portNames(config);
+    expandConfig(config, { ports: Object.fromEntries(names.map((n) => [n, 1])), secrets });
+  } catch (e) {
+    const m = /^unset (\S+)$/.exec(e.message);
+    if (m) problems.push(`refused: \${${m[1]}} is unset (${config.env_file ?? "no env_file"} gives it no value)`);
+    else if (!errors.length) problems.push(e.message);
+  }
+  const roles = isObj(config.roles) ? Object.entries(config.roles) : [];
+  const urls = [...(typeof config.base_url === "string" ? [["base_url", config.base_url]] : []), ...roles.filter(([, r]) => isObj(r) && typeof r.base_url === "string").map(([n, r]) => [`roles.${n}.base_url`, r.base_url])];
+  for (const [where, url] of urls) {
+    const host = hostOf(url);
+    if (!host || !(await resolvesToLoopback(host, lookup))) problems.push(`refused: ${where} names ${host ?? "no host"}, which does not resolve to loopback only (the instance serves this machine alone)`);
+  }
+  // Every backing service the app reads must have its address in the instance env, or the app falls back to its default (the owner's).
+  const env = isObj(config.env) ? config.env : {};
+  const passEnv = Array.isArray(config.pass_env) ? config.pass_env : [];
+  for (const [n, svc] of isObj(config.services) ? Object.entries(config.services) : []) {
+    const k = isObj(svc) ? svc.env : undefined;
+    const set = (Object.hasOwn(env, k) && env[k] !== "") || (passEnv.includes(k) && Boolean(process.env[k]));
+    if (!set) problems.push(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
+  }
+  return { config, secrets, digest, problems };
+}
+
+/**
  * `argus-live.mjs up` (spec §8, steps 1-11): 1 the lock (and recovery of stale runs, every earlier
- * run's secret ledger removed (dropLedgers), then run.json and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
- * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss, no
- * process identity (start times), a `services` variable the instance env does not set, the pinned CLI
+ * run's secret ledger removed (dropLedgers), then run.json and the reaper at once); 2 refusals (configProblems' first:
+ * config errors, an unset `${NAME}`, a base_url or role base_url host that does not resolve to loopback only, a
+ * `services` variable the instance env does not set; then `~/.playwright/cli.config.json`, neither lsof nor ss, no
+ * process identity (start times), the pinned CLI
  * not installable (ensureCli), no Chrome-family browser) and run.json `browser: {js, channel}`;
  * 3 the environment (ports, HOME and its `browser/` HOME for the CLI, the run's Docker client, `since` and the events follower); 4 the worktree (run.json
  * `worktreeHead`, its commit, kept beside the run's records too: recordWorktreeHead) and setup; 5 the Compose
@@ -239,21 +280,11 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
 
     step = "2 refusals";
-    if (errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
+    // The configuration's own faults first, in check's words (one function): the first one refuses.
+    const { problems } = await configProblems(main, { lookup, loaded: { config, errors, secrets, digest } });
+    if (problems.length) throw new Error(problems[0]);
     const contract = contractOf(main);
     const { names, fixed } = portNames(config);
-    try {
-      expandConfig(config, { ports: Object.fromEntries(names.map((n) => [n, 1])), secrets });
-    } catch (e) {
-      const m = /^unset (\S+)$/.exec(e.message);
-      if (m) throw new Error(`refused: \${${m[1]}} is unset (${config.env_file ?? "no env_file"} gives it no value)`);
-      throw e;
-    }
-    const urls = [["base_url", config.base_url], ...Object.entries(config.roles ?? {}).filter(([, r]) => r && r.base_url).map(([n, r]) => [`roles.${n}.base_url`, r.base_url])];
-    for (const [where, url] of urls) {
-      const host = hostOf(url);
-      if (!host || !(await resolvesToLoopback(host, lookup))) throw new Error(`refused: ${where} names ${host ?? "no host"}, which does not resolve to loopback only (the instance serves this machine alone)`);
-    }
     const pw = path.join(ownerHome, ".playwright", "cli.config.json");
     if (fs.existsSync(pw)) throw new Error(`refused: ${pw} exists; the browser CLI would merge it underneath the run's own config (move it aside)`);
     const missing = (argv) => {
@@ -271,12 +302,6 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     const me = startTime(process.pid, runner);
     const listed = table && table.find((p) => p.pid === process.pid);
     if (!me || !listed || !sameStart(me, listed.started)) throw new Error("refused: process identity is unavailable here (no start time from ps -o lstart=): down could not tell the run's processes from others'");
-    // Every backing service the app reads must have its address in the instance env, or the app falls back to its default (the owner's).
-    for (const [n, svc] of Object.entries(config.services ?? {})) {
-      const k = svc && svc.env;
-      const set = (Object.hasOwn(config.env ?? {}, k) && config.env[k] !== "") || ((config.pass_env ?? []).includes(k) && Boolean(process.env[k]));
-      if (!set) throw new Error(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
-    }
     // The browser side: the pinned CLI first, so the install command a missing browser is told names a CLI that exists.
     const cli = ensureCli({ runner, realMain: fs.realpathSync.native(main), secrets });
     const chrome = locateChrome();
