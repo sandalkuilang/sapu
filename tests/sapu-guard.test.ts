@@ -2945,3 +2945,104 @@ describe("sapu-guard — the worker canary also proves the step budget counts (a
     expect(canary({ agent_type: "senior-dev-team:senior-qa-reviewer", agent_id: "r-1" })).not.toMatch(/step_budget/);
   });
 });
+
+describe("sapu-guard — a shell-built label name, route or method counts as any: agent-filed provenance cannot be renamed away", () => {
+  const reviewer = (command: string, r = rules) => check({ command, cwd: wt, main, rules: r, worker: false });
+  const gated = compileRules({ ...FIXTURE_CONTRACT, agentFiledNeedsAcceptance: true });
+  const OWNER = /agent-filed label/;
+  const DYNAMIC = /route or method the shell builds/;
+
+  it.each([
+    ["gh label edit $(echo sapu:agent-filed) --name other"],
+    ["gh label edit `echo sapu:agent-filed` --name other"],
+    ['gh label edit "$L" --name other'],
+    ["gh label edit ${L} --name other"],
+    ["gh label edit bug --name $N"],
+    ["gh label edit bug --name=$(echo sapu:accepted)"],
+    ["gh label delete $(echo sapu:agent-filed) --yes"],
+    ['gh label delete "$L" --yes'],
+    ['gh label create "$L"'],
+    ["gh label create x$(echo y)"],
+    ["gh label $(echo edit) sapu:agent-filed --name x"],
+    ["gh label $S sapu:agent-filed --name x"],
+    ['gh issue create -t t -b b --label "$L"'],
+    ["gh issue create -t t -b b -l sapu:agent-filed -l $(echo sapu:accepted)"],
+    ['gh api -X POST repos/o/r/labels -f name="$L"'],
+    ['gh api -X PATCH repos/o/r/labels/bug -f new_name="$N"'],
+    ['gh api -X POST repos/o/r/issues/8/labels -f "labels[]=$L"'],
+    ["gh api -X POST repos/o/r/issues/8/labels -f labels[]=$(echo sapu:accepted)"],
+    ['gh api -X PATCH repos/o/r/issues/8 -f "$K=x"'],
+  ])("refuses %s: a label the shell builds may be an owner label", (cmd) => {
+    expect(reviewer(cmd)).toMatch(OWNER);
+    expect(blocked(cmd)).not.toBeNull();
+  });
+
+  it.each([
+    ["gh api -X PATCH repos/o/r/labels/$L -f new_name=x"],
+    ["gh api -X DELETE repos/o/r/labels/$L"],
+    ["gh api -X DELETE repos/o/r/labels/$(echo sapu:agent-filed)"],
+    ["gh api --method PATCH repos/o/r/labels/${L} -f new_name=x"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels/$L"],
+    ["gh api -X DELETE repos/o/r/issues/$N/labels"],
+    ["gh api -X DELETE repos/o/r/issues/$(echo 1)/labels"],
+    ["gh api -X DELETE repos/o/r/issues/`echo 1`/labels"],
+    ["gh api -X DELETE repos/o/r/issues/${N}/labels"],
+    ["gh api -X PATCH repos/o/r/issues/$N -f 'labels[]=x'"],
+    ["gh api -X $(echo DELETE) repos/o/r/issues/1/labels"],
+    ['gh api -X "$M" repos/o/r/issues/1/labels'],
+    ["gh api --method=$M repos/o/r/issues/1/labels"],
+    ["gh api -X$M repos/o/r/labels/sapu%3Aagent-filed"],
+    ["gh api repos/$R/issues -f title=t"],
+    ["gh api $U -f title=t"],
+    ["gh api $(echo repos/o/r/issues) -f title=t"],
+    ["gh api repos/o/r/$(echo issues) --input body.json"],
+    ["gh api -X PUT $U"],
+  ])("refuses %s: a non-GET gh api with a shell-built route or method is judged as every one", (cmd) => {
+    expect(reviewer(cmd)).toMatch(new RegExp(`${OWNER.source}|${DYNAMIC.source}`));
+    expect(reviewer(cmd, gated)).not.toBeNull();
+    expect(blocked(cmd)).not.toBeNull();
+  });
+
+  it("a shell-built method alone, with a literal route, is judged as each method", () => {
+    expect(reviewer("gh api -X $M repos/o/r/issues/1/labels")).toMatch(OWNER);
+    expect(reviewer("gh api -X $M repos/o/r/pulls/1/merge")).toMatch(/merge/i);
+    expect(reviewer("gh api -X $M repos/o/r/pulls/1")).toBeNull();
+  });
+
+  it.each([
+    ["gh issue edit 1 --remove-label=$(echo argus:needs-owner)"],
+    ["gh issue edit 1 --remove-label=`echo argus:needs-owner`"],
+    ["gh issue edit 1 --add-label=bug,$(echo sapu:accepted)"],
+    ["gh pr edit 1 --add-label=$(echo sapu:accepted)"],
+    ["gh issue close 1 --reason=$(echo not planned)"],
+  ])("refuses %s: a substitution glued mid-word makes the whole word shell-built", (cmd) => {
+    expect(reviewer(cmd)).not.toBeNull();
+    expect(blocked(cmd)).not.toBeNull();
+  });
+
+  it("a word that starts right after a substitution's close is glued to it, never a comment", () => {
+    expect(reviewer("echo $(true)#; gh label delete sapu:agent-filed --yes")).toMatch(OWNER);
+    expect(reviewer("echo `true`#; gh label delete sapu:agent-filed --yes")).toMatch(OWNER);
+    expect(reviewer("echo $(true) # gh label delete sapu:agent-filed --yes")).toBeNull();
+  });
+
+  it.each([
+    ["gh api repos/$R/pulls/$N"],
+    ["gh api repos/o/r/pulls/$(echo 1)/comments"],
+    ["gh api repos/$R/issues/$N/labels"],
+    ["gh api -X GET repos/$R/issues -f state=open"],
+    ['gh api repos/o/r/issues/8/comments -f body="$B"'],
+    ['gh api repos/o/r/issues/8/comments -f body="$(cat notes.md)"'],
+    ["gh label list --search $Q"],
+    ['gh issue edit 8 --add-label bug --body "$(cat notes.md)"'],
+    ["gh pr view $(git branch --show-current) --json number"],
+    ["gh issue view $N"],
+  ])("still allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
+  });
+
+  it("a glued field still means POST", () => {
+    expect(blocked("gh api repos/o/r/issues -ftitle=t")).toMatch(/files no issues/);
+    expect(blocked("gh api repos/o/r/issues --raw-field=title=t")).toMatch(/files no issues/);
+  });
+});

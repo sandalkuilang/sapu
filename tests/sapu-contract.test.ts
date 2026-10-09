@@ -50,7 +50,7 @@ import {
   isHandoffCommand,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
-import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
+import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser, writeLabel } from "./gh-stub";
 
 const CLI = join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs");
 const clone = () => JSON.parse(JSON.stringify(FIXTURE_CONTRACT));
@@ -1082,6 +1082,7 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   const bin = apiBin("trust-bin");
   const TRUSTING = { ...FIXTURE_CONTRACT, trustedAuthors: [ALICE] };
   commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+  writeLabel(api, "owner/app", "sapu:agent-filed");
   const run = (a: string[], env: Record<string, string> = {}) => cli(repo, a, { bin, env: { HX_API: api, ...env } });
   let next = 10;
   /** Writes `spec` as a fresh issue, runs `issue-trust` on it, and parses the verdict it always prints. */
@@ -1241,6 +1242,30 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
     }
   });
 
+  it("with agentFiledNeedsAcceptance, a trusted author's issue passes only while the agent-filed label exists: a renamed or deleted label hides it", () => {
+    const named = { ...TRUSTING, agentFiledNeedsAcceptance: true, labels: { ...TRUSTING.labels, agentFiled: "bot:filed" } };
+    commit(repo, { ".claude/sapu.json": JSON.stringify(named) });
+    try {
+      // after a rename GitHub names the label otherwise on every issue that carries it: fail closed
+      const r = judge({ author: "owner", labels: ["renamed"], events: [{ event: "labeled", label: "renamed", actor: "owner", minute: 0 }] });
+      expect(r.status).toBe(1);
+      expect(r.v.reason).toMatch(/agent-filed label bot:filed is not in the repository/);
+      writeLabel(api, "owner/app", "bot:filed");
+      expect(judge({ author: "owner" }).status).toBe(0);
+      // an issue carrying it is judged by its acceptance, which needs no lookup
+      expect(judge({ author: "owner", labels: ["bot:filed"], events: [{ event: "labeled", label: "bot:filed", actor: "owner", minute: 0 }] }).v.reason).toMatch(/does not carry sapu:accepted/);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+    // without the setting nothing is looked up: the author decides
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, labels: { ...TRUSTING.labels, agentFiled: "gone:label" } }) });
+    try {
+      expect(judge({ author: "owner" }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
   it("an issue the agent-filed label was EVER applied to stays agent-filed: removing the label launders nothing", () => {
     const F = "sapu:agent-filed";
     const removed = { author: "owner", labels: [] as string[], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "unlabeled" as const, label: F, actor: "owner", minute: 1 }] };
@@ -1387,6 +1412,7 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
   const TRUSTING = { ...FIXTURE_CONTRACT, trustedAuthors: [ALICE] };
   const BOT_RUN = { ...TRUSTING, labels: { ...TRUSTING.labels, acceptors: [ALICE] } };
   commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+  writeLabel(api, "owner/app", "sapu:agent-filed");
   let next = 300;
   const judge = (spec: IssueSpec, env: Record<string, string> = {}) => {
     const n = next++;

@@ -1127,6 +1127,17 @@ function issueSnapshot(c, n) {
 }
 
 /**
+ * Does label `name` exist in the repo of contract `c` (GitHub matches its name in any case)? One REST
+ * call; false on GitHub's 404, and a throw when GitHub cannot be read.
+ */
+function labelExists(c, name) {
+  const r = spawnSync("gh", ["api", `repos/${c.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (r.status === 0) return lc(r.stdout.trim()) === lc(name);
+  if (/\(HTTP 404\)/.test(r.stderr || "")) return false;
+  throw new Error(`cannot read label ${name}: ${(r.stderr || (r.error && r.error.message) || "").trim().split("\n").pop() || `gh exited ${r.status}`}`);
+}
+
+/**
  * May issue (or PR) `n` of contract `c` steer sapu? {trusted, reason, acceptedBy, snapshot}, where
  * snapshot = {kind, title, body, author, lastEditedAt, editor} is the text the verdict judged — the
  * only issue text a skill may read. Yes when its author's id is in `trusted`, unless the contract sets
@@ -1167,6 +1178,12 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   const carries = filedNow ? `it carries ${agentFiledLabel(c)}` : `${agentFiledLabel(c)} was applied to it (removed since)`;
   const gated = agentFiled && c.agentFiledNeedsAcceptance === true;
   const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, agentFiled, snapshot });
+  // A renamed or deleted agent-filed label is named otherwise (or not at all) on every issue it was
+  // on, labels and timeline alike: an agent-filed issue would pass as the author's own. The gate
+  // then trusts no author until the label is back under its contract name.
+  if (ok(snapshot.author) && !gated && c.agentFiledNeedsAcceptance === true && !labelExists(c, agentFiledLabel(c))) {
+    return verdict(false, `author ${named(snapshot.author)} is in the trusted set, but the agent-filed label ${agentFiledLabel(c)} is not in the repository (renamed or deleted?): GitHub would name it otherwise on the issues an agent filed, so none can be told from the owner's. Rename it back (or re-create it, if it was deleted).`);
+  }
   if (ok(snapshot.author) && !gated) return verdict(true, `author ${named(snapshot.author)} is in the trusted set${agentFiled ? `; ${carries}: an agent filed it, and what it quotes is data` : ""}`);
   const author = gated
     ? `author ${named(snapshot.author)} is an agent's account: ${filedNow ? carries : `${agentFiledLabel(c)} was applied to it`} and the contract sets agentFiledNeedsAcceptance`

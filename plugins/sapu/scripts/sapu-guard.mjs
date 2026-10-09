@@ -123,7 +123,11 @@
 // PATCH issues/N with labels, GraphQL updateIssue/updatePullRequest labelIds, an MCP issue or PR update
 // with a labels field). With agentFiledNeedsAcceptance a non-worker's new issue must carry the
 // agent-filed label as a literal (a GraphQL createIssue, naming labels by node id, is BLOCKED); a
-// worker files no issue by any of those routes. A not-planned close (`gh issue close -r`, REST state_reason,
+// worker files no issue by any of those routes. What the shell builds counts as any value: a `gh label
+// create|edit|delete` or `gh issue create --label` word, a gh subcommand (judged as each one a rule
+// names), a `gh api` method (every write method), and a `gh api` route (a non-GET call through it is
+// BLOCKED whole); a substitution glued mid-word (`--x=$(…)`, `a/$(…)/b`) makes the whole word built.
+// A not-planned close (`gh issue close -r`, REST state_reason,
 // GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
 // known one by one; global options before a runner's `run` (`poetry -C . run`, `uv --directory .
@@ -308,7 +312,10 @@ function closingParen(src, open) {
 /**
  * Shell-like tokenizer. Returns simple commands, each {toks: [{v, dyn}], pre, post} where
  * pre/post are the operators around it ("|", "&", "(", ")", ";" ...), plus `nested`: the text
- * of every command substitution found inside double quotes, to be checked on its own.
+ * of every command substitution found inside double quotes, to be checked on its own. An unquoted
+ * $( ) or backtick glued to a word (`--x=$(…)`, `$(…)/y`) makes that word one the shell builds
+ * (dyn): `gluedOpen` marks a command whose last word runs on into the substitution, `gluedFirst`
+ * one whose first word runs on from the substitution before it.
  */
 export function tokenize(src) {
   const cmds = [];
@@ -318,19 +325,30 @@ export function tokenize(src) {
   let pre = ";";
   let preCond = false; // the separator before this command was && or || (pre still reads ";")
   let inBacktick = false;
+  let glueNext = false; // a substitution just closed: a word starting here is glued to it
+  let gluedFirst = false; // this command's first word is glued to the substitution before it
+  const open = () => {
+    if (tok !== null) return;
+    tok = { v: "", dyn: glueNext };
+    if (glueNext && !toks.length) gluedFirst = true;
+    glueNext = false;
+  };
   const push = () => {
     if (tok !== null) toks.push(tok);
     tok = null;
   };
-  const end = (op, cond = false) => {
+  const end = (op, cond = false, gluedOpen = false) => {
     push();
+    glueNext = false;
+    const first = gluedFirst;
+    gluedFirst = false;
     const kept = toks.filter((t) => t.v !== "{" && t.v !== "}");
     // A line break (or comment) right after `|`, `&&` or `||` continues that list: `a |⏎ b` is a pipeline.
     if (!kept.length && op === ";" && (pre === "|" || preCond)) {
       toks = [];
       return;
     }
-    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
+    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond, gluedOpen, gluedFirst: first });
     else if (cmds.length && (op === ")" || op === "|" || op === "&")) {
       // `(…) | x` / `(…) &`: keep the subshell's ")" so its directory is restored; the pipe or job
       // applies to the subshell as a whole, which never moves this shell anyway.
@@ -342,7 +360,7 @@ export function tokenize(src) {
     preCond = cond;
   };
   const add = (c, dyn = false) => {
-    if (tok === null) tok = { v: "", dyn: false };
+    open();
     tok.v += c;
     if (dyn) tok.dyn = true;
   };
@@ -356,7 +374,7 @@ export function tokenize(src) {
       add(src.slice(i + 1, j === -1 ? src.length : j));
       i = j === -1 ? src.length : j;
     } else if (c === '"') {
-      if (tok === null) tok = { v: "", dyn: false };
+      open();
       let j = i + 1;
       for (; j < src.length && src[j] !== '"'; j++) {
         if (src[j] === "\\" && j + 1 < src.length) add(src[++j]);
@@ -402,6 +420,7 @@ export function tokenize(src) {
       // A redirection operator is a word of its own (`cat<.env` is cat, <, .env), with the file
       // descriptor number written right before it (`2>`).
       let op = "";
+      glueNext = false;
       if (tok !== null && !tok.dyn && /^\d+$/.test(tok.v)) {
         op = tok.v;
         tok = null;
@@ -411,25 +430,34 @@ export function tokenize(src) {
       i += m[0].length - 1;
       toks.push({ v: op, dyn: false });
     } else if (c === "$" && src[i + 1] === "(") {
-      end("(");
+      // glued to the word before it: that word is the shell's to finish
+      if (tok !== null) tok.dyn = true;
+      end("(", false, tok !== null);
       i++;
     } else if (c === "`") {
-      end(inBacktick ? ")" : "(");
+      if (inBacktick) end(")");
+      else {
+        if (tok !== null) tok.dyn = true;
+        end("(", false, tok !== null);
+      }
       inBacktick = !inBacktick;
+      glueNext = !inBacktick;
     } else if (c === ";" || c === "\n") {
       end(";");
     } else if (c === "(" || c === ")") {
       end(c);
+      glueNext = c === ")";
     } else if (c === "&" || c === "|") {
       if (src[i + 1] === c) {
         end(";", true);
         i++;
       } else end(c);
-    } else if (c === "#" && tok === null) {
+    } else if (c === "#" && tok === null && !glueNext) {
       while (i < src.length && src[i] !== "\n") i++;
       end(";");
     } else if (/\s/.test(c)) {
       push();
+      glueNext = false;
     } else {
       add(c, c === "$");
     }
@@ -1194,6 +1222,8 @@ const BLOCK = {
   force: "plain force push (--force, -f, +refspec). Use --force-with-lease, and only on a branch whose commits are all yours.",
   remote: "git config or `git remote` that redirects where git pushes or fetches (remote.*, url.*) is the orchestrator's: every worktree shares it. Push your own branch to origin.",
   gitHome: "HOME=/XDG_CONFIG_HOME= in front of git swaps the config git reads (hooks path, aliases, includes). Run git with the environment it has.",
+  apiDynamic:
+    "`gh api` writing (any method but GET) through a route or method the shell builds (`$VAR`, `${VAR}`, `$( )`, backticks): it may be any route — an issue's labels, a label, a new issue, a merge, the repo's contents — so it is judged as every one and refused. Write the route and method literally (gh fills `{owner}/{repo}` itself).",
   graphqlFile: "`gh api graphql` with --input, a query read from a file (-F query=@…) or a query built by the shell ($( ), backticks, a variable): the mutation cannot be inspected. Pass the query inline with -f query='…'.",
   ghAlias: "`gh alias set/import` defines a command the guard cannot see through (an alias can be `pr merge`). Run the gh command itself.",
   worktrees: "--ignore-other-worktrees / `git worktree add --force` check out a branch another worktree holds; the orchestrator's alone.",
@@ -1846,6 +1876,13 @@ function checkCommand(t, state, depth) {
     let [g1, g2] = [i1 < 0 ? undefined : w[i1], i2 < 0 ? undefined : w[i2]];
     if (g1 === "co") [g1, g2] = ["pr", "checkout"];
     if (g1 !== undefined && !g1.startsWith("-") && !GH_COMMANDS.has(g1)) return BLOCK.ghUnknown;
+    // A subcommand the shell builds (`gh label $S …`, `gh pr $(…) 1`) is judged as each one a rule names.
+    if (g1 !== "api" && i2 >= 0 && argv[ix[i2]].dyn) {
+      for (const sub of GH_RULED_SUBCOMMANDS) {
+        const r = checkCommand([...t.slice(0, at + ix[i2]), { v: sub, dyn: false }, ...t.slice(at + ix[i2] + 1)], state, depth + 1);
+        if (r) return r;
+      }
+    }
     if (g1 === "pr" && g2 === "merge") return BLOCK.merge;
     if (g1 === "issue" && g2 === "create" && rules.worker !== false) return BLOCK.issue;
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
@@ -1853,7 +1890,6 @@ function checkCommand(t, state, depth) {
     if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade")) || (g1 === "release" && g2 === "download")) return BLOCK.foreignCode;
     // The owner labels (acceptance, needs-owner), in every spelling gh offers.
     const L = rules.ownerLabels;
-    const tail = i2 < 0 ? [] : w.slice(i2 + 1);
     const tailT = i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]);
     // A label or reason the shell builds cannot be read: refused like the owner's own.
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {
@@ -1877,6 +1913,8 @@ function checkCommand(t, state, depth) {
       }
       if (labels.some((x) => namesLabel(x.v, rules.accepted))) return BLOCK.acceptLabel;
       if (rules.agentFiledGate && !labels.some((x) => !x.dyn && namesLabel(x.v, rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+      // a label the shell builds may be the acceptance label
+      if (labels.some((x) => x.dyn)) return BLOCK.acceptLabel;
     }
     // Closing as not planned is the owner's ruling (argus records it as intended).
     if (g1 === "issue" && g2 === "close") {
@@ -1886,7 +1924,8 @@ function checkCommand(t, state, depth) {
         if (val && (val.dyn || notPlanned(val.v))) return BLOCK.ownerRuling;
       }
     }
-    if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tail.some((v) => namesLabel(v, L))))) return BLOCK.acceptLabel;
+    // A label word the shell builds (`gh label edit $(…) --name x`, `--name "$N"`) may be an owner label.
+    if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tailT.some((x) => x.dyn || namesLabel(x.v, L))))) return BLOCK.acceptLabel;
     if (g1 === "api") {
       if (a.some((v) => /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/.test(v))) return BLOCK.acceptLabel;
       // labelIds on an update replaces the whole label set: the owner labels go without being named.
@@ -1921,34 +1960,15 @@ function checkCommand(t, state, depth) {
         }
       }
       if (a.some((v) => /\b(createCommitOnBranch|createRef|updateRefs?|deleteRef|mergeBranch)\b/.test(v))) return BLOCK.apiWrite;
-      const m = a.findIndex((v) => v === "-X" || v === "--method");
-      const inline = a.map((v) => /^(?:-X|--method=)(.+)$/.exec(v)?.[1]).find(Boolean);
-      const method = (m > 0 ? a[m + 1] : inline) || (a.some((v) => /^(-f|-F|--field|--raw-field|--input)$/.test(v)) ? "POST" : "GET");
-      const M = method.toUpperCase();
-      if (M !== "GET") {
-        if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(v))) return BLOCK.merge;
-        if (a.some((v) => /\/(contents|git|branches)\//.test(v))) return BLOCK.apiWrite;
-        // REST state_reason not_planned, built by the shell, or read from a file.
-        if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
-        const route = (v) => v.replace(/[?#][\s\S]*$/, "");
-        const fields = ghFields(argv);
-        const labelField = (f) => /^labels(\[\])?=/.test(f.v);
-        // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,
-        // drops the owner labels without naming them.
-        if ((M === "PUT" || M === "DELETE") && a.some((v) => /\/issues\/\d+\/labels\/?$/.test(route(v)))) return BLOCK.acceptLabel;
-        if ((M === "POST" || M === "PATCH") && a.some((v) => /\/issues\/\d+\/?$/.test(route(v))) && fields.some(labelField)) return BLOCK.acceptLabel;
-        // A new issue (POST …/issues): never a worker's; it may carry the agent-filed and needs-owner
-        // labels, never the acceptance label; with agentFiledNeedsAcceptance it must carry the first.
-        const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/issues\/?$/.test(route(v)));
-        if (creates) {
-          if (rules.worker !== false) return BLOCK.issue;
-          if (rules.agentFiledGate && !fields.some((f) => labelField(f) && !f.dyn && !f.file && namesLabel(f.v.slice(f.v.indexOf("=") + 1), rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
-        }
-        // A write naming the label, or a label/issue write whose body the guard cannot read.
-        if (a.some((v) => namesLabel(v, creates ? rules.accepted : L))) return BLOCK.acceptLabel;
-        const unread = a.some((v) => /^--input(=|$)/.test(v)) || fields.some((f) => f.file);
-        if (unread && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
-        if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.ownerRuling;
+      // Every method given (a shell-built or cut-off one is any method), else POST with a body, else
+      // GET; a route the shell builds (`repos/$R/issues`, `issues/$(…)/labels`) may be any route, so
+      // a write through it is refused whole, and each method is judged by the strictest rule it meets.
+      const dynRoute = ghApiRoutes(argv, ix[i1]).some((x) => x.dyn);
+      for (const M of ghApiMethods(argv)) {
+        if (M === "GET") continue;
+        if (dynRoute) return BLOCK.apiDynamic;
+        const r = ghApiWrite(M, argv, rules);
+        if (r) return r;
       }
     }
     return null;
@@ -2045,6 +2065,77 @@ function ghWords(a) {
   return { w, i1, i2, ix };
 }
 
+// The gh subcommands a rule names: a shell-built one is judged as each of them.
+const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download"];
+// gh api's options that take a value (the next word, unless glued).
+const GH_API_VALUE_OPTS = /^(-X|--method|-f|-F|--field|--raw-field|-H|--header|--input|-q|--jq|-t|--template|-p|--preview|--cache|--hostname|-R|--repo)$/;
+
+/** gh api's route words ({v, dyn}): its operands after `api` at index `from`, option values skipped. */
+function ghApiRoutes(argv, from) {
+  const out = [];
+  for (let k = from + 1; k < argv.length; k++) {
+    if (argv[k].v === "--") return [...out, ...argv.slice(k + 1)];
+    if (GH_API_VALUE_OPTS.test(argv[k].v)) k++;
+    else if (!argv[k].v.startsWith("-")) out.push(argv[k]);
+  }
+  return out;
+}
+
+/**
+ * The methods a `gh api` call may use, upper case: each -X/--method given (one the shell builds, or
+ * one an unquoted $( ) cut off, may be any write), else POST when a field or --input gives a body, else GET.
+ */
+function ghApiMethods(argv) {
+  const given = [];
+  for (let k = 1; k < argv.length; k++) {
+    let tok = null;
+    if (argv[k].v === "-X" || argv[k].v === "--method") tok = argv[++k] ?? { v: "", dyn: true };
+    else {
+      const m = /^(?:-X|--method=)([\s\S]*)$/.exec(argv[k].v);
+      if (m) tok = { v: m[1], dyn: argv[k].dyn };
+    }
+    if (tok) given.push(tok.dyn || !tok.v ? null : tok.v.toUpperCase());
+  }
+  if (given.includes(null)) return ["POST", "PUT", "PATCH", "DELETE"];
+  if (given.length) return given;
+  return ghFields(argv).length || argv.some((x) => /^--input(=|$)/.test(x.v)) ? ["POST"] : ["GET"];
+}
+
+/** The reason a literal-route `gh api` write with method `M` is refused, or null. */
+function ghApiWrite(M, argv, rules) {
+  const a = argv.map((x) => x.v);
+  const L = rules.ownerLabels;
+  const route = (v) => v.replace(/[?#][\s\S]*$/, "");
+  if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(route(v)))) return BLOCK.merge;
+  if (a.some((v) => /\/(contents|git|branches)\//.test(route(v)))) return BLOCK.apiWrite;
+  // REST state_reason not_planned, built by the shell, or read from a file.
+  if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
+  const fields = ghFields(argv);
+  const labelField = (f) => /^labels(\[\])?=/.test(f.v);
+  // a field whose name the shell builds (`-f "$K=x"`) may be labels or state_reason
+  const dynKey = (f) => f.dyn && (!f.v.includes("=") || /[$`]/.test(f.v.slice(0, f.v.indexOf("="))));
+  // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,
+  // drops the owner labels without naming them.
+  if ((M === "PUT" || M === "DELETE") && a.some((v) => /\/issues\/\d+\/labels\/?$/.test(route(v)))) return BLOCK.acceptLabel;
+  if ((M === "POST" || M === "PATCH") && a.some((v) => /\/issues\/\d+\/?$/.test(route(v))) && fields.some((f) => labelField(f) || dynKey(f))) return BLOCK.acceptLabel;
+  // A new issue (POST …/issues): never a worker's; it may carry the agent-filed and
+  // needs-owner labels, never the acceptance label (nor one the shell builds); with
+  // agentFiledNeedsAcceptance it must carry the first, written literally.
+  const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/issues\/?$/.test(route(v)));
+  if (creates) {
+    if (rules.worker !== false) return BLOCK.issue;
+    if (rules.agentFiledGate && !fields.some((f) => labelField(f) && !f.dyn && !f.file && namesLabel(f.v.slice(f.v.indexOf("=") + 1), rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+    if (fields.some((f) => (labelField(f) && f.dyn) || dynKey(f))) return BLOCK.acceptLabel;
+  }
+  // A write naming the label, or a label/issue write whose body the guard cannot read (a label
+  // write's field the shell builds may name an owner label).
+  if (a.some((v) => namesLabel(v, creates ? rules.accepted : L))) return BLOCK.acceptLabel;
+  const unread = a.some((v) => /^--input(=|$)/.test(v)) || fields.some((f) => f.file);
+  if ((unread || fields.some((f) => f.dyn)) && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
+  if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.ownerRuling;
+  return null;
+}
+
 /**
  * The value of an option at `tail[j]` ({v, dyn}): glued (`--x=v`, `-xv`) or the next word. A value
  * the shell builds is dyn; one an unquoted $( ) or backtick cut off is missing, read as dyn too.
@@ -2123,14 +2214,20 @@ function checkText(text, dir, base, depth) {
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
     // A command an unquoted $( ) or backtick cuts (`gh issue edit 1 $(…) <label>`) goes on after the
-    // substitution: it is judged once more whole, each substitution a word the shell builds.
+    // substitution: it is judged once more whole, each substitution a word the shell builds, and one
+    // glued to the words around it (`--x=$(…)`, `a/$(…)/b`) one word with them.
     if (c.post === "(") {
       const built = { v: "", dyn: true };
-      const whole = [...c.toks, built];
+      const whole = c.gluedOpen ? [...c.toks] : [...c.toks, built];
       for (let k = cmds.indexOf(c) + 1; k < cmds.length && (cmds[k].pre === "(" || cmds[k].pre === ")"); k++) {
         if (cmds[k].pre !== ")") continue;
-        whole.push(...cmds[k].toks);
-        if (cmds[k].post === "(") whole.push(built);
+        let rest = cmds[k].toks;
+        if (cmds[k].gluedFirst && whole.length) {
+          whole.push({ v: whole.pop().v + rest[0].v, dyn: true });
+          rest = rest.slice(1);
+        }
+        whole.push(...rest);
+        if (cmds[k].post === "(" && !cmds[k].gluedOpen) whole.push(built);
       }
       const r = checkCommand(whole, { ...state }, depth);
       if (r) return r;

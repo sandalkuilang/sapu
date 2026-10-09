@@ -176,6 +176,11 @@ export function writePr(api: string, repo: string, n: number, spec: PrSpec) {
   put(api, `graphql_pr_${n}`, { data: { repository: { pullRequest: pr } } });
 }
 
+/** A REST `repos/<repo>/labels/<name>` answer: label `name` exists in `repo` ("owner/name"). */
+export function writeLabel(api: string, repo: string, name: string) {
+  put(api, `repos_${repo.replace("/", "_")}_labels_${encodeURIComponent(name)}`, { name });
+}
+
 /** A REST `users/<login>` answer: that login now belongs to account `id`. */
 export function writeUser(api: string, login: string, id: number) {
   put(api, `users_${login}`, { login, id, type: login.endsWith("[bot]") ? "Bot" : "User" });
