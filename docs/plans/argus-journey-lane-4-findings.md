@@ -1583,3 +1583,11 @@ Interfaces:
   CLI, with `appCycle({repro: true})`; `clerk.1` is clerk2 and `clerk.2` clerk1, so only the claim race
   waits for a TOTP step. The delayed-handoff run opens the clerk's inbox before the order is placed (and
   shares the viewport test's cycle); the trace test and the `down` test are one test.
+- **Task 9.** `repro` passes its other options through to `once` (the CLI gives `say`, so each run's lines
+  are printed as they are made) and leaves a fence whole: only the lines outside it get `run <i> `. An exit 3
+  whose last line is not a valid `REPRODUCED …` reads `HARNESS: run <i>: exit 3 without its REPRODUCED line`,
+  any exit but 0, 2 and 3 `HARNESS: run <i>: exit <k>`; `verdict.json` is 0600. `classify`'s `because`
+  words are the table row's (`dead end on a money journey`, `handoff signal with no written rule`, …);
+  a flag that does not move an oracle's row is accepted and ignored (`reversal --stock` is S1 either way),
+  a flag given twice is refused. The CLI reads `labels.needsOwner` through `loadContract` (none → the
+  default; an invalid contract is refused, as `up` refuses it).

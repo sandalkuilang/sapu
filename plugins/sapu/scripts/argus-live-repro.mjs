@@ -3,6 +3,7 @@
 // browser step runs as the wrapper's own `run-code` template in slot `r`'s sessions, through the session
 // driver, proxy and per-slot config an explorer's use; its answer is an exit code — 0 not reproduced, 3
 // reproduced, 2 a harness failure — and lines in the wrapper's own words, what the page showed fenced.
+// `repro` runs it twice and files only at two of two (decision 9).
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -434,6 +435,47 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
     }
   }
   return { code: result.exit, lines, result };
+}
+
+/** A valid exit 3's last line (decision 8): enums and integers only. */
+const REPRODUCED = /^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)? observed=[a-z-]+(:\d+)?$/;
+
+/**
+ * Candidate `ref`'s repro, two of two (spec §10 "Reproduce"; decision 9) → `{code, lines}`: run 1, and run
+ * 2 only when run 1 reproduced. Each run's lines are prefixed `run <i> ` (a fence stays whole, its nonce
+ * lines as made), then the verdict: run 2's `REPRODUCED …` (exit 3, both runs reproduced), `NOT REPRODUCED
+ * runs=<k>/<n>` (exit 0; `1/2` the intermittent case) or `HARNESS: run <i>: <reason>` (exit 2, at once): an
+ * exit 3 without its REPRODUCED line, or any exit but 0, 2 and 3, is the harness's too. `verdict.json`
+ * `{runs: [exit…], verdict: "reproduced"|"not-reproduced"|"intermittent"|"harness"}` (0600) goes to the
+ * candidate's directory. `once` is the one-run seam (runOnce); `opts` reach it as they are.
+ */
+export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts } = {}) {
+  const { dir } = reproRef(main, ref);
+  const lines = [];
+  const emit = (l) => {
+    lines.push(l);
+    say(l);
+  };
+  const runs = [];
+  let verdict = null;
+  let code = 0;
+  for (let i = 1; i <= 2 && verdict === null; i++) {
+    const prefix = (l) => (l.startsWith("<<<") ? l : `run ${i} ${l}`);
+    const r = await once(main, ref, { ...opts, i, say: (l) => say(prefix(l)) });
+    for (const l of r.lines) lines.push(prefix(l));
+    runs.push(r.code);
+    const last = r.lines.at(-1) ?? "";
+    if (r.code === 3 && !REPRODUCED.test(last)) [verdict, code] = [`HARNESS: run ${i}: exit 3 without its REPRODUCED line`, 2];
+    else if (r.code === 2) [verdict, code] = [`HARNESS: run ${i}: ${last.startsWith("HARNESS: ") ? last.slice(9) : "exit 2"}`, 2];
+    else if (r.code !== 0 && r.code !== 3) [verdict, code] = [`HARNESS: run ${i}: exit ${r.code}`, 2];
+    else if (r.code === 0) verdict = `NOT REPRODUCED runs=${i - 1}/${i}`;
+    else if (i === 2) [verdict, code] = [last, 3];
+  }
+  emit(verdict);
+  const word = code === 3 ? "reproduced" : code === 2 ? "harness" : runs.length === 2 ? "intermittent" : "not-reproduced";
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writePrivate(path.join(dir, "verdict.json"), `${JSON.stringify({ runs, verdict: word })}\n`);
+  return { code, lines };
 }
 
 /**

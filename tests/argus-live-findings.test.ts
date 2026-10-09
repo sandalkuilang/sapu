@@ -5,11 +5,13 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, example, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
+import { alive, ARGUS_LIVE, cleanTemps, committed, example, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+// @ts-expect-error — plain ESM script without types
+import { CLASSES, classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -20,6 +22,8 @@ import { HELPERS, loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs
 import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mjs";
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
+// @ts-expect-error — plain ESM script without types
+import { repro } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -68,7 +72,7 @@ describe("argus-live modules — the DAG", () => {
     expect(g.has("argus-live-start")).toBe(true);
     for (const [m, deps] of g) for (const d of deps) expect(g.has(d), `${m} imports ${d}`).toBe(true);
     for (const m of g.keys()) expect(reach(g, m).has(m), `${m} imports itself through its imports`).toBe(false);
-    for (const leaf of ["argus-live-fence", "argus-live-targets", "argus-live-origin"]) expect(g.get(leaf), leaf).toEqual([]);
+    for (const leaf of ["argus-live-fence", "argus-live-targets", "argus-live-origin", "argus-live-classes"]) expect(g.get(leaf), leaf).toEqual([]);
     expect(reach(g, "argus-live-pw").has("argus-live-instance")).toBe(false);
     expect(reach(g, "argus-live-start").has("argus-live-browser")).toBe(false);
     expect(g.has("argus-live-session")).toBe(true);
@@ -650,5 +654,164 @@ describe("argus-live repro DSL", () => {
       at,
     ).steps;
     expect(reductions(race, { changed: [2, 3] }).map((u: Obj) => u.label)).toEqual(["step 1"]);
+  });
+});
+
+/** The cycles the repro stubs below leave: each is taken down after its test. */
+const reproRuns: { main: string; runId: string }[] = [];
+afterEach(async () => {
+  for (const r of reproRuns.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+});
+/** Slot 1's allocation in the repro stubs: §10's roles and the fixture's. */
+const REPRO_ACCOUNTS = { "customer.1": "buyer1@example.test", "sales.1": "sales1@example.test", "buyer.1": "buyer2@example.test", "clerk.1": "clerk1@example.test" };
+
+/**
+ * A cycle (spec §8's example as its config) whose slot 1 returned one candidate per repro of `repros`, as
+ * the wrapper keeps a return → the cycle, the candidates' refs (`1.1.<k>`) and `dir(ref)`, the candidate's
+ * record directory.
+ */
+const returned = (repros: Obj[][]) => {
+  const t = liveRun();
+  writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(example(), null, 2)}\n`);
+  writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
+  const ports = { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 };
+  writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: ["http://localhost:41002"], allowOrigins: [], groups: [], env: t.env, ports, instanceId: "0123456789abcdef", slots: { "1": { journey: "order-to-cash", accounts: REPRO_ACCOUNTS } } });
+  reproRuns.push({ main: t.main, runId: t.runId });
+  const returns = join(t.main, ".argus/live", t.runId, "returns");
+  mkdirSync(returns, { recursive: true, mode: 0o700 });
+  const candidates = repros.map((list) => ({ claim: "a seeded defect", oracle: list.at(-1)!.final, repro: list }));
+  writeFileSync(join(returns, "1.1.json"), `${JSON.stringify({ journey: "order-to-cash", status: "done", candidates })}\n`);
+  const dir = (ref: string) => join(t.main, ".argus/live", t.runId, "repro", ref);
+  return { ...t, refs: repros.map((_, k) => `1.1.${k + 1}`), dir };
+};
+
+/** A run's answer as runOnce gives it, for exit `code`: its lines in the wrapper's words, the fence, the last line. */
+const answerOf = (code: number) => {
+  const last = code === 3 ? "REPRODUCED step=2 expected=visible observed=absent" : code === 0 ? "NOT REPRODUCED" : "HARNESS: step 3 missing target";
+  const lines = ["fresh: instance 0123456789abcdef", "step 1 customer.1 goto: ok", ...(code === 3 ? ["<<<PAGE-0123456789abcdef0123456789abcdef\nexpected: {}\nPAGE-0123456789abcdef0123456789abcdef>>>"] : []), last];
+  return { code, lines, result: { exit: code, expected: code === 3 ? "visible" : null, observed: code === 3 ? "absent" : null } };
+};
+
+describe("argus-live repro — two of two", () => {
+  /** A `once` answering `exits` in turn, recording what each call was given. */
+  const stub = (exits: number[]) => {
+    const calls: Obj[] = [];
+    const once = async (_main: string, ref: string, opts: Obj) => {
+      calls.push({ ref, ...opts });
+      return answerOf(exits[calls.length - 1]);
+    };
+    return { once, calls };
+  };
+  const LIST = [{ as: "customer", do: "goto", path: "/" }, { as: "customer", expect: "visible", target: { text: "x" }, final: "discoverability" }];
+  const verdict = (t: ReturnType<typeof returned>) => JSON.parse(readFileSync(join(t.dir(t.refs[0]), "verdict.json"), "utf8"));
+
+  it("3 then 3 reproduces: each run's lines prefixed, run 2's REPRODUCED line last", async () => {
+    const t = returned([LIST]);
+    const s = stub([3, 3]);
+    const said: string[] = [];
+    const r = await repro(t.main, t.refs[0], { once: s.once, say: (l: string) => said.push(l) });
+    expect(r.code).toBe(3);
+    expect(r.lines.at(-1)).toBe("REPRODUCED step=2 expected=visible observed=absent");
+    expect(r.lines).toContain("run 1 step 1 customer.1 goto: ok");
+    expect(r.lines).toContain("run 2 REPRODUCED step=2 expected=visible observed=absent");
+    // A fence stays whole: its nonce lines are never prefixed.
+    expect(r.lines.filter((l: string) => l.startsWith("<<<PAGE-"))).toHaveLength(2);
+    expect(s.calls.map((c) => [c.ref, c.i])).toEqual([[t.refs[0], 1], [t.refs[0], 2]]);
+    expect(verdict(t)).toEqual({ runs: [3, 3], verdict: "reproduced" });
+    expect(statSync(join(t.dir(t.refs[0]), "verdict.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("3 then 0 is intermittent; 0 stops after one run", async () => {
+    const t = returned([LIST]);
+    const once30 = stub([3, 0]);
+    const r = await repro(t.main, t.refs[0], { once: once30.once });
+    expect([r.code, r.lines.at(-1)]).toEqual([0, "NOT REPRODUCED runs=1/2"]);
+    expect(verdict(t)).toEqual({ runs: [3, 0], verdict: "intermittent" });
+    const once0 = stub([0]);
+    const n = await repro(t.main, t.refs[0], { once: once0.once });
+    expect([n.code, n.lines.at(-1)]).toEqual([0, "NOT REPRODUCED runs=0/1"]);
+    expect(once0.calls).toHaveLength(1);
+    expect(verdict(t)).toEqual({ runs: [0], verdict: "not-reproduced" });
+  });
+
+  it("a harness failure stops at once and is never counted as reproduced", async () => {
+    const t = returned([LIST]);
+    const once2 = stub([2]);
+    const h = await repro(t.main, t.refs[0], { once: once2.once });
+    expect([h.code, h.lines.at(-1)]).toEqual([2, "HARNESS: run 1: step 3 missing target"]);
+    expect(once2.calls).toHaveLength(1);
+    expect(verdict(t)).toEqual({ runs: [2], verdict: "harness" });
+    const once32 = stub([3, 2]);
+    const h2 = await repro(t.main, t.refs[0], { once: once32.once });
+    expect([h2.code, h2.lines.at(-1)]).toEqual([2, "HARNESS: run 2: step 3 missing target"]);
+    expect(verdict(t)).toEqual({ runs: [3, 2], verdict: "harness" });
+    // An exit 3 without its REPRODUCED line is the harness's (spec §10 "Exit codes").
+    const bare = async () => ({ code: 3, lines: ["fresh: instance 0123456789abcdef"], result: {} });
+    const b = await repro(t.main, t.refs[0], { once: bare });
+    expect([b.code, b.lines.at(-1)]).toEqual([2, "HARNESS: run 1: exit 3 without its REPRODUCED line"]);
+  });
+
+  it("a candidate the return lacks is refused", async () => {
+    const t = returned([LIST]);
+    await expect(repro(t.main, "1.1.9", { once: stub([3]).once })).rejects.toThrow("refused: repro: return 1.1 has no candidate 9");
+  });
+});
+
+describe("argus-live classes", () => {
+  const BUG = ["bug", "argus", "found-by:user"];
+  it("CLASSES holds one row per oracle", () => {
+    expect(Object.keys(CLASSES)).toEqual(ORACLES);
+    expect(() => classify({ oracle: "typo" })).toThrow("refused: classify: typo is not an oracle");
+  });
+  it("dead end: A, S1 on a money journey, else S2", () => {
+    expect(classify({ oracle: "dead-end", money: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S1" });
+    expect(classify({ oracle: "dead-end", money: false })).toMatchObject({ cls: "A", labels: BUG, severity: "S2" });
+  });
+  it("reversal: A, S1", () => {
+    expect(classify({ oracle: "reversal" })).toMatchObject({ cls: "A", labels: BUG, severity: "S1" });
+  });
+  it("claim race: A, S1 only when money or stock moved twice", () => {
+    expect(classify({ oracle: "claim-race", movedTwice: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S1" });
+    expect(classify({ oracle: "claim-race", money: true, stock: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S2" });
+  });
+  it("stale view: A, S1 on money or stock, else S2", () => {
+    expect(classify({ oracle: "stale-view", money: true })).toMatchObject({ severity: "S1" });
+    expect(classify({ oracle: "stale-view", stock: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S1" });
+    expect(classify({ oracle: "stale-view" })).toMatchObject({ cls: "A", labels: BUG, severity: "S2" });
+  });
+  it("status coherence: A, S2 when a role acts on the fact, else S3", () => {
+    expect(classify({ oracle: "status-coherence", actedOn: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S2" });
+    expect(classify({ oracle: "status-coherence" })).toMatchObject({ cls: "A", labels: BUG, severity: "S3" });
+  });
+  it("orphaned work: A, S3", () => {
+    expect(classify({ oracle: "orphaned-work", money: true })).toMatchObject({ cls: "A", labels: BUG, severity: "S3" });
+  });
+  it("interrupted flow and viewport/locale: A, by outcome", () => {
+    for (const oracle of ["interrupted-flow", "viewport-locale"]) expect(classify({ oracle }), oracle).toMatchObject({ cls: "A", labels: BUG, severity: "by outcome" });
+  });
+  it("handoff, re-entry, discoverability, unreachable step: B(a) with a written rule, else heuristic and needs-owner, at most S3", () => {
+    for (const oracle of ["handoff", "re-entry", "discoverability", "unreachable-step"]) {
+      expect(classify({ oracle, rule: true }), oracle).toMatchObject({ cls: "B(a)", labels: ["class:business", "workflow", "argus", "found-by:user"], severity: "at most S3" });
+      expect(classify({ oracle }), oracle).toMatchObject({ cls: "heuristic", labels: ["ux", "workflow", "argus:needs-owner", "argus", "found-by:user"], severity: "at most S3" });
+    }
+    expect(classify({ oracle: "handoff", needsOwner: "owner:rule" }).labels).toEqual(["ux", "workflow", "owner:rule", "argus", "found-by:user"]);
+  });
+
+  it("each seeded defect's class line", () => {
+    const main = committed();
+    const line = (...args: string[]) => {
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "classify", ...args], { cwd: main, encoding: "utf8" });
+      expect(r.status, r.stderr).toBe(0);
+      return r.stdout;
+    };
+    expect(line("--oracle", "handoff")).toBe("class heuristic labels ux,workflow,argus:needs-owner,argus,found-by:user severity at most S3 because handoff signal with no written rule\n");
+    expect(line("--oracle", "dead-end", "--money")).toBe("class A labels bug,argus,found-by:user severity S1 because dead end on a money journey\n");
+    expect(line("--oracle", "reversal", "--stock")).toBe("class A labels bug,argus,found-by:user severity S1 because reversal: a resource not released exactly once\n");
+    expect(line("--oracle", "claim-race", "--moved-twice")).toBe("class A labels bug,argus,found-by:user severity S1 because claim race that moved money or stock twice\n");
+    expect(line("--oracle", "stale-view", "--stock")).toBe("class A labels bug,argus,found-by:user severity S1 because stale view on money or stock\n");
+    expect(line("--oracle", "orphaned-work")).toBe("class A labels bug,argus,found-by:user severity S3 because orphaned work\n");
+    expect(line("--oracle", "viewport-locale")).toBe("class A labels bug,argus,found-by:user severity by outcome because viewport or locale: rated by its outcome, as argus rates\n");
+    const bad = spawnSync(process.execPath, [ARGUS_LIVE, "classify", "--oracle", "handoff", "--money", "--money"], { cwd: main, encoding: "utf8" });
+    expect(bad.status).toBe(1);
   });
 });

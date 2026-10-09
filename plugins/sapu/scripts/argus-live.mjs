@@ -25,26 +25,35 @@
 //                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed
 //   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
 //                                enums and counts, then the return whole in a RETURN nonce fence
+//   argus-live.mjs repro <slot>.<generation>.<k>
+//                                candidate <k>'s repro, two of two (spec §10): run 1, and run 2 only when run 1
+//                                reproduced, each run's lines prefixed `run <i> `; the verdict last: REPRODUCED
+//                                step=… (exit 3, both runs), NOT REPRODUCED runs=<k>/<n> (exit 0) or HARNESS:
+//                                run <i>: … (exit 2); verdict.json in the candidate's records
 //   argus-live.mjs repro <slot>.<generation>.<k> --once
 //                                one run of candidate <k>'s repro on a fresh instance (spec §10): a line per
 //                                step in the wrapper's own words, what the page showed in a nonce fence,
 //                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2)
+//   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
+//                                a journey finding's class, labels and starting severity (spec §10's table):
+//                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
+import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
-import { runOnce } from "./argus-live-repro.mjs";
+import { repro, runOnce } from "./argus-live-repro.mjs";
 import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
-import { findMain } from "./sapu-contract.mjs";
+import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 const main = findMain(process.cwd());
@@ -59,7 +68,9 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> --once";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]";
+/** classify's flags → classify's facts. */
+const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
 try {
   // down and the reaper drain every session into the run's secret ledger before they close it.
@@ -91,6 +102,22 @@ try {
     // Each line is printed as it is made, already in the wrapper's words or fenced and masked (decision 8).
     const r = await runOnce(main, args[0], { say: printMasked });
     process.exit(r.code);
+  } else if (cmd === "repro" && args.length === 1) {
+    // Two of two: each run's lines as they are made, prefixed with the run, then the verdict (decision 9).
+    const r = await repro(main, args[0], { say: printMasked });
+    process.exit(r.code);
+  } else if (cmd === "classify") {
+    const facts = {};
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--oracle" && i + 1 < args.length && facts.oracle === undefined) facts.oracle = args[++i];
+      else if (Object.hasOwn(CLASSIFY_FLAGS, args[i]) && facts[CLASSIFY_FLAGS[args[i]]] === undefined) facts[CLASSIFY_FLAGS[args[i]]] = true;
+      else throw new Error(`refused: ${usage}`);
+    }
+    if (facts.oracle === undefined) throw new Error(`refused: ${usage}`);
+    const c = loadContract(main);
+    if (!c.contract && !c.missing) throw new Error(`refused: ${c.error}`);
+    const k = classify({ ...facts, needsOwner: needsOwnerLabel(c.contract ?? null) });
+    print(`class ${k.cls} labels ${k.labels.join(",")} severity ${k.severity} because ${k.because}`);
   } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
