@@ -16,7 +16,9 @@ import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, startEventsFoll
 // @ts-expect-error — plain ESM script without types
 import { checkEgress, egressAllowed, portHolder } from "../plugins/sapu/scripts/argus-live-egress.mjs";
 // @ts-expect-error — plain ESM script without types
-import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, renewRun, runSetup, startEntry, status, statusJson, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { renewRun, status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, runSetup, startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types

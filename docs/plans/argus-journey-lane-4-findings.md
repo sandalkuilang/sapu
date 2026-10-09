@@ -1484,3 +1484,12 @@ Interfaces:
   slot writers); the guard's explorer rules are unchanged and its seam test grows (T14–T18); `pw`'s
   output is unchanged byte for byte (T2); `down`'s new work (drain, `pruneTraces`) runs inside the
   existing teardown, and what it keeps (`logs/`, `returns/`, `repro/`) only grows by the ledger.
+
+## As built (phase 4)
+
+- **Task 1.** `shown` (how a refusal shows an explorer's argument) moved with `checkUrl` and is
+  exported from `-origin.mjs`: `pw`'s `checkArg` words its other refusals with it too, so it is
+  imported, not copied. `-start.mjs` imports `config`, `egress`, `endpoints`, `lock`, `proc`, `run` and
+  `sapu-contract.mjs`; `-instance.mjs` keeps `up`, `up --fresh`, `renew` and `status` (523 lines), its
+  header the DAG above, with the modules later tasks add named in their places. `canonicalOrigin`'s own
+  default ports fill `ws:` and `wss:` too (the endpoints table has neither); no caller passes them.

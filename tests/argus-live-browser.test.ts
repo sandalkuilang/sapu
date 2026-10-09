@@ -17,7 +17,7 @@ import { closeSessions, runCli, socketsDir } from "../plugins/sapu/scripts/argus
 // @ts-expect-error — plain ESM script without types
 import { clean } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
-import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { commandLogin, login, loginPlan, proveLogins } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types

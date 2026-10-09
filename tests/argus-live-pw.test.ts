@@ -20,17 +20,21 @@ import { clean, fence, nonce, PAGE_CAP } from "../plugins/sapu/scripts/argus-liv
 // @ts-expect-error — plain ESM script without types
 import { killGroup, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { blockedSince, canonicalOrigin, createProxy, proxyAllows, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
+import { blockedSince, createProxy, proxyAllows, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
+// @ts-expect-error — plain ESM script without types
+import { canonicalOrigin, checkUrl } from "../plugins/sapu/scripts/argus-live-origin.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, recover, TEARDOWN_STEPS, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
 import { base32Decode, login, loginCode, loginPlan, reserveStep, runCode, totp, totpFile } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree, status, statusJson, up, waitHealth } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+import { status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { makeHome, makeWorktree, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { checkUrl, maskHeaders, parsePw, pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
+import { maskHeaders, parsePw, pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { intake } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types

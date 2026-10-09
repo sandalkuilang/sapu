@@ -9,34 +9,13 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { DEFAULT_PORTS, normHost } from "./argus-live-endpoints.mjs";
+import { normHost } from "./argus-live-endpoints.mjs";
 import { readLock, runIdOk } from "./argus-live-lock.mjs";
+import { canonicalOrigin, exactHost } from "./argus-live-origin.mjs";
 import { killGroup, sleep, startTime } from "./argus-live-proc.mjs";
 import { CLI, logsDir, readRun, updateRun } from "./argus-live-run.mjs";
 
 const defaultLookup = (h) => dns.promises.lookup(h, { all: true });
-
-/**
- * A host as a URL spells it: lower case, IPv4 and IPv6 in WHATWG URL's one form, without brackets or a
- * trailing dot. Unlike normHost, loopback spellings stay apart: `localhost`, `127.0.0.1` and `::1` may be
- * different listeners (an IPv4 and an IPv6 socket on one port).
- */
-export function exactHost(h) {
-  const x = String(h).trim().replace(/^\[(.*)\]$/, "$1");
-  if (!x) return "";
-  try {
-    return new URL(`http://${net.isIP(x) === 6 ? `[${x}]` : x}/`).hostname.replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
-  } catch {
-    return "";
-  }
-}
-
-/** `http(s)://<exactHost>:<port>` — the form origins are compared in (a host as the run's origin spells it, default ports filled). */
-export function canonicalOrigin(origin) {
-  const u = new URL(origin);
-  const scheme = u.protocol.replace(/:$/, "");
-  return `${scheme}://${exactHost(u.hostname)}:${u.port || DEFAULT_PORTS[scheme]}`;
-}
 
 /**
  * True when `{scheme, host, port}` is allowed: `allowed` is a set of canonical origins

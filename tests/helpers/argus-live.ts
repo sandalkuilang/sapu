@@ -8,7 +8,7 @@ import { join } from "node:path";
 // @ts-expect-error — plain ESM script without types
 import { cliCacheRoot, cliInstallDir, ensureCli } from "../../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree } from "../../plugins/sapu/scripts/argus-live-instance.mjs";
+import { makeHome, makeWorktree } from "../../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../../plugins/sapu/scripts/argus-live-lock.mjs";
 

@@ -11,8 +11,8 @@ import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
 import { clean, nonce } from "./argus-live-fence.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
+import { canonicalOrigin, exactHost } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep, tail, tempBeside, withFileLock } from "./argus-live-proc.mjs";
-import { canonicalOrigin, exactHost } from "./argus-live-proxy.mjs";
 import { logsDir, readRun, updateRun } from "./argus-live-run.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
