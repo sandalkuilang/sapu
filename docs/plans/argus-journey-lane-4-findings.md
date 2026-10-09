@@ -1673,3 +1673,14 @@ Interfaces:
   the store); the stdout scan leaves out the mint's, which is where the token is printed. Scrub also
   checks each `--label` (`label <i> <class>`, counted with the title's and the body's hits): gh puts a
   label on the issue as given.
+- **Task 15.** Steps and anchors are numbered from 1 in the reasons; a journey is dropped for its first
+  failing check (its id first, then each step's anchors, then its role, route or trigger and roots), and a
+  `system` step without a trigger reads `trigger (none)`. Without `.argus/live.json` triggers go unchecked
+  with the roles (one marker, `roles unchecked`); a file that is not JSON is refused. Every occurrence counts,
+  overlapping ones too, and an anchor's file is read at HEAD (`git show HEAD:<file>`, a path with `..` or
+  absolute never read). `readJourneys` checks the shape map-check walks (an object, `journeys` of objects with
+  `steps` arrays, `roots` strings, `dropped` objects). A dropped journey's entry replaces an earlier one of its
+  id, and a journey kept again leaves `dropped`. The catalog sorts its domains, says a role repeated in a row
+  once, and prints `dropped:` only when some journey is; `catalog: <n> journeys, <k> dropped` counts the file's
+  `dropped` after the check. Renames are read with `git diff -z --name-status -M` over the whole tree, so a file
+  renamed out of `roots` counts; the momus report is compared only while `head` is in the history.

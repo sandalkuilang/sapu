@@ -55,6 +55,12 @@
 //                                gh, the repo, the policy), the local ones in a Local evidence: line; the body file
 //                                rewritten; with --create or --comment, filed through gh: filed|commented: <url>
 //                                (exit 0, whatever gh's exit), or failed: … before printing an issue URL (exit 2)
+//   argus-live.mjs map-check [--list]
+//                                keep only the journeys of .argus/journeys.json whose every step is anchored in
+//                                HEAD's code (spec §6), rewriting it: dropped <id>: <reason> per journey dropped
+//                                now, catalog: <n> journeys, <k> dropped[, roles unchecked], refresh: <reason>; …
+//                                or refresh: none; with --list the catalog after them; exit 1 refused: no journey
+//                                is selectable when none is kept. Takes no lock and starts nothing
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -62,6 +68,7 @@
 import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
+import { catalog, mapCheck, readJourneys, refreshReasons } from "./argus-live-map.mjs";
 import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
@@ -88,7 +95,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>]";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -161,6 +168,14 @@ try {
     const r = await scrub(main, { title: opts.title, bodyFile: path.resolve(opts.body), attach: opts.attach, create: Boolean(opts.create), labels: opts.labels, comment: opts.comment ?? null });
     for (const line of r.out) print(line);
     process.exit(r.code);
+  } else if (cmd === "map-check" && (args.length === 0 || (args.length === 1 && args[0] === "--list"))) {
+    const r = mapCheck(main);
+    for (const d of r.dropped) print(`dropped ${d.id}: ${d.reason}`);
+    print(`catalog: ${r.kept.length} journeys, ${(readJourneys(main)?.dropped ?? []).length} dropped${r.rolesUnchecked ? ", roles unchecked" : ""}`);
+    const why = refreshReasons(main, { newDrops: r.newDrops });
+    print(`refresh: ${why.length ? why.join("; ") : "none"}`);
+    if (args[0] === "--list") for (const line of catalog(main)) print(line);
+    if (!r.kept.length) throw new Error("refused: no journey is selectable");
   } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });

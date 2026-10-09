@@ -3,7 +3,7 @@
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -18,6 +18,8 @@ import { CLASSES, classify } from "../plugins/sapu/scripts/argus-live-classes.mj
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
+// @ts-expect-error — plain ESM script without types
+import { catalog, mapCheck, readJourneys, refreshReasons } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
 import { HELPERS, loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -96,6 +98,8 @@ describe("argus-live modules — the DAG", () => {
     // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
     expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
+    // The journey map reads the configuration and git, nothing of a run.
+    expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -1442,4 +1446,230 @@ describe("argus-live scrub — attachments and filing", () => {
       expect(spawnSync(process.execPath, [ARGUS_LIVE, "scrub", ...args], { cwd: t.main, encoding: "utf8", env }).status, args.join(" ")).toBe(1);
     }
   }, 30_000); // five spawned CLIs
+});
+
+describe("argus-live map-check", () => {
+  const gitIn = (main: string, ...args: string[]) => spawnSync("git", ["-C", main, ...args], { encoding: "utf8" }).stdout.trim();
+  const commitAll = (main: string, msg: string) => {
+    gitIn(main, "add", "-A");
+    gitIn(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", msg);
+  };
+  const ORDERS = [
+    'const router = require("express").Router();',
+    'const { requireRole } = require("../auth");',
+    "// the orders routes",
+    "",
+    'router.post("/orders/new", requireRole("buyer"), createOrder);',
+    'router.get("/orders/:id", requireRole("buyer"), showOrder);',
+    'router.post("/orders/:id/approve", requireRole("clerk"), approveOrder);',
+    "module.exports = router;",
+  ];
+  /** A step of each kind, anchored in the map repo's code. */
+  const BUY = { role: "buyer", route: "/orders/new", goal: "place an order", sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.post("/orders/new"' }] };
+  const SETTLE = { role: "system", trigger: "settle", goal: "the payment settles", sources: [{ file: "src/jobs/settle.js", line: 1, text: "export function settlePayments(queue) {" }] };
+  const APPROVE = { role: "clerk", route: "/orders/:id/approve", goal: "approve it", sources: [{ file: "src/routes/orders.js", line: 7, text: 'router.post("/orders/:id/approve"' }] };
+  const journey = (id: string, steps: Obj[], extra: Obj = {}) => ({ id, domain: "sales", title: `Journey ${id}`, money: false, global: false, goal: "a goal", steps, lastCycle: null, ...extra });
+  /**
+   * A committed repo with src/routes/orders.js (the route on line 5), src/routes/repeat.js (one line four
+   * times), src/jobs/settle.js and src/lib/helper.js, and (unless `live` is false) .argus/live.json with
+   * roles buyer and clerk and trigger settle; `map(journeys)` writes .argus/journeys.json at HEAD with
+   * roots src/routes and src/jobs.
+   */
+  const mapRepo = ({ live = true } = {}) => {
+    const main = committed();
+    mkdirSync(join(main, "src/routes"), { recursive: true });
+    mkdirSync(join(main, "src/jobs"), { recursive: true });
+    mkdirSync(join(main, "src/lib"), { recursive: true });
+    writeFileSync(join(main, "src/routes/orders.js"), `${ORDERS.join("\n")}\n`);
+    writeFileSync(join(main, "src/routes/repeat.js"), 'audit.log("an order event here");\n'.repeat(4));
+    writeFileSync(join(main, "src/jobs/settle.js"), "export function settlePayments(queue) {\n  return queue.drain();\n}\n");
+    writeFileSync(join(main, "src/lib/helper.js"), "export function settleHelperFunction() {}\n");
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    if (live) writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ roles: { buyer: {}, clerk: {} }, triggers: { settle: { argv: ["true"] } } }));
+    commitAll(main, "app");
+    const file = join(main, ".argus/journeys.json");
+    const map = (journeys: Obj[], extra: Obj = {}) => writeFileSync(file, `${JSON.stringify({ head: gitIn(main, "rev-parse", "HEAD"), roots: ["src/routes", "src/jobs"], dropped: [], journeys, ...extra }, null, 2)}\n`);
+    const read = () => JSON.parse(readFileSync(file, "utf8"));
+    const cli = (...args: string[]) => {
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "map-check", ...args], { cwd: main, encoding: "utf8" });
+      return { code: r.status, out: r.stdout.trimEnd().split("\n"), err: r.stderr };
+    };
+    return { main, file, map, read, cli };
+  };
+
+  const DROPS: [string, Obj, string][] = [
+    ["a short anchor", { ...BUY, sources: [{ file: "src/routes/orders.js", line: 5, text: "router.post(  x" }] }, "step 1: anchor 1 has fewer than 16 non-space characters"],
+    ["a missing anchor", { ...BUY, sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.delete("/orders/new"' }] }, "step 1: anchor 1 is not in src/routes/orders.js at HEAD"],
+    ["an anchor in a file HEAD lacks", { ...BUY, sources: [{ file: "src/routes/gone.js", line: 1, text: 'router.post("/orders/new"' }] }, "step 1: anchor 1 is not in src/routes/gone.js at HEAD"],
+    ["an anchor occurring four times", { ...BUY, sources: [{ file: "src/routes/repeat.js", line: 1, text: 'audit.log("an order event here")' }] }, "step 1: anchor 1 occurs 4 times in src/routes/repeat.js (at most 3)"],
+    ["a user step with no route", { role: "buyer", goal: "g", sources: BUY.sources }, "step 1: no route"],
+    ["a route segment no anchor names", { ...BUY, route: "/invoices/:id" }, "step 1: no anchor in a route or permission file under roots names invoices"],
+    ["a system step with an unknown trigger", { ...SETTLE, trigger: "refund" }, "step 1: trigger refund is not in live.triggers"],
+    ["a system step anchored outside roots", { ...SETTLE, sources: [{ file: "src/lib/helper.js", line: 1, text: "export function settleHelperFunction" }] }, "step 1: no anchor under roots"],
+    ["an unknown role", { ...BUY, role: "auditor" }, "step 1: role auditor is not in live.roles"],
+  ];
+  for (const [name, step, reason] of DROPS) {
+    it(`drops ${name}`, () => {
+      const t = mapRepo();
+      t.map([journey("ok", [BUY, SETTLE, APPROVE]), journey("bad", [step])]);
+      const r = mapCheck(t.main);
+      expect(r.kept.map((j: Obj) => j.id)).toEqual(["ok"]);
+      expect(r.dropped).toEqual([{ id: "bad", reason }]);
+      expect(r.newDrops).toEqual(["bad"]);
+      const after = t.read();
+      expect(after.journeys.map((j: Obj) => j.id)).toEqual(["ok"]);
+      expect(after.dropped).toEqual([{ id: "bad", reason, head: spawnSync("git", ["-C", t.main, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim() }]);
+    });
+  }
+
+  it("drops a later duplicate id and an id that is not kebab-case; the route / needs only an anchor under roots", () => {
+    const t = mapRepo();
+    const home = { ...BUY, route: "/" };
+    t.map([journey("ok", [BUY]), journey("ok", [APPROVE]), journey("Order_To_Cash", [BUY]), journey("home", [home]), journey("param-only", [{ ...BUY, route: "/:id" }])]);
+    const r = mapCheck(t.main);
+    expect(r.kept.map((j: Obj) => j.id)).toEqual(["ok", "home", "param-only"]);
+    expect(r.dropped).toEqual([{ id: "ok", reason: "duplicate id" }, { id: "Order_To_Cash", reason: "id is not kebab-case" }]);
+    expect(t.read().journeys[0].steps).toEqual([BUY]);
+  });
+
+  it("an anchor's file is read at HEAD, not from the working tree", () => {
+    const t = mapRepo();
+    t.map([journey("ok", [BUY])]);
+    writeFileSync(join(t.main, "src/routes/orders.js"), "nothing here\n");
+    expect(mapCheck(t.main).dropped).toEqual([]);
+  });
+
+  it("line moves to the nearest occurrence", () => {
+    const t = mapRepo();
+    t.map([journey("ok", [{ ...BUY, sources: [{ ...BUY.sources[0], line: 3 }] }, { ...BUY, route: "/orders/:id", sources: [{ file: "src/routes/orders.js", line: 1, text: 'requireRole("buyer")' }] }])]);
+    mapCheck(t.main);
+    const steps = t.read().journeys[0].steps;
+    expect(steps[0].sources[0].line).toBe(5);
+    // Two occurrences (lines 5 and 6): the nearest to line 1 is line 5.
+    expect(steps[1].sources[0].line).toBe(5);
+  });
+
+  it("without .argus/live.json roles are unchecked", () => {
+    const t = mapRepo({ live: false });
+    t.map([journey("ok", [{ ...BUY, role: "auditor" }])]);
+    const r = t.cli();
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toEqual(["catalog: 1 journeys, 0 dropped, roles unchecked", "refresh: none"]);
+  }, 30_000);
+
+  it("refresh triggers", () => {
+    const t = mapRepo();
+    const head = () => spawnSync("git", ["-C", t.main, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+    const reasons = () => refreshReasons(t.main, { newDrops: [] });
+    const rehead = () => t.map([journey("ok", [BUY, SETTLE])]);
+    expect(refreshReasons(committed(), { newDrops: [] })).toEqual(["no map"]);
+    rehead();
+    expect(reasons()).toEqual([]);
+    writeFileSync(join(t.main, "src/routes/invoices.js"), "x\n");
+    commitAll(t.main, "added");
+    expect(reasons()).toEqual(["roots changed: 1 file(s) added, deleted or renamed"]);
+    rehead();
+    rmSync(join(t.main, "src/routes/invoices.js"));
+    commitAll(t.main, "deleted");
+    expect(reasons()).toEqual(["roots changed: 1 file(s) added, deleted or renamed"]);
+    rehead();
+    gitIn(t.main, "mv", "src/routes/orders.js", "src/routes/sales.js");
+    commitAll(t.main, "renamed");
+    expect(reasons()).toEqual(["roots changed: 1 file(s) added, deleted or renamed"]);
+    rehead();
+    // Modified files under roots and files added outside them only re-run map-check.
+    appendFileSync(join(t.main, "src/routes/sales.js"), "// more\n");
+    writeFileSync(join(t.main, "README.md"), "docs\n");
+    commitAll(t.main, "modified");
+    expect(reasons()).toEqual([]);
+    // A momus report newer than the map's head.
+    mkdirSync(join(t.main, ".momus"));
+    const report = join(t.main, ".momus/report-x.md");
+    writeFileSync(report, "report\n");
+    const at = Number(gitIn(t.main, "show", "-s", "--format=%ct", t.read().head));
+    utimesSync(report, at - 60, at - 60);
+    expect(reasons()).toEqual([]);
+    utimesSync(report, at + 60, at + 60);
+    expect(reasons()).toEqual(["a momus report is newer than the map"]);
+    rmSync(join(t.main, ".momus"), { recursive: true });
+    // A head no longer in the history.
+    t.map([journey("ok", [BUY])], { head: "0123456789abcdef0123456789abcdef01234567" });
+    expect(reasons()).toEqual(["the map's head is no longer in the history"]);
+    expect(head()).not.toBe("0123456789abcdef0123456789abcdef01234567");
+  });
+
+  it("a new drop asks for a refresh; the same drop again at the same head does not", () => {
+    const t = mapRepo();
+    const bad = journey("bad", [{ ...BUY, route: "/invoices" }]);
+    t.map([journey("ok", [BUY]), bad]);
+    const r1 = t.cli();
+    expect(r1.code, r1.err).toBe(0);
+    expect(r1.out).toEqual(["dropped bad: step 1: no anchor in a route or permission file under roots names invoices", "catalog: 1 journeys, 1 dropped", "refresh: new drops: bad"]);
+    // A refresh returns the journey again, at the same head: dropped again, nothing more.
+    const now = t.read();
+    writeFileSync(t.file, JSON.stringify({ ...now, journeys: [...now.journeys, bad] }));
+    const r2 = t.cli();
+    expect(r2.out).toEqual(["dropped bad: step 1: no anchor in a route or permission file under roots names invoices", "catalog: 1 journeys, 1 dropped", "refresh: none"]);
+    expect(t.read().dropped).toHaveLength(1);
+  }, 30_000);
+
+  it("no journey kept is refused; a map that is not one is refused", () => {
+    const t = mapRepo();
+    t.map([journey("bad", [{ ...BUY, route: "/invoices" }])]);
+    const r = t.cli();
+    expect(r.code).toBe(1);
+    expect(r.err).toBe("refused: no journey is selectable\n");
+    writeFileSync(t.file, '{"journeys": 3}');
+    expect(() => readJourneys(t.main)).toThrow("refused: .argus/journeys.json is not a journey map");
+    expect(t.cli().err).toBe("refused: .argus/journeys.json is not a journey map\n");
+    rmSync(t.file);
+    expect(readJourneys(t.main)).toBeNull();
+    const none = t.cli();
+    expect(none.code).toBe(1);
+    expect(none.out).toEqual(["catalog: 0 journeys, 0 dropped", "refresh: no map"]);
+  }, 30_000);
+
+  it("map-check starts nothing", () => {
+    const t = mapRepo();
+    t.map([journey("ok", [BUY, SETTLE]), journey("bad", [{ ...BUY, route: "/invoices" }])]);
+    const seen: string[] = [];
+    const runner = (argv: string[], opts: Obj = {}) => (seen.push(argv[0]), spawnSync(argv[0], argv.slice(1), { encoding: "utf8", ...opts }));
+    const r = mapCheck(t.main, { runner });
+    refreshReasons(t.main, { newDrops: r.newDrops, runner });
+    expect(seen.length).toBeGreaterThan(0);
+    expect([...new Set(seen)]).toEqual(["git"]);
+    expect(t.cli("--list").code).toBe(0);
+    expect(existsSync(join(t.main, ".argus/live"))).toBe(false);
+  }, 30_000);
+
+  it("the catalog groups by domain and lists the drops", () => {
+    const t = mapRepo();
+    t.map([
+      journey("order-to-cash", [BUY, SETTLE, APPROVE], { title: "Order to cash", money: true, lastCycle: 4, filed: [12, 15] }),
+      journey("restock", [APPROVE, APPROVE], { domain: "warehouse", title: "Restock", global: true }),
+      journey("reorder", [BUY], { title: "Reorder" }),
+      journey("bad", [{ ...BUY, route: "/invoices" }]),
+    ]);
+    const r = t.cli("--list");
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toEqual([
+      "dropped bad: step 1: no anchor in a route or permission file under roots names invoices",
+      "catalog: 3 journeys, 1 dropped",
+      "refresh: new drops: bad",
+      "sales:",
+      "  order-to-cash — Order to cash — buyer → system → clerk money — last cycle 4, filed 2",
+      "  reorder — Reorder — buyer — last cycle never, filed 0",
+      "warehouse:",
+      "  restock — Restock — clerk global — last cycle never, filed 0",
+      "dropped:",
+      "  bad: step 1: no anchor in a route or permission file under roots names invoices",
+    ]);
+    expect(catalog(t.main)).toEqual(r.out.slice(3));
+  }, 30_000);
+
+  it("the usage line names map-check", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(" | map-check [--list]");
+  }, 30_000);
 });
