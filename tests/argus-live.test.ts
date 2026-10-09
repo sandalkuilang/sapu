@@ -3770,7 +3770,8 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     }, 60000);
 
     it("up with a wrong password is refused at step 10 (exit 1) and leaves nothing: no proxy, no CLI daemon, no HOME or worktree", async () => {
-      const { main } = repo((c) => (c.roles.buyer.users[0].password = "not-the-password"));
+      // A wrong password, given as live.json gives every password: a ${NAME} the env file sets.
+      const { main } = repo((c) => (c.roles.buyer.users[0].password = "${WRONG_PW}"), `PW=${PW}\nWRONG_PW=not-the-password\n`);
       const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tmp };
       const r = cli(main, ["up"], env);
       expect(r.code).toBe(1);
