@@ -45,10 +45,17 @@
 //   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
 //                                a journey finding's class, labels and starting severity (spec §10's table):
 //                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
+//   argus-live.mjs scrub --title <t> --body <file>
+//                                the last check before an issue is filed (spec §10 "Scrub"): a secret the run saw
+//                                or the configuration holds, in any encoding, refuses it — one <title|body>
+//                                <line>:<col> <class> line per hit, never the value (exit 1); else long tokens the
+//                                run never saw redacted, mentions, references and outside links defanged, the body
+//                                file rewritten: scrub: ok; redacted <n>, defanged <n>, cut <n> line(s) and title: …
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
+import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
@@ -59,6 +66,7 @@ import { pw } from "./argus-live-pw.mjs";
 import { minimize, redTestFile, repro, runOnce } from "./argus-live-repro.mjs";
 import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
@@ -76,7 +84,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file>";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -130,6 +138,17 @@ try {
     if (!c.contract && !c.missing) throw new Error(`refused: ${c.error}`);
     const k = classify({ ...facts, needsOwner: needsOwnerLabel(c.contract ?? null) });
     print(`class ${k.cls} labels ${k.labels.join(",")} severity ${k.severity} because ${k.because}`);
+  } else if (cmd === "scrub") {
+    const opts = {};
+    for (let i = 0; i < args.length; i++) {
+      if ((args[i] === "--title" || args[i] === "--body") && i + 1 < args.length && !Object.hasOwn(opts, args[i])) opts[args[i]] = args[++i];
+      else throw new Error(`refused: ${usage}`);
+    }
+    if (opts["--title"] === undefined || opts["--body"] === undefined) throw new Error(`refused: ${usage}`);
+    // Its lines are the wrapper's own: classes and places, never a value (decision 17).
+    const r = await scrub(main, { title: opts["--title"], bodyFile: path.resolve(opts["--body"]) });
+    for (const line of r.out) print(line);
+    process.exit(r.code);
   } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });

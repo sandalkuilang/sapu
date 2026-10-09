@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fence } from "./argus-live-fence.mjs";
-import { liveDir, readLock, RUN_ID, runIdOk } from "./argus-live-lock.mjs";
+import { lastRun, liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
@@ -213,19 +213,6 @@ export function submit(main, { runId, slot, rec }, json) {
   return `submitted: slot ${slot} generation ${rec.generation} status ${value.status}`;
 }
 
-/** The run `intake` reads: the lock's, else the newest run directory (an explorer may return after the reaper ran). */
-function intakeRun(main) {
-  const lock = readLock(main);
-  if (lock) return lock.runId;
-  let names = [];
-  try {
-    names = fs.readdirSync(liveDir(main)).filter((n) => RUN_ID.test(n));
-  } catch {
-    names = [];
-  }
-  return names.sort().pop() ?? null;
-}
-
 /**
  * `argus-live.mjs intake <slot>` → the lines to print: per generation, in order, a summary from enums and
  * counts only (`slot <n> generation <g> journey <id> status <s> steps <k> candidates <k> coverage
@@ -234,7 +221,7 @@ function intakeRun(main) {
  */
 export function intake(main, slot, { secrets = {} } = {}) {
   if (!Number.isInteger(slot) || slot < 1) throw new Error("refused: a slot is a positive integer");
-  const runId = intakeRun(main);
+  const runId = lastRun(main);
   const dir = runId ? returnsDir(main, runId) : null;
   let files = [];
   try {

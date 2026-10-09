@@ -1626,3 +1626,22 @@ Interfaces:
   another shape: they reach a comment and the title. `--test` is `redTestFile(main, ref)` in
   `-repro.mjs` (it reads the records `reproRef` names), and refuses a candidate with no `repro.json`.
   `vitest.config.ts` excludes `tests/fixtures/**`: vitest collected the golden `*.spec.ts` as a test.
+- **Task 12.** `intake`'s run choice (the lock's, else the newest run directory) is `scrub`'s too, and the DAG
+  keeps `scrub` below `return`, so the private `intakeRun` moved to `-lock.mjs` as `lastRun` (exported, and
+  `return` imports it). `scrub` imports `config`, `endpoints` (`normHost`: a loopback link stays), `ledger`,
+  `lock`, `run` and `sapu-contract.mjs`; `proc` comes with Task 13's runner. `scrubSecrets` also refuses a
+  `.argus/live.json` or env file that cannot be read (`refused: scrub: .argus/live.json: <errors>; nothing
+  is filed`, as `pw` refuses it) and an invalid contract (its `guard.envFiles` would be unknown); the
+  expanded roles are expanded per value with no ports, a `${NAME}` the env file lacks giving none. A
+  `label` names a value's source (`<role>.<k> password`, `.env DB_PASSWORD`), never the value, and is
+  never printed. The two sources that mix configuration with secrets (`repo env file`, `environment
+  variable <NAME>`) give a value only at `MIN_SECRET` or more: Claude Code itself sets
+  `CLAUDE_CODE_CHILD_SESSION=1` and `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1` (names `SECRET_KEY` matches),
+  and as whole tokens they refused every issue holding a lone `1`; a short `env_file` value, a role
+  password or a TOTP secret is still matched as a whole token. A title holding a line break is refused. The texts scrub would file are checked again
+  after the rewrite (nothing redaction or defanging made may carry a secret either). Redaction runs over
+  the whole text, fenced blocks included. Defanging also wraps `www.` hosts and `GH-<n>` (both autolinked
+  by GitHub); a code span is one CommonMark reads on one line, and a backtick run with no closer on its
+  line, or a span holding a `|` (a GFM table splits there), is escaped with backslashes, so no span crosses
+  a line, a block or a cell and what is code here is code on GitHub too; the backslashes right before a
+  token go inside its span. The header comment and the usage line name `scrub` from this task on.

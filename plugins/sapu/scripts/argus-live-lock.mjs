@@ -136,6 +136,19 @@ export function readLock(main) {
   return { runId: l.runId, start: l.start, deadline: l.deadline };
 }
 
+/** The run a reader after the explorers takes (`intake`, `scrub`): the lock's, else the newest run directory (an explorer may return after the reaper ran; a run that is down is read the same way), else null. */
+export function lastRun(main) {
+  const lock = readLock(main);
+  if (lock) return lock.runId;
+  let names = [];
+  try {
+    names = fs.readdirSync(liveDir(main)).filter((n) => RUN_ID.test(n));
+  } catch {
+    names = [];
+  }
+  return names.sort().pop() ?? null;
+}
+
 /**
  * Take the lock for a new run and append its start line to the live log.
  * Returns {runId, start, deadline, staleRuns} and, when it took over a lock past its deadline, `stale`
