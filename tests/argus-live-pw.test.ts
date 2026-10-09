@@ -2617,6 +2617,10 @@ describe("argus-live up — the browser refusals and the guard seam", () => {
       `node ${WRAPPER} map-check`,
       `node ${WRAPPER} map-check --list`,
       `${run} code files src && node ${WRAPPER} map-check`,
+      `node ${WRAPPER} up --map`,
+      `node ${WRAPPER} slot 1 --map`,
+      `node ${WRAPPER} map-check --merge 1`,
+      `${run} submit '{}' && node ${WRAPPER} map-check --merge 1`,
     ];
     for (const line of lines) expect(checkExplorerBash(line), line).not.toBeNull();
   });

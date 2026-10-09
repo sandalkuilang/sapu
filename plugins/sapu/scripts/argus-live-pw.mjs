@@ -244,6 +244,7 @@ function pngsIn(dir) {
  * the config is read (it needs only the slot). The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
+ * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall).
  * `cli` (a test seam) stands in for the installed CLI (run.json `browser.js`).
  */
 export async function pw(main, argv, { cli = null, now = Date.now, runner = run, cliRunner = runAsync } = {}) {
@@ -257,7 +258,9 @@ export async function pw(main, argv, { cli = null, now = Date.now, runner = run,
   const { runId, slot } = found;
   if (word !== "submit") {
     try {
-      refuseNotLive(found.run, runId);
+      // A map slot needs no instance (decision 20): only its run named and not sealed.
+      if (found.mode === "map" && (found.run.closing || found.run.runId !== runId)) throw new Error(`refused: cycle ${runId} is being torn down`);
+      if (found.mode !== "map") refuseNotLive(found.run, runId);
     } catch (e) {
       return { code: 1, out: [e.message] };
     }
@@ -289,6 +292,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
       return { code: 1, out: [e.message] };
     }
   }
+  if (slotRec.mode === "map") return mapCall({ main, argv, word, runId, dir, lockNow, now });
   refuseNotLive(readRun(main), runId);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
   const { config, errors, secrets: envSecrets } = loadLive(main);
@@ -481,4 +485,33 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   save({ blockedOffset: fromProxy.offset, proxyBlocked: [...proxyBlocked].slice(-500), blockedReported: [...reported, ...blockedNow].slice(-500) });
   const { body, truncated } = fence([text, ...pageLines].filter((x) => x !== "").join("\n"), { secrets });
   return { code: 0, out: [body, counter, ...(seen > 1 ? [`loop ${seen}/${LOOP_AT}`] : []), ...events, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
+}
+
+/**
+ * A map slot's call (decision 20), under the slot's lock: the deadline and the budget as an explorer's,
+ * then `code` only (anything else but `submit`, handled before, is `refused: a map slot takes only code and
+ * submit`, counted); its output fenced and masked with the env file's values. Each write of the slot's state
+ * re-checks that the run is not sealed (stillLive's map form).
+ */
+async function mapCall({ main, argv, word, runId, dir, lockNow, now }) {
+  const rec = readRun(main);
+  if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
+  if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
+  const { config, secrets } = loadLive(main);
+  const max = (config && config.limits && config.limits.explorer_pw_calls) || DEFAULT_CALLS;
+  const state = readSlotState(dir);
+  if (state.calls >= max) return { code: 1, out: ["BUDGET: submit status handoff"] };
+  state.calls += 1;
+  writeSlotState(dir, state, { main, runId, map: true });
+  const counter = `calls ${state.calls}/${max}`;
+  try {
+    if (word !== "code") throw new Error("refused: a map slot takes only code and submit");
+    const p = parsePw(argv);
+    const c = codeCommand(p.positionals[0], p.positionals.slice(1), { worktree: rec.worktree });
+    const { body, truncated } = fence(String(c.text).trimEnd(), { secrets });
+    return { code: 0, out: [body, counter, ...(c.code !== 0 && c.code !== null ? [`exit ${c.code}`] : []), ...(truncated ? [`truncated ${truncated} characters`] : [])] };
+  } catch (e) {
+    if (!/^refused: /.test(e.message)) throw e;
+    return { code: 1, out: [e.message, counter] };
+  }
 }

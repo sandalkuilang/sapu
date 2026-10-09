@@ -3555,10 +3555,13 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
 
   it("up and up --fresh return the summary the orchestrator reads (never run.json), which statusJson repeats; internal ports stay out of ports and origins", async () => {
     const { main } = repo();
-    expect(await statusJson(main)).toEqual({ runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, slots: {} });
+    expect(await statusJson(main)).toEqual({ runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, mode: null, slots: {} });
     const r = await up(main, opts());
     const rec = runJson(main);
     reapers.push(rec.reaper);
+    // Step 4 records the worktree's commit, and keeps a copy that down leaves (map-check --merge reads it).
+    expect(rec.worktreeHead).toBe(git(rec.worktree, "rev-parse", "HEAD"));
+    expect(JSON.parse(readFileSync(join(main, ".argus/live", rec.runId, "worktree.json"), "utf8"))).toEqual({ worktreeHead: rec.worktreeHead });
     const want = { runId: rec.runId, instanceId: rec.instanceId, deadline: readLock(main).deadline, baseUrl: `http://localhost:${rec.ports.web}`, origins: rec.origins, ports: rec.ports, worktree: rec.worktree };
     expect(r).toEqual(want);
     expect(Object.keys(r)).toEqual(["runId", "instanceId", "deadline", "baseUrl", "origins", "ports", "worktree"]);
@@ -3566,12 +3569,12 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(Object.values(rec.ports)).not.toContain(rec.internal.proxy);
     expect(rec.baseUrl).toBe(want.baseUrl);
     // status --json: the summary and each slot's state (none minted yet).
-    expect(await statusJson(main)).toEqual({ ...want, slots: {} });
+    expect(await statusJson(main)).toEqual({ ...want, mode: "live", slots: {} });
     const f = await up(main, opts({ fresh: true }));
     expect(f).toEqual({ ...want, instanceId: runJson(main).instanceId });
     // A port of the run's own (the proxy's, phase 3) lives in `internal`: never in ports or origins.
     writeRunFiles(main, { ...runJson(main), internal: { proxy: 41999 } });
-    expect(await statusJson(main)).toEqual({ ...want, instanceId: f.instanceId, slots: {} });
+    expect(await statusJson(main)).toEqual({ ...want, instanceId: f.instanceId, mode: "live", slots: {} });
     await down(main, { runId: r.runId, runner: noDocker });
     expect(balanced(main)).toBe(true);
   }, 60000);
@@ -3779,7 +3782,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(st.out).toContain(runId);
       const sj = go(["status", "--json"]);
       expect(sj.code).toBe(0);
-      expect(JSON.parse(sj.out)).toEqual({ ...summary, slots: {} });
+      expect(JSON.parse(sj.out)).toEqual({ ...summary, mode: "live", slots: {} });
       const again = go(["up"]);
       expect(again.code).toBe(1);
       expect(again.out).toMatch(new RegExp(`^refused: cycle ${runId} holds the lock until `, "m"));

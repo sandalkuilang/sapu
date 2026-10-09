@@ -25,6 +25,16 @@ export function logsDir(main, runId) {
   return path.join(liveDir(main), runId, "logs");
 }
 
+/**
+ * Where `up` (step 4) and `up --map` keep a copy of run.json's `worktreeHead`, the commit the run's worktree
+ * was built at: `<MAIN>/.argus/live/<runId>/worktree.json` (0600), which `down` leaves, so `map-check
+ * --merge` stamps the code the map agent read after `down` too.
+ */
+export function worktreeHeadFile(main, runId) {
+  runIdOk(runId);
+  return path.join(liveDir(main), runId, "worktree.json");
+}
+
 /** The CLI the run starts its own helpers with (`argus-live.mjs reap <runId>`, `proxy <runId>`). */
 export const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
 

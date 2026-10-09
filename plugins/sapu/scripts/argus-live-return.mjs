@@ -1,13 +1,15 @@
 // argus-live-return.mjs — the explorer's return (spec §7 "Return"): `pw <token> submit <json>` validates
 // it against the schema, caps every free-text field, writes it per generation and retires the token;
 // `argus-live.mjs intake <slot>` prints it for the orchestrator — a summary built from enums and counts
-// only, then each generation whole inside a fresh `<<<RETURN-<nonce>` fence, as data.
+// only, then each generation whole inside a fresh `<<<RETURN-<nonce>` fence, as data. A map slot's return is
+// the journey map (validateMap), which `map-check --merge` reads back (mapReturn).
 import fs from "node:fs";
 import path from "node:path";
 import { fence } from "./argus-live-fence.mjs";
 import { lastRun, liveDir, runIdOk } from "./argus-live-lock.mjs";
+import { validateMap } from "./argus-live-map.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
-import { readRun, updateRun } from "./argus-live-run.mjs";
+import { readRun, updateRun, worktreeHeadFile } from "./argus-live-run.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 
 /** The oracles a candidate may name and coverage may judge (spec §7, §10). */
@@ -172,12 +174,77 @@ export function validateReturn(obj, { journey, accounts, outFiles }) {
 
 const returnsDir = (main, runId) => path.join(liveDir(main), runId, "returns");
 
+/** A map return (decision 20): the journey map's `journeys`, never an explorer return's `status`. */
+const isMap = (r) => isObj(r) && Array.isArray(r.journeys) && !Object.hasOwn(r, "status");
+
+/**
+ * Slot `slot`'s returns in the run a reader takes (lastRun: the lock's, else the newest run directory) →
+ * `{runId, dir, files}`, the files sorted by generation. Refused when there is none.
+ */
+function returnFiles(main, slot) {
+  if (!Number.isInteger(slot) || slot < 1) throw new Error("refused: a slot is a positive integer");
+  const runId = lastRun(main);
+  const dir = runId ? returnsDir(main, runId) : null;
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => new RegExp(`^${slot}\\.[1-9]\\.json$`).test(f));
+  } catch {
+    files = [];
+  }
+  if (!files.length) throw new Error(`refused: slot ${slot} has not submitted`);
+  return { runId, dir, files: files.sort((a, b) => Number(a.split(".")[1]) - Number(b.split(".")[1])) };
+}
+
+/**
+ * The commit run `runId`'s worktree was built at: run.json `worktreeHead` while run.json names the run, else
+ * the copy `down` keeps (worktreeHeadFile) → the sha, or null when the run recorded none.
+ */
+function worktreeHead(main, runId) {
+  let rec = null;
+  try {
+    rec = readRun(main);
+  } catch {
+    rec = null;
+  }
+  const sha = (v) => (typeof v === "string" && /^[0-9a-f]{40,64}$/.test(v) ? v : null);
+  if (rec && rec.runId === runId) return sha(rec.worktreeHead);
+  try {
+    return sha(JSON.parse(fs.readFileSync(worktreeHeadFile(main, runId), "utf8")).worktreeHead);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What `map-check --merge <slot>` merges (decision 20): the newest generation of map slot `slot`'s return in
+ * the run a reader takes, validated again (validateMap) → `{runId, generation, value, head}`, `head` the
+ * commit the run's worktree was built at (the code the map agent read). Refused: no return, one that is not
+ * a map or no longer valid, a run that recorded no worktree commit.
+ */
+export function mapReturn(main, slot) {
+  const { runId, dir, files } = returnFiles(main, slot);
+  const f = files.at(-1);
+  let obj = null;
+  try {
+    obj = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+  } catch {
+    obj = null;
+  }
+  if (!isMap(obj)) throw new Error(`refused: map-check --merge: slot ${slot} returned no map`);
+  const { value, errors } = validateMap(obj);
+  if (errors.length) throw new Error(`refused: map-check --merge: ${errors.slice(0, 5).join("; ")}`);
+  const head = worktreeHead(main, runId);
+  if (!head) throw new Error(`refused: map-check --merge: run ${runId} recorded no worktree commit`);
+  return { runId, generation: Number(f.split(".")[1]), value, head };
+}
+
 /**
  * `pw <token> submit <json>` for slot `slot` of run `runId` (`rec` its run.json `slots` entry; the caller
  * holds the slot's lock) → the line to print: the JSON (at most 256 KB) validated (validateReturn),
  * written to `.argus/live/<run>/returns/<slot>.<generation>.json` (0600), the slot marked `submitted` and
- * its token retired → `submitted: slot <n> generation <g> status <s>` (enums only). Errors → `refused:
- * return: <the first five>`, nothing written, the token still live.
+ * its token retired → `submitted: slot <n> generation <g> status <s>` (enums only). A map slot's return is
+ * the journey map, validated by validateMap → `submitted: slot <n> generation <g> map journeys <k>`. Errors →
+ * `refused: return: <the first five>`, nothing written, the token still live.
  */
 export function submit(main, { runId, slot, rec }, json) {
   runIdOk(runId);
@@ -194,7 +261,8 @@ export function submit(main, { runId, slot, rec }, json) {
   } catch {
     outFiles = [];
   }
-  const { value, errors } = validateReturn(obj, { journey: rec.journey, accounts: rec.accounts, outFiles });
+  const map = rec.mode === "map";
+  const { value, errors } = map ? validateMap(obj) : validateReturn(obj, { journey: rec.journey, accounts: rec.accounts, outFiles });
   if (errors.length) throw new Error(`refused: return: ${errors.slice(0, 5).join("; ")}`);
   const dir = returnsDir(main, runId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -210,30 +278,27 @@ export function submit(main, { runId, slot, rec }, json) {
     },
     { create: false },
   );
-  return `submitted: slot ${slot} generation ${rec.generation} status ${value.status}`;
+  return map ? `submitted: slot ${slot} generation ${rec.generation} map journeys ${value.journeys.length}` : `submitted: slot ${slot} generation ${rec.generation} status ${value.status}`;
 }
 
 /**
  * `argus-live.mjs intake <slot>` → the lines to print: per generation, in order, a summary from enums and
  * counts only (`slot <n> generation <g> journey <id> status <s> steps <k> candidates <k> coverage
  * <oracle>=<verdict>,…`), then the whole return pretty-printed in a fresh `<<<RETURN-<nonce>` fence (its
- * marker shapes escaped, `secrets` masked). No return → `refused: slot <n> has not submitted`.
+ * marker shapes escaped, `secrets` masked); a map return's summary is `slot <n> generation <g> map journeys
+ * <k> roots <k>`. No return → `refused: slot <n> has not submitted`.
  */
 export function intake(main, slot, { secrets = {} } = {}) {
-  if (!Number.isInteger(slot) || slot < 1) throw new Error("refused: a slot is a positive integer");
-  const runId = lastRun(main);
-  const dir = runId ? returnsDir(main, runId) : null;
-  let files = [];
-  try {
-    files = fs.readdirSync(dir).filter((f) => new RegExp(`^${slot}\\.[1-9]\\.json$`).test(f));
-  } catch {
-    files = [];
-  }
-  if (!files.length) throw new Error(`refused: slot ${slot} has not submitted`);
+  const { dir, files } = returnFiles(main, slot);
   const lines = [];
-  for (const f of files.sort((a, b) => Number(a.split(".")[1]) - Number(b.split(".")[1]))) {
+  for (const f of files) {
     const g = Number(f.split(".")[1]);
     const r = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+    if (isMap(r)) {
+      lines.push(`slot ${slot} generation ${g} map journeys ${r.journeys.length} roots ${Array.isArray(r.roots) ? r.roots.length : 0}`);
+      lines.push(fence(JSON.stringify(r, null, 2), { label: "RETURN", cap: Infinity, secrets }).body);
+      continue;
+    }
     const journey = /^[a-z0-9-]{1,100}$/.test(r.journey) ? r.journey : "-";
     const status = STATUSES.includes(r.status) ? r.status : "-";
     const coverage = Object.entries(isObj(r.coverage) ? r.coverage : {})

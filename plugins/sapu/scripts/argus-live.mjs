@@ -5,6 +5,9 @@
 //                                ports, worktree — all the orchestrator reads, never run.json)
 //   argus-live.mjs up --fresh    restart its entries on a reset store (between repro runs); the same
 //                                summary last
+//   argus-live.mjs up --map      map mode (decision 20): the lock and a worktree at HEAD, nothing started (no
+//                                setup, store, app, proxy, HOME or logins); its summary {runId, mode, deadline,
+//                                worktree} last. up --fresh and renew refuse it
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -17,6 +20,9 @@
 //   argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>,…
 //                                mint slot <n>'s token for an explorer: one line of JSON {slot, token,
 //                                generation, journey, accounts} (the only place a token is printed)
+//   argus-live.mjs slot <n> --map
+//                                mint map slot <n>'s token, in any run with a worktree (a map run, or an up still
+//                                starting): {slot, token, generation, mode}; it takes only pw <token> code and submit
 //   argus-live.mjs slot <n> --handoff
 //                                retire slot <n>'s token and mint the next generation (fresh budget)
 //   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]
@@ -61,6 +67,10 @@
 //                                now, catalog: <n> journeys, <k> dropped[, roles unchecked], refresh: <reason>; …
 //                                or refresh: none; with --list the catalog after them; exit 1 refused: no journey
 //                                is selectable when none is kept. Takes no lock and starts nothing
+//   argus-live.mjs map-check --merge <slot>
+//                                merge the newest map map slot <slot> returned (the lock's run, else the newest run
+//                                directory) into .argus/journeys.json, stamped with the commit that run's worktree
+//                                was built at (after down too), then map-check as above
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -68,18 +78,18 @@
 import path from "node:path";
 import { classify } from "./argus-live-classes.mjs";
 import { loadLive } from "./argus-live-config.mjs";
-import { catalog, mapCheck, readJourneys, refreshReasons } from "./argus-live-map.mjs";
-import { renewRun, status, statusJson, up } from "./argus-live-instance.mjs";
+import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, writeJourneys } from "./argus-live-map.mjs";
+import { renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { minimize, redTestFile, repro, runOnce } from "./argus-live-repro.mjs";
-import { intake } from "./argus-live-return.mjs";
+import { intake, mapReturn } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
-import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
+import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -95,7 +105,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -112,13 +122,15 @@ try {
     const n = /^[1-9][0-9]?$/.test(args[0]) ? Number(args[0]) : NaN;
     const opts = {};
     for (let i = 1; i < args.length; i++) {
-      if (args[i] === "--handoff") opts.handoff = true;
+      if (args[i] === "--handoff" && !opts.handoff) opts.handoff = true;
+      else if (args[i] === "--map" && !opts.map) opts.map = true;
       else if ((args[i] === "--journey" || args[i] === "--accounts") && i + 1 < args.length && !Object.hasOwn(opts, args[i])) opts[args[i]] = args[++i];
       else throw new Error(`refused: ${usage}`);
     }
     if (Number.isNaN(n)) throw new Error("refused: a slot is a number from 1 to 99");
-    if (opts.handoff && Object.keys(opts).length === 1) printMasked(JSON.stringify(await handoffSlot(main, n)));
-    else if (!opts.handoff && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(await mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
+    if (opts.map && Object.keys(opts).length === 1) printMasked(JSON.stringify(await mintMapSlot(main, { slot: n })));
+    else if (opts.handoff && Object.keys(opts).length === 1) printMasked(JSON.stringify(await handoffSlot(main, n)));
+    else if (!opts.handoff && !opts.map && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(await mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
     else throw new Error(`refused: ${usage}`);
   }
   else if (cmd === "intake" && args.length === 1) {
@@ -168,7 +180,13 @@ try {
     const r = await scrub(main, { title: opts.title, bodyFile: path.resolve(opts.body), attach: opts.attach, create: Boolean(opts.create), labels: opts.labels, comment: opts.comment ?? null });
     for (const line of r.out) print(line);
     process.exit(r.code);
-  } else if (cmd === "map-check" && (args.length === 0 || (args.length === 1 && args[0] === "--list"))) {
+  } else if (cmd === "map-check" && (args.length === 0 || (args.length === 1 && args[0] === "--list") || (args.length === 2 && args[0] === "--merge"))) {
+    if (args[0] === "--merge") {
+      if (!/^[1-9][0-9]?$/.test(args[1])) throw new Error("refused: a slot is a number from 1 to 99");
+      // The map as the map agent read the code: stamped with its run's worktree commit, never MAIN's HEAD (decision 20).
+      const m = mapReturn(main, Number(args[1]));
+      writeJourneys(main, mergeMap(readJourneys(main), m.value, { head: m.head }));
+    }
     const r = mapCheck(main);
     for (const d of r.dropped) print(`dropped ${d.id}: ${d.reason}`);
     print(`catalog: ${r.kept.length} journeys, ${(readJourneys(main)?.dropped ?? []).length} dropped${r.rolesUnchecked ? ", roles unchecked" : ""}`);
@@ -176,7 +194,8 @@ try {
     print(`refresh: ${why.length ? why.join("; ") : "none"}`);
     if (args[0] === "--list") for (const line of catalog(main)) print(line);
     if (!r.kept.length) throw new Error("refused: no journey is selectable");
-  } else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
+  } else if (cmd === "up" && args.length === 1 && args[0] === "--map") print(JSON.stringify(await upMap(main, { say: print })));
+  else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);

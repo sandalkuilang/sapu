@@ -1,7 +1,7 @@
 // argus-live-instance.mjs — the journey lane's live instance (spec §8): one isolated copy of the
 // repo's app per cycle, which never touches the owner's servers, services or data.
 //
-// This module runs it: `up` (steps 1-11), `up --fresh`, `renew` and `status`; the bring-up blocks (ports,
+// This module runs it: `up` (steps 1-11), `up --fresh`, `up --map`, `renew` and `status`; the bring-up blocks (ports,
 // the worktree, HOME and environment, setup, start and health, the store phase) live in
 // argus-live-start.mjs. The lane's modules, each importing only modules to its left (leaves import none):
 // argus-live-proc.mjs (processes) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) →
@@ -29,8 +29,8 @@ import { checkEgress, egressAllowed } from "./argus-live-egress.mjs";
 import { hostOf, resolvesToLoopback } from "./argus-live-endpoints.mjs";
 import { dropLedgers } from "./argus-live-ledger.mjs";
 import { iso, readLock, renew, takeLock } from "./argus-live-lock.mjs";
-import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sameStart, startTime, stopRecordedGroups } from "./argus-live-proc.mjs";
-import { down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, writeRunFiles } from "./argus-live-run.mjs";
+import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sameStart, startTime, stopRecordedGroups, tempBeside } from "./argus-live-proc.mjs";
+import { down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, worktreeHeadFile, writeRunFiles } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { allocatePorts, bringUpRest, bringUpStore, instanceEnv, makeHome, makeWorktree, runSetup } from "./argus-live-start.mjs";
 import { loadContract } from "./sapu-contract.mjs";
@@ -127,9 +127,9 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
  * The keys of run.json `up` and `up --fresh` write (spec §8 step 11's table): every other key has its own
  * writer — `reaper` (startReaper), `internal` (startProxy, step 9), `sessions` (openSession, the logins,
  * `up --fresh`'s closes), `slots` (slot, submit, retireAll), `loginFailed` (login), `closing` (down) — and
- * is kept as it stands, as is a key this version does not know.
+ * is kept as it stands, as is a key this version does not know. `mode` is `up --map`'s alone (upMap).
  */
-const UP_KEYS = ["runId", "instanceId", "worktree", "home", "ports", "upstream", "origins", "baseUrl", "env", "since", "events", "digest", "composeServices", "composePorts", "groups", "stops", "browser", "allowOrigins"];
+const UP_KEYS = ["runId", "instanceId", "worktree", "worktreeHead", "home", "ports", "upstream", "origins", "baseUrl", "env", "since", "events", "digest", "composeServices", "composePorts", "groups", "stops", "browser", "allowOrigins"];
 
 /** `state`'s UP_KEYS (those it holds): what `up` and `up --fresh` write of it. */
 const upOwned = (state) => Object.fromEntries(UP_KEYS.filter((k) => Object.hasOwn(state, k)).map((k) => [k, state[k]]));
@@ -147,6 +147,20 @@ function runLog(main, runId, file, secrets, say) {
       // the line still went to `say`
     }
   };
+}
+
+/**
+ * The commit `worktree` was built at (`git rev-parse HEAD` in it), also kept in worktreeHeadFile (0600), which
+ * `down` leaves → the sha (decision 20: `map-check --merge` stamps it, after `down` too).
+ */
+function recordWorktreeHead(main, runId, worktree, runner) {
+  const r = runner(["git", "-C", worktree, "rev-parse", "HEAD"]);
+  const head = r.status === 0 ? String(r.stdout).trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error(`failed: the worktree's commit cannot be read: ${String(r.stderr || (r.error && r.error.message) || "").trim().slice(0, 200)}`);
+  const file = worktreeHeadFile(main, runId);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.renameSync(tempBeside(file, `${JSON.stringify({ worktreeHead: head })}\n`, 0o600), file);
+  return head;
 }
 
 /**
@@ -177,7 +191,8 @@ async function tearDown(main, state, { secrets, runner, log }) {
  * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss, no
  * process identity (start times), a `services` variable the instance env does not set, the pinned CLI
  * not installable (ensureCli), no Chrome-family browser) and run.json `browser: {js, channel}`;
- * 3 the environment (ports, HOME and its `browser/` HOME for the CLI, the run's Docker client, `since` and the events follower); 4 the worktree and setup; 5 the Compose
+ * 3 the environment (ports, HOME and its `browser/` HOME for the CLI, the run's Docker client, `since` and the events follower); 4 the worktree (run.json
+ * `worktreeHead`, its commit, kept beside the run's records too: recordWorktreeHead) and setup; 5 the Compose
  * check; 6 the store phase, checkStore and reset; 7 the other entries and checkStore again; 8 the egress
  * check and the Docker runtime gate; 9 the proxy (run.json `allowOrigins`, its internal group and
  * `internal.proxy`); 10 one proving login per configured account (proveLogins); 11 the instance id. Any
@@ -292,6 +307,8 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     step = "4 worktree";
     state.worktree = makeWorktree(main, runId, { runner });
     save();
+    state.worktreeHead = recordWorktreeHead(main, runId, state.worktree, runner);
+    save();
     await runSetup(state.worktree, x, state.env, { main, secrets, deadline: lock.deadline, groups: state.groups });
     log(`step 4 worktree: ${state.worktree}; setup ${(x.setup ?? []).length} command(s)`);
 
@@ -338,12 +355,62 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   }
 }
 
-/** The running cycle's lock and run.json (they must name the same run), its config and secrets; refused otherwise. */
+/**
+ * `argus-live.mjs up --map` (decision 20): `up`'s step 1 (the lock and its start line, recovery of stale runs,
+ * every earlier run's secret ledger removed, run.json, the reaper) and step 4's worktree at HEAD with its
+ * commit (`worktreeHead`), nothing else — no setup, store, app, proxy, HOME or logins. run.json holds `mode:
+ * "map"`, `instanceId: null` and no group. Any failure after the lock → `down`, and the error rethrown, tagged
+ * with its step. Returns {runId, mode: "map", deadline, worktree}.
+ */
+export async function upMap(main, { runner = run, say = () => {} } = {}) {
+  const { config, errors, secrets } = loadLive(main);
+  const max = config && config.limits && config.limits.max_cycle_minutes;
+  if (!Number.isInteger(max)) throw atStep(new Error(`refused: .argus/live.json: ${errors.join("; ") || "limits.max_cycle_minutes is missing"}`), "1 lock");
+  let lock;
+  try {
+    lock = takeLock(main, { maxCycleMinutes: max });
+  } catch (e) {
+    throw atStep(e, "1 lock");
+  }
+  const runId = lock.runId;
+  const log = runLog(main, runId, "up.log", secrets, say);
+  const state = { runId, mode: "map", instanceId: null, worktree: null, worktreeHead: null, groups: [], stops: [] };
+  let created = false;
+  const save = () => {
+    writeRunFiles(main, state, { runner, secrets, create: !created });
+    created = true;
+  };
+  let step = "1 lock";
+  try {
+    if (lock.staleRuns.length) {
+      const r = await recover(main, { secrets, runner });
+      for (const l of r.report) log(`recovery: ${l}`);
+    }
+    dropLedgers(main, { keep: runId });
+    save();
+    const reaper = startReaper(main, runId);
+    log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)} (map mode)${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
+    step = "4 worktree";
+    state.worktree = makeWorktree(main, runId, { runner });
+    save();
+    state.worktreeHead = recordWorktreeHead(main, runId, state.worktree, runner);
+    save();
+    log(`step 4 worktree: ${state.worktree} at ${state.worktreeHead}; map mode: no setup, store, app, proxy or logins; reaper ${reaper}`);
+    return { runId, mode: "map", deadline: lock.deadline, worktree: state.worktree };
+  } catch (e) {
+    log(`step ${step}: ${e.message}`);
+    await tearDown(main, state, { secrets, runner, log });
+    throw atStep(e, step);
+  }
+}
+
+/** The running cycle's lock and run.json (they must name the same run), its config and secrets; refused otherwise (a map run too). */
 function current(main) {
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
   if (lock.deadline * 1000 <= Date.now()) throw new Error(`refused: the deadline of cycle ${lock.runId} passed at ${iso(lock.deadline)}; run down`);
   const rec = readRun(main);
+  if (rec && rec.runId === lock.runId && rec.mode === "map") throw new Error(`refused: cycle ${lock.runId} is a map run (up --map); run down`);
   if (!rec || rec.runId !== lock.runId || typeof rec.worktree !== "string" || !rec.env) throw new Error(`refused: run.json does not hold the instance of cycle ${lock.runId} (it is still starting, or it failed)`);
   if (rec.closing) throw new Error(`refused: cycle ${lock.runId} is being torn down`);
   // An instance id is set only once `up` (or `up --fresh`) finished every step: anything less was never checked whole.
@@ -490,19 +557,20 @@ function slotStates(main, runId, rec) {
 }
 
 /**
- * `status --json`: the running cycle's summary (summaryOf) and `slots`, each slot's state (slotStates:
- * what the orchestrator reads of its explorers); every field empty when none runs.
+ * `status --json`: the running cycle's summary (summaryOf), its `mode` (`map` for an `up --map` run, else
+ * `live`) and `slots`, each slot's state (slotStates: what the orchestrator reads of its explorers); every
+ * field empty when none runs.
  */
 export function statusJson(main) {
   const lock = readLock(main);
-  if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, slots: {} };
+  if (!lock) return { runId: null, instanceId: null, deadline: null, baseUrl: null, origins: [], ports: {}, worktree: null, mode: null, slots: {} };
   const rec = readRun(main);
   const mine = rec && rec.runId === lock.runId ? rec : {};
-  return { ...summaryOf(lock, mine), slots: slotStates(main, lock.runId, mine) };
+  return { ...summaryOf(lock, mine), mode: mine.mode === "map" ? "map" : "live", slots: slotStates(main, lock.runId, mine) };
 }
 
 /**
- * `status`: the run id, deadline, instance, worktree, ports, each recorded group's state, each slot
+ * `status`: the run id, deadline, `mode: map` for a map run, instance, worktree, ports, each recorded group's state, each slot
  * (`slot <n>: journey <id> generation <g> calls <c>/<max>[ submitted][ retired]`, slotStates) and the
  * number of recorded CLI sessions, as lines.
  */
@@ -512,6 +580,7 @@ export async function status(main, { runner = run } = {}) {
   const out = [`cycle ${lock.runId} until ${iso(lock.deadline)}`];
   const rec = readRun(main);
   if (!rec || rec.runId !== lock.runId) return [...out, "run.json does not name this cycle (it is starting, or it failed)"];
+  if (rec.mode === "map") out.push("mode: map");
   out.push(`instance ${rec.instanceId ?? "(not ready)"}`, `worktree ${rec.worktree ?? "(not made yet)"}`, `ports ${Object.entries(rec.ports ?? {}).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}`);
   let table = null;
   try {
@@ -525,7 +594,7 @@ export async function status(main, { runner = run } = {}) {
     out.push(`${g.name} (pgid ${g.pgid}): ${state}`);
   }
   for (const [n, s] of Object.entries(slotStates(main, lock.runId, rec))) {
-    out.push(`slot ${n}: journey ${s.journey} generation ${s.generation} calls ${s.calls}/${s.max}${s.submitted ? " submitted" : ""}${s.retired ? " retired" : ""}`);
+    out.push(`slot ${n}: ${s.journey === null ? "map" : `journey ${s.journey}`} generation ${s.generation} calls ${s.calls}/${s.max}${s.submitted ? " submitted" : ""}${s.retired ? " retired" : ""}`);
   }
   out.push(`sessions: ${(rec.sessions ?? []).length}`);
   return out;

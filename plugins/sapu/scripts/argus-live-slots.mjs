@@ -3,7 +3,8 @@
 // run.json keeps only the token's sha256, so no file of the run holds a live token. A handoff retires the
 // token and mints the next generation with a fresh budget (at most two handoffs). An account serves one
 // slot per run. Each slot's counters live in `<slot>/state.json` under a per-slot lock that also
-// serializes the slot's `pw` calls.
+// serializes the slot's `pw` calls. A map slot (`slot <n> --map`, decision 20) holds no account: its token
+// takes `code` and `submit` only, in any run whose worktree exists.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,9 +53,12 @@ export function refuseNotLive(rec, runId) {
 /**
  * refuseNotLive on run.json as it stands now. Every writer of a slot's files asks it just before it
  * writes: a `down` removes those files (removeRunSecrets), and a write after that would leave them behind.
+ * A map slot's writers (`map`) need no instance id, only the run named and not sealed.
  */
-export function stillLive(main, runId) {
-  refuseNotLive(readRun(main), runId);
+export function stillLive(main, runId, { map = false } = {}) {
+  const rec = readRun(main);
+  if (!map) return refuseNotLive(rec, runId);
+  if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
 }
 
 /**
@@ -140,11 +144,11 @@ export function readSlotState(dir) {
 
 /**
  * Writes the slot's state whole (beside, then renamed into place), mode 0600: `created` holds the
- * passwords of accounts the journey made. With `live` ({main, runId}), only while the run is still live
+ * passwords of accounts the journey made. With `live` ({main, runId, map?}), only while the run is still live
  * (stillLive), else `refused: …` and nothing written.
  */
 export function writeSlotState(dir, s, live = null) {
-  if (live) stillLive(live.main, live.runId);
+  if (live) stillLive(live.main, live.runId, { map: Boolean(live.map) });
   const file = path.join(dir, "state.json");
   fs.renameSync(tempBeside(file, `${JSON.stringify(s)}\n`, 0o600), file);
 }
@@ -251,6 +255,46 @@ export async function mintSlot(main, { slot, journey, accounts }, { runner = run
   return reply(slot, token, entry);
 }
 
+/**
+ * Mints map slot `slot` (decision 20) → `{slot, token, generation: 1, mode: "map"}`, in any run whose run.json
+ * has a worktree (a map run, or a full `up` still starting): run.json `slots[<n>]` keeps `{mode: "map",
+ * journey: null, generation, tokenHash, accounts: {}, retired: [], submitted: false}`, and the slot's
+ * directory a fresh state.json only. Refused: no lock, past its deadline, a sealed run, no worktree yet, a
+ * slot minted already.
+ */
+export async function mintMapSlot(main, { slot }) {
+  if (!Number.isInteger(slot) || slot < 1 || slot > 99) throw new Error("refused: a slot is a number from 1 to 99");
+  const lock = readLock(main);
+  if (!lock) throw new Error("refused: no journey cycle is running");
+  if (lock.deadline * 1000 <= Date.now()) throw new Error(`refused: the deadline of cycle ${lock.runId} passed; run down`);
+  const token = randomBytes(16).toString("hex");
+  const entry = { mode: "map", journey: null, generation: 1, tokenHash: sha256(token), accounts: {}, retired: [], submitted: false };
+  updateRun(
+    main,
+    lock.runId,
+    (prev) => {
+      if (!prev || typeof prev.worktree !== "string") throw new Error(`refused: cycle ${lock.runId} has no worktree yet`);
+      const slots = prev.slots ?? {};
+      if (Object.hasOwn(slots, String(slot))) throw new Error(`refused: slot ${slot} is minted already`);
+      return { ...prev, slots: { ...slots, [String(slot)]: entry } };
+    },
+    { create: false },
+  );
+  const settle = (loadLive(main).config ?? {}).settle_ms;
+  try {
+    await withSlotLock(main, lock.runId, slot, () => writeSlotState(slotDir(main, lock.runId, slot), freshState(), { main, runId: lock.runId, map: true }), { waitMs: slotLockWaitMs(settle) });
+  } catch (e) {
+    // A slot whose state cannot be written is not minted.
+    try {
+      updateRun(main, lock.runId, (prev) => (prev ? { ...prev, slots: Object.fromEntries(Object.entries(prev.slots ?? {}).filter(([n]) => n !== String(slot))) } : undefined), { create: false });
+    } catch {
+      // sealed or gone
+    }
+    throw e;
+  }
+  return { slot, token, generation: 1, mode: "map" };
+}
+
 /** allocationKeys of an earlier slot's accounts, as keys only (an account the config no longer allows still blocks its key). */
 function allocationKeysQuiet(accounts, live) {
   const out = {};
@@ -306,8 +350,8 @@ export async function handoffSlot(main, slot) {
 }
 
 /**
- * The slot a token belongs to → `{runId, slot, rec, lock, run}` (`rec` its run.json `slots` entry, `run`
- * run.json as read). The
+ * The slot a token belongs to → `{runId, slot, rec, lock, run, mode}` (`rec` its run.json `slots` entry, `run`
+ * run.json as read, `mode` `map` for a map slot, else `explore`). The
  * token's sha256 is compared with each slot's current hash by timingSafeEqual. A retired token →
  * `refused: retired token`; anything else (not 32 lower-case hex, another run's, no cycle) →
  * `refused: unknown token`.
@@ -323,7 +367,7 @@ export function tokenSlot(main, token) {
   let retired = false;
   for (const [n, s] of Object.entries(rec.slots)) {
     if (!s) continue;
-    if (same(s.tokenHash)) return { runId: lock.runId, slot: Number(n), rec: s, lock, run: rec };
+    if (same(s.tokenHash)) return { runId: lock.runId, slot: Number(n), rec: s, lock, run: rec, mode: s.mode === "map" ? "map" : "explore" };
     if ((s.retired ?? []).some(same)) retired = true;
   }
   if (retired) throw new Error("refused: retired token");

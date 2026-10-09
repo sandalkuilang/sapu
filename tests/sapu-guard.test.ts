@@ -2685,6 +2685,22 @@ describe("sapu-guard — the journey explorer reads only tracked files of the ru
     expect(d(join(w, ".ARGUS/config.yml"))).toMatch(/journey explorer reads only files committed/);
   });
 
+  it("the guard lets the map agent Read committed files of a map run's worktree", () => {
+    // A map run (up --map) records its worktree as a full run does: the Read rule is the same, unchanged.
+    const mm = realpathSync(mkdtempSync(join(tmpdir(), "explorer-map-main-")));
+    execFileSync("git", ["init", "-q", mm]);
+    mkdirSync(join(mm, ".argus/live"), { recursive: true });
+    writeFileSync(join(mm, ".argus/live/run.json"), JSON.stringify({ runId: `${"1".repeat(14)}-0123abcd`, mode: "map", worktree: w, worktreeHead: "0".repeat(40), instanceId: null, groups: [] }));
+    try {
+      const d = (file_path: string) => decide({ agent_type: "sapu:ui-explorer", tool_name: "Read", tool_input: { file_path }, cwd: mm });
+      expect(d(join(w, "src/orders/route.ts"))).toBeNull();
+      expect(d(join(w, "src/orders/untracked.ts"))).toMatch(/journey explorer reads only files committed/);
+      expect(d(join(w, ".argus/config.yml"))).toMatch(/journey explorer reads only files committed/);
+    } finally {
+      rmSync(mm, { recursive: true, force: true });
+    }
+  });
+
   it("decide() gives the explorer no Grep or Glob", () => {
     for (const [tool_name, tool_input] of [["Grep", { pattern: "x", path: join(w, "src") }], ["Glob", { pattern: "**/*.ts", path: join(w, "src") }]] as const)
       expect(decide({ agent_type: "sapu:ui-explorer", tool_name, tool_input, cwd: m })).toMatch(/journey explorer has only Bash/);

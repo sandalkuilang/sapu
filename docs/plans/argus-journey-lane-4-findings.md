@@ -1684,3 +1684,17 @@ Interfaces:
   once, and prints `dropped:` only when some journey is; `catalog: <n> journeys, <k> dropped` counts the file's
   `dropped` after the check. Renames are read with `git diff -z --name-status -M` over the whole tree, so a file
   renamed out of `roots` counts; the momus report is compared only while `head` is in the history.
+- **Task 16.** `down` removes run.json, so `worktreeHead` alone could not reach a merge after `down`: `up`'s
+  step 4 and `upMap` also keep it in `.argus/live/<run>/worktree.json` (0600, `worktreeHeadFile` in `-run.mjs`),
+  which `down` leaves; `mapReturn` (`-return.mjs`, shared by the CLI's `map-check --merge`) reads run.json's key
+  while run.json names the run, else that copy, and refuses a slot whose newest return is not a map (`slot <n>
+  returned no map`). `intake` tells a map return by its content (`journeys`, no `status`): after `down` no
+  run.json says which slot was a map slot. `upMap` needs `limits.max_cycle_minutes` from `.argus/live.json` (the
+  lock's deadline), nothing else of it; it starts the reaper as `up` does. `validateMap` reports, never caps:
+  a journey holds 1–40 steps (one without a step would pass map-check with nothing to explore), `notes` at most
+  2000 characters, a trigger `[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}`; `mergeMap(null, …)` starts a map. A map slot's
+  call is counted as an explorer's (a refusal too, with its `calls` line), its `code` output masked with the env
+  file's values; its state writes re-check only that the run is named and not sealed (`stillLive`'s `map` form).
+  `tokenSlot` answers `mode` `map` or `explore`. `status` prints a map slot as `slot <n>: map generation …`, and
+  `status --json` gives `mode: null` when no cycle runs. The guard seam and the map-run Read tests pass at once:
+  the guard needed no change (no RED to see).

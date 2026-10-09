@@ -1,9 +1,10 @@
 // argus-live-map.mjs — the journey map, `.argus/journeys.json` (spec §6): `map-check` keeps only journeys
 // whose every step is anchored in HEAD's code (decision 21), names the map's refresh triggers and prints
-// the catalog. It reads the configuration and git, never a run, and starts nothing.
+// the catalog. It reads the configuration and git, never a run, and starts nothing. The map an explorer
+// returns in map mode is checked against its schema (validateMap) and merged into the file (mergeMap).
 import fs from "node:fs";
 import path from "node:path";
-import { loadLive } from "./argus-live-config.mjs";
+import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
 
 export const JOURNEYS_FILE = ".argus/journeys.json";
@@ -41,14 +42,99 @@ export function readJourneys(main) {
   return map;
 }
 
-/** Writes the map whole (a temp file renamed over it). */
-function writeJourneys(main, map) {
+/** Writes `.argus/journeys.json` whole (a temp file renamed over it). */
+export function writeJourneys(main, map) {
   const file = path.join(main, JOURNEYS_FILE);
   fs.renameSync(tempBeside(file, `${JSON.stringify(map, null, 2)}\n`), file);
 }
 
 /** A repo-relative path that stays inside the repo (no `..`, not absolute). */
 const repoPath = (p) => typeof p === "string" && p !== "" && !path.isAbsolute(p) && !p.split(/[\\/]/).includes("..");
+
+/** A trigger's name as a map step gives it (a key of `live.triggers`). */
+const TRIGGER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+const MAP_KEYS = ["roots", "journeys", "notes"];
+const JOURNEY_KEYS = ["id", "domain", "title", "money", "global", "goal", "steps"];
+const STEP_KEYS = ["role", "route", "trigger", "goal", "claim", "sources"];
+const SOURCE_KEYS = ["file", "line", "text"];
+
+/**
+ * The map an explorer returns in map mode (decision 20) → `{value, errors}`: `{roots: [≤ 100 repo-relative
+ * paths], journeys: [≤ 100 {id kebab-case, domain ≤ 60, title ≤ 120, money, global, goal ≤ 500, steps: [1–40
+ * {role, route? (starts /, ≤ 200), trigger?, goal ≤ 500, claim?, sources: [1–10 {file, line ≥ 1, text 16–500}]}]}],
+ * notes? ≤ 2000}`; every unknown key is an error. `value` is the map as given when there is none.
+ */
+export function validateMap(obj) {
+  const errors = [];
+  const err = (m) => errors.push(m);
+  if (!isObj(obj)) return { value: null, errors: ["the map must be a JSON object"] };
+  const word = (k) => (/^[A-Za-z0-9_-]{1,40}$/.test(k) ? `"${k}"` : "(not shown)");
+  const keys = (o, allowed, where) => {
+    for (const k of Object.keys(o)) if (!allowed.includes(k)) err(`${where}: unknown key ${word(k)}`);
+  };
+  const str = (v, where, max, min = 1) => (typeof v === "string" && v.length >= min && v.length <= max) || err(`${where} must be a string of ${min > 1 ? `${min} to ${max}` : `at most ${max}`} characters`);
+  const bool = (v, where) => typeof v === "boolean" || err(`${where} must be true or false`);
+  const list = (v, where, max, min = 0) => {
+    if (!Array.isArray(v)) return (err(`${where} must be an array`), []);
+    if (v.length > max) err(`${where} holds at most ${max} entries`);
+    else if (v.length < min) err(`${where} must hold ${min} to ${max} ${where.endsWith("sources") ? "anchors" : "entries"}`);
+    return v.slice(0, max);
+  };
+  const objects = (v, where, max, min, allowed, fn) =>
+    list(v, where, max, min).forEach((x, i) => {
+      const at = `${where}[${i}]`;
+      if (!isObj(x)) return err(`${at} must be an object`);
+      keys(x, allowed, at);
+      fn(x, at);
+    });
+  const file = (v, where) => repoPath(v) || err(`${where} must be a repo-relative path (no ..)`);
+  keys(obj, MAP_KEYS, "the map");
+  list(obj.roots, "roots", 100).forEach((r, i) => file(r, `roots[${i}]`));
+  objects(obj.journeys, "journeys", 100, 0, JOURNEY_KEYS, (j, at) => {
+    if (typeof j.id !== "string" || !KEBAB.test(j.id) || j.id.length > 100) err(`${at}.id must be kebab-case`);
+    str(j.domain, `${at}.domain`, 60);
+    str(j.title, `${at}.title`, 120);
+    bool(j.money, `${at}.money`);
+    bool(j.global, `${at}.global`);
+    str(j.goal, `${at}.goal`, 500);
+    objects(j.steps, `${at}.steps`, 40, 1, STEP_KEYS, (s, st) => {
+      if (typeof s.role !== "string" || !ROLE_NAME.test(s.role) || s.role.length > 40) err(`${st}.role must be a role name`);
+      if (s.route !== undefined && (typeof s.route !== "string" || !s.route.startsWith("/") || s.route.length > 200)) err(`${st}.route must start with / (at most 200 characters)`);
+      if (s.trigger !== undefined && (typeof s.trigger !== "string" || !TRIGGER.test(s.trigger))) err(`${st}.trigger must be a trigger name (${TRIGGER.source})`);
+      str(s.goal, `${st}.goal`, 500);
+      if (s.claim !== undefined) bool(s.claim, `${st}.claim`);
+      objects(s.sources, `${st}.sources`, 10, 1, SOURCE_KEYS, (a, sa) => {
+        file(a.file, `${sa}.file`);
+        if (!Number.isInteger(a.line) || a.line < 1) err(`${sa}.line must be a whole number from 1`);
+        str(a.text, `${sa}.text`, 500, MIN_ANCHOR);
+      });
+    });
+  });
+  if (obj.notes !== undefined) str(obj.notes, "notes", 2000);
+  return { value: obj, errors };
+}
+
+/** What a journey keeps from the map it was in when a returned map names its id: its coverage history (decision 22). */
+const HISTORY = ["lastCycle", "lastHead", "filed"];
+
+/**
+ * `prev` (the map as it stands, or null) with the returned map `value` merged in (spec §6 "Refresh", decision
+ * 20) → the new map: `head` the commit the map was built at, `roots` replaced, a journey of a known id given
+ * the returned domain, title, flags, goal and steps (keeping lastCycle, lastHead and filed), a new id
+ * appended (`lastCycle: null`), every other journey and `dropped` kept.
+ */
+export function mergeMap(prev, value, { head }) {
+  const before = prev ?? { journeys: [], dropped: [] };
+  const back = new Map(value.journeys.map((j) => [j.id, j]));
+  const journeys = before.journeys.map((j) => {
+    const r = back.get(j.id);
+    if (!r) return j;
+    back.delete(j.id);
+    return { ...j, ...r, ...Object.fromEntries(HISTORY.filter((k) => Object.hasOwn(j, k)).map((k) => [k, j[k]])) };
+  });
+  for (const j of back.values()) journeys.push({ ...j, lastCycle: null });
+  return { ...before, head, roots: value.roots, dropped: before.dropped ?? [], journeys };
+}
 
 /** `p` is the root `r` or lies under it (both repo-relative). */
 const under = (p, r) => {

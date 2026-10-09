@@ -19,7 +19,13 @@ import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-confi
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
-import { catalog, mapCheck, readJourneys, refreshReasons } from "../plugins/sapu/scripts/argus-live-map.mjs";
+import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
+// @ts-expect-error — plain ESM script without types
+import { renewRun, up, upMap } from "../plugins/sapu/scripts/argus-live-instance.mjs";
+// @ts-expect-error — plain ESM script without types
+import { readLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
+// @ts-expect-error — plain ESM script without types
+import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { HELPERS, loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -37,9 +43,9 @@ import { defang, redactIds, scrub, scrubSecrets } from "../plugins/sapu/scripts/
 // @ts-expect-error — plain ESM script without types
 import { configuredUser, drainSessions, maskSecrets, sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
+import { intake, ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
-import { readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
+import { mintMapSlot, mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { FINAL_KINDS, parseRepro, reductions, stepCode, substitute } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -100,6 +106,7 @@ describe("argus-live modules — the DAG", () => {
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
     // The journey map reads the configuration and git, nothing of a run.
     expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
+    expect(g.get("argus-live-return")).toContain("argus-live-map");
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -1448,55 +1455,56 @@ describe("argus-live scrub — attachments and filing", () => {
   }, 30_000); // five spawned CLIs
 });
 
-describe("argus-live map-check", () => {
-  const gitIn = (main: string, ...args: string[]) => spawnSync("git", ["-C", main, ...args], { encoding: "utf8" }).stdout.trim();
-  const commitAll = (main: string, msg: string) => {
-    gitIn(main, "add", "-A");
-    gitIn(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", msg);
+// The journey map tests' repo and journeys (map-check, map mode, select).
+const gitIn = (main: string, ...args: string[]) => spawnSync("git", ["-C", main, ...args], { encoding: "utf8" }).stdout.trim();
+const commitAll = (main: string, msg: string) => {
+  gitIn(main, "add", "-A");
+  gitIn(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", msg);
+};
+const ORDERS = [
+  'const router = require("express").Router();',
+  'const { requireRole } = require("../auth");',
+  "// the orders routes",
+  "",
+  'router.post("/orders/new", requireRole("buyer"), createOrder);',
+  'router.get("/orders/:id", requireRole("buyer"), showOrder);',
+  'router.post("/orders/:id/approve", requireRole("clerk"), approveOrder);',
+  "module.exports = router;",
+];
+/** A step of each kind, anchored in the map repo's code. */
+const BUY = { role: "buyer", route: "/orders/new", goal: "place an order", sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.post("/orders/new"' }] };
+const SETTLE = { role: "system", trigger: "settle", goal: "the payment settles", sources: [{ file: "src/jobs/settle.js", line: 1, text: "export function settlePayments(queue) {" }] };
+const APPROVE = { role: "clerk", route: "/orders/:id/approve", goal: "approve it", sources: [{ file: "src/routes/orders.js", line: 7, text: 'router.post("/orders/:id/approve"' }] };
+const journey = (id: string, steps: Obj[], extra: Obj = {}) => ({ id, domain: "sales", title: `Journey ${id}`, money: false, global: false, goal: "a goal", steps, lastCycle: null, ...extra });
+/**
+ * A committed repo with src/routes/orders.js (the route on line 5), src/routes/repeat.js (one line four
+ * times), src/jobs/settle.js and src/lib/helper.js, and (unless `live` is false) .argus/live.json with
+ * roles buyer and clerk and trigger settle; `map(journeys)` writes .argus/journeys.json at HEAD with
+ * roots src/routes and src/jobs.
+ */
+const mapRepo = ({ live = true } = {}) => {
+  const main = committed();
+  mkdirSync(join(main, "src/routes"), { recursive: true });
+  mkdirSync(join(main, "src/jobs"), { recursive: true });
+  mkdirSync(join(main, "src/lib"), { recursive: true });
+  writeFileSync(join(main, "src/routes/orders.js"), `${ORDERS.join("\n")}\n`);
+  writeFileSync(join(main, "src/routes/repeat.js"), 'audit.log("an order event here");\n'.repeat(4));
+  writeFileSync(join(main, "src/jobs/settle.js"), "export function settlePayments(queue) {\n  return queue.drain();\n}\n");
+  writeFileSync(join(main, "src/lib/helper.js"), "export function settleHelperFunction() {}\n");
+  mkdirSync(join(main, ".argus"), { recursive: true });
+  if (live) writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ roles: { buyer: {}, clerk: {} }, triggers: { settle: { argv: ["true"] } }, limits: { max_cycle_minutes: 30 } }));
+  commitAll(main, "app");
+  const file = join(main, ".argus/journeys.json");
+  const map = (journeys: Obj[], extra: Obj = {}) => writeFileSync(file, `${JSON.stringify({ head: gitIn(main, "rev-parse", "HEAD"), roots: ["src/routes", "src/jobs"], dropped: [], journeys, ...extra }, null, 2)}\n`);
+  const read = () => JSON.parse(readFileSync(file, "utf8"));
+  const cli = (...args: string[]) => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "map-check", ...args], { cwd: main, encoding: "utf8" });
+    return { code: r.status, out: r.stdout.trimEnd().split("\n"), err: r.stderr };
   };
-  const ORDERS = [
-    'const router = require("express").Router();',
-    'const { requireRole } = require("../auth");',
-    "// the orders routes",
-    "",
-    'router.post("/orders/new", requireRole("buyer"), createOrder);',
-    'router.get("/orders/:id", requireRole("buyer"), showOrder);',
-    'router.post("/orders/:id/approve", requireRole("clerk"), approveOrder);',
-    "module.exports = router;",
-  ];
-  /** A step of each kind, anchored in the map repo's code. */
-  const BUY = { role: "buyer", route: "/orders/new", goal: "place an order", sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.post("/orders/new"' }] };
-  const SETTLE = { role: "system", trigger: "settle", goal: "the payment settles", sources: [{ file: "src/jobs/settle.js", line: 1, text: "export function settlePayments(queue) {" }] };
-  const APPROVE = { role: "clerk", route: "/orders/:id/approve", goal: "approve it", sources: [{ file: "src/routes/orders.js", line: 7, text: 'router.post("/orders/:id/approve"' }] };
-  const journey = (id: string, steps: Obj[], extra: Obj = {}) => ({ id, domain: "sales", title: `Journey ${id}`, money: false, global: false, goal: "a goal", steps, lastCycle: null, ...extra });
-  /**
-   * A committed repo with src/routes/orders.js (the route on line 5), src/routes/repeat.js (one line four
-   * times), src/jobs/settle.js and src/lib/helper.js, and (unless `live` is false) .argus/live.json with
-   * roles buyer and clerk and trigger settle; `map(journeys)` writes .argus/journeys.json at HEAD with
-   * roots src/routes and src/jobs.
-   */
-  const mapRepo = ({ live = true } = {}) => {
-    const main = committed();
-    mkdirSync(join(main, "src/routes"), { recursive: true });
-    mkdirSync(join(main, "src/jobs"), { recursive: true });
-    mkdirSync(join(main, "src/lib"), { recursive: true });
-    writeFileSync(join(main, "src/routes/orders.js"), `${ORDERS.join("\n")}\n`);
-    writeFileSync(join(main, "src/routes/repeat.js"), 'audit.log("an order event here");\n'.repeat(4));
-    writeFileSync(join(main, "src/jobs/settle.js"), "export function settlePayments(queue) {\n  return queue.drain();\n}\n");
-    writeFileSync(join(main, "src/lib/helper.js"), "export function settleHelperFunction() {}\n");
-    mkdirSync(join(main, ".argus"), { recursive: true });
-    if (live) writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ roles: { buyer: {}, clerk: {} }, triggers: { settle: { argv: ["true"] } } }));
-    commitAll(main, "app");
-    const file = join(main, ".argus/journeys.json");
-    const map = (journeys: Obj[], extra: Obj = {}) => writeFileSync(file, `${JSON.stringify({ head: gitIn(main, "rev-parse", "HEAD"), roots: ["src/routes", "src/jobs"], dropped: [], journeys, ...extra }, null, 2)}\n`);
-    const read = () => JSON.parse(readFileSync(file, "utf8"));
-    const cli = (...args: string[]) => {
-      const r = spawnSync(process.execPath, [ARGUS_LIVE, "map-check", ...args], { cwd: main, encoding: "utf8" });
-      return { code: r.status, out: r.stdout.trimEnd().split("\n"), err: r.stderr };
-    };
-    return { main, file, map, read, cli };
-  };
+  return { main, file, map, read, cli };
+};
 
+describe("argus-live map-check", () => {
   const DROPS: [string, Obj, string][] = [
     ["a short anchor", { ...BUY, sources: [{ file: "src/routes/orders.js", line: 5, text: "router.post(  x" }] }, "step 1: anchor 1 has fewer than 16 non-space characters"],
     ["a missing anchor", { ...BUY, sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.delete("/orders/new"' }] }, "step 1: anchor 1 is not in src/routes/orders.js at HEAD"],
@@ -1670,6 +1678,165 @@ describe("argus-live map-check", () => {
   it("the usage line names map-check", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain(" | map-check [--list]");
+    expect(r.stderr).toContain(" | map-check [--list");
+  }, 30_000);
+});
+
+describe("argus-live map mode", () => {
+  const runs: { main: string; runId: string }[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+  });
+  /** A map that passes map-check in mapRepo's code. */
+  const MAP = { roots: ["src/routes", "src/jobs"], journeys: [{ id: "order-to-cash", domain: "sales", title: "Order to cash", money: true, global: false, goal: "an order is placed and settled", steps: [BUY, SETTLE] }] };
+  /** mapRepo with `up --map` run in process → its summary; down after the test. */
+  const mapped = async () => {
+    const t = mapRepo();
+    const u = await upMap(t.main);
+    runs.push({ main: t.main, runId: u.runId });
+    return { ...t, u };
+  };
+  const spawnCli = (main: string, ...args: string[]) => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, ...args], { cwd: main, encoding: "utf8" });
+    return { code: r.status, out: r.stdout, err: r.stderr };
+  };
+
+  it("up --map takes the lock and a worktree and starts nothing", async () => {
+    const t = mapRepo();
+    writeFileSync(join(t.main, ".gitignore"), ".argus/live/\n");
+    const u = spawnCli(t.main, "up", "--map");
+    expect(u.code, u.err).toBe(0);
+    const summary = JSON.parse(u.out.trim().split("\n").at(-1)!);
+    runs.push({ main: t.main, runId: summary.runId });
+    expect(summary).toEqual({ runId: summary.runId, mode: "map", deadline: expect.any(Number), worktree: expect.any(String) });
+    const rec = readRun(t.main);
+    expect(rec).toMatchObject({ runId: summary.runId, mode: "map", instanceId: null, worktree: summary.worktree, groups: [], stops: [], sessions: [] });
+    expect(rec.worktreeHead).toBe(gitIn(t.main, "rev-parse", "HEAD"));
+    for (const k of ["home", "env", "browser", "internal", "ports"]) expect(rec[k] ?? null, k).toEqual(k === "ports" ? {} : null);
+    expect(existsSync(`${summary.worktree}.home`)).toBe(false);
+    expect(existsSync(join(summary.worktree, "src/routes/orders.js"))).toBe(true);
+    const s = spawnCli(t.main, "status", "--json");
+    expect(JSON.parse(s.out)).toMatchObject({ runId: summary.runId, mode: "map", instanceId: null, worktree: summary.worktree, slots: {} });
+    expect(spawnCli(t.main, "status").out).toContain("mode: map\n");
+    // A full up is refused while the map run holds the lock.
+    expect(spawnCli(t.main, "up").err).toMatch(/^refused: cycle \S+ holds the lock until /);
+    const d = spawnCli(t.main, "down");
+    expect(d.code, d.err).toBe(0);
+    expect(existsSync(summary.worktree)).toBe(false);
+    const log = readFileSync(join(t.main, ".git/sapu-live.log"), "utf8").trim().split("\n");
+    expect(log.filter((l) => l.startsWith(`${summary.runId} start `))).toHaveLength(1);
+    expect(log.filter((l) => l.startsWith(`${summary.runId} end `))).toHaveLength(1);
+  }, 60_000);
+
+  it("a map slot reads code and submits a map, nothing else", async () => {
+    const t = await mapped();
+    const m = await mintMapSlot(t.main, { slot: 1 });
+    expect(m).toEqual({ slot: 1, token: expect.stringMatching(/^[0-9a-f]{32}$/), generation: 1, mode: "map" });
+    expect(readRun(t.main).slots["1"]).toEqual({ mode: "map", journey: null, generation: 1, tokenHash: expect.any(String), accounts: {}, retired: [], submitted: false });
+    expect(readdirSync(slotDir(t.main, t.u.runId, 1))).toEqual(["state.json"]);
+    const code = await pw(t.main, [m.token, "code", "files", "src"]);
+    expect(code.code).toBe(0);
+    expect(code.out[0]).toContain(join(t.u.worktree, "src/routes/orders.js"));
+    expect(code.out[1]).toBe("calls 1/120");
+    const goto = await pw(t.main, [m.token, "buyer", "goto", "/"]);
+    expect(goto).toEqual({ code: 1, out: ["refused: a map slot takes only code and submit", "calls 2/120"] });
+    expect((await pw(t.main, [m.token, "facts", "x"])).out[0]).toBe("refused: a map slot takes only code and submit");
+    const bad = await pw(t.main, [m.token, "submit", JSON.stringify({ ...MAP, extra: 1 })]);
+    expect(bad).toEqual({ code: 1, out: ['refused: return: the map: unknown key "extra"'] });
+    const ok = await pw(t.main, [m.token, "submit", JSON.stringify(MAP)]);
+    expect(ok).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 map journeys 1"] });
+    expect((await pw(t.main, [m.token, "code", "files"])).out).toEqual(["refused: retired token"]);
+    const lines = intake(t.main, 1);
+    expect(lines[0]).toBe("slot 1 generation 1 map journeys 1 roots 2");
+    expect(lines[1]).toMatch(/^<<<RETURN-/);
+  }, 30_000);
+
+  it("validateMap holds the map's schema", () => {
+    expect(validateMap(MAP)).toEqual({ value: MAP, errors: [] });
+    const step = (x: Obj) => ({ ...MAP, journeys: [{ ...MAP.journeys[0], steps: [{ ...BUY, ...x }] }] });
+    const errs = (x: Obj) => validateMap(x).errors;
+    expect(errs([])).toEqual(["the map must be a JSON object"]);
+    expect(errs({ ...MAP, roots: ["../x"] })).toEqual(["roots[0] must be a repo-relative path (no ..)"]);
+    expect(errs({ ...MAP, journeys: [{ ...MAP.journeys[0], id: "Order" }] })).toEqual(["journeys[0].id must be kebab-case"]);
+    expect(errs({ ...MAP, journeys: [{ ...MAP.journeys[0], title: "t".repeat(121) }] })).toEqual(["journeys[0].title must be a string of at most 120 characters"]);
+    expect(errs({ ...MAP, journeys: [{ ...MAP.journeys[0], money: "yes" }] })).toEqual(["journeys[0].money must be true or false"]);
+    expect(errs(step({ role: "Buyer" }))).toEqual(["journeys[0].steps[0].role must be a role name"]);
+    expect(errs(step({ route: "orders" }))).toEqual(["journeys[0].steps[0].route must start with / (at most 200 characters)"]);
+    expect(errs(step({ claim: 1 }))).toEqual(["journeys[0].steps[0].claim must be true or false"]);
+    expect(errs(step({ sources: [] }))).toEqual(["journeys[0].steps[0].sources must hold 1 to 10 anchors"]);
+    expect(errs(step({ sources: [{ file: "/etc/x", line: 0, text: "short" }] }))).toEqual([
+      "journeys[0].steps[0].sources[0].file must be a repo-relative path (no ..)",
+      "journeys[0].steps[0].sources[0].line must be a whole number from 1",
+      "journeys[0].steps[0].sources[0].text must be a string of 16 to 500 characters",
+    ]);
+    expect(errs(step({ why: "x" }))).toEqual(['journeys[0].steps[0]: unknown key "why"']);
+    expect(errs({ ...MAP, journeys: Array.from({ length: 101 }, () => MAP.journeys[0]) })).toContain("journeys holds at most 100 entries");
+  });
+
+  it("a map slot can be minted while up is still starting", async () => {
+    const t = liveRun();
+    runs.push({ main: t.main, runId: t.runId });
+    writeRunFiles(t.main, { runId: t.runId, worktree: null, groups: [] });
+    await expect(mintMapSlot(t.main, { slot: 1 })).rejects.toThrow(`refused: cycle ${t.runId} has no worktree yet`);
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, groups: [] });
+    expect((await mintMapSlot(t.main, { slot: 1 })).mode).toBe("map");
+    await expect(mintMapSlot(t.main, { slot: 1 })).rejects.toThrow("refused: slot 1 is minted already");
+    writeFileSync(join(t.main, ".argus/live.json"), JSON.stringify(example()));
+    await expect(mintSlot(t.main, { slot: 2, journey: "order-to-cash", accounts: { "anon.1": null } })).rejects.toThrow(`refused: cycle ${t.runId} has no instance (its up did not finish)`);
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, closing: true }), { sealed: true });
+    await expect(mintMapSlot(t.main, { slot: 3 })).rejects.toThrow(`refused: cycle ${t.runId} is being torn down`);
+  }, 30_000);
+
+  it("map-check --merge keeps ids, lastCycle and the journeys the map did not return", () => {
+    const a = journey("a", [BUY], { lastCycle: 3, lastHead: "abc1234", filed: [7] });
+    const b = journey("b", [APPROVE], { lastCycle: 2 });
+    const prev = { head: "old", roots: ["src"], dropped: [{ id: "z", reason: "duplicate id", head: "old" }], journeys: [a, b] };
+    const back = { roots: ["src/routes"], journeys: [{ id: "a", domain: "billing", title: "A again", money: true, global: false, goal: "g2", steps: [SETTLE] }, { id: "c", domain: "sales", title: "C", money: false, global: true, goal: "g3", steps: [BUY] }] };
+    expect(mergeMap(prev, back, { head: "new" })).toEqual({
+      head: "new",
+      roots: ["src/routes"],
+      dropped: prev.dropped,
+      journeys: [
+        { ...a, domain: "billing", title: "A again", money: true, global: false, goal: "g2", steps: [SETTLE] },
+        b,
+        { ...back.journeys[1], lastCycle: null },
+      ],
+    });
+    expect(mergeMap(null, back, { head: "new" })).toEqual({ head: "new", roots: ["src/routes"], dropped: [], journeys: back.journeys.map((j) => ({ ...j, lastCycle: null })) });
+  });
+
+  it("map-check --merge stamps the worktree's commit, not MAIN's HEAD", async () => {
+    const t = await mapped();
+    const built = gitIn(t.main, "rev-parse", "HEAD");
+    writeFileSync(join(t.main, "later.txt"), "later\n");
+    commitAll(t.main, "meanwhile");
+    expect(gitIn(t.main, "rev-parse", "HEAD")).not.toBe(built);
+    const m = await mintMapSlot(t.main, { slot: 1 });
+    expect((await pw(t.main, [m.token, "submit", JSON.stringify(MAP)])).code).toBe(0);
+    await down(t.main, { runId: t.u.runId, graceMs: 1000 });
+    runs.splice(0);
+    const r = spawnCli(t.main, "map-check", "--merge", "1");
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toBe("catalog: 1 journeys, 0 dropped\nrefresh: none\n");
+    const map = t.read();
+    expect(map.head).toBe(built);
+    expect(map.journeys.map((j: Obj) => [j.id, j.lastCycle])).toEqual([["order-to-cash", null]]);
+    // A run that recorded no worktree commit is refused, and so is a slot that returned no map.
+    rmSync(join(t.main, ".argus/live", t.u.runId, "worktree.json"));
+    expect(spawnCli(t.main, "map-check", "--merge", "1").err).toBe(`refused: map-check --merge: run ${t.u.runId} recorded no worktree commit\n`);
+    expect(spawnCli(t.main, "map-check", "--merge", "2").err).toBe("refused: slot 2 has not submitted\n");
+  }, 60_000);
+
+  it("up --fresh and renew refuse a map run", async () => {
+    const t = await mapped();
+    const refusal = `refused: cycle ${t.u.runId} is a map run (up --map); run down`;
+    await expect(up(t.main, { fresh: true })).rejects.toThrow(refusal);
+    await expect(renewRun(t.main)).rejects.toThrow(refusal);
+    expect(readLock(t.main).runId).toBe(t.u.runId);
+  }, 30_000);
+
+  it("the usage line names map mode", () => {
+    const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
+    for (const u of ["up [--fresh|--map]", "slot <n> --map", "map-check [--list|--merge <slot>]"]) expect(r.stderr, u).toContain(u);
   }, 30_000);
 });
