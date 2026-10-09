@@ -1793,8 +1793,9 @@ function textAt(root, ref, file) {
  */
 const SELF_LOCATING = [
   // the makefile's own path (`lastword`/`firstword` of it, `$(word $(words …),…)`, or the list inside
-  // abspath/realpath/dir or a shell's dirname/realpath/readlink), not a help target that only greps it
-  [/\b(?:lastword|firstword|words)\s+\$[({]MAKEFILE_LIST[)}]|\$\((?:abspath|realpath|dir|shell\s+(?:dirname|realpath|readlink))\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
+  // abspath/realpath/dir or a shell's dirname/realpath/readlink, `$(…)` or `${…}`, also further into
+  // the shell text: `$(shell cd "$$(dirname …)" && pwd)`), not a help target that only greps it
+  [/\b(?:lastword|firstword|words)\s+\$[({]MAKEFILE_LIST[)}]|\$[({](?:abspath|realpath|dir|shell\s+(?:[^\n]*?[\s"'(;&|])?(?:dirname|realpath|readlink))\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
   [/\b(justfile_directory|justfile|source_directory|source_file)\s*\(\s*\)/, (m) => `${m[1]}()`],
   [/\bBASH_SOURCE\b/, "${BASH_SOURCE}"],
   [/\$\{0[%#:]/, (m) => m[0]],

@@ -21,8 +21,9 @@
 // `&`, redirection operators as words of their own, subshells, `$( )` and backticks — also inside
 // double quotes), wrappers are peeled (`env`, `nice`, `time`, `exec`, `xargs`, `npx`, `bunx`,
 // `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, ...),
-// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec`/`parallel` and
-// heredocs fed to a shell are checked recursively, the words xargs, find and parallel fill in at run
+// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec`/`fd -x|-X`/
+// `parallel`/`sem`/`rush` and heredocs fed to a shell are checked recursively, the words xargs, find,
+// fd, parallel and rush fill in at run
 // time counted as words the shell builds (nesting deeper than MAX_DEPTH is blocked, never waved
 // through), and `cd`/`pushd`/`env -C`/`git -C`/`--git-dir`/`--work-tree`/`GIT_DIR` are followed
 // (a `cd` inside `( )`, a pipeline or `&` does not move the parent) to know which checkout a
@@ -109,15 +110,25 @@
 // interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
 // interpreter writes, and a label an interpreter supplies. The words a wrapper fills in at run time
 // count as built by the shell: xargs's (in place of `-I`/`-J`/`--replace`'s string, else one appended
-// to the command), `{}` in `find -exec|-execdir|-ok|-okdir`, and parallel's (its replacement strings,
-// else one appended); in `gh issue|pr edit` any word the shell or a wrapper builds beside a literal
+// to the command), `{}` in `find -exec|-execdir|-ok|-okdir`, fd's (`{}`, `{/}`, `{//}`, `{.}`, `{/.}`
+// after -x/-X, else one appended), parallel's and sem's (its replacement strings, else one appended)
+// and rush's (its `{…}` placeholders in the shell text, else one appended); in `gh issue|pr edit` any word the shell or a wrapper builds beside a literal
 // owner label is refused, since it can be the option name.
-// gh's token: `gh auth token`, `gh auth status -t|--show-token`, `gh auth git-credential`, `git
-// credential …` and reading gh's hosts.yml (the file, its directory, a glob reaching the file) are
-// BLOCKED for every subagent, since with the token `curl` reaches the API around every gh rule; NOT
-// covered: a recursive read from a directory above gh's (`grep -r … ~/.config`), the OS keychain read
-// directly (`security find-internet-password`), and a token already in the environment (GH_TOKEN,
-// GITHUB_TOKEN), which curl can send as it is.
+// gh's token: `gh auth token`, `gh auth status -t|--show-token`, `gh auth git-credential`, `gh config
+// get oauth_token|token` (or a key the shell builds), `git credential …` and every program named
+// `git-credential*` (except `git credential-cache exit`, which prints nothing), and reading gh's
+// hosts.yml or git's store-helper files (~/.git-credentials, $XDG_CONFIG_HOME/git/credentials,
+// ~/.config/git/credentials) are BLOCKED for every subagent, since with the token `curl` reaches the
+// API around every gh rule. A read counts the file, its directory (not for a lister: `ls`, `stat`,
+// `tree`, `cd`, …, nor the Glob tool), a glob reaching the file, a brace list and a `${VAR:-default}`
+// either way, judged by the path a word resolves to (`~`, HOME, XDG_CONFIG_HOME, GH_CONFIG_DIR, the
+// cwd, `..`), so `fixtures/gh/hosts.yml` passes; a word the guard cannot resolve (another variable, a
+// cut substitution) counts when it ends like one. NOT covered: a recursive read from a directory
+// above (`grep -r … ~/.config`), a tool whose own directory option moves where a relative path
+// resolves (`tar -C ~/.config -c gh`, `rsync`, `git -C` for a file read), an interpreter reading the
+// file (`python`, `node -e`, `perl`), the OS keychain read directly (`security
+// find-internet-password`, `secret-tool`), a script piped into a shell (`… | sh`), and a token
+// already in the environment (GH_TOKEN, GITHUB_TOKEN), which curl can send as it is.
 // The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
@@ -499,8 +510,16 @@ const PARALLEL_SEP = /^::::?\+?$/;
 const PARALLEL_REPLACE = /\{(?:=[\s\S]*?=|[0-9]*[./#%+]*)\}/;
 const PARALLEL_SHORT_VALUE = "aCdEIjLnNPsS";
 const PARALLEL_SHORT_FLAG = "0gkmpqrtuvX";
-const PARALLEL_LONG_VALUE = new Set(["arg-file", "arg-file-sep", "arg-sep", "basefile", "bf", "block", "block-size", "colsep", "delay", "delimiter", "env", "eof", "halt", "jobs", "joblog", "load", "max-args", "max-chars", "max-lines", "max-procs", "max-replace-args", "memfree", "nice", "process-slot-var", "res", "results", "retries", "return", "rpl", "slf", "ssh", "sshlogin", "sshloginfile", "tag-string", "tagstring", "template", "tf", "timeout", "tmpdir", "transferfile", "wd", "workdir"]);
-const PARALLEL_LONG_FLAG = new Set(["bar", "dry-run", "dryrun", "eta", "group", "interactive", "keep-order", "lb", "line-buffer", "no-notice", "no-run-if-empty", "null", "pipe", "pipe-part", "pipepart", "progress", "quote", "tag", "ungroup", "verbose", "will-cite", "xargs"]);
+const PARALLEL_LONG_VALUE = new Set(["id", "semaphorename", "semaphoretimeout", "st", "arg-file", "arg-file-sep", "arg-sep", "basefile", "bf", "block", "block-size", "colsep", "delay", "delimiter", "env", "eof", "halt", "jobs", "joblog", "load", "max-args", "max-chars", "max-lines", "max-procs", "max-replace-args", "memfree", "nice", "process-slot-var", "res", "results", "retries", "return", "rpl", "slf", "ssh", "sshlogin", "sshloginfile", "tag-string", "tagstring", "template", "tf", "timeout", "tmpdir", "transferfile", "wd", "workdir"]);
+// fd's exec options (`-x`/`--exec`, `-X`/`--exec-batch`, glued after its flags: `-Hx`) and the
+// placeholders it fills with each path found; without one it appends the path.
+const FD_EXEC = /^(?:-[HIusigFalLp0q1]*[xX]|--exec|--exec-batch)$/;
+const FD_PLACEHOLDER = /\{(?:|\/|\/\/|\.|\/\.)\}/;
+// rush's options taking a value, and its placeholders ({}, {.}, {/}, {#}, {1}, {^suffix}, {@re}, …).
+const RUSH_VALUE = /^(-[vCDdjnJiorTt]|--(assign|continue-file|record-delimiter|records-delimiter|field-delimiter|jobs|nrecords|records-join-sep|infile|out-file|retries|retry-interval|timeout|trim|cleanup-time))$/;
+const RUSH_FLAG = /^(-[ckeqIh]|--(continue|keep-order|stop-on-error|propagate-exit-status|immediate-output|dry-run|verbose|eta|help|version))$/;
+const RUSH_PLACEHOLDER = /\{[^{}\s]*\}/g;
+const PARALLEL_LONG_FLAG = new Set(["fg", "bg", "wait", "semaphore", "bar", "dry-run", "dryrun", "eta", "group", "interactive", "keep-order", "lb", "line-buffer", "no-notice", "no-run-if-empty", "null", "pipe", "pipe-part", "pipepart", "progress", "quote", "tag", "ungroup", "verbose", "will-cite", "xargs"]);
 
 /**
  * Peel env assignments and wrappers; returns the index of the real program in the command. `alts`,
@@ -614,6 +633,21 @@ function programIndex(t, alts = null, out = null) {
   }
   // A wrapper or redirection with nothing after it (`exec >`, `script -q`) must not point past the end.
   return Math.min(i, t.length);
+}
+
+/**
+ * Is this `git-credential-cache exit` (`git credential-cache exit`)? It stops the cache daemon and
+ * prints nothing: the one credential helper call that hands out no credential.
+ */
+function cacheExit(helper, rest) {
+  if (helper !== "git-credential-cache") return false;
+  const ops = [];
+  for (let j = 0; j < rest.length; j++) {
+    if (rest[j].dyn) return false;
+    if (/^--(socket|timeout)$/.test(rest[j].v)) j++;
+    else if (!rest[j].v.startsWith("-")) ops.push(rest[j].v);
+  }
+  return ops.length === 1 && ops[0] === "exit";
 }
 
 /** The first word after a package manager's leading options (`pnpm --filter api exec` → exec). */
@@ -851,6 +885,8 @@ const GIT_REMOTE_CONFIG = /^(remote\.|url\.|push\.)/i;
 const GIT_HOME_ENV = /^(HOME|XDG_CONFIG_HOME)=/;
 /** Environment that injects git config into every git command. */
 const GIT_CONFIG_ENV = /^GIT_CONFIG_(COUNT|KEY_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
+// Programs that name files without reading them: a credential file may be listed, never read.
+const LISTERS = new Set(["ls", "tree", "stat", "du", "eza", "exa", "lsd", "test", "[", "realpath", "readlink", "dirname", "basename", "cd", "pushd"]);
 const SCRIPT_EXT = /\.(sh|js|mjs|cjs|ts|mts|cts|py)$/;
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1235,7 +1271,7 @@ const BLOCK = {
   acceptLabel:
     "the acceptance label, the needs-owner label and the agent-filed label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them (an agent only files a new issue with the agent-filed or needs-owner label) — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
   ghToken:
-    "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `git credential …`, gh's hosts.yml) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
+    "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `gh config get oauth_token`, `git credential …`/`git-credential-*`, gh's hosts.yml, git's ~/.git-credentials or ~/.config/git/credentials) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
   ownerRuling:
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
@@ -1500,38 +1536,82 @@ function isPluginFile(p, replaces = false) {
 const isGlob = (s) => /[*?[]/.test(s);
 
 /**
- * gh's hosts.yml, which holds its OAuth token where no keyring stores it, wherever gh reads it
- * ($GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, ~/.config/gh), also through the real path of its directory.
+ * The files that hold a credential gh or git hands out: gh's hosts.yml (its OAuth token where no
+ * keyring stores it) wherever gh reads it ($GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, ~/.config/gh), and
+ * the files git's store helper keeps (~/.git-credentials, $XDG_CONFIG_HOME/git/credentials,
+ * ~/.config/git/credentials), each also through the real path of its directory. `dirs`: the
+ * directories holding them below HOME (gh's and git's config dirs), which a recursive read, copy or
+ * archive takes the file along from.
  */
-let ghHostsCache = { key: null, files: [] };
-function ghHostsFiles() {
+let tokenCache = { key: null, files: [], dirs: [] };
+function tokenPaths() {
   const { HOME: home, GH_CONFIG_DIR: gh, XDG_CONFIG_HOME: xdg } = process.env;
   const key = `${home}\0${gh}\0${xdg}`;
-  if (ghHostsCache.key === key) return ghHostsCache.files;
-  const dirs = [gh, xdg && path.join(xdg, "gh"), home && path.join(home, ".config", "gh")].filter(Boolean).map((d) => path.resolve(d));
-  ghHostsCache = { key, files: [...new Set(dirs.flatMap((d) => [path.join(d, "hosts.yml"), path.join(realPathOf(d), "hosts.yml")]))] };
-  return ghHostsCache.files;
+  if (tokenCache.key === key) return tokenCache;
+  const both = (d) => [path.resolve(d), realPathOf(path.resolve(d))];
+  const ghDirs = [gh, xdg && path.join(xdg, "gh"), home && path.join(home, ".config", "gh")].filter(Boolean).flatMap(both);
+  const gitDirs = [xdg && path.join(xdg, "git"), home && path.join(home, ".config", "git")].filter(Boolean).flatMap(both);
+  const homes = home ? both(home) : [];
+  const files = [...ghDirs.map((d) => path.join(d, "hosts.yml")), ...gitDirs.map((d) => path.join(d, "credentials")), ...homes.map((h) => path.join(h, ".git-credentials"))];
+  tokenCache = { key, files: [...new Set(files)], dirs: [...new Set([...ghDirs, ...gitDirs])] };
+  return tokenCache;
 }
 
-/** Is `p` gh's hosts.yml, or the directory holding it (a recursive read takes it along)? Any letter case. */
-const isGhHosts = (p) => ghHostsFiles().some((f) => p.toLowerCase() === f.toLowerCase() || p.toLowerCase() === path.dirname(f).toLowerCase());
-
-/** A word naming gh's hosts.yml through a variable the guard does not expand (`$GH_CONFIG_DIR/hosts.yml`, `$X/gh/hosts.yml`). */
-const GH_HOSTS_WORD = /(?:^|[/=])(?:gh|\$\{?GH_CONFIG_DIR\}?)\/hosts\.yml$/i;
+/** Is `p` a credential file of gh or git, or (with `dirs`) a directory holding one? Any letter case. */
+function isTokenFile(p, dirs = true) {
+  const { files, dirs: ds } = tokenPaths();
+  const l = p.toLowerCase();
+  return files.some((f) => f.toLowerCase() === l) || (dirs && ds.some((d) => d.toLowerCase() === l));
+}
 
 /**
- * Does the word `tok` (or an option's glued value, `--file=<path>`) read gh's hosts.yml: the file, its
- * directory, or a glob that can expand into the file? A directory above them is not counted (LIMITS).
+ * A word that can still name a credential file once the guard has resolved what it can: a variable
+ * left, or a part the shell or a wrapper fills in, before `gh/hosts.yml`, `git/credentials`,
+ * `.git-credentials` or `<variable>/hosts.yml`.
  */
-function readsGhToken(tok, dir, prev) {
-  if (GH_HOSTS_WORD.test(tok.v)) return true;
+const TOKEN_TAIL = /(?:^|\/)(?:gh\/hosts\.yml|git\/credentials|\.git-credentials|[^/]*[$`][^/]*\/hosts\.yml)$/i;
+/** The variables that place gh's and git's config: expanded from the environment when set. */
+const TOKEN_VARS = new Set(["HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"]);
+
+/**
+ * The spellings the word `v` can take: `${NAME:-default}` (`-`, `:=`, `=` too) read both as the
+ * variable and as its default, then HOME, XDG_CONFIG_HOME and GH_CONFIG_DIR replaced by their value
+ * when set (an unset one stays, as it may be set earlier in the command).
+ */
+function tokenSpellings(v) {
+  const out = [];
+  const walk = (s, n) => {
+    const m = n > 0 ? /\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=]([^{}]*)\}/.exec(s) : null;
+    if (!m) return void out.push(s);
+    walk(`${s.slice(0, m.index)}\${${m[1]}}${s.slice(m.index + m[0].length)}`, n - 1);
+    walk(s.slice(0, m.index) + m[2] + s.slice(m.index + m[0].length), n - 1);
+  };
+  walk(v, 4);
+  return out.map((s) => s.replace(/\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (all, a, b) => (TOKEN_VARS.has(a ?? b) && process.env[a ?? b] ? process.env[a ?? b] : all)));
+}
+
+/**
+ * Does the word `tok` (or an option's glued value, `--file=<path>`) read a credential file: one
+ * resolved (`~`, `~user`, the variables above, `${…:-…}` defaults, the cwd, `..`) to the file, its
+ * directory, or a glob that can expand into the file? A word the guard cannot resolve counts when it
+ * ends like one (TOKEN_TAIL); a word only ending like one (`fixtures/gh/hosts.yml`) does not. A
+ * directory above them is not counted (LIMITS).
+ */
+function readsToken(tok, dir, prev) {
   const eq = tok.v.indexOf("=");
+  // A word holding no variable yet built by the shell or a wrapper: a cut `$( )` or a `{}` before it.
+  const cut = tok.dyn && !/[$`]/.test(tok.v);
   for (const v of eq > 0 ? [tok.v, tok.v.slice(eq + 1)] : [tok.v]) {
-    const w = writeTarget({ v, dyn: tok.dyn }, true, dir, prev);
-    if (!w) continue;
-    if (isGhHosts(w.abs) || isGhHosts(w.real)) return true;
-    const deep = (g) => ghHostsFiles().some((f) => g.split(path.sep).filter(Boolean).length >= f.split(path.sep).filter(Boolean).length && globReaches(g, [f]));
-    if (w.glob && w.glob.some(deep)) return true;
+    for (const s of tokenSpellings(v)) {
+      const w = /[$`]/.test(s) ? null : writeTarget({ v: s, dyn: false }, true, dir, prev);
+      if (!w || cut) {
+        if (TOKEN_TAIL.test(s)) return true;
+        if (!w) continue;
+      }
+      if (isTokenFile(w.abs) || isTokenFile(w.real)) return true;
+      const deep = (g) => tokenPaths().files.some((f) => g.split(path.sep).filter(Boolean).length >= f.split(path.sep).filter(Boolean).length && globReaches(g, [f]));
+      if (w.glob && w.glob.some(deep)) return true;
+    }
   }
   return false;
 }
@@ -1721,8 +1801,9 @@ function checkCommand(t, state, depth) {
   const db = rules.dbs.find((d) => (d.engine === "postgres" ? dbTarget(scanned, prog, d) : d.engine === "sqlite" ? sqliteTarget(scanned, d, here, main) : engineTarget(scanned, prog, d)));
   if (db) return BLOCK.db(db.label);
   if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
-  if ([...t.slice(0, at), ...argv.filter((_, i) => i > 0 && !skip.has(i))].some((x) => readsGhToken(x, here, state.prev))) return BLOCK.ghToken;
   if (!a.length) return null;
+  // git's credential programs run by their own name (`git-credential fill`, `git-credential-store get`).
+  if (prog.startsWith("git-credential") && !cacheExit(prog, argv.slice(1))) return BLOCK.ghToken;
   // degit/tiged copy another repository's tree here, as a clone would.
   if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
   // patch applies a diff, wherever it was saved (`gh pr diff 8 > f` then `patch < f`): like git apply,
@@ -1748,6 +1829,11 @@ function checkCommand(t, state, depth) {
     const into = mainWrittenOf(w.real, [ts.main, main, state.main], rules.worker !== false);
     if (into) return BLOCK.mainWrite(into);
   }
+  // A credential file read, copied or archived (after the writes: removing one is judged as a write) (brace lists expanded); a lister only names it, so
+  // only what is redirected into one counts.
+  const lists = LISTERS.has(prog);
+  const reads = [...t.slice(0, at), ...argv.filter((_, i) => i > 0 && !skip.has(i) && (!lists || REDIRECT_OP.test(argv[i - 1].v)))];
+  if (reads.flatMap(braceWords).some((x) => readsToken(x, here, state.prev))) return BLOCK.ghToken;
   if (prog === "bun" && a[1] === "exec") return checkText(a.slice(2).join(" "), here, state, depth + 1);
 
   const repoRule = denied(a, prog, rules.deny, here);
@@ -1772,13 +1858,50 @@ function checkCommand(t, state, depth) {
     }
     return null;
   }
-  if (prog === "parallel") {
+  if (prog === "fd" || prog === "fdfind") {
+    // fd -x|-X runs the words after it (up to `;`) for the paths it finds, each placeholder a path.
+    for (let i = 1; i < argv.length; i++) {
+      if (!FD_EXEC.test(a[i])) continue;
+      let j = i + 1;
+      while (j < argv.length && a[j] !== ";") j++;
+      const cmd = argv.slice(i + 1, j);
+      const fills = cmd.some((x) => FD_PLACEHOLDER.test(x.v));
+      const words = [...cmd.map((x) => (FD_PLACEHOLDER.test(x.v) ? { ...x, dyn: true } : x)), ...(fills ? [] : [{ v: "", dyn: true }])];
+      const r = checkCommand(words, { ...state, dir: here }, depth + 1);
+      if (r) return r;
+      i = j;
+    }
+    return null;
+  }
+  if (prog === "rush") {
+    // rush joins its command words into shell text run for each input record, a placeholder standing
+    // for the record (appended when the text has none). An option not known is also read as taking
+    // the next word, as xargs's are.
+    let k = 1;
+    while (k < a.length && a[k].startsWith("-") && a[k] !== "-") {
+      if (a[k] === "--") {
+        k++;
+        break;
+      }
+      if (!RUSH_VALUE.test(a[k]) && !RUSH_FLAG.test(a[k])) {
+        const r = checkCommand([...t.slice(0, at + k), ...t.slice(at + k + 2)], state, depth + 1);
+        if (r) return r;
+      }
+      k += RUSH_VALUE.test(a[k]) ? 2 : 1;
+    }
+    const cmd = a.slice(k).join(" ");
+    if (!cmd.trim()) return null;
+    const arg = "$SAPU_PARALLEL_INPUT";
+    const text = cmd.replace(RUSH_PLACEHOLDER, arg);
+    return checkText(text === cmd ? `${cmd} ${arg}` : text, here, state, depth + 1);
+  }
+  if (prog === "parallel" || prog === "sem") {
     // GNU parallel: options, a command, then its input after `:::`/`::::` (or from stdin). It joins the
     // command's words and runs them through a shell, a replacement string ({}, {.}, {/}, {#}, {1},
     // {= … =}, or -I's own) standing for each input, which it appends when the command has none. So
     // the command is judged both as that shell text and as words, each input a word the shell builds;
     // with no command, each `:::` word is a command of its own. An option not known is judged both as
-    // a flag and as taking the next word, as xargs's are.
+    // a flag and as taking the next word, as xargs's are. `sem` is parallel --semaphore.
     let k = 1;
     let rep = null;
     while (k < a.length && a[k].startsWith("-") && a[k] !== "-" && !PARALLEL_SEP.test(a[k])) {
@@ -1894,7 +2017,7 @@ function checkCommand(t, state, depth) {
     const sub = a[i];
     const rest = a.slice(i + 1);
     // git's credential helpers hand out the token gh stores for git (`git credential fill`)
-    if (/^credential(-|$)/.test(sub ?? "")) return BLOCK.ghToken;
+    if (/^credential(-|$)/.test(sub ?? "") && !cacheExit(`git-${sub}`, argv.slice(i + 1))) return BLOCK.ghToken;
     // The repository git acts on (-C, --git-dir, …) is the touched repo: its base branch and main checkout.
     const gs = (dir !== here && state.resolve && state.resolve(dir)) || scope;
     if (gs.error) return BLOCK.brokenContract(gs.main, gs.error);
@@ -1954,6 +2077,8 @@ function checkCommand(t, state, depth) {
     if (sub === "apply" && !(rest.some((v) => /^--(check|stat|numstat|summary)$/.test(v)) && !rest.some((v) => /^--(apply|index|cached|3way)$|^-3$/.test(v)))) return BLOCK.prCode;
     if (["replace", "update-index", "checkout-index", "read-tree"].includes(sub)) return BLOCK.index;
     if (sub === "stash") {
+      // a subcommand the shell or a wrapper builds may be pop or clear
+      if (argv[i + 1]?.dyn) return BLOCK.stash;
       const op = rest[0] === undefined || rest[0].startsWith("-") ? "push" : rest[0];
       if (rest[0] === undefined || op === "pop" || op === "clear") return BLOCK.stash;
       if (op === "drop" && rest.length < 2) return BLOCK.stash;
@@ -2006,6 +2131,7 @@ function checkCommand(t, state, depth) {
     }
     if (g1 === "pr" && g2 === "merge") return BLOCK.merge;
     if (g1 === "auth" && ghTokenShown(g2, i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]))) return BLOCK.ghToken;
+    if (g1 === "config" && g2 === "get" && ghConfigToken(ix.slice(i2 + 1).map((k) => argv[k]))) return BLOCK.ghToken;
     if (g1 === "issue" && g2 === "create" && rules.worker !== false) return BLOCK.issue;
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
@@ -2188,7 +2314,20 @@ function ghWords(a) {
 }
 
 // The gh subcommands a rule names: a shell-built one is judged as each of them.
-const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download", "token", "status", "git-credential"];
+const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download", "token", "status", "git-credential", "get"];
+
+/**
+ * Does `gh config get <tail…>` print a token? Its key `oauth_token` (or `token`) does, read from the
+ * keyring too; a key the shell builds may be it. -h/--host take a value.
+ */
+function ghConfigToken(tail) {
+  for (let j = 0; j < tail.length; j++) {
+    if (/^(-h|--host)$/.test(tail[j].v)) j++;
+    else if (tail[j].dyn) return true;
+    else if (!tail[j].v.startsWith("-")) return /^(oauth_)?token$/i.test(tail[j].v);
+  }
+  return false;
+}
 
 /**
  * Does `gh auth <sub> <tail…>` print gh's token? `token` and `git-credential` do; `status` with
@@ -2425,7 +2564,7 @@ export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONL
   const s = (resolve && resolve(real)) || { main, rules };
   if (s.error) return BLOCK.brokenContract(s.main, s.error);
   if ([abs, real].some((p) => s.rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
-  if (isGhHosts(abs) || isGhHosts(real)) return BLOCK.ghToken;
+  if (isTokenFile(abs) || isTokenFile(real)) return BLOCK.ghToken;
   if (WRITE_TOOLS.has(tool) && (isGitFile(abs) || isGitFile(real))) return BLOCK.gitFiles;
   if (WRITE_TOOLS.has(tool) && (isMachineConfigFile(abs) || isMachineConfigFile(real))) return BLOCK.machineConfig;
   if (WRITE_TOOLS.has(tool) && (isPluginFile(abs) || isPluginFile(real))) return BLOCK.pluginFiles;
@@ -2451,7 +2590,8 @@ export function checkSearch({ tool, input = {}, cwd, rules: given = ENGINE_ONLY,
   if (s.error) return BLOCK.brokenContract(s.main, s.error);
   const rules = s.rules;
   if (abs && [abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
-  if (abs && (isGhHosts(abs) || isGhHosts(realPathOf(abs)))) return BLOCK.ghToken;
+  // Grep reads what it searches; Glob only lists names, so listing gh's config dir passes.
+  if (tool === "Grep" && abs && (isTokenFile(abs) || isTokenFile(realPathOf(abs)))) return BLOCK.ghToken;
   const g = tool === "Grep" ? input.glob : input.pattern;
   if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep", escapes: true })) return BLOCK.env;
   return null;

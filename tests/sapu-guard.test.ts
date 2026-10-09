@@ -3240,3 +3240,126 @@ describe("sapu-guard — words a wrapper supplies are shell-built, owner labels 
     expect(reviewer(cmd)).toBeNull();
   });
 });
+
+describe("sapu-guard — gh config's token, brace and default forms of the hosts file, fd/sem/rush, dashed git-credential, git's store files; listing and look-alikes pass", () => {
+  const reviewer = (command: string) => check({ command, cwd: wt, main, rules, worker: false });
+  const TOKEN = /auth token/;
+  const HOME = process.env.HOME as string;
+
+  it.each([
+    ["gh config get oauth_token -h github.com"],
+    ["gh config get -h github.com oauth_token"],
+    ["gh config get --host=github.com oauth_token"],
+    ["gh config get token"],
+    ["gh config get $K -h github.com"],
+    ['gh config get "$(echo oauth_token)"'],
+    ["gh config $S oauth_token"],
+    ["cat ~/.config/gh/hosts.{yml,x}"],
+    ["cat ~/.config/{gh,x}/hosts.yml"],
+    ["cat ${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml"],
+    ["cat ${GH_CONFIG_DIR:-~/.config/gh}/hosts.yml"],
+    ["cat ${XDG_CONFIG_HOME:-$HOME/.config}/gh/hosts.yml"],
+    ["cat $XDG_CONFIG_HOME/gh/hosts.yml"],
+    ["cd ~ && cat .config/gh/hosts.yml"],
+    ["cd ~/.config && cat gh/hosts.yml"],
+    ["cat ~/.config/x/../gh/hosts.yml"],
+    ["cat ~/./.config/gh//hosts.yml"],
+    ["tar czf /tmp/x.tgz ~/.config/gh"],
+    ["cp -r ~/.config/gh /tmp/x"],
+    ["git-credential fill"],
+    ["$(git --exec-path)/git-credential fill"],
+    ["git-credential-osxkeychain get"],
+    ["git-credential-store get"],
+    ["git-credential-manager get"],
+    ["git-credential-libsecret get"],
+    ["/usr/lib/git-core/git-credential-store get"],
+    ["git credential-cache get"],
+    ["cat ~/.git-credentials"],
+    ["grep github $HOME/.git-credentials"],
+    ["cat ~/.config/git/credentials"],
+    ["cat $XDG_CONFIG_HOME/git/credentials"],
+    ["cat ~/.git-{credentials,x}"],
+  ])("refuses %s to every subagent", (cmd) => {
+    expect(reviewer(cmd)).toMatch(TOKEN);
+    expect(blocked(cmd)).toMatch(TOKEN);
+  });
+
+  it.each([
+    ["fd -x gh label delete {} --yes"],
+    ["fd . -x gh pr merge {}"],
+    ["fd -x git stash"],
+    ["fd -e ts --exec-batch git stash pop"],
+    ["fdfind -X gh pr merge"],
+    ["fd -Hx gh pr merge {/}"],
+    ["fd x src --exec gh pr merge {//}"],
+    ["fd -x gh auth {.}"],
+    ["sem gh pr merge 1"],
+    ["sem --id x -j1 gh pr merge 1"],
+    ["rush 'gh pr merge {}'"],
+    ["rush -j 2 gh pr merge {}"],
+    ["rush 'gh label delete {} --yes'"],
+    ["rush -k 'git stash'"],
+  ])("refuses %s: fd, sem and rush run a command, the words they fill in shell-built", (cmd) => {
+    expect(blocked(cmd)).not.toBeNull();
+  });
+
+  it("refuses git's store files and gh's hosts file to the file tools, under XDG_CONFIG_HOME too", () => {
+    const saved = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = join(root, "xdg");
+    try {
+      expect(blocked(`cat ${join(root, "xdg", "git", "credentials")}`)).toMatch(TOKEN);
+      expect(blocked("cat $XDG_CONFIG_HOME/git/credentials")).toMatch(TOKEN);
+      expect(blocked("cat $XDG_CONFIG_HOME/gh/hosts.yml")).toMatch(TOKEN);
+      expect(checkFile({ tool: "Read", filePath: join(root, "xdg", "git", "credentials"), cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+      expect(blocked("cat $XDG_CONFIG_HOME/git/ignore")).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = saved;
+    }
+    expect(checkFile({ tool: "Read", filePath: "~/.git-credentials", cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+    expect(checkFile({ tool: "Read", filePath: "~/.config/git/credentials", cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+    expect(checkSearch({ tool: "Grep", input: { pattern: "github", path: "~/.git-credentials" }, cwd: wt, rules })).toMatch(TOKEN);
+  });
+
+  it("lists gh's config dir, and reads a fixture hosts.yml, as Bash and the file tools agree", () => {
+    expect(checkSearch({ tool: "Glob", input: { pattern: "*", path: "~/.config/gh" }, cwd: wt, rules })).toBeNull();
+    expect(checkSearch({ tool: "Glob", input: { pattern: "**/*.yml", path: `${HOME}/.config/gh` }, cwd: wt, rules })).toBeNull();
+    expect(checkFile({ tool: "Read", filePath: "test/fixtures/gh/hosts.yml", cwd: wt, main, rules, worker: false })).toBeNull();
+    expect(checkFile({ tool: "Read", filePath: "fixtures/gh/hosts.yml", cwd: wt, main, rules, worker: false })).toBeNull();
+    expect(checkFile({ tool: "Read", filePath: `${HOME}/.config/x/../gh/hosts.yml`, cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+  });
+
+  it.each([
+    ["git ls-files -z | xargs -0 npx prettier --check"],
+    ["find . -name '*.test.ts' -exec npx vitest run {} +"],
+    ["git diff --name-only | xargs npx eslint"],
+    ["lsof -ti:3000 | xargs kill"],
+    ["gh auth status"],
+    ["git push -u origin HEAD"],
+    ["gh config get git_protocol"],
+    ["gh config get git_protocol -h github.com"],
+    ["gh config list"],
+    ["gh config set editor vim"],
+    ["fd -e ts -x npx prettier --check {}"],
+    ["fd -e ts -X npx prettier --check"],
+    ["fd -ex -x wc -l"],
+    ["fd -x wc -l"],
+    ["sem echo hi"],
+    ["rush 'echo {}'"],
+    ["ls ~/.config/gh"],
+    ["ls -la ~/.config/gh/"],
+    ["ls ~/.config/gh/hosts.yml"],
+    ["cat test/fixtures/gh/hosts.yml"],
+    ["cat fixtures/gh/hosts.yml"],
+    ['echo "gh/hosts.yml" >> notes.txt'],
+    ['git commit -m "docs: never read .config/gh/hosts.yml"'],
+    ["git commit --message='docs: guard ~/.config/gh/hosts.yml'"],
+    ["git credential-cache exit"],
+    ["git-credential-cache exit"],
+    ["cat ~/.config/git/ignore"],
+    ["cat ~/.config/gh/config.yml"],
+  ])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+    expect(reviewer(cmd)).toBeNull();
+  });
+});

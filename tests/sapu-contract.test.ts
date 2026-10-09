@@ -2102,6 +2102,9 @@ describe("gate.merge self-location: the idioms that find the tree, not a file me
     ["MK := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
     ["ROOT := $(shell dirname $(MAKEFILE_LIST))\n"],
     ["ROOT := $(shell cd $(shell dirname $(realpath $(MAKEFILE_LIST))) && pwd)\n"],
+    ['ROOT := $(shell cd "$$(dirname $(MAKEFILE_LIST))" && pwd)\n'],
+    ["ROOT := ${shell dirname ${MAKEFILE_LIST}}\n"],
+    ["ROOT := ${dir ${abspath ${MAKEFILE_LIST}}}\n"],
   ])("warns on a makefile that finds its own place: %s", (text) => {
     expect(warn("make gate", text)).toMatch(/finds the tree from its own location \(\$\(MAKEFILE_LIST\)\)/);
   });
