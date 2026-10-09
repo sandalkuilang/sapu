@@ -2670,6 +2670,8 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     ["bun run", `bun run ${L} up`],
     ["deno run", `deno run -A ${L} up`],
     ["tsx watch", `tsx watch ${L} renew`],
+    ["the script after a word the shell builds, which may be an option", `node "$OPT" ${L} up`],
+    ["tsx past its --tsconfig value", `tsx --tsconfig tsconfig.json ${L} up`],
   ])("refuses a subagent %s", (_what, cmd) => {
     expect(sub(cmd)).toMatch(REFUSED);
     expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);

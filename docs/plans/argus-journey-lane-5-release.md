@@ -900,7 +900,8 @@ Refs #53
   `=` or a loading option's value counts as a file it runs too, and `node --check`/`-c` runs nothing. A
   later operand is an argument, so eslint over the file and `node --test a.test.mjs argus-live.mjs` pass.
   A script name or a loaded file the shell builds refuses a lane verb, or any built word, after the
-  script operand (`node "$S" "$V"`, `node --import=$S x up`). An option the table does not know to take
+  script operand (`node "$S" "$V"`, `node --import=$S x up`); after a first operand the shell builds (it may
+  be an option, `node "$OPT" argus-live.mjs up`), a later word naming the script counts. An option the table does not know to take
   a value leaves its value read as the operand; the guard's LIMITS, CONTRACT.md and usage.md name what
   stays uncaught (a copy under another name, an interpreter's own code that imports it), and the spec and
   usage.md no longer say "however the script is reached".

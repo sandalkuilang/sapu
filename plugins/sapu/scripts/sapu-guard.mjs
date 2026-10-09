@@ -1267,7 +1267,7 @@ function isLiveCli(w, dir) {
 const NODE_VALUE_OPTS = ["-r", "--require", "--import", "--loader", "--experimental-loader", "-e", "--eval", "-p", "--print", "-C", "--conditions", "--env-file", "--input-type", "--title", "--watch-path", "--test-name-pattern", "--test-reporter", "--test-reporter-destination", "--redirect-warnings", "--disable-warning"];
 const VALUE_OPTS = {
   node: new Set(NODE_VALUE_OPTS),
-  tsx: new Set(NODE_VALUE_OPTS),
+  tsx: new Set([...NODE_VALUE_OPTS, "--tsconfig"]),
   "ts-node": new Set([...NODE_VALUE_OPTS, "-P", "--project", "-O", "--compiler-options", "--compiler"]),
   bun: new Set(["-r", "--preload", "-e", "--eval", "-p", "--print", "-c", "--config", "--cwd", "--env-file", "--tsconfig-override", "--conditions"]),
   deno: new Set(["-c", "--config", "--import-map", "--location", "--cert", "-L", "--log-level", "--env-file"]),
@@ -1320,7 +1320,10 @@ function liveCliRun(all, dir, explorer) {
   else if (INTERPRETERS.has(bare(argv[0].v))) {
     const { op, values, args } = interpArgv(argv, bare(argv[0].v));
     const named = [...values, ...(op > 0 ? [argv[op]] : [])];
+    // A first operand the shell builds may be an option it fills in (`node "$OPT" argus-live.mjs up`): a later word naming the script is then the script.
+    const later = op > 0 && argv[op].dyn ? argv.findIndex((w, i) => i > op && isLiveCli(w, dir)) : -1;
     if (named.some((w) => isLiveCli(w, dir))) rest = args;
+    else if (later > 0) rest = argv.slice(later + 1);
     else return named.some(builtName) && (LIVE_VERBS.has(args[0]?.v) || args.some((w) => w.dyn)) ? BLOCK.liveCli : null;
   } else return null;
   if (rest.some((w) => w.dyn)) return BLOCK.liveCli;
