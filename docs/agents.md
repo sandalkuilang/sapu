@@ -31,7 +31,7 @@ Reviewers and advisers are called by role. By default each role is an agent of t
 
 ### /inspector — full sweep before release
 
-Runs momus, then argus, then nemesis — one phase finished before the next starts, each on its own model and effort. momus's business-process gap rows become priority targets for the other two; a scoped run adds a read-only team review. One combined summary and a security roll-up at the end.
+Runs momus, then argus, then nemesis — one phase finished before the next starts, each on its own model and effort. momus's business-process gap rows become priority targets for the other two; a scoped run adds a read-only team review. One combined summary and a security roll-up at the end. Its argus phase never runs the journey lane, which runs only from the main session.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/inspector-dark.svg">
@@ -54,6 +54,15 @@ One bounded cycle of eleven phases (ORIENT → ROTATE), applying five review len
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/argus-dark.svg">
   <img src="img/argus.svg" alt="argus runs one eleven-phase QA cycle with five lenses and evidence tiers, filing de-duplicated issues; it tests but never fixes" width="100%">
+</picture>
+
+### /journey — the user's side of the workflows
+
+argus's journey lane, with its own door. One bounded cycle walks the app's business journeys through the real UI, as every role each one needs, on an isolated instance argus starts itself (its own worktree, ports, data and HOME), never on your servers. The journey catalog is generated from the code, every step anchored in a line at HEAD, and rebuilt by a map-mode explorer when it is stale (files added, deleted or renamed under its roots, a newer momus report, a journey that no longer anchors); SELECT picks the top journeys and allocates their accounts; one `sapu:ui-explorer` agent per journey walks it through the lane's browser wrapper and only suspects. A script then replays every candidate on a fresh instance, and only one that reproduces two of two is minimized, turned into a Playwright RED test, classified, checked by `scrub` for any secret the run saw, and filed. `down` stops what `up` started; PERSIST records each journey's visit and the next picks.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/journey-dark.svg">
+  <img src="img/journey.svg" alt="One journey cycle: argus's journey lane checks the catalog, brings up an isolated instance of its own, picks the top journeys, walks each with a ui-explorer agent through the browser wrapper only, reproduces every candidate two of two on a fresh instance, minimizes it into a RED test, classifies it, files it only after scrub finds no secret the run saw, tears the instance down and records the visit." width="100%">
 </picture>
 
 ### /momus — release-readiness audit

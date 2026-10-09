@@ -150,6 +150,7 @@ A new install also installs its dependency [senior-dev-team](#senior-dev-team) a
 | `/sapu:sapu` | **Orchestrator.** Drains every open PR, then works every issue in parallel lanes until the backlog is clean. |
 | `/sapu:forge` | One issue → one tested, reviewed PR, merged through the merge script when its risk tier allows. |
 | `/sapu:argus` | Autonomous QA against the local dev app. |
+| `/sapu:journey` | Walks your app's business journeys through the real UI as every role, on an isolated instance of its own; files only what a script reproduced twice. |
 | `/sapu:momus` | Release-readiness audit. |
 | `/sapu:nemesis` | Red team against the local dev app (explicitly authorized targets only). |
 | `/sapu:inspector` | Runs momus → argus → nemesis in sequence, each on its own model and effort, with one combined summary. |
@@ -206,6 +207,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | **Guard hook** | Checks every subagent's shell, file, search and MCP tool calls: no direct push to the main branch, no merge, no touching the dev database or `.env` files, no writing into the main checkout or into the plugins they run under. |
 | **Scope lock** | `sapu-contract.mjs check` refuses to run in a checkout outside the roots the machine config allows, with the wrong account, or with a moved `HOME`; a second `/sapu` session on the same repo stops at its Step 0. |
 | **Trust checks** | In public repos, sapu works only issues and PRs from trusted authors (or accepted by a trusted account). |
+| **Journey lane** | Runs on an instance of its own (worktree, ports, data and HOME), never on your servers. Its explorer agent runs nothing but the lane's browser wrapper and reads page text only as fenced data. A finding is filed only after a script reproduced it twice and `scrub` found no secret the run saw in it. |
 
 > [!IMPORTANT]
 > The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token. Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#day-to-day).
@@ -215,7 +217,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | | |
 |---|---|
 | [Install and use](docs/usage.md) | Setup, day-to-day commands, requirements and limits, cleanup, updating, rolling back, a new machine, common problems |
-| [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories |
+| [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories, the journey lane |
 | [How the agents work](docs/agents.md) | One diagram per skill |
 | [Contributing](docs/contributing.md) | Repo layout, the gate, rule guard, versioning |
 | [Contract format](plugins/sapu/CONTRACT.md) | What a repo's contract holds |

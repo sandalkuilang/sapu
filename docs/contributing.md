@@ -11,19 +11,24 @@
 plugins/sapu/
   .claude-plugin/plugin.json      version; dependencies: senior-dev-team
   CONTRACT.md                     the repo contract format
-  skills/                         sapu, forge, argus, momus, nemesis, inspector, dream, init
-  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, nothing else
+  skills/                         sapu, forge, argus, journey, momus, nemesis, inspector, dream, init
+  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, and ui-explorer (the journey lane's explorer)
   hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
   workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
-  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs
+  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs;
+                                  argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub)
+  scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
 scripts/rule-guard.ts             gate: a weakened engine rule needs a Rule-Change trailer (not shipped)
-tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, and "the engine is clean of repos"
+tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, the journey lane (argus-live*), and "the engine is clean of repos"
+.github/workflows/                test.yml runs the suite on Linux for every push and PR; tag-release.yml tags a released version
 ```
 
-The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`.
+The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`. The journey lane's browser CLI is the one exception, and it is not installed with the plugin: `scripts/pw/` pins it, and the lane installs it into the user's cache with `npm ci --ignore-scripts` the first time it needs it.
+
+The journey lane's browser tests (`tests/argus-live-browser.test.ts`) drive a real Chrome or Edge through that CLI: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI.
 
 ## Changing the plugin
 
