@@ -174,28 +174,39 @@ tracked); the owner may edit it:
   (§8 "`up --map`"); `slot <n> --map` mints a map token in any run whose run.json has a worktree — a map
   run, or a full `up` still starting, so `/sapu:journey` refreshes the map while `up` brings the app
   up — and prints `{slot, token, generation, mode: "map"}`. A map token takes `code` and `submit` only
-  (§9), before an instance id too. Its `submit` validates the map (`validateMap`), reporting every
-  fault and capping nothing: `{roots, journeys, notes?}` with no other key; `roots` at most 100
+  (§9), before an instance id too. Its `submit` validates the map (`validateMap`), which collects
+  every fault (the refusal, `refused: return: …`, names the first five) and caps nothing: `{roots,
+  journeys, notes?}` with no other key at any level; `roots` at most 100
   repo-relative paths (no `..`); at most 100 journeys, each `{id, domain, title, money, global, goal,
   steps}` — `id` kebab-case (at most 100 characters), `domain` at most 60 characters, `title` 120,
   `goal` 500, `money` and `global` booleans — with 1–40 steps, each `{role, route?, trigger?, goal,
   claim?, sources}`: `role` a role name, `route` starting `/` (at most 200 characters), `trigger`
   matching `^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$`, `claim` a boolean, 1–10 `sources` of `{file, line ≥ 1,
-  text of 16–500 characters}`; `notes` at most 2000 characters; no string holds a control character.
-  `map-check --merge <slot>` merges the newest generation that map slot returned (in the lock's run,
+  text of 16–500 characters}`; `notes` at most 2000 characters. What the catalog prints as given — a
+  journey's `domain`, `title` and `goal`, a step's `goal`, and `notes` — holds no C0 or C1 control
+  character (DEL included: `<where> must hold no control character`), so no line of the catalog can be
+  forged. `map-check --merge <slot>` merges the newest generation that map slot returned (in the lock's run,
   else the newest run directory) into `.argus/journeys.json`, `head` set to the commit the run's
   worktree was built at — the code the map agent read, not MAIN's HEAD, which may have moved meanwhile
   — read from run.json's `worktreeHead`, or after `down` from the run's `worktree.json` (§8); then it
   runs `map-check`. A journey whose id the file already holds takes the returned domain, title, flags,
   goal and steps and keeps `lastCycle`, `lastHead` and `filed`; a new id is appended with `lastCycle:
   null`; every other journey, and `dropped`, stay. A slot whose newest return is not a map → `refused:
-  map-check --merge: slot <n> returned no map`.
+  map-check --merge: slot <n> returned no map`; one that no longer validates → `refused: map-check
+  --merge: <the first five faults>`; a run that recorded no worktree commit → `refused: map-check
+  --merge: run <runId> recorded no worktree commit`.
 - **Reserved roles.** `anon` (never signed in) and `system`: a transition driven by a scheduler,
   webhook, queue or expiry is a step with `"role": "system"` and the `trigger` that `live.triggers`
   runs. A step's `"claim": true` marks the role a claim race needs two accounts of.
-- **Visits.** `argus-live.mjs visit <journeyId> --cycle <n> [--filed <url>…]` (PERSIST) writes the
-  journey's `lastCycle` (argus's cycle `n`), `lastHead` (the commit it was visited at) and `filed`
-  (the issues filed for it).
+- **Visits.** `argus-live.mjs visit <journeyId> --cycle <n> [--filed <url>…]` (PERSIST) writes into
+  `.argus/journeys.json` the journey's `lastCycle` (argus's cycle `n`, a whole number from 1),
+  `lastHead` (MAIN's HEAD as the cycle ends, `git rev-parse HEAD`: the commit the journey was last
+  explored at, as near as MAIN tells) and `filed`, a list of issue URLs: each `--filed` (repeatable)
+  is one URL as `scrub` prints it after `filed:` or `commented:` (`https://<host>/<owner>/<repo>/issues/<n>`,
+  optionally `#issuecomment-<n>`), appended in order, once each. Nothing else changes. It prints
+  `visited <id>: last cycle <n>, last head <sha12>, filed <k>` (`k` the URLs `filed` now holds).
+  Refused: no `.argus/journeys.json`, an id that is not kebab-case or not in the map, a `--filed`
+  that is not such a URL, a HEAD that cannot be read.
 - **`map-check`** (no LLM, no lock, starts nothing) drops a journey at its first failing check, in
   this order, printing `dropped <id>: <reason>` (steps and anchors numbered from 1):
   - the id is kebab-case (`id is not kebab-case`) and not an earlier journey's (`duplicate id`: the
@@ -544,8 +555,10 @@ defence in depth and not enforcement:
 4. **Worktree.** A linked worktree at HEAD **outside** the repo (`$TMPDIR/sapu-live/<repo>-<run>`),
    so no lookup that walks up the directory tree finds the repo's own `.env`. `$TMPDIR/sapu-live` is
    the user's own directory, mode 0700, never a symlink, and never inside the repo. The commit it was
-   built at is run.json's `worktreeHead`, kept also in `.argus/live/<run>/worktree.json` (0600), which
-   `down` leaves (§6 `map-check --merge` reads it after `down`). `live.setup` runs
+   built at is run.json's `worktreeHead`, kept also in `.argus/live/<run>/worktree.json` (0600)
+   `{worktreeHead, mode}` (`mode` `"map"` for `up --map`, else `"explore"`), which `down` leaves: after
+   `down`, §6 `map-check --merge` reads the commit there and `scrub` (§10) tells a map run by its
+   `mode`. `live.setup` runs
    in the worktree under step 3's environment, each command bounded by the time left before the
    lock's deadline (`failed: setup <cmd> timed out`), its output logged to a private file and every
    secret value masked in the error quoted; afterwards `up` refuses when any symlink in the worktree, followed through every link
@@ -766,7 +779,7 @@ with those now).
 
 **`up --map`** (§6 map mode) runs step 1 — the lock and its start line, recovery of stale runs,
 `dropLedgers`, run.json with `mode: "map"`, `instanceId: null` and no group, the reaper — and step 4's
-worktree at HEAD with its `worktreeHead` (and `worktree.json`); nothing else: no setup, store, app,
+worktree at HEAD with its `worktreeHead` (and `worktree.json`, written with `mode: "map"`); nothing else: no setup, store, app,
 proxy, HOME or logins. It reads only `limits.max_cycle_minutes` from `.argus/live.json` (the lock's
 deadline). It prints `{runId, mode: "map", deadline, worktree}`; a failure after the lock runs `down`.
 
@@ -777,7 +790,8 @@ its own teardown instead), then replays each stop record, sends SIGTERM to each 
 recorded and SIGKILL after 10 s, stops the proxy, drains each recorded CLI session into the run's
 secret ledger (§10; a session found gone while its account's state says `drained: false` marks the
 ledger `<session> lost before its drain`, one that cannot be drained `<session> could not be
-drained`) and only then closes them by name (never
+drained`, and a drain that throws part-way marks each session it had not drained `<session> closed
+undrained`) and only then closes them by name (never
 `close-all`: other projects share the CLI) and kills by identity what they leave, removes its own
 worktree (`--force` on that worktree only) and its HOME (read-only trees made writable first), removes
 each slot's secrets and CLI state (`.playwright/`, `state.json`, `lock`, `totp.json`) under that
@@ -957,8 +971,11 @@ as 0.1.22 reads them:
   context's cookies and storage and what the hook gathered go to the run's secret ledger and
   `seen.jsonl` (§10), and the account's state is marked `drained: true` (`false` from the command's
   start). A session found gone while `drained: false` marks the ledger `<session> lost before its
-  drain`. A hook that fails is told as `harness: hook failed` among the open's events, and the ledger
-  is marked `<session> unhooked`.
+  drain`. A hook that fails is told as `harness: hook failed` among the open's events. For `pw`'s
+  sessions the session driver then marks the ledger `<session> unhooked` — at whichever open failed
+  to hook (a first use, a reopen, a login-command role's re-login) — and the session is used all the
+  same, its headers unrecorded. The repro runner never uses an unhooked session (the run ends at once,
+  `HARNESS: step <n> <role>.<k> hook failed`), so it marks nothing.
 - **Screenshots.** After `pw … screenshot` the call drains first, then the `shot` stage reads the text
   of the page and of every frame (iframes included), every input value, and whether a password or
   one-time-code field is visible and the page an error page (main document status ≥ 400, or a
@@ -1011,9 +1028,17 @@ as 0.1.22 reads them:
   …`, `harness: login failed`, `harness: observation failed`, `harness: probe failed`), `BUDGET:`,
   `LOOP:`, `DEADLINE:`, refusals, and `login: ok` or `login: failed (<reason>)`. Inside the fence every secret value (the env file's,
   the role passwords and TOTP secrets, created accounts' passwords) is masked however the page or the
-  CLI encoded it: per character as is, backslash-escaped, `\uXXXX`, `\xHH`, an HTML entity, `%HH` of its
-  UTF-8 bytes or `+` for a space (so JavaScript's, Go's, Python's and PHP's JSON, HTML and URL forms
-  alike), or the whole value in base64. Outside it the wrapper prints only its own fixed words: a
+  CLI encoded it: per character as is or in its other case, backslash-escaped, `\uXXXX`, `\xHH`, an
+  HTML entity, `%HH` of its UTF-8 bytes or `+` for a space (so JavaScript's, Go's, Python's and PHP's
+  JSON, HTML and URL forms alike, mixed freely); or the value in base64 (padded, unpadded or URL-safe,
+  also inside a longer base64 text at any byte offset) or in hex, either case; and the same for the
+  value URL-decoded, when it holds `%HH`. A value longer than 256 characters is matched part by part —
+  parts of 256 characters, each overlapping the next by 16, the last ending at the value's end — so the
+  whole value is masked and no pattern grows past what the regular-expression engine can run. Known
+  limit: where the page text starts or ends inside such a value, the piece of it the text holds that
+  no whole part covers — shorter than 256 characters — matches no part and is not masked. A pattern that cannot be built or run withholds the whole text:
+  `*** (withheld: a secret's pattern could not be run)`, never the engine's message (which quotes the
+  pattern, and so the value). Outside it the wrapper prints only its own fixed words: a
   login's failure is `rejected`, `rate-limited`, `no-login-form`, `no-totp-secret` or `error:
   playwright`, Playwright's own text (which may quote the page) going to the run's `logs/logins.log`.
 
@@ -1119,7 +1144,11 @@ other one a step or `{"parallel": [steps…]}`:
   list, written by a run of it), `run-<i>.json` `{exit, step, expected, observed, shownSha256, ms,
   saved, traces, changed, reduced}` (`saved` the values `read` saved, masked; `traces` the trace files
   the run wrote; `changed` the click-family steps that changed state; `reduced` true for a minimizer's
-  run), `steps-<i>.jsonl`, `verdict.json`, `minimize.json`, `min.json` and `red.spec.ts`.
+  run), `steps-<i>.jsonl`, `verdict.json`, `minimize.json`, `min.json` and `red.spec.ts`. Run numbers
+  continue: each run takes one past the highest `run-<i>.json` the candidate's records hold (an
+  unreadable one included), so a later `repro`, `--once` or `--minimize` never overwrites an earlier
+  run's records; the `run <i> ` prefix of `repro`'s lines counts that repro's own runs (1, 2).
+  Refs are numbered per run, so a later cycle can hold the same ref again.
 - **One run** (`repro <ref> --once`): the list checked (a refusal → `HARNESS: repro: step <n>:
   <reason>`); an acting account in run.json `loginFailed` → `HARNESS: <role>.<k> cannot sign in this
   cycle`, no browser opened (a repro's own failed sign-in of a configured account is recorded there
@@ -1173,14 +1202,28 @@ a reversal repro could lose its cancel: with or without the defect, the stock fa
 `differs`). Runs stop at `limits.minimize_runs` (default 12), one of them kept for a confirming run of
 the result (`confirm: exit <k>`). Last line `minimized <ref>: steps <a> → <b>, runs <k>/<max>, stopped
 fixpoint|budget|down|deadline, confirmed yes|no`: `fixpoint` when no unit is left untried, `budget` at
-the cap, `down` or `deadline` (exit 2) when the cycle died or its deadline is near. `min.json` (the
+the cap. Before each run, a try or the confirm, the lock must still name the candidate's run (else
+`stopped down`), and at least the longest of the candidate's recorded runs (its `run-<i>.json` `ms`,
+read as minimize starts), a minute at the least, must be left before the lock's deadline (else
+`stopped deadline`); either stops it at once, with no confirm run, and exits 2 (else 0). `min.json` (the
 context element first) is written only when the confirm run failed the same way, else the whole list
 stays the one filed; `minimize.json` `{runs, max, stopped, from, to, confirmed, tried}` always. No
 browser work enters the orchestrator's context.
 
-**RED test** (`repro <ref> --test`) is refused unless the candidate's `verdict.json` says it
-reproduced 2 of 2; it writes `red.spec.ts` from `min.json` when the last minimize confirmed it, else
-from `repro.json`, and prints `red test: <absolute path>`.
+**RED test** (`repro <ref> --test`) is refused unless the candidate's `verdict.json` says
+`reproduced` (2 of 2): `refused: repro: <ref> did not reproduce two of two (<verdict>); repro <ref>
+first`, `<verdict>` `not-reproduced`, `intermittent`, `harness` or `never run`. It writes
+`red.spec.ts` from `min.json` when the last minimize confirmed it, else from `repro.json`, and prints
+`red test: <absolute path>`.
+
+**Saved values** (`repro <ref> --saved`, for the issue body): the values the candidate's newest
+reproducing run of its whole list (a `run-<i>.json` that exited 3 and is not a minimizer's) read with
+`save`, as scrub would let them leave: per value `saved <name>: <JSON string>`, long tokens the run never
+saw redacted as scrub redacts them (§"Scrub"), or `saved <name>: *** (<class>)` for one holding a
+scrub secret (`*** (unchecked)` when its matcher failed); a name that is not a save name prints as
+`(name not shown)`. Scrub's run refusal (a ledger gone, damaged or incomplete; the configuration
+unreadable) → that line, exit 1. Refused without a reproducing run (`refused: repro: <ref> has no
+reproducing run (repro <ref> first)`); it needs no `verdict.json`.
 
 **Classes and severity** — from the oracle, then argus's own adjustments (mitigating factors, the
 `Reachable-by` rule), with the arithmetic shown; never the LLM's opinion:
@@ -1244,7 +1287,10 @@ each string leaf by the same rule under its own key. Every value is cut to its f
 a value of these three classes shorter than 6 is not recorded (it would refuse every issue; `pw`'s
 fence still masks it). Nothing is lost silently: the markers `incomplete` (`<session> passed <capBytes>
 bytes`, `<session> lost before its drain`, `<session> could not be drained`, `<session> closed
-undrained`, `<session> unhooked`) say where something may be missing. The ledger lives under `logs/`,
+undrained`, `<session> unhooked`) say where something may be missing. `<session> unhooked` is set by
+the session driver for `pw`'s sessions (§9 "The in-daemon hook": a first use, a reopen or a
+login-command role's re-login whose hook failed), never by the repro runner, which ends such a run
+with `HARNESS` instead. The ledger lives under `logs/`,
 which `down` keeps, so it survives `down` and `scrub` never needs the run live; the next `up`'s step 1
 (`up --map`'s too) deletes every earlier run's ledger. Until then it holds the dead instance's session
 values, 0600 under the run's 0700 directory. Beside it, `logs/seen.jsonl` keeps the ids the run's
@@ -1255,40 +1301,81 @@ value starting `eyJ`.
 
 **Scrub, before every `gh issue create` and `comment`:** `argus-live.mjs scrub (--run <runId> | --ref
 <slot>.<generation>.<k>) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] |
---comment <n>]`. It reads only what `down` keeps (the run's ledger and seen ids, the configuration), so
-a run that is down is scrubbed the same way. `--run` names the run; `--ref` names a candidate, whose
-`verdict.json` must say it reproduced 2 of 2. A map run is refused with its own reason.
+--comment <n>]` (`--run` and `--ref` may also be given together). It reads only what `down` keeps (the run's ledger and seen ids, the configuration), so
+a run that is down is scrubbed the same way. It checks the run it is told, never the newest: text from
+one run checked against another's ledger would let the first run's secrets through. `--run <runId>`
+names the run; `--ref <slot>.<generation>.<k>` names a candidate, and the run is the one whose
+records (`repro/<ref>/`) hold it; both together name the candidate in that run. With `--ref`, the
+candidate's `verdict.json` in that run must say `reproduced` (2 of 2). Refused, each with exit 1 and
+no `gh` run:
+- neither flag: `refused: scrub: name the run (--run <runId>) or the candidate (--ref
+  <slot>.<generation>.<k>); nothing is filed`; a malformed one: `refused: scrub: --run takes a run id;
+  …` or `refused: scrub: --ref takes <slot>.<generation>.<k>; …`;
+- a ref no run directory holds: `refused: scrub: no run here reproduced candidate <ref>; nothing is
+  filed`; a ref more than one run directory holds — a second cycle that reached the same ref, since
+  refs are numbered per run and `down` keeps `repro/` — `refused: scrub: candidate <ref> was reproduced
+  in more than one run; name it with --run <runId> too; nothing is filed`, so such a ref always needs
+  `--run` beside `--ref`;
+- a run with no directory here: `refused: scrub: no run <runId> here; nothing is filed`;
+- a candidate not reproduced 2 of 2: `refused: scrub: candidate <ref> of run <runId> did not reproduce
+  two of two (<verdict>); nothing is filed`, `<verdict>` `not-reproduced`, `intermittent`, `harness`
+  or `never run`;
+- a map run (run.json's `mode` while it names the run, else `worktree.json`'s, §8 step 4): `refused:
+  scrub: run <runId> is a map run (up --map): it drained no session and keeps no secret ledger;
+  nothing from it is filed`;
+- a title holding a line break: `refused: scrub: a title is one line`; a body file it cannot read:
+  `refused: scrub: the body file cannot be read (<error code>)`.
+
+Then, against the run it named:
 - **Refuses the run** — `nothing from this run is filed` — when its ledger is gone (`refused: scrub:
   the run's secret ledger is gone (a later up removed it); nothing from this run is filed`), holds an
   `incomplete` marker (`refused: scrub: the run's secret ledger is incomplete (<why>); nothing from this
   run is filed`) or a line it cannot read (`refused: scrub: the run's secret ledger is damaged`); and
-  when `.argus/live.json` or the env file cannot be read, or the contract is invalid (its secrets would
-  be unknown).
-- **Refuses the issue** when the title, the body or a label holds a secret. Classes: the ledger's
-  (`cookie`, `header`, `storage`, `created password`); `env file` (every value of `env_file`, now and as
-  `up` read it: the owner declared them secrets); `repo env file` and `environment variable <NAME>`
-  (sources that mix configuration with secrets: only a value under a `SECRET_KEY` name or a
-  high-entropy one; never a value of digits only or a boolean, a `CLAUDE_CODE_*` variable, or a
-  path-like variable such as `PWD`, `HOME`, `TMPDIR` or `PATH`); `role password` and `TOTP secret`
-  (`.argus/live.json`'s roles, expanded). Empty values are ignored. A value of 6 characters or more is
-  found in every encoding `pw`'s fence masks (§9 "Output"), base64 included, or when the text and the
-  value, each stripped of whitespace, punctuation and symbols, contain it; a long value is matched by
-  a bounded prefix. A shorter value is found only as a whole token — not preceded or followed by a
-  letter or digit — raw, URL-decoded, as its base64 and spelled out with whitespace, punctuation or
-  symbols between its characters, never as part of a longer word: a ledger-class value never (the
-  6-character floor is theirs), an `env file` or `environment variable` value from 4 characters, a
-  `role password`, `TOTP secret` or `created password` at any length. Invisible format characters
-  (Unicode `Cf`, such as a zero-width space) inside a token are ignored. Each hit prints `<title|body>
-  <line>:<col> <class>` (1-based, a hit in a stripped or decoded form placed at its first character)
-  or `label <i> <class>`, then `refused: scrub: <k> secret(s) in the issue; nothing is filed` — never
-  the value, never the text around it; a matcher that fails refuses by class alone. Exit 1, the body
-  file untouched, no `gh` run. A title holding a line break is refused.
+  when `.argus/live.json` or the env file cannot be read (`refused: scrub: .argus/live.json: <why>;
+  nothing is filed`), or the contract is invalid (`refused: scrub: <why>`): its secrets would be unknown.
+- **Refuses the issue** when the title, the body or a label holds a secret. Classes:
+  - the ledger's: `cookie`, `header`, `storage`, `created password`;
+  - `env file`: every value of `env_file`, now and as `up` read it (the owner declared them secrets),
+    at any length, but a number (digits only) or a switch word (`true`, `false`, `yes`, `no`, `on`,
+    `off`, in any case);
+  - `repo env file` (the owner's `.env`, `.env.local` and `guard.envFiles`) and `environment variable
+    <NAME>`: sources that mix configuration with secrets, so only what is secret-like. Never a value
+    under 4 characters, a number or a switch word, nor a variable named `PWD`, `OLDPWD`, `INIT_CWD`,
+    `HOME`, `TMPDIR`, `TMP`, `TEMP`, `PATH`, `SHELL`, `USER`, `USERNAME`, `LOGNAME`, `LANG`,
+    `LANGUAGE`, `LC_*`, `TERM*`, `XDG_*_HOME`, `SSH_AUTH_SOCK` or `CLAUDE_CODE_*` (names compared
+    exactly, upper case); otherwise a value whose name matches `SECRET_KEY`, or a high-entropy value
+    that is not an absolute path (`/…`, `~/…`, `C:\…`) under a name that does not end in a place word
+    (`DIR`, `PATH`, `HOME`, `PWD`, `CWD`, `ROOT` or `PREFIX`, the whole name or after `_`, any case).
+    Claude Code's own `CLAUDE_CODE_CHILD_SESSION=1` would otherwise refuse every issue holding a lone
+    `1`;
+  - `role password` and `TOTP secret`: `.argus/live.json`'s roles, expanded.
+
+  Empty values are ignored. The separators below are whitespace, punctuation, symbols and invisible
+  format characters (Unicode `Cf`: a soft hyphen, a zero-width space, a word joiner). A value of 6
+  characters or more is found in every encoding `pw`'s fence masks (§9 "Output": either case, hex,
+  base64 at any byte offset, URL-decoded too), or when the text and the value, each stripped of
+  separators, contain it. A value longer than 256 characters is found by its first 256-character part
+  alone (a prefix still finds the leak; masking in `pw` covers every part). A shorter value — or one
+  under 6 once stripped of separators — is found only as a whole token, not preceded or followed by a
+  letter or digit: raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with
+  separators between its characters, never as part of a longer word. So a ledger-class value is never
+  short (the 6-character floor is theirs), a `repo env file` or `environment variable` value counts
+  from 4 characters, and an `env file`, `role password`, `TOTP secret` or `created password` value at
+  any length. Each hit prints `<title|body> <line>:<col> <class>` (1-based, a hit in a stripped or
+  decoded form placed at its first character) or `label <i> <class>`, then `refused: scrub: <k>
+  secret(s) in the issue; nothing is filed` — never the value, never the text around it. A pattern that
+  cannot be built or run refuses by class alone: `refused: scrub: a <class> value could not be checked;
+  nothing is filed`, never the engine's message (which quotes the pattern, and so the value). Exit 1,
+  the body file untouched, no `gh` run.
 - **Redacts in place** (`<redacted>`, fenced blocks included) every other run of 24+ `[A-Za-z0-9_-]`
   holding a letter and a digit, not all hex (a commit sha stays), and not among the run's seen ids
   (record ids such as cuid or ULID stay readable).
 - **Defangs**, outside fenced blocks and code spans as CommonMark reads them, by wrapping in
-  backticks: every `http(s)` URL whose host is not loopback, a protocol-relative link (`//host/…`), a
-  `www.` host, `owner/repo#<n>`, `GH-<n>`, `#<n>` and `@user` or `@org/team`. A backtick run with no
+  backticks: every `http(s)` URL whose host is not loopback (trailing punctuation left outside), a
+  `www.` host, a protocol-relative target where GitHub would follow it — a link's or an image's
+  (`[x](//host/…)`, `![x](//host/…)`) and an HTML `src=` or `href=` value (`src="//host/…"`) —,
+  `owner/repo#<n>`, `GH-<n>`, `#<n>` (not after `&`, an HTML entity) and `@user` or `@org/team`, each
+  with the backslashes right before it; a bare `//host` in prose is left as it is. A backtick run with no
   closer on its line, or a span holding a `|` (a GFM table splits there), is escaped instead, so no span
   crosses a line, a block or a cell. Fenced blocks whose info string is `ts`, `typescript` or `json`
   (the generated test, the repro) stay whole; every other keeps at most 20 lines (`… <k> lines cut`).
@@ -1308,8 +1395,8 @@ recorded`, `the screenshot changed after its verdict`, or the verdict's own: `a 
 password field`, `a one-time-code field`, `an error page`). The local ones are named in one `Local
 evidence:` line appended to the body (once, however often it is scrubbed). Traces are never attached.
 
-**Filing.** With `--create` (and its `--label`s: at most 50 characters, no comma or control character,
-only with `--create`) or `--comment <n>` (never both), once the text passed, scrub runs `gh issue
+**Filing.** With `--create` (and its `--label`s: 1–50 characters, no comma or C0 control character,
+not starting with whitespace, only with `--create`) or `--comment <n>` (never both), once the text passed, scrub runs `gh issue
 create|comment … --body-file <file> [--attach <png>]…` with no shell. An issue or comment URL in gh's
 stdout means filed — `filed: <url>` or `commented: <url>`, exit 0, whatever gh's exit — and is never
 re-filed; none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2).
@@ -1384,14 +1471,17 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | A repro's acting account is in run.json `loginFailed` (the explore phase's or an earlier repro's failed sign-in) | the run exits 2 at once, `HARNESS: <role>.<k> cannot sign in this cycle`, no browser opened for it; never retried (lockout) |
 | A repro `login` step fails | the run exits 2, `HARNESS: step <n> <role>.<k> login failed`; the failure is kept in slot `r`'s state.json `createdFailed`, never in run.json `loginFailed`; the cycle is unaffected |
 | `repro <ref>` names no return, no candidate, a slot never minted or no running cycle | `refused: repro: …`, CLI exit 1; nothing runs |
-| Minimize finds the cycle down or its deadline near | it stops, `stopped down` or `stopped deadline`, exit 2; the candidate is journalled with where minimizing stopped |
+| Minimize finds, before a try or the confirm, the lock no longer naming the candidate's run, or less than the longest of its recorded runs (a minute at the least) left before the deadline | it stops at once, no confirm run, `stopped down` or `stopped deadline`, exit 2; the candidate is journalled with where minimizing stopped |
 | `scrub` refuses | the issue is not filed; the candidate is journalled with the reason; on a hit, the orchestrator rewrites the place named and scrubs again, never pasting the value anywhere |
 | The run's secret ledger is gone, damaged or incomplete | `scrub` refuses the whole run: nothing from it is filed, and the journal says so |
 | A run's ledger after `down` | kept 0600 under `logs/`, so scrub of that run still works; the next `up` (or `up --map`) removes it, and scrub of the old run then refuses as gone |
-| `scrub --ref` names a candidate not reproduced 2 of 2 (or `repro --test` does) | refused; nothing is filed or written |
+| `scrub --ref` names a candidate not reproduced 2 of 2 (or `repro --test` does) | refused, naming the verdict (`not-reproduced`, `intermittent`, `harness`, `never run`); nothing is filed or written |
+| `scrub` names neither `--run` nor `--ref` | refused: `refused: scrub: name the run (--run <runId>) or the candidate (--ref <slot>.<generation>.<k>); nothing is filed` |
+| A second cycle reproduces the same ref (refs are numbered per run, and `down` keeps each run's `repro/`) | `scrub --ref <ref>` alone is refused: `refused: scrub: candidate <ref> was reproduced in more than one run; name it with --run <runId> too; nothing is filed`; the orchestrator passes `--run <runId>` beside `--ref` |
+| `scrub` names a map run | `refused: scrub: run <runId> is a map run (up --map): it drained no session and keeps no secret ledger; nothing from it is filed`, after `down` too |
 | A screenshot changed after its verdict | not attached: `local: <name> (the screenshot changed after its verdict)`, named in `Local evidence:` |
 | `up --fresh` or `renew` on a map run | `refused: cycle <run> is a map run (up --map); run down` |
-| `map-check --merge` on a slot whose newest return is not a map, or one that no longer validates | refused, naming the slot or the first faults; `.argus/journeys.json` untouched |
+| `map-check --merge` on a slot whose newest return is not a map, or one that no longer validates, or in a run that recorded no worktree commit | refused, naming the slot, the first five faults or the run; `.argus/journeys.json` untouched |
 | `git worktree remove` refuses a worktree the instance dirtied | `--force` on the run's own worktree only |
 | `down` or recovery cannot remove something (a read-only module cache, a directory it may not write) | read-only trees are made writable first (symlinks not followed); what still cannot be removed is named in the report; `run.json`, the lock, the end line and the stale run's claim are finished anyway, so the next `up` is not blocked |
 | A recorded process group now runs something else (its pid reused by the owner's process) | not killed; named in the report |
@@ -1461,7 +1551,8 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
 
 `tests/argus-live-findings.test.ts` (no browser; a CLI shim where a session is involved):
 - **The DAG:** "every argus-live module imports only modules below it"; "origins are compared as the
-  run spells them".
+  run spells them"; "the instance module's header names every module, each after the modules it
+  imports".
 - **Session driver and hook:** "ensure opens the session on first use and reuses the recorded one",
   "a hook that fails is told among the open's events, and the session is used all the same", "a gone
   browser is reopened and the command is not run", "relogin probes before signing in", "observe keeps
@@ -1472,7 +1563,8 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   "secretHits finds a value raw, URL-encoded, base64-encoded and split by spaces, and says where", "a
   short configuration secret is matched as a whole token only", "seenIds keeps the ids and none of the
   tokens", "a damaged ledger refuses; a gone one is null; an incomplete one says why", "drainSessions
-  marks what it could not drain".
+  marks what it could not drain", "a drain that throws mid-way leaves the sessions it had not drained
+  marked undrained".
 - **Repro sessions:** "slot r is a slot", "a repro session is recorded only while the run has an
   instance", "down closes them".
 - **Repro DSL:** "FINAL_KINDS holds decision 7's templates, one per oracle", "parseRepro reads §10's
@@ -1484,14 +1576,17 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   state-changing step".
 - **Two of two:** "3 then 3 reproduces: each run's lines prefixed, run 2's REPRODUCED line last", "3
   then 0 is intermittent; 0 stops after one run", "a harness failure stops at once and is never counted
-  as reproduced", "a candidate the return lacks is refused".
+  as reproduced", "a run is numbered after the candidate's records, never over one", "repro --saved
+  prints the values the reproducing run read, masked by scrub's rules", "a candidate the return lacks
+  is refused".
 - **Classes:** one test per §10 row ("dead end: A, S1 on a money journey, else S2", …, "handoff,
   re-entry, discoverability, unreachable step: B(a) with a written rule, else heuristic and
   needs-owner, at most S3") and "each seeded defect's class line".
 - **Minimize:** "keeps the essential steps and every step it may not drop, to a fixpoint, and
   confirms", "stops at its budget, one run kept for the confirm; an unconfirmed result is not written",
   "a reduction that fails its final another way is not kept", "never tries a trigger or the final; a
-  reduction the static checks refuse costs no run", "refuses a candidate that never reproduced".
+  reduction the static checks refuse costs no run", "refuses a candidate that never reproduced", "stops
+  before a try once the cycle is down, or too little of its deadline is left".
 - **Generated RED test:** "the §10 example matches the golden file"
   (`tests/fixtures/argus-red/order-to-cash.handoff.spec.ts`, written by hand before the generator), "saved
   names never collide", "the test is valid TypeScript", "strings never become code", "repro --test
@@ -1501,7 +1596,13 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   secret-like is not a secret", "a short configuration secret is refused as a whole token, never inside
   a word", "a cuid or ULID the run saw stays; an unknown long token is redacted", "mentions, references
   and outside links are defanged outside code", "scrub needs the run's whole ledger", "scrub works on a
-  run that is down".
+  run that is down", "scrub checks the run it is told, never the newest: a later up's run leaves the
+  earlier one unfileable", "with --ref, scrub files only a candidate that reproduced two of two, in the
+  run that reproduced it", "a ledger or env_file value thousands of characters long is refused by its
+  class, and no output holds any part of it", "a secret is refused case-folded, in hex, inside base64
+  at any offset, URL-decoded and split by invisible format characters", "environment and repo env
+  values: a short secret from 4 characters is refused, a number, a switch and a path never",
+  "protocol-relative links and images are defanged too".
 - **Attachments and filing:** "a screenshot whose every condition holds is attached, and gh files the
   rewritten body", "a screenshot is attached only when every condition holds: <reason>" (one per
   reason), "a non-zero gh exit after the URL counts as filed", "the needs-owner label goes through
@@ -1529,6 +1630,8 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
 - **Doc drift:** "code newer than the doc, the doc newer, both in one commit", "the newest of every code
   range counts", "uncommitted lines, a file with no history and a bad range", "author time decides, not
   committer time", "the CLI's verdict lines".
+- **Visit:** "visit writes a journey's lastCycle, lastHead and filed into journeys.json, and nothing
+  else".
 
 `tests/argus-live-repro.test.ts` (in Chrome, on the fixture app):
 - **Hook:** "a popup a link opened is watched from its first document", "the hook installs once per
@@ -1552,7 +1655,10 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   through a fake `gh`).
 
 `tests/argus-live-pw.test.ts` also holds "the findings and map commands are the orchestrator's: none
-passes the explorer's guard". `vitest.config.ts` excludes `tests/fixtures/**` (vitest would collect the
+passes the explorer's guard", and for the fence's long and re-encoded secrets "a secret thousands of
+characters long is masked whole in its every form, and no pattern ever fails on it", "a secret is
+masked case-folded, in hex, inside base64 at any byte offset, and URL-decoded" and "an env_file value
+thousands of characters long is masked in pw's output, and no pattern error prints it". `vitest.config.ts` excludes `tests/fixtures/**` (vitest would collect the
 golden `*.spec.ts` as a test) and `.claude/**`.
 
 Elsewhere:
@@ -1614,17 +1720,18 @@ Elsewhere:
 | `plugins/sapu/skills/argus/reference.md` | §4.1 note: UI journeys complement the HTTP rule; §9 state: `.argus/live/`, `journeys.json`, and a journey cycle's `run.log` fields (`fraud=-`) |
 | `plugins/sapu/skills/argus/standards.md` | Nielsen's ten heuristics; workflow-net soundness; the cognitive walkthrough |
 | `plugins/sapu/agents/ui-explorer.md` | new agent |
-| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `up --fresh`, `up --map`, `down`, `renew`, `status [--json]`, `slot`, `slot --map`, `slot --handoff`, `pw`, `intake`, `repro <ref> [--once\|--minimize\|--test]`, `classify`, `scrub`, `map-check [--list\|--merge <slot>]`, `select`, `visit`, `drift`, the filtering proxy |
+| `plugins/sapu/scripts/argus-live.mjs` | new: `up`, `up --fresh`, `up --map`, `down`, `renew`, `status [--json]`, `slot`, `slot --map`, `slot --handoff`, `pw`, `intake`, `repro <ref> [--once\|--minimize\|--test\|--saved]`, `classify`, `scrub`, `map-check [--list\|--merge <slot>]`, `select`, `visit`, `drift`, the filtering proxy |
 | `plugins/sapu/scripts/argus-live-origin.mjs` | new leaf: exact origins (`exactHost`, `canonicalOrigin`, `originOf`), `BLOCKED_ERROR`, `checkUrl` |
 | `plugins/sapu/scripts/argus-live-start.mjs` | new: the bring-up blocks of `up` (ports, worktree, HOME, environment, setup, start, health, store) |
 | `plugins/sapu/scripts/argus-live-session.mjs` | new: the session driver shared by `pw` and the repro runner (open, hook, sign-in, observe and drain), `drainSessions`, `maskSecrets`, `configuredUser` |
 | `plugins/sapu/scripts/argus-live-ledger.mjs` | new: the secret ledger and `seen.jsonl` (§10), `dropLedgers`, the matcher `secretHits` |
 | `plugins/sapu/scripts/argus-live-steps.mjs` | new: the repro DSL (`parseRepro`, `FINAL_KINDS`, `substitute`, the step templates, `reductions`) |
-| `plugins/sapu/scripts/argus-live-repro.mjs` | new: the repro runner (`runOnce`), two of two (`repro`), `minimize`, `redTestFile` |
+| `plugins/sapu/scripts/argus-live-repro.mjs` | new: the repro runner (`runOnce`), two of two (`repro`), `minimize`, `redTestFile`, `savedValues` (`--saved`) |
 | `plugins/sapu/scripts/argus-live-classes.mjs` | new leaf: §10's class and severity table, `classify` |
 | `plugins/sapu/scripts/argus-live-redtest.mjs` | new: the generated Playwright RED test |
-| `plugins/sapu/scripts/argus-live-scrub.mjs` | new: `scrub`, the screenshot verdict's writer and reader, redaction and defanging |
-| `plugins/sapu/scripts/argus-live-map.mjs` | new: the journey map (`validateMap`, `map-check`, refresh reasons, the catalog, `mergeMap`), SELECT (`score`, `selectJourneys`) |
+| `plugins/sapu/scripts/argus-live-scrub.mjs` | new: `scrub` (`scrubRun`, the run it checks; `scrubSecrets`), the screenshot verdict's writer and reader, redaction and defanging |
+| `plugins/sapu/scripts/argus-live-fence.mjs` | `secretPatterns` built part by part (256-character parts overlapping by 16), case-folded, hex, base64 at any byte offset and URL-decoded; `PatternError`, whose fixed words replace the engine's message |
+| `plugins/sapu/scripts/argus-live-map.mjs` | new: the journey map (`validateMap`, `map-check`, refresh reasons, the catalog, `mergeMap`), SELECT (`score`, `selectJourneys`), PERSIST (`visitJourney`) |
 | `plugins/sapu/scripts/argus-live-drift.mjs` | new: doc drift by author time (§5) |
 | `vitest.config.ts` | excludes `tests/fixtures/**` (the golden RED test is a Playwright spec) and `.claude/**` |
 | `plugins/sapu/scripts/sapu-merge.sh` | ` live=1` on gates-log lines overlapping `sapu-live.log`; excluded from flake proofs |
