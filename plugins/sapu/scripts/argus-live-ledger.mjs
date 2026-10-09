@@ -6,7 +6,7 @@
 // refuses an issue by, which says where a secret is and never what it is.
 import fs from "node:fs";
 import path from "node:path";
-import { PatternError, secretPatterns } from "./argus-live-fence.mjs";
+import { leakFinder, mergedSpans, PatternError, secretParts } from "./argus-live-fence.mjs";
 import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { logsDir } from "./argus-live-run.mjs";
 
@@ -291,10 +291,11 @@ const tokenPattern = (v) =>
 /**
  * Where `secrets` (`[{cls, v}]`) occur in `text` → `[{line, col, cls}]` (1-based), sorted by line,
  * column and class, distinct. Empty values are ignored; a value of a class in LEDGER_CLASSES counts only
- * at MIN_SECRET or more. A value of MIN_SECRET or more is found by secretPatterns (its every encoding,
- * base64 and hex included, from its first PATTERN_CHARS characters: a prefix still finds the leak) or,
- * the text and the value each stripped of SEPARATOR, as a substring (the stripped value MIN_SECRET or
- * more; a shorter one is matched as a short value is). A shorter value is found only as a whole token:
+ * at MIN_SECRET or more. A value of MIN_SECRET or more is found by any part of it in any of its encodings
+ * (leakFinder: secretPatterns' every part, base64 and hex included, so a long value's middle or tail alone
+ * is found) or, the text and the value each stripped of SEPARATOR, by any part of the stripped value as a
+ * substring (the stripped value MIN_SECRET or more; a shorter one is matched as a short value is); in either
+ * form, parts that overlap or touch are one hit (a whole long value is one). A shorter value is found only as a whole token:
  * raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with SEPARATOR between
  * its characters — never as a part of a longer word. A hit in a stripped or decoded form is placed at its
  * first character in `text`. A pattern that cannot be built or run throws a PatternError `refused: scrub: a
@@ -319,6 +320,7 @@ export function secretHits(text, secrets) {
     }
   };
   const flat = stripped(t, SEPARATOR);
+  const find = leakFinder(t);
   for (const s of Array.isArray(secrets) ? secrets : []) {
     if (!s || typeof s.v !== "string" || s.v === "") continue;
     const v = s.v.slice(0, MAX_SECRET);
@@ -328,10 +330,12 @@ export function secretHits(text, secrets) {
         short(v, s.cls);
         continue;
       }
-      for (const re of secretPatterns(v, { prefix: true })) for (const i of matchIndexes(re, t)) place(i, s.cls);
+      for (const i of find(v)) place(i, s.cls);
       const sv = stripped(v, SEPARATOR).text;
       if (sv.length >= MIN_SECRET) {
-        for (let i = flat.text.indexOf(sv); i >= 0; i = flat.text.indexOf(sv, i + 1)) place(flat.at[i], s.cls);
+        const found = [];
+        for (const part of secretParts(sv)) for (let i = flat.text.indexOf(part); i >= 0; i = flat.text.indexOf(part, i + 1)) found.push([i, i + part.length]);
+        for (const [i] of mergedSpans(found)) place(flat.at[i], s.cls);
       } else if (sv) short(sv, s.cls);
     } catch {
       throw new PatternError(`refused: scrub: a ${s.cls} value could not be checked; nothing is filed`);

@@ -143,14 +143,14 @@ export function mergeMap(prev, value, { head }) {
   return { ...before, head, roots: value.roots, dropped: before.dropped ?? [], journeys };
 }
 
-/** An issue or comment URL as `scrub` prints it after `filed:`. */
-const ISSUE_URL = /^https?:\/\/[^\s/]+\/[^\s]+\/issues\/[0-9]+(?:#issuecomment-[0-9]+)?$/;
+/** An issue or comment URL as `scrub` prints it after `filed:`: no whitespace and no control character (an ESC would reach the catalog). */
+const ISSUE_URL = /^https?:\/\/[^\s\x00-\x1f\x7f/]+\/[^\s\x00-\x1f\x7f]+\/issues\/[0-9]+(?:#issuecomment-[0-9]+)?$/;
 
 /**
  * PERSIST (spec §6): `map` with journey `id`'s `lastCycle` set to `cycle`, `lastHead` to `head` and the issue
  * URLs `filed` added to its `filed` (kept in order, once each) → `{map, journey}`; nothing else changes.
  * Refused: an id that is not kebab-case or not in the map, a cycle that is not a whole number from 1, a head
- * that is not a commit, a URL that is not an issue's.
+ * that is not a commit, a URL that is not an issue's or holds a control character.
  */
 export function visitJourney(map, id, { cycle, head, filed = [] }) {
   if (typeof id !== "string" || !KEBAB.test(id)) throw new Error("refused: visit: a journey id is kebab-case");

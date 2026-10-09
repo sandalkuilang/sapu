@@ -1635,9 +1635,10 @@ Interfaces:
   expanded roles are expanded per value with no ports, a `${NAME}` the env file lacks giving none. A
   `label` names a value's source (`<role>.<k> password`, `.env DB_PASSWORD`), never the value, and is
   never printed. The two sources that mix configuration with secrets (`repo env file`, `environment
-  variable <NAME>`) give a value only at `MIN_SECRET` or more: Claude Code itself sets
-  `CLAUDE_CODE_CHILD_SESSION=1` and `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1` (names `SECRET_KEY` matches),
-  and as whole tokens they refused every issue holding a lone `1`; a short `env_file` value, a role
+  variable <NAME>`) give a value only at `MIN_SECRET` or more (later 4 characters: "The environment's
+  floor" below): Claude Code itself sets `CLAUDE_CODE_CHILD_SESSION=1` and
+  `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1` (names `SECRET_KEY` matches), and as whole tokens they refused
+  every issue holding a lone `1`; a short `env_file` value, a role
   password or a TOTP secret is still matched as a whole token. A title holding a line break is refused. The texts scrub would file are checked again
   after the rewrite (nothing redaction or defanging made may carry a secret either). Redaction runs over
   the whole text, fenced blocks included. Defanging also wraps `www.` hosts and `GH-<n>` (both autolinked
@@ -1718,9 +1719,10 @@ Interfaces:
   - *A secret thousands of characters long (QA, critical).* A pattern spelling out some 2700 characters
     overflowed the regex engine's stack, and its error quoted the pattern, which spells the value out (scrub's
     exit 2, pw's `failed:` line). `-fence.mjs` now builds a value's patterns from parts of at most
-    `PATTERN_CHARS` (256) characters overlapping by 16 (`secretPatterns(v, {prefix})`): scrub finds a leak by
-    the first part (a prefix still finds it), `clean` masks every part, merging the spans of every match
-    (overlapping ones too) into one `***`. Building or running a pattern throws a `PatternError` with fixed
+    `PATTERN_CHARS` (256) characters overlapping by 16 (`secretPatterns(v)`, `secretParts`): `clean` masks
+    every part, merging the spans of every match (overlapping ones too) into one `***` (`mergedSpans`). Scrub
+    first found a leak by the first part alone; since the scrub re-review it looks for every part too
+    (below). Building or running a pattern throws a `PatternError` with fixed
     words; `secretHits` turns it into `refused: scrub: a <class> value could not be checked; nothing is filed`,
     `refusalLines` prints only that, `writeVerdict` counts it as `secret`, and `clean` gives `WITHHELD`, never
     the text. A part of a long value shorter than a part, at a page's edge, is not masked; a whole value is.
@@ -1746,20 +1748,26 @@ Interfaces:
   - *Invisible format characters (QA).* `\p{Cf}` (a soft hyphen, U+200B, U+2060) is a separator: stripped
     with whitespace, punctuation and symbols, and allowed between a short value's characters.
   - *The environment's floor (owner).* A repo env file's and the environment's values count from 4
-    characters (a shorter secret-like one is a whole token from there), never a number or a switch word
-    (`true`, `false`, `yes`, `no`, `on`, `off`), never a variable that says where or who (`PWD`, `OLDPWD`,
-    `INIT_CWD`, `HOME`, `TMPDIR`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TERM*`, `XDG_*_HOME`,
-    `SSH_AUTH_SOCK`, `CLAUDE_CODE_*`), and never by entropy alone for an absolute path or a place's name
-    (`…_DIR`, `…_PATH`, `…_HOME`, `…_PWD`, `…_CWD`, `…_ROOT`, `…_PREFIX`). The run's env file gives every
-    value but a number or a switch word.
+    characters (a shorter secret-like one is a whole token from there), never a switch word (`true`,
+    `false`, `yes`, `no`, `on`, `off`) or a short plain number (`plainValue`: digits only, under
+    `MIN_SECRET`, under a name `SECRET_KEY` does not match), never a variable that says where or who
+    (`plainEnv`: `PWD`, `OLDPWD`, `INIT_CWD`, `HOME`, `TMPDIR`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `LANG`,
+    `LC_*`, `TERM*`, `XDG_*_HOME`, `SSH_AUTH_SOCK`, and a `CLAUDE_CODE_*` name `SECRET_KEY` does not match),
+    and never by entropy alone for an absolute path (two or more non-empty segments of path characters, no
+    `+` or `=`) or a place's name (`…_DIR`, `…_PATH`, `…_HOME`, `…_PWD`, `…_CWD`, `…_ROOT`, `…_PREFIX`). The
+    run's env file gives every value but a switch word or a short plain number.
   - *More encodings (owner).* Each character also in its other case; the value's bytes in hex (either case,
     from 4 bytes); its base64 at byte offsets 1 and 2 (`base64("user:" + pw)`: the characters only its bytes
     make), standard and URL-safe; and a value holding `%HH` decoded too (a cookie recorded `s%3A…`, shown
-    `s:…`). Every form is at least 8 characters.
+    `s:…`). A whole base64 form is at least 8 characters, an offset form at least 7 (a 6-character secret
+    after 4 or 5 other bytes). A character whose other case is two characters (`ß`, `SS`) matches only as
+    itself: a known limit.
   - *Control characters in a map (owner).* `validateMap` refuses one in a domain, title, goal (a journey's or
     a step's) or the notes: the catalog prints them. An anchor's text may hold a tab.
-  - *Protocol-relative links (owner).* `[x](//host…)`, `![](//host…)`, `src=//…` and `href=//…` (quoted or
-    not) have their target wrapped in a code span.
+  - *Protocol-relative links (owner).* `[x](//host…)`, `[x](<//host…>)`, `![](//host…)`, a reference
+    definition's `[1]: //host…`, and `src=`, `href=`, `poster=` and `srcset=` values (quoted or not, every
+    srcset candidate) have their target wrapped in a code span, their slashes escaped (`\/\/host`) or not;
+    an `http(s)` URL is defanged with its scheme in any case (`HTTPS://`) and its slashes escaped or not.
   - *A drain that fails part-way (owner).* The teardown hands its drain a `drained(name)` callback;
     `drainSessions` tells each session it kept (or that lost nothing), and when the drain throws the teardown
     marks every other session `closed undrained`. `guarded` answers whether its step ran through.
@@ -1774,8 +1782,19 @@ Interfaces:
     earlier than 4000 ms after the goto began.
   - *Phase 5's seams.* `visit <journeyId> --cycle <n> [--filed <issue url>…]` writes the journey's
     `lastCycle`, `lastHead` (MAIN's HEAD as the cycle ends) and `filed` (added once each, in order) into
-    `.argus/journeys.json` through `visitJourney` (`-map.mjs`), so PERSIST never edits the file by hand:
+    `.argus/journeys.json` through `visitJourney` (`-map.mjs`; a `--filed` URL holding a control character is
+    refused), so PERSIST never edits the file by hand:
     `visited <id>: last cycle <n>, last head <sha12>, filed <k>`. `repro <ref> --saved` prints the values the
     newest reproducing run of the whole list read, as scrub would let them leave (`savedValues`): scrub's
     refusal for the run (exit 1), else `saved <name>: <JSON string>` with unknown long tokens redacted, or
     `saved <name>: *** (<class>)` for a value holding a secret.
+  - *Scrub re-review (owner).* Two exemptions went too far: every `CLAUDE_CODE_*` variable (it let
+    `CLAUDE_CODE_OAUTH_TOKEN` through) and every number (`ADMIN_PIN=73914826`, `API_TOKEN=4815162342108`);
+    both now hold only as "The environment's floor" says. `secretHits` looks for every part of a long value
+    (its middle or tail alone was missed) through `leakFinder` (`-fence.mjs`): one pass lists every 4
+    characters the text may spell in any mix of charPattern's encodings, and a part's pattern is built and
+    run only when the text may spell each 4 of its characters, or holds the part's base64 or hex (a match
+    spells them all, so the result is the same as running every pattern). The separator-stripped check
+    looks for every part too, and the hits of one value's parts that overlap or touch are one hit. 200
+    ledger values of 4096 characters against a 64 KB body take about 0.3 to 0.6 s (every pattern compiled
+    took over 5 s for the first parts alone).

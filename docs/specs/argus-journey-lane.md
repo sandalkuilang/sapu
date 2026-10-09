@@ -206,7 +206,8 @@ tracked); the owner may edit it:
   optionally `#issuecomment-<n>`), appended in order, once each. Nothing else changes. It prints
   `visited <id>: last cycle <n>, last head <sha12>, filed <k>` (`k` the URLs `filed` now holds).
   Refused: no `.argus/journeys.json`, an id that is not kebab-case or not in the map, a `--filed`
-  that is not such a URL, a HEAD that cannot be read.
+  that is not such a URL or holds a control character (an ESC would reach the catalog), a HEAD that
+  cannot be read.
 - **`map-check`** (no LLM, no lock, starts nothing) drops a journey at its first failing check, in
   this order, printing `dropped <id>: <reason>` (steps and anchors numbered from 1):
   - the id is kebab-case (`id is not kebab-case`) and not an earlier journey's (`duplicate id`: the
@@ -1030,9 +1031,11 @@ as 0.1.22 reads them:
   the role passwords and TOTP secrets, created accounts' passwords) is masked however the page or the
   CLI encoded it: per character as is or in its other case, backslash-escaped, `\uXXXX`, `\xHH`, an
   HTML entity, `%HH` of its UTF-8 bytes or `+` for a space (so JavaScript's, Go's, Python's and PHP's
-  JSON, HTML and URL forms alike, mixed freely); or the value in base64 (padded, unpadded or URL-safe,
-  also inside a longer base64 text at any byte offset) or in hex, either case; and the same for the
-  value URL-decoded, when it holds `%HH`. A value longer than 256 characters is matched part by part —
+  JSON, HTML and URL forms alike, mixed freely); or the value in base64 (padded or unpadded from 8
+  characters, URL-safe, and inside a longer base64 text at any byte offset from 7: a 6-character secret
+  after 4 or 5 other bytes, `base64("abc:" + pw)`, is 7) or in hex, either case, from 4 bytes; and the
+  same for the value URL-decoded, when it holds `%HH`. Known limit: a character whose other case is more
+  than one character (`ß`, upper-cased `SS`) is matched only in the cases that are one character. A value longer than 256 characters is matched part by part —
   parts of 256 characters, each overlapping the next by 16, the last ending at the value's end — so the
   whole value is masked and no pattern grows past what the regular-expression engine can run. Known
   limit: where the page text starts or ends inside such a value, the piece of it the text holds that
@@ -1336,26 +1339,36 @@ Then, against the run it named:
 - **Refuses the issue** when the title, the body or a label holds a secret. Classes:
   - the ledger's: `cookie`, `header`, `storage`, `created password`;
   - `env file`: every value of `env_file`, now and as `up` read it (the owner declared them secrets),
-    at any length, but a number (digits only) or a switch word (`true`, `false`, `yes`, `no`, `on`,
-    `off`, in any case);
+    at any length, but a switch word (`true`, `false`, `yes`, `no`, `on`, `off`, in any case) or a
+    short plain number: digits only, under 6 characters, under a name `SECRET_KEY` does not match
+    (`PORT=3000` stays; `ADMIN_PIN=73914826` and `DB_PASSWORD=1234` are secrets);
   - `repo env file` (the owner's `.env`, `.env.local` and `guard.envFiles`) and `environment variable
     <NAME>`: sources that mix configuration with secrets, so only what is secret-like. Never a value
-    under 4 characters, a number or a switch word, nor a variable named `PWD`, `OLDPWD`, `INIT_CWD`,
-    `HOME`, `TMPDIR`, `TMP`, `TEMP`, `PATH`, `SHELL`, `USER`, `USERNAME`, `LOGNAME`, `LANG`,
-    `LANGUAGE`, `LC_*`, `TERM*`, `XDG_*_HOME`, `SSH_AUTH_SOCK` or `CLAUDE_CODE_*` (names compared
-    exactly, upper case); otherwise a value whose name matches `SECRET_KEY`, or a high-entropy value
-    that is not an absolute path (`/…`, `~/…`, `C:\…`) under a name that does not end in a place word
-    (`DIR`, `PATH`, `HOME`, `PWD`, `CWD`, `ROOT` or `PREFIX`, the whole name or after `_`, any case).
-    Claude Code's own `CLAUDE_CODE_CHILD_SESSION=1` would otherwise refuse every issue holding a lone
-    `1`;
+    under 4 characters, a switch word or a short plain number (as for `env file`: a number of 6 digits
+    or more, or one under a `SECRET_KEY` name, is judged as any value), nor a variable named `PWD`,
+    `OLDPWD`, `INIT_CWD`, `HOME`, `TMPDIR`, `TMP`, `TEMP`, `PATH`, `SHELL`, `USER`, `USERNAME`,
+    `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TERM*`, `XDG_*_HOME` or `SSH_AUTH_SOCK`, nor a
+    `CLAUDE_CODE_*` variable whose name `SECRET_KEY` does not match (names compared exactly, upper
+    case: `CLAUDE_CODE_OAUTH_TOKEN` is judged, `CLAUDE_CODE_ENTRYPOINT` never); otherwise a value whose
+    name matches `SECRET_KEY`, or a high-entropy value that is not an absolute path under a name that
+    does not end in a place word (`DIR`, `PATH`, `HOME`, `PWD`, `CWD`, `ROOT` or `PREFIX`, the whole
+    name or after `_`, any case). An absolute path starts `/`, `~/` or `C:\` and has at least two
+    non-empty segments of path characters (letters, digits, `_`, `.`, `@`, `~`, `,`, `-`), never a `+`
+    or `=`: a base64 value that starts with `/` is judged by its entropy. Claude Code's own
+    `CLAUDE_CODE_CHILD_SESSION=1` would otherwise refuse every issue holding a lone `1`;
   - `role password` and `TOTP secret`: `.argus/live.json`'s roles, expanded.
 
   Empty values are ignored. The separators below are whitespace, punctuation, symbols and invisible
   format characters (Unicode `Cf`: a soft hyphen, a zero-width space, a word joiner). A value of 6
   characters or more is found in every encoding `pw`'s fence masks (§9 "Output": either case, hex,
   base64 at any byte offset, URL-decoded too), or when the text and the value, each stripped of
-  separators, contain it. A value longer than 256 characters is found by its first 256-character part
-  alone (a prefix still finds the leak; masking in `pw` covers every part). A shorter value — or one
+  separators, contain it. A value longer than 256 characters is found by any of its 256-character
+  parts (§9 "Output"), so its middle or its tail alone is found too; hits of parts that overlap or
+  touch are one hit, so a whole value is one. Most parts' patterns are never built: one pass over the
+  text lists every 4 characters it may spell in any mix of those encodings, and a part is matched only
+  when the text may spell each 4 of its characters, or holds its base64 or hex (200 values of 4096
+  characters against a 64 KB text take well under 3 s). Known limit: a piece shorter than a whole part
+  (at the text's edge) matches no part. A shorter value — or one
   under 6 once stripped of separators — is found only as a whole token, not preceded or followed by a
   letter or digit: raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with
   separators between its characters, never as part of a longer word. So a ledger-class value is never
@@ -1371,9 +1384,12 @@ Then, against the run it named:
   holding a letter and a digit, not all hex (a commit sha stays), and not among the run's seen ids
   (record ids such as cuid or ULID stay readable).
 - **Defangs**, outside fenced blocks and code spans as CommonMark reads them, by wrapping in
-  backticks: every `http(s)` URL whose host is not loopback (trailing punctuation left outside), a
-  `www.` host, a protocol-relative target where GitHub would follow it — a link's or an image's
-  (`[x](//host/…)`, `![x](//host/…)`) and an HTML `src=` or `href=` value (`src="//host/…"`) —,
+  backticks: every `http(s)` URL whose host is not loopback, its scheme in any case (`HTTPS://`) and its
+  slashes escaped or not (`https:\/\/`; trailing punctuation left outside), a `www.` host, a
+  protocol-relative target where GitHub would follow it, its slashes escaped or not (`\/\/host`) — a
+  link's or an image's (`[x](//host/…)`, `[x](<//host/…>)`, `![x](//host/…)`), a reference
+  definition's (`[1]: //host/…`) and an HTML `src=`, `href=`, `poster=` or `srcset=` value
+  (`src="//host/…"`, every candidate of a srcset) —,
   `owner/repo#<n>`, `GH-<n>`, `#<n>` (not after `&`, an HTML entity) and `@user` or `@org/team`, each
   with the backslashes right before it; a bare `//host` in prose is left as it is. A backtick run with no
   closer on its line, or a span holding a `|` (a GFM table splits there), is escaped instead, so no span
@@ -1600,9 +1616,13 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   earlier one unfileable", "with --ref, scrub files only a candidate that reproduced two of two, in the
   run that reproduced it", "a ledger or env_file value thousands of characters long is refused by its
   class, and no output holds any part of it", "a secret is refused case-folded, in hex, inside base64
-  at any offset, URL-decoded and split by invisible format characters", "environment and repo env
-  values: a short secret from 4 characters is refused, a number, a switch and a path never",
-  "protocol-relative links and images are defanged too".
+  at any offset, URL-decoded and split by invisible format characters", "a long secret's middle or
+  tail alone is refused: every part of it is looked for, not only the first", "every part of 200
+  ledger values of 4096 characters is checked against a 64 KB body in under 3 seconds", "a 6-character
+  secret inside base64 after 4 or 5 other bytes is refused, and a near miss is not", "environment and
+  repo env values: a short secret from 4 characters is refused, a switch, a short plain number and a
+  path never", "protocol-relative links and images are defanged too", "an angle-bracketed target, a
+  reference definition, srcset, poster, escaped slashes and an upper-case scheme are defanged too".
 - **Attachments and filing:** "a screenshot whose every condition holds is attached, and gh files the
   rewritten body", "a screenshot is attached only when every condition holds: <reason>" (one per
   reason), "a non-zero gh exit after the URL counts as filed", "the needs-owner label goes through
@@ -1730,7 +1750,7 @@ Elsewhere:
 | `plugins/sapu/scripts/argus-live-classes.mjs` | new leaf: §10's class and severity table, `classify` |
 | `plugins/sapu/scripts/argus-live-redtest.mjs` | new: the generated Playwright RED test |
 | `plugins/sapu/scripts/argus-live-scrub.mjs` | new: `scrub` (`scrubRun`, the run it checks; `scrubSecrets`), the screenshot verdict's writer and reader, redaction and defanging |
-| `plugins/sapu/scripts/argus-live-fence.mjs` | `secretPatterns` built part by part (256-character parts overlapping by 16), case-folded, hex, base64 at any byte offset and URL-decoded; `PatternError`, whose fixed words replace the engine's message |
+| `plugins/sapu/scripts/argus-live-fence.mjs` | `secretPatterns` built part by part (256-character parts overlapping by 16), case-folded, hex, base64 at any byte offset and URL-decoded; `leakFinder`, which finds every part of a value while building only the patterns the text may hold; `mergedSpans`; `PatternError`, whose fixed words replace the engine's message |
 | `plugins/sapu/scripts/argus-live-map.mjs` | new: the journey map (`validateMap`, `map-check`, refresh reasons, the catalog, `mergeMap`), SELECT (`score`, `selectJourneys`), PERSIST (`visitJourney`) |
 | `plugins/sapu/scripts/argus-live-drift.mjs` | new: doc drift by author time (§5) |
 | `vitest.config.ts` | excludes `tests/fixtures/**` (the golden RED test is a Playwright spec) and `.claude/**` |
