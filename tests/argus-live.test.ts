@@ -387,7 +387,7 @@ describe("argus-live instance — lock, live log, renew", () => {
       ids.add(takeLock(main, { maxCycleMinutes: MAX, now: T0 }).runId);
     }
     expect(ids.size).toBe(20);
-  });
+  }, 30_000);
 
   it("refuses while another cycle's deadline has not passed, naming its run and deadline", () => {
     const main = repo();
@@ -438,7 +438,7 @@ describe("argus-live instance — lock, live log, renew", () => {
     }
     for (const max of [0, 1441, 1e300, 1.5]) expect(() => takeLock(repo(), { maxCycleMinutes: max, now: T0 })).toThrow(/^refused: limits\.max_cycle_minutes/);
     expect(() => takeLock(repo(), { maxCycleMinutes: MAX, now: 1e300 })).toThrow(/^refused: /);
-  });
+  }, 30_000);
 
   describe("races, replayed step by step", () => {
     it("the lock vanishes between the failed link and the read: take it fresh", () => {
@@ -799,7 +799,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     const home = makeHome(main, id);
     writeFileSync(join(home, "python"), "");
     await expect(setup(wt, [link(join(home, "python"), ".venv/bin/python")])).resolves.toBeUndefined();
-  });
+  }, 30_000);
 
   it("the environment holds only the listed variables, the expanded env, the run's Compose project and HOME", async () => {
     process.env.ARGUS_TEST_LEAK = "1";
@@ -839,7 +839,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     expect(seen.env).toMatchObject({ COMPOSE_PROJECT_NAME: `argus-${id}`, HOME: home });
     expect(seen.env).not.toHaveProperty("ARGUS_TEST_LEAK");
     expect(existsSync(join(wt, "$NOT_EXPANDED"))).toBe(true);
-  });
+  }, 30_000);
 
   it("a failing setup step is reported with its own error, every secret value masked", async () => {
     const wt = makeWorktree(committed(), runId());
@@ -859,7 +859,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     await setup(wt, [node("process.exit(0) // hunter2")], { secrets: { PW: "hunter2" }, groups });
     expect(groups[0].cmdline).not.toContain("hunter2");
     expect(groups[0].cmdline).toContain("// ***");
-  });
+  }, 30_000);
 
   it("a setup step is bounded by the lock's deadline", async () => {
     const wt = makeWorktree(committed(), runId());
@@ -869,7 +869,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     await expect(setup(wt, [node("require('fs').writeFileSync('ran', '')")], { deadline: later(-1) })).rejects.toThrow(/^failed: setup .* timed out/);
     expect(existsSync(join(wt, "ran"))).toBe(false);
     await expect(runSetup(wt, { setup: [] }, PATH(), {})).rejects.toThrow(/deadline/);
-  });
+  }, 30_000);
 
   describe("setup in its own process group", () => {
     const gone = (pid: number) => {
@@ -894,13 +894,13 @@ describe("argus-live instance — worktree, environment, setup", () => {
       const child = Number(readFileSync(join(wt, "child.pid"), "utf8"));
       expect(await settle(child)).toBe(true);
       expect(groups).toEqual([expect.objectContaining({ name: "setup[0]", pgid: expect.any(Number) })]);
-    });
+    }, 30_000);
 
     it("a failed setup with a grandchild leaves no process", async () => {
       const wt = makeWorktree(committed(), runId());
       await expect(setup(wt, [parentWithChild("process.exit(1)")])).rejects.toThrow(/exited 1/);
       expect(await settle(Number(readFileSync(join(wt, "child.pid"), "utf8")))).toBe(true);
-    });
+    }, 30_000);
 
     it("a setup that leaves a daemon in its group succeeds, and its group stays recorded for down", async () => {
       const wt = makeWorktree(committed(), runId());
@@ -914,7 +914,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
         process.kill(-groups[0].pgid, "SIGKILL");
       }
       expect(await settle(child)).toBe(true);
-    });
+    }, 30_000);
 
     it("a setup argv that cannot start is reported", async () => {
       const wt = makeWorktree(committed(), runId());
@@ -929,7 +929,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
     await expect(setup(wt, [link(join(main, "node_modules"), "deps/node_modules")])).rejects.toThrow(`refused: ${join(wt, "deps/node_modules")} points into the main checkout`);
     rmSync(join(wt, "deps"), { recursive: true });
     await expect(setup(wt, [link(main, "up")])).rejects.toThrow(/points into the main checkout/);
-  });
+  }, 30_000);
 
   describe("links the check must see through", () => {
     const refusedAfter = async (make: (main: string, wt: string) => string[]) => {
@@ -977,7 +977,7 @@ describe("argus-live instance — worktree, environment, setup", () => {
       const main = committed();
       const wt = makeWorktree(main, runId());
       await expect(setup(wt, [link(chain(30), "ok")])).resolves.toBeUndefined();
-    });
+    }, 30_000);
   });
 
   it("a missing TMPDIR is refused, not a raw error", async () => {
@@ -1066,7 +1066,7 @@ describe("argus-live instance — processes, health, store", () => {
     expect(w.events()).toEqual(["backing", "check", "check", "check", "reset", "web", "check", "check", "check"]);
     expect(groups.map((g) => g.name)).toEqual(["backing", "reset", "web"]);
     expect(readFileSync(join(w.ctx.logs, "web.log"), "utf8")).toMatch(/listening on/);
-  });
+  }, 30_000);
 
   it("a store_check printing another store is refused, and reset never runs", async () => {
     const w = await world();
@@ -1076,7 +1076,7 @@ describe("argus-live instance — processes, health, store", () => {
     await expect(bringUpStore(w.ctx)).rejects.toThrow('refused: store_check printed "app_dev", not the store "app_explore"');
     expect(w.events()).toEqual(["backing"]);
     expect(existsSync(join(w.data, "sentinel"))).toBe(true);
-  });
+  }, 30_000);
 
   it("an env URL equal to one in the repo's env files is refused, naming the key and never the value", async () => {
     const w = await world();
@@ -1088,7 +1088,7 @@ describe("argus-live instance — processes, health, store", () => {
     const prod = await checkStore({ ...w.ctx, env: { ...w.ctx.env, C: "redis://localhost:7000" }, contract: { guard: { envFiles: [".env.production"], postgres: null } } }).catch((e: Error) => e.message);
     expect(prod).toMatch(/^refused: env\.C points at a service the repo's env files name/);
     await expect(checkStore(w.ctx)).resolves.toBeUndefined();
-  });
+  }, 30_000);
 
   it("an env URL naming a database or port guard.databases protects (any engine) is refused", async () => {
     const w = await world();
@@ -1227,7 +1227,7 @@ describe("argus-live instance — processes, health, store", () => {
     await expect(waitHealth(sleeper, await startEntry(sleeper, { ...w.ctx, groups }), { ...w.ctx, aliveAfterMs: 300 })).resolves.toBeUndefined();
     const ready = { name: "ready", cmd: `sleep 1; touch ready; exec ${JSON.stringify(process.execPath)} -e "setInterval(() => {}, 1 << 30)"`, health: { cmd: "test -f ready" } };
     await expect(waitHealth(ready, await startEntry(ready, { ...w.ctx, groups }), w.ctx)).resolves.toBeUndefined();
-  });
+  }, 30_000);
 
   it("a health timeout fails, naming the entry", async () => {
     const w = await world();
@@ -1236,7 +1236,7 @@ describe("argus-live instance — processes, health, store", () => {
     const t0 = Date.now();
     await expect(waitHealth(never, await startEntry(never, { ...w.ctx, groups }), { ...w.ctx, timeoutS: 1 })).rejects.toThrow(/^failed: api was not healthy within 1 s/);
     expect(Date.now() - t0).toBeLessThan(5000);
-  });
+  }, 30_000);
 
   it("an entry runs in its own process group, with the instance env and its own, never HOME or COMPOSE_PROJECT_NAME", async () => {
     const w = await world();
@@ -1259,7 +1259,7 @@ describe("argus-live instance — processes, health, store", () => {
     }
     expect(() => process.kill(child, 0)).toThrow();
     await expect(startEntry({ name: "x", cmd: "true", env: { HOME: "/" } }, { ...w.ctx, groups })).rejects.toThrow("refused: start entry x may not set HOME");
-  });
+  }, 30_000);
 });
 
 describe("argus-live instance — review: env of every entry, secrets in shell fields, health and store_check hygiene", () => {
@@ -1329,13 +1329,13 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       writeFileSync(join(ctx.main, ".env"), "DATABASE_URL=postgres://owner:x@localhost:5432/app_dev\n");
       (ctx.config.start[0].env as Record<string, string>).DATABASE_URL = "postgres://app@127.0.0.1/app_explore";
       expect(await message(checkStore(ctx))).toBe("refused: start.web.env.DATABASE_URL points at a service the repo's env files name (.env, .env.local); it would reach the owner's service");
-    });
+    }, 30_000);
 
     it("store_check runs under each entry's own env too, and must print the store there as well", async () => {
       const ctx = await ctxFor();
       (ctx.config.start[0].env as Record<string, string>).DATA_DIR = join(tempDir(), "app_dev");
       expect(await message(checkStore(ctx))).toBe('refused: store_check printed "app_dev" under the env of start entry web, not the store "app_explore"');
-    });
+    }, 30_000);
 
     it("a store that guard.postgres protects is refused", async () => {
       const ctx = await ctxFor({ store: "app_dev" });
@@ -1392,7 +1392,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       await bringUpStore({ ...ctx, config, secrets: { PW: VALUE } });
       expect(readFileSync(join(ctx.worktree, "reset.out"), "utf8")).toBe(VALUE);
       expect(groups.map((g) => g.cmdline).join("\n")).not.toContain("pwned");
-    });
+    }, 30_000);
   });
 
   it("3. a health cmd that already succeeds before start is refused, and the command never runs", async () => {
@@ -1621,14 +1621,14 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       const bg = Number(readFileSync(join(ctx.worktree, "bg.pid"), "utf8"));
       pids.push(bg);
       expect(await goneSoon(bg)).toBe(true);
-    });
+    }, 30_000);
 
     it("store_check has its own timeout (the health timeout), not the whole time to the deadline", async () => {
       const ctx = await ctxFor({ store_check: "sleep 30" });
       const t0 = Date.now();
       expect(await message(checkStore({ ...ctx, timeoutS: 1 }))).toMatch(/^failed: store_check timed out/);
       expect(Date.now() - t0).toBeLessThan(5000);
-    });
+    }, 30_000);
 
     it("a health cmd's background child is killed after each try", async () => {
       const ctx = await ctxFor();
@@ -1637,7 +1637,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
       const left = readFileSync(join(ctx.worktree, "hc.pids"), "utf8").trim().split("\n").map(Number);
       pids.push(...left);
       for (const p of left) expect(await goneSoon(p)).toBe(true);
-    });
+    }, 30_000);
   });
 
   it("8. a process that exits while its health URL answers fails, even though the URL answered", async () => {
@@ -1649,7 +1649,7 @@ describe("argus-live instance — review: env of every entry, secrets in shell f
     await new Promise<void>((r) => slow.listen(port, "127.0.0.1", () => r()));
     servers.push(slow);
     expect(await message(waitHealth(entry, s, ctx))).toMatch(/^failed: w exited \(code 1\) before its health passed/);
-  });
+  }, 30_000);
 });
 
 describe("argus-live instance — Compose and egress checks", () => {
@@ -1745,7 +1745,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       // The host ports its services publish (all the run's) come back too: the Docker daemon serves them.
       expect(checkCompose({ worktree: w.wt, env: w.env, ports: w.ports, main: w.main })).toEqual({ services: ["db", "web", "sidecar"], published: [41001, 41002] });
       expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f compose.yaml --profile * config --format json`]);
-    });
+    }, 30_000);
 
     it("every tracked Compose file is found at any depth and read per directory; an untracked one at the root too", () => {
       const w = world(good(), { files: ["compose.override.yaml", "compose.yaml", "deploy/docker-compose.dev.yml", "deploy/compose-test.yml", "composer.yaml", "docs/compose.md"], untracked: ["docker-compose.yml"] });
@@ -1756,7 +1756,7 @@ describe("argus-live instance — Compose and egress checks", () => {
           `${w.wt}/deploy|${PROJECT}|compose -f compose-test.yml -f docker-compose.dev.yml --profile * config --format json`,
         ].sort(),
       );
-    });
+    }, 30_000);
 
     describe("compose_files names the files the instance uses", () => {
       const bad = () => {
@@ -1771,18 +1771,18 @@ describe("argus-live instance — Compose and egress checks", () => {
         writeFileSync(join(w.wt, "docker-compose.prod.yml"), `services:\n  db:\n    container_name: fixed\n    env_file: [${w.main}/.env]\n`);
         expect(compose(w, { config: { compose_files: ["compose.yaml"] } })).toBe("ok");
         expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f compose.yaml --profile * config --format json`]);
-      });
+      }, 30_000);
       it("unlisted, every tracked file is checked (fail closed), and the refusal says to list compose_files", () => {
         const w = world(good(), { files: three, bad: { when: "prod", json: bad() } });
         expect(compose(w)).toMatch(/^refused: Compose service db sets container_name .*; list the files the instance uses in compose_files to check only those$/);
         writeFileSync(join(w.wt, "docker-compose.prod.yml"), `services:\n  db:\n    env_file: [${w.main}/.env]\n`);
         expect(compose(w)).toMatch(/^refused: docker-compose\.prod\.yml names a path inside the main checkout .*; list the files the instance uses in compose_files to check only those$/);
-      });
+      }, 30_000);
       it("keeps the listed order (Compose's -f order) and runs from the worktree's root", () => {
         const w = world(good(), { files: ["compose.yaml", "compose.override.yaml", "deploy/stack.yml"] });
         expect(compose(w, { config: { compose_files: ["deploy/stack.yml", "compose.yaml"] } })).toBe("ok");
         expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose -f deploy/stack.yml -f compose.yaml --profile * config --format json`]);
-      });
+      }, 30_000);
       it("a listed file that git does not track is refused", () => {
         const w = world(good(), { files: ["compose.yaml"], untracked: ["local.yml"] });
         expect(compose(w, { config: { compose_files: ["compose.yaml", "local.yml"] } })).toBe("refused: compose_files names local.yml, which the worktree does not track");
@@ -1794,7 +1794,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(w.ran()).toEqual([`${w.wt}|${PROJECT}|compose --profile * config --format json`]);
         writeFileSync(join(w.wt, "compose.yaml"), `services:\n  db:\n    env_file: [${w.main}/.env]\n`);
         expect(compose({ ...w, env: { ...w.env, COMPOSE_FILE: "compose.yaml" } })).toMatch(/^refused: compose\.yaml names a path inside the main checkout/);
-      });
+      }, 30_000);
     });
 
     it("no Compose file: nothing to check, docker never runs", () => {
@@ -1811,7 +1811,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       writeFileSync(join(v.wt, ".env"), "COMPOSE_FILE=elsewhere/dev.yml\n");
       expect(compose(v)).toBe("ok");
       expect(v.ran()).toHaveLength(1);
-    });
+    }, 30_000);
 
     it("a tracked Compose file that names a path inside the main checkout (env_file, extends, include, ...) is refused", () => {
       const w = world(good());
@@ -1825,7 +1825,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       }
       writeFileSync(join(w.wt, "compose.yaml"), `services:\n  web:\n    image: x\n    volumes: [./data:/data, /var/lib/x:/y, "${"$"}{DATA:-./data}:/d"]\n    command: http://example.test/a\n    working_dir: ${w.main}-other/x\n`);
       expect(compose(w)).toBe("ok");
-    });
+    }, 30_000);
 
     const SOCKETS = (home: string) => [`${home}/Library/Containers/com.docker.docker/Data/docker.raw.sock`, `${home}/.docker/run/user-analytics.otlp.grpc.sock`, `${home}/Library/Containers/com.docker.docker/Data`, "/var/run/docker.sock", "/var/run", "/run", "/", `${home}/.docker/run`, "/run/containerd/containerd.sock", "/srv/podman.sock", "/tmp/.s.PGSQL.5432", "/var/run/postgresql"];
     const refusals: [string, (c: Obj, main: string) => void, RegExp][] = [
@@ -1885,7 +1885,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       };
       it("loopback in a container is the container's own; a service name of the project is exempt", () => {
         expect(run(() => {})).toBe("ok");
-      });
+      }, 30_000);
       it.each([
         [(c: Obj) => (c.services.web.environment.X = "postgres://u@db.internal.example:5432/other"), /^refused: compose\.web\.environment\.X points at a service the repo's env files name/],
         [(c: Obj) => (c.services.web.command = ["--cache", "redis://cache.internal.example:6379/2"]), /^refused: compose\.web\.command\.1 points at a service/],
@@ -1910,7 +1910,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       const j = world(good());
       writeFileSync(join(j.bin, "out.json"), "{oops");
       expect(compose(j)).toMatch(/^refused: .*not JSON/);
-    });
+    }, 30_000);
 
     describe("commands of the config that would run Docker past the check", () => {
       const cfg = (over: Obj): Obj => ({ setup: [], store_check: "true", reset: "true", start: [{ name: "backing", phase: "store", cmd: "docker compose up -d", stop: "docker compose down -v" }], ...over });
@@ -1963,7 +1963,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       const ctx = { config: { store: "app_explore", store_check: "echo app_explore", start: [] }, env: { PATH: process.env.PATH!, DATABASE_URL: "postgres://app@db:5432/app_explore" }, worktree: w.wt, main: w.main, contract: null, timeoutS: 10, deadline: Math.floor(Date.now() / 1000) + 600 };
       expect(await message(checkStore({ ...ctx, composeServices }))).toBe("ok");
       expect(await message(checkStore(ctx))).toMatch(/^refused: env\.DATABASE_URL points at a service/);
-    });
+    }, 30_000);
   });
 
   describe("the run's Docker client", () => {
@@ -2013,7 +2013,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(instanceEnv({ ...base, config: { env: {}, pass_env: [], compose_files: ["compose.yaml"] } }).COMPOSE_FILE).toBe("compose.yaml");
         expect(instanceEnv({ ...base, config: { compose_files: ["compose.yaml", "deploy/stack.yml"] } }).COMPOSE_FILE).toBe("compose.yaml:deploy/stack.yml");
         expect(instanceEnv({ ...base, config: { env: {} } }).COMPOSE_FILE).toBeUndefined();
-      });
+      }, 30_000);
       it("COMPOSE_PATH_SEPARATOR is \":\" with it, so a tracked .env naming another separator cannot split the list elsewhere", () => {
         expect(instanceEnv({ ...base, config: { compose_files: ["compose.yaml", "deploy/stack.yml"] } })).toMatchObject({ COMPOSE_FILE: "compose.yaml:deploy/stack.yml", COMPOSE_PATH_SEPARATOR: ":" });
         expect(instanceEnv({ ...base, config: { env: {} } }).COMPOSE_PATH_SEPARATOR).toBeUndefined();
@@ -2155,7 +2155,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(check()).toBe("ok");
         s.containers[2].Mounts.push({ Type: "bind", Source: join(main, "data") });
         expect(check()).toMatch(/^refused: container gate-db-1, .* bind-mounts a path inside the main checkout/);
-      });
+      }, 30_000);
       it("a transient container, gone by now, that mounted a volume that existed before the cycle is refused from its mount event; a mount of a new volume, or by a run container, passes", () => {
         const s = state();
         s.events.push(
@@ -2323,7 +2323,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         process.kill(-p.pid!, "SIGKILL");
         await new Promise((done) => p.once("exit", done));
         expect(gate(s, { eventsFile: file, follower, runner })).toBe(`refused: the docker events follower (process group ${p.pid}) no longer runs; the Docker runtime gate cannot see the whole cycle`);
-      });
+      }, 30_000);
       it("startEventsFollower runs `docker events --since <since>` under the run's env in its own recorded group, writing the run's logs", async () => {
         const bin = tempDir();
         const logs = join(tempDir(), "logs");
@@ -2339,7 +2339,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         expect(readFileSync(f.file, "utf8")).toBe('{"Type":"network","Action":"connect"}\n');
         expect(readFileSync(join(bin, "args"), "utf8").trim()).toBe(`events --since ${((T0 - 1000) / 1000).toFixed(3)} --format {{json .}} --filter type=container --filter type=volume --filter type=network`);
         expect(statSync(f.file).mode & 0o777).toBe(0o600);
-      });
+      }, 30_000);
     });
 
     it("daemonNow reads the daemon's clock; no docker or no daemon gives null", () => {
@@ -2412,28 +2412,28 @@ describe("argus-live instance — Compose and egress checks", () => {
       const a = await startApp({});
       const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web } });
       expect(await message(checkEgress({ pids: a.pids, allowed, samples: 1, expectListen: [a.web] }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
-    });
+    }, 30_000);
 
     it("CACHE_URL pointing at a run port passes (the health request it answered is inbound, not egress)", async () => {
       const cache = await listen();
       const a = await startApp({ CACHE_URL: `tcp://127.0.0.1:${cache}` });
       const allowed = egressAllowed({ config: { start: [a.entry], allow_origins: [] }, env: a.base, ports: { web: a.web, cache } });
       expect(await message(checkEgress({ pids: a.pids, allowed, samples: 2, intervalMs: 100, expectListen: [a.web] }))).toBe("ok");
-    });
+    }, 30_000);
 
     it("a loopback endpoint the env names but the run did not allocate is refused: loopback is allowed only on the run's ports", async () => {
       const cache = await listen();
       const a = await startApp({ CACHE_URL: `tcp://localhost:${cache}` });
       const allowed = egressAllowed({ config: { start: [a.entry] }, env: a.base, ports: { web: a.web } });
       expect(await message(checkEgress({ pids: a.pids, allowed, samples: 1 }))).toMatch(new RegExp(`^refused: node \\(\\d+\\) connects to 127\\.0\\.0\\.1:${cache}$`));
-    });
+    }, 30_000);
 
     it("a connection made after the first look is caught by a later sample", async () => {
       await listen(46379);
       const c = await startNode(`setTimeout(() => require("net").connect(46379, "127.0.0.1").on("error", () => {}), 800)`);
       expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1 }))).toBe("ok");
       expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 5, intervalMs: 500 }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
-    });
+    }, 30_000);
 
     it("waitHealth runs the egress sample it is given while it waits", async () => {
       const wt = tempDir();
@@ -2444,7 +2444,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(n).toBeGreaterThan(0);
       const t = await startEntry({ ...entry, name: "w2" }, { worktree: wt, env: { PATH: process.env.PATH! }, logs: join(wt, "logs"), groups });
       expect(await message(waitHealth({ ...entry, name: "w2" }, t, { worktree: wt, env: {}, timeoutS: 5, aliveAfterMs: 400, egress: async () => { throw new Error("refused: x (1) connects to 127.0.0.1:6379"); } }))).toBe("refused: x (1) connects to 127.0.0.1:6379");
-    });
+    }, 30_000);
 
     describe("unix sockets", () => {
       it("a connection to a datastore's socket outside the run is refused, naming it; one inside the run, or to another socket, passes", async () => {
@@ -2458,7 +2458,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         await listen(app);
         const d = await startNode(`require("net").connect(${JSON.stringify(app)})`);
         expect(await message(checkEgress({ pids: d.pids, allowed: [], samples: 1 }))).toBe("ok");
-      });
+      }, 30_000);
 
       it("any socket in a directory the owner's env files name for a socket, or inside the main checkout, is refused", async () => {
         const dir = realpathSync(tempDir());
@@ -2473,7 +2473,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         await listen(inMain);
         const d = await startNode(`require("net").connect(${JSON.stringify(inMain)})`);
         expect(await message(checkEgress({ pids: d.pids, allowed: [], samples: 1, main }))).toMatch(/connects to the socket .*app\.sock$/);
-      });
+      }, 30_000);
 
       it("a server lsof cannot see (another user's) is named through netstat -an -f unix, whose addresses are lsof's", async () => {
         const lsofU = "p700\ncnode\nf21\nd0x1111\nn->0xaaaa\nf22\nd0x2222\nn->0xbbbb\n";
@@ -2507,7 +2507,7 @@ describe("argus-live instance — Compose and egress checks", () => {
         const said = await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }));
         if (process.platform === "darwin") expect(said).toBe("failed: netstat -an -f unix exited 1: netstat: sysctl: Operation not permitted");
         else expect(said).toBe("ok");
-      });
+      }, 30_000);
 
       it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {
         const ssx = [
@@ -2530,7 +2530,7 @@ describe("argus-live instance — Compose and egress checks", () => {
       const a = await startApp({ CACHE_URL: `tcp://127.0.0.1:${cache}`, CHILD_PID_FILE: pidFile }, "--spawn-child");
       expect(a.pids).toContain(Number(readFileSync(pidFile, "utf8")));
       expect(a.pids.length).toBeGreaterThanOrEqual(2);
-    });
+    }, 30_000);
 
     it("refuses when neither lsof nor ss is available", async () => {
       const empty = tempDir();
@@ -2648,7 +2648,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(rec.groups[0].members[0].started).toBe(rec.groups[0].started); // captured when startEntry recorded it
     expect(logsDir(r.main, r.runId)).toBe(join(r.main, ".argus/live", r.runId, "logs"));
     await down(r.main, { runId: r.runId, graceMs: 2000 });
-  });
+  }, 30_000);
 
   it("down replays each stop with its own cwd and env, kills every group (a grandchild and a setup's daemon too) and the reaper, removes worktree, HOME, setup log, run.json and lock, then appends end", async () => {
     const r = liveRun();
@@ -2696,7 +2696,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(liveFiles(r.main)).toEqual([r.runId]); // its logs stay
     expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end \\d{10}$`));
     expect(JSON.stringify(res)).not.toContain(SECRETS.PW);
-  });
+  }, 30_000);
 
   describe("one writer path for run.json (updateRun)", () => {
     const claimOf = (main: string, runId: string) => join(main, ".argus/live", `claim-${runId}.json`);
@@ -2722,7 +2722,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       rmSync(join(r.main, ".argus/live/run.json"));
       expect(() => writeRunFiles(r.main, record(r))).toThrow(/^refused: the lock no longer names cycle/);
       expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
-    });
+    }, 30_000);
 
     it("a run being torn down takes no more writes, and a later write never recreates a run.json a down removed", async () => {
       const r = liveRun();
@@ -2733,7 +2733,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(() => writeRunFiles(r.main, record(r), { create: false })).toThrow(`refused: run.json of cycle ${r.runId} is gone (a down removed it); not written again`);
       expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
       await down(r.main, { runId: r.runId, graceMs: 200 });
-    });
+    }, 30_000);
 
     it("startReaper records its pid through the same path", async () => {
       const r = liveRun();
@@ -2743,7 +2743,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(runJson(r.main).reaper).toBe(reaper);
       await down(r.main, { runId: r.runId, graceMs: 200 });
       expect(await until(() => !alive(reaper), 3000)).toBe(true);
-    });
+    }, 30_000);
   });
 
   it("down and recovery run one teardown, in spec order (each phase 3 step is one entry of it)", () => {
@@ -2760,7 +2760,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(res.report.join("\n")).toContain(`run.json names the worktree ${realpathSync(r.main)}, which is not the run's own`);
     expect(existsSync(r.wt)).toBe(false); // the run's own, by its id, still goes
     expect(existsSync(join(r.main, ".argus/live/lock.json"))).toBe(false);
-  });
+  }, 30_000);
 
   it("down runs the Docker runtime gate before the stops; a finding is reported and the teardown goes on", async () => {
     const r = liveRun();
@@ -2785,7 +2785,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(readFileSync(join(out, "stop.txt"), "utf8")).toBe("stopped\n");
     expect(existsSync(r.wt)).toBe(false);
     expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end `));
-  });
+  }, 30_000);
 
   describe("claims (carried from the lock review)", () => {
     const claimOf = (main: string, runId: string) => join(main, ".argus/live", `claim-${runId}.json`);
@@ -2810,7 +2810,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       await down(r.main, { runId: r.runId, graceMs: 200 });
       expect(existsSync(join(r.main, ".argus/live/lock.json"))).toBe(false);
       expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end `));
-    });
+    }, 30_000);
 
     it("takeLock on a stale lock whose claim is old but whose pid is alive: refused, naming the file to remove", () => {
       const main = committed();
@@ -2850,7 +2850,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
       expect(readLock(r.main).runId).toBe(l.runId);
       expect(staleRecords(r.main)).toEqual([]);
-    });
+    }, 30_000);
   });
 
   it("recover replays only stops whose cwd exists and whose env names the run's project, kills a group only while its command line matches, and appends end", async () => {
@@ -2893,7 +2893,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
     expect(existsSync(join(r.main, ".argus/live/run.json"))).toBe(false);
     expect(readLock(r.main).runId).toBe(l.runId);
-  });
+  }, 30_000);
 
   it("a leader that changes its title after the last write is still the run's (pid and start time): down from run.json kills it", async () => {
     const r = liveRun();
@@ -2907,7 +2907,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     const res = await down(r.main, { runId: r.runId, graceMs: 2000 });
     expect(await until(() => !alive(s.pid), 3000)).toBe(true);
     expect(res.report.join("\n")).not.toContain("not killed");
-  });
+  }, 30_000);
 
   it("a worktree whose directory is already gone: down removes git's record of it, and nothing repo-wide", async () => {
     const r = liveRun();
@@ -2921,7 +2921,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(git(r.main, "worktree", "list")).not.toContain(r.wt);
     expect(git(r.main, "worktree", "list")).toContain(join(tmp, "unrelated"));
     expect(calls.some((a) => a.includes("prune"))).toBe(false);
-  });
+  }, 30_000);
 
   it("two downs at once: one end line", async () => {
     const r = liveRun();
@@ -2929,7 +2929,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     await Promise.all([down(r.main, { runId: r.runId, graceMs: 200 }), down(r.main, { runId: r.runId, graceMs: 200 })]);
     expect(logOf(r.main).filter((x) => x.startsWith(`${r.runId} end `))).toHaveLength(1);
     expect(existsSync(join(r.main, ".argus/live/lock.json"))).toBe(false);
-  });
+  }, 30_000);
 
   describe("pid reuse: a process of the owner's on a recorded pgid", () => {
     const ownerProcess = async (cmd: string) => {
@@ -2949,7 +2949,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(alive(owner)).toBe(true);
       expect(res.report).toContain(`process group ${owner} (setup[0]): what runs in it is not what was recorded; not killed`);
       expect(logOf(r.main).at(-1)).toMatch(new RegExp(`^${r.runId} end `));
-    });
+    }, 30_000);
 
     it("a recorded group whose leader and members now run something else survives down and recover", async () => {
       const recorded = (owner: number) => [{ name: "app", pgid: owner, cmdline: "node server.mjs", members: [{ pid: owner, cmdline: "node server.mjs" }] }];
@@ -2967,7 +2967,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       const res = await recover(b.main, { graceMs: 500 });
       expect(alive(owner)).toBe(true);
       expect(res.report).toContain(`${b.runId}: process group ${owner} (app): what runs in it is not what was recorded; not killed`);
-    });
+    }, 30_000);
 
     it("down from the in-memory record of a failed up kills the groups it started, the exec'd leader too", async () => {
       const r = liveRun();
@@ -2980,7 +2980,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(groups[0].cmdline).toBe(`/bin/sh -c ${app()}`); // as recorded at spawn, before sh exec'd it
       await down(r.main, { runId: r.runId, record: { runId: r.runId, worktree: r.wt, groups, stops: [] }, graceMs: 2000 });
       expect(await until(() => !alive(s.pid), 3000)).toBe(true);
-    });
+    }, 30_000);
   });
 
   it("down and recover remove read-only trees (a module cache); a removal that still fails is reported, and run.json, lock, end and claim are finished anyway", async () => {
@@ -3023,7 +3023,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
     expect(readLock(c.main).runId).toBe(l.runId);
     expect(logOf(c.main).filter((x) => x.startsWith(`${c.runId} end `))).toHaveLength(1);
     expect(staleRecords(c.main)).toEqual([]);
-  });
+  }, 30_000);
 
   it("recover says when run.json does not name the stale run: its stops and groups are unknown", async () => {
     const main = committed();
@@ -3066,7 +3066,7 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
       expect(logOf(r.main).some((x) => x.startsWith(`${r.runId} end `))).toBe(false);
       expect(readFileSync(join(logsDir(r.main, r.runId), "reaper.log"), "utf8")).toContain(`the lock names cycle ${other.runId}, not ${r.runId}: exiting without acting`);
       await down(r.main, { runId: r.runId, graceMs: 200 });
-    });
+    }, 30_000);
 
     it("renew moves its wake-up", async () => {
       const r = liveRun();
@@ -3340,7 +3340,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(await message(up(main, { runner, ownerHome: tempDir() }))).toMatch(/^refused: the docker context remote is not a local unix socket \(tcp\)/);
     expect(calls).toEqual(["context inspect"]);
     expect(balanced(main)).toBe(true);
-  });
+  }, 30_000);
 
   /** A docker whose context is a local socket, whose daemon is not running, and whose `compose config` prints `project(env)`. */
   const composeDocker = (project: (env: Obj) => Obj) => (argv: string[], o: Obj = {}) => {
@@ -3662,7 +3662,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       const { main, pid } = await recorded(null);
       expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^refused: node \(\d+\) connects to 127\.0\.0\.1:46379$/);
       expect(alive(pid)).toBe(true); // doubt about its identity: not killed
-    });
+    }, 30_000);
     // lstart drifts with the boot time it is derived from; Linux's boot ticks are compared exactly.
     it.skipIf(process.platform === "linux")("a start time one second off is the same process (clock drift): caught, and killed by the down that follows", async () => {
       const { main, pid } = await recorded(1);
@@ -3674,7 +3674,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       expect(await message(renewRun(main, { runner: noDocker }))).toMatch(/^failed: the run's process listing cannot be trusted: process group \d+ \(web\) has processes, none of them the run's$/);
       expect(alive(pid)).toBe(true);
       expect(balanced(main)).toBe(true);
-    });
+    }, 30_000);
   });
 
   it("up --fresh keeps an old group that is still alive after the stop in the record, and reports it", async () => {

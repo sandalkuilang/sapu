@@ -202,10 +202,17 @@ export function defang(md) {
   return { text: out.join("\n"), defanged, cut };
 }
 
-/** `secretHits` on the title and the body → the refusal's lines, `<title|body> <line>:<col> <class>` then the count; none → []. */
-function refusalLines(title, body, secrets) {
+/**
+ * `secretHits` on the title, the body and each label (gh puts a label on the issue as given) → the refusal's
+ * lines, `<title|body> <line>:<col> <class>` and `label <i> <class>` (1-based), then the count; none → [].
+ */
+function refusalLines(title, body, secrets, labels = []) {
   const hits = [...secretHits(title, secrets).map((h) => ({ ...h, where: "title" })), ...secretHits(body, secrets).map((h) => ({ ...h, where: "body" }))];
-  return hits.length ? [...hits.map((h) => `${h.where} ${h.line}:${h.col} ${h.cls}`), `refused: scrub: ${hits.length} secret(s) in the issue; nothing is filed`] : [];
+  const lines = hits.map((h) => `${h.where} ${h.line}:${h.col} ${h.cls}`);
+  labels.forEach((l, i) => {
+    for (const h of secretHits(String(l), secrets)) lines.push(`label ${i + 1} ${h.cls}`);
+  });
+  return lines.length ? [...lines, `refused: scrub: ${lines.length} secret(s) in the issue; nothing is filed`] : [];
 }
 
 /** Where a screenshot's verdict lies: beside it, `<name>.verdict.json`. */
@@ -298,9 +305,9 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
 /**
  * `argus-live.mjs scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment
  * <n>]` → `{code, out}`. The run is the lock's, else the newest run directory (a run that is down is read
- * the same way). scrubSecrets' refusal → that line (exit 1); a secret in the title or the body as given →
- * one line per hit, `<title|body> <line>:<col> <class>`, then `refused: scrub: <k> secret(s) in the issue;
- * nothing is filed` (exit 1, the file untouched, no gh run; never a value, never the text around it); else
+ * the same way). scrubSecrets' refusal → that line (exit 1); a secret in the title, the body or a label as
+ * given → one line per hit, `<title|body> <line>:<col> <class>` or `label <i> <class>`, then `refused:
+ * scrub: <k> secret(s) in the issue; nothing is filed` (exit 1, the file untouched, no gh run; never a value, never the text around it); else
  * both redacted (redactIds, the run's seen ids) and defanged, `scrub: ok; redacted <n>, defanged <n>, cut
  * <n> line(s)` and `title: <the scrubbed title>`. Each `attach` → `attach: <name>` or `local: <name>
  * (<reason>)` (attachVerdict; gh's version from `gh --version`, the visibility from `gh repo view`, `traces`
@@ -324,7 +331,7 @@ export async function scrub(main, { title, bodyFile, attach = [], create = false
   } catch (e) {
     return { code: 1, out: [`refused: scrub: the body file cannot be read (${(e && e.code) || "error"})`] };
   }
-  const given = refusalLines(t, body, secrets);
+  const given = refusalLines(t, body, secrets, labels);
   if (given.length) return { code: 1, out: given };
   const seen = readSeen(main, runId);
   const rt = redactIds(t, seen);

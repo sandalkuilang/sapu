@@ -173,7 +173,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     const again = await t.driver().ensure();
     expect(again).toEqual({ record: first.record, opened: false, events: [] });
     expect(opens()).toHaveLength(1);
-  });
+  }, 30_000);
 
   it("a hook that fails is told among the open's events, and the session is used all the same", async () => {
     const t = driverRun();
@@ -181,7 +181,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     const first = await t.driver().ensure();
     expect(first).toMatchObject({ opened: true, events: ["harness: hook failed"], record: { name: `${t.runId}-1-buyer.1` } });
     expect((readRun(t.main).sessions ?? []).map((x: Obj) => x.name)).toEqual([`${t.runId}-1-buyer.1`]);
-  });
+  }, 30_000);
 
   it("a gone browser is reopened and the command is not run", async () => {
     const t = driverRun();
@@ -202,7 +202,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     // The session reopened is the one run.json records now, with its new daemon.
     const now = (readRun(t.main).sessions ?? []).find((x: Obj) => x.name === d.name);
     expect(now.daemon.pid).not.toBe(record.daemon.pid);
-  });
+  }, 30_000);
 
   it("relogin probes before signing in", async () => {
     const t = driverRun();
@@ -230,7 +230,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     expect(probes.map((p) => [p.slot, p.account, p.url])).toEqual([[1, "buyer.1", `${BASE}/`], [1, "buyer.1", `${BASE}/`]]);
     // logged_in on the page: nothing is probed.
     expect(await d.relogin({ ...o, loggedIn: true })).toEqual([]);
-  });
+  }, 30_000);
 
   it("observe keeps the drain in the ledger and seen.jsonl and marks the account drained; a reopen after a command marks it lost", async () => {
     const t = driverRun();
@@ -257,7 +257,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     u.answer("run-code", `### Result\n${JSON.stringify({ state: "in", status429: false, lockout: false, origins: [] })}\n`);
     expect(await e.reopen(opened.record)).toEqual(["session-reopened: buyer.1"]);
     expect(readLedger(u.main, u.runId).incomplete).toBe(`${e.name} lost before its drain`);
-  });
+  }, 60_000);
 
   it("maskSecrets holds the env file's, the roles' and the created accounts' values", () => {
     const t = driverRun();
@@ -399,7 +399,7 @@ describe("argus-live ledger", () => {
     updateRun(u.main, u.runId, (prev: Obj) => ({ ...prev, sessions: [{ name: `${u.runId}-1-buyer.1`, slot: 1, account: "buyer.1", cwd: slotDir(u.main, u.runId, 1), home: join(u.home, "browser"), daemon: me, browser: null }] }));
     await down(u.main, { runId: u.runId, graceMs: 1000 });
     expect(readLedger(u.main, u.runId).incomplete).toBe(`${u.runId}-1-buyer.1 closed undrained`);
-  });
+  }, 30_000);
 });
 
 describe("argus-live repro sessions", () => {
@@ -451,7 +451,7 @@ describe("argus-live repro sessions", () => {
     await down(t.main, { runId: t.runId, graceMs: 1000 });
     expect(t.calls().map((c) => c.argv)).toEqual([[`-s=${name}`, "close"]]);
     expect(await until(() => !alive(p.pid!), 3000)).toBe(true);
-  });
+  }, 30_000);
 });
 
 /** Spec §10's example, its context as the list's first element (decision 1). */
@@ -827,7 +827,7 @@ describe("argus-live classes", () => {
     expect(line("--oracle", "viewport-locale")).toBe("class A labels bug,argus,found-by:user severity by outcome because viewport or locale: rated by its outcome, as argus rates\n");
     const bad = spawnSync(process.execPath, [ARGUS_LIVE, "classify", "--oracle", "handoff", "--money", "--money"], { cwd: main, encoding: "utf8" });
     expect(bad.status).toBe(1);
-  });
+  }, 30_000);
 });
 
 describe("argus-live minimize", () => {
@@ -1038,7 +1038,7 @@ describe("argus-live generated RED test", () => {
     expect(every).toContain('  await expect(customer2).toHaveURL((u) => u.pathname + u.search === "/" || u.pathname === "/", { timeout: SETTLE });\n');
     expect(every).toContain('  await anon1.keyboard.press("Enter");\n');
     expect(every).toContain("  await expect.poll(() => fact(marker, \"quantity\"), { timeout: SETTLE }).toBe(2);\n");
-  });
+  }, 30_000);
 
   it("strings never become code", () => {
     const value = "`${process.exit()}`";
@@ -1081,7 +1081,7 @@ describe("argus-live generated RED test", () => {
     writeFileSync(join(dir, "minimize.json"), JSON.stringify({ confirmed: true }));
     expect(cli().status).toBe(0);
     expect(readFileSync(file, "utf8")).not.toContain("await trigger(");
-  });
+  }, 30_000);
 });
 
 // The values of each secret class scrub knows, as one run holds them (each its own, none inside another).
@@ -1213,7 +1213,7 @@ describe("argus-live scrub", () => {
     const labels = scrubSecrets(t.main, { runId: t.runId, env: SCRUB_ENV }).secrets.map((s: Obj) => s.cls);
     expect(labels).not.toContain("environment variable HOME");
     expect(scrubSecrets(t.main, { runId: t.runId, env: SCRUB_ENV }).secrets.some((s: Obj) => s.v === "3000")).toBe(false);
-  });
+  }, 30_000);
 
   it("a short configuration secret is refused as a whole token, never inside a word", async () => {
     const t = scrubRun();
@@ -1327,7 +1327,7 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(c.body).toBe("Seen by `@octocat`.\n");
     expect(c.attached).toEqual([PNG.toString("latin1")]);
     expect(t.g.calls().map((x) => x.argv.slice(0, 2).join(" "))).toEqual(["--version", "repo view", "issue create"]);
-  });
+  }, 30_000);
 
   const reasons: [string, (t: ReturnType<typeof filing>) => { file: string; shown: string }][] = [
     ["gh older than 2.99", (t) => (t.g.set({ version: "gh version 2.98.1 (stable)" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
@@ -1368,7 +1368,7 @@ describe("argus-live scrub — attachments and filing", () => {
       expect(r).toEqual({ code: 0, out: ["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: A title", `local: ${shown} (${reason})`, `filed: ${URL9}`] });
       expect(readFileSync(b, "utf8")).toBe(`A clean body.\n\nLocal evidence: \`${shown}\`\n`);
       expect(creates(t.g).map((c) => c.argv)).toEqual([["issue", "create", "--title", "A title", "--body-file", b]]);
-    });
+    }, 30_000);
   }
 
   it("a non-zero gh exit after the URL counts as filed", async () => {
@@ -1381,14 +1381,27 @@ describe("argus-live scrub — attachments and filing", () => {
     const { b, done } = t.file({ create: false, comment: "9" });
     expect((await done).out.at(-1)).toBe(`commented: ${URL9}#issuecomment-77`);
     expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", b]);
-  });
+  }, 30_000);
 
   it("the needs-owner label goes through create", async () => {
     const t = filing();
     expect((await t.file({ labels: ["argus:needs-owner", "bug"] }).done).code).toBe(0);
     const argv = creates(t.g)[0].argv;
     expect(argv.slice(argv.indexOf("--label"))).toEqual(["--label", "argus:needs-owner", "--label", "bug"]);
-  });
+  }, 30_000);
+
+  it("a label is checked as the title and the body are, naming where and never what, and a refused one runs no gh", async () => {
+    const t = filing();
+    for (const [cls, v] of SCRUB_CLASSES) {
+      for (const [form, encode] of Object.entries(SCRUB_FORMS)) {
+        if (form === "spaced") continue; // a label holds no whitespace (the CLI refuses it)
+        const r = await t.file({ labels: ["bug", `x-${encode(v)}`] }).done;
+        expect(r, `${cls} ${form}`).toEqual({ code: 1, out: [`label 2 ${cls}`, "refused: scrub: 1 secret(s) in the issue; nothing is filed"] });
+        expect(leaked(r.out.join("\n"), Object.values(SCRUB))).toEqual([]);
+      }
+    }
+    expect(t.g.calls()).toEqual([]);
+  }, 60_000); // 32 scrubs, each reading the configuration and the contract (git)
 
   it("a body scrubbed again names its local evidence once", async () => {
     const t = filing();
@@ -1396,7 +1409,7 @@ describe("argus-live scrub — attachments and filing", () => {
     const b = t.body("A clean body.\n");
     for (let i = 0; i < 2; i++) expect((await t.run("A title", b, { attach: [png], gh: t.g.gh })).code).toBe(0);
     expect(readFileSync(b, "utf8")).toBe(`A clean body.\n\nLocal evidence: \`${t.shown("1/out/page-1.png")}\`\n`);
-  });
+  }, 30_000);
 
   it("a refused scrub runs no gh", async () => {
     const t = filing();

@@ -48,13 +48,13 @@
 //   argus-live.mjs scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>]
 //                                the last check before an issue is filed (spec §10 "Scrub"): a secret the run saw
 //                                or the configuration holds, in any encoding, refuses it — one <title|body>
-//                                <line>:<col> <class> line per hit, never the value (exit 1, no gh run); else long
-//                                tokens the run never saw redacted, mentions, references and outside links defanged:
-//                                scrub: ok; redacted <n>, defanged <n>, cut <n> line(s) and title: …; each screenshot
-//                                attach: <name> or local: <name> (<reason>) (its verdict, gh, the repo, the policy),
-//                                the local ones in a Local evidence: line; the body file rewritten; with --create or
-//                                --comment, filed through gh: filed|commented: <url> (exit 0, whatever gh's exit), or
-//                                failed: … before printing an issue URL (exit 2)
+//                                <line>:<col> <class> or label <i> <class> line per hit, never the value (exit 1,
+//                                no gh run); else long tokens the run never saw redacted, mentions, references and
+//                                outside links defanged: scrub: ok; redacted <n>, defanged <n>, cut <n> line(s) and
+//                                title: …; each screenshot attach: <name> or local: <name> (<reason>) (its verdict,
+//                                gh, the repo, the policy), the local ones in a Local evidence: line; the body file
+//                                rewritten; with --create or --comment, filed through gh: filed|commented: <url>
+//                                (exit 0, whatever gh's exit), or failed: … before printing an issue URL (exit 2)
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
