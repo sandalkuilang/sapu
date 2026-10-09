@@ -859,3 +859,6 @@ Refs #53
 - **Phase-end review (QA).** The explorer's brief says `values[].value`, `candidates[].measured` and every
   `cw` field are JSON strings, as `validateReturn` takes them (it refuses a number or a boolean there); the
   brief is 15 467 bytes, inside its 15 500 budget.
+- **Phase-end review (QA).** `/sapu:init` writes `.argus/live.env` only when it does not exist, never
+  over the owner's values; with a file in place it names the `${NAME}`s it needs and `live check` reports
+  an unset one.

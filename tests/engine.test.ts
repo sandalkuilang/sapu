@@ -1023,6 +1023,12 @@ describe("the journey lane's engine text", () => {
     expect(list).toEqual(SKILLS);
   });
 
+  it("init writes the env file only when it is missing, never over the owner's values", () => {
+    const line = read(INIT).split("\n").find((l) => l.includes("`env_file` `.argus/live.env`"))!;
+    expect(line).toContain("only when no such file exists");
+    expect(line).toContain("an existing one is never overwritten");
+  });
+
   it("init selects argus whenever the skills selection includes journey", () => {
     const flat = read(INIT).replace(/\s+/g, " ");
     expect(flat).toContain("selecting `journey` also selects `argus` (the lane runs under argus)");
