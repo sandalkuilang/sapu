@@ -237,6 +237,7 @@ phase('Argus')
 const argus = await agent(
   load('argus', `${PROFILES}/argus.md (its index names the argus-<topic>.md files to load as needed)`) +
   'Then execute ONE COMPLETE, REAL bounded argus QA cycle against this repo, exactly per its own cycle (ORIENT through PERSIST), including its own evidence tiers, falsification discipline, and filing gates. ' +
+  'Never select the journey lane (`journey:` cells): it runs only from the main session, as /sapu:journey. ' +
   BASELINE +
   'File real GitHub issues per argus\'s own filing gates (dedup, fingerprint, single-defect-per-issue). ' + BLOCKED + ' Return the structured summary.' + SCOPE_BLOCK + SECURITY_BAR + '\n\n' +
   `momus's baseline severity counts, for context only: ${JSON.stringify(momus.counts ?? {})}` + PROCESS_GAPS_BLOCK,

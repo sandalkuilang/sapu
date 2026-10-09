@@ -120,6 +120,13 @@ describe("inspector — three phases, strictly in order, each on its own model/e
     for (const part of [`${MAIN}/.nemesis/authorization.yml`, "attestation", "expiry", "environments_allowed", "the resolved-address host floor", `${MAIN}/.nemesis/STOP`]) expect(nem).toContain(part);
   });
 
+  it("the argus phase never runs the journey lane", async () => {
+    const { calls } = await runInspector(base());
+    const sentence = "Never select the journey lane (`journey:` cells): it runs only from the main session, as /sapu:journey.";
+    expect(find(calls, "argus").prompt).toContain(sentence);
+    for (const label of ["momus", "nemesis"]) expect(find(calls, label).prompt).not.toContain("journey lane");
+  });
+
   it("the security bar reaches every phase, with the known gaps of the contract's securityEpic", async () => {
     const { calls } = await runInspector(base());
     for (const c of calls) {

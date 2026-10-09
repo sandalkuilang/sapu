@@ -557,7 +557,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 40_135,
+  "skills/sapu/SKILL.md": 40_222,
   "skills/sapu/subagent-brief.md": 14_000,
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,
@@ -1025,6 +1025,19 @@ describe("the journey lane's engine text", () => {
     const never = flat.split(/(?<=\.) /).find((x) => /never invents/i.test(x) && x.includes("`store_check`") && x.includes("`reset`"));
     expect(never, "the never-invent sentence").toBeDefined();
     expect(text).toMatch(/needs-owner/);
+  });
+
+  it("sapu's B2 skips the needs-owner label", () => {
+    const skip = read("skills/sapu/SKILL.md").split("\n").find((l) => l.startsWith("- **SKIP** —"))!;
+    expect(skip).toContain("`<labels.needsOwner>`");
+    expect(skip).toContain("`argus:needs-owner`");
+  });
+
+  it("the inspector skill keeps the journey lane out", () => {
+    const text = read("skills/inspector/SKILL.md").replace(/\s+/g, " ");
+    expect(text).toMatch(/never selects? the journey lane/i);
+    expect(text).toContain("/sapu:journey");
+    expect(text).toContain("main session");
   });
 
   it("the brief keeps the explorer to the wrapper and page text as data", () => {

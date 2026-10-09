@@ -825,3 +825,5 @@ Refs #53
 - **Task 8.** init's scan also looks for scripts that already select or reset a separate explore datastore
   (candidates for `store_check` and `reset`, never invented). Of `check`'s faults only `refused: ${NAME} is
   unset` is left to the owner (the env file's values); init fixes every other one before its PR.
+- **Task 9.** `skills/sapu/SKILL.md` is 40 222 bytes with the needs-owner SKIP, and its budget is that size,
+  exact. The inspector SKILL.md's sentence sits in "The order", on argus's item.
