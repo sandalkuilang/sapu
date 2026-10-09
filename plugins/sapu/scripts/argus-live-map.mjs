@@ -143,6 +143,28 @@ export function mergeMap(prev, value, { head }) {
   return { ...before, head, roots: value.roots, dropped: before.dropped ?? [], journeys };
 }
 
+/** An issue or comment URL as `scrub` prints it after `filed:`. */
+const ISSUE_URL = /^https?:\/\/[^\s/]+\/[^\s]+\/issues\/[0-9]+(?:#issuecomment-[0-9]+)?$/;
+
+/**
+ * PERSIST (spec §6): `map` with journey `id`'s `lastCycle` set to `cycle`, `lastHead` to `head` and the issue
+ * URLs `filed` added to its `filed` (kept in order, once each) → `{map, journey}`; nothing else changes.
+ * Refused: an id that is not kebab-case or not in the map, a cycle that is not a whole number from 1, a head
+ * that is not a commit, a URL that is not an issue's.
+ */
+export function visitJourney(map, id, { cycle, head, filed = [] }) {
+  if (typeof id !== "string" || !KEBAB.test(id)) throw new Error("refused: visit: a journey id is kebab-case");
+  if (!Number.isInteger(cycle) || cycle < 1) throw new Error("refused: visit: --cycle takes a whole number from 1");
+  if (typeof head !== "string" || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error("refused: visit: HEAD's commit cannot be read");
+  const bad = filed.find((u) => typeof u !== "string" || !ISSUE_URL.test(u));
+  if (bad !== undefined) throw new Error("refused: visit: --filed takes an issue URL (https://<host>/<owner>/<repo>/issues/<n>)");
+  const i = map.journeys.findIndex((j) => isObj(j) && j.id === id);
+  if (i < 0) throw new Error(`refused: visit: no journey ${id} in ${JOURNEYS_FILE}`);
+  const was = Array.isArray(map.journeys[i].filed) ? map.journeys[i].filed : [];
+  const journey = { ...map.journeys[i], lastCycle: cycle, lastHead: head, filed: [...new Set([...was, ...filed])] };
+  return { map: { ...map, journeys: map.journeys.map((j, k) => (k === i ? journey : j)) }, journey };
+}
+
 /** `p` is the root `r` or lies under it (both repo-relative). */
 const under = (p, r) => {
   const root = r.replace(/\/+$/, "");

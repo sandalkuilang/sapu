@@ -15,13 +15,13 @@ import { expandConfig, loadLive } from "./argus-live-config.mjs";
 import { clean, fence } from "./argus-live-fence.mjs";
 import { runHook } from "./argus-live-hooks.mjs";
 import { upFresh } from "./argus-live-instance.mjs";
-import { appendLedger } from "./argus-live-ledger.mjs";
+import { appendLedger, readSeen, secretHits } from "./argus-live-ledger.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { checkUrl } from "./argus-live-origin.mjs";
 import { run, runAsync, sleep, tempBeside } from "./argus-live-proc.mjs";
 import { redTest } from "./argus-live-redtest.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
-import { REF, verdictOf } from "./argus-live-scrub.mjs";
+import { redactIds, REF, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { CAP_BYTES, configuredUser, keepDrain, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { readSlotState, slotLockWaitMs, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { CLICKS, parseRepro, provingExpect, reductions, stepCode, substitute } from "./argus-live-steps.mjs";
@@ -682,6 +682,34 @@ export function redTestFile(main, ref) {
   const file = path.resolve(dir, "red.spec.ts");
   writePrivate(file, text);
   return file;
+}
+
+/**
+ * `repro <ref> --saved` (Phase 5's issue body): the values the candidate's newest reproducing run of its whole
+ * list read (`run-<i>.json` `saved`) as scrub would let them leave → `{code, out}`: scrub's refusal for the
+ * run (scrubSecrets: a ledger gone, damaged or incomplete; exit 1), else per value `saved <name>: <JSON
+ * string>`, its long unknown tokens redacted as scrub redacts them (the run's seen ids stay), or `saved
+ * <name>: *** (<class>)` for one holding a secret (secretHits; a value that could not be checked: `***
+ * (unchecked)`). Refused without such a run.
+ */
+export function savedValues(main, ref, { env = process.env } = {}) {
+  const { runId, dir } = reproRef(main, ref);
+  const base = runRecords(dir).filter((r) => isObj(r.rec) && r.rec.exit === 3 && !r.rec.reduced).at(-1);
+  if (!base) throw new Error(`refused: repro: ${ref} has no reproducing run (repro ${ref} first)`);
+  const { secrets, refusal } = scrubSecrets(main, { runId, env });
+  if (refusal) return { code: 1, out: [refusal] };
+  const seen = readSeen(main, runId);
+  const out = Object.entries(isObj(base.rec.saved) ? base.rec.saved : {}).map(([k, v]) => {
+    const name = /^[a-z][a-z0-9_]{0,39}$/.test(k) ? k : "(name not shown)";
+    let hits;
+    try {
+      hits = secretHits(String(v), secrets);
+    } catch {
+      return `saved ${name}: *** (unchecked)`;
+    }
+    return hits.length ? `saved ${name}: *** (${hits[0].cls})` : `saved ${name}: ${JSON.stringify(redactIds(String(v), seen).text)}`;
+  });
+  return { code: 0, out };
 }
 
 /**

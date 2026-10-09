@@ -1772,3 +1772,10 @@ Interfaces:
   - *The flaky find test (owner).* `find waits…` times the late text from the goto's start (the load's lower
     bound): the find asked again at least once (500 ms or more), within its own call, and was answered no
     earlier than 4000 ms after the goto began.
+  - *Phase 5's seams.* `visit <journeyId> --cycle <n> [--filed <issue url>…]` writes the journey's
+    `lastCycle`, `lastHead` (MAIN's HEAD as the cycle ends) and `filed` (added once each, in order) into
+    `.argus/journeys.json` through `visitJourney` (`-map.mjs`), so PERSIST never edits the file by hand:
+    `visited <id>: last cycle <n>, last head <sha12>, filed <k>`. `repro <ref> --saved` prints the values the
+    newest reproducing run of the whole list read, as scrub would let them leave (`savedValues`): scrub's
+    refusal for the run (exit 1), else `saved <name>: <JSON string>` with unknown long tokens redacted, or
+    `saved <name>: *** (<class>)` for a value holding a secret.

@@ -837,6 +837,25 @@ describe("argus-live repro — two of two", () => {
     expect(JSON.parse(readFileSync(join(t.dir(t.refs[0]), "run-1.json"), "utf8"))).toEqual({ exit: 3, reduced: false });
   }, 30_000);
 
+  it("repro --saved prints the values the reproducing run read, masked by scrub's rules", () => {
+    const t = returned([LIST]);
+    const dir = t.dir(t.refs[0]);
+    mkdirSync(dir, { recursive: true });
+    appendLedger(t.main, t.runId, [{ c: "cookie", v: "CookieVal_7731x" }]);
+    const saved = { order: "ORD-1", token: "CookieVal_7731x", pw: "pw-1", blob: "sk_li\u0076e_51HxYzAbCdEfGh1234567890", line: "a\nb" };
+    writeFileSync(join(dir, "run-1.json"), JSON.stringify({ exit: 3, saved }));
+    writeFileSync(join(dir, "run-2.json"), JSON.stringify({ exit: 3, reduced: true, saved: { order: "ORD-9" } }));
+    const cli = () => spawnSync(process.execPath, [ARGUS_LIVE, "repro", t.refs[0], "--saved"], { cwd: t.main, encoding: "utf8", env: { PATH: process.env.PATH! } });
+    const r = cli();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toBe(['saved order: "ORD-1"', "saved token: *** (cookie)", "saved pw: *** (env file)", 'saved blob: "<redacted>"', 'saved line: "a\\nb"', ""].join("\n"));
+    // An incomplete ledger: nothing of the run is fileable, so nothing is shown.
+    appendLedger(t.main, t.runId, [{ c: "incomplete", v: "s-1 lost before its drain" }]);
+    expect([cli().status, cli().stdout]).toEqual([1, "refused: scrub: the run's secret ledger is incomplete (s-1 lost before its drain); nothing from this run is filed\n"]);
+    rmSync(join(dir, "run-1.json"));
+    expect(cli().stderr).toBe(`refused: repro: ${t.refs[0]} has no reproducing run (repro ${t.refs[0]} first)\n`);
+  }, 30_000);
+
   it("a candidate the return lacks is refused", async () => {
     const t = returned([LIST]);
     await expect(repro(t.main, "1.1.9", { once: stub([3]).once })).rejects.toThrow("refused: repro: return 1.1 has no candidate 9");
@@ -2259,3 +2278,29 @@ describe("argus-live doc drift", () => {
   }, 30_000);
 });
 
+describe("argus-live visit", () => {
+  it("visit writes a journey's lastCycle, lastHead and filed into journeys.json, and nothing else", () => {
+    const t = mapRepo();
+    t.map([journey("order-to-cash", [BUY]), journey("refund", [BUY], { filed: ["https://github.com/o/r/issues/3"] })]);
+    const before = t.read();
+    const visit = (...args: string[]) => {
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "visit", ...args], { cwd: t.main, encoding: "utf8" });
+      return { code: r.status, out: r.stdout, err: r.stderr };
+    };
+    const head = gitIn(t.main, "rev-parse", "HEAD");
+    expect(visit("refund", "--cycle", "4", "--filed", "https://github.com/o/r/issues/9", "--filed", "https://github.com/o/r/issues/3")).toEqual({ code: 0, out: `visited refund: last cycle 4, last head ${head.slice(0, 12)}, filed 2\n`, err: "" });
+    const after = t.read();
+    expect(after.journeys[1]).toEqual({ ...before.journeys[1], lastCycle: 4, lastHead: head, filed: ["https://github.com/o/r/issues/3", "https://github.com/o/r/issues/9"] });
+    expect({ ...after, journeys: [after.journeys[0]] }).toEqual({ ...before, journeys: [before.journeys[0]] });
+    // A visit that filed nothing keeps what was filed before.
+    expect(visit("order-to-cash", "--cycle", "5").code).toBe(0);
+    expect(t.read().journeys[0]).toMatchObject({ lastCycle: 5, lastHead: head, filed: [] });
+    const kept = readFileSync(t.file, "utf8");
+    for (const args of [["nope", "--cycle", "1"], ["refund"], ["refund", "--cycle", "0"], ["refund", "--cycle", "x"], ["refund", "--cycle", "2", "--filed", "https://evil.test/x"], ["refund", "--cycle", "2", "--cycle", "3"], ["Bad Id", "--cycle", "2"]]) {
+      const r = visit(...args);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.err, args.join(" ")).toMatch(/^refused: /);
+    }
+    expect(readFileSync(t.file, "utf8")).toBe(kept);
+  }, 30_000);
+});
