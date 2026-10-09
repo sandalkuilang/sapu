@@ -1331,6 +1331,10 @@ describe("the remaining write paths to the machine config and git's files: brace
     ["install -d -m 700 ~"],
     // removing any ancestor takes the config along
     ["rm -rf ~/.."],
+    // any letter case of the protected names (a case-insensitive disk)
+    ["rm -rf ~/.config/SAPU"],
+    ["echo x > ~/.config/Sapu/config.json"],
+    ["rm -rf ~/.CONFIG"],
   ])("blocks %s", (cmd) => {
     expect(blocked(cmd)).toMatch(MC);
     expect(check({ command: cmd, cwd: wt, main, rules, worker: false })).toMatch(MC);
@@ -1350,8 +1354,18 @@ describe("the remaining write paths to the machine config and git's files: brace
     // a command starts with OLDPWD = its cwd (measured in Claude Code's Bash), so a first `cd -` stays
     ["cd - && rm -rf .git"],
     ["cd - && echo x > .git/hooks/pre-commit"],
+    // a case-insensitive disk (macOS) opens .git under any spelling: the last segment is never canonicalised
+    ["rm -rf .GIT"],
+    ["rm -rf ./.Git"],
+    ["mv x .gIT"],
+    ["echo x >> ~/.GITCONFIG"],
+    ["rm -rf ~/.config/GIT"],
   ])("blocks %s as git's own files", (cmd) => {
     expect(blocked(cmd)).toMatch(cmd === "cp -r dotfiles/ ~" ? MC : GF);
+  });
+
+  it("the file tools refuse git's own files and the machine config under any letter case", () => {
+    for (const f of [join(wt, ".GIT"), join(wt, ".Git/config"), "~/.GitConfig", "~/.Config/SAPU/config.json"]) expect(checkFile({ tool: "Write", filePath: f, cwd: wt, main, rules }), f).toMatch(/git's own files|machine config/);
   });
 
   it.skipIf(!passwdHome)("reads ~<user> for git's files too", () => {
@@ -1429,6 +1443,10 @@ describe("no subagent writes the plugins it runs under: their folders, Claude Co
     `rm -rf ${devmkt}`,
     `echo x > ${ownRoot}/hooks/hooks.json`,
     `mv x.mjs ${ownRoot}/scripts/sapu-guard.mjs`,
+    // any letter case of the protected names (a case-insensitive disk)
+    `rm -rf ${cfg}/PLUGINS`,
+    `echo '{}' > ${cfg}/Settings.json`,
+    `rm -rf ${devmkt}/.CLAUDE-PLUGIN`,
   ];
   it.each(writes.map((c) => [c]))(
     "blocks %s, for a worker and for any other subagent",

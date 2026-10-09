@@ -31,7 +31,7 @@
 // written, no git file (`.git`, ~/.gitconfig, ~/.config/git/), nothing in sapu's machine config
 // (~/.config/sapu/, whose loss lifts the scope lock) and nothing of a plugin agents run under (its
 // folder, Claude Code's plugin store and user settings, a local marketplace's plugin sources:
-// pluginDirs) is written by any subagent, and a worker writes
+// pluginDirs; these three in any letter case too) is written by any subagent, and a worker writes
 // nothing into the main checkout outside its `.claude/worktrees/` (symlinks resolved, so a
 // worktree's linked node_modules counts as <MAIN>). The same holds for the common Bash write
 // forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), with brace lists
@@ -1236,6 +1236,12 @@ function writeTarget(tok, follow, dir, prev = UNKNOWN) {
 
 /** Is `x` inside `dir` or `dir` itself? */
 const inside = (x, dir) => x === dir || x.startsWith(dir + path.sep);
+/**
+ * `inside` with letter case ignored, for the protected names: a case-insensitive disk (macOS) opens
+ * `.git` as `.GIT`, and the real path of a name that does not exist yet, or of a removed entry's last
+ * segment, keeps the case it was written in. On a case-sensitive disk this is a false block, never a miss.
+ */
+const insideAnyCase = (x, dir) => inside(x.toLowerCase(), dir.toLowerCase());
 
 /** Git's own files under HOME: ~/.gitconfig and git's config dir, for HOME and its real path. */
 function gitHomePaths() {
@@ -1258,7 +1264,7 @@ function inGitDir(p) {
 
 /** Is this one of git's own files: a `.git` file or directory (or anything in one), any other git directory, ~/.gitconfig, ~/.config/git/…? */
 function isGitFile(p) {
-  return p.split(path.sep).includes(".git") || inGitDir(p) || gitHomePaths().some((x) => inside(p, x));
+  return p.split(path.sep).some((s) => s.toLowerCase() === ".git") || inGitDir(p) || gitHomePaths().some((x) => insideAnyCase(p, x));
 }
 
 /**
@@ -1279,7 +1285,7 @@ function machineConfigDirs() {
  * every directory above it (`~/.config`, `~`, …), which takes the config with it.
  */
 function isMachineConfigFile(p, replaces = false) {
-  return machineConfigDirs().some((d) => inside(p, d) || (replaces && inside(d, p)));
+  return machineConfigDirs().some((d) => insideAnyCase(p, d) || (replaces && insideAnyCase(d, p)));
 }
 
 /** This plugin's own folder, wherever it was loaded from (an installed copy, or `--plugin-dir`). */
@@ -1331,11 +1337,11 @@ function pluginDirs() {
 }
 
 /** A checkout's worktrees are not what a marketplace serves, even when a plugin's source is that checkout's root. */
-const inPluginDir = (p, d) => inside(p, d) && !inside(p, path.join(d, ".claude", "worktrees"));
+const inPluginDir = (p, d) => insideAnyCase(p, d) && !insideAnyCase(p, path.join(d, ".claude", "worktrees"));
 
 /** Does writing `p` change a plugin a subagent runs under? With `replaces`, a directory above one counts. */
 function isPluginFile(p, replaces = false) {
-  return pluginDirs().some((d) => inPluginDir(p, d) || (replaces && inside(d, p)));
+  return pluginDirs().some((d) => inPluginDir(p, d) || (replaces && insideAnyCase(d, p)));
 }
 
 const isGlob = (s) => /[*?[]/.test(s);
@@ -1373,7 +1379,7 @@ function protectedTarget(w, follow, tree = false) {
   const replaces = !follow || tree;
   if (isGitFile(w.abs) || isGitFile(w.real)) return BLOCK.gitFiles;
   if (isMachineConfigFile(w.abs, replaces) || isMachineConfigFile(w.real, replaces)) return BLOCK.machineConfig;
-  if (replaces && gitHomePaths().some((x) => inside(x, w.abs) || inside(x, w.real))) return BLOCK.gitFiles;
+  if (replaces && gitHomePaths().some((x) => insideAnyCase(x, w.abs) || insideAnyCase(x, w.real))) return BLOCK.gitFiles;
   if (isPluginFile(w.abs, replaces) || isPluginFile(w.real, replaces)) return BLOCK.pluginFiles;
   return null;
 }
