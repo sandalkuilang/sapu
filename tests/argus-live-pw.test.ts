@@ -2045,6 +2045,9 @@ await import(${JSON.stringify(t.shim)});
   });
 });
 
+// ps is machine-wide and suites may run side by side: the hung hook sleeps a duration this run owns.
+const HANG_S = String(600 + (process.pid % 9000));
+
 describe("argus-live pw — code, trigger, facts, mail", () => {
   const saved = { ...process.env };
   const runs: { main: string; runId: string }[] = [];
@@ -2068,7 +2071,7 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     const main = liveRepo((c) => {
       c.facts = { argv: [process.execPath, SERVER, "--facts", "{1}"] };
       c.mail = { argv: [process.execPath, SERVER, "--mail"] };
-      c.triggers = { settle: { argv: [process.execPath, SERVER, "--trigger", "settle", "{1}"] }, any: { argv: [process.execPath, SERVER, "--trigger", "any", "{1}"], args: ["^.*$"] }, hang: { argv: ["/bin/sleep", "600"] } };
+      c.triggers = { settle: { argv: [process.execPath, SERVER, "--trigger", "settle", "{1}"] }, any: { argv: [process.execPath, SERVER, "--trigger", "any", "{1}"], args: ["^.*$"] }, hang: { argv: ["/bin/sleep", HANG_S] } };
       over(c);
     });
     const r = liveCycle(main, { env: { PATH: process.env.PATH, DATA_DIR: data } });
@@ -2160,7 +2163,7 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     const r = await t.call("trigger", "hang");
     expect(Date.now() - start).toBeLessThan(35_000);
     expect(r.out.slice(1)).toEqual(["calls 1/120", "harness: trigger timed out"]);
-    const left = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l === "/bin/sleep 600");
+    const left = execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l === `/bin/sleep ${HANG_S}`);
     expect(left).toEqual([]);
   }, 60_000);
 });
