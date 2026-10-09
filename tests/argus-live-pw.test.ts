@@ -496,12 +496,12 @@ describe("journey-app fixture — browser side", () => {
     expect(page).toContain('d.id = "late"');
     expect(JSON.parse((await c.get("/api/orders/ORD-1")).text)).toEqual({ id: "ORD-1", status: "placed", quantity: 2 });
     expect((await anon.get("/api/orders/ORD-1")).status).toBe(401);
-    expect(JSON.parse(cli("--facts", "ORD-1").stdout)).toEqual({ status: "placed", quantity: 2 });
+    expect(JSON.parse(cli("--facts", "ORD-1").stdout)).toEqual({ status: "placed", quantity: 2, stock: 8, claims: 0 });
     expect(cli("--facts", "ORD-9").status).toBe(1);
     expect(JSON.parse(cli("--mail").stdout)).toEqual([{ to: "buyer1@example.test", subject: "Order ORD-1 placed", text: "Your order ORD-1 was placed." }]);
     const t = cli("--trigger", "settle", "ORD-1");
     expect(JSON.parse(t.stdout)).toEqual(["--trigger", "settle", "ORD-1"]);
-    expect(JSON.parse(cli("--facts", "ORD-1").stdout)).toEqual({ status: "paid", quantity: 2 });
+    expect(JSON.parse(cli("--facts", "ORD-1").stdout)).toEqual({ status: "paid", quantity: 2, stock: 8, claims: 0 });
   });
 
   it("--mail prints [] before any order; --login-state prints a storage state whose sid signs a browser in", async () => {
@@ -534,6 +534,231 @@ describe("journey-app fixture — browser side", () => {
     expect(text).not.toContain("x</script>");
     const odd = (await client(base).get("/leak?other=1;alert(1)&allowed=javascript:alert(1)")).text;
     expect(odd).not.toContain("alert(1)");
+  });
+
+  // The seeded oracle defects: each is on while its name is in $DEFECTS_FILE, re-read on every request.
+
+  /** The fixture with a defects file (empty: every defect off); `set(...)` switches the named ones on, the others off. */
+  const defective = async () => {
+    const file = join(tempDir(), "defects");
+    writeFileSync(file, "");
+    const s = await start({ DEFECTS_FILE: file });
+    /** A browser stand-in signed in as `user` through --login-state. */
+    const as = (user: string) => {
+      const c = client(s.base);
+      c.jar.sid = JSON.parse(s.cli("--login-state", user).stdout).cookies[0].value;
+      return c;
+    };
+    const facts = (id: string) => JSON.parse(s.cli("--facts", id).stdout);
+    return { ...s, as, facts, set: (...names: string[]) => writeFileSync(file, names.join(",")) };
+  };
+  /** An order of `quantity` placed by `c`; its id. */
+  const place = async (c: ReturnType<typeof client>, quantity: number, note?: string) => {
+    const r = await c.post("/orders", { quantity: String(quantity), ...(note === undefined ? {} : { note }) });
+    expect(r.status).toBe(303);
+    return r.location!.match(/ORD-\d+/)![0];
+  };
+  /** The text of the element whose data-testid is `id` in `html` (entities decoded), or null. */
+  const testIdText = (html: string, id: string) => {
+    const m = html.match(new RegExp(`data-testid="${id}"[^>]*>([^<]*)<`));
+    return m ? m[1].replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n))) : null;
+  };
+  const inbox = async (c: ReturnType<typeof client>) => [...(await c.get("/inbox")).text.matchAll(/data-testid="inbox-item">(ORD-\d+)/g)].map((m) => m[1]);
+
+  it("an order takes its quantity from stock and the buyer's cancel puts it back; /stock and --facts show the stock and the claims", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    expect(testIdText((await buyer.get("/stock")).text, "stock")).toBe("10");
+    const id = await place(buyer, 2);
+    expect(testIdText((await buyer.get("/stock")).text, "stock")).toBe("8");
+    expect(t.facts(id)).toEqual({ status: "placed", quantity: 2, stock: 8, claims: 0 });
+    expect((await buyer.get(`/orders/${id}`)).text).toContain(">Cancel order</button>");
+    expect(await buyer.post(`/orders/${id}/cancel`, {})).toMatchObject({ status: 303, location: `/orders/${id}` });
+    expect(t.facts(id)).toEqual({ status: "cancelled", quantity: 2, stock: 10, claims: 0 });
+    expect((await buyer.get(`/orders/${id}`)).text).not.toContain("Cancel order");
+    expect((await buyer.post(`/orders/${id}/cancel`, {})).status).toBe(409);
+    expect(t.facts(id).stock).toBe(10);
+    expect((await client(t.base).get("/stock")).status).toBe(303);
+  });
+
+  it("a clerk's inbox lists the actionable orders, each with a Claim button; a second claim answers 409 and both pages show the claim", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const [one, two] = [await place(buyer, 1), await place(buyer, 1)];
+    await buyer.post(`/orders/${two}/cancel`, {});
+    const clerk1 = t.as("clerk1@example.test");
+    const page = (await clerk1.get("/inbox")).text;
+    expect(page).toContain("<h1>Inbox</h1>");
+    expect(page).toContain(`<li data-testid="inbox-item">${one} <form method="post" action="/orders/${one}/claim"><button type="submit">Claim</button></form></li>`);
+    expect(await inbox(clerk1)).toEqual([one]);
+    expect((await buyer.get("/inbox")).status).toBe(403);
+    expect(await clerk1.post(`/orders/${one}/claim`, {})).toMatchObject({ status: 303, location: `/orders/${one}` });
+    const second = await t.as("clerk2@example.test").post(`/orders/${one}/claim`, {});
+    expect(second.status).toBe(409);
+    expect(second.text).toContain("Already claimed by clerk1@example.test");
+    expect(second.text).toContain('<li data-testid="claim">Claimed by clerk1@example.test</li>');
+    expect((await clerk1.get(`/orders/${one}`)).text.match(/data-testid="claim"/g)).toHaveLength(1);
+    expect(t.facts(one).claims).toBe(1);
+    expect((await buyer.post(`/orders/${one}/claim`, {})).status).toBe(403);
+  });
+
+  it("a clerk approves a placed order and ships an approved one; approve refuses an order no longer placed", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const clerk = t.as("clerk2@example.test");
+    const id = await place(buyer, 1);
+    const placed = (await clerk.get(`/orders/${id}`)).text;
+    expect(placed).toContain(`<form method="post" action="/orders/${id}/approve"><input type="hidden" name="rendered" value="placed"><button type="submit">Approve</button></form>`);
+    expect(placed).not.toContain(">Ship<");
+    expect(placed).not.toContain("Cancel order");
+    expect((await buyer.get(`/orders/${id}`)).text).not.toContain(">Approve<");
+    expect((await buyer.post(`/orders/${id}/approve`, { rendered: "placed" })).status).toBe(403);
+    expect(await clerk.post(`/orders/${id}/approve`, { rendered: "placed" })).toMatchObject({ status: 303, location: `/orders/${id}` });
+    const approved = (await clerk.get(`/orders/${id}`)).text;
+    expect(approved).toContain(`<form method="post" action="/orders/${id}/ship"><button type="submit">Ship</button></form>`);
+    const again = await clerk.post(`/orders/${id}/approve`, { rendered: "placed" });
+    expect(again.status).toBe(409);
+    expect(again.text).toContain("Order is approved");
+    expect(again.text).toContain(`<span data-testid="order-number">${id}</span>`);
+    expect((await buyer.get(`/orders/${id}`)).text).toContain(">Cancel order</button>");
+    expect(await clerk.post(`/orders/${id}/ship`, {})).toMatchObject({ status: 303, location: `/orders/${id}` });
+    expect(t.facts(id).status).toBe("shipped");
+    expect((await clerk.post(`/orders/${id}/ship`, {})).status).toBe(409);
+  });
+
+  it("the note is echoed as written", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    expect((await buyer.get("/orders/new")).text).toContain('<label>Note <input type="text" name="note" maxlength="500"></label>');
+    const note = `O'Brien "x" \\ <b>`;
+    const id = await place(buyer, 1, note);
+    const page = (await buyer.get(`/orders/${id}`)).text;
+    expect(page).not.toContain("<b>");
+    expect(testIdText(page, "note")).toBe(note);
+    expect(testIdText((await buyer.get(`/orders/${await place(buyer, 1, "n".repeat(600))}`)).text, "note")).toBe("n".repeat(500));
+    expect(testIdText((await buyer.get(`/orders/${await place(buyer, 1)}`)).text, "note")).toBeNull();
+  });
+
+  it("a signed-up account signs in as a buyer; a configured or taken email answers 409", async () => {
+    const t = await defective();
+    const anon = client(t.base);
+    const form = (await anon.get("/signup")).text;
+    for (const s of ['<label>Email <input type="email" name="email" required></label>', '<label>Password <input type="password" name="password" required></label>', '<button type="submit">Sign up</button>']) expect(form).toContain(s);
+    const made = await anon.post("/signup", { email: "new1@example.test", password: "Fresh-pw-1" });
+    expect(made.status).toBe(200);
+    expect(made.text).toContain("<p>Welcome new1@example.test</p>");
+    expect(anon.jar.sid).toBeUndefined();
+    const c = client(t.base);
+    expect(await signIn(c, "new1@example.test", "Fresh-pw-1")).toMatchObject({ status: 303, location: "/" });
+    expect((await c.get("/")).text).toContain("Signed in as new1@example.test");
+    expect((await c.get("/inbox")).status).toBe(403);
+    expect((await signIn(client(t.base), "new1@example.test", PW)).status).toBe(401);
+    expect((await anon.post("/signup", { email: "new1@example.test", password: "x" })).status).toBe(409);
+    expect((await anon.post("/signup", { email: "buyer1@example.test", password: "x" })).status).toBe(409);
+    expect((await anon.post("/signup", { email: "", password: "x" })).status).toBe(400);
+  });
+
+  it("missing-handoff: the inbox never lists an order", async () => {
+    const t = await defective();
+    const id = await place(t.as("buyer1@example.test"), 1);
+    const clerk = t.as("clerk2@example.test");
+    expect(await inbox(clerk)).toEqual([id]);
+    t.set("missing-handoff");
+    expect(await inbox(clerk)).toEqual([]);
+  });
+
+  it("delayed-handoff: an order is listed only 2000 ms after it was placed", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const clerk = t.as("clerk2@example.test");
+    const first = await place(buyer, 1);
+    expect(await inbox(clerk)).toEqual([first]);
+    await new Promise((r) => setTimeout(r, 2100));
+    t.set("delayed-handoff");
+    const second = await place(buyer, 1);
+    expect(await inbox(clerk)).toEqual([first]);
+    await new Promise((r) => setTimeout(r, 2100));
+    expect(await inbox(clerk)).toEqual([first, second]);
+  });
+
+  it("double-release: a cancel adds twice what the order took", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const off = await place(buyer, 2);
+    expect(t.facts(off).stock).toBe(8);
+    await buyer.post(`/orders/${off}/cancel`, {});
+    expect(t.facts(off).stock).toBe(10);
+    t.set("double-release");
+    const on = await place(buyer, 2);
+    expect(t.facts(on).stock).toBe(8);
+    await buyer.post(`/orders/${on}/cancel`, {});
+    expect(t.facts(on).stock).toBe(12);
+  });
+
+  it("claim-race lets two claims through", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const [clerk1, clerk2] = [t.as("clerk1@example.test"), t.as("clerk2@example.test")];
+    const both = (id: string) => Promise.all([clerk1.post(`/orders/${id}/claim`, {}), clerk2.post(`/orders/${id}/claim`, {})]);
+    const off = await place(buyer, 1);
+    expect((await both(off)).map((r) => r.status).sort()).toEqual([303, 409]);
+    expect(t.facts(off).claims).toBe(1);
+    t.set("claim-race");
+    const on = await place(buyer, 1);
+    expect((await both(on)).map((r) => r.status)).toEqual([303, 303]);
+    expect(t.facts(on).claims).toBe(2);
+    expect((await clerk1.get(`/orders/${on}`)).text.match(/data-testid="claim"/g)).toHaveLength(2);
+  });
+
+  it("stale-view: approve accepts any status", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const clerk = t.as("clerk2@example.test");
+    const off = await place(buyer, 1);
+    await buyer.post(`/orders/${off}/cancel`, {});
+    const refused = await clerk.post(`/orders/${off}/approve`, { rendered: "placed" });
+    expect(refused.status).toBe(409);
+    expect(refused.text).toContain("Order is cancelled");
+    expect(t.facts(off).status).toBe("cancelled");
+    t.set("stale-view");
+    const on = await place(buyer, 1);
+    await buyer.post(`/orders/${on}/cancel`, {});
+    expect(await clerk.post(`/orders/${on}/approve`, { rendered: "placed" })).toMatchObject({ status: 303, location: `/orders/${on}` });
+    expect(t.facts(on).status).toBe("approved");
+  });
+
+  it("orphaned: the inbox also lists cancelled orders", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const clerk = t.as("clerk2@example.test");
+    const id = await place(buyer, 1);
+    await buyer.post(`/orders/${id}/cancel`, {});
+    expect(await inbox(clerk)).toEqual([]);
+    t.set("orphaned");
+    expect(await inbox(clerk)).toEqual([id]);
+  });
+
+  it("dead-end: Ship is rendered disabled", async () => {
+    const t = await defective();
+    const clerk = t.as("clerk2@example.test");
+    const id = await place(t.as("buyer1@example.test"), 1);
+    await clerk.post(`/orders/${id}/approve`, { rendered: "placed" });
+    expect((await clerk.get(`/orders/${id}`)).text).toContain('<button type="submit">Ship</button>');
+    t.set("dead-end");
+    expect((await clerk.get(`/orders/${id}`)).text).toContain('<button type="submit" disabled>Ship</button>');
+  });
+
+  it("narrow-viewport: Place order is hidden below 500 px wide by a media query", async () => {
+    const t = await defective();
+    const buyer = t.as("buyer1@example.test");
+    const RULE = "<style>@media (max-width: 499px) { .place { display: none; } }</style>";
+    const off = (await buyer.get("/orders/new")).text;
+    expect(off).toContain('<button type="submit">Place order</button>');
+    expect(off).not.toContain(RULE);
+    t.set("dead-end", "narrow-viewport");
+    const on = (await buyer.get("/orders/new")).text;
+    expect(on).toContain(RULE);
+    expect(on).toContain('<button type="submit" class="place">Place order</button>');
   });
 });
 
@@ -2151,9 +2376,9 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
 
   it("facts and mail print fenced JSON; a settle trigger changes the facts", async () => {
     const t = await hookRun();
-    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "placed", quantity: 2 });
+    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "placed", quantity: 2, stock: 10, claims: 0 });
     await t.call("trigger", "settle", "ORD-1");
-    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "paid", quantity: 2 });
+    expect(JSON.parse(body(await t.call("facts", "ORD-1")))).toEqual({ status: "paid", quantity: 2, stock: 10, claims: 0 });
     const mail = await t.call("mail");
     expect(JSON.parse(body(mail))[0]).toMatchObject({ subject: "Order ORD-1 placed" });
     expect(mail.out.slice(1)).toEqual(["calls 4/120"]);
