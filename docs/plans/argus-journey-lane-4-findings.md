@@ -6,9 +6,9 @@
 candidate's repro steps — data, never code — on a freshly reset instance, twice, and answers
 reproduced, not reproduced or harness failure by exit code; `--minimize` shrinks a reproduced list one
 step or role at a time; `--test` writes the Playwright test a sapu worker uses as its RED test.
-`scrub` refuses an issue that carries any secret the run saw, in any encoding, redacts unknown long
-tokens, defangs mentions, references and outside links, decides which screenshots may be attached,
-and files through `gh`. `map-check` keeps only journeys whose every step is anchored in HEAD's code,
+`scrub` refuses an issue that carries any secret the run saw, in any encoding — naming where, never
+what — redacts unknown long tokens, defangs mentions, references and outside links, decides which
+screenshots may be attached, and files through `gh`, also after `down`. `map-check` keeps only journeys whose every step is anchored in HEAD's code,
 names its refresh triggers and prints the catalog; `select` ranks journeys and allocates accounts.
 The map itself is built through the wrapper, on a run that starts no app.
 
@@ -38,6 +38,17 @@ suite green. Phase 3 code imports each symbol from its owning module; this phase
 helper it needs that is still private is exported from its owner in the commit that first imports it —
 never copied. Every path under `.argus/` is resolved from `<MAIN>` (`findMain`), never from the cwd.
 Test seams are function parameters only, never environment variables.
+
+**Revision (2026-10-09, after the QA review of 9e46024: not approved, no Critical).** Tasks 1, 2 and 5
+were cleared to start before this revision; their text is unchanged by it (where a later task needs
+more of them — the driver's drain, `upFresh`'s drain — that later task adds it). The owner's decisions
+on the review are folded in: scrub refuses only what is secret-like and says where, never what
+(decisions 14, 17); short configuration secrets are matched as whole tokens (decision 17); the ledger
+loses nothing silently, lives under `logs/`, survives `down` and is removed by the next `up` (decision
+14); traces start after sign-in, are never filed and are pruned by `down` (decision 13); the seen-id
+exemption is narrower (decision 15); the `login` step has a shape (decision 26); the tests the review
+found wrong are fixed (Tasks 8, 10, 11). The core path's end-to-end task moved ahead of the map work:
+it is now Task 14, and `map-check`, map mode, SELECT and doc drift follow as Tasks 15–18.
 
 ---
 
@@ -78,18 +89,22 @@ Facts read from the code as built (5fef368), where it and the spec differ:
 2. **Repro references.** `repro <slot>.<generation>.<k>` names candidate `k` (1-based) of
    `returns/<slot>.<generation>.json` of the lock's run; the runner reads the file itself, so the
    orchestrator never re-types a repro. Its records live in `.argus/live/<run>/repro/<ref>/`
-   (`repro.json`, `run-<i>.json`, `steps-<i>.jsonl`, `min.json`, `minimize.json`, `red.spec.ts`), kept
-   by `down`; the teardown's slot-file pass skips `repro/` like `logs/` and `returns/`.
+   (`repro.json`, `run-<i>.json` — `{exit, step, expected, observed, ms, saved, traces}`, `saved` the
+   values `save` produced (masked as `pw` masks), `traces` the trace files the run wrote —,
+   `steps-<i>.jsonl`, `min.json`, `minimize.json`, `red.spec.ts`), kept by `down`; the teardown's
+   slot-file pass skips `repro/` like `logs/` and `returns/`.
 3. **Repro sessions** live in slot `r` (`.argus/live/<run>/r/`), named `<run>-r-<role>.<k>`
    (`sessionName(runId, "r", account)`). The accounts are the candidate's slot allocation (run.json
    `slots[<slot>].accounts`). Slot `r`'s CLI config is written at the start of every run with the
    repro's context (`slotConfig` with `locale`, `timezone` and `viewports: [viewport]` overridden).
-   The runner closes its sessions at the end of every run; `up --fresh` closes every session whose
-   slot is not `up`; `putSession`'s instance-id rule covers every slot but `up`.
+   The runner closes its sessions at the end of every run; `up --fresh` closes (after draining it,
+   decision 14) every session whose slot is not `up`; `putSession`'s instance-id rule covers every slot but `up`.
 4. **`loginFailed` and repro.** An account in run.json `loginFailed` (the explore phase's, or an
    earlier repro's) makes the run exit 2 at once with `HARNESS: <role>.<k> cannot sign in this cycle`,
-   no browser opened for it. A repro's own failed login is recorded there too (`login`'s default
-   `runFailures`), so it blocks every later repro of the cycle: never retried (lockout).
+   no browser opened for it. A repro's own failed sign-in of a configured account is recorded there
+   too (`login`'s default `runFailures`), so it blocks every later repro of the cycle: never retried
+   (lockout). A `login` step's failure (an account the journey created, decision 26) is not: it goes to
+   slot `r`'s state.json `createdFailed`, as `pw` keeps an explorer's, and ends that run with exit 2.
 5. **Steps are wrapper code.** Every browser step and browser expectation runs as `run-code
    --filename` of a constant template (`stepCode`), its payload only as `const P = <JSON>;`, its target
    only as `(pg) => <targetCode>` built from a structured target; `goto` takes paths only, through
@@ -110,7 +125,9 @@ Facts read from the code as built (5fef368), where it and the spec differ:
    dead-end → `enabled`; reversal and stale-view → `fact-equals`; orphaned-work → `hidden`; re-entry →
    `value-equals`; claim-race → `count` after an earlier `parallel` group holding two accounts of one
    role; interrupted-flow → `count` with the step before it a `no-error` of the same account;
-   viewport-locale → `visible` or `enabled`. (The spec gives no template for unreachable-step.)
+   viewport-locale → `visible` or `enabled`. (The spec gives no template for unreachable-step.) In the
+   claim-race template each account of the `parallel` group proves its action with `visible` on a
+   target with `nth: 0` (one row or two may match, and a bare target fails strict mode on two).
 8. **Output and exit codes of one run.** Outside any fence only the wrapper's words: `fresh: instance
    <id>`, one `step <n> <account|system> <action|expect kind>: ok|held|failed|changed-state` line per
    step, `truncated <k> characters`, and the last line. Expected values and what the page showed go in
@@ -135,49 +152,102 @@ Facts read from the code as built (5fef368), where it and the spec differ:
     in the page, `fact-equals` and `mail` every 500 ms) up to `settle_ms` and holds at the first
     success. `no-error` reads the acting account's 5xx responses, console errors and page errors since
     the previous step; lines carrying Chrome's blocked-request errors or naming an origin outside the
-    run's origins and `allow_origins` never count.
+    run's origins and `allow_origins` never count, nor does any `Failed to load resource: the server
+    responded with a status of <k>` console line (a 4xx is the app answering; a 5xx counts once, from the
+    response listener).
 12. **Placeholders.** `read` saves an element's value (`inputValue` of an input, textarea or select,
     else its trimmed `innerText`, at most 500 characters) under `save` (`^[a-z][a-z0-9_]{0,31}$`, not
     `marker`); `{{marker}}` is `argus-<8 hex>`, fresh per run; a `{{name}}` used before its `read` is a
-    static error. Substitution is textual in string fields only, the result a literal.
-13. **Trace.** Each repro session runs `tracing-start` after its open and `tracing-stop` before its
-    close; the files stay in `r/out/traces/` (the slot's 0700 directory), kept by `down` for H2
-    diagnosis, never attached (they hold the run's cookies).
-14. **The secret ledger** is `.argus/live/<run>/secrets.jsonl` (0600), one `{"c": "cookie"|"header"|
-    "storage", "v": <value>}` per line, appended by the session driver's observation; `down` removes it
-    with the slot secrets; `scrub` refuses without it (`refused: scrub: the run's secret ledger is gone (a
-    down removed it); nothing from this run is filed`) and with a line it cannot read. Values shorter
-    than 6 characters, of any class, are not recorded and not matched by scrub (they would refuse every
-    issue; `pw`'s fence still masks them);
-    `Authorization` values are kept whole and without their scheme word, a `Cookie` header as each
-    cookie's value, `Set-Cookie` as the value before its first `;`, storage values whole and as each JSON
-    string leaf.
+    static error. Substitution is textual in string fields only, the result a literal. The values `save`
+    produced are recorded in `run-<i>.json` `saved` (decision 2).
+13. **Traces.** A repro account's `tracing-start` runs only after its sign-in (right after its open for
+    `anon` and for an account whose first step is a `login`); a `login` step stops the account's trace
+    before it and starts a new one after it, so no trace holds a password typed into a form or a
+    sign-in's request. `tracing-stop` runs before the close. The files stay in `r/out/traces/` (the
+    slot's 0700 directory) and are named in `run-<i>.json` `traces`. They still hold the session's
+    cookies and requests, so they are never attached to an issue (`attachVerdict` refuses any file
+    under a `traces/` directory) and never filed. `down` deletes every trace file but those a run that
+    exited 2 names (`pruneTraces`): a run that exited 0 or 3 needs no diagnosis, an H2 run keeps its
+    traces under `r/out/traces/`, local only.
+14. **The secret ledger** is `.argus/live/<run>/logs/secrets.jsonl` (0600), one `{"c": <class>, "v":
+    <value>}` per line, appended by the session driver's drains. Classes: `cookie`, `header`, `storage`
+    (the ledger classes, `LEDGER_CLASSES`), `created password` (a `login`'s password, from `pw` or a
+    repro, decision 26) and the marker `incomplete`.
+    - **What is recorded.** `Authorization` and `Proxy-Authorization` values whole and without their
+      scheme word, `*-token` header values whole; a cookie (from `ctx.cookies()`, a `Cookie` header's
+      pair, a `Set-Cookie` value before its first `;`) only when its name matches `SECRET_KEY`, it is
+      flagged HttpOnly or Secure (the `Set-Cookie` attributes, or `ctx.cookies()` for that name), or its
+      value is high-entropy; a storage item only when its key matches `SECRET_KEY` or its value is
+      high-entropy — a value that parses as a JSON object or array is never taken whole, each string
+      leaf goes through the same rule under its own key. `SECRET_KEY` =
+      `/password|passwd|secret|token|auth|session|sid|jwt|bearer|api[-_]?key|credential|sig|cookie/i`;
+      high-entropy (`highEntropy`) = at least 16 characters, at least 3 of lower case, upper case, digit
+      and other, no whitespace. Every value is cut to its first `MAX_SECRET` (4096) characters (a prefix
+      still finds its own leak). A ledger-class value shorter than `MIN_SECRET` (6) is not recorded (it
+      would refuse every issue; `pw`'s fence still masks it); the floor is the ledger classes' only
+      (decision 17).
+    - **Nothing lost silently.** The hook dedupes in the daemon with a `Set` of every value it recorded
+      (no count cap that drops values); past a byte cap (`capBytes`, 4 MiB of distinct values per
+      context) it records nothing more and sets `overflow`, and the drain that reads it appends
+      `{"c": "incomplete", "v": "<session> passed <cap> bytes"}`. Each `pw` call and each repro step ends
+      with a drain (the `observe` stage, or the step template's own) and sets the account's state
+      `drained: true` (`false` while a command runs). `up --fresh` and `down` drain every session they
+      close before closing it (`drainSessions`); a session found gone with `drained: false` appends
+      `incomplete` (`<session> lost before its drain`); one gone between commands lost nothing.
+    - **Lifecycle.** The ledger lives under `logs/`, which `down` keeps, so it survives `down` and
+      `scrub` never needs the run live. The next `up`'s step 1 (`up --map`'s too) deletes every earlier
+      run's `logs/secrets.jsonl` (`dropLedgers`). There is no `down --purge`, and none is added. A kept
+      ledger holds the dead instance's session values, 0600 under the run's 0700 directory, until then.
+    - **Scrub's reading.** `readLedger` → `{entries, incomplete}`; scrub refuses when the file is gone
+      (`refused: scrub: the run's secret ledger is gone (a later up removed it); nothing from this run is
+      filed`), when it holds an `incomplete` marker (`refused: scrub: the run's secret ledger is
+      incomplete (<why>); nothing from this run is filed`) and on a line it cannot read (`refused:
+      scrub: the run's secret ledger is damaged`).
 15. **Ids the run saw** go to `logs/seen.jsonl` (kept): the path segments of the pages' requests to the
-    run's origins and the JSON response leaves that are 24+ characters mixing letters and digits, except
-    under a key matching `/token|secret|key|pass|session|auth|csrf|cookie/i`. Scrub leaves those
-    readable.
+    run's origins and the JSON response leaves that are 24+ characters mixing letters and digits,
+    filtered on the Node side (`seenIds`) from the raw `paths: [[previous segment, segment]]` and
+    `leaves: [[key, value]]` the hook drains. Never a seen id: a leaf under a key matching `SEEN_SKIP_KEY`
+    = `/token|secret|key|pass|session|auth|csrf|cookie|bearer|value|jwt|credential|sig|signature|code|otp|nonce/i`;
+    a segment whose previous segment matches
+    `/reset|verify|invite|magic|token|confirm|activate|unsubscribe/i` (`/password-reset/<x>`,
+    `/verify-email/<x>`); a value starting `eyJ` (a JWT or other base64 JSON). Scrub leaves the seen ids
+    readable; anything wrongly left out of them is only redacted.
 16. **The in-daemon hook.** `hook`, a new stage of `loginCode`, runs once after every session open of
     an explorer or repro slot (not the proving logins): it installs, once per context (`ctx.__argus`),
     the request and response listeners (header values, 5xx, ids), `console`/`pageerror` listeners on
     every page, and a `domcontentloaded` listener on every page and popup that evaluates
     `SIGNAL_SCRIPT` again — so a `target=_blank` popup is watched from its first document (phase 3's
-    known limit, spec §7, goes). Buffers are capped (headers 500, errors 200, ids 2000); `observe`
-    drains them.
-17. **Scrub's text rules.** A secret is refused in the title and the body when `secretPattern` finds
-    it or when the text and the value, each stripped of whitespace, punctuation and symbols, contain
-    it. Redaction: every run of 24+ `[A-Za-z0-9_-]` holding a letter and a digit, not all hex, not in
+    known limit, spec §7, goes). Header values: a `Set` of every value recorded plus the values not yet
+    drained, no count cap, `capBytes` per context (decision 14); errors 200 and raw ids 2000 per drain (a
+    lost id costs one redaction, never a secret). `observe` and every step template drain them.
+17. **Scrub's text rules.** Classes: the ledger's (`cookie`, `header`, `storage`), `created password`
+    (the ledger's too), and the configuration secrets — `env file` (every value of `env_file`: the owner
+    declared them secrets), `repo env file` and `environment variable <NAME>` (both only under a
+    `SECRET_KEY` name or with a high-entropy value: those sources mix configuration with secrets),
+    `role password` and `TOTP secret`. Empty values are ignored. A value of 6 characters or more is
+    refused when `secretPattern` finds it or when the text and the value, each stripped of whitespace,
+    punctuation and symbols, contain it. A configuration secret or created password shorter than 6 (the
+    6-character floor is the ledger classes' only) is refused as a whole token — not preceded or followed
+    by a letter or digit — raw, URL-decoded, as its base64 (a whole token) and spelled out with
+    whitespace, punctuation or symbols between its characters; never as a part of a longer word. A
+    refusal prints one line per hit, `<title|body> <line>:<col> <class>` (1-based; a hit in a stripped
+    or decoded form is placed at its first character in the text as given), then `refused: scrub: <k>
+    secret(s) in the issue; nothing is filed` — never the value, never the text around it. Redaction: every run of 24+ `[A-Za-z0-9_-]` holding a letter and a digit, not all hex, not in
     the seen ids → `<redacted>`. Defanging, outside fenced blocks and code spans as CommonMark reads
     them: `@name`, `#123`, `owner/repo#123` and every `http(s)` URL whose host is not loopback are
     wrapped in backticks. Fenced blocks whose info string is `ts`, `typescript` or `json` (the generated
     test, the repro) are left whole; every other fenced block keeps at most 20 lines (`… <k> lines cut`
     inside it). The title gets the same treatment.
-18. **Screenshots.** After `pw … screenshot`, the wrapper runs a `shot` stage and writes, beside the
-    PNG, `<name>.verdict.json` (0600) `{t, passed, reasons}`: `secret` (the page text or an input value
-    holds a scrub secret at that moment), `password-field`, `one-time-code-field`, `error-page` (status
-    ≥ 400 or a `chrome-error:` page). Never the text. Scrub attaches a screenshot only when it lies in a
-    slot's `out/` of the run, its verdict passed, `gh --version` ≥ 2.99, `gh repo view` says `PRIVATE`
-    or `INTERNAL`, and the contract's policy `traces` is not `none`; the others are named in a `Local
-    evidence:` line scrub appends to the body.
+18. **Screenshots.** After `pw … screenshot`, the wrapper drains first (`observe`, so the ledger holds
+    the page's values before the verdict reads it), then runs a `shot` stage and writes, beside the PNG,
+    `<name>.verdict.json` (0600) `{t, sha256, passed, reasons}` — `sha256` of the PNG's bytes as
+    written: `secret` (the text of the page and of every frame, iframes included, or an input value
+    holds a scrub secret at that moment; a gone or incomplete ledger counts as `secret`),
+    `password-field`, `one-time-code-field`, `error-page` (status ≥ 400 or a `chrome-error:` page).
+    Never the text. Scrub attaches a screenshot only when it lies in a slot's `out/` of the run and not
+    under a `traces/` directory, its verdict passed, its bytes still hash to the verdict's `sha256`,
+    `gh --version` ≥ 2.99, `gh repo view` says `PRIVATE` or `INTERNAL`, and the contract's policy
+    `traces` is not `none`; the others are named in a `Local evidence:` line scrub appends to the body.
 19. **Scrub files.** `scrub … --create [--label <l>…]` and `scrub … --comment <n>` run `gh issue
     create|comment --body-file` (no shell) once the text passed; an issue or comment URL in gh's stdout
     means filed, whatever its exit code (`filed: <url>`); no URL means not filed (exit 2). Without
@@ -187,8 +257,9 @@ Facts read from the code as built (5fef368), where it and the spec differ:
     map token in any run whose run.json has a worktree (a map run, or a full `up` still starting), so
     `/sapu:journey` can refresh the map while `up` brings the app up. A map token takes `code` and
     `submit` only, before an instance id too; its `submit` validates the map schema (`validateMap`).
-    `map-check --merge <slot>` merges the newest generation's map into `.argus/journeys.json` and checks
-    it. `up --fresh` and `renew` refuse a map run. The guard needs nothing new: the map agent's Read is
+    `map-check --merge <slot>` merges the newest generation's map into `.argus/journeys.json` with `head`
+    the commit of the map run's worktree (the code the map agent read, not MAIN's HEAD, which may have
+    moved meanwhile) and checks it. `up --fresh` and `renew` refuse a map run. The guard needs nothing new: the map agent's Read is
     the run's worktree, as run.json names it.
 21. **`map-check`'s rules, made exact.** An anchor's `text` counts every occurrence in the file at HEAD
     (two on one line count two); `line` moves to the nearest occurrence's line. "In a route or
@@ -209,25 +280,46 @@ Facts read from the code as built (5fef368), where it and the spec differ:
     [--acted-on] [--rule]` (§10's table; `--rule` = a written rule exists); argus's own adjustments
     stay the orchestrator's.
 24. **Doc drift** comes from `drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]` (§5's
-    blame comparison): `code-newer` (needs-owner), `doc-newer` (class B(a)), or `undecidable (<why>)`
-    (needs-owner).
+    blame comparison, by **author** time: a rebase or cherry-pick rewrites the committer time, not when
+    the line was written): `code-newer` (needs-owner), `doc-newer` (class B(a)), or `undecidable
+    (<why>)` (needs-owner).
 25. **Module split.** `argus-live-instance.mjs` keeps `up`, `up --fresh`, `up --map`, `renew` and
     `status`; the bring-up blocks (ports, worktree, HOME, environment, setup, start, health, store)
     move whole to `argus-live-start.mjs`. `canonicalOrigin`, `exactHost` (from `-proxy.mjs`),
     `originOf`, `BLOCKED_ERROR` and `checkUrl` (from `-pw.mjs`) move to the leaf `argus-live-origin.mjs`;
     `secretsOf` and `configuredUser` move from `-pw.mjs` to `-session.mjs` (as `maskSecrets`,
     `configuredUser`), shared with the runner.
+26. **The `login` step** is `{"as": "<role>.<k>", "do": "login", "user": <string>, "password":
+    <string>}` — the owner's `{action: "login", role: "<role.k>", user, password}` in the DSL's
+    `as`/`do` spelling. `as` is an account of the allocation written with its number; `user` and
+    `password` are literal or hold `{{marker}}` and `{{<saved>}}` placeholders (values an earlier `read`
+    saved or the run created); after substitution `user` must not be a configured user
+    (`configuredUser`). The runner appends the substituted password to the ledger as `created password`
+    before the sign-in (so scrub refuses it after `down` too, when slot `r`'s state.json is gone; `pw`'s
+    `login` does the same for an explorer's), then signs that account's session in as the created user
+    through the driver's `signIn` with slot `r`'s state.json `createdFailed` as its failure record, as
+    `pw` does; a failure ends the run with exit 2 `HARNESS: step <n> <role.k> login failed` and never
+    touches run.json `loginFailed`. An account whose first step is a `login` is opened without signing
+    its allocated user in. A `login` always changes state (decision 6).
 
 **Spec edits this plan needs** (folded in by the final task, as built): §5 — `drift`; §6 — the
 journey fields `lastHead`, `filed` and the step field `claim`, map mode (`up --map`, map slots,
 `map-check --merge`), the exact `map-check` rules (decision 21), `select`'s inputs and output,
-`map-check --list` as the catalog; §7 — the popup known limit removed (decision 16); §8 — run.json
-`mode`, `up --map`, map slots, `down` removing `secrets.jsonl`, the teardown skipping `repro/`,
-`status` naming a map run; §9 — slot `r` and its sessions, the `hook` stage, the screenshot verdict,
-the map token's two commands; §10 — decisions 1–15 and 17–19, 23; §12 — rows for a repro account in
-`loginFailed`, a gone or damaged ledger, `up --fresh` refusing a map run; §14 — the test names as
-built; §16 — `argus-live.mjs` gains `up --map`, `slot --map`, `repro`, `map-check`, `select`, `scrub`,
-`classify`, `drift`. Roadmap row 4 — map mode, `classify` and `drift` added.
+`map-check --list` as the catalog, `map-check --merge` stamping the map run's worktree commit as
+`head`; §7 — the popup known limit removed (decision 16); §8 — run.json `mode` and `worktreeHead`, `up --map`, map slots,
+the ledger under `logs/` kept by `down` and removed by the next `up`'s step 1, `up --fresh` and `down`
+draining every session before they close it, `down` pruning `r/out/traces/` to the traces of runs that
+exited 2, the teardown skipping `repro/`, `status` naming a map run; §9 — slot `r` and its sessions,
+the `hook` stage (the in-daemon `Set`, `capBytes`, the drain), the screenshot verdict with its
+`sha256`, the map token's two commands; §10 — decisions 1–15, 17–19, 23 and 26 (the `login` step, the
+`created password` class, traces only after sign-in and never filed); §12 — rows for a repro account in
+`loginFailed`, a `login` step that failed (slot `r`'s `createdFailed`, exit 2, the cycle unaffected), a
+gone, damaged or incomplete ledger, a run's ledger after `down` (kept 0600 under `logs/`, scrub of
+that run still works, the next `up` removes it and scrub of the old run then refuses), a screenshot
+changed after its verdict, `up --fresh` refusing a map run; §14 — the test names as built; §16 —
+`argus-live.mjs`: `repro`, `map-check` and `scrub` as listed, and these **additions to the spec's list**:
+`up --map`, `slot --map`, `select`, `classify`, `drift`. Roadmap row 4 — map mode, `classify` and
+`drift` added.
 
 ---
 
@@ -237,8 +329,8 @@ built; §16 — `argus-live.mjs` gains `up --map`, `slot --map`, `repro`, `map-c
 |---|---|
 | `plugins/sapu/scripts/argus-live-origin.mjs` | new leaf: `exactHost`, `canonicalOrigin`, `originOf`, `BLOCKED_ERROR`, `checkUrl` |
 | `plugins/sapu/scripts/argus-live-start.mjs` | new: the bring-up blocks moved from `-instance.mjs` |
-| `plugins/sapu/scripts/argus-live-session.mjs` | new: `sessionDriver`, `maskSecrets`, `configuredUser` (from `pw`'s `call`) |
-| `plugins/sapu/scripts/argus-live-ledger.mjs` | new: `MIN_SECRET`, `ledgerFile`, `ledgerEntries`, `appendLedger`, `readLedger`, `seenFile`, `appendSeen`, `readSeen`, `secretHits` |
+| `plugins/sapu/scripts/argus-live-session.mjs` | new: `sessionDriver`, `maskSecrets`, `configuredUser` (from `pw`'s `call`); `drainSessions` (Task 4) |
+| `plugins/sapu/scripts/argus-live-ledger.mjs` | new: `MIN_SECRET`, `MAX_SECRET`, `SECRET_KEY`, `SEEN_SKIP_KEY`, `LEDGER_CLASSES`, `highEntropy`, `ledgerFile`, `ledgerEntries`, `appendLedger`, `readLedger`, `dropLedgers`, `seenFile`, `seenIds`, `appendSeen`, `readSeen`, `secretHits` |
 | `plugins/sapu/scripts/argus-live-steps.mjs` | new: the repro DSL — `parseRepro`, `FINAL_KINDS`, `substitute`, `stepCode`, `reductions` |
 | `plugins/sapu/scripts/argus-live-repro.mjs` | new: `reproRef`, `runOnce`, `repro`, `minimize` |
 | `plugins/sapu/scripts/argus-live-redtest.mjs` | new: `redTest` |
@@ -247,8 +339,8 @@ built; §16 — `argus-live.mjs` gains `up --map`, `slot --map`, `repro`, `map-c
 | `plugins/sapu/scripts/argus-live-map.mjs` | new: `JOURNEYS_FILE`, `readJourneys`, `validateMap`, `mapCheck`, `refreshReasons`, `catalog`, `mergeMap`, `score`, `selectJourneys` |
 | `plugins/sapu/scripts/argus-live-drift.mjs` | new: `drift` |
 | `plugins/sapu/scripts/argus-live-proxy.mjs`, `-login.mjs`, `-pw.mjs`, `-browser.mjs`, `-cli.mjs`, `-run.mjs`, `-slots.mjs`, `-return.mjs`, `-instance.mjs`, `argus-live.mjs` | modified (each task names its change) |
-| `tests/fixtures/journey-app/server.mjs` | modified: `/storage`, `/api/items/<id>`, stock, inbox, claim, approve, ship, cancel, the seeded defects behind `$DEFECTS_FILE` |
-| `tests/fixtures/argus-red/order-to-cash.handoff.spec.ts` | new: the golden generated test |
+| `tests/fixtures/journey-app/server.mjs` | modified: `/storage`, `/api/me`, `/api/items/<id>`, `/api/reset/<x>`, stock, inbox, claim, approve, ship, cancel, signup, the order note's echo, the seeded defects behind `$DEFECTS_FILE` |
+| `tests/fixtures/argus-red/order-to-cash.handoff.spec.ts` | new: the golden generated test, written by hand from Task 11's text before `redTest` exists |
 | `tests/helpers/argus-live.ts` | modified: `appCycle()` (a full `up` on the fixture app with its defects file), `candidate()` (a minted slot's return holding repros), `fakeGh()` |
 | `tests/argus-live-findings.test.ts` | new: tests that need no browser (DAG, DSL, red test, classes, ledger matcher, scrub, map, select, drift; the CLI shim where a session is involved) |
 | `tests/argus-live-repro.test.ts` | new: tests in Chrome (hook, ledger, repro, minimize, screenshot verdicts, the end-to-end cycle) |
@@ -258,7 +350,9 @@ Module DAG after this phase (each module imports only modules to its left; leave
 `argus-live-*` module): proc → lock → endpoints → docker/egress and cli → run → {browser, proxy,
 hooks, slots, start, map, ledger, scrub, drift} → return → login → session → {pw, steps} →
 {instance, redtest} → repro → `argus-live.mjs`. Leaves: `fence`, `targets`, `origin`, `classes`.
-`ledger` imports only `fence` and `lock`; `scrub` imports `config`, `endpoints`, `run`, `ledger`,
+`ledger` imports only `fence`, `lock` (`liveDir`) and `run` (`logsDir`: the ledger and `seen.jsonl`
+both live under the run's `logs/`); `run` takes the teardown's drain as a `drain` parameter of `down`
+and `reap` (supplied by `argus-live.mjs` from `-session.mjs`), never an import; `scrub` imports `config`, `endpoints`, `run`, `ledger`,
 `proc` and `sapu-contract.mjs` (so `pw`'s screenshot verdict can use it); `map` imports `config` and
 `proc`; `drift` imports `proc`; `return` imports `map` (`validateMap`); `steps` imports `targets`,
 `hooks`, `login` (`HELPERS`) and `return` (`ORACLES`). `pw` never imports `instance`; `start` never
@@ -363,25 +457,38 @@ Interfaces:
 
 ### Task 3: the in-daemon hook
 
-**Files:** Modify `plugins/sapu/scripts/argus-live-login.mjs` (stages `hook`, `observe`),
-`plugins/sapu/scripts/argus-live-session.mjs` (`open()` runs `hook`); Test
-`tests/argus-live-repro.test.ts` (Chrome), `tests/argus-live-findings.test.ts` (shim).
+**Files:** Modify `plugins/sapu/scripts/argus-live-login.mjs` (stages `hook`, `observe`,
+`HELPERS.drain`), `plugins/sapu/scripts/argus-live-session.mjs` (`open()` runs `hook`; `capBytes`),
+`tests/fixtures/journey-app/server.mjs` (`/storage`, `/api/me`, `/api/items/<id>`, `/api/reset/<x>`);
+Test `tests/argus-live-repro.test.ts` (Chrome), `tests/argus-live-findings.test.ts` (shim).
 
 Interfaces:
-- Stage `hook` (payload `{runOrigins, signals: SIGNAL_SCRIPT}`; returns `{installed: true|false}`,
-  false when `ctx.__argus` existed): creates `ctx.__argus = {headers: [], errors: [], ids: [],
-  paths: []}`; `ctx.on("request")` pushes `[name, value]` for `cookie`, `authorization`,
-  `proxy-authorization` and `*-token` headers (`request.allHeaders()`), and the URL's path segments for
-  a run origin; `ctx.on("response")` pushes `set-cookie`, a `{kind: "5xx", status, url}` error for a
-  status ≥ 500, and for a `json` content type the string leaves of the body (decision 15's shape and key
-  rule); a page hook (for `ctx.pages()` and `ctx.on("page")`) adds `console` errors and `pageerror`
-  (`{kind: "console"|"pageerror", text ≤ 500, url}`) and a `domcontentloaded` listener evaluating
-  `P.signals`. Buffers capped (decision 16).
-- Stage `observe` additionally returns `secrets: {cookies: <ctx.cookies() values>, storage: <every
-  page's localStorage and sessionStorage values>, headers: <drained>}`, `ids: <drained>`, `paths:
-  <drained>`, `errors: <drained>`.
-- `sessionDriver().open()` runs `hook` right after `openSession` (a failure → `harness: hook failed`
-  among the open's events; the session is used all the same).
+- Stage `hook` (payload `{runOrigins, signals: SIGNAL_SCRIPT, capBytes}`; returns `{installed:
+  true|false}`, false when `ctx.__argus` existed): creates `ctx.__argus = {seen: new Set(), bytes: 0,
+  overflow: false, headers: [], errors: [], leaves: [], paths: []}`; `ctx.on("request")` records
+  `[name, value]` for `cookie`, `authorization`, `proxy-authorization` and `*-token` headers
+  (`request.allHeaders()`), and `[previous segment, segment]` pairs of the URL's path for a run origin;
+  `ctx.on("response")` records `set-cookie`, a `{kind: "5xx", status, url}` error for a status ≥ 500,
+  and for a `json` content type `[key, value]` for each string leaf of 24+ characters mixing letters
+  and digits (decision 15's shape; its key and segment rules are `seenIds`', on the Node side). A
+  header value (cut to `MAX_SECRET`) is pushed to `headers` only when `seen` lacks `name\0value`; it
+  is then added to `seen` and its length to `bytes`; past `capBytes` nothing more is recorded and
+  `overflow` is set (decisions 14, 16). A page hook (for `ctx.pages()` and `ctx.on("page")`) adds
+  `console` errors and `pageerror` (`{kind: "console"|"pageerror", text ≤ 500, url}`) and a
+  `domcontentloaded` listener evaluating `P.signals`.
+- `HELPERS.drain(ctx)` (in `-login.mjs`, shared with Task 7's step templates) → `{cookies:
+  [{name, value, httpOnly, secure}] from ctx.cookies(), storage: [{key, value}] of every page's
+  localStorage and sessionStorage, headers, leaves, paths, errors, overflow}`, emptying the pending
+  arrays (never `seen`). Stage `observe` additionally returns `secrets: <drain>`.
+- `sessionDriver({…, capBytes = 4 * 2 ** 20})` (the parameter added here; a test passes a small one);
+  `open()` runs `hook` right after `openSession` (a failure → `harness: hook failed` among the open's
+  events; the session is used all the same).
+- The fixture: `/storage` (signed in) sets `localStorage.jwt` to 32 random hex and
+  `localStorage.theme` to `dark-mode-on`, fetches `/api/me` with `Authorization: Bearer <32 hex>`, and
+  again 2000 ms after load with a second bearer (each bearer 32 random hex chosen once at the fixture's
+  start and kept in `DATA_DIR/bearer.json`, so a test can read them), `/api/reset/rk7b6a5c4d3e2f1g0h9i8j7k6` and `/api/items/ck9a8b7c6d5e4f3g2h1i0j9k8`
+  answering `{"id": "ck9a8b7c6d5e4f3g2h1i0j9k8", "token": "tok_<32 hex>", "code":
+  "cd4e5f6a7b8c9d0e1f2a3b4c5d", "ref": "eyJhbGciOiJIUzI1NiJ9x1y2z3a4b5"}`; nothing of it is rendered.
 
 - [ ] **Step 1: Probe first (done, see "Verified against"); re-run on the release machine** the
   linked-popup case below before writing the code.
@@ -391,8 +498,13 @@ Interfaces:
   - "a popup a link opened is watched from its first document": `pw <t> buyer.1 goto /popup`, `click
     'getByRole('\''link'\'', { name: '\''Open linked details'\'' })'`, wait 6 s (the toast comes at 4 s
     and goes at 5 s), `pw <t> buyer.1 tab-list` → the fence holds `signal status: Linked ready`.
-  - "the hook installs once per context": two `pw` calls, then a test `runCode` returning
-    `Object.keys(page.context().__argus)` and the listener count of `ctx.listenerCount("request")` → 1.
+  - "the hook installs once per context": a test `runCode` after the first `pw` call reads
+    `ctx.listenerCount("request")`, `ctx.listenerCount("response")` and `ctx.listenerCount("page")`; a
+    second `pw` call, then the same read → each count's delta is 0 (the CLI may hold listeners of its
+    own, so no absolute count is asserted), and `Object.keys(page.context().__argus)` is decision 16's.
+  - "header values are recorded once, and overflow is flagged": two `pw … goto /storage` (the same
+    bearer twice) → the drained headers hold that bearer once; a driver opened in-process with
+    `capBytes: 64` on `/storage` → its drain answers `overflow: true`.
   - "a reopened session gets the hook again": kill the browser root; the next call answers
     `session-reopened: buyer.1`; the one after records the linked popup's toast as above.
   `tests/argus-live-findings.test.ts`, describe "argus-live hook stage": "the hook's code takes its
@@ -406,54 +518,96 @@ Interfaces:
 ### Task 4: the secret ledger and the ids the run saw
 
 **Files:** Create `plugins/sapu/scripts/argus-live-ledger.mjs`; Modify `-session.mjs` (`observe()`
-appends), `-run.mjs` (`removeRunSecrets` removes `secrets.jsonl`, skips `repro/`),
-`tests/fixtures/journey-app/server.mjs` (`/storage`, `/api/me`, `/api/items/<id>`); Test
-`tests/argus-live-findings.test.ts`, `tests/argus-live-repro.test.ts`.
+appends to the ledger and `seen.jsonl` and keeps `drained`; `reopen` marks a session lost mid-command;
+`drainSessions`), `-pw.mjs` (`login`'s password to the ledger), `-instance.mjs` (`upFresh` drains every
+session it closes; `up`'s step 1 runs `dropLedgers`), `-run.mjs` (`down` and `reap` take `drain`; the
+teardown's slot-file pass skips `repro/`), `argus-live.mjs` (`down` and `reap` pass `drainSessions`);
+Test `tests/argus-live-findings.test.ts`, `tests/argus-live-repro.test.ts`.
 
 Interfaces:
-- `export const MIN_SECRET = 6`.
-- `export function ledgerFile(main, runId)` → `<liveDir>/<runId>/secrets.jsonl`;
-  `export function seenFile(main, runId)` → `<logs>/seen.jsonl`.
-- `export function ledgerEntries({cookies = [], storage = [], headers = []})` → `[{c, v}]` per
-  decision 14 (values under `MIN_SECRET` dropped, duplicates dropped).
-- `export function appendLedger(main, runId, entries)`: appends the entries not already in the file,
-  as one write, mode 0600; `export function readLedger(main, runId)` → `[{c, v}]`, `null` when the file
-  is gone, throws `refused: scrub: the run's secret ledger is damaged` on a line that is not
-  `{c, v}` JSON.
-- `export function appendSeen(main, runId, values)`, `export function readSeen(main, runId)` → `Set`.
-- `export function secretHits(text, secrets)` → the sorted distinct classes (`secrets` is `{"<class>:
-  <anything>": value}`) whose value (≥ `MIN_SECRET`) `secretPattern` finds in `text`, or whose value
-  stripped of `[\s\p{P}\p{S}]` (when still ≥ `MIN_SECRET` long) is a substring of `text` stripped the
-  same way.
-- The fixture: `/storage` (signed in) sets `localStorage.jwt` to 32 random hex, fetches `/api/me` with
-  `Authorization: Bearer <32 random hex>` (kept in `DATA_DIR/bearer.json` so the test can read it) and
-  `/api/items/ck9a8b7c6d5e4f3g2h1i0j9k8` answering `{"id": "ck9a8b7c6d5e4f3g2h1i0j9k8", "token":
-  "tok_<32 hex>"}`; nothing of it is rendered.
+- `export const MIN_SECRET = 6`, `export const MAX_SECRET = 4096`, `export const SECRET_KEY`,
+  `export const SEEN_SKIP_KEY`, `export const LEDGER_CLASSES = ["cookie", "header", "storage"]`,
+  `export function highEntropy(v)` (decision 14).
+- `export function ledgerFile(main, runId)` → `<logsDir>/secrets.jsonl`;
+  `export function seenFile(main, runId)` → `<logsDir>/seen.jsonl`.
+- `export function ledgerEntries({cookies = [], storage = [], headers = []})` (cookies `{name, value,
+  httpOnly, secure}`, storage `{key, value}`, headers `[name, value]`) → `[{c, v}]` per decision 14
+  (the cookie and storage rules, values cut to `MAX_SECRET`, values under `MIN_SECRET` dropped,
+  duplicates dropped).
+- `export function appendLedger(main, runId, entries)`: appends the entries not already in the file
+  (`{c: "created password"}` and `{c: "incomplete"}` entries included), as one write, mode 0600;
+  `export function readLedger(main, runId)` → `{entries: [{c, v}], incomplete: <the first marker's v> |
+  null}`, `null` when the file is gone, throws `refused: scrub: the run's secret ledger is damaged` on
+  a line that is not `{c, v}` JSON.
+- `export function dropLedgers(main, {keep})` → removes `logs/secrets.jsonl` of every run directory
+  under `.argus/live/` but `keep` (the new run's id); `up`'s step 1 calls it after the lock is taken.
+- `export function seenIds({paths = [], leaves = []})` → the ids decision 15 keeps;
+  `export function appendSeen(main, runId, values)`, `export function readSeen(main, runId)` → `Set`.
+- `export function secretHits(text, secrets)` (`secrets` is `[{cls, v}]`) → `[{line, col, cls}]`,
+  sorted by line, column and class, distinct: a value of a class in `LEDGER_CLASSES` counts only at
+  `MIN_SECRET` or more; any value of 6 or more is found by `secretPattern` or, stripped of
+  `[\s\p{P}\p{S}]`, as a substring of `text` stripped the same way (an index map places the hit in
+  `text`); any other value shorter than 6 is found only as a whole token, raw, URL-decoded, as its
+  base64 and spelled out (decision 17).
+- `export async function drainSessions(main, runId, records, {runner, cliRunner})` (in
+  `-session.mjs`): for each record whose daemon runs, the `observe` stage and its values appended
+  (ledger, `seen.jsonl`); a record whose daemon is gone with its account's state `drained: false` →
+  `{"c": "incomplete", "v": "<session> lost before its drain"}`; an `observe` that fails on a live daemon
+  → `incomplete` (`<session> could not be drained`). `upFresh` calls it on the sessions it closes, right
+  before `closeSessions` (after Task 5 those are every slot's but `up`'s); `down(main, {…, drain})` and
+  `reap` call `drain` on the run's recorded sessions before the teardown closes them (`drain` absent —
+  only a test's call — closes them undrained and appends `incomplete`).
+- `observe()` sets the account's state `drained: true` after it appended; `pw` sets `drained: false`
+  before it runs a command. `pw`'s `login <user> <password>` appends `{c: "created password", v:
+  <password>}` before it signs in.
 
 - [ ] **Step 1: Failing tests.**
   describe "argus-live ledger" (findings file):
-  - "ledgerEntries splits headers and storage as scrub matches them": cookies `["COOKIEVALUE_abc123"]`,
-    storage `['{"jwt":"LS_TOKEN_98765","n":1}', "dark"]`, headers `[["authorization", "Bearer
-    AUTHVALUE_112233"], ["cookie", "sid=abcdef123456; theme=dark"], ["set-cookie",
-    "sid=zzzzzz999999; Path=/; HttpOnly"], ["x-csrf-token", "CSRFVAL_9988"]]` → exactly the values
-    `COOKIEVALUE_abc123`, the whole JSON string, `LS_TOKEN_98765`, `Bearer AUTHVALUE_112233`,
-    `AUTHVALUE_112233`, `abcdef123456`, `zzzzzz999999`, `CSRFVAL_9988` with their classes.
-  - "secretHits finds a value raw, URL-encoded, base64-encoded and split by spaces": value
-    `AUTHVALUE_112233` in `x AUTHVALUE_112233 y`, `AUTHVALUE%5F112233`, `QVVUSFZBTFVFXzExMjIzMw`,
-    `A U T H V A L U E _ 1 1 2 2 3 3` → `["header"]` each; `"db"` as a value and `db` in the text →
+  - "ledgerEntries takes only secret-like cookies and storage, and every secret header": cookies
+    `[{name: "sid", value: "COOKIEVALUE_abc123", httpOnly: true}, {name: "theme", value:
+    "dark-mode-on"}, {name: "prefs", value: "Xy7_kq9Lm2Pz8Wv4"}, {name: "sid2", value: "abc12"}]`,
+    storage `[{key: "app", value: '{"jwt":"LS_TOKEN_98765","n":1,"label":"hello world"}'}, {key:
+    "theme", value: "dark"}]`, headers `[["authorization", "Bearer AUTHVALUE_112233"], ["cookie",
+    "sid=abcdef123456; theme=dark-mode-on"], ["set-cookie", "zz=zzzzzz999999; Path=/; HttpOnly"],
+    ["x-csrf-token", "CSRFVAL_9988"], ["x-api-token", "T".repeat(10_000)]]` → exactly
+    `COOKIEVALUE_abc123` and `Xy7_kq9Lm2Pz8Wv4` (`cookie`), `LS_TOKEN_98765` (`storage`; the JSON
+    never whole), `Bearer AUTHVALUE_112233`, `AUTHVALUE_112233`, `abcdef123456`, `zzzzzz999999`,
+    `CSRFVAL_9988` and 4096 `T`s (`header`); never `dark-mode-on`, `dark`, `hello world` or `abc12`.
+  - "secretHits finds a value raw, URL-encoded, base64-encoded and split by spaces, and says where":
+    `{cls: "header", v: "AUTHVALUE_112233"}` in `x AUTHVALUE_112233 y` → `[{line: 1, col: 3, cls:
+    "header"}]`; in `ok\n  AUTHVALUE%5F112233` → line 2, col 3; `QVVUSFZBTFVFXzExMjIzMw` and
+    `A U T H V A L U E _ 1 1 2 2 3 3` → one hit each; `{cls: "header", v: "db"}` and `db` in the text →
     `[]`.
-  - "a damaged ledger refuses; a gone one is null".
+  - "a short configuration secret is matched as a whole token only": `{cls: "role password", v:
+    "pw1"}` → a hit in `use pw1 here`, `p-w-1`, `p%771`, `cHcx`; none in `pw123`, `xpw1` or `cHcxZ`.
+  - "seenIds keeps the ids and none of the tokens": paths `[["items", "ck9a8b7c6d5e4f3g2h1i0j9k8"],
+    ["reset", "rk7b6a5c4d3e2f1g0h9i8j7k6"], ["verify-email", "ve1a2b3c4d5e6f7g8h9i0j1k2"]]`, leaves
+    `[["id", "01HZX3J4K5M6N7P8Q9R0S1T2V3"], ["code", "cd4e5f6a7b8c9d0e1f2a3b4c5d"], ["nonce",
+    "nn4e5f6a7b8c9d0e1f2a3b4c5d"], ["ref", "eyJhbGciOiJIUzI1NiJ9x1y2z3a4b5"]]` → exactly the cuid and the
+    ULID.
+  - "a damaged ledger refuses; a gone one is null; an incomplete one says why".
+  - "drainSessions marks what it could not drain": a record whose daemon is gone and state `drained:
+    false` → the ledger's `incomplete` names it; the same with `drained: true` → no marker; down's
+    teardown without `drain` → a marker.
   describe "argus-live ledger in Chrome" (repro file):
-  - "observation records the HttpOnly cookie, the storage value and the bearer token, never in pw's
-    output": `pw <t> buyer.1 goto /storage` → `secrets.jsonl` (mode 0600) holds the `sid` the fixture
-    issued (from `sessions.json`), `localStorage.jwt` and the bearer from `bearer.json`; `pw`'s output
-    holds none of the three.
+  - "observation records the HttpOnly cookie, the jwt and the bearer token, never in pw's output":
+    `pw <t> buyer.1 goto /storage` → `logs/secrets.jsonl` (mode 0600) holds the `sid` the fixture
+    issued (from `sessions.json`), `localStorage.jwt` and the first bearer from `bearer.json`, not
+    `dark-mode-on`; `pw`'s output holds none of the three.
   - "the ids the run saw are kept, tokens are not": `logs/seen.jsonl` holds
-    `ck9a8b7c6d5e4f3g2h1i0j9k8`, not the `tok_` value.
-  - "down removes the ledger and keeps the ids": after `down`, `secrets.jsonl` is gone,
-    `logs/seen.jsonl` remains.
+    `ck9a8b7c6d5e4f3g2h1i0j9k8`, not the `tok_` value, the `/reset/` segment, the `code` leaf or the
+    `eyJ` value.
+  - "down drains every session before it closes it": `pw <t> buyer.1 goto /storage` returns before the
+    second `/api/me`; wait 3 s; `down` → the ledger holds the second bearer.
+  - "up --fresh drains every session it closes": the same with `upFresh` in place of `down`.
+  - "the ledger survives down and the next up removes it": after `down`, `logs/secrets.jsonl` (0600)
+    and `logs/seen.jsonl` remain; the next `up` → the earlier run's `secrets.jsonl` is gone, its
+    `seen.jsonl` remains.
+  - "a created account's password is in the ledger": `pw <t> buyer.1 login new@example.test
+    Secret-pw-1` (no such account: `login: failed`) → the ledger holds `{"c": "created password", "v":
+    "Secret-pw-1"}`; run.json `loginFailed` is unchanged.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live records the run's cookie, header and storage values in a 0600 ledger down removes, and the ids its pages saw`.
+- [ ] **Step 5: Commit** `feat(sapu): argus-live records the run's secret-like cookie, header and storage values in a 0600 ledger that loses nothing silently, survives down and goes at the next up, and the ids its pages saw`.
 
 ---
 
@@ -501,6 +655,13 @@ The fixture keeps every phase-2 and phase-3 behaviour and adds, without dependen
   `Approve` (a hidden field carrying the status the page rendered) while `placed`, and `Ship` while
   `approved`; `POST …/approve` refuses (409 `Order is <status>`) unless the order is still `placed`;
   `POST …/ship` → `shipped`.
+- **Echo.** `/orders/new` takes an optional `Note` (a textbox labelled `Note`, at most 500
+  characters); `/orders/<id>` shows it verbatim, HTML-escaped, in `data-testid=note` — the field Task
+  8's literal-values test reads back.
+- **Signup.** `/signup` (anon) takes `Email` and `Password` and a `Sign up` button; it creates a
+  `buyer` account (kept in `DATA_DIR/accounts.json`, signed in through `/login` like any other) and
+  shows `Welcome <email>`; an email of a configured user, or one already signed up, answers 409 —
+  the account Task 8's `login` step uses.
 - **Defects**, each on while its name is in `$DEFECTS_FILE` (comma separated, re-read on every
   request, so a test toggles one without restarting the app): `missing-handoff` (the inbox never
   lists an order), `delayed-handoff` (an order is listed only 2000 ms after it was placed),
@@ -512,9 +673,12 @@ The fixture keeps every phase-2 and phase-3 behaviour and adds, without dependen
 - [ ] **Step 1: Failing tests:** each fixed behaviour and each defect through `fetch` with a `sid` from
   `--login-state` (one `it` per defect: on and off), e.g. "double-release adds twice what the order
   took": stock 10, order of 2 → 8, cancel → 10 (off) / 12 (on); "claim-race lets two claims through":
-  two parallel claims → 409 for one (off) / `claims: 2` in `--facts` (on).
+  two parallel claims → 409 for one (off) / `claims: 2` in `--facts` (on); "the note is echoed as
+  written": a note `O'Brien "x" \ <b>` → the order page's `note` element's text is exactly that; "a
+  signed-up account signs in": `/signup` then `/login` with it → signed in as `buyer`; signing up
+  `buyer1@example.test` → 409.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): the journey-app fixture's seeded oracle defects — handoff, dead end, reversal, claim race, stale view, orphaned work, viewport — each with its fixed variant`.
+- [ ] **Step 5: Commit** `feat(sapu): the journey-app fixture's seeded oracle defects — handoff, dead end, reversal, claim race, stale view, orphaned work, viewport — each with its fixed variant, plus signup and an echoed note`.
 
 ---
 
@@ -538,7 +702,9 @@ Interfaces:
   before its final`, `<action> changes state: an expect as <account> must follow before its next
   action`, `a
   parallel group holds 2 to 8 actions of different accounts`, `anon is never signed in`, `login takes
-  an account the journey created, never a configured user`, `trigger <name> is not in live.triggers`,
+  an account the journey created, never a configured user` (a literal `user`; a placeholder is checked
+  again after substitution, Task 8), `login's as names an account (<role>.<k>)`, `login takes a user
+  and a password (strings, placeholders allowed)` (decision 26), `trigger <name> is not in live.triggers`,
   `trigger <name> takes <k> value(s)`, `viewport must be from 200 to 4000`, `locale is not a BCP 47
   tag`, `timezone is not one Intl knows`, `at most 100 steps`. Every string ≤ 500 characters, no
   control characters.
@@ -547,9 +713,11 @@ Interfaces:
 - `export function stepCode(step, {settleMs, at = null, runOrigins})` → the `async page => {…}` text
   of the `step` template: `const P = <JSON>;`, `const T = (pg) => <targetCode(step.target, "pg")>;` (or
   `null`), the shared `HELPERS`, then the action or the expectation's poll (decision 11). Actions answer
-  `{ok, changed, method, value?, errors}` or `{ok: false, why: "missing-target"|"timeout"|"error",
-  detail}`; expectations `{held, observed, detail, errors}` (`observed` per decision 8). `P.at` (epoch
-  ms) is the `parallel` barrier.
+  `{ok, changed, method, value?, errors, drain}` or `{ok: false, why: "missing-target"|"timeout"|
+  "error", detail, drain}`; expectations `{held, observed, detail, errors, drain}` (`observed` per
+  decision 8; `drain` = `HELPERS.drain(ctx)`, so every step drains the hook's buffers without a call of
+  its own, decision 14). `P.at` (epoch ms) is the `parallel` barrier. A `login` step has no template:
+  the runner signs it in through the driver (decision 26).
 - `export function reductions(steps, {changed})` → the removal units of decision 10, in order, each
   `{kind: "role"|"step", label, drop: [n…]}`; `changed` holds the steps of the click family the
   reproducing run recorded as state-changing.
@@ -563,6 +731,13 @@ Interfaces:
     "customer", do: "goto", path: "/"}]` → `refused: repro: step 1: select changes state: an expect as
     customer.1 must follow before its next action`; §10's example itself passes (its `read` between
     the click and the `expect` is allowed).
+  - "a login step has its shape": `{as: "customer.1", do: "login", user: "{{marker}}@example.test",
+    password: "pw-{{marker}}"}` followed by an `expect` as `customer.1` parses; `as: "customer"` →
+    `login's as names an account (<role>.<k>)`; `user: "buyer1@example.test"` (a configured user) →
+    `login takes an account the journey created, never a configured user`; no `password` → `login takes
+    a user and a password (strings, placeholders allowed)`.
+  - "every step template drains": the `stepCode` text of an action and of an expectation each call
+    `HELPERS.drain` in every answer path.
   - "stepCode embeds values only as JSON": a `fill` value `'); process.exit(); ('` and a target name
     `"}); evil(); ({"` appear only inside the `const P = …;` line and as JSON string literals in the `T`
     line; the `T` line matches phase 3's `targetCode` regex.
@@ -582,7 +757,8 @@ Interfaces:
 ### Task 8: the repro runner, one run
 
 **Files:** Create `plugins/sapu/scripts/argus-live-repro.mjs`; Modify `plugins/sapu/scripts/argus-live.mjs`
-(`repro <ref> --once`), `tests/helpers/argus-live.ts` (`appCycle()`, `candidate()`); Test
+(`repro <ref> --once`), `plugins/sapu/scripts/argus-live-run.mjs` (`pruneTraces`, run by `down`'s
+teardown), `tests/helpers/argus-live.ts` (`appCycle()`, `candidate()`); Test
 `tests/argus-live-repro.test.ts`.
 
 Interfaces:
@@ -597,18 +773,29 @@ Interfaces:
      `fresh: instance <id>`;
   4. slot `r`: `writeSlotConfig` with the repro's context, a fresh `state.json`;
   5. each step in order (a `parallel` group's actions spawned together with `at = now + 1500`): the
-     account's driver `ensure()` (first use: `tracing-start`, signed in unless `anon`), `substitute`,
-     then the browser step through `driver.code(stepCode(…))`, or `trigger` through `runHook` (its
-     values through `fillArgv`), `fact-equals`/`mail` polled through `runHook`, `no-error` from the
-     account's error buffer; a session lost (`logged_in` gone on the page and in a probe) → exit 2
+     account's driver `ensure()` (first use: open, signed in unless `anon` or its first step is a
+     `login`, then `tracing-start` — never before the sign-in, decision 13), `substitute`, then the
+     browser step through `driver.code(stepCode(…))` with the state `drained: false` around it and its
+     answer's `drain` appended (ledger, `seen.jsonl`, the account's error buffer, `drained: true`), or
+     `trigger` through `runHook` (its values through `fillArgv`), `fact-equals`/`mail` polled through
+     `runHook`, `no-error` from the account's error buffer, `login` per decision 26 (`tracing-stop`, the
+     substituted `user` checked against `configuredUser` — exit 2 `HARNESS: step <n> login takes an
+     account the journey created, never a configured user` —, the password appended to the ledger as
+     `created password`, `driver.signIn({user, password})` with slot `r`'s `createdFailed` as
+     `failures`, a failure → exit 2 `HARNESS: step <n> <role.k> login failed`, then `tracing-start`); a
+     `read`'s value kept in `saved`; a session lost (`logged_in` gone on the page and in a probe) → exit 2
      `HARNESS: step <n> <role.k> lost its session`; a `click`/`dblclick`/`press` with `changed` and no
      proving expect → exit 2 `HARNESS: step <n> changed state (a <METHOD> request) with no proving
      expect` (decision 6); a missing target → `HARNESS: step <n> missing target`; an
      `expect` before the final that fails → `HARNESS: step <n> expectation failed before the final step`;
   6. the final: held → exit 0 `NOT REPRODUCED`; failed → exit 3 with the fence and `REPRODUCED …`;
-  7. `finally`: for each opened account `observe()` (the ledger), `tracing-stop`, `closeSessions`;
-     `run-<i>.json` `{exit, step, expected, observed, ms}` and `steps-<i>.jsonl` (0600) written.
+  7. `finally`: for each opened account `observe()` (the last drain), `tracing-stop`, `closeSessions`;
+     `run-<i>.json` `{exit, step, expected, observed, ms, saved, traces}` (decision 2; `saved` masked
+     with `maskSecrets` and the run's created passwords) and `steps-<i>.jsonl` (0600) written.
   Any throw → exit 2 `HARNESS: failed: <message, masked>` (the top-level handler).
+- `pruneTraces(main, runId)` (`-run.mjs`, run by `down`'s teardown after it closed the sessions):
+  removes every file under `r/out/traces/` that no `repro/*/run-*.json` with `exit: 2` names in
+  `traces` (decision 13); it reads those records as JSON, imports nothing above `run`.
 - CLI: `repro <ref> --once` prints `lines` (each already masked; the fence's nonce never re-masked)
   and exits with `code`.
 
@@ -618,8 +805,9 @@ Interfaces:
   `candidate(main, {slot, accounts, repro})` mints a slot and submits a return holding that repro):
   - "each seeded oracle defect reproduces, and its fixed variant does not": for each of handoff
     (`missing-handoff`), dead end, reversal (`double-release`), claim race (a `parallel` group of
-    `clerk.1` and `clerk.2` clicking `Claim`), stale view, orphaned work — the repro written in the test
-    from §10's templates; defect on → exit 3, last line matches `^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)?
+    `clerk.1` and `clerk.2` clicking `Claim`, each proved by `visible {testId: "claim", nth: 0}`, the
+    final `count {testId: "claim"} 1`), stale view, orphaned work — the repro written in the test from
+    §10's templates; defect on → exit 3, last line matches `^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)?
     observed=[a-z-]+(:\d+)?$`, every earlier line outside the fence matches the vocabulary regex
     `^(fresh: instance [0-9a-f]+|step \d+ (system|[a-z][a-z0-9_-]*\.\d+) [a-z-]+: (ok|held|failed|changed-state)|truncated \d+ characters)$`;
     defect off → exit 0, last line `NOT REPRODUCED`.
@@ -631,16 +819,28 @@ Interfaces:
     not hold → `… expectation failed before the final step`; a `Place order` click followed by `goto` →
     `HARNESS: step 3 changed state (a POST request) with no proving expect`; a `fresh` seam that throws
     `boom` → `HARNESS: failed: boom`.
-  - "a run's records are absent from the next run": run 1 places an order; run 2's first step `expect
-    count {testId: "inbox-item"} 0` as `clerk` holds.
-  - "values with quotes are substituted as literals": `fill` of `O'Brien "x" \ {{marker}}` → a `text-equals`
-    on the echoed field holds with the marker substituted; a `trigger settle` value `;id` → exit 2 naming
-    the value's regex, the hook never ran.
+  - "a run's records are absent from the next run": run 1 places an order; run 2 is `clerk.1 goto
+    /inbox`, `expect count {testId: "inbox-item"} 0`, then a final `visible {role: "heading", name:
+    "Inbox"}` (`discoverability`) → exit 0 and `step 2 clerk.1 count: held`.
+  - "values with quotes are substituted as literals": `fill {label: "Note"}` with `O'Brien "x" \
+    {{marker}}` on `/orders/new`, `Place order`, then a `text-equals {testId: "note"}` of the same
+    string → it holds with the marker substituted; `run-1.json` `saved` holds the order number a `read`
+    saved; a `trigger settle` value `;id` → exit 2 naming the value's regex, the hook never ran.
+  - "a login step signs in an account the run created, and its failure is the run's only": `anon`
+    signs up `{{marker}}@example.test` / `pw-{{marker}}` on `/signup`, `expect visible` its `Welcome`;
+    `buyer.2` (`as`, first step) `login` with those, `expect visible {text: "Signed in as"}`, then a
+    final → no `HARNESS`; the ledger holds `pw-<marker>` as `created password`; a second repro whose
+    `login` uses a password never signed up → exit 2 `HARNESS: step <n> buyer.2 login failed`, slot
+    `r`'s state.json `createdFailed` names it and run.json `loginFailed` is unchanged.
   - "an account whose login failed this cycle is never retried": run.json `loginFailed
     {"buyer/buyer1@example.test": "rejected"}` → exit 2 `HARNESS: buyer.1 cannot sign in this cycle`; the
     fixture's `/__test/stats` shows no new `POST /login`.
-  - "the run leaves a trace and no session": `r/out/traces/*.trace` exists; no process command holds
-    `cliDaemon.js <run>-r-`; run.json `sessions` holds none of slot `r`.
+  - "the run leaves a trace, begun after sign-in, and no session": `run-1.json` `traces` names files
+    under `r/out/traces/` that exist; no trace file's bytes hold the role's password or the
+    `POST /login` body; no process command holds `cliDaemon.js <run>-r-`; run.json `sessions` holds none
+    of slot `r`.
+  - "down keeps only the traces of runs that exited 2": one run exiting 0 and one exiting 2 (`{testId:
+    "nope"}`), then `down` → the exit-0 run's traces are gone, the exit-2 run's remain.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live repro runs a candidate's steps on a fresh instance — exit 0, a valid 3, or 2 for every harness failure`.
 
@@ -676,6 +876,13 @@ Interfaces:
     else S3; orphaned-work S3; interrupted-flow and viewport-locale `by outcome`; handoff with `rule` →
     `B(a)`, `class:business`, `workflow`, `at most S3`; without → `heuristic`, `ux`, `workflow`,
     `argus:needs-owner`; `CLASSES`' keys equal `ORACLES`.
+  - "each seeded defect's class line" (spec §14 "Repro": a seeded defect's class row): for each defect
+    Task 8 reproduces, the spawned `classify` with that oracle and the flags the fixture's defect
+    implies → exactly its line: `handoff` (no `--rule`) → `class heuristic labels
+    ux,workflow,argus:needs-owner,argus,found-by:user severity at most S3 because …`; `dead-end
+    --money` → `class A labels bug,argus,found-by:user severity S1 …`; `reversal --stock` (double
+    release), `claim-race --moved-twice`, `stale-view --stock`, `orphaned-work` and `viewport-locale` →
+    their rows' lines, each written out in the test.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live repro files only at two of two, and classify gives a journey finding's class and starting severity`.
 
@@ -695,10 +902,16 @@ Interfaces:
   `steps 4+5`) and exits.
 
 - [ ] **Step 1: Failing tests:**
-  findings file, describe "argus-live minimize": a stub `once` that answers 3 exactly when steps 2 and
-  6 are absent → `min.json` lacks them, `stopped fixpoint`, `confirmed yes`; `max: 3` → `stopped
-  budget`, two tries and the confirm run; a confirm run answering 0 → `confirmed no` and `min.json`
-  not written; a trigger and the final never appear among the tried labels.
+  findings file, describe "argus-live minimize": an 8-step list (`buyer`: 1 `goto`, 2 `fill`, 3
+  `hover`, 4 `click` with `changed`, 5 its proving `expect`; `clerk`: 6 `goto`, 7 `hover`, 8 the
+  final) whose essential steps are 2 and 6, and a stub `once` that answers 3 exactly while steps 2 and
+  6 are both in the list it is given (0 once either is gone) → `min.json` keeps 2, 6, `buyer`'s only
+  state-changing step 4 with its expect 5 (never offered) and the final 8, and drops 1, 3 and 7;
+  `tried` shows `role buyer`, `step 6` and `step 2` answering 0 and `step 7`, `step 3`, `step 1`
+  answering 3; `stopped fixpoint`, `confirmed yes`. (A stub answering 3 while 2 and 6 are absent would
+  pass a minimizer that drops every step, so it is not the test.) `max: 3` → `stopped budget`, two
+  tries and the confirm run; a confirm run answering 0 → `confirmed no` and `min.json` not written; on
+  §10's example a trigger and the final never appear among the tried labels.
   repro file, describe "argus-live minimize in Chrome": the reversal repro padded with a `hover`, a
   `goto /stock` + `expect url /stock`, and a `read` nobody uses → `min.json` holds the original's
   essential steps only, exit 3 on its own `--once` run.
@@ -716,25 +929,87 @@ Interfaces:
 - `export function redTest({journey, oracle, ref, context, steps, settleMs})` → TypeScript text for
   `@playwright/test`: a header comment (`Generated by argus-live.mjs repro <ref> --test … RED until the
   defect is fixed. Wire signedIn, trigger, fact and mail to this repo's E2E helpers.`); `const SETTLE`;
-  `const marker = \`argus-${Date.now().toString(36)}\``; stub helpers `signedIn(browser, account,
-  context)`, `trigger(name, values)`, `fact(marker, field)`, `mail()` that throw `wire <name> to this
-  repo's E2E helpers`; one `test("<journey>: <oracle> (<ref>)", async ({ browser }) => {…})` with one
-  page per account (`const customer1 = await signedIn(browser, "customer.1", CONTEXT)`), each action as
-  Playwright calls on `targetCode(target, <page variable>)`, `read`+`save` as `const <name> = (await
-  …innerText()).trim()` (or `inputValue()`), expectations as `expect(…).toBeVisible|toBeHidden|
-  toBeEnabled|toHaveText|toContainText|toHaveValue|toHaveCount|toHaveURL({ timeout: SETTLE })`,
-  `fact-equals` and `mail` as `expect.poll`, `no-error` through a per-page error collector the test
-  sets up, `parallel` as `await Promise.all([...])`. Every string is `JSON.stringify`'d; `{{name}}`
-  becomes the variable.
+  `const CONTEXT` (the repro's context as JSON: `viewport` → `{"width": <w>, "height": 900}`, as
+  `slotConfig` sets it, `locale`, `timezone` → `timezoneId`); `const marker =
+  \`argus-${Date.now().toString(36)}\``; stub helpers `signedIn(browser, account, context)`,
+  `trigger(name, values)`, `fact(key, field)`, `mail()` that throw `wire <name> to this repo's E2E
+  helpers`, and `readValue(target)` (decision 12's reading: an input's, textarea's or select's value,
+  else the trimmed `innerText`, at most 500 characters); one `test("<journey>: <oracle> (<ref>)", async
+  ({ browser }) => {…})` with one page per account (`const customer1 = await signedIn(browser,
+  "customer.1", CONTEXT)`), each action as Playwright calls on a locator in `targetCode`'s form on the
+  page variable, `read`+`save` as `const saved_<name> = await readValue(…)` (the `saved_` prefix keeps a
+  saved name from colliding with `marker`, `SETTLE`, `CONTEXT`, a helper, a page variable or a reserved
+  word), expectations as `expect(…).toBeVisible|toBeHidden|toBeEnabled|toHaveText|toContainText|
+  toHaveValue|toHaveCount|toHaveURL({ timeout: SETTLE })`, `fact-equals` and `mail` as `expect.poll`,
+  `no-error` through a per-page error collector the test sets up, `parallel` as `await
+  Promise.all([...])`, the final preceded by the comment `// final (<oracle>): the correct behaviour,
+  RED while the defect is there`. Every string is `JSON.stringify`'d; a string that is one placeholder
+  becomes its variable (`marker`, `saved_<name>`), one that mixes text and placeholders a `+`
+  concatenation of JSON literals and variables — never a template literal.
 - `repro <ref> --test` writes `red.spec.ts` (0600) from `min.json` when confirmed, else `repro.json`,
   and prints `red test: <absolute path>`.
 
-- [ ] **Step 1: Failing tests** (describe "argus-live generated RED test"):
-  - "the §10 example matches the golden file": `redTest` of the spec's list with `journey:
-    "order-to-cash"`, `ref: "1.1.1"` → equals `tests/fixtures/argus-red/order-to-cash.handoff.spec.ts`
-    byte for byte (the golden file is written from the first run and reviewed by hand before commit).
+- [ ] **Step 1: Write the golden file by hand, then the failing tests.** The golden file is written
+  first, from this text, before `redTest` exists — never generated by the implementation it checks.
+  `tests/fixtures/argus-red/order-to-cash.handoff.spec.ts`, exactly, less this plan's four-space indent
+  (40 lines, ending in one newline; checked while writing this plan: `stripTypeScriptTypes` takes it
+  and `node --check` passes on the result):
+
+    ```ts
+    // Generated by argus-live.mjs repro 1.1.1 --test: journey order-to-cash, oracle handoff.
+    // RED until the defect is fixed. Wire signedIn, trigger, fact and mail to this repo's E2E helpers.
+    import { test, expect } from "@playwright/test";
+    import type { Browser, BrowserContextOptions, Locator, Page } from "@playwright/test";
+
+    const SETTLE = 3000;
+    const CONTEXT: BrowserContextOptions = {"viewport": {"width": 1440, "height": 900}, "locale": "en-US", "timezoneId": "UTC"};
+    const marker = `argus-${Date.now().toString(36)}`;
+
+    async function signedIn(browser: Browser, account: string, context: BrowserContextOptions): Promise<Page> {
+      throw new Error("wire signedIn to this repo's E2E helpers");
+    }
+    async function trigger(name: string, values: string[]): Promise<void> {
+      throw new Error("wire trigger to this repo's E2E helpers");
+    }
+    async function fact(key: string, field: string): Promise<unknown> {
+      throw new Error("wire fact to this repo's E2E helpers");
+    }
+    async function mail(): Promise<unknown[]> {
+      throw new Error("wire mail to this repo's E2E helpers");
+    }
+    async function readValue(target: Locator): Promise<string> {
+      const v = await target.evaluate((e) => e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement || e instanceof HTMLSelectElement ? e.value : (e as HTMLElement).innerText);
+      return v.trim().slice(0, 500);
+    }
+
+    test("order-to-cash: handoff (1.1.1)", async ({ browser }) => {
+      const customer1 = await signedIn(browser, "customer.1", CONTEXT);
+      const sales1 = await signedIn(browser, "sales.1", CONTEXT);
+      await customer1.goto("/orders/new");
+      await customer1.getByLabel("Quantity").fill("2");
+      await customer1.getByRole("button", {"name": "Place order"}).click();
+      const saved_order = await readValue(customer1.getByTestId("order-number"));
+      await expect(customer1.getByText(saved_order)).toBeVisible({ timeout: SETTLE });
+      await trigger("payment-settles", [saved_order]);
+      await expect.poll(() => fact(saved_order, "status"), { timeout: SETTLE }).toBe("paid");
+      await sales1.goto("/");
+      // final (handoff): the correct behaviour, RED while the defect is there
+      await expect(sales1.getByText(saved_order)).toBeVisible({ timeout: SETTLE });
+    });
+    ```
+
+  The reviewer of this task checks the file against §10's example line by line before the
+  implementation starts; a later change to it is a reviewed change of the generator's contract, not a
+  re-recording.
+  describe "argus-live generated RED test":
+  - "the §10 example matches the golden file": `redTest` of the spec's list (its context element
+    first) with `journey: "order-to-cash"`, `oracle: "handoff"`, `ref: "1.1.1"`, `settleMs: 3000` and
+    accounts `customer` → `customer.1`, `sales` → `sales.1` → equals the golden file byte for byte.
+  - "saved names never collide": a `save: "marker"` is refused by `parseRepro` (decision 12); `save:
+    "settle"` and `save: "customer1"` become `saved_settle` and `saved_customer1`; `"x {{order}}"`
+    becomes `"x " + saved_order`.
   - "the test is valid TypeScript": `stripTypeScriptTypes` does not throw and `node --check` passes on
-    the result, for the golden case and for a list holding a `parallel` group, a `no-error`, a `mail`
+    the result (written as `.mjs`), for the golden case and for a list holding a `parallel` group, a `no-error`, a `mail`
     expectation and a context `{viewport: 390, locale: "de-DE"}`.
   - "strings never become code": a value `` `${process.exit()}` `` and a name `"); x("` appear only as
     JSON string literals (the stripped file's AST via `node --check` succeeds and the text contains the
@@ -750,28 +1025,43 @@ Interfaces:
 (`scrub`); Test `tests/argus-live-findings.test.ts`.
 
 Interfaces:
-- `export function scrubSecrets(main, {runId, env = process.env})` → `{"<class>:<label>": value}` for
-  the classes `env file` (`loadLive(main).secrets` and `recordedSecrets`), `repo env file`
-  (`ownerEnvFiles(main, loadContract(main))`), `role password`, `TOTP secret` (`.argus/live.json`
-  roles, expanded), `cookie`, `header`, `storage` (`readLedger`; null → the refusal of decision 14),
-  `environment variable <NAME>` (names matching `/TOKEN|SECRET|KEY|PASSWORD/i`).
+- `export function scrubSecrets(main, {runId, env = process.env})` → `{secrets: [{cls, label, v}],
+  refusal: null | <decision 14's refusal>}` for the classes of decision 17: `env file`
+  (`loadLive(main).secrets` and `recordedSecrets`, every value), `repo env file`
+  (`ownerEnvFiles(main, loadContract(main))`, only a `SECRET_KEY` name or a `highEntropy` value),
+  `role password`, `TOTP secret` (`.argus/live.json` roles, expanded), `environment variable <NAME>`
+  (only a `SECRET_KEY` name or a `highEntropy` value), and the ledger's `cookie`, `header`, `storage`
+  and `created password` (`readLedger`; gone, incomplete or damaged → `refusal`). Empty values dropped.
 - `export function redactIds(text, seen)` → `{text, count}` (decision 17).
 - `export function defang(md)` → `{text, defanged, cut}` (decision 17; fences per CommonMark: an
   opening run of 3+ backticks or tildes, closed by the same character at least as long).
 - `export async function scrub(main, {title, bodyFile, attach = [], create = false, labels = [],
   comment = null}, {env, gh = "gh", runner})` → `{code, out}`. This task: the run (the lock's, else the
-  newest run directory), `secretHits` on the title and the body as given → `refused: scrub: the
-  <title|body> holds a secret (<class>[, <class>…])` (exit 1, the file untouched, nothing else printed);
-  then `redactIds` and `defang` on both, the body file rewritten in place, `scrub: ok; redacted <n>,
-  defanged <n>, cut <n> line(s)` and `title: <the scrubbed title>` (exit 0).
+  newest run directory — a run that is down is read the same way: scrub never needs it live);
+  `scrubSecrets`' `refusal` → that line (exit 1); `secretHits` on the title and the body as given →
+  one line per hit `<title|body> <line>:<col> <class>`, then `refused: scrub: <k> secret(s) in the
+  issue; nothing is filed` (exit 1, the file untouched, no value and no text around it printed); then
+  `redactIds` and `defang` on both, the body file rewritten in place, `scrub: ok; redacted <n>, defanged
+  <n>, cut <n> line(s)` and `title: <the scrubbed title>` (exit 0).
 - CLI `scrub --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>]`.
 
 - [ ] **Step 1: Failing tests** (describe "argus-live scrub"; a `liveRun()` with a ledger written by
-  `appendLedger`, an env file, a repo `.env`, roles with a password and a TOTP secret, `env:
-  {GH_TOKEN: "ghp_scrubtest123456"}`):
+  `appendLedger` (a `cookie`, a `header`, a `storage` and a `created password` value), an env file, a
+  repo `.env` holding `DB_PASSWORD=Repo-Secret-77` and `PORT=3000`, roles with a password and a TOTP
+  secret, `env: {GH_TOKEN: "ghp_scrubtest123456", HOME: "/Users/someone", BUILD_ID:
+  "Ab3$xYz9Qw2!Lm5Np"}`):
   - "each secret class is refused, raw, URL-encoded, base64-encoded and split by spaces, in the title
-    and in the body": 8 classes × 4 forms × 2 places, each → exit 1 with its class named, the body file
-    byte for byte as before.
+    and in the body": 9 classes × 4 forms × 2 places, each → exit 1 with a `<title|body> <line>:<col>
+    <class>` line placing it, the body file byte for byte as before.
+  - "a refusal says where, never what": a body whose line 3 holds the cookie value at column 7 → the
+    output is exactly `body 3:7 cookie` and `refused: scrub: 1 secret(s) in the issue; nothing is filed`;
+    no output line holds the value or any other text of the body.
+  - "configuration that is not secret-like is not a secret": a body holding `3000`, `/Users/someone`
+    and `dark-mode-on` → exit 0; `Repo-Secret-77` (a `SECRET_KEY` name) and `Ab3$xYz9Qw2!Lm5Np`
+    (high-entropy under a plain name) → refused, `repo env file` and `environment variable BUILD_ID`.
+  - "a short configuration secret is refused as a whole token, never inside a word": a role password
+    `pw1` → `use pw1 here` refused (`role password`), `pw123` and `xpw1` kept; a 5-character ledger
+    cookie value is never matched (the floor is the ledger's).
   - "a cuid or ULID the run saw stays; an unknown long token is redacted": seen holds
     `ck9a8b7c6d5e4f3g2h1i0j9k8` and `01HZX3J4K5M6N7P8Q9R0S1T2V3`; the body holds both,
     `sk_live_… (a fake 30-character key)`, a 40-hex sha and `abcdefghijklmnopqrstuvwxyzabcd` → only the
@@ -781,30 +1071,39 @@ Interfaces:
     `http://127.0.0.1:9/x` kept; `` `@x` `` and a ```` ```ts ```` block of 40 lines untouched; a
     ```` ```text ```` block of 25 lines → 20 lines and `… 5 lines cut`; a line ```` ``` ```` inside a
     ```` ~~~text ```` block does not close it.
-  - "scrub needs the run's ledger": no `secrets.jsonl` → exit 1 with decision 14's wording.
+  - "scrub needs the run's whole ledger": no `logs/secrets.jsonl` → exit 1 with decision 14's `gone`
+    wording; an `incomplete` marker → exit 1 with its `incomplete (<why>)` wording; a damaged line →
+    `damaged`.
+  - "scrub works on a run that is down": the same run after its lock is released (no `lock.json`, the
+    run directory and its `logs/` kept) → a clean body → exit 0; the cookie in it → exit 1.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live scrub refuses any secret the run saw in any encoding, redacts unknown long tokens and defangs page text`.
+- [ ] **Step 5: Commit** `feat(sapu): argus-live scrub refuses any secret-like value the run saw in any encoding, naming where and never what, redacts unknown long tokens and defangs page text`.
 
 ---
 
 ### Task 13: screenshot verdicts, attachments, filing through gh
 
 **Files:** Modify `plugins/sapu/scripts/argus-live-login.mjs` (stage `shot`), `plugins/sapu/scripts/argus-live-pw.mjs`
-(`screenshot` writes the verdict), `plugins/sapu/scripts/argus-live-scrub.mjs` (`attachVerdict`, gh),
-`tests/helpers/argus-live.ts` (`fakeGh()`); Test `tests/argus-live-repro.test.ts`,
+(`screenshot` drains, then writes the verdict), `plugins/sapu/scripts/argus-live-scrub.mjs`
+(`attachVerdict`, gh), `tests/fixtures/journey-app/server.mjs` (`/frame?echo=1` framing
+`/inject?echo=1`; `/storage?show=1` rendering the second bearer once fetched), `tests/helpers/argus-live.ts`
+(`fakeGh()`); Test `tests/argus-live-repro.test.ts`,
 `tests/argus-live-findings.test.ts`.
 
 Interfaces:
-- Stage `shot` → `{text: <body innerText, then every input/textarea/select value, one per line>,
-  password: <a visible password input>, otp: <a visible one-time-code input>, error: <status ≥ 400 or
-  a chrome-error: URL>}`.
-- After a `screenshot` the CLI ran, `pw` runs `shot` and writes `<out>/<name>.verdict.json` (0600)
-  `{t, passed, reasons}` (decision 18; `secret` from `secretHits(text, scrubSecrets(main, {runId}))`;
-  a gone ledger counts as `secret`). `pw`'s output is unchanged.
+- Stage `shot` → `{text: <the body's innerText of the page and of every frame (`page.frames()`,
+  iframes included), then every input/textarea/select value of each, one per line>, password: <a
+  visible password input in any frame>, otp: <a visible one-time-code input in any frame>, error:
+  <status ≥ 400 or a chrome-error: URL>}`.
+- After a `screenshot` the CLI ran, `pw` first drains (`observe()`, its values appended to the ledger),
+  then runs `shot` and writes `<out>/<name>.verdict.json` (0600) `{t, sha256, passed, reasons}`
+  (decision 18; `sha256` of the PNG's bytes; `secret` when `secretHits(text, scrubSecrets(main,
+  {runId}).secrets)` is not empty or `scrubSecrets` answered a `refusal`). `pw`'s output is unchanged.
 - `export function attachVerdict(main, runId, file, {ghVersion, visibility, traces})` → `{attach:
-  true}` or `{attach: false, reason}` (`gh older than 2.99`, `public repository`, `traces none`, `not a
-  screenshot of this run`, `no verdict recorded`, `a secret on the page`, `a password field`, `a
-  one-time-code field`, `an error page`).
+  true}` or `{attach: false, reason}` (`gh older than 2.99`, `public repository`, `traces none`, `a
+  trace, never attached` (any file under a `traces/` directory), `not a screenshot of this run`, `no
+  verdict recorded`, `the screenshot changed after its verdict` (its sha256 differs), `a secret on the
+  page`, `a password field`, `a one-time-code field`, `an error page`).
 - `scrub` gains: `attach: <name>` / `local: <name> (<reason>)` lines, the `Local evidence: <paths from
   MAIN>` line appended to the body; with `--create`: `gh issue create --title <scrubbed> --body-file
   <file> [--label <l>]… [--attach <png>]…`; with `--comment <n>`: `gh issue comment <n> --body-file
@@ -816,25 +1115,65 @@ Interfaces:
 - [ ] **Step 1: Failing tests.**
   repro file, describe "argus-live screenshot verdicts": `pw … goto /inject?echo=1` then `screenshot`
   → its verdict `{passed: false, reasons: ["secret"]}`; `anon goto /login` + `screenshot` →
-  `password-field`; `goto /orders/new` + `screenshot` → `passed: true`; no verdict file holds
-  `Quantity` or exceeds 200 bytes.
+  `password-field`; `goto /orders/new` + `screenshot` → `passed: true` and `sha256` equal to the PNG's;
+  a page holding the env file's value only inside an iframe (`/frame?echo=1`, a fixture page framing
+  `/inject?echo=1`) + `screenshot` → `secret`; `goto /storage?show=1` (the page also shows the second
+  bearer once its delayed fetch ran), wait 3 s, `screenshot` → `secret` (the second bearer reached the
+  ledger only through the screenshot call's own drain, so this proves the drain runs before `shot`); no
+  verdict file holds `Quantity` or exceeds 200 bytes.
   findings file, describe "argus-live scrub — attachments and filing" (`fakeGh()`: a script on a
   given path recording argv and answering `--version`, `repo view` and `issue create|comment` as the
   test sets):
-  - "a screenshot is attached only when every condition holds": one `it` per reason above → `local:`
-    with that reason and the body's `Local evidence:` line; all conditions → `attach:` and gh saw
-    `--attach <abs path>`.
+  - "a screenshot is attached only when every condition holds": one `it` per reason above (a PNG
+    rewritten after its verdict for `the screenshot changed after its verdict`, a file under
+    `r/out/traces/` for `a trace, never attached`) → `local:` with that reason and the body's `Local
+    evidence:` line; all conditions → `attach:` and gh saw `--attach <abs path>`.
   - "a non-zero gh exit after the URL counts as filed": gh prints the URL and exits 1 → exit 0
     `filed: https://github.com/o/r/issues/9`; gh prints nothing and exits 1 → exit 2.
   - "the needs-owner label goes through create": `--label argus:needs-owner` reaches gh's argv as
     `--label argus:needs-owner`.
   - "a refused scrub runs no gh".
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live screenshot verdicts at capture time; scrub attaches only what passed and files through gh, counting a printed URL as filed`.
+- [ ] **Step 5: Commit** `feat(sapu): argus-live screenshot verdicts at capture time, hashed and over every frame; scrub attaches only what passed, never a trace, and files through gh, counting a printed URL as filed`.
 
 ---
 
-### Task 14: `map-check`, refresh triggers, the catalog
+### Task 14: the core path on the CLI, the guard seam, one cycle end to end
+
+The repro → minimize → test → classify → scrub path is finished and proven end to end before any map
+work starts (Tasks 15–18 add `map-check`, map mode, `select` and `drift`, each adding its commands to
+the usage line and the guard seam test).
+
+**Files:** Modify `plugins/sapu/scripts/argus-live.mjs` (header comment and usage line: `repro`,
+`classify`, `scrub`); Test `tests/argus-live-pw.test.ts` (guard seam), `tests/argus-live-repro.test.ts`.
+
+- [ ] **Step 1: Failing tests.**
+  `tests/argus-live-pw.test.ts`, describe "argus-live up — the browser refusals and the guard seam"
+  gains: `checkExplorerBash` refuses `node <WRAPPER> repro 1.1.1`, `… repro 1.1.1 --minimize`, `…
+  repro 1.1.1 --test`, `… scrub --title x --body /tmp/b`, `… classify --oracle dead-end`.
+  `tests/argus-live-repro.test.ts`, describe "argus-live — findings end to end" (spawned CLI only):
+  - "a candidate goes from an explorer's submit to a filed issue, and down leaves no secret outside the
+    ledger": `appCycle()`
+    with `double-release` on; `slot 1 --journey order-to-cash --accounts buyer.1=buyer1@example.test`;
+    through spawned `pw`: `goto /storage`, `goto /orders/new`, place an order, `screenshot`, `submit` a
+    return whose candidate holds the reversal repro; `repro 1.1.1` → exit 3, `run 1` and `run 2` lines,
+    last line `REPRODUCED …`; `repro 1.1.1 --minimize` → `confirmed yes`; `repro 1.1.1 --test` → the
+    file passes `stripTypeScriptTypes`; `classify --oracle reversal --stock` → its class line; a body
+    quoting the session's HttpOnly `sid` → `scrub` exit 1 with a `body <line>:<col> cookie` line and no
+    line holding the `sid`; a clean body with the screenshot → `scrub … --create --label bug` through
+    `fakeGh()` → `filed: …`, gh's argv holds `--attach` and nothing under `traces/`; `down` →
+    `logs/secrets.jsonl` kept (0600), no `.playwright/`, `state.json` or `lock` in any slot, no file
+    under `r/out/traces/` (both runs exited 3), `repro/1.1.1/` kept, no process whose command holds the
+    run id; after `down`, `scrub` of the `sid` body still exits 1 and of the clean body exits 0
+    (scrub never needs the run live); neither any stdout nor any file left under
+    `.argus/live/<run>/` holds `APP_PW`'s value or the slot token (the ledger holds neither: role
+    passwords are configuration, matched from `.argus/live.json`, never recorded).
+- [ ] **Step 2–4:** run (FAIL), implement, run both files and `npx vitest run` (PASS).
+- [ ] **Step 5: Commit** `feat(sapu): argus-live repro, classify and scrub on the CLI, kept from the explorer by the guard, one cycle end to end`.
+
+---
+
+### Task 15: `map-check`, refresh triggers, the catalog
 
 **Files:** Create `plugins/sapu/scripts/argus-live-map.mjs`; Modify `plugins/sapu/scripts/argus-live.mjs`
 (`map-check [--list]`); Test `tests/argus-live-findings.test.ts`.
@@ -875,16 +1214,19 @@ Interfaces:
     the same drop again at the same head → `refresh: none`.
   - "map-check starts nothing": no `.argus/live/lock.json` appears; the runner saw only `git`.
   - "the catalog groups by domain and lists the drops".
+  - the guard seam test (`tests/argus-live-pw.test.ts`) gains `… map-check` and `… map-check --list`;
+    the usage line gains `map-check [--list]`.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live map-check keeps only journeys anchored in HEAD's code, names its refresh triggers and prints the catalog`.
 
 ---
 
-### Task 15: map mode — `up --map`, map slots, the map return
+### Task 16: map mode — `up --map`, map slots, the map return
 
 **Files:** Modify `-map.mjs` (`validateMap`, `mergeMap`), `-slots.mjs` (`mintMapSlot`; `tokenSlot`
 returns the slot's `mode`), `-pw.mjs` (a map token's two commands), `-return.mjs` (`submit` and `intake`
-of a map return), `-instance.mjs` (`upMap`; `upFresh`/`renewRun` refuse a map run; `status`), `argus-live.mjs`
+of a map return), `-instance.mjs` (`upMap`; `up`'s step 4 and `upMap` record `worktreeHead`;
+`upFresh`/`renewRun` refuse a map run; `status`), `argus-live.mjs`
 (`up --map`, `slot <n> --map`, `map-check --merge <slot>`); Test `tests/argus-live-findings.test.ts`.
 
 Interfaces:
@@ -897,7 +1239,7 @@ Interfaces:
   of a known id gets the returned `domain`, `title`, `money`, `global`, `goal`, `steps` and keeps
   `lastCycle`, `lastHead`, `filed`; a new id is appended; every other journey and `dropped` kept.
 - `export async function upMap(main, {runner, say})` → the summary `{runId, mode: "map", deadline,
-  worktree}`: `up` step 1 (lock, `sapu-live.log` start line, reaper), step 4's worktree without
+  worktree}`: `up` step 1 (lock, `sapu-live.log` start line, reaper, `dropLedgers`), step 4's worktree without
   setup, run.json `{runId, mode: "map", worktree, instanceId: null, groups: [], …}`; `up --fresh` and
   `renew` on it → `refused: cycle <run> is a map run (up --map); run down`.
 - `export async function mintMapSlot(main, {slot})` → `{slot, token, generation: 1, mode: "map"}`:
@@ -911,7 +1253,11 @@ Interfaces:
   roots <k>`, then the fenced return.
 - `map-check --merge <slot>` reads the newest generation of that map slot's return (the lock's run,
   else the newest run directory), validates it again, writes `mergeMap(readJourneys(main), …, {head:
-  <MAIN's HEAD>})`, then runs `map-check`.
+  <the run's worktreeHead>})`, then runs `map-check`. `worktreeHead` is a new run.json key, owned by
+  `up`'s step 4 and `upMap`: the worktree's commit (`git -C <worktree> rev-parse HEAD`) once it is
+  built, so a merge after `down` (the worktree gone) still stamps the code the map agent read, never
+  MAIN's HEAD, which may have moved while the map was built (decision 20). A run without it → `refused:
+  map-check --merge: run <id> recorded no worktree commit`.
 - `status` prints `mode: map` for a map run; `status --json` adds `mode` (`"map"` or `"live"`).
 
 - [ ] **Step 1: Failing tests** (describe "argus-live map mode"):
@@ -925,7 +1271,12 @@ Interfaces:
   - "a map slot can be minted while up is still starting": run.json with a worktree and no instance id
     → `mintMapSlot` succeeds; `mintSlot` (an explorer's) is refused there.
   - "map-check --merge keeps ids, lastCycle and the journeys the map did not return".
+  - "map-check --merge stamps the worktree's commit, not MAIN's HEAD": `up --map`, a commit on MAIN
+    meanwhile, submit, `down`, `map-check --merge 1` → `.argus/journeys.json` `head` is the commit
+    `up --map` built the worktree at.
   - "up --fresh and renew refuse a map run".
+  - the guard seam test gains `… up --map`, `… slot 1 --map`, `… map-check --merge 1`; the usage line
+    gains them.
   - "the guard lets the map agent Read committed files of a map run's worktree" (`tests/sapu-guard.test.ts`:
     run.json of a map run; the existing Read rule, unchanged, allows a committed file and refuses an
     untracked one).
@@ -934,7 +1285,7 @@ Interfaces:
 
 ---
 
-### Task 16: SELECT — score and accounts
+### Task 17: SELECT — score and accounts
 
 **Files:** Modify `plugins/sapu/scripts/argus-live-map.mjs` (`score`, `selectJourneys`),
 `plugins/sapu/scripts/argus-live.mjs` (`select`); Test `tests/argus-live-findings.test.ts`.
@@ -965,12 +1316,14 @@ Interfaces:
   - "a claim step gets a second account when one is free".
   - "a login-command role serves one journey a cycle".
   - "explicit ids print what they displaced".
+  - "users must be literal": a user `${BUYER_USER}` → the `${` refusal above, nothing selected.
+  - the guard seam test gains `… select --cycle 1`; the usage line gains `select`.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live select ranks journeys by the map's score and allocates accounts no two journeys share`.
 
 ---
 
-### Task 17: doc drift
+### Task 18: doc drift
 
 **Files:** Create `plugins/sapu/scripts/argus-live-drift.mjs`; Modify `plugins/sapu/scripts/argus-live.mjs`
 (`drift`); Test `tests/argus-live-findings.test.ts`.
@@ -978,45 +1331,21 @@ Interfaces:
 Interfaces:
 - `export function drift(main, {doc, code}, {runner = run})` → `{verdict: "code-newer"|"doc-newer"|
   "undecidable", why?}`: `git blame --porcelain -L <a>,<b> -- <file>` per range; the newest
-  `committer-time` of the doc's lines against the newest of all code ranges'; a line not committed
+  `author-time` of the doc's lines against the newest of all code ranges' (decision 24); a line not committed
   (`0000000…`), a file with no history or a git failure → `undecidable` (`uncommitted lines`, `no
   history`), equal times → `undecidable (same time)`. Ranges `<repo-relative file>:<a>-<b>`, no `..`.
 - CLI `drift --doc <range> --code <range> [--code <range>…]` → `code-newer → needs-owner`,
   `doc-newer → class B(a)` or `undecidable (<why>) → needs-owner`.
 
 - [ ] **Step 1: Failing tests** (describe "argus-live doc drift"; a repo whose commits carry
-  `GIT_COMMITTER_DATE`): doc 2026-01-01, code 2026-03-01 → `code-newer`; reversed → `doc-newer`; the doc
+  `GIT_AUTHOR_DATE`): doc 2026-01-01, code 2026-03-01 → `code-newer`; reversed → `doc-newer`; the doc
   range edited and not committed → `undecidable (uncommitted lines)`; both in one commit → `undecidable
-  (same time)`; a range with `..` → refused.
+  (same time)`; a range with `..` → refused; "author time decides, not committer time": the doc
+  authored 2026-01-01 but committed (`GIT_COMMITTER_DATE`, as a rebase leaves it) 2026-05-01, code
+  authored and committed 2026-03-01 → `code-newer`.
+  The guard seam test gains `… drift --doc a:1-2 --code b:1-2`; the usage line gains `drift`.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live drift decides doc drift by line-level history`.
-
----
-
-### Task 18: the CLI, the guard seam, one cycle end to end
-
-**Files:** Modify `plugins/sapu/scripts/argus-live.mjs` (header comment and usage line: every command of
-this phase); Test `tests/argus-live-pw.test.ts` (guard seam), `tests/argus-live-repro.test.ts`.
-
-- [ ] **Step 1: Failing tests.**
-  `tests/argus-live-pw.test.ts`, describe "argus-live up — the browser refusals and the guard seam"
-  gains: `checkExplorerBash` refuses `node <WRAPPER> repro 1.1.1`, `… repro 1.1.1 --minimize`, `…
-  scrub --title x --body /tmp/b`, `… map-check`, `… map-check --merge 1`, `… select --cycle 1`, `…
-  classify --oracle dead-end`, `… drift --doc a:1-2 --code b:1-2`, `… up --map`, `… slot 1 --map`.
-  `tests/argus-live-repro.test.ts`, describe "argus-live — findings end to end" (spawned CLI only):
-  - "a candidate goes from an explorer's submit to a filed issue, and down leaves no secret": `appCycle()`
-    with `double-release` on; `slot 1 --journey order-to-cash --accounts buyer.1=buyer1@example.test`;
-    through spawned `pw`: `goto /storage`, `goto /orders/new`, place an order, `screenshot`, `submit` a
-    return whose candidate holds the reversal repro; `repro 1.1.1` → exit 3, `run 1` and `run 2` lines,
-    last line `REPRODUCED …`; `repro 1.1.1 --minimize` → `confirmed yes`; `repro 1.1.1 --test` → the
-    file passes `stripTypeScriptTypes`; a body quoting the session's HttpOnly `sid` → `scrub` exit 1
-    `(cookie)`; a clean body with the screenshot → `scrub … --create --label bug` through `fakeGh()` →
-    `filed: …`, gh's argv holds `--attach`; `down` → no `secrets.jsonl`, no `.playwright/`,
-    `state.json` or `lock` in any slot, `repro/1.1.1/` kept, no process whose command holds the run id;
-    neither any stdout nor any file left under `.argus/live/<run>/` (traces aside) holds `APP_PW`'s
-    value or the token.
-- [ ] **Step 2–4:** run (FAIL), implement, run both files and `npx vitest run` (PASS).
-- [ ] **Step 5: Commit** `feat(sapu): argus-live repro, scrub, map-check, select, classify and drift on the CLI, kept from the explorer by the guard`.
 
 ---
 
@@ -1048,8 +1377,16 @@ this phase); Test `tests/argus-live-pw.test.ts` (guard seam), `tests/argus-live-
   runs=1/2` is the intermittent journal entry), the order `repro` → `--minimize` → `--test` → `classify`
   → `scrub --create`, `renew` before each `repro`, and PERSIST's writes of `lastCycle`, `lastHead`,
   `filed`.
+- The orchestrator scrubs and files **before `down`** wherever it can (scrub works after `down` too —
+  the ledger survives it — but the next `up` removes the ledger, and an issue not filed by then cannot
+  be scrubbed again), and runs `renew` before a long filing stretch so the lock's deadline does not
+  end the cycle mid-filing. A scrub refusal names `<title|body> <line>:<col> <class>`: the orchestrator
+  rewrites that place and scrubs again, never pastes the value anywhere to check it. An `incomplete`
+  ledger means nothing of that run is filed; the journal says so.
+- `journeys.md`'s claim-race template: each account of the `parallel` group proves its action with
+  `visible` and `nth: 0` (decision 7); the `login` step's shape (decision 26).
 - The explorer brief: repro lists use the five target kinds and `{{marker}}`; screenshots only as
-  evidence (their verdict decides attachment).
+  evidence (their verdict decides attachment); traces are never evidence in an issue.
 - The map brief: map mode's two commands, `claim: true`, the return schema of `validateMap`.
 
 ---
@@ -1067,9 +1404,13 @@ this phase); Test `tests/argus-live-pw.test.ts` (guard seam), `tests/argus-live-
   - every state-changing step proven, else exit 2 (T7 static, T8 dynamic, decision 6);
   - `final` from its oracle's template (T7 `FINAL_KINDS`, decision 7);
   - exit codes 0, 3 with `REPRODUCED step=… expected=… observed=…`, everything else a harness failure,
-    an uncaught error mapped to 2, a failed login, a missing target (T8, decision 8);
+    an uncaught error mapped to 2, a failed login (a configured account's: run.json `loginFailed`; a
+    `login` step's: slot `r`'s `createdFailed`), a missing target (T8, decisions 4, 8, 26);
+  - the `login` action: its shape, placeholders, the configured-user refusal, the `created password`
+    class (T7, T8, T4 for `pw`'s, decision 26);
   - reproduce: after every explorer returned (phase 5's order), each candidate from `up --fresh`,
-    twice, filed only at 2 of 2, 1 of 2 intermittent, a CLI trace kept (T8, T9, decisions 9, 13);
+    twice, filed only at 2 of 2, 1 of 2 intermittent, a CLI trace kept for H2 diagnosis — begun after
+    sign-in, never filed, pruned by `down` to the runs that exited 2 (T8, T9, decisions 9, 13);
   - minimize: one step or role at a time from `up --fresh`, a state-changing step with its `expect`,
     never a `trigger` or a role's only state-changing step, kept only on exit 3 with every remaining
     `expect`, at most `limits.minimize_runs`, where it stopped journalled, no browser work in the
@@ -1079,42 +1420,67 @@ this phase); Test `tests/argus-live-pw.test.ts` (guard seam), `tests/argus-live-
     orchestrator's text (phase 5);
   - needs-owner: the label (phase 1); filing with it through `scrub --create --label` (T13);
   - scrub refuses each secret class — env_file, repo env files, role passwords and TOTP secrets,
-    cookies and `Authorization`/`Set-Cookie`/`*-Token` values the run saw, storage values, orchestrator
-    variables — raw, URL-encoded, base64 and with whitespace and punctuation removed (T4 ledger and
-    matcher, T12); redacts other 24+ letter-and-digit strings unless the run saw them as a URL path
-    segment or a response-body value (T3 ids, T4 `seen`, T12); page text in fenced blocks of at most
-    20 lines, mentions, `#N` and outside URLs defanged (T12);
+    created passwords, cookies and `Authorization`/`Set-Cookie`/`*-Token` values the run saw, storage
+    values, orchestrator variables — raw, URL-encoded, base64 and with whitespace and punctuation
+    removed (T4 ledger and matcher, T12), narrowed by decision 14/17 to what is secret-like (a
+    `SECRET_KEY` name, an HttpOnly/Secure cookie or a high-entropy value) where a source mixes
+    configuration with secrets, short configuration secrets as whole tokens, and a refusal that says
+    where and never what (T4, T12); the ledger complete or scrub refuses (T3 `Set`/`capBytes`, T4
+    drains, T12), and alive after `down` (T4, T12, T14); redacts other 24+ letter-and-digit strings
+    unless the run saw them as a URL path segment or a response-body value, never a token-like one
+    (T3 raw ids, T4 `seenIds`, T12); page text in fenced blocks of at most 20 lines, mentions, `#N` and
+    outside URLs defanged (T12);
   - screenshots attached only with gh ≥ 2.99, a private or internal repo, `traces` allowing it, and at
-    capture time a secret-free page and inputs, no password or one-time-code field, no error page;
-    otherwise named locally (T13); a non-zero gh exit after the URL counts as filed (T13);
+    capture time (after a drain, every frame read) a secret-free page and inputs, no password or
+    one-time-code field, no error page, its bytes unchanged since; otherwise named locally (T13); a
+    non-zero gh exit after the URL counts as filed (T13);
   - issue body additions: the generated Playwright test (T11); the trail, numbers and repro steps are
     the orchestrator's (phase 5), the files they come from are T8's records;
   - one defect per issue and `max_issues_per_cycle`: argus's gates, unchanged (phase 5's text).
-- **Spec §6 coverage:** `map-check`'s every rule and its printed reasons (T14); refresh triggers and no
-  second refresh for a recorded drop (T14); ids stable across a refresh (T15 `mergeMap`); `global`
-  selected alone, the score, account allocation and waiting (T16); the catalog (T14); the map built by
-  the explorer in map mode through `submit` (T15).
-- **Spec §14 coverage:** "Repro" — each seeded defect 3 and its fix 0 with the class row (T8, T9), the
-  claim race through `parallel` with two accounts (T8), viewport at 390 not 1440 (T8), the delayed
-  handoff (T8), exit 2 on a broken target, a dropped prerequisite, a missing proving `expect` and an
-  uncaught error (T8), a run's records absent from the next (T8), quoted values as literals (T8),
-  minimize never dropping a `trigger` and keeping only exit-3 reductions (T7, T10), 2 of 2 (T9), the
-  golden test (T11). "Scrub" — each class in each encoding in title and body (T12), the HttpOnly cookie
-  (T18), cuid/ULID kept and unknown tokens redacted (T12), defanging (T12), screenshots not attached
-  for a public repo, an older gh, a password field or an error page (T13), the URL rule (T13).
-  "`map-check`" — every listed case, the refresh triggers, stable ids, `global`, allocation, `list`
-  starting nothing (T14–T16). "Doc drift" — code newer, doc newer, no history, and the needs-owner label
-  on the issue (T17, T13's label pass-through).
+- **Spec §6 coverage:** `map-check`'s every rule and its printed reasons (T15); refresh triggers and no
+  second refresh for a recorded drop (T15); ids stable across a refresh (T16 `mergeMap`, `head` the map
+  run's worktree commit); `global` selected alone, the score, account allocation and waiting (T17);
+  the catalog (T15); the map built by the explorer in map mode through `submit` (T16) — kept in this
+  phase because §6 needs the map returned through `submit` without the app, and ordered after the core
+  path (T14).
+- **Spec §14 coverage:** "Repro" — each seeded defect 3 and its fix 0 (T8: one `it` per defect, on and
+  off) with its class row (T9: "each seeded defect's class line", one exact `classify` line per defect
+  T8 reproduces), the claim race through `parallel` with two accounts (T8), viewport at 390 not 1440
+  (T8), the delayed handoff (T8), exit 2 on a broken target, a dropped prerequisite, a missing proving
+  `expect` and an uncaught error (T8), a run's records absent from the next (T8, the count read after
+  `goto /inbox`), quoted values as literals (T8, through the fixture's echoed note), minimize never
+  dropping a `trigger` and keeping only exit-3 reductions (T7, T10, its stub answering 3 only while the
+  essential steps remain), 2 of 2 (T9), the golden test (T11, the golden file written by hand first).
+  "Scrub" — each class in each encoding in title and body (T12), the HttpOnly cookie (T14), cuid/ULID
+  kept and unknown tokens redacted (T12), defanging (T12), screenshots not attached for a public repo,
+  an older gh, a password field or an error page (T13), the URL rule (T13). "`map-check`" — every
+  listed case, the refresh triggers, stable ids, `global`, allocation, `list` starting nothing
+  (T15–T17). "Doc drift" — code newer, doc newer, no history, and the needs-owner label on the issue
+  (T18, by author time; T13's label pass-through).
 - **Carried from phase 3:** the ledger (T4), the driver (T2), slot `r` (T5), `-origin.mjs` (T1),
   `loginFailed` for repro (decision 4, T8), the instance split (T1), the in-daemon listener probed and
   built (T3).
+- **The QA review of 9e46024, and where each finding went:** scrub over-refusal → decisions 14, 17,
+  T4, T12; short secrets → decision 17, T4 `secretHits`, T12; ledger loss → decisions 14, 16, T3, T4;
+  ledger lifecycle → decision 14, T4, T12, T14, the §12 row, "Carried to Phase 5"; traces → decision
+  13, T8, T13, T14; seen-id exemption → decision 15, T4; the `login` step → decision 26, T7, T8, T6
+  signup; T10's stub, T8's count, T6's echo → fixed in place; claim-race `nth: 0` → decision 7, T8;
+  4xx console lines → decision 11; screenshot `sha256`, drain before `shot`, frames → decision 18,
+  T13; `saved` in `run-<i>.json` → decisions 2, 12, T8; `mergeMap`'s `head` → decision 20, T16; the
+  `saved_` prefix → T11; author time → decision 24, T18; T3's listener delta → T3; T11's golden file
+  by hand → T11; the §14 claim for T8 → made true by T9's per-defect class lines; the ledger's
+  imports → the DAG statement (`run` for `logsDir`). Not changed: Tasks 1, 2 and 5 (cleared to start).
 - **Names defined once:** `exactHost`, `canonicalOrigin`, `originOf`, `BLOCKED_ERROR`, `checkUrl`,
-  `sessionDriver`, `maskSecrets`, `configuredUser`, `MIN_SECRET`, `ledgerFile`, `ledgerEntries`,
-  `appendLedger`, `readLedger`, `seenFile`, `appendSeen`, `readSeen`, `secretHits`, `FINAL_KINDS`,
-  `parseRepro`, `substitute`, `stepCode`, `reductions`, `reproRef`, `runOnce`, `repro`, `minimize`,
-  `redTest`, `CLASSES`, `classify`, `scrubSecrets`, `redactIds`, `defang`, `attachVerdict`, `scrub`,
-  `JOURNEYS_FILE`, `readJourneys`, `validateMap`, `mapCheck`, `refreshReasons`, `catalog`, `mergeMap`,
-  `score`, `selectJourneys`, `upMap`, `mintMapSlot`, `drift`.
+  `sessionDriver`, `maskSecrets`, `configuredUser`, `drainSessions`, `MIN_SECRET`, `MAX_SECRET`,
+  `SECRET_KEY`, `SEEN_SKIP_KEY`, `LEDGER_CLASSES`, `highEntropy`, `ledgerFile`, `ledgerEntries`,
+  `appendLedger`, `readLedger`, `dropLedgers`, `seenFile`, `seenIds`, `appendSeen`, `readSeen`,
+  `secretHits`, `FINAL_KINDS`, `parseRepro`, `substitute`, `stepCode`, `reductions`, `reproRef`,
+  `runOnce`, `repro`, `minimize`, `pruneTraces`, `redTest`, `CLASSES`, `classify`, `scrubSecrets`,
+  `redactIds`, `defang`, `attachVerdict`, `scrub`, `JOURNEYS_FILE`, `readJourneys`, `validateMap`,
+  `mapCheck`, `refreshReasons`, `catalog`, `mergeMap`, `score`, `selectJourneys`, `upMap`,
+  `mintMapSlot`, `drift`.
 - **Interfaces shared with earlier phases:** run.json is still written only through `updateRun`, each
-  key by its owner (`mode` by `up --map`; `slots` by the slot writers); the guard's explorer rules are
-  unchanged and its seam test grows (T18); `pw`'s output is unchanged byte for byte (T2).
+  key by its owner (`mode` by `up --map`; `worktreeHead` by `up`'s step 4 and `upMap`; `slots` by the
+  slot writers); the guard's explorer rules are unchanged and its seam test grows (T14–T18); `pw`'s
+  output is unchanged byte for byte (T2); `down`'s new work (drain, `pruneTraces`) runs inside the
+  existing teardown, and what it keeps (`logs/`, `returns/`, `repro/`) only grows by the ledger.
