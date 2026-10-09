@@ -210,13 +210,13 @@ export function findChrome({ platform = process.platform, exists = fs.existsSync
   return (BROWSERS[platform] || []).find((b) => exists(b.path)) || null;
 }
 
-/** A slot: a positive integer (an explorer's), or `up` (the proving logins of `up`). */
-const SLOT = (slot) => (Number.isInteger(slot) && slot > 0) || slot === "up";
+/** A slot: a positive integer (an explorer's), `up` (the proving logins of `up`) or `r` (the repro runner's). */
+const SLOT = (slot) => (Number.isInteger(slot) && slot > 0) || slot === "up" || slot === "r";
 
 /** A slot's directory, `<MAIN>/.argus/live/<runId>/<slot>`: the CLI's cwd, so its workspace and session namespace. */
 export function slotDir(main, runId, slot) {
   runIdOk(runId);
-  if (!SLOT(slot)) throw new Error(`failed: ${slot} is not a slot (a positive integer, or up)`);
+  if (!SLOT(slot)) throw new Error(`failed: ${slot} is not a slot (a positive integer, up or r)`);
   return path.join(liveDir(main), runId, String(slot));
 }
 
@@ -412,10 +412,10 @@ const identity = (p) => (p ? { pid: p.pid, pgid: p.pgid, started: p.started } : 
 
 /**
  * run.json `sessions` with `record` in place of the one of its name (appended when there is none); null
- * drops that name. An explorer slot's record (a numbered slot) is refused while run.json has no instance
- * id: an `up --fresh` under way closes the explorers' sessions, and one recorded after that pass would
- * outlive it. An opened one (its daemon known) is refused too when its pending record is gone: that pass
- * dropped it, then may have finished.
+ * drops that name. The record of every slot but `up` (an explorer's, a numbered slot, or the repro
+ * runner's, `r`) is refused while run.json has no instance id: an `up --fresh` under way closes those
+ * sessions, and one recorded after that pass would outlive it. An opened one (its daemon known) is
+ * refused too when its pending record is gone: that pass dropped it, then may have finished.
  */
 function putSession(main, runId, name, record) {
   return updateRun(
@@ -424,7 +424,7 @@ function putSession(main, runId, name, record) {
     (prev) => {
       if (!prev) return undefined;
       const sessions = prev.sessions ?? [];
-      if (record && typeof record.slot === "number") {
+      if (record && record.slot !== "up") {
         if (!prev.instanceId) throw new Error(`refused: cycle ${runId} has no instance (an up --fresh is under way); the session ${name} is not recorded`);
         if (record.daemon && !sessions.some((x) => x && x.name === name)) throw new Error(`refused: the session ${name} was closed while it opened (an up --fresh); not recorded`);
       }
@@ -445,7 +445,7 @@ function putSession(main, runId, name, record) {
  * leads a process group of its own); each recorded by {pid, pgid, started}, which the teardown's kills
  * ask first. An `open` that fails or times out, or a daemon not in ps, closes the session by name and
  * sweeps what it left (sweepSessions), drops the record, and throws; run.json gone or sealed before
- * `open`, or an explorer slot's run without an instance id (putSession), throws with nothing started; a
+ * `open`, or a run without an instance id for any slot but `up` (putSession), throws with nothing started; a
  * record refused once `open` returned closes the session it names and drops the pending one.
  */
 export async function openSession({ main, runId, slot, account, js, home, storageState = null, runner = run, cliRunner = runAsync, timeoutMs = 60_000 }) {

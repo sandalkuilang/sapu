@@ -400,7 +400,7 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
 
 /**
  * Removes what the run kept under `.argus/live/<runId>/` that holds secrets or the CLI's state: in each
- * slot directory (`<n>/`, `up/`) its `.playwright/` (configs, a storage state), `state.json`
+ * slot directory (`<n>/`, `up/`, `r/`) its `.playwright/` (configs, a storage state), `state.json`
  * (counters, created accounts' passwords), `lock` and `totp.json`; and the run's `totp.json`. `out/`,
  * `files/`, `returns/`, `repro/` and `logs/` (the secret ledger among them, 0600) stay (evidence for the
  * owner, the repro and scrub). Symlinks are removed, never followed.

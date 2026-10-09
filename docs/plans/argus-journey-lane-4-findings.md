@@ -1537,3 +1537,8 @@ Interfaces:
   fixture through the CLI) moved to the helpers file as `appCycle({clerk, mark})`, with `fixtureProcs`;
   the ledger's cycle tests run `down` and `up --fresh` through the CLI, and assert first that the `pw`
   call's own drain ran before the page's second bearer.
+- **Task 5.** "up --fresh closes repro sessions" is an `r` record added to phase 3's `up --fresh` test
+  in `tests/argus-live.test.ts` (its title now names the repro sessions): `upFresh` needs a whole
+  instance, which that file's harness brings up; the findings file holds slot `r` itself, the
+  instance-id rule and `down`. `openSession`'s, `sessionName`'s and the teardown's slot-file pass
+  comments name slot `r`.

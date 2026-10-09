@@ -71,7 +71,7 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
 /** An account word as sessions carry it: `<role>.<k>`. */
 const ACCOUNT = /^[a-z][a-z0-9_-]*\.[1-9][0-9]?$/;
 
-/** A CLI session's name: `<runId>-<slot>-<role>.<k>` (slot a number, or `up` for the proving logins). */
+/** A CLI session's name: `<runId>-<slot>-<role>.<k>` (slot a number, `up` for the proving logins, or `r` for the repro runner). */
 export function sessionName(runId, slot, account) {
   if (!ACCOUNT.test(String(account))) throw new Error(`failed: ${account} is not an account (<role>.<k>)`);
   return `${runId}-${slot}-${account}`;

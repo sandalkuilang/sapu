@@ -1,13 +1,15 @@
 // tests/argus-live-findings.test.ts — the journey lane's findings side without a browser: the module DAG,
 // origins, the session driver (the CLI shim standing in for @playwright/cli), and later the repro DSL, the
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, example, liveRun, makeShim, tempDir } from "./helpers/argus-live";
+import { alive, cleanTemps, example, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -371,5 +373,57 @@ describe("argus-live ledger", () => {
     updateRun(u.main, u.runId, (prev: Obj) => ({ ...prev, sessions: [{ name: `${u.runId}-1-buyer.1`, slot: 1, account: "buyer.1", cwd: slotDir(u.main, u.runId, 1), home: join(u.home, "browser"), daemon: me, browser: null }] }));
     await down(u.main, { runId: u.runId, graceMs: 1000 });
     expect(readLedger(u.main, u.runId).incomplete).toBe(`${u.runId}-1-buyer.1 closed undrained`);
+  });
+});
+
+describe("argus-live repro sessions", () => {
+  const runs: { main: string; runId: string }[] = [];
+  const groups: number[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+    for (const g of groups.splice(0)) {
+      try {
+        process.kill(-g, "SIGKILL");
+      } catch {
+        // gone
+      }
+    }
+  });
+  /** A run's files (an instance id unless `instanceId` is null) with the CLI shim as its browser CLI. */
+  const reproRun = (instanceId: string | null = "0123456789abcdef") => {
+    const t = liveRun();
+    const { shim, calls } = makeShim();
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId, browser: { js: shim, channel: "chrome" } });
+    runs.push({ main: t.main, runId: t.runId });
+    return { ...t, shim, calls };
+  };
+
+  it("slot r is a slot", () => {
+    const t = liveRun();
+    expect(slotDir(t.main, t.runId, "r")).toBe(join(t.main, ".argus/live", t.runId, "r"));
+    expect(() => slotDir(t.main, t.runId, "x")).toThrow("failed: x is not a slot (a positive integer, up or r)");
+    expect(sessionName(t.runId, "r", "buyer.1")).toBe(`${t.runId}-r-buyer.1`);
+  });
+
+  it("a repro session is recorded only while the run has an instance", async () => {
+    const t = reproRun(null);
+    mkdirSync(slotDir(t.main, t.runId, "r"), { recursive: true, mode: 0o700 });
+    await expect(openSession({ main: t.main, runId: t.runId, slot: "r", account: "buyer.1", js: t.shim, home: join(t.home, "browser") })).rejects.toThrow(`refused: cycle ${t.runId} has no instance (an up --fresh is under way); the session ${t.runId}-r-buyer.1 is not recorded`);
+    expect(t.calls()).toEqual([]);
+    expect(readRun(t.main).sessions ?? []).toEqual([]);
+  });
+
+  it("down closes them", async () => {
+    const t = reproRun();
+    const dir = slotDir(t.main, t.runId, "r");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+    groups.push(p.pid!);
+    const daemon = { pid: p.pid!, pgid: p.pid!, started: startTime(p.pid!) };
+    const name = sessionName(t.runId, "r", "buyer.1");
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, sessions: [{ name, slot: "r", account: "buyer.1", cwd: dir, home: join(t.home, "browser"), daemon, browser: null }] }));
+    await down(t.main, { runId: t.runId, graceMs: 1000 });
+    expect(t.calls().map((c) => c.argv)).toEqual([[`-s=${name}`, "close"]]);
+    expect(await until(() => !alive(p.pid!), 3000)).toBe(true);
   });
 });

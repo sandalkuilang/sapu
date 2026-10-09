@@ -3438,7 +3438,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(balanced(main)).toBe(true);
   }, 60000);
 
-  it("up --fresh keeps the proxy, closes the explorer sessions (never the up ones) and retires every slot's token", async () => {
+  it("up --fresh keeps the proxy, closes the explorer and repro sessions (never the up ones) and retires every slot's token", async () => {
     const { main } = repo();
     const r = await up(main, opts());
     reapers.push(runJson(main).reaper);
@@ -3458,6 +3458,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
       return { name: sessionName(r.runId, slot, account), slot, account, cwd, home, daemon: standIn(), browser: standIn() };
     };
     const explorer = record(1, "buyer.1");
+    const reproducer = record("r", "buyer.1");
     const proving = record("up", "buyer.1");
     // A session whose processes the teardown cannot end (they are root's: SIGTERM and SIGKILL fail): its record stays for down.
     if (process.getuid!() === 0) throw new Error("run the suite as a user, not root: this test signals a process of root's that must survive it");
@@ -3467,16 +3468,17 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const seen = join(tempDir(), "hash-at-close");
     const cli = join(tempDir(), "cli.mjs");
     writeFileSync(cli, `import fs from "node:fs";\nconst rec = JSON.parse(fs.readFileSync(${JSON.stringify(join(main, ".argus/live/run.json"))}, "utf8"));\nfs.appendFileSync(${JSON.stringify(seen)}, JSON.stringify(rec.slots["1"].tokenHash) + "\\n");\nawait import(${JSON.stringify(shim)});\n`);
-    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [explorer, proving, stuck], browser: { js: cli, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
+    updateRun(main, r.runId, (prev: Obj) => ({ ...prev, sessions: [explorer, reproducer, proving, stuck], browser: { js: cli, channel: "chrome" }, slots: { 1: { journey: "j", generation: 1, tokenHash: "a".repeat(64), retired: [] } } }));
     await up(main, opts({ fresh: true }));
     // The tokens retire first: no explorer call can reopen a session after its close.
-    expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual(["null", "null"]);
+    expect(readFileSync(seen, "utf8").trim().split("\n")).toEqual(["null", "null", "null"]);
     const fresh = runJson(main);
     expect(alive(proxy.pid)).toBe(true);
     expect(fresh.groups.filter((g: Obj) => g.internal).map((g: Obj) => g.pgid)).toEqual([proxy.pid]);
     expect(fresh.internal).toEqual({ proxy: proxy.port });
-    expect(calls().map((c) => c.argv)).toEqual([[`-s=${explorer.name}`, "close"], [`-s=${stuck.name}`, "close"]]);
-    for (const p of [explorer.daemon.pid, explorer.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
+    // Every session but the proving logins': an explorer's and the repro runner's (slot r).
+    expect(calls().map((c) => c.argv)).toEqual([[`-s=${explorer.name}`, "close"], [`-s=${reproducer.name}`, "close"], [`-s=${stuck.name}`, "close"]]);
+    for (const p of [explorer.daemon.pid, explorer.browser.pid, reproducer.daemon.pid, reproducer.browser.pid]) expect(await until(() => !alive(p), 3000)).toBe(true);
     expect(alive(proving.daemon.pid)).toBe(true);
     expect(fresh.sessions.map((s: Obj) => s.name)).toEqual([proving.name, stuck.name]);
     expect(fresh.slots["1"]).toMatchObject({ tokenHash: null, retired: ["a".repeat(64)] });

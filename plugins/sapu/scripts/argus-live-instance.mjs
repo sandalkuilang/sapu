@@ -361,8 +361,8 @@ function current(main) {
  * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; retires
  * every slot's token and clears the instance id first (from then on `pw` refuses every call but
  * `submit`), stops every `start` entry (its stop replayed, its group stopped; setup groups, the events
- * follower and the proxy stay), drains every explorer's CLI session into the secret ledger and closes
- * it, then the store phase, checkStore,
+ * follower and the proxy stay), drains every CLI session but the proving logins' (an explorer's or the
+ * repro runner's) into the secret ledger and closes it, then the store phase, checkStore,
  * reset, the other entries, checkStore, the egress check and the runtime gate again, and a new instance
  * id. It writes only up's keys of run.json (UP_KEYS). Any refusal or failure → `down`, and the error
  * rethrown.
@@ -400,9 +400,10 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     for (const g of alive) note(`${g.name} (pgid ${g.pgid}) still runs after the stop; kept in the record for down`);
     state.groups = recordingArray(save, [...kept, ...alive]);
     state.stops = recordingArray(save);
-    // The explorers' sessions are closed, as run.json holds them now (one a call opened before its token
-    // retired included). The proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
-    const explorers = ((readRun(main) ?? {}).sessions ?? []).filter((x) => x && typeof x.slot === "number");
+    // The explorers' and the repro runner's sessions (every slot but `up`) are closed, as run.json holds
+    // them now (one a call opened before its token retired included). The proving logins' sessions (slot
+    // `up`) were closed by up itself; any left stay for down.
+    const explorers = ((readRun(main) ?? {}).sessions ?? []).filter((x) => x && x.slot !== "up");
     await drainSessions(main, runId, explorers, { js: rec.browser?.js ?? null, runner });
     await closeSessions(explorers, { js: rec.browser?.js ?? null, runner, note });
     // Only those now gone leave the record (one still running stays for down); re-read under the
