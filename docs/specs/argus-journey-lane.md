@@ -1274,7 +1274,7 @@ citable source for dead end, orphaned work and unreachable step.
 
 **Needs-owner.** A new contract label, `labels.needsOwner` (default `argus:needs-owner`), marks a
 finding only the owner can rule on. `/sapu:init` and the 2.9.0 upgrade step create it from the main
-session. `/sapu:sapu` lists it in B2's SKIP. `gh issue create --label <needsOwner>` is allowed; the
+session. `/sapu:sapu` lists it in B2's SKIP, and `/sapu:forge`'s priority ladder skips it. `gh issue create --label <needsOwner>` is allowed; the
 guard refuses adding or removing it on an existing issue or PR, and creating, editing, deleting or
 cloning the label, for every subagent (§11). The owner removes it to accept; closes the issue as not
 planned to rule it intended, which argus records in `arid.md` as today, and the next charters for
@@ -1732,7 +1732,7 @@ Elsewhere:
   the inspector workflow never selects it.
 - `tests/engine.test.ts`: the new files are English and name no repo; size budgets for `journeys.md`
   and the agent file; the agent file's frontmatter is `tools: Bash, Read, StructuredOutput`; argus SKILL.md grows by at most its one-sentence pointer and the lane name in
-  SELECT; B2's SKIP names `labels.needsOwner`; `/sapu:init` adds `env_file` to `guard.envFiles` and
+  SELECT; B2's SKIP and forge's priority ladder name `labels.needsOwner`; `/sapu:init` adds `env_file` to `guard.envFiles` and
   creates the label.
 - Acceptance: the pilots in §15.
 
@@ -1786,6 +1786,7 @@ Elsewhere:
 | `plugins/sapu/workflows/inspector.js` | its argus phase excludes the journey lane |
 | `plugins/sapu/skills/init/SKILL.md` | `journey` in the skills question; the `live` block with `services` (from the tracked config and code defaults that name a local service), `live.roles` from `test_accounts`, `env_file` and its `guard.envFiles` entry, `reserved_ports`, the two `confirmed` statements in §8's words; creates `labels.needsOwner` |
 | `plugins/sapu/skills/sapu/SKILL.md` | `labels.needsOwner` in B2's SKIP |
+| `plugins/sapu/skills/forge/reference.md` | `labels.needsOwner` among the priority ladder's exclusions |
 | `plugins/sapu/CONTRACT.md` | `labels.needsOwner`; version coupling; the explorer's guard rules; `sapu-live.log`; the gates-log `live=1` field |
 | `plugins/sapu/.claude-plugin/plugin.json`, workflow metas | version 2.9.0 |
 | `tests/…`, `tests/fixtures/journey-app/`, `tests/fixtures/argus-red/` | §14 |

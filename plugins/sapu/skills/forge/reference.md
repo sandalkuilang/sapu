@@ -4,7 +4,7 @@ Lookup material for the forge skill (SKILL.md in this skill's directory). Repo f
 
 ## Issue priority ladder
 
-Only consider issues that are open, not `needs-clarification`/`<blocked>`, not already owned by an open PR, and passing `sapu-contract.mjs issue-trust <n>` (a trusted author, or the contract's acceptance label applied by a trusted login). `needs-ai` (and any legacy spelling of it in profile §Labels) does **not** exclude an issue — it means the work starts with a research dossier instead of with code.
+Only consider issues that are open, not `needs-clarification`/`<blocked>`/`<labels.needsOwner>` (default `argus:needs-owner`: it waits for the owner's ruling), not already owned by an open PR, and passing `sapu-contract.mjs issue-trust <n>` (a trusted author, or the contract's acceptance label applied by a trusted login). `needs-ai` (and any legacy spelling of it in profile §Labels) does **not** exclude an issue — it means the work starts with a research dossier instead of with code.
 
 1. **p0** — production broken, security, data loss, `<base>` build red.
 2. **p1** — high-value bug or committed feature.

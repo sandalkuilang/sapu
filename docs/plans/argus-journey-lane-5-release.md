@@ -840,3 +840,5 @@ Refs #53
   after `live: ok` while only the draft covers the file. Every test repo that runs `up` now commits a
   contract (`liveContract`). `BUDGETS["skills/journey/live.md"]` is 14 500 (it was 14 000): the
   committed-contract note took it past.
+- **Phase-end review.** forge's priority ladder (`skills/forge/reference.md`) skips `<labels.needsOwner>`
+  as sapu's B2 does, pinned in engine.test beside B2's pin.

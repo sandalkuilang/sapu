@@ -1033,6 +1033,12 @@ describe("the journey lane's engine text", () => {
     expect(skip).toContain("`argus:needs-owner`");
   });
 
+  it("forge's priority ladder skips the needs-owner label", () => {
+    const ladder = read("skills/forge/reference.md").split("\n").find((l) => l.startsWith("Only consider issues that are open"))!;
+    expect(ladder).toContain("`<labels.needsOwner>`");
+    expect(ladder).toContain("`argus:needs-owner`");
+  });
+
   it("the inspector skill keeps the journey lane out", () => {
     const text = read("skills/inspector/SKILL.md").replace(/\s+/g, " ");
     expect(text).toMatch(/never selects? the journey lane/i);
