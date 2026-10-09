@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
+import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SKILLS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
 // @ts-expect-error — plain ESM script without types
 import { LIMIT_KEYS, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1003,6 +1003,28 @@ describe("the journey lane's engine text", () => {
     const row = read("CONTRACT.md").split("\n").find((l) => l.startsWith("| Existing QA configuration |"))!;
     expect(row).toContain("`.argus/live.json`");
     expect(row).toContain("skills/journey/live.md");
+  });
+
+  const INIT = "skills/init/SKILL.md";
+  it("init asks for every skill the contract knows", () => {
+    const popup2 = read(INIT).split("\n").find((l) => l.startsWith("- **Popup 2**"))!;
+    const list = /\(\*\*multiSelect\*\*: ([a-z, ]+)\)/.exec(popup2)![1].split(", ");
+    expect(list).toEqual(SKILLS);
+  });
+
+  it("init proposes the live block as the lane needs it", () => {
+    const text = read(INIT);
+    const flat = text.replace(/\s+/g, " ");
+    expect(text).toContain("${CLAUDE_PLUGIN_ROOT}/skills/journey/live.md");
+    expect(text.split("\n").filter((l) => l.includes("env_file")).some((l) => l.includes("guard.envFiles"))).toBe(true);
+    for (const statement of [
+      "every outbound integration (payments, email, messaging, identity checks) runs in test or mock mode under `env`, because a browser cannot see server-side calls",
+      "the data `reset` creates is synthetic (no real personal or business data), so screenshots and page text may appear in issues",
+    ]) expect(flat, statement).toContain(statement);
+    expect(text).toContain('argus-live.mjs" check');
+    const never = flat.split(/(?<=\.) /).find((x) => /never invents/i.test(x) && x.includes("`store_check`") && x.includes("`reset`"));
+    expect(never, "the never-invent sentence").toBeDefined();
+    expect(text).toMatch(/needs-owner/);
   });
 
   it("the brief keeps the explorer to the wrapper and page text as data", () => {

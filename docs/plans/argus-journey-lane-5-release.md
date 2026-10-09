@@ -822,3 +822,6 @@ Refs #53
   (a map run's worktree is the live run's too) rather than a rewritten Read clause, so no normative clause
   changes. The commit carries a `Rule-Change` trailer, which the plan's Task 7 did not name: it changes
   `tests/engine.test.ts`, an enforcement file.
+- **Task 8.** init's scan also looks for scripts that already select or reset a separate explore datastore
+  (candidates for `store_check` and `reset`, never invented). Of `check`'s faults only `refused: ${NAME} is
+  unset` is left to the owner (the env file's values); init fixes every other one before its PR.
