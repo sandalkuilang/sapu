@@ -244,9 +244,13 @@ candidate (stored injection), never followed.
 dialog — distinct from `not-tested`. Throughout, for every step: console errors and 4xx/5xx
 responses. **Absence is never instant:** anything judged missing is waited for up to `settle_ms`.
 **Short-lived signals** (toasts, `role=status`/`alert`, `aria-live` regions, Notification calls) are
-captured by an init script installed in every page and popup, which logs each to the console; the
-wrapper reports the new ones after every command, so a toast gone before the next snapshot is seen.
-A popup a link opened (`target=_blank rel=opener`) gets the script at the next command's observation:
+captured by an init script installed in every page and popup, which pushes each onto the page's own
+`window.__argusSignals` buffer (and logs it to the console). After every command the wrapper's
+observation evaluates the script again in every page of the session (it watches each document once)
+and drains every page's buffer, so a toast gone before the next snapshot is seen. The script also wraps
+`window.open`: Chrome runs init scripts in a popup's first document (about:blank) but not in the page
+it then loads, so the opener watches that page once it leaves about:blank. A popup a link opened
+(`target=_blank rel=opener`) has no such hook: it is watched from the next command's observation, and
 what it signalled before that is not seen (a known limit).
 
 **Token discipline.** Read the page with `find` or `snapshot --depth=<n>` first and a full snapshot
@@ -274,8 +278,10 @@ the budget and the deadline); its StructuredOutput is only `{status, slot}`. Sch
 off_goal}], created: [markers], values: [{marker, field, role, value, from}], candidates: [{claim,
 oracle, measured, roles, observed, expected, repro, screenshots[], h2h3}], cw: [{step, q1, q2, q3,
 q4}], coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events, next, notes }`.
-The orchestrator reads it only through `argus-live.mjs intake <slot>`, which prints every free-text
-field inside a fresh nonce fence, as data. A candidate is never a finding (argus §3).
+The orchestrator reads it only through `argus-live.mjs intake <slot>`, which prints, per generation,
+a summary from enums and counts only first (`slot <n> generation <g> journey <id> status <s> steps
+<k> candidates <k> coverage <oracle>=<verdict>,…`), then the whole return pretty-printed inside a
+fresh `<<<RETURN-<nonce>` fence (marker shapes escaped, secrets masked), as data. A candidate is never a finding (argus §3).
 
 ## 8. Live instance
 
@@ -601,32 +607,45 @@ defence in depth and not enforcement:
    and at `down`, where a finding is reported but never stops the teardown. No docker, or no daemon
    running, means nothing was created through it (a run whose daemon did not answer at step 3 has no
    follower; its gate reads the daemon's own window from `since`).
-9. **Proxy.** Starts the run's filtering proxy (§9).
-10. **Logins.** One proving login per allocated account, sequential, `login_spacing_ms` apart, each
+9. **Proxy.** Records `allowOrigins` (the expanded `allow_origins`) in run.json, then starts the
+    run's filtering proxy (§9) as `argus-live.mjs proxy <run>`, detached into a process group recorded
+    as the run's `internal` group `proxy` before anything waits; it listens on 127.0.0.1 at a port the
+    system gives it and reads its allowed origins from run.json once, at start. Once it reports its port, run.json
+    `internal.proxy` is written (by the proxy's start, its one writer).
+10. **Logins.** One proving login per configured account — every user of every role with `users`
+    (`<role>.<k>`, k from 1 in order) and once per login-command role (`<role>.1`) — sequential,
+    `login_spacing_ms` apart, in slot `up/` (its CLI config written there), each
     followed by a check that the browser's requests reached only the run's origins and
     `allow_origins` — any other origin (e.g. a redirect to the owner's own server) → refuse, naming
     it. The check reads only the requests and WebSockets of the login's own pages (popups, redirects
     and blocked requests included), never the proxy's log: Chrome's own start-up traffic, which no
-    flag stops entirely, reaches the proxy too and is no page's request. The proving sessions are
-    then closed.
+    flag stops entirely, reaches the proxy too and is no page's request. A login that fails →
+    `refused: <role>.<k> could not sign in (<reason>)` and `down`. The proving sessions are then
+    closed and their records dropped.
 11. **Run files.** `.argus/live/run.json` gets its instance id; a detached **reaper**, started with
     the run id as soon as run.json first exists (step 1), runs `down` at the deadline unless `renew`
     moved it, and exits without acting when the lock names another run. `up` ends by printing the
     run's **summary**, one line of JSON free of secrets — `{runId, instanceId, deadline, baseUrl,
-    origins, ports, worktree}` (`deadline` in epoch seconds) — and `status --json` repeats it: the
-    orchestrator reads that, never run.json.
+    origins, ports, worktree}` (`deadline` in epoch seconds) — and `status --json` repeats it with
+    `slots`, each slot's `{journey, generation, calls, max, submitted, retired}` (`retired`: it holds
+    no live token; `status` marks such a slot ` retired`): the orchestrator reads that, never run.json.
 
     **`run.json`** (mode 0600, under the gitignored `.argus/`; written from step 1 on, so a session that
     dies mid-`up` leaves a record for the reaper and for recovery). Every write is a read-modify-write
-    under the run's lock claim (`down` below). This is its one schema:
+    under the run's lock claim (`down` below). Each key has one owner: a writer merges only its own
+    keys over the record as it stands, so a key another owner wrote — or one a later version adds — is
+    kept. `up` and `up --fresh` write only `up`'s keys (every row below whose writer is `up` or `up
+    --fresh`, except `reaper` and `internal`, which have their own writers). This is its one schema:
 
     | Key | Holds | Written by |
     |---|---|---|
     | `runId` | the run id | `up` step 1 |
     | `digest` | `{live, env_file}`: sha256 of `.argus/live.json` and of the env_file as `up` read them | `up` step 1 |
-    | `reaper` | the reaper's pid | `up` step 1 (the reaper's start) |
+    | `reaper` | the reaper's pid | the reaper's start (`up` step 1) |
     | `ports` | `{<name>: port}` of every `{port:<name>}`: what pages and processes use | `up` step 3 |
-    | `internal` | `{<name>: port}` the run's own machinery uses (the proxy, phase 3): never in `ports` or the origins | `up` step 3; the proxy's start |
+    | `browser` | `{js, channel}`: the pinned CLI's entry point and the Chrome-family channel | `up` step 2 |
+    | `internal` | `{<name>: port}` the run's own machinery uses (`proxy`): never in `ports` or the origins | the proxy's start (`up` step 9) |
+    | `allowOrigins` | the expanded `allow_origins`, which the proxy and every slot config admit | `up` step 9 |
     | `upstream` | `{<port>: address}`: the loopback address each run port's listener passed health on (the proxy connects a loopback name such as `localhost` there, never at another listener on that port; a port with none recorded answers 502) | `up`'s health waits; rewritten by `up --fresh` |
     | `origins` | the run's origins (above), from `ports` only | `up` step 3 |
     | `baseUrl` | `base_url`, expanded | `up` step 3 |
@@ -638,8 +657,10 @@ defence in depth and not enforcement:
     | `composeServices`, `composePorts` | the Compose projects' service names, and the host ports they publish | `up` step 5 |
     | `groups` | `[{name, pgid, started, cmdline, members: [{pid, started, cmdline}], exited}]`: every process group the run started (setup steps, the follower, `reset`, start entries), recorded as it starts; members and command lines re-read from `ps` at every write, secret values masked | every start; `up --fresh` drops those it stopped |
     | `stops` | `[{name, cmd, cwd, env}]`: each start entry's stop, as `down` replays it (`cmd` holds variable references, never a secret value) | every start of an entry with `stop`; `up --fresh` |
-    | `instanceId` | set once `up` (or `up --fresh`) passed every step; null meanwhile | `up` step 11, `up --fresh` |
-    | `sessions`, tokens | the run's CLI sessions and their tokens (§9) | phase 3 |
+    | `instanceId` | set once `up` (or `up --fresh`) passed every step; null meanwhile (`pw` refuses then) | `up` step 11, `up --fresh` |
+    | `sessions` | `[{name, slot, account, cwd, home, daemon: {pid, pgid, started}, browser: {pid, pgid, started}}]`: every CLI session (§9 "Sessions"), recorded before it opens | the session's open; its close (the proving logins, `up --fresh`, a reopen) |
+    | `slots` | `{<n>: {journey, generation, tokenHash, accounts, retired, submitted}}`: each slot's token as its sha256 (§9 "Token") | `slot`, `slot --handoff`, `submit`, `up --fresh` (retires) |
+    | `loginFailed` | `{"<role>/<user>": reason}`: the configured accounts whose login failed this run (never retried) | the login |
     | `closing` | true once a `down` sealed the record | `down` |
 
 **`renew`** extends the deadline by `limits.max_cycle_minutes`, never past start + 3 × that + the
@@ -648,10 +669,14 @@ appends `<run id> deadline <epoch>` to `sapu-live.log`; the cycle renews after e
 candidates not yet reproduced are journalled `not reproduced: harness`.
 
 **`up --fresh`** (between repro runs) keeps the lock, worktree, dependencies, ports, proxy, reaper,
-setup groups and events follower: it stops every `start` entry (running its `stop`), starts the
-`phase: store` entries, runs `store_check` and `reset`, starts the rest, runs `store_check`, the
-egress check and the Docker runtime gate again, takes a new instance id, and prints the summary. It
-makes no proving logins.
+setup groups and events follower: it first retires every slot's token and clears the instance id (so
+`pw` refuses every call but `submit` from then on), stops every `start` entry (running its `stop`),
+closes every explorer's CLI session as run.json holds it then (the tokens retired first, so no call
+reopens one after its close; one still running stays recorded for `down`), starts the `phase: store`
+entries, runs `store_check` and `reset`, starts the rest, runs `store_check`, the egress check and the
+Docker runtime gate again, takes a new instance id, and prints the summary. It makes no proving
+logins, and `loginFailed` survives it. A failure tears down from run.json as it stands (the sessions
+and slots other writers recorded meanwhile) under its own in-memory keys.
 
 `up --fresh` and `renew` refuse, leaving the run as it is for `down`, a cycle whose `up` did not finish
 (no instance id), whose deadline passed, that a `down` sealed, or whose `.argus/live.json` or env_file
@@ -665,8 +690,12 @@ claim, refused once the lock no longer names the run, once `down` sealed it, or 
 it: so an `up` racing a `down` cannot add a process group the teardown did not read, and fails into
 its own teardown instead), then replays each stop record, sends SIGTERM to each process group that still runs what was
 recorded and SIGKILL after 10 s, stops the proxy, closes the run's CLI sessions by name (never
-`close-all`: other projects share the CLI), removes its own worktree (`--force` on that worktree only)
-and its HOME (read-only trees made writable first), kills the reaper last, removes `run.json` and the
+`close-all`: other projects share the CLI) and kills by identity what they leave, removes its own
+worktree (`--force` on that worktree only) and its HOME (read-only trees made writable first), removes
+each slot's secrets and CLI state (`.playwright/`, `state.json`, `lock`, `totp.json`) under that
+slot's lock, waiting at most 10 s for a `pw` call still holding it (every writer of those files
+re-checks run.json first, so one that outlives the wait writes nothing), keeps `out/`, `files/`,
+`returns/` and `logs/` (evidence for the owner and the repro), kills the reaper last, removes `run.json` and the
 lock, appends `<run id> end <epoch>` to `sapu-live.log`, and leaves the data for the next reset. A step
 that fails is reported and the next one runs: `run.json`, the lock and the end line are always
 finished, and what could not be removed is named for the owner; the end line is written under the
@@ -713,14 +742,28 @@ bytes, which the run's HOME exceeds; the teardown removes the directory, since t
 sockets behind); nothing of the owner's `PLAYWRIGHT_*`, `PWTEST_*`, `NODE_OPTIONS` or `XDG_*`. The
 repo needs no Playwright of its own.
 
-**Per-slot CLI config**, written by `up` to `.argus/live/<run>/<slot>/.playwright/cli.config.json`
-(its location also scopes the CLI's session namespace):
-- `outputDir` = `.argus/live/<run>/<slot>/out`, headless, `timeouts.idle` 30 min;
-- `contextOptions`: `locale` and `timezoneId` from `live.locale`/`live.timezone` (a repro's own
-  context overrides them, §10), `serviceWorkers: "block"`;
-- `initScript`: the signal logger (§7), installed in every page and popup;
-- **network block, in layers:** a **filtering forward proxy** inside `argus-live.mjs` that admits only
-  the run's origins and `allow_origins` — plain HTTP, `CONNECT` and WebSocket upgrades — with
+**Per-slot CLI config**, written by `slot` when it mints slot `<n>` to
+`.argus/live/<run>/<n>/.playwright/cli.config.json` (with the signal script beside it, `signals.js`,
+both 0600, and the fixtures in `<n>/files/`), and by `up` for its proving logins in slot `up/`; the
+slot's directory is the CLI's cwd, so its location also scopes the CLI's session namespace. The keys,
+as 0.1.22 reads them:
+- `outputDir` = `.argus/live/<run>/<slot>/out`, `timeouts.idle` 30 min, `console.level` `info`,
+  `allowUnrestrictedFileAccess: false`;
+- `browser.browserName` `chromium`, `browser.isolated: true`,
+  `browser.launchOptions`: `channel` (Chrome, else Edge), `headless`, `proxy.server` (the run's proxy)
+  and `args` (the host rules, the WebRTC flags and the quiet flags below);
+- `browser.contextOptions`: `locale` and `timezoneId` from `live.locale`/`live.timezone` (a repro's
+  own context overrides them, §10), `viewport` (the first of `viewports`, 900 high),
+  `serviceWorkers: "block"`;
+- `browser.initScript`: the signal logger (§7), installed in every page and popup;
+- **network block, in layers:** a **filtering forward proxy** that admits only the run's origins and
+  `allow_origins` — plain HTTP in absolute form, `CONNECT` and WebSocket upgrades. It runs as
+  `argus-live.mjs proxy <run>`, an internal process group of the run listening on 127.0.0.1 at a port
+  it is given by the system (§8 step 9); origin-form requests and absolute `https://` answer 400 (it is
+  no reverse proxy); a run host that is not loopback by itself is resolved again at each connection and
+  connected to only while it resolves to loopback alone, at the address checked; each blocked origin
+  is logged once to `logs/proxy-blocked.jsonl`; and it exits by itself once the lock names another
+  run. Chrome gets it with
   `--proxy-bypass-list=<-loopback>`, so loopback traffic goes through it too (Chrome bypasses a proxy
   for loopback by default); `network.allowedOrigins` = the same set; `--host-resolver-rules` mapping
   every host to NOTFOUND except the run's hosts and `allow_origins` hosts;
@@ -745,15 +788,22 @@ repo needs no Playwright of its own.
 
 **The wrapper**, `argus-live.mjs pw <token> <role>[.<n>] <command> [args]`, is the only way in
 (`<role>.<n>` is the role's n-th allocated account; a plain word, so it needs no quoting):
-- **Token.** `argus-live.mjs slot <n>` mints a random token per explorer dispatch, recorded in
-  `run.json` with its slot, journey and generation. The wrapper refuses an unknown or retired token,
-  and a role or account outside that journey's allocation. Known limit: the token is an argument of the
+- **Token.** `argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>,…`
+  mints a random token per explorer dispatch and prints it in one line of JSON `{slot, token,
+  generation, journey, accounts}` — the only place a token exists: `run.json` `slots[<n>]` keeps its
+  sha256 alone (`{journey, generation, tokenHash, accounts, retired: [<sha256>…], submitted}`).
+  `slot <n> --handoff` retires the current token and mints the next generation with a fresh budget; a
+  slot has at most three generations (the first and two handoffs). An account (a configured user, or a
+  login-command role's `.1`) serves one slot per run. Each slot keeps its counters in `<n>/state.json`
+  (calls, loops, its sessions' state, the blocked origins it was told, the accounts its journey
+  created) under `<n>/lock`, which every `pw` call and handoff of the slot holds. The wrapper refuses
+  an unknown or retired token, and a role or account outside that journey's allocation. Known limit: the token is an argument of the
   explorer's command line, so while a `pw` call runs any local user can read it in the process list;
   the lane assumes a single-user development machine (on a shared host, another user could spend the
   slot's budget, though never reach the CLI past the wrapper's checks).
 - **Commands allowed to the explorer:** `goto` and `tab-new`; `click`, `dblclick`, `fill`, `type`,
   `select`, `check`, `uncheck`, `hover`, `press`, `drag`; `upload` (files from `live.fixtures`, which
-  `up` copies to the slot's directory); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
+  `slot` copies from HEAD into the slot's `files/`); `go-back`, `go-forward`, `reload`; `snapshot`, `find`,
   `screenshot`, `console`, `requests`, `request`, `response-body`; `resize`; `tab-list`,
   `tab-select`, `tab-close`; `dialog-accept`, `dialog-dismiss`; `code grep <pattern> [<pathspec>]` and
   `code files [<pathspec>]` — fixed argv `git --literal-pathspecs -C <wt> grep -z -n -I --no-color
@@ -772,9 +822,19 @@ repo needs no Playwright of its own.
   `javascript:`, `data:`, `file:`, `view-source:` and `http://localhost:<port>@host` are refused.
 - **Values into commands.** `trigger`, `facts` and `mail` run their argv with no shell; each value
   replaces one placeholder (`{1}`, `{2}`…) and must match that placeholder's regex in `args` (default
-  `^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$` — never a leading `-`), so a value read from a page can
-  never become a command or an option.
-- **Sessions** are named `<run>-<slot>-<role>[.<n>]`; `anon` is never signed in.
+  `^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$`); a leading `-` is refused even when a custom `args` regex
+  allows it, so a value read from a page can never become a command or an option. The browser
+  commands' positionals go to the CLI after `--`, so none is read as an option either.
+- **Sessions** are named `<run>-<slot>-<role>.<k>`, always with the account's number (an explorer's
+  bare `<role>` is `<role>.1`); `anon` is never signed in. Each is recorded in run.json `sessions`
+  before `open` runs, as `{name, slot, account, cwd, home, daemon, browser}`, the daemon and the
+  browser (Chrome's root, which leads a process group of its own) each `{pid, pgid, started}`. The
+  teardown closes each by name (`close`, in its own cwd and HOME), kills what still runs as recorded
+  by identity, then sweeps what no record names: daemons of the run by name, orphaned browsers by HOME.
+- **The wrapper's own browser code** (the login stages, the probe and the observation) comes from
+  fixed templates: its payload enters only as one JSON literal (`const P = <JSON>;`), targets only as
+  the JSON literals the target parser emits; it is written 0600 to `.playwright/run-<nonce>.js`, run
+  as `run-code --filename=<file>` and removed, and the CLI's echo of it is never shown.
 - **Login** (also used by `up`), with the role's own `login_url`, `logged_in` and optional
   `login_open` (a control to click first, for a login modal): open the login page fresh each time
   (CSRF tokens); fill the visible user field (`type=email`, else the text input before the
@@ -788,12 +848,36 @@ repo needs no Playwright of its own.
   never retried within a run (lockout); a 429 or a lockout message is a harness event.
   `login: {command}` runs per session open and must print a fresh storage state each time, which
   goes into that session's config at open. The wrapper's login actions never appear in its output,
-  the trail or a repro.
-- **Re-login:** when `logged_in` is no longer visible after a command, the wrapper signs that session
-  in once, reports `re-logged-in: <role>`, and does not repeat the command (it may have side effects).
+  the trail or a repro: after every successful login the session's `requests --clear` and
+  `console --clear` run.
+- **Re-login:** when `logged_in` is gone from the page after a command while the session was signed
+  in, a probe tab opens at the role's base_url; only when `logged_in` is absent there too (a page
+  without the header is not a lost session) does the wrapper sign that session in once, report
+  `re-logged-in: <role>.<k>`, and not repeat the command (it may have side effects). A login-command
+  role's session is closed and opened again with a fresh storage state. Every probe is told as
+  `probed: <role>.<k>` outside the fence and logged to `logs/probes.jsonl` (`{slot, account, url,
+  start, end}`), so the probe tab's request to the base_url is told apart from the page's own.
+- **Absence is never instant:** a `find` with no match is asked again every 500 ms up to
+  `settle_ms`, then `found after <ms> ms` or `not found after <ms> ms`.
+- **`request`** prints the values of `Cookie`, `Set-Cookie`, `Authorization`,
+  `Proxy-Authorization` and every `*-Token` header as `<masked>`.
+- **Exit codes:** 0 the command ran (a CLI error is page data, inside the fence), 1 refused or
+  `BUDGET`/`LOOP`/`DEADLINE`/`HARNESS`, 2 the wrapper failed. `BUDGET` and `DEADLINE` apply to every
+  command but `submit`. While the run is not live, every command but `submit` is refused and counts
+  nothing: `refused: cycle <run> has no instance (its up did not finish)` during an `up --fresh`,
+  `refused: cycle <run> is being torn down` once a `down` sealed run.json; and every write of the
+  slot's files re-checks it just before it writes, so a call in flight during a `down` leaves nothing.
 - **Output** from the page is fenced by `<<<PAGE-<nonce>` … `PAGE-<nonce>>>>` with a fresh random
-  nonce per call (`PAGE-` inside page text is escaped); new console signals, the budget and loop
-  counters and harness events follow outside the fence. Inside it every secret value (the env file's,
+  nonce per call. Inside the fence: the CLI's answer and the page's lines — the new signals, the
+  console's new errors and warnings, and `blocked: <origin>` once per slot for an origin the run
+  blocked that a page named (never as a console error). In it every marker shape (`PAGE-`,
+  `RETURN-`) gets U+2011 for its hyphen, C0 and C1 controls become U+FFFD (newlines and tabs kept,
+  CRLF as LF), and past 24 000 characters the rest is dropped and counted. Outside the fence, only the
+  wrapper's own vocabulary: `calls <c>/<max>`, `loop <n>/3`, `re-logged-in: <role>.<k>`,
+  `session-reopened: <role>.<k>`, `probed: <role>.<k>`, `found after <ms> ms`, `not found after <ms>
+  ms`, `truncated <n> characters`, `exit <n>` (a role-free command's), the harness lines (`HARNESS:
+  …`, `harness: login failed`, `harness: observation failed`, `harness: probe failed`), `BUDGET:`,
+  `LOOP:`, `DEADLINE:`, refusals, and `login: ok` or `login: failed (<reason>)`. Inside the fence every secret value (the env file's,
   the role passwords and TOTP secrets, created accounts' passwords) is masked however the page or the
   CLI encoded it: per character as is, backslash-escaped, `\uXXXX`, `\xHH`, an HTML entity, `%HH` of its
   UTF-8 bytes or `+` for a space (so JavaScript's, Go's, Python's and PHP's JSON, HTML and URL forms
@@ -990,7 +1074,7 @@ backticks) is refused like the owner's own. A plain `gh issue close` (completed)
 | Login rate-limited or locked | a harness event; that account's journey stops for the cycle |
 | Goal cannot be reached | the permission checks say the role may not → not a candidate; they say it may → discoverability candidate |
 | A precondition is missing | created through the UI by a role allowed to, or by a `trigger`; otherwise the charter is re-scoped (argus's standing order) |
-| A browser session dies | the wrapper reopens it on the next command; the explorer resumes from its last trail step |
+| A browser session dies | the command that finds it gone reopens it (and signs it in) and is not run: `session-reopened: <role>.<k>`; the explorer resumes from its last trail step |
 | Another local user reads a slot's token from the process list while a `pw` call runs | a known limit (§9 "Token"): the lane assumes a single-user development machine |
 | An explorer returns `aborted`, hits `DEADLINE`, or returns nothing | its submitted trail and reason are journalled; its candidates still go through repro |
 | `up --fresh` fails in the repro phase | the remaining candidates are journalled `not reproduced: harness`, never dropped |

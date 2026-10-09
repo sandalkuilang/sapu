@@ -1000,15 +1000,16 @@ Interfaces:
 
 ### Task 15: whole suite and phase-end team review
 
-- [ ] `npx vitest run` → PASS, every file (browser tests on the release machine's Chrome).
-- [ ] Phase-end review (owner's rule): `senior-dev-team:senior-qa-reviewer` and
+- [x] `npx vitest run` → PASS, every file (browser tests on the release machine's Chrome).
+- [x] Phase-end review (owner's rule): `senior-dev-team:senior-qa-reviewer` and
   `senior-dev-team:senior-software-architect` read `git diff <phase 3 base>..HEAD` against this plan and
   spec §7, §8 steps 2/9/10 and teardown, §9 and §12; findings fixed by the developer, re-reviewed,
   suite green.
-- [ ] Append an "As built" section to this plan for every interface that changed in implementation,
+- [x] Append an "As built" section to this plan for every interface that changed in implementation,
   and list the spec edits this phase needs (the "Decisions this plan takes" above, as finally built)
   for the coordinator to fold into spec §7, §8 and §9.
-- [ ] Commit `docs(sapu): argus journey lane phase 3 — as-built notes`.
+- [x] Commit `docs(sapu): argus journey lane phase 3 — as-built notes` (as `… as-built notes and the
+  spec it settled`: the spec edits were folded in by the same commit).
 
 ## As built (Tasks 1–4)
 
@@ -1396,6 +1397,73 @@ in with Task 5): §8 — top-level
 `limits.explorer_pw_calls`; `fixtures` repo-relative; the five role-free command words reserved as role
 names; `logged_in`/`login_open` must be parseTarget forms (the getBy family or `locator(...)`), never refs or bare CSS strings.
 
+## As built — phase-end review
+
+The phase-end review (`senior-qa-reviewer` and `senior-software-architect`) approved phase 3 with these
+items, all built in `fix(sapu): argus-live up owns only its keys of run.json, and teardown, fresh and pw
+agree on a closing run`, each with its test:
+
+- **A — run.json key ownership.** `writeRunFiles` merges the keys of the state it is given over run.json
+  as it stands (it no longer writes a whole record with a fixed list of protected keys). `up` and
+  `up --fresh` pass only `UP_KEYS` (runId, instanceId, worktree, home, ports, upstream, origins, baseUrl,
+  env, since, events, digest, composeServices, composePorts, groups, stops, browser, allowOrigins), so
+  `sessions`, `slots`, `loginFailed`, `reaper`, `internal`, `closing` and any key a later version adds
+  keep their own writers. `internal.proxy` has one writer, `startProxy` (step 9); `up` keeps no
+  `internal` of its own. Test: a key another owner writes during `up` and during `up --fresh`
+  (`loginFailed`, an unknown key) survives both.
+- **B — `up --fresh` order.** It retires every token and clears the instance id first, then stops the
+  entries and closes the explorer sessions, read from run.json at that moment (a session a call opened
+  before its token retired included). Test: each `close` sees `tokenHash: null` in run.json.
+- **C — `pw` refuses a run that is not live.** `tokenSlot` returns run.json too; `pw` and `call` refuse
+  every command but `submit` when it has no instance id (`refused: cycle <run> has no instance (its up
+  did not finish)`) or is `closing` (`refused: cycle <run> is being torn down`), counting nothing.
+- **D — teardown and slot writers.** `writeSlotState(dir, s, {main, runId})` and `prepareSlot`
+  re-check run.json (`stillLive`) just before they write; pw's `open` does too. `down` removes each
+  slot's files under the slot's lock (withFileLock, `slotWaitMs`, default 10 s; past it the files go
+  anyway and it is noted). Tests: a `down` while a `pw` call is in flight (a CLI whose `goto` blocks)
+  leaves no `state.json`, `.playwright/` or `lock`; a lock holder that writes late is waited for.
+- **E — rollback sessions.** `tearDown` (after a failing `up` or `up --fresh`) passes `down` run.json as
+  it stands under the in-memory state, so sessions recorded meanwhile are closed. Test: a session
+  recorded during a failing `up --fresh` has its processes killed.
+- **F — ensureCli's URL mask.** Each URL-shaped word holding `@` is parsed with `URL`: masked only when
+  it names a user or password; one that does not parse (a password holding `/`) is masked as before.
+  Test: a scoped package's 404 keeps `registry.npmjs.org`.
+- **G — status.** A slot holding no live token (`tokenHash: null`: submitted, or retired by
+  `up --fresh`) shows ` retired`; `status --json` adds `slots: {<n>: {journey, generation, calls, max,
+  submitted, retired}}` (Phase 5's orchestrator reads only `status --json`).
+- **H — probes.** After a re-login probe `pw` prints `probed: <role.k>` outside the fence and appends
+  `{slot, account, url, start, end}` to `logs/probes.jsonl`. Live-checked in Chrome: a page without
+  the header (`/no-header`) probes once and logs it.
+- Also tested: `up` with a wrong password exits 1 at step 10 (`refused: buyer.1 could not sign in
+  (rejected)`), leaving no proxy, no `cliDaemon.js <run>-up-` process, no HOME or worktree, and a
+  balanced `sapu-live.log`.
+
+The architect's two open questions, answered:
+- Popups a link opens with `target=_blank` (no `window.open` hook): an acceptable known limit, as
+  spec §7 states; they are watched from the next observation.
+- The probe tab's request to the role's base_url: kept (a page without the header must not count as a
+  lost session) and not cleared from the CLI's request list; it is told instead, by the `probed:` line
+  and `logs/probes.jsonl` (H).
+
+## Carried to Phase 4 (opening tasks)
+
+1. **Scrub has nothing to read.** Add a 0600 secret ledger under the run's `logs/`, filled by `observe`
+   (the context's cookies and storage values) and by the login stages before they clear the request
+   and console lists; scrub reads it. (The Self-review's claim that scrub reads request logs this
+   phase writes is corrected above.)
+2. **Extract `argus-live-session.mjs`** (ensureSession, exec, observe, relogin) from `pw`'s `call`, so
+   the repro runner shares the session handling rather than copying it.
+3. **Repro sessions.** The `SLOT` shape (`slotDir`) and `up --fresh`'s numeric-slot filter of explorer
+   sessions must admit repro sessions `<run>-r-<role>`.
+4. **Move `canonicalOrigin` and `exactHost`** from `-proxy.mjs` to a leaf `-origin.mjs` (pw, login and
+   the proxy import them).
+5. **`loginFailed` survives `up --fresh`:** decide the policy for repro (a failure from the explore phase
+   still blocks that account in every repro run).
+6. **Split `argus-live-instance.mjs`** (950+ lines) when next touched; its module-DAG header comment is
+   stale (it still says steps 9 and 10 arrive later).
+7. **An in-daemon page listener** that re-runs `SIGNAL_SCRIPT` on `domcontentloaded` (so a
+   `target=_blank` popup is watched from its first document): probe live first.
+
 ---
 
 ## Self-review
@@ -1413,8 +1481,10 @@ names; `logged_in`/`login_open` must be parseTarget forms (the getBy family or `
   retried; login actions absent; toast in page and popup; fence; BUDGET, LOOP, DEADLINE; fresh budget;
   submit; intake).
 - Deferred to phase 4 with their reasons: the repro runner and its sessions `<run>-r-<role>` (it
-  reuses `runCli`, `openSession`, `login`, `runHook`, `parseTarget`/`targetCode`); scrub (it reads the
-  proxy's and the CLI's request logs, which this phase writes); the fixture's seeded oracle defects
+  reuses `runCli`, `openSession`, `login`, `runHook`, `parseTarget`/`targetCode`); scrub (corrected at
+  the phase-end review: this phase writes no request log scrub could read — the proxy logs only the
+  origins it blocked, and the CLI keeps its request lists in the daemon, cleared after every login —
+  so Phase 4 opens with a secret ledger, below); the fixture's seeded oracle defects
   (dead end, double release, claim race, stale view, orphaned item, missing and delayed handoff).
 - Names defined once: `CLI_VERSION`, `ensureCli`, `findChrome`, `cliEnv`, `runCli`, `slotDir`,
   `slotConfig`, `SIGNAL_SCRIPT`, `openSession`, `closeSessions`, `sessionName`, `PAGE_CAP`, `nonce`,
