@@ -1780,7 +1780,7 @@ describe("argus-live scrub — attachments and filing", () => {
     const { b, done } = t.file({ attach: [png] }, "Seen by @octocat.\n");
     expect(await done).toEqual({ code: 0, out: ["scrub: ok; redacted 0, defanged 1, cut 0 line(s)", "title: A title", `attach: ${t.shown("1/out/page-1.png")}`, `filed: ${URL9}`] });
     const [c] = creates(t.g);
-    expect(c.argv).toEqual(["issue", "create", "--title", "A title", "--body-file", b, "--attach", realpathSync(png)]);
+    expect(c.argv).toEqual(["issue", "create", "--title", "A title", "--body-file", b, "--label", "sapu:agent-filed", "--attach", realpathSync(png)]);
     expect(c.body).toBe("Seen by `@octocat`.\n");
     expect(c.attached).toEqual([PNG.toString("latin1")]);
     expect(t.g.calls().map((x) => x.argv.slice(0, 2).join(" "))).toEqual(["--version", "repo view", "issue create"]);
@@ -1824,7 +1824,9 @@ describe("argus-live scrub — attachments and filing", () => {
       const r = await done;
       expect(r).toEqual({ code: 0, out: ["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: A title", `local: ${shown} (${reason})`, `filed: ${URL9}`] });
       expect(readFileSync(b, "utf8")).toBe(`A clean body.\n\nLocal evidence: \`${shown}\`\n`);
-      expect(creates(t.g).map((c) => c.argv)).toEqual([["issue", "create", "--title", "A title", "--body-file", b]]);
+      // traces "none" puts no sapu label on GitHub, the agent-filed one included.
+      const label = reason === "traces none" ? [] : ["--label", "sapu:agent-filed"];
+      expect(creates(t.g).map((c) => c.argv)).toEqual([["issue", "create", "--title", "A title", "--body-file", b, ...label]]);
     }, 30_000);
   }
 
@@ -1844,7 +1846,47 @@ describe("argus-live scrub — attachments and filing", () => {
     const t = filing();
     expect((await t.file({ labels: ["argus:needs-owner", "bug"] }).done).code).toBe(0);
     const argv = creates(t.g)[0].argv;
-    expect(argv.slice(argv.indexOf("--label"))).toEqual(["--label", "argus:needs-owner", "--label", "bug"]);
+    expect(argv.slice(argv.indexOf("--label"))).toEqual(["--label", "argus:needs-owner", "--label", "bug", "--label", "sapu:agent-filed"]);
+  }, 30_000);
+
+  /** The repo's own contract with `patch` over it, committed in the run's main (scrub reads the committed one). */
+  const contractWith = (t: ReturnType<typeof filing>, patch: (c: Obj) => Obj) => {
+    const c = JSON.parse(readFileSync(join(__dirname, "../.claude/sapu.json"), "utf8"));
+    mkdirSync(join(t.main, ".claude"), { recursive: true });
+    writeFileSync(join(t.main, ".claude/sapu.json"), JSON.stringify(patch(c)));
+    gitIn(t.main, "add", ".claude/sapu.json");
+    gitIn(t.main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract");
+  };
+
+  it("every issue scrub files carries the contract's agent-filed label, once, and a comment carries none", async () => {
+    const t = filing();
+    contractWith(t, (c) => ({ ...c, labels: { ...c.labels, agentFiled: "x:filed" } }));
+    const { b, done } = t.file({ labels: ["bug", "X:Filed"] });
+    expect((await done).code).toBe(0);
+    expect(creates(t.g)[0].argv).toEqual(["issue", "create", "--title", "A title", "--body-file", b, "--label", "bug", "--label", "x:filed"]);
+    const c = t.file({ create: false, comment: "9" });
+    expect((await c.done).code).toBe(0);
+    expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", c.b]);
+  }, 30_000);
+
+  it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {
+    const t = filing();
+    for (const label of ["sapu:accepted", "SAPU:Accepted"]) {
+      expect(await t.file({ labels: ["bug", label] }).done).toEqual({ code: 1, out: ["refused: scrub: label 2 is the acceptance label (sapu:accepted): only an acceptor applies it"] });
+    }
+    contractWith(t, (c) => ({ ...c, labels: { ...c.labels, accepted: "triage:ok" } }));
+    expect((await t.file({ labels: ["triage:ok"] }).done).out).toEqual(["refused: scrub: label 1 is the acceptance label (triage:ok): only an acceptor applies it"]);
+    expect((await t.file({ labels: ["sapu:accepted"] }).done).code).toBe(0);
+    expect(t.g.calls().filter((c) => c.argv[0] === "issue")).toHaveLength(1);
+  }, 30_000);
+
+  it("policy.fileIssues false: scrub files nothing, though it still scrubs and comments", async () => {
+    const t = filing();
+    contractWith(t, (c) => ({ ...c, policy: { fileIssues: false } }));
+    expect(await t.file({ labels: ["bug"] }).done).toEqual({ code: 1, out: ["refused: scrub: the contract's policy.fileIssues is false: nothing is filed (skills/sapu/policy.md)"] });
+    expect(t.g.calls()).toEqual([]);
+    expect((await t.file({ create: false }).done).code).toBe(0);
+    expect((await t.file({ create: false, comment: "9" }).done).out.at(-1)).toBe(`commented: ${URL9}#issuecomment-77`);
   }, 30_000);
 
   it("a label is checked as the title and the body are, naming where and never what, and a refused one runs no gh", async () => {

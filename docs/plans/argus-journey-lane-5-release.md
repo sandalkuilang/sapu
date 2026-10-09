@@ -827,3 +827,8 @@ Refs #53
   unset` is left to the owner (the env file's values); init fixes every other one before its PR.
 - **Task 9.** `skills/sapu/SKILL.md` is 40 222 bytes with the needs-owner SKIP, and its budget is that size,
   exact. The inspector SKILL.md's sentence sits in "The order", on argus's item.
+- **Phase-end review.** `scrub --create` adds the contract's `labels.agentFiled` itself, last and once
+  (whatever case a caller gave it in; none under `traces` `"none"`), and refuses, before any gh run, a
+  `--label` that is the acceptance label in any case and a policy with `fileIssues: false`: under
+  `agentFiledNeedsAcceptance` an issue built from page text would otherwise have skipped acceptance. A
+  comment gets no label, and `fileIssues: false` leaves comments to policy.md as it does for argus.

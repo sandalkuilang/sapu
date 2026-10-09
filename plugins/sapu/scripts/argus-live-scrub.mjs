@@ -16,7 +16,7 @@ import { highEntropy, MIN_SECRET, readLedger, readSeen, secretHits, secretName }
 import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run, tempBeside, within } from "./argus-live-proc.mjs";
 import { readRun, recordedSecrets, worktreeHeadFile } from "./argus-live-run.mjs";
-import { loadContract, resolvePolicy } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, loadContract, resolvePolicy } from "./sapu-contract.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
@@ -434,7 +434,9 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
  * `argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file>
  * [--attach <png>…] [--create [--label <l>…] | --comment <n>]` → `{code, out}`. The run is the one named, or
  * the one whose candidate `ref` reproduced two of two (scrubRun; a run that is down is read the same way);
- * its refusal, then scrubSecrets', → that line (exit 1); a secret in the title, the body or a label as
+ * its refusal → that line (exit 1); with `create`, the committed contract's `policy.fileIssues` false or a label
+ * that is its acceptance label (any case) → one `refused: scrub: …` line (exit 1, no gh run); then
+ * scrubSecrets' refusal → that line (exit 1); a secret in the title, the body or a label as
  * given → one line per hit, `<title|body> <line>:<col> <class>` or `label <i> <class>`, then `refused:
  * scrub: <k> secret(s) in the issue; nothing is filed` (exit 1, the file untouched, no gh run; never a value, never the text around it); else
  * both redacted (redactIds, the run's seen ids) and defanged, `scrub: ok; redacted <n>, defanged <n>, cut
@@ -442,7 +444,8 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
  * (<reason>)` (attachVerdict; gh's version from `gh --version`, the visibility from `gh repo view`, `traces`
  * from the contract's policy), the local ones named in a `Local evidence:` line appended to the body (once).
  * The body file is rewritten in place. With `create`: `gh issue create --title … --body-file <file>
- * [--label <l>]… [--attach <png>]…`; with `comment`: `gh issue comment <n> --body-file <file> [--attach
+ * [--label <l>]… [--attach <png>]…`, the labels ending with the contract's agent-filed label (once; none
+ * under `traces` "none"); with `comment`: `gh issue comment <n> --body-file <file> [--attach
  * <png>]…`; an issue URL in gh's stdout → `filed: <url>` / `commented: <url>` (exit 0, whatever gh's
  * exit); none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2). gh's
  * own output is never printed.
@@ -453,6 +456,14 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   const { runId } = which;
   const t = String(title ?? "");
   if (/[\r\n]/.test(t)) return { code: 1, out: ["refused: scrub: a title is one line"] };
+  const contract = loadContract(main).contract ?? null;
+  const policy = resolvePolicy(contract);
+  if (create) {
+    if (policy.fileIssues === false) return { code: 1, out: ["refused: scrub: the contract's policy.fileIssues is false: nothing is filed (skills/sapu/policy.md)"] };
+    const accepted = acceptedLabel(contract);
+    const i = labels.findIndex((l) => String(l).toLowerCase() === accepted.toLowerCase());
+    if (i >= 0) return { code: 1, out: [`refused: scrub: label ${i + 1} is the acceptance label (${accepted}): only an acceptor applies it`] };
+  }
   const { secrets, refusal } = scrubSecrets(main, { runId, env });
   if (refusal) return { code: 1, out: [refusal] };
   let body;
@@ -477,7 +488,7 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
       const r = runner([gh, ...argv], { cwd: main, env });
       return r.status === 0 ? String(r.stdout ?? "").trim() : null;
     };
-    const at = { ghVersion: ask(["--version"]), visibility: ask(["repo", "view", "--json", "visibility", "--jq", ".visibility"]), traces: resolvePolicy(loadContract(main).contract ?? null).traces };
+    const at = { ghVersion: ask(["--version"]), visibility: ask(["repo", "view", "--json", "visibility", "--jq", ".visibility"]), traces: policy.traces };
     for (const f of attach) {
       const v = attachVerdict(main, runId, f, at);
       if (v.attach) attached.push(v.file);
@@ -494,7 +505,10 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   fs.writeFileSync(bodyFile, text);
   if (!create && comment === null) return { code: 0, out };
   const files = attached.flatMap((f) => ["--attach", f]);
-  const argv = create ? ["issue", "create", "--title", dt.text, "--body-file", bodyFile, ...labels.flatMap((l) => ["--label", l]), ...files] : ["issue", "comment", String(comment), "--body-file", bodyFile, ...files];
+  // Every issue an agent files carries the agent-filed label (CONTRACT.md, Agent-filed issues), once; none under traces "none".
+  const filed = agentFiledLabel(contract);
+  const all = policy.traces === "none" ? labels : [...labels.filter((l) => String(l).toLowerCase() !== filed.toLowerCase()), filed];
+  const argv = create ? ["issue", "create", "--title", dt.text, "--body-file", bodyFile, ...all.flatMap((l) => ["--label", l]), ...files] : ["issue", "comment", String(comment), "--body-file", bodyFile, ...files];
   const r = runner([gh, ...argv], { cwd: main, env });
   const url = ISSUE_URL.exec(String(r.stdout ?? ""));
   if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`] };

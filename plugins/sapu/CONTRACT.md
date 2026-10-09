@@ -268,7 +268,8 @@ text before it — the reason names when to re-apply the label.
 running account, which is trusted, so their issues pass `issue-trust` by author. Their provenance is
 a label: **`labels.agentFiled`** (optional, default `sapu:agent-filed`; a plain name like the owner
 labels, apart from each of them and from the workflow and tier labels). Every issue an agent files
-carries it from `gh issue create --label` on — except the orchestrator's `flake:`/`base:` issue,
+carries it from `gh issue create --label` on (the journey lane's `argus-live.mjs scrub --create` adds it
+itself) — except the orchestrator's `flake:`/`base:` issue,
 whose text is the base's own gate output and which it works at once — and no agent removes it,
 renames it or deletes it (the guard refuses it to subagents: §Engine floor); with `policy.traces`
 `"none"` it is not applied. A missing label is created by the owner (`/sapu:init` proposes it); an

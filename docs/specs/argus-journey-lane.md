@@ -1428,7 +1428,13 @@ evidence:` line appended to the body (once, however often it is scrubbed). Trace
 
 **Filing.** With `--create` (and its `--label`s: 1–50 characters, no comma or C0 control character,
 not starting with whitespace, only with `--create`) or `--comment <n>` (never both), once the text passed, scrub runs `gh issue
-create|comment … --body-file <file> [--attach <png>]…` with no shell. An issue or comment URL in gh's
+create|comment … --body-file <file> [--attach <png>]…` with no shell. An issue's labels end with the
+contract's `labels.agentFiled` (default `sapu:agent-filed`; given once, whatever its case among the
+`--label`s; none under `policy.traces` `"none"`), as every agent-filed issue's do (CONTRACT.md,
+Agent-filed issues). `--create` is refused, with no gh run, when the committed contract's
+`policy.fileIssues` is `false` (`refused: scrub: the contract's policy.fileIssues is false: nothing is
+filed (skills/sapu/policy.md)`) or a `--label` is its acceptance label in any case (`refused: scrub:
+label <i> is the acceptance label (<name>): only an acceptor applies it`). An issue or comment URL in gh's
 stdout means filed — `filed: <url>` or `commented: <url>`, exit 0, whatever gh's exit — and is never
 re-filed; none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2).
 gh's own output is never printed. Without either flag scrub only checks and rewrites.
