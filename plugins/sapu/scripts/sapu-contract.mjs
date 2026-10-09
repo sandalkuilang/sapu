@@ -1745,13 +1745,55 @@ function fileAt(root, ref, file) {
   return spawnSync("git", ["-C", root, "cat-file", "-e", `${ref}:${file}`], { stdio: "ignore" }).status === 0;
 }
 
-/** The warning `show`/`check` print when gate.merge pins no repo file, or null. */
-export function gateProtectionWarning(contract, hasFile) {
+/** The text of `file` in the repo at `root` at `ref` (null = its working tree), or null. */
+function textAt(root, ref, file) {
+  if (ref === null) {
+    try {
+      return fs.readFileSync(path.join(root, file), "utf8");
+    } catch {
+      return null;
+    }
+  }
+  const r = spawnSync("git", ["-C", root, "show", `${ref}:${path.posix.normalize(file)}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout : null;
+}
+
+/**
+ * The ways a file finds its own location (make, just, shell, node, python, ruby, php), each with
+ * the name a warning prints. sapu-merge.sh runs a pinned file from <MAIN>'s path, so a gate that
+ * finds the tree it tests this way tests <MAIN>, not the PR's worktree.
+ */
+const SELF_LOCATING = [
+  [/\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
+  [/\b(justfile_directory|justfile|source_directory|source_file)\s*\(\s*\)/, (m) => `${m[1]}()`],
+  [/\bBASH_SOURCE\b/, "${BASH_SOURCE}"],
+  [/\$\{0[%#:]/, (m) => m[0]],
+  [/\b(?:dirname|realpath|readlink)\b[^\n;|&)]*?(["']?)\$(?:0\b|\{0\})/, () => 'dirname "$0"'],
+  [/\b__dirname\b|\b__filename\b/, (m) => m[0]],
+  [/\bimport\.meta\.(?:url|dirname|filename)\b/, (m) => m[0]],
+  [/\b__file__\b|\b__dir__\b|\b__FILE__\b|\b__DIR__\b/, (m) => m[0]],
+];
+
+/**
+ * The warning `show`/`check` print about gate.merge, or null: when it pins no repo file, or when the
+ * file it pins finds the tree from its own location (`readFile(path)` gives that file's text, or null).
+ */
+export function gateProtectionWarning(contract, hasFile, readFile = () => null) {
   const merge = contract && contract.gate && contract.gate.merge;
   if (!isStr(merge)) return null;
   const p = protectedCommand(merge.trim().split(/\s+/), hasFile);
-  if (p.index !== null) return null;
-  return `gate.merge (\`${merge}\`) pins no repo file (${p.why}): sapu-merge.sh runs the PR's own copy of the gate's logic, so a PR can change the gate that judges it. Write it as a repo script run by path or by an interpreter (\`scripts/gate.sh\`, \`bash scripts/gate.sh\`, \`node scripts/gate.mjs\`, \`uv run python scripts/gate.py\`), or as \`make <target>\`/\`just <recipe>\` with the makefile or justfile on the base branch.`;
+  if (p.index === null) {
+    return `gate.merge (\`${merge}\`) pins no repo file (${p.why}): sapu-merge.sh runs the PR's own copy of the gate's logic, so a PR can change the gate that judges it. Write it as a repo script run by path or by an interpreter (\`scripts/gate.sh\`, \`bash scripts/gate.sh\`, \`node scripts/gate.mjs\`, \`uv run python scripts/gate.py\`), or as \`make <target>\`/\`just <recipe>\` with the makefile or justfile on the base branch.`;
+  }
+  const text = readFile(p.file);
+  if (typeof text !== "string") return null;
+  const found = [];
+  for (const [re, name] of SELF_LOCATING) {
+    const m = re.exec(text);
+    if (m) found.push(typeof name === "function" ? name(m) : name);
+  }
+  if (!found.length) return null;
+  return `gate.merge's pinned file ${p.file} finds the tree from its own location (${[...new Set(found)].join(", ")}): sapu-merge.sh runs it from the main checkout's path (\`<MAIN>/${p.file}\`), so that location is the main checkout, not the PR's worktree, and the gate would test the main checkout (a false green). Find the tree through the cwd or $SAPU_WT (both the PR's worktree) instead.`;
 }
 
 function main(argv) {
@@ -1911,7 +1953,8 @@ function main(argv) {
   // Every gh call below (and in its children) goes to the contract's GitHub host.
   if (hostOf(contract) !== DEFAULT_HOST) process.env.GH_HOST = hostOf(contract);
   if (cmd === "show" || cmd === "check") {
-    const warning = gateProtectionWarning(contract, (f) => fileAt(here, workingTree ? null : (ref ?? "HEAD"), f));
+    const at = workingTree ? null : (ref ?? "HEAD");
+    const warning = gateProtectionWarning(contract, (f) => fileAt(here, at, f), (f) => textAt(here, at, f));
     if (warning) process.stderr.write(`sapu-contract: WARNING ${warning}\n`);
   }
   if (cmd === "check") {

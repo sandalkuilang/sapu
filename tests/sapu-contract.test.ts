@@ -1990,4 +1990,38 @@ describe("protectedCommand: the repo file a contract command pins, for any runne
     withMerge("uv run bash scripts/gate.sh");
     expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
   });
+
+  it.each([
+    ["make gate", "Makefile", "ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))\ngate:\n\tcd $(ROOT) && npm test\n", /MAKEFILE_LIST/],
+    ["just gate", "justfile", "gate:\n  cd {{justfile_directory()}} && npm test\n", /justfile_directory\(\)/],
+    ["just gate", "justfile", "gate:\n  cd {{ source_directory () }} && npm test\n", /source_directory\(\)/],
+    ["scripts/gate.sh", "scripts/gate.sh", '#!/bin/sh\ncd "$(dirname "$0")/.." && npm test\n', /dirname "\$0"/],
+    ["bash scripts/gate.sh", "scripts/gate.sh", '#!/bin/bash\ncd "$(dirname "${BASH_SOURCE[0]}")/.."\nnpm test\n', /BASH_SOURCE/],
+    ["bash scripts/gate.sh", "scripts/gate.sh", "#!/bin/bash\ncd ${0%/*}/..\nnpm test\n", /\$\{0%/],
+    ["node scripts/gate.mjs", "scripts/gate.mjs", "process.chdir(new URL('..', import.meta.url).pathname);\n", /import\.meta\.url/],
+    ["node scripts/gate.cjs", "scripts/gate.cjs", "process.chdir(require('path').join(__dirname, '..'));\n", /__dirname/],
+    ["uv run python scripts/gate.py", "scripts/gate.py", "import os\nos.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n", /__file__/],
+  ])("`show`/`check` warn when gate.merge's pinned file locates the tree from its own place: `%s` (%s)", (merge, file, text, idiom) => {
+    const repo = join(root, `self-locate-${file.replace(/\W/g, "-")}-${merge.replace(/\W/g, "-")}`);
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { [file]: text, ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge } }) });
+    const r = cli(repo, ["show"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(new RegExp(`WARNING gate\\.merge's pinned file ${file.replace(/\./g, "\\.")} finds the tree from its own location`));
+    expect(r.err).toMatch(idiom);
+    expect(r.err).toMatch(/runs it from the main checkout's path.*through the cwd or \$SAPU_WT/);
+    expect(cli(repo, ["check"]).err).toMatch(/pinned file .* finds the tree from its own location/);
+    // the working tree is what `show --working-tree` reads: a fixed copy there no longer warns
+    writeFileSync(join(repo, file), "gate:\n\tnpm test\n");
+    expect(cli(repo, ["show", "--working-tree"]).err).not.toMatch(/WARNING/);
+  });
+
+  it("a pinned file that finds the tree through its cwd or SAPU_WT does not warn", () => {
+    const repo = join(root, "self-locate-ok");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { "scripts/gate.sh": '#!/bin/sh\ncd "${SAPU_WT:-$PWD}" && npm test\n', ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge: "bash scripts/gate.sh" } }) });
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+  });
 });

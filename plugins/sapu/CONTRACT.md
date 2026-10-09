@@ -550,6 +550,17 @@ used — while `redAreas` fails (unknown red areas = no merge). **The remaining 
 logic lives in one protected script. Write a script at the repo root with a `/` (`./gate.sh`),
 not `gate.sh`.
 
+**A pinned file runs from the main checkout's path.** `make -f <MAIN>/Makefile gate`,
+`just --justfile <MAIN>/justfile …`, `bash <MAIN>/scripts/gate.sh`: the file's own location is the
+main checkout, not the PR worktree. So a pinned file must find the tree it tests through its **cwd**
+(the PR worktree, for `gate.merge`) or **`SAPU_WT`**, never through its own location: not
+`ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))` then `cd $(ROOT)`, not just's
+`justfile_directory()`/`source_directory()`, not `cd "$(dirname "$0")"` or `${BASH_SOURCE[0]}`, not
+`__dirname`/`import.meta.url`/`__file__` — each of those tests the main checkout, and a red PR passes.
+`show`/`check` warn when `gate.merge`'s pinned file holds one of those idioms (`gate.merge's pinned file
+… finds the tree from its own location`); a helper the pinned file calls is not read (write the gate
+in that one file).
+
 **The main checkout must be identical to `origin/<base>`.** For `.claude/sapu.json` and every
 protected word of `gate.merge`, `mergeAfter` and `redAreas` that exists on `origin/<base>`,
 `git hash-object --no-filters <MAIN>/<path>` must equal `git rev-parse origin/<base>:<path>`.
