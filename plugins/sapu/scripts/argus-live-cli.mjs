@@ -72,7 +72,8 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
 /**
  * `argus-live.mjs show`: the CLI's dashboard on the run's sessions for an owner who wants to watch — `show
  * --port 0` (a blocking http server on a free localhost port; it prints its URL) under cliEnv(home), from
- * `cwd` (the run's directory), stdio inherited, until the owner stops it. Probed with the pinned CLI: from
+ * `cwd` (the run's directory), stdout and stderr inherited (stdin closed: a background group reading the
+ * terminal would stop on SIGTTIN; the dashboard reads none), until the owner stops it. Probed with the pinned CLI: from
  * the run's directory it lists every session of the run's browser HOME, `pw` keeps answering while it
  * runs, and SIGINT to its process group ends the CLI and its dashboard process both (to the CLI's pid
  * alone it leaves the dashboard running). So the CLI leads a process group of its own, and SIGINT,
@@ -86,7 +87,7 @@ export function showDashboard({ js, home, cwd }) {
   ownDir(SOCKETS_ROOT);
   ownDir(socketsDir(home));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: "inherit", detached: true });
+    const child = spawn(process.execPath, [js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: ["ignore", "inherit", "inherit"], detached: true });
     const group = (sig) => {
       try {
         process.kill(-child.pid, sig);
