@@ -3,6 +3,7 @@
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive, ARGUS_LIVE, cleanTemps, committed, example, liveRun, makeShim, tempDir, until } from "./helpers/argus-live";
@@ -24,6 +25,8 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { minimize, repro } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+// @ts-expect-error — plain ESM script without types
+import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -84,6 +87,9 @@ describe("argus-live modules — the DAG", () => {
     expect(g.has("argus-live-steps")).toBe(true);
     for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
+    // The generated RED test reads targets and oracles only; the runner above it writes it.
+    expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
+    expect(g.get("argus-live-repro")).toContain("argus-live-redtest");
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -442,22 +448,24 @@ describe("argus-live repro sessions", () => {
   });
 });
 
+/** Spec §10's example, its context as the list's first element (decision 1). */
+const EXAMPLE = () => [
+  { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } },
+  { as: "customer", do: "goto", path: "/orders/new" },
+  { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
+  { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+  { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+  { as: "customer", expect: "visible", target: { text: "{{order}}" } },
+  { as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] },
+  { as: "customer", expect: "fact-equals", marker: "{{order}}", field: "status", value: "paid" },
+  { as: "sales", do: "goto", path: "/" },
+  { as: "sales", expect: "visible", target: { text: "{{order}}" }, final: "handoff" },
+];
+const ACCOUNTS = { "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "anon.1": null };
+const at = { accounts: ACCOUNTS, live: example() };
+const FINAL_EXPECT = { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" };
+
 describe("argus-live repro DSL", () => {
-  /** Spec §10's example, its context as the list's first element (decision 1). */
-  const EXAMPLE = () => [
-    { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } },
-    { as: "customer", do: "goto", path: "/orders/new" },
-    { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
-    { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
-    { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
-    { as: "customer", expect: "visible", target: { text: "{{order}}" } },
-    { as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] },
-    { as: "customer", expect: "fact-equals", marker: "{{order}}", field: "status", value: "paid" },
-    { as: "sales", do: "goto", path: "/" },
-    { as: "sales", expect: "visible", target: { text: "{{order}}" }, final: "handoff" },
-  ];
-  const ACCOUNTS = { "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "anon.1": null };
-  const at = { accounts: ACCOUNTS, live: example() };
   const FINAL = { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" };
   /** The refusal parseRepro throws for `list`. */
   const refusal = (list: Obj[]) => {
@@ -934,5 +942,138 @@ describe("argus-live minimize", () => {
   it("refuses a candidate that never reproduced", async () => {
     const t = returned([EIGHT]);
     await expect(minimize(t.main, t.refs[0], { once: essential().once })).rejects.toThrow(`refused: repro: ${t.refs[0]} has no reproducing run (repro ${t.refs[0]} first)`);
+  });
+});
+
+describe("argus-live generated RED test", () => {
+  const GOLDEN = join(__dirname, "fixtures/argus-red/order-to-cash.handoff.spec.ts");
+  /** The RED test of `list` as candidate 1.1.1 of journey order-to-cash, its oracle the final's. */
+  const red = (list: Obj[], settleMs = 3000) => {
+    const { context, steps } = parseRepro(list, at);
+    return redTest({ journey: "order-to-cash", oracle: steps.at(-1).final, ref: "1.1.1", context, steps, settleMs });
+  };
+  /** `ts` stripped of its types and parsed by `node --check` (as an .mjs file) → its exit and stderr. */
+  const check = (ts: string) => {
+    const file = join(tempDir(), "red.mjs");
+    writeFileSync(file, stripTypeScriptTypes(ts));
+    const r = spawnSync(process.execPath, ["--check", file], { encoding: "utf8" });
+    return { code: r.status, err: r.stderr };
+  };
+
+  it("the §10 example matches the golden file", () => {
+    expect(red(EXAMPLE())).toBe(readFileSync(GOLDEN, "utf8"));
+  });
+
+  it("saved names never collide", () => {
+    expect(() => parseRepro([{ as: "customer", do: "read", target: { testId: "n" }, save: "marker" }, FINAL_EXPECT], at)).toThrow("save takes a name");
+    const text = red([
+      { as: "customer", do: "goto", path: "/orders/new" },
+      { as: "customer", do: "read", target: { testId: "order-number" }, save: "settle" },
+      { as: "customer", do: "read", target: { testId: "order-number" }, save: "customer1" },
+      { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+      { as: "customer", do: "fill", target: { label: "Note" }, value: "x {{order}}" },
+      { as: "sales", expect: "visible", target: { text: "{{settle}}{{customer1}}" }, final: "handoff" },
+    ]);
+    expect(text).toContain("  const saved_settle = await readValue(customer1.getByTestId(\"order-number\"));\n");
+    expect(text).toContain("  const saved_customer1 = await readValue(customer1.getByTestId(\"order-number\"));\n");
+    expect(text).toContain('  await customer1.getByLabel("Note").fill("x " + saved_order);\n');
+    expect(text).toContain("  await expect(sales1.getByText(saved_settle + saved_customer1)).toBeVisible({ timeout: SETTLE });\n");
+    expect(check(text).code).toBe(0);
+  });
+
+  it("the test is valid TypeScript", () => {
+    expect(check(readFileSync(GOLDEN, "utf8"))).toEqual({ code: 0, err: "" });
+    const race = red([
+      { context: { viewport: 390, locale: "de-DE" } },
+      { as: "customer.1", do: "goto", path: "/inbox" },
+      { as: "customer.2", do: "goto", path: "/inbox" },
+      { parallel: [{ as: "customer.1", do: "click", target: { role: "button", name: "Claim" } }, { as: "customer.2", do: "click", target: { role: "button", name: "Claim" } }] },
+      { as: "customer.1", expect: "visible", target: { testId: "claim", nth: 0 } },
+      { as: "customer.2", expect: "visible", target: { testId: "claim", nth: 0 } },
+      { as: "customer.1", do: "reload" },
+      { as: "customer.1", expect: "no-error" },
+      { as: "system", expect: "mail", to: "buyer1@example.test", contains: "Claimed" },
+      { as: "customer.1", expect: "count", target: { testId: "claim" }, value: 1, final: "claim-race" },
+    ]);
+    expect(check(race)).toEqual({ code: 0, err: "" });
+    expect(race).toContain('const CONTEXT: BrowserContextOptions = {"viewport": {"width": 390, "height": 900}, "locale": "de-DE", "timezoneId": "UTC"};\n');
+    expect(race).toContain('  await Promise.all([\n    customer1.getByRole("button", {"name": "Claim"}).click(),\n    customer2.getByRole("button", {"name": "Claim"}).click(),\n  ]);\n');
+    // no-error: a collector on the page, cleared before the step before it, read at it.
+    expect(race).toContain("  const errors_customer1 = collectErrors(customer1);\n");
+    expect(race).toContain("  errors_customer1.length = 0;\n  await customer1.reload();\n");
+    expect(race).toContain("  expect(errors_customer1).toEqual([]);\n");
+    expect(race).toContain("  // final (claim-race): the correct behaviour, RED while the defect is there\n  await expect(customer1.getByTestId(\"claim\")).toHaveCount(1, { timeout: SETTLE });\n");
+    // Every other kind, an account the run creates and anon too.
+    const every = red([
+      { as: "anon.1", do: "goto", path: "/signup" },
+      { as: "anon.1", do: "fill", target: { placeholder: "Email" }, value: "{{marker}}@example.test" },
+      { as: "anon.1", do: "press", key: "Enter" },
+      { as: "anon.1", expect: "text-contains", target: { role: "status" }, value: "Welcome" },
+      { as: "customer.2", do: "login", user: "{{marker}}@example.test", password: "pw-{{marker}}" },
+      { as: "customer.2", expect: "url", value: "/" },
+      { as: "customer.1", do: "goto", path: "/orders/new" },
+      { as: "customer.1", do: "select", target: { label: "Size" }, value: "L" },
+      { as: "customer.1", expect: "value-equals", target: { label: "Size" }, value: "L" },
+      { as: "customer.1", do: "check", target: { label: "Gift", exact: true } },
+      { as: "customer.1", expect: "enabled", target: { role: "button", name: "Place order", exact: false } },
+      { as: "customer.1", do: "uncheck", target: { label: "Gift" } },
+      { as: "customer.1", expect: "hidden", target: { text: "Gift wrap", within: { testId: "extras" } } },
+      { as: "customer.1", do: "dblclick", target: { text: "Size" } },
+      { as: "customer.1", do: "hover", target: { text: "Size" } },
+      { as: "customer.1", do: "press", key: "Tab", target: { label: "Size" } },
+      { as: "customer.1", do: "go-back" },
+      { as: "customer.1", expect: "text-equals", target: { role: "heading" }, value: "Home" },
+      { as: "customer.1", expect: "fact-equals", marker: "{{marker}}", field: "quantity", value: 2, final: "status-coherence" },
+    ]);
+    expect(check(every)).toEqual({ code: 0, err: "" });
+    expect(every).toContain("// RED until the defect is fixed. Wire signedIn, login, trigger, fact and mail to this repo's E2E helpers.\n");
+    expect(every).toContain("  const anon1 = await browser.newPage(CONTEXT);\n  const customer2 = await browser.newPage(CONTEXT);\n  const customer1 = await signedIn(browser, \"customer.1\", CONTEXT);\n");
+    expect(every).toContain('  await login(customer2, marker + "@example.test", "pw-" + marker);\n');
+    expect(every).toContain('  await expect(customer2).toHaveURL((u) => u.pathname + u.search === "/" || u.pathname === "/", { timeout: SETTLE });\n');
+    expect(every).toContain('  await anon1.keyboard.press("Enter");\n');
+    expect(every).toContain("  await expect.poll(() => fact(marker, \"quantity\"), { timeout: SETTLE }).toBe(2);\n");
+  });
+
+  it("strings never become code", () => {
+    const value = "`${process.exit()}`";
+    const name = '"); x("';
+    const text = red([
+      { as: "customer", do: "goto", path: "/orders/new" },
+      { as: "customer", do: "fill", target: { label: "Note" }, value },
+      { as: "customer", do: "click", target: { role: "button", name } },
+      { as: "customer", expect: "visible", target: { text: value } },
+      { as: "sales", expect: "visible", target: { text: name }, final: "handoff" },
+    ]);
+    expect(check(text)).toEqual({ code: 0, err: "" });
+    expect(text).toContain(`.fill(${JSON.stringify(value)})`);
+    expect(text).toContain(`getByRole("button", {"name": ${JSON.stringify(name)}})`);
+    // Each occurrence sits inside its JSON string literal.
+    for (const line of text.split("\n").filter((l) => l.includes("process.exit"))) expect(line).toContain(JSON.stringify(value));
+    // The header and the title take only an id, a ref and an oracle.
+    const { context, steps } = parseRepro(EXAMPLE(), at);
+    expect(() => redTest({ journey: "x\nprocess.exit()", oracle: "handoff", ref: "1.1.1", context, steps, settleMs: 3000 })).toThrow("failed: redTest: a journey id is kebab-case");
+  });
+
+  it("repro --test writes red.spec.ts from the confirmed min.json, else repro.json", () => {
+    const t = returned([EXAMPLE()]);
+    const dir = t.dir(t.refs[0]);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "repro.json"), JSON.stringify({ ref: t.refs[0], repro: EXAMPLE() }));
+    const cli = () => spawnSync(process.execPath, [ARGUS_LIVE, "repro", t.refs[0], "--test"], { cwd: t.main, encoding: "utf8" });
+    const r = cli();
+    expect(r.status, r.stderr).toBe(0);
+    const file = join(realpathSync(dir), "red.spec.ts");
+    expect(r.stdout).toBe(`red test: ${file}\n`);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Spec §8's example config: settle_ms 10000.
+    expect(readFileSync(file, "utf8")).toBe(readFileSync(GOLDEN, "utf8").replace("const SETTLE = 3000;", "const SETTLE = 10000;"));
+    const min = [EXAMPLE()[0], ...EXAMPLE().slice(1, 6), ...EXAMPLE().slice(8)];
+    writeFileSync(join(dir, "min.json"), JSON.stringify(min));
+    writeFileSync(join(dir, "minimize.json"), JSON.stringify({ confirmed: false }));
+    expect(cli().status).toBe(0);
+    expect(readFileSync(file, "utf8")).toContain('await trigger("payment-settles"');
+    writeFileSync(join(dir, "minimize.json"), JSON.stringify({ confirmed: true }));
+    expect(cli().status).toBe(0);
+    expect(readFileSync(file, "utf8")).not.toContain("await trigger(");
   });
 });

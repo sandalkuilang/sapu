@@ -4,7 +4,8 @@
 // driver, proxy and per-slot config an explorer's use; its answer is an exit code — 0 not reproduced, 3
 // reproduced, 2 a harness failure — and lines in the wrapper's own words, what the page showed fenced.
 // `repro` runs it twice and files only at two of two (decision 9); `minimize` drops one role or step at a
-// time and keeps a drop only when the run still fails its final the same way (decision 10).
+// time and keeps a drop only when the run still fails its final the same way (decision 10); `redTestFile`
+// writes the Playwright test a sapu worker uses as its RED test.
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,6 +19,7 @@ import { appendLedger } from "./argus-live-ledger.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { checkUrl } from "./argus-live-origin.mjs";
 import { run, runAsync, sleep, tempBeside } from "./argus-live-proc.mjs";
+import { redTest } from "./argus-live-redtest.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { CAP_BYTES, configuredUser, keepDrain, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { readSlotState, slotLockWaitMs, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
@@ -493,6 +495,14 @@ export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts
   return { code, lines };
 }
 
+/** The repo's live config, expanded with the running cycle's ports (the static checks read it). */
+function liveOf(main) {
+  const { config, errors, secrets } = loadLive(main);
+  if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
+  const rec = readRun(main);
+  return expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+}
+
 /** The candidate's run records in `dir` → `[{i, rec}]` by run number (an unreadable one left out). */
 function runRecords(dir) {
   let names = [];
@@ -532,10 +542,7 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   const records = runRecords(dir);
   const base = records.filter((r) => isObj(r.rec) && r.rec.exit === 3 && !r.rec.reduced).at(-1);
   if (!base) throw new Error(`refused: repro: ${ref} has no reproducing run (repro ${ref} first)`);
-  const { config, errors, secrets } = loadLive(main);
-  if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
-  const rec = readRun(main);
-  const live = expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+  const live = liveOf(main);
   const budget = max ?? (live.limits && live.limits.minimize_runs) ?? 12;
   const at = { accounts: slotRec.accounts, live };
   const list = candidate.repro;
@@ -606,6 +613,34 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   writePrivate(path.join(dir, "minimize.json"), `${JSON.stringify({ runs, max: budget, stopped, from, to: keep.size, confirmed, tried })}\n`);
   emit(`minimized ${ref}: steps ${from} → ${keep.size}, runs ${runs}/${budget}, stopped ${stopped}, confirmed ${confirmed ? "yes" : "no"}`);
   return { code: 0, lines };
+}
+
+/**
+ * Candidate `ref`'s RED test (spec §10 "Issue body additions") written to `red.spec.ts` (0600) in its
+ * records → the file's absolute path: from `min.json` when the last minimize confirmed it, else from the
+ * whole list `repro.json` holds (refused without one), parsed against the slot's allocation, its journey
+ * the slot's, its oracle the final's, `SETTLE` the run's settle_ms.
+ */
+export function redTestFile(main, ref) {
+  const { slotRec, dir } = reproRef(main, ref);
+  const read = (f) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  const m = read("minimize.json");
+  const min = isObj(m) && m.confirmed === true ? read("min.json") : null;
+  const whole = read("repro.json");
+  const list = Array.isArray(min) ? min : isObj(whole) ? whole.repro : null;
+  if (!Array.isArray(list)) throw new Error(`refused: repro: ${ref} has no records (repro ${ref} first)`);
+  const live = liveOf(main);
+  const { context, steps } = parseRepro(list, { accounts: slotRec.accounts, live });
+  const text = redTest({ journey: slotRec.journey, oracle: steps.at(-1).final, ref, context, steps, settleMs: live.settle_ms ?? 10_000 });
+  const file = path.resolve(dir, "red.spec.ts");
+  writePrivate(file, text);
+  return file;
 }
 
 /**

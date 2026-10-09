@@ -131,15 +131,16 @@ export function parseTarget(s) {
 /**
  * The code of a parsed target on `root` (`page`, a frame or a locator variable), every string a JSON
  * literal: `page.getByRole("button", {"name": "Account"}).nth(2)`. A ref is refused: it names an
- * element of the CLI's last snapshot, not something code can find.
+ * element of the CLI's last snapshot, not something code can find. `lit` writes each string (the
+ * generated RED test's turns a placeholder into its variable); by default `JSON.stringify`.
  */
-export function targetCode(t, root = "page") {
+export function targetCode(t, root = "page", lit = JSON.stringify) {
   const bad = () => new Error(`not code: ${JSON.stringify(t)}`);
   if (!t || typeof t !== "object") throw bad();
   if (t.ref !== undefined) throw new Error(`not code: ${t.ref} is a ref (an element of the CLI's last snapshot)`);
-  let code = t.within ? targetCode(t.within, root) : root;
+  let code = t.within ? targetCode(t.within, root, lit) : root;
   if (typeof t.css === "string") {
-    code += `.locator(${JSON.stringify(t.css)})`;
+    code += `.locator(${lit(t.css)})`;
   } else {
     const method = typeof t.by === "string" && Object.hasOwn(METHOD, t.by) ? METHOD[t.by] : null;
     const arg = t.by === "role" ? t.role : t.value;
@@ -147,13 +148,13 @@ export function targetCode(t, root = "page") {
     const opts = [];
     if (t.name !== undefined) {
       if (t.by !== "role" || typeof t.name !== "string") throw bad();
-      opts.push(`"name": ${JSON.stringify(t.name)}`);
+      opts.push(`"name": ${lit(t.name)}`);
     }
     if (t.exact !== undefined) {
       if (typeof t.exact !== "boolean" || t.by === "testId") throw bad();
       opts.push(`"exact": ${t.exact}`);
     }
-    code += `.${method}(${JSON.stringify(arg)}${opts.length ? `, {${opts.join(", ")}}` : ""})`;
+    code += `.${method}(${lit(arg)}${opts.length ? `, {${opts.join(", ")}}` : ""})`;
   }
   if (t.nth !== undefined) {
     if (!Number.isInteger(t.nth)) throw bad();

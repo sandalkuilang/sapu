@@ -1608,3 +1608,21 @@ Interfaces:
   parsed context, defaults included) and is removed when a later minimize does not confirm. The fixture's
   repro cycle sets `limits.minimize_runs` 6, so the Chrome test stops at its budget after the four pads and
   the cancel: it puts the pads after the cancel's proving expect, where minimize starts.
+- **Task 11.** The golden file was copied from this plan's text before `redTest` existed; the probe (Node
+  v26) stripped it with `stripTypeScriptTypes` and `node --check` passed, and the pinned CLI's
+  `playwright` (1.64 alpha) takes a predicate in `toHaveURL`. `targetCode` gained a third parameter, `lit`
+  (how each string is written, `JSON.stringify` by default), so the generator writes targets through it
+  and a placeholder becomes its variable inside a locator too. Forms the plan did not spell out: `url` →
+  `toHaveURL((u) => u.pathname + u.search === <path> || u.pathname === <path>)` (the runner's own test);
+  `mail` → `expect.poll` of `mail()`'s messages holding one to that address containing the text; a page
+  for `anon` and for an account whose first step is a `login` is `browser.newPage(CONTEXT)`, and a `login`
+  step is `await login(<page>, <user>, <password>)` through a `login` stub added (and named in the header)
+  only when the repro has one; `no-error` sets up `collectErrors` (5xx responses, console errors but
+  Chrome's `Failed to load resource` line, page errors) only when the repro has one, clears the
+  account's list right before the step before it and expects it empty; a `parallel` group with a `read`
+  destructures `Promise.all`. A page variable is the role (non-identifier characters as `_`) and its
+  number, suffixed `_` while it would take a name the test declares or a `saved_` name. `redTest` refuses
+  (`failed: redTest: …`) a journey that is not a kebab-case id, an oracle not in `ORACLES`, a ref of
+  another shape: they reach a comment and the title. `--test` is `redTestFile(main, ref)` in
+  `-repro.mjs` (it reads the records `reproRef` names), and refuses a candidate with no `repro.json`.
+  `vitest.config.ts` excludes `tests/fixtures/**`: vitest collected the golden `*.spec.ts` as a test.
