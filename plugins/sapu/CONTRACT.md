@@ -622,6 +622,40 @@ behaviour. Section names are English and match exactly the headings `sapu-contra
 prints. `worker.md` is read by every worker/reviewer (Phase A fixers too), and holds the setup, test and
 verification commands in the worktree along with the protected targets.
 
+## Engine defects go upstream
+
+A defect of the engine that a sweep or a skill hits in a consuming repo — a skill's rule, the guard,
+a workflow, `sapu-merge.sh`, `sapu-contract.mjs` — is fixed in the plugin, for every repo. Nobody
+patches around it in the consuming repo: no local copy of a plugin file, no profile rule that
+contradicts the engine, no workaround script (and no subagent can write the plugin's files). The
+orchestrator files it on the plugin's own repository (`repository` in the plugin's
+`.claude-plugin/plugin.json`); a subagent reports it in its return instead. The same three gates
+as argus's engine additions (its reference.md §10):
+
+1. **Account.** `gh api user --jq .login` equals the contract's `ghUser`, and the repo's policy
+   allows filing (`policy.fileIssues` is not `false`, `policy.traces` is not `"none"`). Otherwise
+   file nothing — never `gh auth switch` — and put the proposal in the final report.
+2. **Dedup.** Fetch the plugin repo's open issues and test the match inside jq, so no title or body
+   is printed (they are anyone's): `gh api "repos/<plugin repo>/issues?state=open&per_page=100"
+   --paginate --jq '.[] | select(((.title // "") + " " + (.body // "")) | test("<component>.*<key
+   words>"; "i")) | {number, author: .user.login}'`. A match = file nothing; name its number in the report.
+3. **No repo data.** The text names the component, the engine's behaviour and the fix — nothing of
+   the consuming repo: no repo name, path, account, issue or PR number, finding, URL or log line.
+
+The issue, filed with `gh issue create --repo <plugin repo> --title "<component>: <one line>"
+--body-file <file>` (no labels: the plugin repo's labels are its own):
+
+```
+**Component:** <skill, guard, workflow, merge script or contract script> — <plugin file>
+**Plugin version:** <version in plugin.json>
+**What happens:** <the engine's behaviour, in general terms>
+**Expected:** <what the engine should do instead>
+**Proposed fix:** <the rule or code change; a diff when it is short>
+```
+
+The final report lists each engine defect as filed (its number), a duplicate (the existing number)
+or unfiled (why).
+
 ## Engine floor (the contract cannot switch it off)
 
 **Threat model.** The guard hook protects against an agent that is **honest but fallible**: mistakes like
