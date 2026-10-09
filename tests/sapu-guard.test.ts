@@ -1486,6 +1486,38 @@ describe("no subagent writes the plugins it runs under: their folders, Claude Co
     }),
   );
 
+  it(
+    "reads the claude CLI past its options' values and through npx/bunx under its package names",
+    env(() => {
+      for (const c of [
+        "claude --model opus plugin install x@y",
+        "claude --settings s.json plugins update sapu@sapu",
+        "claude --add-dir /tmp plugin marketplace add ./x",
+        "npx claude-code plugin install x@y",
+        "npx @anthropic-ai/claude-code plugin update sapu@sapu",
+        "npx -y @anthropic-ai/claude-code@latest plugin marketplace add ./x",
+        "bunx @anthropic-ai/claude-code plugin enable x",
+        "pnpm dlx @anthropic-ai/claude-code plugin uninstall sapu@sapu",
+      ]) expect(blocked(c), c).toMatch(PF);
+      for (const c of ["claude --model opus plugin list", "npx @anthropic-ai/claude-code --version", "npx @anthropic-ai/claude-code plugin list", "claude -p 'list my plugins'"]) expect(blocked(c), c).toBeNull();
+    }),
+  );
+
+  it(
+    "refuses a git command that changes the files of a plugin folder or a checkout holding one",
+    env(() => {
+      for (const c of [
+        `git -C ${pluginRoot} checkout evil`,
+        `cd ${cfg}/plugins/marketplaces/sapu && git pull`,
+        `git -C ${cfg}/plugins/marketplaces/sapu reset --hard origin/x`,
+        `git -C ${devmkt} restore .`,
+        `git -C ${devmkt}/plugins/x commit -am x`,
+        `git --git-dir=${cfg}/plugins/marketplaces/sapu/.git --work-tree=${cfg}/plugins/marketplaces/sapu merge x`,
+      ]) expect(check({ command: c, cwd: wt, main, rules, worker: false }), c).toMatch(PF);
+      for (const c of [`git -C ${pluginRoot} log -1`, `git -C ${cfg}/plugins/marketplaces/sapu status`, `git -C ${devmkt}/.claude/worktrees/w commit -m x`, "git commit -m x"]) expect(check({ command: c, cwd: wt, main, rules, worker: false }), c).toBeNull();
+    }),
+  );
+
   it.each([
     [`cat ${pluginRoot}/scripts/sapu-guard.mjs`],
     [`node ${pluginRoot}/scripts/sapu-contract.mjs show`],

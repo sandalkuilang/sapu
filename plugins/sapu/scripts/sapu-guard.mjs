@@ -91,8 +91,9 @@
 // and the program variables (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `PAGER`, …) are refused
 // only in front of git itself, not when exported earlier or given to a program that runs git; a git
 // config key names a program by the list in git-config(1) (GIT_CONFIG_PROGRAM), so a key a newer git
-// adds is unknown until it is listed. Plugins: `claude plugin` changes are refused, a plugin
-// manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
+// adds is unknown until it is listed. Plugins: `claude plugin` changes are refused (also run as
+// `npx @anthropic-ai/claude-code`, and after an option's value), and so is a mutating git command in
+// a plugin folder or a checkout holding one; a plugin manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
 // worktree makes that folder unwritable for the session's subagents too. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
@@ -1613,9 +1614,12 @@ function checkCommand(t, state, depth) {
   }
   if (prog === "pkill" || prog === "killall") return BLOCK.kill;
   // The claude CLI's plugin changes rewrite the plugin store; its reads (list, validate) are fine.
-  if (prog === "claude") {
-    const w = a.slice(1).filter((v) => !v.startsWith("-"));
-    if (/^plugins?$/.test(w[0] ?? "") && !/^(list|validate|help)$/.test(w[1] ?? "list") && !(w[1] === "marketplace" && /^(list|help)$/.test(w[2] ?? "list"))) return BLOCK.pluginFiles;
+  // An option's value may stand before the subcommand (`claude --model x plugin …`), so the first
+  // `plugin(s)` word starts it; `npx @anthropic-ai/claude-code` (or `claude-code`) is the same CLI.
+  if (prog === "claude" || prog === "claude-code") {
+    const p = a.findIndex((v, k) => k > 0 && /^plugins?$/.test(v));
+    const w = p < 0 ? [] : a.slice(p).filter((v) => !v.startsWith("-"));
+    if (p > 0 && !/^(list|validate|help)$/.test(w[1] ?? "list") && !(w[1] === "marketplace" && /^(list|help)$/.test(w[2] ?? "list"))) return BLOCK.pluginFiles;
   }
   if (prog === "sapu-merge.sh") return a.includes("--dry-run") ? null : BLOCK.orchestrator;
 
@@ -1748,6 +1752,12 @@ function checkCommand(t, state, depth) {
     if (sub === "worktree" && ["remove", "prune", "move"].includes(rest[0])) return BLOCK.refs;
     if (sub === "branch" && flags.some((f) => ["-D", "-d", "-f", "-M", "--delete", "--force"].includes(f))) return BLOCK.refs;
     if (sub === "update-ref" || sub === "symbolic-ref") return BLOCK.refs;
+    // A plugin folder, or a checkout holding one (a marketplace clone, a local marketplace), is the
+    // plugin's: no git command changes its files, as no write does.
+    if (MUTATING_GIT.has(sub) && dir !== UNKNOWN) {
+      const top = gitRoot(dir) ?? dir;
+      if ([top, realPathOf(top)].some((p) => isPluginFile(p, true))) return BLOCK.pluginFiles;
+    }
     if ((gs.main || state.main) && MUTATING_GIT.has(sub)) {
       if (dir === UNKNOWN) return `\`git ${sub}\` in a directory that cannot be told (a path held in a shell variable, or after a cd inside a pipeline): write the literal path of your own worktree, with git -C or a plain cd.`;
       const m = [gs.main, main, state.main].find((x) => x && realpathOrSelf(dir) === realpathOrSelf(x));
