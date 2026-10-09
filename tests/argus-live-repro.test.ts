@@ -4,10 +4,11 @@
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { alive, appCycle, browserCleanup, browserLeftovers, browserTools, candidate, fixtureProcs, PW, pwBrowserRun, until } from "./helpers/argus-live";
+import { alive, appCycle, browserCleanup, browserLeftovers, browserTools, candidate, fakeGh, fixtureProcs, PW, pwBrowserRun, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -499,8 +500,10 @@ describe("argus-live repro — one run", () => {
     for (const f of failed.traces) expect(existsSync(join(tracesDir, f)), f).toBe(true);
   }, 900_000);
 
-  describe("argus-live minimize in Chrome", () => {
-    it("drops what pads the reversal repro and keeps its essential steps, the cancel too", async () => {
+  describe("argus-live — findings end to end", () => {
+    // One cycle, every command spawned as the orchestrator and the explorer's Bash run them. The minimize
+    // part is the padded reversal repro (its budget, limits.minimize_runs 6, is the repro cycle's).
+    it("a candidate goes from an explorer's submit to a filed issue, and down leaves no secret outside the ledger", async () => {
       const reversal = ORACLE_REPROS.find(([d]) => d === "double-release")![1];
       // Padding after the cancel's proving expect, where minimize starts (from the last step back): a hover, a goto with its url expect, a read nobody uses.
       const padded = [
@@ -511,14 +514,55 @@ describe("argus-live repro — one run", () => {
         { as: "buyer.1", do: "read", target: { testId: "stock" }, save: "unused" },
         reversal.at(-1)!,
       ];
-      const t = await reproCycle([padded]);
-      t.c.defects("double-release");
-      const once = t.repro(t.refs[0]);
-      expect(once.code, `${once.lines.join(" | ")} ${once.last} ${once.err}`).toBe(3);
-      const m = t.c.cli("repro", t.refs[0], "--minimize");
+      const c = appCycle({ mark: MARK, repro: true });
+      c.defects("double-release");
+      const { summary } = c.up();
+      const runId = summary.runId as string;
+      const runDir = join(c.main, ".argus/live", runId);
+      const mint = c.cli("slot", "1", "--journey", "order-to-cash", "--accounts", "buyer.1=buyer1@example.test");
+      expect(mint.code, mint.err).toBe(0);
+      const token = JSON.parse(mint.out).token as string;
+      // The explorer: its pw calls, a screenshot, and a return whose candidate holds the reversal repro.
+      const pw = (...args: string[]) => {
+        const r = c.cli("pw", token, ...args);
+        expect(r.code, `pw ${args.join(" ")}: ${r.out} ${r.err}`).toBe(0);
+        return r;
+      };
+      pw("buyer.1", "goto", "/storage");
+      pw("buyer.1", "goto", "/orders/new");
+      pw("buyer.1", "fill", "getByLabel('Quantity')", "2");
+      pw("buyer.1", "click", "getByRole('button', { name: 'Place order' })");
+      const outDir = join(runDir, "1/out");
+      const pngsBefore = new Set(existsSync(outDir) ? readdirSync(outDir) : []);
+      pw("buyer.1", "screenshot");
+      const png = readdirSync(outDir).filter((f) => f.endsWith(".png") && !pngsBefore.has(f));
+      expect(png).toHaveLength(1);
+      const shot = join(outDir, png[0]);
+      const ret = { journey: "order-to-cash", status: "done", candidates: [{ claim: "a cancel puts the stock back twice", oracle: "reversal", repro: padded }] };
+      expect(pw("submit", JSON.stringify(ret)).out.trim()).toBe("submitted: slot 1 generation 1 status done");
+      // The explorer's HttpOnly sid, as the ledger recorded it (the next up --fresh resets the store).
+      const ledgerOf = () => readFileSync(join(runDir, "logs/secrets.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+      const sessions = JSON.parse(readFileSync(join(c.data, "sessions.json"), "utf8"));
+      const cookies = ledgerOf().filter((e: Obj) => e.c === "cookie").map((e: Obj) => e.v);
+      const sid = Object.keys(sessions).find((k) => sessions[k].user === "buyer1@example.test" && cookies.includes(k))!;
+      expect(sid).toMatch(/^[0-9a-f]{32}$/);
+
+      // Two of two: run 1 and run 2 each reproduce, the verdict last.
+      const ref = "1.1.1";
+      const r = c.cli("repro", ref);
+      expect(r.code, `${r.out} ${r.err}`).toBe(3);
+      const lines = r.out.trimEnd().split("\n");
+      expect(lines.some((l) => l.startsWith("run 1 step "))).toBe(true);
+      expect(lines.some((l) => l.startsWith("run 2 step "))).toBe(true);
+      expect(lines.at(-1)).toMatch(REPRODUCED);
+      const dir = join(runDir, "repro", ref);
+      const record = (i: number) => JSON.parse(readFileSync(join(dir, `run-${i}.json`), "utf8"));
+      expect([record(1).exit, record(2).exit]).toEqual([3, 3]);
+
+      // Minimize: only labels and exits; the four pads dropped; the cancel with its expect still fails the
+      // final, but another way (the stock 4 under, not 4 over), so it stays.
+      const m = c.cli("repro", ref, "--minimize");
       expect(m.code, m.err).toBe(0);
-      // Only labels and exits (limits.minimize_runs 6 here): the four pads kept dropped; the cancel with its
-      // expect still fails the final, but another way (the stock 4 under, not 4 over), so it stays.
       expect(m.out.trimEnd().split("\n")).toEqual([
         "try step 13: exit 3",
         "try step 12: exit 3",
@@ -526,16 +570,81 @@ describe("argus-live repro — one run", () => {
         "try step 10: exit 3",
         "try steps 8+9: exit 3",
         "confirm: exit 3",
-        `minimized ${t.refs[0]}: steps 14 → 10, runs 6/6, stopped budget, confirmed yes`,
+        `minimized ${ref}: steps 14 → 10, runs 6/6, stopped budget, confirmed yes`,
       ]);
-      const dir = join(t.c.main, ".argus/live", t.runId, "repro", t.refs[0]);
       expect(JSON.parse(readFileSync(join(dir, "min.json"), "utf8"))).toEqual([{ context: { viewport: 1440, locale: "en-US", timezone: "UTC" } }, ...reversal]);
-      // The minimized list on a run of its own (the confirm, run 7) exits 3 as the reproducing run did.
-      expect(t.record(t.refs[0], 7)).toMatchObject({ exit: 3, reduced: true, expected: "fact-equals", observed: "differs", shownSha256: t.record(t.refs[0]).shownSha256 });
-      expect(t.record(t.refs[0], 6)).toMatchObject({ exit: 3, reduced: true });
-      expect(t.record(t.refs[0], 6).shownSha256).not.toBe(t.record(t.refs[0]).shownSha256);
+      // The minimized list on a run of its own (the confirm, run 8 after the two and five tries) fails as the reproducing run did.
+      expect(record(8)).toMatchObject({ exit: 3, reduced: true, expected: "fact-equals", observed: "differs", shownSha256: record(2).shownSha256 });
+      expect(record(7)).toMatchObject({ exit: 3, reduced: true });
+      expect(record(7).shownSha256).not.toBe(record(2).shownSha256);
       // The candidate's own record is the whole list's, never a reduced one.
       expect(JSON.parse(readFileSync(join(dir, "repro.json"), "utf8")).repro).toEqual(padded);
+
+      // The RED test, from the confirmed min.json.
+      const red = c.cli("repro", ref, "--test");
+      expect(red.code, red.err).toBe(0);
+      const redFile = red.out.trim().replace(/^red test: /, "");
+      expect(realpathSync(redFile)).toBe(realpathSync(join(dir, "red.spec.ts")));
+      expect(() => stripTypeScriptTypes(readFileSync(redFile, "utf8"))).not.toThrow();
+
+      const k = c.cli("classify", "--oracle", "reversal", "--stock");
+      expect([k.code, k.out]).toEqual([0, "class A labels bug,argus,found-by:user severity S1 because reversal: a resource not released exactly once\n"]);
+
+      // Scrub: the sid refuses, by place and class only; a clean body with the screenshot is filed through gh.
+      const bodies = tempDir();
+      const sidBody = join(bodies, "sid.md");
+      writeFileSync(sidBody, `Cancelling twice.\n\nThe session was sid=${sid} then.\n`);
+      const scrubSid = () => {
+        const s = c.cli("scrub", "--title", "Cancel releases stock twice", "--body", sidBody);
+        expect(s.code, s.err).toBe(1);
+        const out = s.out.trimEnd().split("\n");
+        expect(out.some((l) => /^body 3:\d+ cookie$/.test(l)), s.out).toBe(true);
+        expect(out.at(-1)).toMatch(/^refused: scrub: \d+ secret\(s\) in the issue; nothing is filed$/);
+        expect(`${s.out}${s.err}`).not.toContain(sid);
+      };
+      scrubSid();
+      const gh = fakeGh();
+      c.env.PATH = `${gh.dir}:${c.env.PATH}`;
+      const clean = join(bodies, "clean.md");
+      writeFileSync(clean, "A cancelled order puts its stock back twice.\n");
+      const filed = c.cli("scrub", "--title", "Cancel releases stock twice", "--body", clean, "--attach", shot, "--create", "--label", "bug");
+      expect(filed.code, `${filed.out} ${filed.err}`).toBe(0);
+      expect(filed.out.trimEnd().split("\n")).toEqual(["scrub: ok; redacted 0, defanged 0, cut 0 line(s)", "title: Cancel releases stock twice", `attach: .argus/live/${runId}/1/out/${png[0]}`, "filed: https://github.com/o/r/issues/9"]);
+      const create = gh.calls().find((x) => x.argv[0] === "issue")!;
+      expect(create.argv).toContain("--attach");
+      expect(create.argv.slice(create.argv.indexOf("--label"), create.argv.indexOf("--label") + 2)).toEqual(["--label", "bug"]);
+      expect(create.argv.filter((a: string) => a.includes("traces"))).toEqual([]);
+      expect(create.body).toBe("A cancelled order puts its stock back twice.\n");
+
+      // down: the ledger and the candidate's records kept; no session file, slot state, lock or trace (every run exited 3); no process of the run.
+      const d = c.cli("down");
+      expect(d.code, d.err).toBe(0);
+      expect(statSync(join(runDir, "logs/secrets.jsonl")).mode & 0o777).toBe(0o600);
+      const files = (at: string): string[] => (existsSync(at) ? readdirSync(at, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(at, e.name)) : [join(at, e.name)])) : []);
+      const left = files(runDir).map((f) => f.slice(runDir.length + 1));
+      expect(left.filter((f) => /(^|\/)(\.playwright\/|state\.json$|lock$)/.test(f))).toEqual([]);
+      expect(left.filter((f) => f.startsWith("r/out/traces/"))).toEqual([]);
+      expect(existsSync(join(dir, "repro.json"))).toBe(true);
+      expect(existsSync(join(dir, "red.spec.ts"))).toBe(true);
+      const ofRun = () => execFileSync("ps", ["-A", "-ww", "-o", "command="], { encoding: "utf8" }).split("\n").filter((l) => l.includes(runId));
+      expect(await until(() => ofRun().length === 0, 10_000), ofRun().join("\n")).toBe(true);
+
+      // Scrub never needs the run live.
+      scrubSid();
+      const after = join(bodies, "after.md");
+      writeFileSync(after, "A cancelled order puts its stock back twice.\n");
+      expect(c.cli("scrub", "--title", "Cancel releases stock twice", "--body", after).code).toBe(0);
+
+      // No stdout (but the mint's) and no file left under the run holds the role password or the slot token.
+      const forms = [PW, encodeURIComponent(PW), new URLSearchParams({ p: PW }).toString().slice(2), JSON.stringify(PW).slice(1, -1)];
+      const outs = c.outs.filter((o) => o !== mint.out);
+      for (const o of outs) {
+        for (const x of [...forms, token]) expect(o.includes(x), `an output holds ${x === token ? "the token" : "the password"}`).toBe(false);
+      }
+      for (const f of files(runDir)) {
+        const bytes = readFileSync(f, "latin1");
+        for (const x of [...forms, token]) expect(bytes.includes(x), `${f} holds ${x === token ? "the token" : "the password"}`).toBe(false);
+      }
     }, 900_000);
   });
 });

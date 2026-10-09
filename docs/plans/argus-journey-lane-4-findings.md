@@ -1660,3 +1660,16 @@ Interfaces:
   first on PATH) that also records the `--body-file`'s text and each `--attach` file's bytes when called, so
   the tests scan everything gh received. The Chrome verdict test is one `it` on one `pwBrowserRun` (about
   35 s); with the `shot` stage moved before the call's drain it fails at `/storage?show=1`, as it should.
+- **Task 14.** The CLI's `repro` (`--once`, `--minimize`, `--test`), `classify` and `scrub`, its header
+  comment and its usage line were already in place, each added by the task that built its module (8–13),
+  so this task adds tests only, plus `env` in `appCycle`'s answer (a test puts `fakeGh()` first on the
+  spawned CLI's PATH). The guard needs nothing: `checkExplorerBash` passes only `node <wrapper> pw …`
+  runs, so every new subcommand was refused before it existed and the guard seam test passes at once
+  (no RED to see; the test pins it for Tasks 15–18). The end-to-end test reuses the Chrome minimize
+  test's cycle and replaces that test (every assertion kept): its candidate, the padded reversal repro,
+  comes from the explorer's spawned `submit`, and `repro <ref>` runs two of two before `--minimize`, so
+  the confirm run is `run-8.json` and the base `run-2.json`. The `sid` it quotes is buyer1's in the
+  app's `sessions.json` that the ledger recorded as `cookie` (read before `repro`'s `up --fresh` resets
+  the store); the stdout scan leaves out the mint's, which is where the token is printed. Scrub also
+  checks each `--label` (`label <i> <class>`, counted with the title's and the body's hits): gh puts a
+  label on the issue as given.

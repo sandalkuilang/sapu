@@ -377,8 +377,9 @@ export const fixtureProcs = (mark: string) =>
  * spawns `argus-live.mjs` in the repo, as the orchestrator and the explorer's Bash run it, under a fresh
  * HOME holding the pinned CLI and a docker whose daemon is not running. `mark` (an argument the app
  * ignores) marks the file's fixture processes (fixtureProcs): other test files run the fixture at the
- * same time. `data` is the app's DATA_DIR. With `repro` (the repro runner's cycle): `buyer` has buyer1 and
- * buyer2, `clerk` clerk1 (TOTP) and clerk2, settle_ms is 3000, limits.minimize_runs 6, the app's mail is a
+ * same time. `data` is the app's DATA_DIR; `env` the spawned CLI's environment (a test may put a fake `gh`
+ * first on its PATH). With `repro` (the repro runner's cycle): `buyer` has buyer1 and buyer2, `clerk`
+ * clerk1 (TOTP) and clerk2, settle_ms is 3000, limits.minimize_runs 6, the app's mail is a
  * hook too, and its seeded defects are read from a file `defects(...names)` writes (none at first).
  */
 export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolean; mark: string; repro?: boolean }) => {
@@ -459,7 +460,7 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
   /** The app's request counts (`/__test/stats`) on the running cycle's web port. */
   const stats = async () => (await (await fetch(`http://localhost:${runJson().ports.web}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
   const defects = (...names: string[]) => writeFileSync(defectsFile, names.join(","));
-  return { main, data, outs, cli, runJson, up: upNow, slot, balanced, stats, defects };
+  return { main, data, env, outs, cli, runJson, up: upNow, slot, balanced, stats, defects };
 };
 
 /**

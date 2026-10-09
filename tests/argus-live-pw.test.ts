@@ -2601,4 +2601,20 @@ describe("argus-live up — the browser refusals and the guard seam", () => {
     }
     for (const line of [`node ${WRAPPER} slot 1 --handoff`, `node ${WRAPPER} intake 1`, `node ${WRAPPER} up`, `${run} buyer.1 goto / && node ${WRAPPER} down`]) expect(checkExplorerBash(line), line).not.toBeNull();
   });
+
+  it("the findings commands are the orchestrator's: repro, classify and scrub never pass the explorer's guard", () => {
+    const run = `node ${WRAPPER} pw 0123456789abcdef0123456789abcdef`;
+    const lines = [
+      `node ${WRAPPER} repro 1.1.1`,
+      `node ${WRAPPER} repro 1.1.1 --once`,
+      `node ${WRAPPER} repro 1.1.1 --minimize`,
+      `node ${WRAPPER} repro 1.1.1 --test`,
+      `node ${WRAPPER} scrub --title x --body /tmp/b`,
+      `node ${WRAPPER} scrub --title x --body /tmp/b --create --label bug`,
+      `node ${WRAPPER} classify --oracle dead-end`,
+      `${run} buyer.1 goto / && node ${WRAPPER} repro 1.1.1`,
+      `${run} submit '{}' && node ${WRAPPER} scrub --title x --body /tmp/b --comment 9`,
+    ];
+    for (const line of lines) expect(checkExplorerBash(line), line).not.toBeNull();
+  });
 });
