@@ -39,7 +39,7 @@ helper it needs that is still private is exported from its owner in the commit t
 never copied. Every path under `.argus/` is resolved from `<MAIN>` (`findMain`), never from the cwd.
 Test seams are function parameters only, never environment variables.
 
-**Revision (2026-10-09, after the QA review of 9e46024: not approved, no Critical).** Tasks 1, 2 and 5
+**Revision (after the QA review of 9e46024: not approved, no Critical).** Tasks 1, 2 and 5
 were cleared to start before this revision; their text is unchanged by it (where a later task needs
 more of them — the driver's drain, `upFresh`'s drain — that later task adds it). The owner's decisions
 on the review are folded in: scrub refuses only what is secret-like and says where, never what
@@ -54,7 +54,7 @@ it is now Task 14, and `map-check`, map mode, SELECT and doc drift follow as Tas
 
 ## Verified against @playwright/cli 0.1.22, Chrome and gh 2.102.0
 
-Probed live on 2026-10-09 (macOS, Google Chrome, the pinned CLI from
+Probed live (macOS, Google Chrome, the pinned CLI from
 `~/Library/Caches/sapu/pw-c925ef206091`, a scratch HTTP server, `HOME`/`TMPDIR`/`PWTEST_SOCKETS_DIR`
 as `cliEnv` sets them):
 
@@ -234,7 +234,7 @@ Facts read from the code as built (5fef368), where it and the spec differ:
     or decoded form is placed at its first character in the text as given), then `refused: scrub: <k>
     secret(s) in the issue; nothing is filed` — never the value, never the text around it. Redaction: every run of 24+ `[A-Za-z0-9_-]` holding a letter and a digit, not all hex, not in
     the seen ids → `<redacted>`. Defanging, outside fenced blocks and code spans as CommonMark reads
-    them: `@name`, `#123`, `owner/repo#123` and every `http(s)` URL whose host is not loopback are
+    them: `@name`, `#<n>`, `owner/repo#<n>` and every `http(s)` URL whose host is not loopback are
     wrapped in backticks. Fenced blocks whose info string is `ts`, `typescript` or `json` (the generated
     test, the repro) are left whole; every other fenced block keeps at most 20 lines (`… <k> lines cut`
     inside it). The title gets the same treatment.
@@ -1048,7 +1048,7 @@ Interfaces:
 - [ ] **Step 1: Failing tests** (describe "argus-live scrub"; a `liveRun()` with a ledger written by
   `appendLedger` (a `cookie`, a `header`, a `storage` and a `created password` value), an env file, a
   repo `.env` holding `DB_PASSWORD=Repo-Secret-77` and `PORT=3000`, roles with a password and a TOTP
-  secret, `env: {GH_TOKEN: "ghp_scrubtest123456", HOME: "/Users/someone", BUILD_ID:
+  secret, `env: {GH_TOKEN: "ghp_scrubtest123456", HOME: "<a home directory, built in the test>", BUILD_ID:
   "Ab3$xYz9Qw2!Lm5Np"}`):
   - "each secret class is refused, raw, URL-encoded, base64-encoded and split by spaces, in the title
     and in the body": 9 classes × 4 forms × 2 places, each → exit 1 with a `<title|body> <line>:<col>
@@ -1056,7 +1056,7 @@ Interfaces:
   - "a refusal says where, never what": a body whose line 3 holds the cookie value at column 7 → the
     output is exactly `body 3:7 cookie` and `refused: scrub: 1 secret(s) in the issue; nothing is filed`;
     no output line holds the value or any other text of the body.
-  - "configuration that is not secret-like is not a secret": a body holding `3000`, `/Users/someone`
+  - "configuration that is not secret-like is not a secret": a body holding `3000`, the test HOME path
     and `dark-mode-on` → exit 0; `Repo-Secret-77` (a `SECRET_KEY` name) and `Ab3$xYz9Qw2!Lm5Np`
     (high-entropy under a plain name) → refused, `repo env file` and `environment variable BUILD_ID`.
   - "a short configuration secret is refused as a whole token, never inside a word": a role password
@@ -1338,11 +1338,11 @@ Interfaces:
   `doc-newer → class B(a)` or `undecidable (<why>) → needs-owner`.
 
 - [ ] **Step 1: Failing tests** (describe "argus-live doc drift"; a repo whose commits carry
-  `GIT_AUTHOR_DATE`): doc 2026-01-01, code 2026-03-01 → `code-newer`; reversed → `doc-newer`; the doc
+  `GIT_AUTHOR_DATE`): doc at time T1, code at a later T2 → `code-newer`; reversed → `doc-newer`; the doc
   range edited and not committed → `undecidable (uncommitted lines)`; both in one commit → `undecidable
   (same time)`; a range with `..` → refused; "author time decides, not committer time": the doc
-  authored 2026-01-01 but committed (`GIT_COMMITTER_DATE`, as a rebase leaves it) 2026-05-01, code
-  authored and committed 2026-03-01 → `code-newer`.
+  authored at T1 but committed (`GIT_COMMITTER_DATE`, as a rebase leaves it) at T3 > T2, code
+  authored and committed at T2 → `code-newer`.
   The guard seam test gains `… drift --doc a:1-2 --code b:1-2`; the usage line gains `drift`.
 - [ ] **Step 2–4:** run (FAIL), implement, run (PASS).
 - [ ] **Step 5: Commit** `feat(sapu): argus-live drift decides doc drift by line-level history`.
