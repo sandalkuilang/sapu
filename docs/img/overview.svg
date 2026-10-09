@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 956" width="920" height="956" role="img" aria-label="How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config, with specialists from the senior-dev-team plugin; the sapu orchestrator runs one forge worker per issue in parallel lanes, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 976" width="920" height="976" role="img" aria-label="How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config, with specialists from the senior-dev-team plugin; the sapu orchestrator runs one forge worker per issue in parallel lanes, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.">
   <title>sapu — how the pieces fit</title>
-  <desc>The sapu plugin is an engine (skills, worker agents, guard hook, workflows, scripts) that knows no repo; its specialist agents come from the senior-dev-team plugin, installed with it and called by role. Each repo supplies a contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init), committed in the repo or kept local under ~/.config/sapu/repos/, plus the QA configs .argus/, .momus/ and .nemesis/ config.yml; nemesis targets are not in it but in an owner-signed, gitignored authorization.yml. An optional per-machine config (~/.config/sapu/config.json: allowedRoots, projectScopeOnly) limits where sapu may run. /sapu runs one forge worker per issue in parallel lanes, a reviewer by tier that is never the author, and merges ready PRs through the merge gate sapu-merge.sh; /inspector runs momus, then argus, then nemesis, one after another; /dream runs standalone and read-only and writes one local report under dreams/. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate. GitHub issues are filed by argus and nemesis; by sapu only for security gaps and a proven base flake; by momus only when asked. momus and inspector write reports; state lives in the main checkout under .argus/, .momus/, .nemesis/ and dreams/.</desc>
+  <desc>The sapu plugin is an engine (skills, worker agents, guard hook, workflows, scripts) that knows no repo; its specialist agents come from the senior-dev-team plugin, installed with it and called by role. Each repo supplies a contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init), committed in the repo or kept local under ~/.config/sapu/repos/, plus the QA configs .argus/, .momus/ and .nemesis/ config.yml; nemesis targets are not in it but in an owner-signed, gitignored authorization.yml. An optional per-machine config (~/.config/sapu/config.json: allowedRoots, projectScopeOnly) limits where sapu may run. /sapu runs one forge worker per issue in parallel lanes, as many as the machine's cores, memory and load allow, a reviewer by tier that is never the author, and merges ready PRs through the merge gate sapu-merge.sh; /inspector runs momus, then argus, then nemesis, one after another; /dream runs standalone and read-only and writes one local report under dreams/. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate. GitHub issues are filed by argus and nemesis; by sapu only for security gaps and a proven base flake; by momus only when asked; every issue an agent files carries the agent-filed label. A defect of the engine itself is filed by sapu on the plugin's own repository, never patched around in the repo. momus and inspector write reports; state lives in the main checkout under .argus/, .momus/, .nemesis/ and dreams/.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -43,8 +43,8 @@
     <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
     <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
   </defs>
-  <rect x="0.5" y="0.5" width="919" height="955" rx="20" class="canvas"/>
-  <clipPath id="cv"><rect x="0" y="0" width="920" height="956" rx="20"/></clipPath>
+  <rect x="0.5" y="0.5" width="919" height="975" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="976" rx="20"/></clipPath>
   <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
   <text x="32" y="46" class="eyebrow">ARCHITECTURE</text>
   <text x="32" y="78" class="h1">How the pieces fit</text>
@@ -145,7 +145,7 @@
   <text x="167" y="656" class="cap"></text>
   <rect x="186" y="640" width="196" height="52" rx="12" class="sunken" />
   <text x="284" y="663" class="tb" text-anchor="middle">forge worker × N</text>
-  <text x="284" y="681" class="cap" text-anchor="middle">one lane per issue</text>
+  <text x="284" y="681" class="cap" text-anchor="middle">a lane per issue, N per machine</text>
   <path d="M384,666 L404,666" class="ar" marker-end="url(#mn)"/>
   <rect x="408" y="640" width="196" height="52" rx="12" class="sunken" />
   <text x="506" y="663" class="tb" text-anchor="middle">reviewer by tier</text>
@@ -180,9 +180,10 @@
   <rect x="648" y="790" width="240" height="52" rx="12" class="k-green" />
   <text x="768" y="813" class="tb" text-anchor="middle">one local report</text>
   <text x="768" y="831" class="cap mono" text-anchor="middle">dreams/</text>
-  <rect x="32" y="866" width="856" height="66" rx="12" class="sunken" />
-  <rect x="46" y="882" width="34" height="34" rx="9.5625" class="tile-violet"/>
-  <g transform="translate(52.375,888.375) scale(0.8854166666666667)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico s-violet"/></g>
+  <rect x="32" y="866" width="856" height="86" rx="12" class="sunken" />
+  <rect x="46" y="892" width="34" height="34" rx="9.5625" class="tile-violet"/>
+  <g transform="translate(52.375,898.375) scale(0.8854166666666667)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico s-violet"/></g>
   <text x="94" y="894" class="cap"><tspan class="tb">GitHub issues</tspan>  argus, nemesis · sapu only for security gaps and a proven base flake · momus only when asked</text>
-  <text x="94" y="914" class="cap"><tspan class="tb">Reports + state</tspan>  momus, inspector write reports · state in the main checkout: <tspan class="mono">.argus/ .momus/ .nemesis/ dreams/</tspan></text>
+  <text x="94" y="914" class="cap"><tspan class="tb">Agent-filed label</tspan>  on every issue an agent files · a defect of the engine itself: filed on the plugin's own repo</text>
+  <text x="94" y="934" class="cap"><tspan class="tb">Reports + state</tspan>  momus, inspector write reports · state in the main checkout: <tspan class="mono">.argus/ .momus/ .nemesis/ dreams/</tspan></text>
 </svg>

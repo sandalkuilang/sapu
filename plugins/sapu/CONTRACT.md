@@ -158,6 +158,10 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 }
 ```
 
+**Version coupling.** `mergeMethod`, `host`, `tuning` and `guard.databases` need plugin
+**≥ 2.9.0**. An older plugin refuses them as unknown keys: the contract reads as broken, and the
+guard then blocks every subagent.
+
 ### Tuning
 
 What depends on the machine is derived from it: `sapu-contract.mjs lanes` prints the Phase B lanes
@@ -311,9 +315,11 @@ signed merge or rebase, and apply a review suggestion by hand instead of with "C
 **The issue rule — `sapu-contract.mjs issue-trust <N> [--text] [--comments]`.** One GraphQL query
 returns the snapshot the verdict is decided on: author, labels, the body's edit history
 (`userContentEdits`, deleted revisions included, and `lastEditedAt`/`editor`), the first page of the
-label and title timeline, and the title and body. A trusted author, or a missing acceptance label,
-is decided on that page; only an outsider's issue that carries the label pages the rest of the
-timeline, with a light timeline-only query (at most 50 pages, then it refuses). Trusted when the
+label and title timeline, and the title and body. The rest of the timeline is paged, with a light
+timeline-only query, whenever the agent-filed label is not on the issue now (to find whether it ever
+was; trusted authors included), and for an outsider's issue that carries the acceptance label; a
+timeline that cannot be read whole (more than 50 pages of 100 events, or a page GitHub does not
+return) refuses the issue. Trusted when the
 author's id is in the set, or when all of these hold: it carries the acceptance label now; the
 latest `labeled`/`unlabeled` event for that label applied it, by an acceptor (an issue template
 applies labels as the issue's author: that does not count); the label was not renamed or edited
@@ -832,7 +838,9 @@ could use them.
   a leading `*` counts as matching `.env`; Glob only lists names and uses the shell's rules.
   A Grep over a directory relies on ripgrep's ignore rules (env files are usually gitignored).
 - No bare `git stash`, force push, ref deletion, or git that changes the main checkout from a
-  subagent (including `add` and `notes`); no push to `baseBranch`, `main`, or `master`
+  subagent (including `add` and `notes`), nor one that changes files in a directory the guard cannot
+  tell (a path in a variable, after a `cd` inside a pipeline, or a `$( )` or backtick, quoted or not:
+  `git -C $(pwd) commit`); no push to `baseBranch`, `main`, or `master`
   (the refspec destination after `:`, also `heads/main` and `refs/heads/main`), and no
   `git push --all`/`--mirror`. Abbreviated long options — git accepts an unambiguous prefix,
   e.g. `--no-verif`, `--forc` — count as the option when they are ≥ 5 characters long.

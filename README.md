@@ -131,7 +131,7 @@ claude plugin marketplace add sandalkuilang/sapu
 claude plugin install sapu@sapu --scope project
 ```
 
-A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once.
+A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once. From a version before 2.9.0, read [what changes](docs/usage.md#upgrading-from-a-version-before-290) first.
 
 **3 · Start a new session in that repo, then**
 
@@ -195,7 +195,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/sapu-dark.svg">
-  <img src="docs/img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge), a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
+  <img src="docs/img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock and one sweep per repo, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge) and a handoff past the step budget, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report, engine defects filed on the plugin's repo" width="100%">
 </picture>
 
 ## Safety model
@@ -203,8 +203,8 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | Layer | What it enforces |
 |---|---|
 | **Merge script** | `sapu-merge.sh` is the only way sapu merges: only a PR that `sapu-contract.mjs pr-trust` passes, only after a green gate, pinned to the gated commit. |
-| **Guard hook** | Checks every subagent's shell, file, search and MCP tool calls: no direct push to the main branch, no merge, no touching the dev database or `.env` files, no writing into the main checkout. |
-| **Scope lock** | `sapu-contract.mjs check` refuses to run in a checkout outside the roots the machine config allows, or with the wrong account. |
+| **Guard hook** | Checks every subagent's shell, file, search and MCP tool calls: no direct push to the main branch, no merge, no touching the dev database or `.env` files, no writing into the main checkout or into the plugins they run under. |
+| **Scope lock** | `sapu-contract.mjs check` refuses to run in a checkout outside the roots the machine config allows, with the wrong account, or with a moved `HOME`; a second `/sapu` session on the same repo stops at its Step 0. |
 | **Trust checks** | In public repos, sapu works only issues and PRs from trusted authors (or accepted by a trusted account). |
 
 > [!IMPORTANT]
