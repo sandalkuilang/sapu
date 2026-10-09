@@ -98,7 +98,8 @@
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
 // contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via
-// busybox/toybox, except --dry-run/--check/-C; also a shell's -c fed by `gh pr diff`/`gh api`/`curl`/
+// busybox/toybox, except a dry run: --dry-run/--check/-C standing as an option, read past patch's
+// value-taking options, an unknown option refusing; also a shell's -c fed by `gh pr diff`/`gh api`/`curl`/
 // `wget`), and a `curl`/`wget` download piped (through any filter) into tar/bsdtar/unzip/cpio/7z.
 // NOT traced (named limits, each needing intent): a download saved to a file and unpacked later
 // (`curl -o x.tgz`, then `tar xf x.tgz`), a download piped into a shell (`curl … | sh`, an
@@ -1555,7 +1556,8 @@ function checkCommand(t, state, depth) {
   if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
   // patch applies a diff, wherever it was saved (`gh pr diff 8 > f` then `patch < f`): like git apply,
   // only its dry run is a read.
-  if ((prog === "patch" || ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch")) && !a.some((v) => /^(--dry-run|--check|-C)$/.test(v))) return BLOCK.prCode;
+  if (prog === "patch" && !patchDryRun(a.slice(1))) return BLOCK.prCode;
+  if ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch" && !patchDryRun(a.slice(2))) return BLOCK.prCode;
 
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
   // <MAIN> outside its worktrees is off limits, except the STATE_DIRS for non-worker subagents.
@@ -1869,6 +1871,47 @@ function checkCommand(t, state, depth) {
     if (/^(\.\/)?node_modules\/?$/.test(last)) return BLOCK.nodeModules;
   }
   return null;
+}
+
+// patch's options (GNU and BSD/macOS patch, busybox's subset), read as getopt reads them: a short
+// option taking a value takes the rest of its word or the next word (`-z --dry-run` is a suffix),
+// short options bundle (`-sNp1`), a long one takes `=value` or the next word, `--` ends them.
+const PATCH_SHORT_VALUE = "BDdFgioprVxYz";
+const PATCH_SHORT_FLAG = "bCcEeflNnRstTuvZ";
+const PATCH_LONG_VALUE = new Set(["prefix", "ifdef", "directory", "fuzz", "get", "input", "output", "strip", "reject-file", "version-control", "debug", "basename-prefix", "suffix", "quoting-style", "reject-format", "read-only"]);
+const PATCH_LONG_FLAG = new Set(["backup", "check", "dry-run", "context", "remove-empty-files", "ed", "force", "ignore-whitespace", "forward", "normal", "reverse", "quiet", "silent", "batch", "unified", "version", "posix", "binary", "set-utc", "set-time", "verbose", "help", "backup-if-mismatch", "no-backup-if-mismatch", "follow-symlinks", "merge"]);
+
+/**
+ * Is patch with these arguments only a dry run? Yes when --dry-run, --check or -C stands as an
+ * option of its own; never when that word is another option's value or follows `--`, and never
+ * with an option the guard does not know (it may take the next word as its value).
+ */
+function patchDryRun(args) {
+  let dry = false;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (v === "--") break;
+    if (v.startsWith("--")) {
+      const eq = v.indexOf("=");
+      const name = v.slice(2, eq < 0 ? undefined : eq);
+      if (PATCH_LONG_VALUE.has(name)) {
+        if (eq < 0) i++;
+      } else if (PATCH_LONG_FLAG.has(name) && (eq < 0 || name === "merge")) {
+        if (name === "dry-run" || name === "check") dry = true;
+      } else return false;
+    } else if (v.startsWith("-") && v.length > 1) {
+      for (let k = 1; k < v.length; k++) {
+        const ch = v[k];
+        if (PATCH_SHORT_VALUE.includes(ch)) {
+          if (k === v.length - 1) i++;
+          break;
+        }
+        if (!PATCH_SHORT_FLAG.includes(ch)) return false;
+        if (ch === "C") dry = true;
+      }
+    }
+  }
+  return dry;
 }
 
 /** Does this command print a PR's diff or patch (`gh pr diff`, `gh api …/pulls/…`, curl/wget of a PR URL)? */

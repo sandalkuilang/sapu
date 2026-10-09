@@ -2326,6 +2326,38 @@ describe("sapu-guard — deliberate-agent bypasses closed where cheap and precis
   });
 
   it.each([
+    // the dry-run word as an option's value (macOS patch reads it as -z's suffix, then applies)
+    ["patch -p1 -z --dry-run < pr.diff"],
+    ["patch -z--dry-run -p1 < pr.diff"],
+    ["patch --suffix --dry-run -p1 < pr.diff"],
+    ["patch -B --check -p1 < pr.diff"],
+    ["patch -Y -C -p1 < pr.diff"],
+    ["patch -sNz --dry-run -p1 < pr.diff"],
+    ["patch -i --dry-run -p1"],
+    ["patch -p1 -- --dry-run < pr.diff"],
+    // an option the guard does not know may take the next word as its value
+    ["patch --frobnicate --dry-run -p1 < pr.diff"],
+    ["patch -K --dry-run -p1 < pr.diff"],
+    ["busybox patch -z --dry-run -p1 -i pr.diff"],
+  ])("refuses %s: --dry-run/--check/-C counts only as an option, not as another option's value", (cmd) => {
+    expect(blocked(cmd)).toMatch(/applying a patch/);
+  });
+
+  it.each([
+    ["patch -p1 --dry-run < pr.diff"],
+    ["patch -sNp1 --dry-run -i pr.diff"],
+    ["patch -Cp1 < pr.diff"],
+    ["patch -p 1 --check -i pr.diff"],
+    ["patch --strip=1 --dry-run < pr.diff"],
+    ["patch -z .orig --dry-run -p1 < pr.diff"],
+    ["patch --suffix=.orig -C -p1 < pr.diff"],
+    ["patch -p1 -i pr.diff --dry-run"],
+    ["busybox patch --dry-run -p1 -i pr.diff"],
+  ])("allows %s: a dry run standing as an option", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  it.each([
     ["echo 8 | xargs -I{} gh issue edit {} --add-label bug"],
     ["patch --dry-run -p1 -i pr.diff"],
     ["tar xzf vendor.tgz"],
