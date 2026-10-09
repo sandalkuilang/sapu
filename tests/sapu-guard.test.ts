@@ -3097,3 +3097,138 @@ describe("sapu-guard — gh api routes match in any letter case, and an issue im
     expect(blocked(cmd)).toMatch(why);
   });
 });
+
+describe("sapu-guard — words a wrapper supplies are shell-built, owner labels behind a query or escape, pflag's -X=, gh's token", () => {
+  const reviewer = (command: string, r = rules) => check({ command, cwd: wt, main, rules: r, worker: false });
+  const OWNER = /agent-filed label/;
+
+  it.each([
+    ["echo sapu:agent-filed | xargs gh label edit --name zz"],
+    ["echo sapu:agent-filed | xargs gh label create"],
+    ["xargs gh label delete --yes < f"],
+    ["xargs -n1 -P2 gh label delete --yes < f"],
+    ["find . -exec gh label delete {} --yes \;"],
+    ["find . -execdir gh label edit {} --name x +"],
+    ["find . -ok gh label delete x{} --yes \;"],
+    ["parallel gh label delete {} --yes ::: sapu:agent-filed"],
+    ["parallel gh label delete --yes ::: sapu:agent-filed"],
+    ["parallel gh label delete {.} --yes :::: labels.txt"],
+    ["parallel -j 2 'gh label delete {} --yes' ::: x"],
+    ["parallel -I ,, gh label delete ,, --yes ::: x"],
+    ["parallel --frobnicate x gh label delete {} --yes ::: x"],
+    ["parallel ::: 'gh label delete sapu:agent-filed --yes'"],
+  ])("refuses %s: a word xargs, find or parallel supplies may be an owner label", (cmd) => {
+    expect(reviewer(cmd)).toMatch(OWNER);
+    expect(blocked(cmd)).toMatch(OWNER);
+  });
+
+  it.each([
+    ["git ls-files -z | xargs -0 wc -l"],
+    ["echo 8 | xargs gh issue view"],
+    ["find . -name '*.ts' -exec grep -l TODO {} +"],
+    ["parallel -j 4 gzip ::: a.log b.log"],
+    ["parallel echo {} ::: a b"],
+  ])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  it.each([
+    ["gh api -X PATCH repos/o/r/labels/sapu:agent-filed?x=1 -f new_name=x"],
+    ["gh api -X PATCH repos/o/r/labels/sapu:accepted# -f new_name=x"],
+    ["gh api -X DELETE repos/o/r/labels/sapu%3Aagent-filed?%E0"],
+    ["gh api -X DELETE repos/o/r/labels/sapu%3Aagent%2Dfiled#%"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels/argus:needs-owner?x=1"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels/argus%3Aneeds-owner#top"],
+  ])("refuses %s: a label behind a query string, fragment or malformed escape is still named", (cmd) => {
+    expect(reviewer(cmd)).toMatch(OWNER);
+    expect(blocked(cmd)).toMatch(OWNER);
+  });
+
+  it("still allows a label write naming no owner label, query string or not", () => {
+    expect(reviewer("gh api -X PATCH repos/o/r/labels/bug?x=1 -f new_name=defect")).toBeNull();
+    expect(reviewer("gh api -X DELETE repos/o/r/issues/8/labels/bug%E0")).toBeNull();
+  });
+
+  it.each([
+    ["gh api -X=POST repos/o/r/issues -f title=t", /files no issues/],
+    ["gh api -X=PUT repos/o/r/issues/8/labels -f labels[]=bug", OWNER],
+    ["gh api -X=DELETE repos/o/r/issues/8/labels", OWNER],
+    ["gh api repos/o/r/issues/8 -f=labels[]=bug -X PATCH", OWNER],
+    ["gh api repos/o/r/issues/8 -F=labels=@l.json -X PATCH", OWNER],
+    ["gh api -X=PUT repos/o/r/pulls/8/merge", /merges/],
+    ["gh api graphql -F=query=@q.graphql", /graphql/],
+    ["gh api graphql -f=query=$(cat q)", /graphql/],
+  ])("refuses %s for a worker: pflag reads -X=V as the value V", (cmd, why) => {
+    expect(blocked(cmd)).toMatch(why);
+  });
+
+  it.each([["gh api -X=GET repos/o/r/issues -f state=open"], ["gh api repos/o/r/pulls/1"]])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  const TOKEN = /auth token/;
+  it.each([
+    ["gh auth token"],
+    ["gh auth token -h github.com"],
+    ["gh -R o/r auth token"],
+    ["gh auth status --show-token"],
+    ["gh auth status --show-token=true"],
+    ["gh auth status -t"],
+    ["gh auth status -at"],
+    ["gh auth status -h github.com -t"],
+    ["gh auth $(echo token)"],
+    ["gh auth status $F"],
+    ["gh auth git-credential get"],
+    ['curl -H "Authorization: token $(gh auth token)" https://api.github.com/user'],
+    ["T=`gh auth token`; curl -H \"Authorization: token $T\" https://api.github.com/user"],
+    ["printf 'protocol=https\\nhost=github.com\\n' | git credential fill"],
+    ["git credential-osxkeychain get"],
+    ["cat ~/.config/gh/hosts.yml"],
+    ["grep oauth_token $HOME/.config/gh/hosts.yml"],
+    ['cat "$GH_CONFIG_DIR/hosts.yml"'],
+    ["grep -r oauth_token ~/.config/gh"],
+    ["cat ~/.config/gh/*.yml"],
+    ["head < ~/.config/gh/hosts.yml"],
+  ])("refuses %s to every subagent: gh's token reaches the API around every gh rule", (cmd) => {
+    expect(reviewer(cmd)).toMatch(TOKEN);
+    expect(blocked(cmd)).toMatch(TOKEN);
+  });
+
+  it("refuses gh's hosts.yml under GH_CONFIG_DIR and to the file tools", () => {
+    const saved = process.env.GH_CONFIG_DIR;
+    process.env.GH_CONFIG_DIR = join(root, "ghcfg");
+    try {
+      expect(blocked(`cat ${join(root, "ghcfg", "hosts.yml")}`)).toMatch(TOKEN);
+      expect(checkFile({ tool: "Read", filePath: join(root, "ghcfg", "hosts.yml"), cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+    } finally {
+      if (saved === undefined) delete process.env.GH_CONFIG_DIR;
+      else process.env.GH_CONFIG_DIR = saved;
+    }
+    expect(checkFile({ tool: "Read", filePath: "~/.config/gh/hosts.yml", cwd: wt, main, rules, worker: false })).toMatch(TOKEN);
+    expect(checkSearch({ tool: "Grep", input: { pattern: "oauth", path: "~/.config/gh" }, cwd: wt, rules })).toMatch(TOKEN);
+    expect(checkFile({ tool: "Read", filePath: "~/.config/gh/config.yml", cwd: wt, main, rules, worker: false })).toBeNull();
+  });
+
+  it("the main session (no agent_id) is not refused gh's token: the guard polices subagents", () => {
+    expect(decide({ tool_name: "Bash", tool_input: { command: "gh auth token" }, cwd: wt })).toBeNull();
+    expect(decide({ agent_id: "a1", agent_type: "senior-dev-team:senior-qa-analyst", tool_name: "Bash", tool_input: { command: "gh auth token" }, cwd: wt })).toMatch(TOKEN);
+  });
+
+  it.each([
+    ["gh auth status"],
+    ["gh auth status -h github.com"],
+    ["gh auth status --active"],
+    ["cat ~/.config/gh/config.yml"],
+    ["git push origin $(git branch --show-current)"],
+    ["ls $(git rev-parse --show-toplevel)/x"],
+    ["gh pr view $(gh pr list --json number -q '.[0].number')"],
+    ["git commit -m \"$(cat <<'EOF'\nfix: a thing\n\nbody\nEOF\n)\""],
+    ["diff <(git show HEAD:a.ts) <(cat a.ts)"],
+    ["gh api repos/{owner}/{repo}/commits/$SHA"],
+    ["gh api repos/{owner}/{repo}/pulls/$N/comments"],
+    ['gh api -X POST repos/{owner}/{repo}/issues/12/comments -f body="$(cat f)"'],
+  ])("still allows the worker command %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+    expect(reviewer(cmd)).toBeNull();
+  });
+});

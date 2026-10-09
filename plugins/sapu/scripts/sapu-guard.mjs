@@ -21,8 +21,9 @@
 // `&`, redirection operators as words of their own, subshells, `$( )` and backticks — also inside
 // double quotes), wrappers are peeled (`env`, `nice`, `time`, `exec`, `xargs`, `npx`, `bunx`,
 // `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, ...),
-// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec` and heredocs
-// fed to a shell are checked recursively (nesting deeper than MAX_DEPTH is blocked, never waved
+// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec`/`parallel` and
+// heredocs fed to a shell are checked recursively, the words xargs, find and parallel fill in at run
+// time counted as words the shell builds (nesting deeper than MAX_DEPTH is blocked, never waved
 // through), and `cd`/`pushd`/`env -C`/`git -C`/`--git-dir`/`--work-tree`/`GIT_DIR` are followed
 // (a `cd` inside `( )`, a pipeline or `&` does not move the parent) to know which checkout a
 // command acts on. A regex over the raw text was the first version and the review rounds showed
@@ -73,8 +74,9 @@
 // hook is live with a canary command (`sapu-guard-canary`) before trusting a worker.
 //
 // LIMITS (deliberate, known — see THREAT MODEL): an interpreter running its own code (`node -e`,
-// `python -c`, a script, `expect`, `tmux send-keys`, `parallel`, `watch`, a pty wrapper such as
-// `script` fed through stdin) is not parsed; shell variables are not expanded (except a leading
+// `python -c`, a script, `expect`, `tmux send-keys`, commands `parallel` reads from stdin or a file,
+// `watch`, a pty wrapper such as `script` fed through stdin) is not parsed, nor is a command held in
+// a variable (`$CMD`, `eval "$CMD"`, `bash -c "$CMD"`); shell variables are not expanded (except a leading
 // `$HOME`/`${HOME}`, read like `~`) — a mutating git command whose target is a variable is
 // BLOCKED, but a Bash write whose target is another variable (`> "$M/x"`) or comes from stdin
 // (`xargs rm`), or whose cwd is such a variable while the path is relative, is allowed. A write
@@ -105,11 +107,17 @@
 // (`curl -o x.tgz`, then `tar xf x.tgz`), or unpacked through a subshell or a process substitution
 // (`curl u | (tar x)`, `tar xzf <(curl u)`), a download piped into a shell (`curl … | sh`, an
 // interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
-// interpreter writes, and a label an interpreter or a file-reading program supplies (`gh issue edit
-// --add-label` with a word from `xargs` without a replace string is refused only when the option's
-// value itself is missing; one from `-I`/`-J`/`--replace` is refused as not literal, and in `gh
-// issue|pr edit` any word the shell or xargs builds — `$O`, `$( )` quoted or not, a replace string —
-// beside a literal owner label is refused, since it can be the option name).
+// interpreter writes, and a label an interpreter supplies. The words a wrapper fills in at run time
+// count as built by the shell: xargs's (in place of `-I`/`-J`/`--replace`'s string, else one appended
+// to the command), `{}` in `find -exec|-execdir|-ok|-okdir`, and parallel's (its replacement strings,
+// else one appended); in `gh issue|pr edit` any word the shell or a wrapper builds beside a literal
+// owner label is refused, since it can be the option name.
+// gh's token: `gh auth token`, `gh auth status -t|--show-token`, `gh auth git-credential`, `git
+// credential …` and reading gh's hosts.yml (the file, its directory, a glob reaching the file) are
+// BLOCKED for every subagent, since with the token `curl` reaches the API around every gh rule; NOT
+// covered: a recursive read from a directory above gh's (`grep -r … ~/.config`), the OS keychain read
+// directly (`security find-internet-password`), and a token already in the environment (GH_TOKEN,
+// GITHUB_TOKEN), which curl can send as it is.
 // The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
@@ -486,13 +494,21 @@ const XARGS_SHORT_FLAG = "0oprtx";
 const XARGS_LONG_VALUE = new Set(["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"]);
 const XARGS_LONG_OPTIONAL = new Set(["eof", "replace", "max-lines"]);
 const XARGS_LONG_FLAG = new Set(["null", "interactive", "no-run-if-empty", "verbose", "exit", "show-limits", "version", "help", "open-tty"]);
+// GNU parallel's: the input separators, its replacement strings, options taking a value, flags.
+const PARALLEL_SEP = /^::::?\+?$/;
+const PARALLEL_REPLACE = /\{(?:=[\s\S]*?=|[0-9]*[./#%+]*)\}/;
+const PARALLEL_SHORT_VALUE = "aCdEIjLnNPsS";
+const PARALLEL_SHORT_FLAG = "0gkmpqrtuvX";
+const PARALLEL_LONG_VALUE = new Set(["arg-file", "arg-file-sep", "arg-sep", "basefile", "bf", "block", "block-size", "colsep", "delay", "delimiter", "env", "eof", "halt", "jobs", "joblog", "load", "max-args", "max-chars", "max-lines", "max-procs", "max-replace-args", "memfree", "nice", "process-slot-var", "res", "results", "retries", "return", "rpl", "slf", "ssh", "sshlogin", "sshloginfile", "tag-string", "tagstring", "template", "tf", "timeout", "tmpdir", "transferfile", "wd", "workdir"]);
+const PARALLEL_LONG_FLAG = new Set(["bar", "dry-run", "dryrun", "eta", "group", "interactive", "keep-order", "lb", "line-buffer", "no-notice", "no-run-if-empty", "null", "pipe", "pipe-part", "pipepart", "progress", "quote", "tag", "ungroup", "verbose", "will-cite", "xargs"]);
 
 /**
  * Peel env assignments and wrappers; returns the index of the real program in the command. `alts`,
  * when given, collects the index of each wrapper option the guard does not know (an xargs option):
- * read here as a flag, it may instead take the next word as its value.
+ * read here as a flag, it may instead take the next word as its value. `out`, when given, counts in
+ * `out.appends` the words a wrapper appends to the command at run time (xargs without a replace string).
  */
-function programIndex(t, alts = null) {
+function programIndex(t, alts = null, out = null) {
   let i = 0;
   while (i < t.length) {
     const v = path.basename(t[i].v);
@@ -579,7 +595,10 @@ function programIndex(t, alts = null) {
         i += used;
       }
       // xargs puts what it reads in place of its replace string: such a word is not a literal.
-      if (rep) for (let k = i; k < t.length; k++) if (t[k].v.includes(rep)) t[k] = { ...t[k], dyn: true };
+      // Without one it appends what it reads to the command: one word the shell builds, at its end.
+      if (rep) {
+        for (let k = i; k < t.length; k++) if (t[k].v.includes(rep)) t[k] = { ...t[k], dyn: true };
+      } else if (out) out.appends = (out.appends ?? 0) + 1;
     } else if (v === "npx" || v === "bunx" || v === "corepack" || (PKG_MANAGERS.has(v) && /^(exec|x|dlx)$/.test(pmSubcommand(t, i)))) {
       // `npm exec`, `npm x`, `pnpm exec|dlx`, `yarn exec|dlx` run their argument like npx does.
       if (PKG_MANAGERS.has(v)) {
@@ -910,16 +929,23 @@ const GH_COMMANDS = new Set([
 ]);
 // Options of `git fetch`/`git pull` that take their value as the next word.
 const FETCH_VALUE_OPTS = new Set(["--depth", "--deepen", "--shallow-since", "--shallow-exclude", "-j", "--jobs", "--upload-pack", "-o", "--server-option", "--negotiation-tip", "--refmap", "--filter", "-s", "--strategy", "-X", "--strategy-option"]);
-/** The words of `v` a label name could be (URL-decoded, lower case): does one of them name one of `labels`? */
+/**
+ * The words of `v` a label name could be (lower case): does one of them name one of `labels`? Read as
+ * written, and as a route: without its query string or fragment (`labels/<name>?x=1`, `…#`), each
+ * read URL-decoded whole and also `%XX` by `%XX`, so a malformed escape elsewhere hides nothing.
+ */
 const namesLabel = (v, labels) => {
-  let s = v;
-  try {
-    s = decodeURIComponent(v);
-  } catch {
-    /* not URL-encoded */
+  const words = new Set();
+  for (const s of [v, v.replace(/[?#][\s\S]*$/, "")]) {
+    const reads = [s, pct(s)];
+    try {
+      reads.push(decodeURIComponent(s));
+    } catch {
+      /* a malformed escape: the %XX reading above stands */
+    }
+    for (const r of reads) for (const w of r.toLowerCase().split(/[\s,="'/[\]{}()]+/)) words.add(w);
   }
-  const words = s.toLowerCase().split(/[\s,="'/[\]{}()]+/);
-  return [].concat(labels).some((l) => words.includes(l));
+  return [].concat(labels).some((l) => words.has(l));
 };
 
 const ENGINE_ONLY = compileRules(null);
@@ -1208,6 +1234,8 @@ const BLOCK = {
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
     "the acceptance label, the needs-owner label and the agent-filed label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them (an agent only files a new issue with the agent-filed or needs-owner label) — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
+  ghToken:
+    "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `git credential …`, gh's hosts.yml) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
   ownerRuling:
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
@@ -1472,6 +1500,43 @@ function isPluginFile(p, replaces = false) {
 const isGlob = (s) => /[*?[]/.test(s);
 
 /**
+ * gh's hosts.yml, which holds its OAuth token where no keyring stores it, wherever gh reads it
+ * ($GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, ~/.config/gh), also through the real path of its directory.
+ */
+let ghHostsCache = { key: null, files: [] };
+function ghHostsFiles() {
+  const { HOME: home, GH_CONFIG_DIR: gh, XDG_CONFIG_HOME: xdg } = process.env;
+  const key = `${home}\0${gh}\0${xdg}`;
+  if (ghHostsCache.key === key) return ghHostsCache.files;
+  const dirs = [gh, xdg && path.join(xdg, "gh"), home && path.join(home, ".config", "gh")].filter(Boolean).map((d) => path.resolve(d));
+  ghHostsCache = { key, files: [...new Set(dirs.flatMap((d) => [path.join(d, "hosts.yml"), path.join(realPathOf(d), "hosts.yml")]))] };
+  return ghHostsCache.files;
+}
+
+/** Is `p` gh's hosts.yml, or the directory holding it (a recursive read takes it along)? Any letter case. */
+const isGhHosts = (p) => ghHostsFiles().some((f) => p.toLowerCase() === f.toLowerCase() || p.toLowerCase() === path.dirname(f).toLowerCase());
+
+/** A word naming gh's hosts.yml through a variable the guard does not expand (`$GH_CONFIG_DIR/hosts.yml`, `$X/gh/hosts.yml`). */
+const GH_HOSTS_WORD = /(?:^|[/=])(?:gh|\$\{?GH_CONFIG_DIR\}?)\/hosts\.yml$/i;
+
+/**
+ * Does the word `tok` (or an option's glued value, `--file=<path>`) read gh's hosts.yml: the file, its
+ * directory, or a glob that can expand into the file? A directory above them is not counted (LIMITS).
+ */
+function readsGhToken(tok, dir, prev) {
+  if (GH_HOSTS_WORD.test(tok.v)) return true;
+  const eq = tok.v.indexOf("=");
+  for (const v of eq > 0 ? [tok.v, tok.v.slice(eq + 1)] : [tok.v]) {
+    const w = writeTarget({ v, dyn: tok.dyn }, true, dir, prev);
+    if (!w) continue;
+    if (isGhHosts(w.abs) || isGhHosts(w.real)) return true;
+    const deep = (g) => ghHostsFiles().some((f) => g.split(path.sep).filter(Boolean).length >= f.split(path.sep).filter(Boolean).length && globReaches(g, [f]));
+    if (w.glob && w.glob.some(deep)) return true;
+  }
+  return false;
+}
+
+/**
  * Can the absolute glob `pattern` expand into one of `paths`, an ancestor of one (removing it takes
  * the path along), or anything inside one? Matched segment by segment as the shell expands it (a
  * leading `*`/`?` never matches a leading `.`; `**` reaches any depth), case-insensitively, so
@@ -1614,12 +1679,14 @@ function checkCommand(t, state, depth) {
   const values = t.map((x) => x.v);
   if (values.includes("sapu-guard-canary")) return BLOCK.canary;
   const alts = [];
-  const at = programIndex(t, alts);
+  const peeled = {};
+  const at = programIndex(t, alts, peeled);
   // An unknown wrapper option read the other way too: taking the next word as its value.
   for (const k of alts) {
     const r = checkCommand([...t.slice(0, k), ...t.slice(k + 2)], state, depth + 1);
     if (r) return r;
   }
+  if (peeled.appends && at < t.length) t = [...t, ...Array.from({ length: peeled.appends }, () => ({ v: "", dyn: true }))];
   const here = envChdir(t, at, state.dir) ?? state.dir;
   // The repo this command runs in, and its contract (TOUCHED REPO in decide()); without a resolver,
   // or where the place cannot be told, the scope the caller gave.
@@ -1654,6 +1721,7 @@ function checkCommand(t, state, depth) {
   const db = rules.dbs.find((d) => (d.engine === "postgres" ? dbTarget(scanned, prog, d) : d.engine === "sqlite" ? sqliteTarget(scanned, d, here, main) : engineTarget(scanned, prog, d)));
   if (db) return BLOCK.db(db.label);
   if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
+  if ([...t.slice(0, at), ...argv.filter((_, i) => i > 0 && !skip.has(i))].some((x) => readsGhToken(x, here, state.prev))) return BLOCK.ghToken;
   if (!a.length) return null;
   // degit/tiged copy another repository's tree here, as a clone would.
   if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
@@ -1697,11 +1765,60 @@ function checkCommand(t, state, depth) {
       if (!/^-(exec|execdir|ok|okdir)$/.test(a[i])) continue;
       let j = i + 1;
       while (j < argv.length && a[j] !== ";" && a[j] !== "+") j++;
-      const r = checkCommand(argv.slice(i + 1, j), { ...state, dir: here }, depth + 1);
+      // find puts each path it finds where `{}` stands: such a word is not a literal.
+      const r = checkCommand(argv.slice(i + 1, j).map((x) => (x.v.includes("{}") ? { ...x, dyn: true } : x)), { ...state, dir: here }, depth + 1);
       if (r) return r;
       i = j;
     }
     return null;
+  }
+  if (prog === "parallel") {
+    // GNU parallel: options, a command, then its input after `:::`/`::::` (or from stdin). It joins the
+    // command's words and runs them through a shell, a replacement string ({}, {.}, {/}, {#}, {1},
+    // {= … =}, or -I's own) standing for each input, which it appends when the command has none. So
+    // the command is judged both as that shell text and as words, each input a word the shell builds;
+    // with no command, each `:::` word is a command of its own. An option not known is judged both as
+    // a flag and as taking the next word, as xargs's are.
+    let k = 1;
+    let rep = null;
+    while (k < a.length && a[k].startsWith("-") && a[k] !== "-" && !PARALLEL_SEP.test(a[k])) {
+      const o = a[k];
+      if (o === "--") {
+        k++;
+        break;
+      }
+      const long = /^--([^=]+)(=?)/.exec(o);
+      const name = long ? long[1] : o[1];
+      let used = 1;
+      if (long ? name === "replace" : name === "i") rep = (long ? long[2] && o.slice(o.indexOf("=") + 1) : o.slice(2)) || "{}";
+      else if (long ? PARALLEL_LONG_VALUE.has(name) : PARALLEL_SHORT_VALUE.includes(name)) {
+        const glued = long ? !!long[2] : o.length > 2;
+        if (name === "I") rep = glued ? o.slice(2) : (a[k + 1] ?? null);
+        used = glued ? 1 : 2;
+      } else if (!(long ? PARALLEL_LONG_FLAG.has(name) && !long[2] : [...o.slice(1)].every((ch) => PARALLEL_SHORT_FLAG.includes(ch)))) {
+        const r = checkCommand([...t.slice(0, at + k), ...t.slice(at + k + 2)], state, depth + 1);
+        if (r) return r;
+      }
+      k += used;
+    }
+    const sep = a.findIndex((v, j) => j >= k && PARALLEL_SEP.test(v));
+    const cmd = argv.slice(k, sep < 0 ? argv.length : sep);
+    if (!cmd.length) {
+      for (const x of sep < 0 ? [] : argv.slice(sep + 1)) {
+        const r = PARALLEL_SEP.test(x.v) ? null : checkText(x.v, here, state, depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+    const replaces = (v) => (rep ? v.includes(rep) : PARALLEL_REPLACE.test(v));
+    const fills = cmd.some((x) => replaces(x.v));
+    const built = { v: "", dyn: true };
+    const words = [...cmd.map((x) => (replaces(x.v) ? { ...x, dyn: true } : x)), ...(fills ? [] : [built])];
+    const r = checkCommand(words, { ...state, dir: here }, depth + 1);
+    if (r) return r;
+    const arg = "$SAPU_PARALLEL_INPUT";
+    const text = cmd.map((x) => (rep ? x.v.split(rep).join(arg) : x.v.replace(new RegExp(PARALLEL_REPLACE.source, "g"), arg))).join(" ");
+    return checkText(fills ? text : `${text} ${arg}`, here, state, depth + 1);
   }
   if (prog === "cd" || prog === "pushd") {
     let k = 1;
@@ -1776,6 +1893,8 @@ function checkCommand(t, state, depth) {
     }
     const sub = a[i];
     const rest = a.slice(i + 1);
+    // git's credential helpers hand out the token gh stores for git (`git credential fill`)
+    if (/^credential(-|$)/.test(sub ?? "")) return BLOCK.ghToken;
     // The repository git acts on (-C, --git-dir, …) is the touched repo: its base branch and main checkout.
     const gs = (dir !== here && state.resolve && state.resolve(dir)) || scope;
     if (gs.error) return BLOCK.brokenContract(gs.main, gs.error);
@@ -1886,6 +2005,7 @@ function checkCommand(t, state, depth) {
       }
     }
     if (g1 === "pr" && g2 === "merge") return BLOCK.merge;
+    if (g1 === "auth" && ghTokenShown(g2, i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]))) return BLOCK.ghToken;
     if (g1 === "issue" && g2 === "create" && rules.worker !== false) return BLOCK.issue;
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
@@ -1951,10 +2071,10 @@ function checkCommand(t, state, depth) {
             val = argv[k + 1];
             fromFile = /^(-F|--field)$/.test(a[k]);
           } else {
-            const m = /^(-f|-F|--field=|--raw-field=)(query=[\s\S]*)$/.exec(a[k]);
+            const m = /^(?:(-f|-F)=?|(--field=|--raw-field=))(query=[\s\S]*)$/.exec(a[k]);
             if (m) {
-              val = { v: m[2], dyn: argv[k].dyn };
-              fromFile = /^(-F|--field=)$/.test(m[1]);
+              val = { v: m[3], dyn: argv[k].dyn };
+              fromFile = m[1] === "-F" || m[2] === "--field=";
             }
           }
           // an empty `query=` was cut by an unquoted $( ) or backtick
@@ -2068,7 +2188,32 @@ function ghWords(a) {
 }
 
 // The gh subcommands a rule names: a shell-built one is judged as each of them.
-const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download"];
+const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download", "token", "status", "git-credential"];
+
+/**
+ * Does `gh auth <sub> <tail…>` print gh's token? `token` and `git-credential` do; `status` with
+ * -t/--show-token (any value, short options bundled: `-at`) or a word the shell builds, which may be it.
+ */
+function ghTokenShown(sub, tail) {
+  if (sub === "token" || sub === "git-credential") return true;
+  if (sub !== "status") return false;
+  for (let j = 0; j < tail.length; j++) {
+    const v = tail[j].v;
+    if (tail[j].dyn || /^--show-token(=|$)/.test(v)) return true;
+    if (/^--(hostname|jq|template)$/.test(v)) j++;
+    else if (/^-[^-]/.test(v)) {
+      for (let k = 1; k < v.length; k++) {
+        if (v[k] === "t") return true;
+        // -h, -q and -T take the rest of the word, or the next word
+        if ("hqT".includes(v[k])) {
+          if (k === v.length - 1) j++;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
 // gh api's options that take a value (the next word, unless glued).
 const GH_API_VALUE_OPTS = /^(-X|--method|-f|-F|--field|--raw-field|-H|--header|--input|-q|--jq|-t|--template|-p|--preview|--cache|--hostname|-R|--repo)$/;
 
@@ -2093,7 +2238,8 @@ function ghApiMethods(argv) {
     let tok = null;
     if (argv[k].v === "-X" || argv[k].v === "--method") tok = argv[++k] ?? { v: "", dyn: true };
     else {
-      const m = /^(?:-X|--method=)([\s\S]*)$/.exec(argv[k].v);
+      // pflag reads a short option's glued value after one `=` (`-X=POST`), a long one's after `=`
+      const m = /^(?:-X=?|--method=)([\s\S]*)$/.exec(argv[k].v);
       if (m) tok = { v: m[1], dyn: argv[k].dyn };
     }
     if (tok) given.push(tok.dyn || !tok.v ? null : tok.v.toUpperCase());
@@ -2159,10 +2305,11 @@ function ghFields(argv) {
       typed = /^(-F|--field)$/.test(x);
       k++;
     } else {
-      const m = /^(-f|-F|--field=|--raw-field=)([\s\S]+)$/.exec(x);
+      // glued: `-fk=v`, pflag's `-f=k=v`, `--field=k=v`
+      const m = /^(?:(-f|-F)=?|(--field=|--raw-field=))([\s\S]+)$/.exec(x);
       if (m) {
-        f = { v: m[2], dyn: argv[k].dyn };
-        typed = /^(-F|--field=)$/.test(m[1]);
+        f = { v: m[3], dyn: argv[k].dyn };
+        typed = m[1] === "-F" || m[2] === "--field=";
       }
     }
     if (f) out.push({ v: f.v, dyn: f.dyn, file: typed && /^[^=]*=@/.test(f.v) });
@@ -2277,6 +2424,7 @@ export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONL
   const s = (resolve && resolve(real)) || { main, rules };
   if (s.error) return BLOCK.brokenContract(s.main, s.error);
   if ([abs, real].some((p) => s.rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
+  if (isGhHosts(abs) || isGhHosts(real)) return BLOCK.ghToken;
   if (WRITE_TOOLS.has(tool) && (isGitFile(abs) || isGitFile(real))) return BLOCK.gitFiles;
   if (WRITE_TOOLS.has(tool) && (isMachineConfigFile(abs) || isMachineConfigFile(real))) return BLOCK.machineConfig;
   if (WRITE_TOOLS.has(tool) && (isPluginFile(abs) || isPluginFile(real))) return BLOCK.pluginFiles;
@@ -2302,6 +2450,7 @@ export function checkSearch({ tool, input = {}, cwd, rules: given = ENGINE_ONLY,
   if (s.error) return BLOCK.brokenContract(s.main, s.error);
   const rules = s.rules;
   if (abs && [abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
+  if (abs && (isGhHosts(abs) || isGhHosts(realPathOf(abs)))) return BLOCK.ghToken;
   const g = tool === "Grep" ? input.glob : input.pattern;
   if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep", escapes: true })) return BLOCK.env;
   return null;
