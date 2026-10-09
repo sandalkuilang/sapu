@@ -1347,6 +1347,9 @@ describe("the remaining write paths to the machine config and git's files: brace
     ["rm -rf .g*"],
     ["rm -rf ./.[g]*"],
     ["rm -rf .gi?"],
+    // a command starts with OLDPWD = its cwd (measured in Claude Code's Bash), so a first `cd -` stays
+    ["cd - && rm -rf .git"],
+    ["cd - && echo x > .git/hooks/pre-commit"],
   ])("blocks %s as git's own files", (cmd) => {
     expect(blocked(cmd)).toMatch(cmd === "cp -r dotfiles/ ~" ? MC : GF);
   });
@@ -2099,6 +2102,7 @@ describe("sapu-guard — a session whose project directory is <MAIN> keeps its c
     expect(run({ tool_name: "PowerShell", tool_input: { command: `Set-Location -Path:${wt6}` }, cwd: repo6 })).not.toBe(0);
     expect(run({ tool_name: "Bash", tool_input: { command: `cd $HOME/.claude/worktrees/pr-1 && ls` }, cwd: repo6 }, { CLAUDE_PROJECT_DIR: repo6, HOME: repo6 })).not.toBe(0);
     expect(bash("cd apps && ls", wt6)).toMatch(/already the linked worktree .*cd ".*sapu-home-[^"]*" &&/s);
+    expect(bash("cd - && npm test", wt6)).toMatch(/already the linked worktree/); // a first `cd -` stays where the command starts
   });
 
   it("lets through what does not move the cwd, a cd back, a worktree outside <MAIN> (Claude Code resets that itself), and a host that resets the cwd", () => {

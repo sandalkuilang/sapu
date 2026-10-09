@@ -1569,7 +1569,7 @@ function checkCommand(t, state, depth) {
     if (argv[k]?.v === "--") k++;
     const target = argv[k];
     const from = state.dir;
-    // `cd -` returns to the previous directory (unknown before the first cd); an absolute or `~`
+    // `cd -` returns to the previous directory (the command's cwd before the first cd); an absolute or `~`
     // target is known from anywhere, a relative one only from a known cwd.
     const e = target && target.v !== "-" ? expandHome(target, from, state.prev) : null;
     if (!target) state.dir = process.env.HOME || from;
@@ -1896,7 +1896,9 @@ function prSource(toks) {
 /** `base` = the caller's scope: {main, rules, resolve}; each command of `text` re-resolves its own place. */
 function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
-  const state = { dir, main: base.main, rules: base.rules, resolve: base.resolve };
+  // A command text starts with OLDPWD = its cwd: Claude Code's Bash sets it so (measured), and a
+  // fresh shell's `cd -` stays where it is (bash ignores an inherited OLDPWD, zsh starts it at $PWD).
+  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
@@ -2358,7 +2360,7 @@ function dropHeredocBodies(command) {
  */
 export function topLevelStops(command, dir) {
   let cur = dir;
-  let prev = null;
+  let prev = dir; // OLDPWD = the cwd when a command starts (checkText)
   const saved = [];
   const stack = [];
   const stops = [];
