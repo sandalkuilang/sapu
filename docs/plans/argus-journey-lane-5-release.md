@@ -865,3 +865,5 @@ Refs #53
 - **Phase-end review.** `browserHome(rec)` in argus-live-run.mjs is the one place a run's browser HOME is
   built; instance, session, the CLI's `show` and `down`'s sweep call it (the DAG unchanged: each already
   imported the run module).
+- **Phase-end review.** argus-live-config.mjs's key lists are frozen, `REQUIRED` is exported with them,
+  and engine.test pins live.md's `Required:` line to it, in order.

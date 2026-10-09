@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SKILLS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
 // @ts-expect-error — plain ESM script without types
-import { LIMIT_KEYS, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { LIMIT_KEYS, REQUIRED, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1008,6 +1008,12 @@ describe("the journey lane's engine text", () => {
   it("the live.json reference names every key the schema takes", () => {
     const text = read(LIVE);
     for (const k of [...TOP_KEYS, ...LIMIT_KEYS, ...ROLE_KEYS, ...START_KEYS, ...USER_KEYS] as string[]) expect(text, k).toContain(`\`${k}\``);
+  });
+
+  it("the live.json reference marks exactly the required keys, and the key lists are frozen", () => {
+    const line = read(LIVE).split("\n").find((l) => l.startsWith("Required: "))!;
+    expect([...line.matchAll(/`([a-z_]+)`/g)].map((m) => m[1])).toEqual([...REQUIRED]);
+    for (const list of [TOP_KEYS, REQUIRED, LIMIT_KEYS, START_KEYS, ROLE_KEYS, USER_KEYS]) expect(Object.isFrozen(list)).toBe(true);
   });
 
   it("CONTRACT.md's layer table points at the live.json reference", () => {
