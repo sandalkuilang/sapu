@@ -96,9 +96,10 @@ export async function reserveStep(file, secret, { now = Date.now, sleep: wait = 
  * the hook (below) gathered in context `c` since the last drain, plus the context's cookies and every
  * page's localStorage and sessionStorage → `{cookies: [{name, value, httpOnly, secure}], storage: [{key,
  * value}], headers: [[name, value]], leaves: [[key, value]], paths: [[previous, segment]], errors,
- * overflow}`, the pending arrays emptied (never `seen`). The observation and the repro's step templates drain.
+ * overflow}`, the pending arrays emptied (never `seen`). The observation and the repro's step templates
+ * (argus-live-steps.mjs) drain.
  */
-const HELPERS = `  const pause = (ms) => page.waitForTimeout(ms);
+export const HELPERS = `  const pause = (ms) => page.waitForTimeout(ms);
   const visible = async (loc) => {
     try {
       return await loc.first().isVisible();

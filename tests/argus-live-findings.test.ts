@@ -15,7 +15,7 @@ import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-confi
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
+import { HELPERS, loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
 import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -25,7 +25,13 @@ import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sap
 // @ts-expect-error — plain ESM script without types
 import { configuredUser, drainSessions, maskSecrets, sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
+import { ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
+// @ts-expect-error — plain ESM script without types
 import { readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
+// @ts-expect-error — plain ESM script without types
+import { FINAL_KINDS, parseRepro, reductions, stepCode, substitute } from "../plugins/sapu/scripts/argus-live-steps.mjs";
+// @ts-expect-error — plain ESM script without types
+import { parseTarget } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 
 type Obj = Record<string, any>;
 
@@ -70,6 +76,10 @@ describe("argus-live modules — the DAG", () => {
     // The ledger sits right above run.json's module: the drains above it write it, the teardown takes its drain as a parameter.
     expect([...(g.get("argus-live-ledger") ?? [])].sort()).toEqual(["argus-live-fence", "argus-live-lock", "argus-live-run"]);
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
+    // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
+    expect(g.has("argus-live-steps")).toBe(true);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
+    for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -425,5 +435,220 @@ describe("argus-live repro sessions", () => {
     await down(t.main, { runId: t.runId, graceMs: 1000 });
     expect(t.calls().map((c) => c.argv)).toEqual([[`-s=${name}`, "close"]]);
     expect(await until(() => !alive(p.pid!), 3000)).toBe(true);
+  });
+});
+
+describe("argus-live repro DSL", () => {
+  /** Spec §10's example, its context as the list's first element (decision 1). */
+  const EXAMPLE = () => [
+    { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } },
+    { as: "customer", do: "goto", path: "/orders/new" },
+    { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
+    { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+    { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+    { as: "customer", expect: "visible", target: { text: "{{order}}" } },
+    { as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] },
+    { as: "customer", expect: "fact-equals", marker: "{{order}}", field: "status", value: "paid" },
+    { as: "sales", do: "goto", path: "/" },
+    { as: "sales", expect: "visible", target: { text: "{{order}}" }, final: "handoff" },
+  ];
+  const ACCOUNTS = { "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "anon.1": null };
+  const at = { accounts: ACCOUNTS, live: example() };
+  const FINAL = { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" };
+  /** The refusal parseRepro throws for `list`. */
+  const refusal = (list: Obj[]) => {
+    try {
+      parseRepro(list, at);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    return "parsed";
+  };
+  /** The step template's own code: HELPERS left out. */
+  const own = (code: string) => code.replace(HELPERS, "");
+  /** Phase 3's targetCode shape (argus-live-pw.test.ts), rooted at the template's `pg`; its options may hold a JSON string with a brace. */
+  const SHAPE = /^pg(\.(getBy(Role|Text|Label|Placeholder|TestId|Title|AltText)|locator)\(("(?:[^"\\]|\\.)*")(, \{(?:"(?:[^"\\]|\\.)*"|[^}"])*\})?\)|\.(first|last)\(\)|\.nth\(-?\d+\))+$/;
+  const OPTS = { settleMs: 3000, runOrigins: ["http://localhost:41002"] };
+
+  it("FINAL_KINDS holds decision 7's templates, one per oracle", () => {
+    expect(Object.keys(FINAL_KINDS)).toEqual(ORACLES);
+    expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled"] });
+  });
+
+  it("parseRepro reads §10's example", () => {
+    const { context, steps } = parseRepro(EXAMPLE(), at);
+    expect(context).toEqual({ viewport: 1440, locale: "en-US", timezone: "UTC" });
+    expect(steps).toHaveLength(9);
+    expect(steps.map((s: Obj) => s.n)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(steps[0]).toEqual({ n: 1, as: "customer.1", do: "goto", path: "/orders/new" });
+    expect(steps[1].target).toEqual(parseTarget("getByLabel('Quantity')"));
+    expect(steps[2].target).toEqual(parseTarget("getByRole('button', { name: 'Place order' })"));
+    expect(steps[3]).toMatchObject({ do: "read", save: "order", target: parseTarget("getByTestId('order-number')") });
+    expect(steps[5]).toEqual({ n: 6, as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] });
+    expect(steps[8]).toMatchObject({ as: "sales.1", expect: "visible", final: "handoff", target: { by: "text", value: "{{order}}" } });
+  });
+
+  it("the context defaults to live's viewport, locale and timezone", () => {
+    const { context } = parseRepro(EXAMPLE().slice(1), { accounts: ACCOUNTS, live: { ...example(), viewports: [390, 1440], locale: "de-DE", timezone: "Europe/Berlin" } });
+    expect(context).toEqual({ viewport: 390, locale: "de-DE", timezone: "Europe/Berlin" });
+  });
+
+  it("each refusal names its step", () => {
+    const cases: [Obj[], string][] = [
+      [[{ as: "customer", do: "goto", path: "/", colour: "red" }, FINAL], 'step 1: unknown key "colour"'],
+      [[{ as: "customer", do: "teleport" }, FINAL], "step 1: unknown action"],
+      [[{ as: "customer", expect: "glows", target: { text: "x" } }, FINAL], "step 1: unknown action"],
+      [[{ as: "admin", do: "goto", path: "/" }, FINAL], "step 1: admin is not allocated to this slot"],
+      [[{ as: "system", do: "goto", path: "/" }, FINAL], "step 1: system only triggers, reads facts and reads mail"],
+      [[{ as: "customer", do: "click", target: { css: "#x" } }, FINAL], "step 1: a target names one of role, label, text, placeholder, testId"],
+      [[{ as: "customer", do: "click", target: { role: "button", label: "x" } }, FINAL], "step 1: a target names one of role, label, text, placeholder, testId"],
+      [[{ as: "customer", do: "click", target: { title: "x" } }, FINAL], "step 1: a target names one of role, label, text, placeholder, testId"],
+      [[{ as: "customer", do: "click", target: { text: "a", within: { altText: "b" } } }, FINAL], "step 1: a target names one of role, label, text, placeholder, testId"],
+      [[{ as: "customer", do: "goto", path: "http://outside.test/" }, FINAL], "step 1: goto takes a path (/…)"],
+      [[{ as: "customer", do: "goto", path: "//outside.test/" }, FINAL], "step 1: goto takes a path (/…)"],
+      [[{ as: "customer", expect: "visible", target: { text: "{{order}}" } }, FINAL], "step 1: {{order}} is used before a read saves it"],
+      [[{ as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" }, { as: "sales", do: "goto", path: "/" }], "step 1: final must be the last step"],
+      [[{ as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" }, FINAL], "step 2: one final only"],
+      [[{ as: "sales", expect: "hidden", target: { text: "x" }, final: "handoff" }], "step 1: handoff's final is visible"],
+      [[{ as: "sales", expect: "visible", target: { text: "x" }, final: "status-coherence" }], "step 1: status-coherence's final is fact-equals or text-equals"],
+      [[{ as: "sales", expect: "count", target: { testId: "claim" }, value: 1, final: "claim-race" }], "step 1: claim-race needs a parallel group of two accounts of one role before its final"],
+      [[{ as: "customer", do: "goto", path: "/" }, { as: "customer", expect: "count", target: { testId: "x" }, value: 1, final: "interrupted-flow" }], "step 2: interrupted-flow needs no-error right before its final"],
+      [[{ as: "customer", do: "select", target: { label: "Size" }, value: "L" }, { as: "customer", do: "goto", path: "/" }], "step 1: select changes state: an expect as customer.1 must follow before its next action"],
+      [[{ as: "sales", do: "check", target: { label: "Urgent" } }, { as: "customer", expect: "visible", target: { text: "x" }, final: "handoff" }], "step 1: check changes state: an expect as sales.1 must follow before its next action"],
+      [[{ parallel: [{ as: "customer", do: "click", target: { text: "a" } }] }, FINAL], "step 1: a parallel group holds 2 to 8 actions of different accounts"],
+      [[{ parallel: [{ as: "customer", do: "click", target: { text: "a" } }, { as: "customer.1", do: "click", target: { text: "b" } }] }, FINAL], "step 1: a parallel group holds 2 to 8 actions of different accounts"],
+      [[{ parallel: [{ as: "customer", do: "click", target: { text: "a" } }, { as: "sales", expect: "visible", target: { text: "b" } }] }, FINAL], "step 1: a parallel group holds 2 to 8 actions of different accounts"],
+      [[{ as: "anon.1", do: "login", user: "x@example.test", password: "pw-1" }, FINAL], "step 1: anon is never signed in"],
+      [[{ as: "customer", do: "login", user: "x@example.test", password: "pw-1" }, FINAL], "step 1: login's as names an account (<role>.<k>)"],
+      [[{ as: "customer.2", do: "login", user: "buyer1@example.test", password: "pw-1" }, FINAL], "step 1: login takes an account the journey created, never a configured user"],
+      [[{ as: "customer.2", do: "login", user: " Sales1@Example.test", password: "pw-1" }, FINAL], "step 1: login takes an account the journey created, never a configured user"],
+      [[{ as: "customer.2", do: "login", user: "x@example.test" }, FINAL], "step 1: login takes a user and a password (strings, placeholders allowed)"],
+      [[{ as: "customer.2", do: "login", user: "x@example.test", password: 7 }, FINAL], "step 1: login takes a user and a password (strings, placeholders allowed)"],
+      [[{ as: "system", do: "trigger", name: "nope", values: [] }, FINAL], "step 1: trigger nope is not in live.triggers"],
+      [[{ as: "system", do: "trigger", name: "payment-settles", values: [] }, FINAL], "step 1: trigger payment-settles takes 1 value"],
+      [[{ as: "customer", do: "fill", target: { label: "Note" }, value: "n".repeat(501) }, FINAL], "step 1: a string is at most 500 characters, without control characters"],
+      [[{ as: "customer", do: "fill", target: { label: "Note" }, value: "a\u0007b" }, FINAL], "step 1: a string is at most 500 characters, without control characters"],
+      [[...Array.from({ length: 100 }, () => ({ as: "customer", do: "goto", path: "/" })), FINAL], "step 101: at most 100 steps"],
+    ];
+    for (const [list, why] of cases) expect(refusal(list), why).toBe(`refused: repro: ${why}`);
+    // The context's own faults are the context's.
+    expect(refusal([{ context: { viewport: 100 } }, FINAL])).toBe("refused: repro: context: viewport must be from 200 to 4000");
+    expect(refusal([{ context: { locale: "not a locale!" } }, FINAL])).toBe("refused: repro: context: locale is not a BCP 47 tag");
+    expect(refusal([{ context: { timezone: "Mars/Olympus" } }, FINAL])).toBe("refused: repro: context: timezone is not one Intl knows");
+    expect(refusal([{ context: { colour: "red" } }, FINAL])).toBe('refused: repro: context: unknown key "colour"');
+    // §10's example passes: its read between the click and the expect is allowed.
+    expect(refusal(EXAMPLE())).toBe("parsed");
+  });
+
+  it("a claim race's parallel group and an interrupted flow's no-error pass", () => {
+    const race = [
+      { parallel: [{ as: "customer.1", do: "click", target: { role: "button", name: "Claim" } }, { as: "customer.2", do: "click", target: { role: "button", name: "Claim" } }] },
+      { as: "customer.1", expect: "visible", target: { testId: "claim", nth: 0 } },
+      { as: "customer.2", expect: "visible", target: { testId: "claim", nth: 0 } },
+      { as: "customer.1", expect: "count", target: { testId: "claim" }, value: 1, final: "claim-race" },
+    ];
+    const { steps } = parseRepro(race, at);
+    expect(steps.map((s: Obj) => [s.n, s.as, s.group ?? null])).toEqual([[1, "customer.1", 1], [2, "customer.2", 1], [3, "customer.1", null], [4, "customer.2", null], [5, "customer.1", null]]);
+    expect(steps[2].target).toEqual({ by: "testId", value: "claim", nth: 0 });
+    expect(refusal([{ as: "customer", do: "goto", path: "/" }, { as: "customer", expect: "no-error" }, { as: "customer", expect: "count", target: { testId: "x" }, value: 1, final: "interrupted-flow" }])).toBe("parsed");
+  });
+
+  it("a login step has its shape", () => {
+    const login = { as: "customer.2", do: "login", user: "{{marker}}@example.test", password: "pw-{{marker}}" };
+    const { steps } = parseRepro([login, { as: "customer.2", expect: "visible", target: { text: "Signed in as" } }, FINAL], at);
+    expect(steps[0]).toEqual({ n: 1, ...login });
+    // A login changes state: its proving expect is the account's next expect.
+    expect(refusal([login, { as: "customer.2", do: "goto", path: "/" }, FINAL])).toBe("refused: repro: step 1: login changes state: an expect as customer.2 must follow before its next action");
+  });
+
+  it("a trigger needs an expect of any account before the next state-changing step", () => {
+    const trigger = { as: "system", do: "trigger", name: "payment-settles", values: ["ORD-1"] };
+    expect(refusal([trigger, { as: "sales", do: "check", target: { label: "x" } }, FINAL])).toBe("refused: repro: step 1: trigger changes state: an expect must follow before the next state-changing step");
+    expect(refusal([trigger, FINAL])).toBe("parsed");
+    // A literal value is checked against the trigger's regex before any browser work.
+    expect(refusal([{ ...trigger, values: [";id"] }, FINAL])).toMatch(/^refused: repro: step 1: value 1 of payment-settles does not match \^\[A-Za-z0-9-\]\{1,64\}\$$/);
+  });
+
+  it("every step template drains", () => {
+    const { steps } = parseRepro(EXAMPLE(), at);
+    for (const step of [{ ...steps[0], url: "http://localhost:41002/orders/new" }, steps[2], steps[3], steps[4], { n: 2, as: "customer.1", expect: "no-error" }]) {
+      const code = stepCode(step, OPTS);
+      expect(code.startsWith("async page => {\n  const P = ")).toBe(true);
+      expect(code).toContain(HELPERS);
+      // The step's answer, whatever it is, and a throw anywhere in it leave through finish, which drains.
+      const body = own(code);
+      expect(body).toMatch(/\n {2}const finish = async \(x\) => \{\n {4}const d = await drain\(ctx\);\n {4}return \{ \.\.\.x, errors: counted\(d\.errors\), drain: d \};\n {2}\};\n/);
+      expect(body.endsWith(`  try {\n    return await finish(await step());\n  } catch (e) {\n    return await finish(${step.do ? '{ ok: false, why: "error", detail: failure(e) }' : '{ held: false, observed: "error", detail: failure(e) }'});\n  }\n}\n`), JSON.stringify(step)).toBe(true);
+      expect(body.match(/\n {2}return /g), "no answer bypasses finish").toBeNull();
+    }
+    expect(() => stepCode({ n: 1, as: "customer.2", do: "login", user: "a", password: "b" }, OPTS)).toThrow(/login has no template/);
+    expect(() => stepCode(steps[5], OPTS)).toThrow(/trigger has no template/);
+  });
+
+  it("stepCode embeds values only as JSON", () => {
+    const value = "'); process.exit(); ('";
+    const name = '"}); evil(); ({"';
+    const code = stepCode({ n: 1, as: "customer.1", do: "fill", target: { by: "role", role: "textbox", name }, value }, OPTS);
+    const lines = code.split("\n");
+    const pLine = lines.find((l: string) => l.startsWith("  const P = "))!;
+    const tLine = lines.find((l: string) => l.startsWith("  const T = "))!;
+    expect(lines.filter((l: string) => l.includes("process.exit") || l.includes("evil()"))).toEqual([pLine, tLine].filter((l) => l.includes("process.exit") || l.includes("evil()")));
+    expect(JSON.parse(pLine.slice("  const P = ".length, -1)).value).toBe(value);
+    expect(tLine).toMatch(/^ {2}const T = \(pg\) => .*;$/);
+    const t = tLine.slice("  const T = (pg) => ".length, -1);
+    expect(t).toMatch(SHAPE);
+    expect([...t.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((m) => JSON.parse(m[0]))).toEqual(["textbox", "name", name]);
+    expect(lines.filter((l: string) => l.includes("const T = "))).toEqual([tLine]);
+    expect(stepCode({ n: 1, as: "customer.1", expect: "url", value: "/x" }, OPTS)).toContain("\n  const T = null;\n");
+  });
+
+  it("substitute is textual and literal", () => {
+    const saved = `O'Brien "x" \\ \${y}`;
+    const vars = { order: "ORD-1", note: saved, marker: "argus-0a1b2c3d" };
+    const s = substitute({ n: 5, as: "customer.1", expect: "visible", target: { by: "text", value: "{{order}}", within: { by: "testId", value: "row-{{order}}" } } }, vars);
+    expect(s.target).toEqual({ by: "text", value: "ORD-1", within: { by: "testId", value: "row-ORD-1" } });
+    const fill = substitute({ n: 2, as: "customer.1", do: "fill", target: { by: "label", value: "Note" }, value: "{{note}} {{marker}}" }, vars);
+    expect(fill.value).toBe(`${saved} argus-0a1b2c3d`);
+    const p = stepCode(fill, OPTS).split("\n").find((l: string) => l.startsWith("  const P = "))!;
+    expect(JSON.parse(p.slice("  const P = ".length, -1)).value).toBe(`${saved} argus-0a1b2c3d`);
+    expect(substitute({ n: 6, as: "system", do: "trigger", name: "settle", values: ["{{order}}", "{{order}}x"] }, vars).values).toEqual(["ORD-1", "ORD-1x"]);
+    // The step itself is unchanged.
+    const step = { n: 1, as: "customer.1", do: "goto", path: "/orders/{{order}}" };
+    expect(substitute(step, vars).path).toBe("/orders/ORD-1");
+    expect(step.path).toBe("/orders/{{order}}");
+  });
+
+  it("reductions never offer a trigger, a final, a parallel group, a proving expect or a role's only state-changing step", () => {
+    const { steps } = parseRepro(EXAMPLE(), at);
+    expect(reductions(steps, { changed: [3] }).map((u: Obj) => u.label)).toEqual(["role customer", "step 8", "step 4", "step 2", "step 1"]);
+    expect(reductions(steps, { changed: [3] })[0]).toEqual({ kind: "role", label: "role customer", drop: [1, 2, 3, 4, 5, 7] });
+    const twice = parseRepro(
+      [
+        { as: "customer", do: "goto", path: "/orders/new" },
+        { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+        { as: "customer", expect: "visible", target: { testId: "order-number" } },
+        { as: "customer", do: "click", target: { role: "button", name: "Cancel order" } },
+        { as: "customer", expect: "hidden", target: { role: "button", name: "Cancel order" } },
+        { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" },
+      ],
+      at,
+    ).steps;
+    const units = reductions(twice, { changed: [2, 4] });
+    expect(units.map((u: Obj) => u.label)).toEqual(["role customer", "steps 4+5", "steps 2+3", "step 1"]);
+    expect(units[1]).toEqual({ kind: "step", label: "steps 4+5", drop: [4, 5] });
+    // Without the run's record of what changed state, a click is a plain step.
+    expect(reductions(twice, { changed: [] }).map((u: Obj) => u.label)).toEqual(["role customer", "step 5", "step 4", "step 3", "step 2", "step 1"]);
+    // A parallel group's members are never offered alone.
+    const race = parseRepro(
+      [
+        { as: "customer.1", do: "goto", path: "/inbox" },
+        { parallel: [{ as: "customer.1", do: "click", target: { text: "Claim" } }, { as: "customer.2", do: "click", target: { text: "Claim" } }] },
+        { as: "customer.1", expect: "visible", target: { testId: "claim", nth: 0 } },
+        { as: "customer.2", expect: "visible", target: { testId: "claim", nth: 0 } },
+        { as: "customer.1", expect: "count", target: { testId: "claim" }, value: 1, final: "claim-race" },
+      ],
+      at,
+    ).steps;
+    expect(reductions(race, { changed: [2, 3] }).map((u: Obj) => u.label)).toEqual(["step 1"]);
   });
 });
