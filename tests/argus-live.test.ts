@@ -3094,9 +3094,12 @@ describe("argus-live status --json — a stale lock", () => {
     expect(statusJson(main)).toMatchObject({ runId, stale: true });
     const cli = spawnSync(process.execPath, [join(__dirname, "../plugins/sapu/scripts/argus-live.mjs"), "status", "--json"], { cwd: main, encoding: "utf8" });
     expect(JSON.parse(cli.stdout.trim())).toMatchObject({ runId, stale: true });
+    const text = () => spawnSync(process.execPath, [join(__dirname, "../plugins/sapu/scripts/argus-live.mjs"), "status"], { cwd: main, encoding: "utf8" }).stdout.split("\n")[0];
+    expect(text()).toMatch(new RegExp(`^cycle ${runId} until \\S+ \\(stale: up recovers it\\)$`));
     setLock(main, { runId, start: now() - 60, deadline: now() + 600 });
     expect(statusJson(main)).toMatchObject({ runId });
     expect("stale" in statusJson(main)).toBe(false);
+    expect(text()).toMatch(new RegExp(`^cycle ${runId} until \\S+$`));
   }, 30_000);
 });
 

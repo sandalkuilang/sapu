@@ -737,7 +737,8 @@ defence in depth and not enforcement:
     has passed (the next `up` takes it over and recovers it, so journeys.md's ORIENT goes on): the
     orchestrator reads that, never run.json.
     `status` prints `mode: map` for a map run and a map slot as `slot <n>: map generation <g> calls
-    <c>/<max>`.
+    <c>/<max>`, and ends its first line, `cycle <run> until <time>`, with ` (stale: up recovers it)`
+    once the deadline has passed.
 
     **`run.json`** (mode 0600, under the gitignored `.argus/`; written from step 1 on, so a session that
     dies mid-`up` leaves a record for the reaper and for recovery). Every write is a read-modify-write

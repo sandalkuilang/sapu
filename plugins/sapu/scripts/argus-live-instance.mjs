@@ -647,14 +647,14 @@ export function statusJson(main) {
 }
 
 /**
- * `status`: the run id, deadline, `mode: map` for a map run, instance, worktree, ports, each recorded group's state, each slot
+ * `status`: the run id, deadline (` (stale: up recovers it)` once it has passed), `mode: map` for a map run, instance, worktree, ports, each recorded group's state, each slot
  * (`slot <n>: journey <id> generation <g> calls <c>/<max>[ submitted][ retired]`, slotStates) and the
  * number of recorded CLI sessions, as lines.
  */
 export async function status(main, { runner = run } = {}) {
   const lock = readLock(main);
   if (!lock) return ["no journey cycle is running"];
-  const out = [`cycle ${lock.runId} until ${iso(lock.deadline)}`];
+  const out = [`cycle ${lock.runId} until ${iso(lock.deadline)}${lock.deadline <= Math.floor(Date.now() / 1000) ? " (stale: up recovers it)" : ""}`];
   const rec = readRun(main);
   if (!rec || rec.runId !== lock.runId) return [...out, "run.json does not name this cycle (it is starting, or it failed)"];
   if (rec.mode === "map") out.push("mode: map");
