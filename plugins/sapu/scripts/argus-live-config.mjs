@@ -22,16 +22,16 @@ const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 /** A cycle longer than a day is a mistake, and keeps every epoch the lock computes in range. */
 export const MAX_CYCLE_MINUTES = 1440;
 
-const TOP_KEYS = [
+export const TOP_KEYS = [
   "setup", "services", "start", "base_url", "login_url", "logged_in", "login_open", "env_file", "env", "pass_env", "store", "store_check", "reset",
   "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
   "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
 ];
 const REQUIRED = ["start", "base_url", "login_url", "logged_in", "store", "store_check", "reset", "confirmed", "roles", "limits"];
-const LIMIT_KEYS = ["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"];
-const START_KEYS = ["name", "cmd", "phase", "stop", "env", "health"];
-const ROLE_KEYS = ["code_role", "users", "login", "base_url", "login_url", "logged_in", "login_open"];
-const USER_KEYS = ["user", "password", "totp_secret"];
+export const LIMIT_KEYS = ["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"];
+export const START_KEYS = ["name", "cmd", "phase", "stop", "env", "health"];
+export const ROLE_KEYS = ["code_role", "users", "login", "base_url", "login_url", "logged_in", "login_open"];
+export const USER_KEYS = ["user", "password", "totp_secret"];
 
 const isStr = (v) => typeof v === "string" && v.trim() !== "";
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);

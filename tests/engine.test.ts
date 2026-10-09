@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
 // @ts-expect-error — plain ESM script without types
+import { LIMIT_KEYS, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+// @ts-expect-error — plain ESM script without types
 import { validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
@@ -563,6 +565,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/journeys.md": 12_000,
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_000,
+  "skills/journey/live.md": 14_000,
 };
 
 describe("context budgets", () => {
@@ -984,6 +987,22 @@ describe("the journey lane's engine text", () => {
       "http://www.workflowpatterns.com/patterns/control/",
       "http://www.workflowpatterns.com/patterns/resource/",
     ]) expect(lane, url).toContain(url);
+  });
+
+  const LIVE = "skills/journey/live.md";
+  it("the live.json reference's example is one validateLive accepts", () => {
+    expect(validateLive(fenced(read(LIVE), "## Example"))).toEqual([]);
+  });
+
+  it("the live.json reference names every key the schema takes", () => {
+    const text = read(LIVE);
+    for (const k of [...TOP_KEYS, ...LIMIT_KEYS, ...ROLE_KEYS, ...START_KEYS, ...USER_KEYS] as string[]) expect(text, k).toContain(`\`${k}\``);
+  });
+
+  it("CONTRACT.md's layer table points at the live.json reference", () => {
+    const row = read("CONTRACT.md").split("\n").find((l) => l.startsWith("| Existing QA configuration |"))!;
+    expect(row).toContain("`.argus/live.json`");
+    expect(row).toContain("skills/journey/live.md");
   });
 
   it("the brief keeps the explorer to the wrapper and page text as data", () => {

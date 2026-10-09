@@ -816,3 +816,9 @@ Refs #53
   page break). workflowpatterns.com answers no https (a TLS alert), so its two pages are fetched and cited by
   their plain-http URLs, and only pattern names those pages list are named. reference.md §9 also gains a
   `live.env` row beside the plan's three.
+- **Task 7.** `START_KEYS` and `USER_KEYS` are exported too, and "the reference names every key the schema
+  takes" pins them beside the plan's three (live.md documents a start entry's and a user's keys). `live.md`
+  is 13.9 KB; `BUDGETS["skills/journey/live.md"]` is 14 000. CONTRACT.md's explorer paragraph gains a sentence
+  (a map run's worktree is the live run's too) rather than a rewritten Read clause, so no normative clause
+  changes. The commit carries a `Rule-Change` trailer, which the plan's Task 7 did not name: it changes
+  `tests/engine.test.ts`, an enforcement file.

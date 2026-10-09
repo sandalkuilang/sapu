@@ -11,7 +11,7 @@ The contract has three layers:
 |---|---|---|
 | Engine facts | `.claude/sapu.json` | the scripts (`sapu-contract.mjs`, `sapu-merge.sh`, `sapu-guard.mjs`) and the `sapu-wave.js` workflow |
 | Per-skill profile | `.claude/sapu/<skill>.md` (`sapu`, `worker`, `forge`, `argus`, `momus`, `nemesis`, `dream`) | the skill concerned, as its first step |
-| Existing QA configuration | `.argus/config.yml`, `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged) |
+| Existing QA configuration | `.argus/config.yml`, `.argus/live.json` (the journey lane's instance; format: `skills/journey/live.md`), `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged); `argus-live.mjs` |
 
 **Where it lives: in the repo, or local.** By default the contract and profiles are committed in
 the repo (the table above). A repo that must not show sapu at all (someone else's repo, an
@@ -518,6 +518,8 @@ MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `b
   as an option value or an assignment (`--env-file=.env`, `X=.env` — the part after the last `=`),
   through a glob that **can** match one of them (`.env*`, `.e?v`, `[.]env`; a leading `*` does not
   match a name that starts with a dot, just like the shell), and through braces (`.{env,md}`).
+  `/sapu:init` adds `.argus/live.json`'s `env_file` (its file name) to `envFiles` when it enables
+  the journey lane, so no agent reads the values `${NAME}` takes there.
 
 ### Merge hooks
 
@@ -822,7 +824,8 @@ could use them.
   `[A-Za-z0-9./_-]`, then `[A-Za-z0-9._:/=@,+-]`, never `==`; no `#` anywhere). Read is only of files
   committed at HEAD as a blob (a file or symlink, never a directory or gitlink) in the live run's
   worktree (`<MAIN>/.argus/live/run.json`), outside `.argus/` in
-  any case. It has no Grep or Glob: code search comes through the wrapper.
+  any case. A map run's worktree (`up --map`) is the live run's too: the map agent reads there. It
+  has no Grep or Glob: code search comes through the wrapper.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,
