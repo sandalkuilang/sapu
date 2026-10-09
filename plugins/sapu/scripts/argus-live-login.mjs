@@ -10,6 +10,7 @@ import { openSession, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from
 import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
 import { clean, nonce } from "./argus-live-fence.mjs";
+import { MAX_SECRET } from "./argus-live-ledger.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { canonicalOrigin, exactHost } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep, tail, tempBeside, withFileLock } from "./argus-live-proc.mjs";
@@ -89,9 +90,6 @@ export async function reserveStep(file, secret, { now = Date.now, sleep: wait = 
 // The wrapper's own browser code: `async page => {…}` functions run through `run-code --filename`. Each
 // is a constant template; a stage's payload enters only as `const P = <JSON>;` and its targets only as
 // targetCode's output (every string a JSON literal), so no value and no config string becomes code.
-
-/** The longest header value the hook records; a longer one is cut (its prefix still finds its own leak). */
-const MAX_VALUE = 4096;
 
 /**
  * Helpers every stage has: waiting, visibility, waiting up to a time for a condition; and `drain(c)`, what
@@ -226,7 +224,7 @@ const STAGES = {
   const SECRET_HEADER = /^(cookie|authorization|proxy-authorization|[a-z0-9-]*-token)$/;
   const record = (name, value) => {
     if (A.overflow) return;
-    const v = String(value).slice(0, ${MAX_VALUE});
+    const v = String(value).slice(0, ${MAX_SECRET});
     if (!v || A.seen.has(name + "\\0" + v)) return;
     if (A.bytes + v.length > P.capBytes) {
       A.overflow = true;
@@ -236,7 +234,7 @@ const STAGES = {
     A.bytes += v.length;
     A.headers.push([name, v]);
   };
-  const idLike = (v) => typeof v === "string" && v.length >= 24 && v.length <= ${MAX_VALUE} && /[A-Za-z]/.test(v) && /[0-9]/.test(v);
+  const idLike = (v) => typeof v === "string" && v.length >= 24 && v.length <= ${MAX_SECRET} && /[A-Za-z]/.test(v) && /[0-9]/.test(v);
   const pushId = (list, pair) => {
     if (list.length < 2000 && !list.some((x) => x[0] === pair[0] && x[1] === pair[1])) list.push(pair);
   };

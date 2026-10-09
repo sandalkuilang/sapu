@@ -9,15 +9,70 @@ import path from "node:path";
 import { openSession, SIGNAL_SCRIPT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
+import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-ledger.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { run, runAsync } from "./argus-live-proc.mjs";
-import { logsDir, recordedSecrets } from "./argus-live-run.mjs";
+import { logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
 
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+
+/** The bytes of distinct header values one context records before its hook stops and flags overflow. */
+export const CAP_BYTES = 4 * 2 ** 20;
+
+/**
+ * Keeps a drain of session `session` (the observe stage's `secrets`): its secret-like values in the run's
+ * ledger, `incomplete` (`<session> passed <capBytes> bytes`) when its hook overflowed, and its ids in
+ * `seen.jsonl`.
+ */
+function keepDrain(main, runId, session, drained, capBytes) {
+  const s = drained && typeof drained === "object" ? drained : {};
+  appendLedger(main, runId, [...ledgerEntries(s), ...(s.overflow ? [{ c: "incomplete", v: `${session} passed ${capBytes} bytes` }] : [])]);
+  appendSeen(main, runId, seenIds(s));
+}
+
+/**
+ * Drains run `runId`'s sessions `records` (run.json `sessions`) before they are closed (`up --fresh`,
+ * `down`): each whose daemon runs, the observe stage in its own cwd and HOME, its values kept (keepDrain;
+ * `<session> could not be drained` marks the ledger incomplete when that fails); each whose daemon is
+ * gone while its account's state (its slot's state.json) says `drained: false`, `<session> lost before
+ * its drain`; one gone between commands lost nothing. `js` is run.json's CLI unless given.
+ */
+export async function drainSessions(main, runId, records, { js = null, runner = run, cliRunner = runAsync, capBytes = CAP_BYTES } = {}) {
+  let cli = js;
+  if (!cli) {
+    try {
+      cli = (readRun(main) ?? {}).browser?.js ?? null;
+    } catch {
+      cli = null;
+    }
+  }
+  const marks = [];
+  for (const s of Array.isArray(records) ? records : []) {
+    if (!s || typeof s.name !== "string" || !s.daemon) continue;
+    if (!sessionAlive({ daemon: s.daemon }, runner)) {
+      let state = null;
+      try {
+        state = (readSlotState(s.cwd).sessions ?? {})[s.account] ?? null;
+      } catch {
+        state = null;
+      }
+      if (state && state.drained === false) marks.push({ c: "incomplete", v: `${s.name} lost before its drain` });
+      continue;
+    }
+    try {
+      if (typeof cli !== "string" || !fs.existsSync(cli)) throw new Error("no CLI");
+      const o = await runCode({ js: cli, session: s.name, cwd: s.cwd, home: s.home, code: loginCode("observe", { loggedIn: null }), timeoutMs: 60_000, runner: cliRunner });
+      keepDrain(main, runId, s.name, o && o.secrets, capBytes);
+    } catch {
+      marks.push({ c: "incomplete", v: `${s.name} could not be drained` });
+    }
+  }
+  if (marks.length) appendLedger(main, runId, marks);
+}
 
 /** Every value the output must never show: the env_file's (now and as `up` read them), every role password and TOTP secret, and the passwords of accounts the journey created. */
 export function maskSecrets(main, config, live, state) {
@@ -75,15 +130,18 @@ function logProbe(main, runId, entry) {
  * - `gone(res, record)`: the command failed and the CLI said the browser is not open, or the recorded
  *   daemon no longer runs.
  * - `reopen(record)` → events: the session closed and opened again (and hooked), signed in unless anon or
- *   a login-command role (`session-reopened: <role.k>`, and `harness: login failed` when that failed).
- * - `observe()` → `{o, events}`: the observe stage (signals, logged_in, URL, aria); `state.lastState`
- *   the hash the loop rule reads; a failure → `harness: observation failed`.
+ *   a login-command role (`session-reopened: <role.k>`, and `harness: login failed` when that failed); a
+ *   session lost while undrained (`state.drained` false: a command ran since its last drain) marks the
+ *   ledger incomplete (`<session> lost before its drain`).
+ * - `observe()` → `{o, events}`: the observe stage (signals, logged_in, URL, aria, the drain); the drain
+ *   kept (keepDrain: the ledger, `seen.jsonl`) and `state.drained` set; `state.lastState` the hash the
+ *   loop rule reads; a failure → `harness: observation failed`, the account left undrained.
  * - `relogin(o)` → events: when `o` lacks logged_in while the account is signed in, a probe tab at the
  *   role's base_url (`probed: <role.k>`, logged to `logs/probes.jsonl`), and when it lacks it too, one
  *   sign-in (`re-logged-in: <role.k>` or `harness: login failed`; a login-command role's session is
  *   closed and opened again).
  */
-export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, capBytes = 4 * 2 ** 20, runner = run, cliRunner = runAsync }) {
+export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, capBytes = CAP_BYTES, runner = run, cliRunner = runAsync }) {
   const role = account.split(".")[0];
   const r = live.roles && live.roles[role];
   const plan = loginPlan(live, role);
@@ -139,6 +197,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   };
   d.gone = (res, session) => res.code !== 0 && (NOT_OPEN.test(`${res.stdout}\n${res.stderr}`) || !sessionAlive(session, runner));
   d.reopen = async (session) => {
+    if (d.state.drained === false) appendLedger(main, runId, [{ c: "incomplete", v: `${name} lost before its drain` }]);
     await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
     const hooked = await open();
     const events = [`session-reopened: ${account}`, ...hooked];
@@ -153,7 +212,11 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     } catch {
       events.push("harness: observation failed");
     }
-    if (o && typeof o === "object") d.state.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
+    if (o && typeof o === "object") {
+      d.state.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
+      keepDrain(main, runId, name, o.secrets, capBytes);
+      d.state.drained = true;
+    }
     return { o, events };
   };
   d.relogin = async (o) => {

@@ -1519,3 +1519,21 @@ Interfaces:
   `URL.origin` spells them. The fixture keeps both bearers and the jwt in `bearer.json` as `{bearers,
   jwt}`. Phase 3's `browserRun`, its pw-in-Chrome run (`pwBrowserRun`) and the Chrome suites' cleanup
   (`browserCleanup`, `browserLeftovers`) moved to the helpers file.
+- **Task 4.** A Cookie header's pairs and a Set-Cookie value's first pair are class `header` (the
+  plan's test lists them there); the context's cookies are class `cookie`. `-run.mjs` sits below the
+  ledger, so a teardown without a `drain` (a test's `down`, and recovery) appends its own marker,
+  `<session> closed undrained`, one per recorded session with a daemon, to `logs/secrets.jsonl` itself.
+  `up`'s failure path (`tearDown`) passes the drain to its `down` too. `drainSessions` takes `js` (else
+  run.json's) and `capBytes`; `CAP_BYTES` is exported from `-session.mjs`, the driver's default. `observe()`
+  keeps its drain through one helper (`keepDrain`: the ledger, the overflow marker, `seen.jsonl`), the
+  one `drainSessions` uses. `appendLedger` creates the file even with nothing to add (a drained run has
+  a ledger, so scrub's "gone" means a later `up` removed it) and skips empty values; `seen.jsonl` holds
+  one JSON string a line (0600). `secretHits` takes the stripped form only when the stripped value is
+  at least `MIN_SECRET` long, else matches that stripped value as a short one (whole token), so a value
+  of punctuation and a few letters never matches inside every word. `pw` sets `drained: false` right
+  after `ensure()` (a sign-in and a `login` run in the context too), so a reopen inside a call marks the
+  session lost; `reopen` checks the state before the open replaces it. `drainSessions` reads a record's
+  account state from the record's `cwd` (its slot's directory). Phase 3's `cycle()` (a full `up` of the
+  fixture through the CLI) moved to the helpers file as `appCycle({clerk, mark})`, with `fixtureProcs`;
+  the ledger's cycle tests run `down` and `up --fresh` through the CLI, and assert first that the `pw`
+  call's own drain ran before the page's second bearer.

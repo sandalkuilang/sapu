@@ -27,9 +27,11 @@ import { expandConfig, LIVE_FILE, loadLive, portNames } from "./argus-live-confi
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed } from "./argus-live-egress.mjs";
 import { hostOf, resolvesToLoopback } from "./argus-live-endpoints.mjs";
+import { dropLedgers } from "./argus-live-ledger.mjs";
 import { iso, readLock, renew, takeLock } from "./argus-live-lock.mjs";
 import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sameStart, startTime, stopRecordedGroups } from "./argus-live-proc.mjs";
 import { down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, writeRunFiles } from "./argus-live-run.mjs";
+import { drainSessions } from "./argus-live-session.mjs";
 import { allocatePorts, bringUpRest, bringUpStore, instanceEnv, makeHome, makeWorktree, runSetup } from "./argus-live-start.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -150,7 +152,8 @@ function runLog(main, runId, file, secrets, say) {
 /**
  * After a refusal or failure: `down` from the in-memory run — run.json's keys as they stand (the sessions
  * and slots other writers recorded meanwhile) under `state`'s own (the groups and stops this process
- * started, even one whose save was refused) — its report logged; the original error is what counts.
+ * started, even one whose save was refused), each session drained into the secret ledger before it
+ * closes — its report logged; the original error is what counts.
  */
 async function tearDown(main, state, { secrets, runner, log }) {
   let onDisk = null;
@@ -161,7 +164,7 @@ async function tearDown(main, state, { secrets, runner, log }) {
   }
   const record = { ...(onDisk && onDisk.runId === state.runId ? onDisk : {}), ...state };
   try {
-    const { report } = await down(main, { runId: state.runId, record, secrets, runner });
+    const { report } = await down(main, { runId: state.runId, record, secrets, runner, drain: (records) => drainSessions(main, state.runId, records, { runner }) });
     for (const l of report) log(`down: ${l}`);
   } catch (e) {
     log(`down: ${e.message}`);
@@ -169,8 +172,8 @@ async function tearDown(main, state, { secrets, runner, log }) {
 }
 
 /**
- * `argus-live.mjs up` (spec §8, steps 1-11): 1 the lock (and recovery of stale runs, then run.json
- * and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
+ * `argus-live.mjs up` (spec §8, steps 1-11): 1 the lock (and recovery of stale runs, every earlier
+ * run's secret ledger removed (dropLedgers), then run.json and the reaper at once); 2 refusals (config errors, an unset `${NAME}`, a base_url or role base_url
  * host that does not resolve to loopback only, `~/.playwright/cli.config.json`, neither lsof nor ss, no
  * process identity (start times), a `services` variable the instance env does not set, the pinned CLI
  * not installable (ensureCli), no Chrome-family browser) and run.json `browser: {js, channel}`;
@@ -212,6 +215,8 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
       const r = await recover(main, { secrets, runner });
       for (const l of r.report) log(`recovery: ${l}`);
     }
+    // Every earlier run's secret ledger goes now: kept by its down for scrub, until this cycle began.
+    dropLedgers(main, { keep: runId });
     save();
     state.reaper = startReaper(main, runId);
     log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
@@ -356,7 +361,8 @@ function current(main) {
  * `up --fresh` (between repro runs, spec §8): keeps the lock, worktree, ports, HOME and reaper; retires
  * every slot's token and clears the instance id first (from then on `pw` refuses every call but
  * `submit`), stops every `start` entry (its stop replayed, its group stopped; setup groups, the events
- * follower and the proxy stay), closes every explorer's CLI session, then the store phase, checkStore,
+ * follower and the proxy stay), drains every explorer's CLI session into the secret ledger and closes
+ * it, then the store phase, checkStore,
  * reset, the other entries, checkStore, the egress check and the runtime gate again, and a new instance
  * id. It writes only up's keys of run.json (UP_KEYS). Any refusal or failure → `down`, and the error
  * rethrown.
@@ -397,6 +403,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     // The explorers' sessions are closed, as run.json holds them now (one a call opened before its token
     // retired included). The proving logins' sessions (slot `up`) were closed by up itself; any left stay for down.
     const explorers = ((readRun(main) ?? {}).sessions ?? []).filter((x) => x && typeof x.slot === "number");
+    await drainSessions(main, runId, explorers, { js: rec.browser?.js ?? null, runner });
     await closeSessions(explorers, { js: rec.browser?.js ?? null, runner, note });
     // Only those now gone leave the record (one still running stays for down); re-read under the
     // run's claim, so a session recorded meanwhile is kept, and never written back from this snapshot.

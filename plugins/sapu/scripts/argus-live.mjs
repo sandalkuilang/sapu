@@ -37,6 +37,7 @@ import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain } from "./sapu-contract.mjs";
 
@@ -56,7 +57,8 @@ const printMasked = (line) => process.stdout.write(`${line}\n`);
 const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n>";
 
 try {
-  if (cmd === "reap" && args.length === 1) await reap(main, args[0]);
+  // down and the reaper drain every session into the run's secret ledger before they close it.
+  if (cmd === "reap" && args.length === 1) await reap(main, args[0], { drain: (records) => drainSessions(main, args[0], records) });
   else if (cmd === "proxy" && args.length === 1) await serveProxy(main, args[0]);
   else if (cmd === "pw") {
     // The explorer's call: its lines (every page byte already fenced and masked), exit 0, 1 or 2 (decision 20).
@@ -88,7 +90,7 @@ try {
     const lock = readLock(main);
     if (!lock) print("no journey cycle is running");
     else {
-      const { report } = await down(main, { runId: lock.runId, secrets });
+      const { report } = await down(main, { runId: lock.runId, secrets, drain: (records) => drainSessions(main, lock.runId, records) });
       for (const line of report) print(line);
       print(`cycle ${lock.runId} is down`);
     }

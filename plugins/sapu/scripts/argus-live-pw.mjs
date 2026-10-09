@@ -11,6 +11,7 @@ import { slotDir } from "./argus-live-browser.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
+import { appendLedger } from "./argus-live-ledger.mjs";
 import { submit } from "./argus-live-return.mjs";
 import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
@@ -217,12 +218,14 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
  * first use (invisibly); the command, its positionals after `--` (a browser gone → the session opened
  * again and signed in, `session-reopened: <role.k>`, the command not run; a `find` with no match asked
  * again every 500 ms up to settle_ms, `found|not found after <ms> ms`); the observation (the state hash
- * the loop rule reads, the signals of every page, the console's new errors and warnings, the origins the
+ * the loop rule reads, the hook's drain kept in the run's secret ledger — the account `drained: false`
+ * in its state from the session's first use in the call until then —, the signals of every page, the console's new errors and warnings, the origins the
  * run blocked that a page named, once per slot as `blocked: <origin>`; logged_in gone from the page and
  * from a probe tab at the role's base_url → signed in again once, `re-logged-in: <role.k>`, the command not
  * repeated; every probe told as `probed: <role.k>` and logged to `logs/probes.jsonl`); and the output: the CLI's answer and the page's lines in one nonce fence, then `calls
  * <c>/<max>`, `loop <n>/3` and the wrapper's own events. `login <user> <password>` signs the session in as
- * an account the journey created (`login: ok` or `login: failed (<reason>)`; kept in state.json
+ * an account the journey created (its password appended to the run's secret ledger first, as `created
+ * password`; `login: ok` or `login: failed (<reason>)`; kept in state.json
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
  * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
  * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
@@ -366,10 +369,15 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 
   // The session: opened on first use (and hooked: a hook that failed is told) and signed in, invisibly (anon never is).
   const { record: session, events: opening } = await d.ensure();
+  // From here until the observation drains it, what the session's hook gathers is not in the ledger yet.
+  d.state.drained = false;
+  save();
   if (p.cmd === "login") {
     // An account the journey created: signed in on this session; kept for its re-logins only once it worked.
+    // Its password goes to the run's secret ledger first, so scrub refuses it after down too.
     const [u, password] = positionals;
     setSecrets({ ...secrets, "login:password": password });
+    appendLedger(main, runId, [{ c: "created password", v: password }]);
     const done = await d.signIn({ user: u, password, totpSecret: null, created: true });
     save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
     return { code: 0, out: [counter, ...opening, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };

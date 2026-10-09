@@ -4,11 +4,11 @@
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { alive, browserCleanup, browserLeftovers, browserRun, browserTools, cleanups, fakeDocker, homeWithCli, listen, PW, pwBrowserRun, runIds, SERVER, tempDir, until } from "./helpers/argus-live";
+import { alive, appCycle, browserCleanup, browserLeftovers, browserRun, browserTools, cleanups, fixtureProcs, listen, PW, pwBrowserRun, SERVER, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -575,15 +575,9 @@ describe("argus-live pw in Chrome", () => {
 });
 
 describe("argus-live — a cycle end to end", () => {
-  const CLI = join(__dirname, "../plugins/sapu/scripts/argus-live.mjs");
-  const NODE = process.execPath;
   /** Marks this describe's fixture processes: other test files run the fixture at the same time. */
   const MARK = "--from=argus-live-cycle-tests";
-  const app = (args = "") => `${JSON.stringify(NODE)} ${JSON.stringify(SERVER)} ${MARK}${args ? ` ${args}` : ""}`;
-  const ours = () =>
-    execFileSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "command="], { encoding: "utf8" })
-      .split("\n")
-      .filter((l) => l.includes(SERVER) && l.includes(MARK));
+  const ours = () => fixtureProcs(MARK);
   afterEach(() => {
     // Whatever a failed assertion left of this describe's fixture app.
     for (const l of ours()) {
@@ -594,83 +588,8 @@ describe("argus-live — a cycle end to end", () => {
       }
     }
   });
-  const TOTP = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
   const PLACE = "getByRole('button', { name: 'Place order' })";
-
-  /**
-   * The fixture as the repo's app: a store-phase `cache` and the `web` app on `{port:web}`, the app's
-   * facts and settle trigger as hooks, `buyer` signing in with a password and (unless `clerk` is false)
-   * `clerk` with a TOTP code too; `.argus/live.json` tracked, its env file (APP_PW, APP_TOTP) not. `cli`
-   * spawns `argus-live.mjs` in the repo, as the orchestrator and the explorer's Bash run it, under a fresh
-   * HOME holding the pinned CLI and a docker whose daemon is not running.
-   */
-  const cycle = ({ clerk = true } = {}) => {
-    const main = tempDir();
-    const data = join(tempDir(), "app_explore");
-    const roles: Obj = { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } };
-    if (clerk) roles.clerk = { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] };
-    const config = {
-      start: [
-        { name: "cache", phase: "store", cmd: app(), env: { PORT: "{port:cache}" }, health: { url: "http://127.0.0.1:{port:cache}/health" } },
-        { name: "web", cmd: app(), env: { PORT: "{port:web}" }, health: { url: "http://localhost:{port:web}/health" } },
-      ],
-      base_url: "http://localhost:{port:web}",
-      login_url: "/login",
-      logged_in: "getByRole('button', { name: 'Account' })",
-      env_file: ".argus/live.env",
-      services: { cache: { env: "CACHE_URL" } },
-      env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "control-7" },
-      pass_env: [],
-      store: "app_explore",
-      store_check: app("--which-store"),
-      reset: app("--reset"),
-      facts: { argv: [NODE, SERVER, "--facts", "{1}"] },
-      triggers: { settle: { argv: [NODE, SERVER, "--trigger", "settle", "{1}"] } },
-      confirmed: { mocks: true, data: true },
-      allow_origins: [],
-      port_range: [41000, 41999],
-      reserved_ports: [],
-      settle_ms: 5000,
-      roles,
-      limits: { max_cycle_minutes: 30, live_health_timeout_s: 20 },
-    };
-    execFileSync("git", ["-C", main, "init", "-q"]);
-    mkdirSync(join(main, ".argus"));
-    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
-    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(config, null, 2)}\n`);
-    execFileSync("git", ["-C", main, "add", "."]);
-    execFileSync("git", ["-C", main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
-    writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\n`);
-    const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tempDir() };
-    const outs: string[] = [];
-    const cli = (...args: string[]) => {
-      const r = spawnSync(NODE, [CLI, ...args], { cwd: main, env, encoding: "utf8", timeout: 240_000 });
-      outs.push(r.stdout, r.stderr);
-      return { code: r.status, out: r.stdout, err: r.stderr };
-    };
-    const runJson = () => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
-    /** `up`, exit 0, its summary (the last line); `down` runs after the test whatever it asserted. */
-    const upNow = () => {
-      const u = cli("up");
-      expect(u.code, u.err).toBe(0);
-      const summary = JSON.parse(u.out.trim().split("\n").at(-1)!);
-      runIds.add(summary.runId);
-      cleanups.push(() => down(main, { runId: summary.runId, graceMs: 2000 }));
-      return { u, summary };
-    };
-    /** Slot `n`'s token, minted through the CLI. */
-    const slot = (n: number, accounts: string) => {
-      const s = cli("slot", String(n), "--journey", "order-to-cash", "--accounts", accounts);
-      expect(s.code, s.err).toBe(0);
-      return JSON.parse(s.out).token as string;
-    };
-    const balanced = () => {
-      const lines = readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
-      const starts = lines.filter((l) => / start /.test(l)).map((l) => l.split(" ")[0]);
-      return starts.length > 0 && starts.every((r) => lines.filter((l) => l.startsWith(`${r} end `)).length === 1);
-    };
-    return { main, outs, cli, runJson, up: upNow, slot, balanced };
-  };
+  const cycle = ({ clerk = true } = {}) => appCycle({ clerk, mark: MARK });
 
   it("up proves every login, a slot drives the app, intake reads the return, and down leaves nothing", async () => {
     const c = cycle();

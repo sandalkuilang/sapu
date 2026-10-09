@@ -400,9 +400,10 @@ function removeRunDirs(main, runId, recorded, { runner, note }) {
 
 /**
  * Removes what the run kept under `.argus/live/<runId>/` that holds secrets or the CLI's state: in each
- * slot directory (`<n>/`, `up/`) its `.playwright/` (configs, a storage state), `state.json` (counters,
- * created accounts' passwords), `lock` and `totp.json`; and the run's `totp.json`. `out/`, `files/`,
- * `returns/` and `logs/` stay (evidence for the owner and the repro). Symlinks are removed, never followed.
+ * slot directory (`<n>/`, `up/`) its `.playwright/` (configs, a storage state), `state.json`
+ * (counters, created accounts' passwords), `lock` and `totp.json`; and the run's `totp.json`. `out/`,
+ * `files/`, `returns/`, `repro/` and `logs/` (the secret ledger among them, 0600) stay (evidence for the
+ * owner, the repro and scrub). Symlinks are removed, never followed.
  * Each slot's files go under its lock (withFileLock on `<slot>/lock`, waiting at most `slotWaitMs`), so a
  * `pw` call or a handoff still writing finishes first; a lock still held after that is noted and the files
  * go anyway (those writers re-check run.json before they write, slots.mjs liveSlot).
@@ -425,7 +426,7 @@ async function removeRunSecrets(main, runId, note, slotWaitMs) {
   };
   remove(path.join(dir, "totp.json"));
   for (const e of entries) {
-    if (!e.isDirectory() || ["logs", "returns"].includes(e.name)) continue;
+    if (!e.isDirectory() || ["logs", "returns", "repro"].includes(e.name)) continue;
     const clear = () => {
       for (const f of [".playwright", "state.json", "lock", "totp.json"]) remove(path.join(dir, e.name, f));
     };
@@ -491,10 +492,24 @@ async function replayRecorded(s, t) {
 }
 
 /**
+ * Without a drain (`down`'s `drain` absent: a test's call, or recovery), the sessions the teardown closes
+ * are closed undrained: each that had a daemon marks the run's secret ledger (argus-live-ledger.mjs
+ * `ledgerFile`, `logs/secrets.jsonl`, 0600) incomplete, `<session> closed undrained`, so scrub refuses
+ * the run rather than miss what they held.
+ */
+function markUndrained(main, runId, sessions) {
+  const lines = (Array.isArray(sessions) ? sessions : []).filter((x) => x && typeof x.name === "string" && x.daemon).map((x) => `${JSON.stringify({ c: "incomplete", v: `${x.name} closed undrained` })}\n`);
+  if (!lines.length) return;
+  const logs = logsDir(main, runId);
+  fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
+  fs.appendFileSync(path.join(logs, "secrets.jsonl"), lines.join(""), { mode: 0o600 });
+}
+
+/**
  * The teardown's steps in spec §8's order, shared by `down` and recovery: one list (the proxy, then the
  * CLI sessions by name, come after the process groups). Each runs
  * guarded: a failure is noted and the next step runs. `t` = {main, runId, rec, mode: "down" | "recover",
- * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh, note}.
+ * secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh, drain, note}.
  */
 const TEARDOWN = [
   // `down` only: a finding is reported, never stops the teardown.
@@ -507,9 +522,12 @@ const TEARDOWN = [
   // The run's own helpers (`internal`: the proxy) have their own steps.
   ["process groups", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => !(g && g.internal)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
   ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && g.name === "proxy"), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) })],
-  // Each session closed by name, then its daemon and browser killed by identity (closeSessions).
+  // Each session drained first (`drain`: its values into the run's secret ledger; else marked undrained),
+  // closed by name, then its daemon and browser killed by identity (closeSessions).
   // Then whatever a session of the run left that no record holds (sweepSessions: its daemons by name, orphaned browsers by HOME).
   ["CLI sessions", async (t) => {
+    if (t.drain) await guarded("draining the CLI sessions", t.note, () => t.drain(t.rec?.sessions ?? []));
+    else await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, t.rec?.sessions));
     await closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note });
     const homes = [...new Set([...(t.rec?.sessions ?? []).map((x) => x && x.home), t.rec?.home ? path.join(t.rec.home, "browser") : null].filter((h) => typeof h === "string"))];
     await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });
@@ -543,9 +561,12 @@ async function teardown(t) {
  * and the next one runs. Returns {report: [lines]} (secret values masked). Throws only when the lock still
  * names the run and another process holds its claim (claimBusy, after waiting `claimWaitMs` for a live
  * holder): the teardown is done by then, and the lock and its end line wait for the owner. `slotWaitMs`
- * bounds the wait for each slot's lock before its files go (removeRunSecrets).
+ * bounds the wait for each slot's lock before its files go (removeRunSecrets). `drain(records)` (from
+ * argus-live-session.mjs, supplied by the caller: this module sits below it) drains the run's recorded
+ * sessions into its secret ledger before they close; without one they close undrained, and the ledger
+ * says so (markUndrained).
  */
-export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000, slotWaitMs = 10_000 } = {}) {
+export async function down(main, { runId, record, secrets = {}, runner = run, asyncRunner = runAsync, graceMs = 10_000, stopTimeoutMs = 120_000, claimWaitMs = 2000, slotWaitMs = 10_000, drain = null } = {}) {
   runIdOk(runId);
   const report = [];
   const note = (line) => report.push(redact(line, secrets));
@@ -567,7 +588,7 @@ export async function down(main, { runId, record, secrets = {}, runner = run, as
     if (now.digest.live !== rec.digest.live) note(`${LIVE_FILE} changed since up: down works from run.json as recorded`);
     if (now.digest.env_file !== rec.digest.env_file) note(`${(now.config && now.config.env_file) || "the env_file"} changed since up: the stops were replayed with its values as they are now`);
   }
-  await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh: Boolean(record), note });
+  await teardown({ main, runId, rec, mode: "down", secrets, runner, asyncRunner, graceMs, stopTimeoutMs, claimWaitMs, slotWaitMs, refresh: Boolean(record), drain, note });
   await releaseLock(main, runId, claimWaitMs, () => {
     // Synchronous: the end line is written before the claim is released.
     try {
@@ -611,9 +632,10 @@ export async function recover(main, { secrets = {}, runner = run, asyncRunner = 
 /**
  * The reaper (`argus-live.mjs reap <runId>`): sleeps until the lock's deadline, re-reading the lock at
  * least every `pollMs` (so a `renew` moves its wake-up), then runs `down` — only while the lock still
- * names `runId`; otherwise it exits without acting. What it did goes to `<logs>/reaper.log`.
+ * names `runId`; otherwise it exits without acting. What it did goes to `<logs>/reaper.log`. `drain`
+ * goes to `down` (the sessions drained into the run's secret ledger before they close).
  */
-export async function reap(main, runId, { pollMs = 60_000 } = {}) {
+export async function reap(main, runId, { pollMs = 60_000, drain = null } = {}) {
   const logs = logsDir(main, runId);
   const say = (line) => {
     try {
@@ -645,7 +667,7 @@ export async function reap(main, runId, { pollMs = 60_000 } = {}) {
   const live = loadLive(main);
   const secrets = { ...recordedSecrets(main, live.config), ...live.secrets };
   try {
-    const { report } = await down(main, { runId, secrets });
+    const { report } = await down(main, { runId, secrets, drain });
     for (const line of report) say(line);
     say("down finished");
     return "down";
