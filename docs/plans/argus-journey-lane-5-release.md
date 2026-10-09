@@ -810,3 +810,9 @@ Refs #53
   blocks until Ctrl-C); the orchestrator never runs it. `list` starts with `live map-check --list`: its
   `refresh:` line decides whether the map is rebuilt (and `refused: no journey is selectable` with a refresh
   due, as with no map yet, rebuilds too), so no separate `map-check` call is needed.
+- **Task 6.** Every source of the new standards.md section was fetched, and each quote is the page's own
+  words: NN/g's heuristics and severity pages, Lewis and Rieman's chapter 4 (the four questions), and van der
+  Aalst et al.'s soundness paper (read from its PDF text; the three requirements are one sentence across a
+  page break). workflowpatterns.com answers no https (a TLS alert), so its two pages are fetched and cited by
+  their plain-http URLs, and only pattern names those pages list are named. reference.md §9 also gains a
+  `live.env` row beside the plan's three.

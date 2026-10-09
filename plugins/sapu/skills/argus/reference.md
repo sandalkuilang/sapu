@@ -59,7 +59,7 @@ Keep `.argus/corpus/*.json`: request bodies that have produced interesting behav
 Per-subsection repo instances: profile §Test design.
 
 ### §4.1 Business process & workflow conformance (B)
-Model the intended flow as a state machine from the repo's rules and blueprint docs (and the state-machine file, if one exists). Prove forbidden transitions are blocked, required steps unskippable, each step's permission gate held. Try to reach illegal states via ID manipulation, replay, back/forward navigation. Every process, not only the main one: processes with no state-machine file keep their guards in per-service code — `sapu:momus`'s business-process map lists them. Drive them over HTTP, never through the UI (ASVS 2.3.1).
+Model the intended flow as a state machine from the repo's rules and blueprint docs (and the state-machine file, if one exists). Prove forbidden transitions are blocked, required steps unskippable, each step's permission gate held. Try to reach illegal states via ID manipulation, replay, back/forward navigation. Every process, not only the main one: processes with no state-machine file keep their guards in per-service code — `sapu:momus`'s business-process map lists them. Drive them over HTTP, never through the UI (ASVS 2.3.1). The journey lane ([journeys.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/journeys.md)) walks the same flows through the UI as each role: it adds the user's side and replaces none of this rule.
 
 **Forward/reverse pairs — the leg nobody tests.** For every transition that *consumes* a limited resource, test the reverse and assert the resource is released **exactly once** — not zero (permanent silent loss), not twice (free quota). Enumerate the pairs (quota, stock availability, credit utilisation, receivable…). **Know which quantity the rule says moves**: a rule may require the reverse to move *utilisation* while the *ceiling* stays unchanged — then assert on utilisation, and treat a moved ceiling as the defect. (`WSTG-BUSL-06`, `ASVS v5.0.0-2.3.3`.)
 
@@ -277,9 +277,14 @@ On a dedup match whose `issue-trust` passed: **comment the new reproduction path
 | `journal/<cycle>-candidates.md` | TRIAGE | audit | the candidate table |
 | `referrals.md` | TRIAGE | the report, and NEMESIS | out-of-lane candidates + why, so nothing is silently discarded |
 | `run.log` | PERSIST | audit | one line per cycle, format below (SKILL.md §6 assertion 4) |
+| `live.json` | owner, through `/sapu:init` (tracked beside `config.yml`) | `argus-live.mjs` | the journey lane's isolated instance: setup, services, start entries, roles and their accounts, limits |
+| `live.env` | owner (the `env_file`; never tracked) | `argus-live.mjs` | the values `live.json`'s `${NAME}` references take; no agent reads it |
+| `journeys.json` | `argus-live.mjs map-check`, `visit` | SELECT (`select`) | the journey map: journeys, steps and their code anchors, `lastCycle`, `lastHead`, `filed` |
+| `live/` | `argus-live.mjs` | `argus-live.mjs` | journey cycles' lock, run records, returns, repro records, secret ledgers and logs: read only through its commands (journeys.md) |
 
 **`run.log` format**, date prefix included:
 `<date> cycle=<id> mode=<live|static> focus=<area> candidates=N confirmed=N declined=N dropped_on_minimize=K filed=N issues=#a,#b referred=N fraud=<surface>:<schemes>/<theft_blocked>/<concealment_blocked> negatives=<control>@<locator>[live|test|read] method=...`
+A journey cycle's line: `mode=live focus=journey:<ids> … fraud=-` (journeys.md: it owes no fraud pass).
 
 **Recovery if state looks stale:** re-derive `fingerprints.json` from the argus-labelled issues (`gh issue list --state all --label argus --json number,author`, each read through `sapu-contract.mjs issue-trust <n> --text`; exit 1 = not argus's own, skip it) when state is missing but argus-labelled issues exist; none exist = a genuine first run. Start `coverage.json` fresh only for the missing areas. Don't rewrite history you can still read.
 

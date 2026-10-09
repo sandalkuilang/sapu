@@ -965,6 +965,27 @@ describe("the journey lane's engine text", () => {
     expect(select).toContain("main session");
   });
 
+  it("reference.md names the lane's state and run.log form", () => {
+    const ref = read("skills/argus/reference.md");
+    const state = ref.split("\n## §9 ")[1].split("\n## §10 ")[0];
+    for (const w of ["`journeys.json`", "`live.json`", "`live.env`", "`live/`", "fraud=-", "focus=journey:"]) expect(state, w).toContain(w);
+    const workflow = ref.split("\n### §4.1 ")[1].split("\n### §4.2 ")[0];
+    expect(workflow).toContain("journeys.md");
+  });
+
+  it("standards.md grounds the journey oracles", () => {
+    const text = read("skills/argus/standards.md");
+    const lane = text.split("\n## Usability and workflow soundness")[1]?.split("\n## ")[0] ?? "";
+    for (const url of [
+      "https://www.nngroup.com/articles/ten-usability-heuristics/",
+      "https://www.nngroup.com/articles/how-to-rate-the-severity-of-usability-problems/",
+      "https://hcibib.org/tcuid/chap-4.html",
+      "https://www.vdaalst.com/publications/p628.pdf",
+      "http://www.workflowpatterns.com/patterns/control/",
+      "http://www.workflowpatterns.com/patterns/resource/",
+    ]) expect(lane, url).toContain(url);
+  });
+
   it("the brief keeps the explorer to the wrapper and page text as data", () => {
     const text = read(AGENT).replace(/\s+/g, " ");
     for (const sentence of [
