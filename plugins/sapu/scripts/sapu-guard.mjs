@@ -655,7 +655,7 @@ const GIT_CONFIG_DANGER = /^(core\.hookspath|alias\.|include\.|includeif\.|filte
  * config hooks (`hook.*`), trailer, tar, sendemail and imap commands, upload-pack and gc hooks.
  * `submodule.<name>.update` runs only a `!command`; `protocol[.ext].allow` lets an `ext::` URL run one.
  */
-const GIT_CONFIG_PROGRAM = /^(core\.(pager|editor|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|interactive\.difffilter|credential\.(.+\.)?helper|gpg\.((.+\.)?program|ssh\.defaultkeycommand)|diff\..+\.(textconv|command)|merge\..+\.driver|(difftool|mergetool|browser|man)\..+\.(cmd|path)|guitool\..+\.cmd|hook\..+|trailer\..+\.(cmd|command)|tar\..+\.command|sendemail\.(smtpserver|tocmd|cccmd|headercmd)|imap\.tunnel|instaweb\.httpd|uploadpack\.packobjectshook|gc\.recentobjectshook)$/i;
+const GIT_CONFIG_PROGRAM = /^(core\.(pager|editor|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|interactive\.difffilter|credential\.(.+\.)?helper|gpg\.((.+\.)?program|ssh\.defaultkeycommand)|diff\..+\.(textconv|command)|merge\..+\.driver|(difftool|mergetool|browser|man)\..+\.(cmd|path)|guitool\..+\.cmd|hook\..+|trailer\..+\.(cmd|command)|tar\..+\.command|sendemail\.(smtpserver|tocmd|cccmd|headercmd|sendmailcmd)|imap\.tunnel|instaweb\.httpd|uploadpack\.packobjectshook|gc\.recentobjectshook)$/i;
 /** The variables git reads for the same programs (a protocol list naming `ext`, a command directory). */
 const GIT_PROGRAM_ENV = /^(GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|PAGER|EDITOR|VISUAL|GIT_EXEC_PATH|GIT_ALLOW_PROTOCOL)=([\s\S]*)$/;
 /** A value that runs nothing worth checking: a no-op program, a boolean (`pager.<cmd>`), or empty (resets a helper list). */
@@ -683,35 +683,60 @@ function gitEnvRuns(tok) {
 /**
  * The commands a git command hands to a shell through its options: `rebase -x|--exec`, `bisect run`,
  * `submodule foreach`, `filter-branch --*-filter`, `difftool -x|--extcmd`, `grep -O|--open-files-in-pager`,
- * `--upload-pack`/`--receive-pack`/`--exec` (`ls-remote -u`). Each is {text} (a shell string) or
- * {argv} (words run as a command). `rest` is the argv after the subcommand.
+ * `--upload-pack`/`--receive-pack`/`--exec` (`ls-remote -u`), `send-email --to-cmd|--cc-cmd|
+ * --header-cmd|--sendmail-cmd|--smtp-server`, `instaweb -d|--httpd`; long ones by any prefix, short
+ * ones bundled too. Each is {text} (a shell string) or {argv} (words run as a command). `rest` is the
+ * argv after the subcommand.
  */
 function gitOptionCommands(sub, rest) {
   const out = [];
   const a = rest.map((x) => x.v);
   if (sub === "bisect" && a[0] === "run") return a.length > 1 ? [{ argv: rest.slice(1) }] : [];
-  if (sub === "submodule" && a[0] === "foreach") {
-    let k = 1;
+  // `git submodule` takes its own options before its subcommand (`submodule --quiet foreach`).
+  let s = 0;
+  while (sub === "submodule" && s < a.length && a[s].startsWith("-") && a[s] !== "--") s++;
+  if (sub === "submodule" && a[s] === "foreach") {
+    let k = s + 1;
     while (k < a.length && a[k].startsWith("-")) k++;
     return k < a.length ? [{ text: a.slice(k).join(" ") }] : [];
   }
   const long = ["--exec", "--upload-pack", "--receive-pack", "--extcmd", "--open-files-in-pager"];
   if (sub === "filter-branch") long.push("--env-filter", "--tree-filter", "--index-filter", "--parent-filter", "--msg-filter", "--commit-filter", "--tag-name-filter");
-  const short = { rebase: "-x", difftool: "-x", "ls-remote": "-u" }[sub];
+  // The options that name what a config key would (sendemail.toCmd, …, instaweb.httpd).
+  if (sub === "send-email") long.push("--to-cmd", "--cc-cmd", "--header-cmd", "--sendmail-cmd", "--smtp-server");
+  if (sub === "instaweb") long.push("--httpd");
+  const short = { rebase: "x", difftool: "x", "ls-remote": "u", instaweb: "d" }[sub];
   for (let k = 0; k < a.length; k++) {
     const v = a[k];
     if (v === "--") break;
     const eq = v.indexOf("=");
     const name = eq > 0 ? v.slice(0, eq) : v;
-    if (v.startsWith("--") && long.includes(name)) {
+    // git takes any unambiguous prefix of a long option (`--exe`, `--upload-pa=`): a word that is a
+    // prefix of one of these is read as it (an ambiguous one git refuses, so nothing is missed).
+    const hits = /^--[^-]/.test(name) ? long.filter((l) => l.startsWith(name)) : [];
+    if (hits.length) {
       if (eq > 0) out.push({ text: v.slice(eq + 1) });
-      else if (name !== "--open-files-in-pager" && k + 1 < a.length) out.push({ text: a[++k] });
-    } else if (short && v === short && k + 1 < a.length) out.push({ text: a[++k] });
-    else if (short && v.startsWith(short) && v.length > 2) out.push({ text: v.slice(2) });
-    else if (sub === "grep" && v.startsWith("-O") && v.length > 2) out.push({ text: v.slice(2) });
+      else if (hits.some((h) => h !== "--open-files-in-pager") && k + 1 < a.length) out.push({ text: a[++k] });
+    } else if (/^-[A-Za-z0-9]/.test(v)) {
+      // Short options bundle (`-qx cmd`, `-qx'cmd'`): the one that takes a value takes the rest of
+      // the word, or the next word; grep's -O takes only an attached value.
+      for (let j = 1; j < v.length && /[A-Za-z0-9]/.test(v[j]); j++) {
+        if (v[j] === short) {
+          if (j + 1 < v.length) out.push({ text: v.slice(j + 1) });
+          else if (k + 1 < a.length) out.push({ text: a[++k] });
+          break;
+        }
+        if (sub === "grep" && v[j] === "O") {
+          if (j + 1 < v.length) out.push({ text: v.slice(j + 1) });
+          break;
+        }
+      }
+    }
   }
   return out;
 }
+/** Is the key of `key[=value]` built by the shell (a variable, `$( )`, backticks)? */
+const dynamicKey = (kv) => /[$`]/.test(kv.split("=")[0]);
 /** Git config that redirects where git pushes or fetches: a remote's url/pushurl/push refspec, a url rewrite. */
 const GIT_REMOTE_CONFIG = /^(remote\.|url\.|push\.)/i;
 /** Environment that swaps the config file git reads (and with it hooksPath, aliases, includes). */
@@ -1094,6 +1119,7 @@ const BLOCK = {
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
   noVerify: "--no-verify, commit -n, or git config that changes the hook path, defines an alias, includes a config file or runs code (filter.*, core.fsmonitor, core.sshCommand, core.attributesFile, diff.external) — via -c, --config-env, GIT_CONFIG_* or git config — can skip the hook gate or hide changes. Fix what the hook reports.",
+  gitConfigKey: "a git config key the shell builds ($VAR, $( ), backticks — in -c, --config-env or git config) cannot be read: it may name a program git runs or switch off the hook gate. Write the key literally.",
   gitProgram:
     "this names a program git runs (core.pager, core.editor, sequence.editor, credential.helper, gpg.program, a merge/diff driver or textconv, pager.<cmd>, hook.*, … through -c, --config-env or git config; or GIT_PAGER, GIT_EDITOR, GIT_SEQUENCE_EDITOR, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EXTERNAL_DIFF, PAGER, EDITOR … in front of git): code the guard cannot check. For one command only a no-op value passes (true, false, :, cat, or empty — GIT_EDITOR=true, -c core.pager=cat); a config file takes none, since every worktree and the orchestrator read it.",
   force: "plain force push (--force, -f, +refspec). Use --force-with-lease, and only on a branch whose commits are all yours.",
@@ -1610,7 +1636,9 @@ function checkCommand(t, state, depth) {
       if (m) dir = target({ v: m[2], dyn: e.dyn }, m[1] === "DIR");
     }
     // `-c key=value` (a key alone is a boolean); `--config-env` reads the value from a variable: unknown.
-    const configRisk = (kv, known) => {
+    // A key the shell builds is unknown too: it may be any key, so it is refused whatever its value.
+    const configRisk = (kv, known, dyn) => {
+      if (dyn && dynamicKey(kv)) return BLOCK.gitConfigKey;
       if (GIT_CONFIG_DANGER.test(kv)) return BLOCK.noVerify;
       if (GIT_REMOTE_CONFIG.test(kv)) return BLOCK.remote;
       const eq = kv.indexOf("=");
@@ -1626,11 +1654,11 @@ function checkCommand(t, state, depth) {
         dir = target(long[2] ? { v: long[3], dyn: argv[i].dyn } : argv[i + 1], long[1] === "git-dir");
         i += long[2] ? 1 : 2;
       } else if (v === "-c" || v === "--config-env") {
-        const risk = configRisk(argv[i + 1]?.v ?? "", v === "-c" && argv[i + 1] && !argv[i + 1].dyn);
+        const risk = configRisk(argv[i + 1]?.v ?? "", v === "-c" && argv[i + 1] && !argv[i + 1].dyn, argv[i + 1]?.dyn);
         if (risk) return risk;
         i += 2;
       } else if (v.startsWith("--config-env=")) {
-        const risk = configRisk(v.slice("--config-env=".length), false);
+        const risk = configRisk(v.slice("--config-env=".length), false, argv[i].dyn);
         if (risk) return risk;
         i++;
       } else i++;
@@ -1652,6 +1680,8 @@ function checkCommand(t, state, depth) {
         rest.some((v) => /^(--get(-all|-regexp|-urlmatch)?|-l|--list)$/.test(v)) ||
         (!writeFlag && positional.length === 1 && !["set", "unset", "edit", "rename-section", "remove-section"].includes(positional[0]));
       if (!reads && rest.some((v) => /^--(global|system)$/.test(v))) return BLOCK.gitFiles;
+      const key = argv.slice(i + 1).find((t, k) => !t.v.startsWith("-") && !(fileOpt >= 0 && k === fileOpt + 1) && !["set", "unset", "edit", "rename-section", "remove-section"].includes(t.v));
+      if (!reads && key?.dyn && dynamicKey(key.v)) return BLOCK.gitConfigKey;
       const cfgFile = fileOpt >= 0 ? rest[fileOpt + 1] : rest.find((v) => v.startsWith("--file="))?.slice("--file=".length);
       if (!reads && cfgFile) {
         const w = writeTarget({ v: cfgFile, dyn: false }, true, dir);

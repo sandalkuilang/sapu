@@ -1574,6 +1574,7 @@ describe("git config, variables and options that name a program git runs", () =>
     ["git -c trailer.sign.command=/tmp/x commit -m x"],
     ["git -c tar.tgz.command=/tmp/x archive --format=tgz HEAD"],
     ["git -c sendemail.toCmd=/tmp/x send-email x.patch"],
+    ["git -c sendemail.sendmailCmd=/tmp/x send-email x.patch"],
     ["git -c imap.tunnel=/tmp/x imap-send"],
     ["git -c browser.x.cmd=/tmp/x help -w log"],
     ["git -c submodule.lib.update='!/tmp/x' submodule update"],
@@ -1617,6 +1618,22 @@ describe("git config, variables and options that name a program git runs", () =>
   });
 
   it.each([
+    // a key the shell builds is unknown: it may be any of the keys above, or one that skips the hook gate
+    ['git -c "$K=/tmp/x" log'],
+    ["git -c $K log"],
+    ['git -c "core.$K=/tmp/x" log'],
+    ["git -c \"$(cat k)=/tmp/x\" log"],
+    ['git --config-env="$K=V" log'],
+    ['git --config-env "$K=V" log'],
+    ['git config "$K" /tmp/x'],
+    ["git config --local ${K} /tmp/x"],
+    ['git config --unset "$K"'],
+  ])("blocks %s: a config key the shell builds", (cmd) => {
+    expect(blocked(cmd)).toMatch(/config key the shell builds/);
+    expect(check({ command: cmd, cwd: wt, main, rules, worker: false })).toMatch(/config key the shell builds/);
+  });
+
+  it.each([
     ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=/tmp/x git log"],
     ["GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=/tmp/x git push origin feat/x"],
     ["GIT_CONFIG_PARAMETERS=\"'gpg.program'='/tmp/x'\" git commit -S -m x"],
@@ -1646,6 +1663,31 @@ describe("git config, variables and options that name a program git runs", () =>
     ["git filter-branch --tree-filter 'rm -rf ~/.config/sapu' HEAD", /machine config/],
     ["git grep --open-files-in-pager='gh pr merge 1' x", /orchestrator merges/],
     ["git grep -O'gh pr merge 1' x", /orchestrator merges/],
+    // git takes any unambiguous prefix of a long option, and short options bundled
+    ["git rebase --exe 'gh pr merge 1' HEAD~2", /orchestrator merges/],
+    ["git rebase --ex='gh pr merge 1' HEAD~2", /orchestrator merges/],
+    ["git ls-remote --e='gh pr merge 1' origin", /orchestrator merges/],
+    ["git fetch --upload-pa='rm -rf ~/.config/sapu' origin", /machine config/],
+    ["git push --receive='gh pr merge 1' origin feat/x", /orchestrator merges/],
+    ["git difftool --ext 'cat .env'", /env files/],
+    ["git filter-branch --tree-f 'rm -rf ~/.config/sapu' HEAD", /machine config/],
+    ["git grep --open-files='gh pr merge 1' x", /orchestrator merges/],
+    ["git rebase -qx 'gh pr merge 1' HEAD~2", /orchestrator merges/],
+    ["git rebase -qx'gh pr merge 1' HEAD~2", /orchestrator merges/],
+    ["git ls-remote -qu 'gh pr merge 1' origin", /orchestrator merges/],
+    ["git grep -iO'gh pr merge 1' x", /orchestrator merges/],
+    ["git submodule --quiet foreach 'git stash'", /stash/],
+    ["git submodule -q foreach --recursive git stash", /stash/],
+    // the options that name the program a config key would (sendemail.*cmd, instaweb.httpd)
+    ["git send-email --to-cmd='gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git send-email --cc-cmd 'gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git send-email --header-cmd='gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git send-email --sendmail-cmd='gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git send-email --smtp-server='gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git send-email --to-cm='gh pr merge 1' x.patch", /orchestrator merges/],
+    ["git instaweb --httpd='gh pr merge 1'", /orchestrator merges/],
+    ["git instaweb --http 'gh pr merge 1'", /orchestrator merges/],
+    ["git instaweb -d 'gh pr merge 1'", /orchestrator merges/],
   ])("judges the command an option hands git: %s", (cmd, why) => {
     expect(blocked(cmd)).toMatch(why);
   });
@@ -1675,11 +1717,21 @@ describe("git config, variables and options that name a program git runs", () =>
     ["git config --get-regexp '^diff\\.'"],
     ["git config --list"],
     ["git config get core.editor"],
+    ['git config "$K"'],
+    ['git config --get "$K"'],
     // the options' commands that are fine to run
     ["git rebase -x 'npm test' HEAD~3"],
     ["git bisect run npm test"],
     ["git submodule foreach git status"],
+    ["git submodule --quiet foreach git status"],
+    ["git rebase --exe 'npm test' HEAD~3"],
+    ["git rebase -qx 'npm test' HEAD~3"],
+    ["git rebase -Xtheirs HEAD~3"],
+    ["git send-email --to x@example.com x.patch"],
+    ["git send-email --smtp-server=smtp.example.com x.patch"],
+    ["git -c user.name=\"$N\" commit -m x"],
     ["git grep -O x"],
+    ["git grep -iO x"],
     ["git fetch origin"],
     ["git log --format=%H -n 1"],
     // a variable that only reads like one, or set for another program
