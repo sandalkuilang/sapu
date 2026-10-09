@@ -118,7 +118,7 @@ import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { minimize, redTestFile, repro, runOnce, savedValues } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
-import { down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { browserHome, down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
@@ -297,7 +297,7 @@ try {
     const lock = readLock(main);
     const rec = lock && readRun(main);
     if (!rec || rec.runId !== lock.runId || !rec.browser || typeof rec.browser.js !== "string" || typeof rec.home !== "string") throw new Error("refused: no journey cycle is running");
-    process.exit(showDashboard({ js: rec.browser.js, home: path.join(rec.home, "browser"), cwd: path.join(liveDir(main), lock.runId) }));
+    process.exit(showDashboard({ js: rec.browser.js, home: browserHome(rec), cwd: path.join(liveDir(main), lock.runId) }));
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);

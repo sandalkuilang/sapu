@@ -38,6 +38,9 @@ export function worktreeHeadFile(main, runId) {
 /** The CLI the run starts its own helpers with (`argus-live.mjs reap <runId>`, `proxy <runId>`). */
 export const CLI = fileURLToPath(new URL("./argus-live.mjs", import.meta.url));
 
+/** A run's browser HOME (the CLI's own, cliEnv), under the run's HOME: `rec` is run.json's record or anything holding `home`. */
+export const browserHome = (rec) => path.join(rec.home, "browser");
+
 /** run.json, or null when there is none. Throws `refused: …` on one that cannot be read: it is never guessed at. */
 export function readRun(main) {
   let raw;
@@ -594,7 +597,7 @@ const TEARDOWN = [
       if (!ok) await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, (t.rec?.sessions ?? []).filter((x) => !x || !done.has(x.name))));
     } else await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, t.rec?.sessions));
     await closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note });
-    const homes = [...new Set([...(t.rec?.sessions ?? []).map((x) => x && x.home), t.rec?.home ? path.join(t.rec.home, "browser") : null].filter((h) => typeof h === "string"))];
+    const homes = [...new Set([...(t.rec?.sessions ?? []).map((x) => x && x.home), t.rec?.home ? browserHome(t.rec) : null].filter((h) => typeof h === "string"))];
     await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });
     for (const h of homes) removeSockets(h);
   }],

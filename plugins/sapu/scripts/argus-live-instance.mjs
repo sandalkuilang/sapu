@@ -31,7 +31,7 @@ import { hostOf, resolvesToLoopback } from "./argus-live-endpoints.mjs";
 import { dropLedgers } from "./argus-live-ledger.mjs";
 import { iso, readLock, renew, takeLock } from "./argus-live-lock.mjs";
 import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sameStart, startTime, stopRecordedGroups, tempBeside } from "./argus-live-proc.mjs";
-import { down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, worktreeHeadFile, writeRunFiles } from "./argus-live-run.mjs";
+import { browserHome, down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, worktreeHeadFile, writeRunFiles } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { allocatePorts, bringUpRest, bringUpStore, instanceEnv, makeHome, makeWorktree, runSetup } from "./argus-live-start.mjs";
 import { loadContract } from "./sapu-contract.mjs";
@@ -327,8 +327,8 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     state.baseUrl = x.base_url;
     state.home = makeHome(main, runId);
     // The browser CLI's own HOME (cliEnv): its profiles, caches and temp files stay apart from what setup writes.
-    const browserHome = path.join(state.home, "browser");
-    fs.mkdirSync(browserHome, { mode: 0o700 });
+    const cliHome = browserHome(state);
+    fs.mkdirSync(cliHome, { mode: 0o700 });
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
     // The daemon's clock through the run's own client (its context checked by dockerEnv just now);
@@ -376,7 +376,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     log(`step 9 proxy: 127.0.0.1:${proxy.port}`);
 
     step = "10 logins";
-    const proven = await proveLogins(main, runId, { live: x, secrets, origins: state.origins, allowOrigins: state.allowOrigins, js: cli.js, home: browserHome, proxyPort: proxy.port, chrome, env: state.env, worktree: state.worktree, runner, say: log });
+    const proven = await proveLogins(main, runId, { live: x, secrets, origins: state.origins, allowOrigins: state.allowOrigins, js: cli.js, home: cliHome, proxyPort: proxy.port, chrome, env: state.env, worktree: state.worktree, runner, say: log });
     log(`step 10 logins: ${proven} account(s) proven`);
 
     step = "11 run files";

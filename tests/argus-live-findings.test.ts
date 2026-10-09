@@ -41,7 +41,7 @@ import { minimize, repro, runOnce } from "../plugins/sapu/scripts/argus-live-rep
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
-import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+import { browserHome, down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
 import { defang, redactIds, scrub, scrubSecrets, writeVerdict } from "../plugins/sapu/scripts/argus-live-scrub.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -114,6 +114,13 @@ describe("argus-live modules — the DAG", () => {
     // Doc drift reads git's blame and nothing else.
     expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
+  });
+
+  it("one helper names a run's browser HOME: browserHome in the run module", () => {
+    expect(browserHome({ home: "/h/run" })).toBe(join("/h/run", "browser"));
+    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live.*\.mjs$/.test(x) && x !== "argus-live-run.mjs")) {
+      expect(readFileSync(join(SCRIPTS, f), "utf8"), f).not.toMatch(/path\.join\([^)]*home[^)]*,\s*"browser"\)/);
+    }
   });
 
   it("the instance module's header names every module, each after the modules it imports", () => {

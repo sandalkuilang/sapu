@@ -12,7 +12,7 @@ import { loadLive } from "./argus-live-config.mjs";
 import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-ledger.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { run, runAsync } from "./argus-live-proc.mjs";
-import { logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
+import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
@@ -152,7 +152,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   const r = live.roles && live.roles[role];
   const plan = loginPlan(live, role);
   const name = sessionName(runId, slot, account);
-  const home = () => path.join(rec.home, "browser");
+  const home = () => browserHome(rec);
   let record = null;
   const d = {
     name,

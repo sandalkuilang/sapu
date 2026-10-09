@@ -862,3 +862,6 @@ Refs #53
 - **Phase-end review (QA).** `/sapu:init` writes `.argus/live.env` only when it does not exist, never
   over the owner's values; with a file in place it names the `${NAME}`s it needs and `live check` reports
   an unset one.
+- **Phase-end review.** `browserHome(rec)` in argus-live-run.mjs is the one place a run's browser HOME is
+  built; instance, session, the CLI's `show` and `down`'s sweep call it (the DAG unchanged: each already
+  imported the run module).
