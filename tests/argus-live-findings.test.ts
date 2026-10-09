@@ -15,6 +15,8 @@ import { sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { CLASSES, classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
+import { drift } from "../plugins/sapu/scripts/argus-live-drift.mjs";
+// @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
@@ -107,6 +109,8 @@ describe("argus-live modules — the DAG", () => {
     // The journey map reads the configuration and git, nothing of a run.
     expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
     expect(g.get("argus-live-return")).toContain("argus-live-map");
+    // Doc drift reads git's blame and nothing else.
+    expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
@@ -1949,5 +1953,95 @@ describe("argus-live select", () => {
   it("the usage line names select", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
     expect(r.stderr).toContain(" | select --cycle <n> [--flagged <id>,…] [--ids <id>,…]");
+  }, 30_000);
+});
+
+describe("argus-live doc drift", () => {
+  const T1 = Math.floor(Date.now() / 1000) - 3 * 86_400;
+  const T2 = T1 + 86_400;
+  const T3 = T2 + 86_400;
+  /** Commits every change in `main` authored at `author` and committed at `committer` (epoch seconds). */
+  const commitAt = (main: string, author: number, committer = author) => {
+    const env = { ...process.env, GIT_AUTHOR_DATE: `@${author} +0000`, GIT_COMMITTER_DATE: `@${committer} +0000` };
+    for (const args of [["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "c"]]) expect(spawnSync("git", ["-C", main, ...args], { env, encoding: "utf8" }).status).toBe(0);
+  };
+  const doc = (main: string, text = "Orders ship within two days.") => writeFileSync(join(main, "guide.md"), `# Guide\n\n${text}\n`);
+  const code = (main: string, days = 2) => writeFileSync(join(main, "ship.js"), `// shipping\nexport const SHIP_DAYS = ${days};\n`);
+  const RANGES = { doc: "guide.md:3-3", code: ["ship.js:2-2"] };
+
+  it("code newer than the doc, the doc newer, both in one commit", () => {
+    const a = committed();
+    doc(a);
+    commitAt(a, T1);
+    code(a);
+    commitAt(a, T2);
+    expect(drift(a, RANGES)).toEqual({ verdict: "code-newer" });
+    const b = committed();
+    code(b);
+    commitAt(b, T1);
+    doc(b);
+    commitAt(b, T2);
+    expect(drift(b, RANGES)).toEqual({ verdict: "doc-newer" });
+    const c = committed();
+    doc(c);
+    code(c);
+    commitAt(c, T2);
+    expect(drift(c, RANGES)).toEqual({ verdict: "undecidable", why: "same time" });
+  });
+
+  it("the newest of every code range counts", () => {
+    const m = committed();
+    code(m);
+    commitAt(m, T1);
+    doc(m);
+    commitAt(m, T2);
+    writeFileSync(join(m, "rules.js"), "export const LATE = true;\n");
+    commitAt(m, T3);
+    expect(drift(m, { doc: "guide.md:3-3", code: ["ship.js:1-2", "rules.js:1-1"] })).toEqual({ verdict: "code-newer" });
+  });
+
+  it("uncommitted lines, a file with no history and a bad range", () => {
+    const m = committed();
+    doc(m);
+    code(m);
+    commitAt(m, T1);
+    doc(m, "Orders ship within a week.");
+    expect(drift(m, RANGES)).toEqual({ verdict: "undecidable", why: "uncommitted lines" });
+    writeFileSync(join(m, "new.md"), "a\nb\n");
+    expect(drift(m, { doc: "new.md:1-2", code: ["ship.js:2-2"] })).toEqual({ verdict: "undecidable", why: "no history" });
+    expect(drift(m, { doc: "guide.md:7-9", code: ["ship.js:2-2"] })).toEqual({ verdict: "undecidable", why: "no history" });
+    for (const bad of ["../guide.md:1-2", "/etc/passwd:1-2", "guide.md:2-1", "guide.md:0-1", "guide.md", "docs/../guide.md:1-1"]) {
+      expect(() => drift(m, { doc: bad, code: ["ship.js:2-2"] }), bad).toThrow(`refused: drift: ${bad} is not <repo-relative file>:<a>-<b>`);
+      expect(() => drift(m, { doc: "guide.md:3-3", code: [bad] }), bad).toThrow("refused: drift: ");
+    }
+  });
+
+  it("author time decides, not committer time", () => {
+    // The doc written at T1 but committed at T3 (as a rebase leaves it); the code written and committed at T2.
+    const m = committed();
+    doc(m);
+    commitAt(m, T1, T3);
+    code(m);
+    commitAt(m, T2);
+    expect(drift(m, RANGES)).toEqual({ verdict: "code-newer" });
+  });
+
+  it("the CLI's verdict lines", () => {
+    const m = committed();
+    doc(m);
+    commitAt(m, T1);
+    code(m);
+    commitAt(m, T2);
+    const cli = (...args: string[]) => {
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "drift", ...args], { cwd: m, encoding: "utf8" });
+      return { code: r.status, out: r.stdout, err: r.stderr };
+    };
+    expect(cli("--doc", "guide.md:3-3", "--code", "ship.js:2-2")).toEqual({ code: 0, out: "code-newer → needs-owner\n", err: "" });
+    expect(cli("--doc", "ship.js:2-2", "--code", "guide.md:3-3").out).toBe("doc-newer → class B(a)\n");
+    expect(cli("--doc", "guide.md:3-3", "--code", "guide.md:3-3", "--code", "ship.js:1-1").out).toBe("code-newer → needs-owner\n");
+    expect(cli("--doc", "guide.md:3-3", "--code", "guide.md:3-3").out).toBe("undecidable (same time) → needs-owner\n");
+    for (const bad of [["--doc", "guide.md:3-3"], ["--code", "ship.js:2-2"], ["--doc", "a:1-2", "--doc", "b:1-2", "--code", "c:1-1"], ["--doc", "../a:1-2", "--code", "c:1-1"]]) expect(cli(...bad).code, bad.join(" ")).toBe(1);
+    const usage = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: m, encoding: "utf8" });
+    expect(usage.stderr).toContain(" | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]");
   }, 30_000);
 });

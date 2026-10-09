@@ -1708,3 +1708,9 @@ Interfaces:
   with 0. The CLI takes `--cycle` as a whole number from 1 and `--flagged`/`--ids` as comma lists of
   kebab-case ids; an id the map lacks is refused (`refused: select: no journey <id> in .argus/journeys.json`).
   The `wait` and `displaced` lines are printed before the `no journey is selectable` refusal.
+- **Task 18.** `drift` takes the ranges as the CLI gives them (`{doc: "<file>:<a>-<b>", code: [...]}`) and refuses
+  one whose start passes its end, a line 0, an absolute path, a `..` or a control character (`refused: drift:
+  <range> is not <repo-relative file>:<a>-<b>`). Blame runs on the working tree, so an edited line reads as git's
+  all-zero commit (`uncommitted lines`); a range starting past the file's end, or a file HEAD lacks, fails git
+  (`no history`), while an end past it is clipped by git. The doc's range is read first, then each code range,
+  and the first that is undecidable gives the `why`. The CLI exits 0 for every verdict.
