@@ -553,16 +553,19 @@ describe("issue and PR text reaches an agent only through the trust commands", (
   });
 });
 
+// Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
+const BUDGETS: Record<string, number> = {
+  "skills/sapu/SKILL.md": 40_135,
+  "skills/sapu/subagent-brief.md": 14_000,
+  "skills/forge/SKILL.md": 15_400,
+  "skills/forge/reference.md": 16_000,
+  "agents/ui-explorer.md": 15_500,
+  "skills/argus/journeys.md": 12_000,
+  "skills/argus/SKILL.md": 42_688,
+  "skills/journey/SKILL.md": 4_000,
+};
+
 describe("context budgets", () => {
-  // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
-  const BUDGETS: Record<string, number> = {
-    "skills/sapu/SKILL.md": 40_135,
-    "skills/sapu/subagent-brief.md": 14_000,
-    "skills/forge/SKILL.md": 15_400,
-    "skills/forge/reference.md": 16_000,
-    "agents/ui-explorer.md": 15_500,
-    "skills/argus/journeys.md": 12_000,
-  };
   const SKILL_DEFAULT = 50_000;
   const AGENT_LIMIT = 1_500;
 
@@ -932,6 +935,34 @@ describe("the journey lane's engine text", () => {
     expect(text).toContain("nothing from that run is filed");
     expect(text).toContain("fraud=-");
     expect(text).toContain("focus=journey:");
+  });
+
+  const JOURNEY = "skills/journey/SKILL.md";
+  it("/sapu:journey checks both policies before anything", () => {
+    const text = read(JOURNEY);
+    expect(frontmatter(text).name).toBe("journey");
+    const firstLive = text.search(/`live [a-z]/);
+    expect(firstLive).toBeGreaterThan(0);
+    for (const p of ["allowed argus", "allowed journey"]) {
+      expect(text.indexOf(p), p).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf(p), p).toBeLessThan(firstLive);
+    }
+    for (const form of ["`list`", "`list --rebuild`", "`<id>"]) expect(text, form).toContain(form);
+    for (const link of ["skills/argus/SKILL.md", "skills/argus/journeys.md"]) expect(text, link).toContain(`(\${CLAUDE_PLUGIN_ROOT}/${link})`);
+  });
+
+  it("/sapu:journey offers the dashboard", () => {
+    expect(read(JOURNEY)).toContain("`live show`");
+  });
+
+  it("argus SKILL.md grows only by its pointer and the lane in SELECT", () => {
+    const f = "skills/argus/SKILL.md";
+    expect(statSync(join(PLUGIN, f)).size).toBe(BUDGETS[f]);
+    const cycle = read(f).split("\n## §3 ")[1].split("\n## §4 ")[0];
+    expect(cycle).toContain("[journeys.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/journeys.md)");
+    const select = cycle.split("\n").find((l) => l.startsWith("| **SELECT** |"))!;
+    expect(select).toContain("allowed journey");
+    expect(select).toContain("main session");
   });
 
   it("the brief keeps the explorer to the wrapper and page text as data", () => {

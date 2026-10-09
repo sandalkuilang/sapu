@@ -802,3 +802,11 @@ Refs #53
   The repro in an issue body is `min.json`'s when minimize confirmed it, else the return's (the RED test
   follows the same rule); a screenshot to attach is `.argus/live/<runId>/<slot>/out/<name>`, the name as
   the return lists it.
+- **Task 5.** `BUDGETS` moved from the "context budgets" describe to module scope, so "argus SKILL.md grows
+  only by its pointer and the lane in SELECT" reads the exact entry (`skills/argus/SKILL.md` 42 688, its size
+  after the two edits). `skills/journey/SKILL.md` got a budget of its own, 4 000 (its 3.7 KB rounded up to
+  the next 500; the plan's ceiling was 5 000). Task 2 built `show` (outcome A), so the skill has the run print
+  `live show` written out with the plugin's real path, for the owner to run in a terminal of their own (it
+  blocks until Ctrl-C); the orchestrator never runs it. `list` starts with `live map-check --list`: its
+  `refresh:` line decides whether the map is rebuilt (and `refused: no journey is selectable` with a refresh
+  due, as with no map yet, rebuilds too), so no separate `map-check` call is needed.
