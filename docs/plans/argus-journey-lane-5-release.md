@@ -888,3 +888,9 @@ Refs #53
   <slot>.<generation>.<k> | both)`, as its doc comment and the spec say. `pw <token> <word>` with nothing
   after it now says either that no command follows the account or that the word is no explorer command
   (`pw <token> show`), with pw's usage, instead of "no command given; that is not an explorer command".
+- **Phase-end review (writer).** The docs name both prerequisites of the lane (`argus` and `journey`
+  allowed), plain `list` rebuilding a stale catalog, the explorer's wrapper token in the process list, the
+  three owner labels with their defaults, the repro tests among the browser tests, and the run directories
+  the owner deletes; journeys.md's map step drops the `list --rebuild` clause (the skill's `list` decides
+  that) and its drift step names the needs-owner label to file with. journey-boundary gains an arrow from
+  `.argus/live.env` to scrub (scrub reads the configuration's secrets too), and its alt text says so.

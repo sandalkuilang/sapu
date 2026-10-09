@@ -28,7 +28,7 @@ tests/                            vitest: guard, workflows, contract, merge, met
 
 The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`. The journey lane's browser CLI is the one exception, and it is not installed with the plugin: `scripts/pw/` pins it, and the lane installs it into the user's cache with `npm ci --ignore-scripts` the first time it needs it.
 
-The journey lane's browser tests (`tests/argus-live-browser.test.ts`) drive a real Chrome or Edge through that CLI: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI.
+The journey lane's browser tests (`tests/argus-live-browser.test.ts` and `tests/argus-live-repro.test.ts`) drive a real Chrome or Edge through that CLI: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI.
 
 ## Changing the plugin
 

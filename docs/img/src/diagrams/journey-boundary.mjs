@@ -115,6 +115,8 @@ export default {
     s += text(462, ly + 19, `secret ledger, ${m("0600")}`, "cap");
     s += text(462, ly + 36, "what the run met; kept by down", "cap");
     s += arrow([[533, ly - 2], [533, fy3 + 52]], "ar-b");
+    // scrub reads the env file's values too (the configuration's secrets), never printing one
+    s += arrow([[400, ly - 2], [400, ly - 11], [470, ly - 11], [470, fy3 + 52]], "ar-b");
     s += lines(704, ly + 19, [`${b("ledger incomplete,", "tb c-red")}`, "gone or damaged: nothing filed"], "cap", 17);
 
     // ---- limits
@@ -125,7 +127,7 @@ export default {
     s += lines(90, y4 + 54, [
       "· Process groups bound every kill and listing: a process that leaves its group is neither killed nor listed.",
       "· The egress check samples, and lists no process inside a container.",
-      "· A slot's token is in the process list while a pw call runs: the lane assumes a single-user machine.",
+      "· An explorer's wrapper token is in the process list while a pw call runs: the lane assumes a single-user machine.",
       `· The full list: ${m("plugins/sapu/skills/journey/live.md")}, section Known limits.`,
     ], "cap", 18);
     return s;
