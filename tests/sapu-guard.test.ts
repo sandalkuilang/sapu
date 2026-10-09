@@ -2658,12 +2658,35 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     ["a script name a variable holds", `node "$S" down`],
     ["a script name backticks build", `node \`echo x\` scrub --run r1 --title t --body b.md --create`],
     ["a redirection after the verb", `node ${L} up > /dev/null 2>&1`],
+    ["a built script name and a built verb", `node "$S" "$V"`],
+    ["a built script name and a substituted verb", `node "$S" $(echo up)`],
+    ["a built script name past a -r value", `node -r /dev/null "$S" up`],
+    ["a built script name past an --import value", `node --import /dev/null "$S" scrub`],
+    ["a built preload by --import=", `node --import=$SCRIPT /dev/null up`],
+    ["a built preload by --require=", `node --require=$SCRIPT /dev/null up`],
+    ["the script as an --import= preload", `node --import=${L} /dev/null up`],
+    ["the script as a -r preload", `node -r ${L} /dev/null down`],
+    ["a built script name after --", `node -- "$S" up`],
+    ["bun run", `bun run ${L} up`],
+    ["deno run", `deno run -A ${L} up`],
+    ["tsx watch", `tsx watch ${L} renew`],
   ])("refuses a subagent %s", (_what, cmd) => {
     expect(sub(cmd)).toMatch(REFUSED);
     expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
   });
 
   it.each([[`node ${L} status`], [`node ${L} status --json`], [`node ${L} check`], [`node "\${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" status --json`], [`cd ${plug}/scripts && node argus-live.mjs check`], [`node ${L} status --json 2>/dev/null`], [`node ${L} status --json | head -1`], [`node ${L}-notes.md up`], [`node "$D/build.js" up`], [`node $(which tsc) --build`]])("lets a subagent run %s", (cmd) => {
+    expect(sub(cmd)).toBeNull();
+  });
+
+  // Only the interpreter's first operand is the script it runs: a later word naming the lane's script is an argument.
+  it.each([
+    ["eslint over the script", `node node_modules/.bin/eslint plugins/sapu/scripts/argus-live.mjs`],
+    ["a test run naming the script", `node --test tests/foo.test.mjs plugins/sapu/scripts/argus-live.mjs`],
+    ["a syntax check, which runs nothing", `node --check plugins/sapu/scripts/argus-live.mjs`],
+    ["a syntax check by -c", `node -c ${L} up`],
+    ["deno's check, which runs nothing", `deno check ${L}`],
+  ])("lets a subagent run %s", (_what, cmd) => {
     expect(sub(cmd)).toBeNull();
   });
 

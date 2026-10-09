@@ -1262,23 +1262,66 @@ function isLiveCli(w, dir) {
   return path.basename(realpathOrSelf(path.resolve(dir, w.v))).toLowerCase() === "argus-live.mjs";
 }
 
+/** JS runtimes' options whose value is the next word (code, a preload, a config), not the script. */
+const NODE_VALUE_OPTS = ["-r", "--require", "--import", "--loader", "--experimental-loader", "-e", "--eval", "-p", "--print", "-C", "--conditions", "--env-file", "--input-type", "--title", "--watch-path", "--test-name-pattern", "--test-reporter", "--test-reporter-destination", "--redirect-warnings", "--disable-warning"];
+const VALUE_OPTS = {
+  node: new Set(NODE_VALUE_OPTS),
+  tsx: new Set(NODE_VALUE_OPTS),
+  "ts-node": new Set([...NODE_VALUE_OPTS, "-P", "--project", "-O", "--compiler-options", "--compiler"]),
+  bun: new Set(["-r", "--preload", "-e", "--eval", "-p", "--print", "-c", "--config", "--cwd", "--env-file", "--tsconfig-override", "--conditions"]),
+  deno: new Set(["-c", "--config", "--import-map", "--location", "--cert", "-L", "--log-level", "--env-file"]),
+};
+/** Shells, python, ruby, perl: code (`-c`, `-e`) or a module (`-m`) as the next word. */
+const OTHER_VALUE_OPTS = new Set(["-c", "-e", "-m"]);
+/** A runtime's subcommand before the script it runs (`bun run x`, `deno run x`, `tsx watch x`). */
+const RUN_SUBCOMMANDS = { bun: new Set(["run"]), deno: new Set(["run", "test", "bench", "serve"]), tsx: new Set(["watch"]) };
+
 /**
- * The journey lane's script run by its path or by an interpreter (its first operand, past the
- * interpreter's options), with words other than LIVE_READS — or `pw` for the explorer — after it: the
- * refusal. Every later word must be literal: a verb the shell or xargs fills in may be any verb.
+ * An interpreter's argv read once: `op`, the index of its first operand — the script it runs, past its
+ * options, their values and a run subcommand (-1: none, or the runtime only checks its syntax) — and
+ * `values`, the option values that can load code (`-r x`, `--import=x`) or are code.
+ */
+function interpArgv(argv, prog) {
+  const takes = VALUE_OPTS[prog] ?? OTHER_VALUE_OPTS;
+  const values = [];
+  let sub = false;
+  let checkOnly = false;
+  let op = -1;
+  for (let i = 1; i < argv.length && op < 0; i++) {
+    const v = argv[i].v;
+    if (v === "--") op = i + 1 < argv.length ? i + 1 : -1;
+    else if (!v.startsWith("-") || v === "-") {
+      if (!sub && RUN_SUBCOMMANDS[prog]?.has(v)) sub = true;
+      else op = i;
+    } else if (v.includes("=")) values.push({ v: v.slice(v.indexOf("=") + 1), dyn: argv[i].dyn });
+    else if (takes.has(v)) {
+      if (argv[i + 1]) values.push(argv[i + 1]);
+      i++;
+    } else if (prog === "node" && (v === "-c" || v === "--check")) checkOnly = true;
+  }
+  return { op: checkOnly ? -1 : op, values, args: op < 0 ? [] : argv.slice(op + 1) };
+}
+
+/** A script name the shell builds whole (`"$S"`, `$(…)`) and does not show as some other script file. */
+const builtName = (w) => w.dyn && !/^[\w.-]+\.[cm]?[jt]sx?$/i.test(bare(w.v));
+
+/**
+ * The journey lane's script run by its path, or by an interpreter as its first operand or a preload,
+ * with words other than LIVE_READS — or `pw` for the explorer — after it: the refusal. Every later
+ * word must be literal: a verb the shell or xargs fills in may be any verb. A script name the shell
+ * builds is unknown: a verb of the script, or any built word, after it refuses it.
  */
 function liveCliRun(all, dir, explorer) {
   const argv = withoutRedirects(all);
   if (!argv.length) return null;
-  const interp = INTERPRETERS.has(bare(argv[0].v));
-  const k = isLiveCli(argv[0], dir) ? 0 : interp ? argv.findIndex((w, i) => i > 0 && !w.v.startsWith("-") && isLiveCli(w, dir)) : -1;
-  if (k < 0) {
-    // A script name the shell builds whole (`node "$S" up`, `node $(…) up`): unknown, so a verb of the script after it refuses it.
-    const op = interp ? argv.findIndex((w, i) => i > 0 && !w.v.startsWith("-")) : -1;
-    const built = op > 0 && argv[op].dyn && !/^[\w.-]+\.[cm]?[jt]sx?$/i.test(bare(argv[op].v));
-    return built && LIVE_VERBS.has(argv[op + 1]?.v) ? BLOCK.liveCli : null;
-  }
-  const rest = argv.slice(k + 1);
+  let rest;
+  if (isLiveCli(argv[0], dir)) rest = argv.slice(1);
+  else if (INTERPRETERS.has(bare(argv[0].v))) {
+    const { op, values, args } = interpArgv(argv, bare(argv[0].v));
+    const named = [...values, ...(op > 0 ? [argv[op]] : [])];
+    if (named.some((w) => isLiveCli(w, dir))) rest = args;
+    else return named.some(builtName) && (LIVE_VERBS.has(args[0]?.v) || args.some((w) => w.dyn)) ? BLOCK.liveCli : null;
+  } else return null;
   if (rest.some((w) => w.dyn)) return BLOCK.liveCli;
   const words = rest.map((w) => w.v);
   if (explorer && words[0] === "pw") return null;
