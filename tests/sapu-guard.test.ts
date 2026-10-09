@@ -784,6 +784,8 @@ describe("guard.databases — a protected dev database of any engine", () => {
     ["redis-cli -u redis://localhost:6380/0 flushall"],
     [`sqlite3 ${main}/db/development.sqlite3 'DELETE FROM users'`],
     [`rm ${main}/db/development.sqlite3`],
+    [`sqlite3 file:${main}/db/development.sqlite3?mode=rw 'DELETE FROM users'`],
+    [`DATABASE_URL=sqlite://${main}/db/development.sqlite3?mode=rwc npm run seed`],
     ["psql -p 5433"],
   ])("blocks %s", (cmd) => {
     expect(at(cmd)).toMatch(/protected database/);
@@ -817,7 +819,7 @@ describe("the guard /sapu:init proposes per ecosystem blocks that ecosystem's de
     return compileRules({ ...FIXTURE_CONTRACT, guard: { envFiles: [], ...s.guard } } as typeof FIXTURE_CONTRACT);
   };
   it.each([
-    ["rails", ["bin/rails db:drop", "bundle exec rails db:reset", "bundle exec rake db:purge", "RAILS_ENV=test bin/rails db:schema:load", "mysql shop_development", "redis-cli -p 6380 flushall"], ["bin/rails db:migrate", "bundle exec rails test", "bin/rails db:create"]],
+    ["rails", ["bin/rails db:drop", "bundle exec rails db:reset", "bundle exec rake db:purge", "RAILS_ENV=test bin/rails db:schema:load", "bin/rails db:drop:all", "bundle exec rails db:rollback STEP=3", "mysql shop_development", "redis-cli -p 6380 flushall"], ["bin/rails db:migrate", "bundle exec rails test", "bin/rails db:create"]],
     ["django", ["python manage.py flush --noinput", "python3 manage.py migrate shop zero", "./manage.py reset_db", "uv run python manage.py flush", "poetry run alembic downgrade base", "psql -p 5433"], ["python manage.py test", "python manage.py migrate", "alembic upgrade head"]],
     ["laravel", ["php artisan migrate:fresh --seed", "./artisan db:wipe", "sail artisan migrate:refresh", "mongosh --port 27018"], ["php artisan migrate", "php artisan test"]],
     ["go", ["migrate -path db/migrations -database x drop", "goose -dir db reset", "migrate -path db -database x down", "mongosh ledger_dev"], ["go test ./...", "migrate -path db -database x up"]],

@@ -462,7 +462,9 @@ async function runItem(item) {
     const family = MODEL[who][0]
     if (r.model && !r.model.toLowerCase().includes(family)) state.modelWarnings.push(`${who} ran on ${r.model}`)
     // The canary proves the guard; its step_budget answer proves the budget counts this worker (agent_id in the hook input).
-    const off = r.step_budget && !/^counting\b/.test(r.step_budget) && `${who}: ${r.step_budget}`
+    // A missing or empty answer proves nothing: the same warning.
+    const sb = typeof r.step_budget === 'string' ? r.step_budget.trim() : ''
+    const off = !/^counting\b/.test(sb) && `${who}: ${sb || 'off: no step_budget in its return'}`
     if (off && !state.budgetWarnings.includes(off)) state.budgetWarnings.push(off)
     if (r.branch) state.branch = r.branch
     if (r.pr_number) { state.pr = r.pr_number; state.prUrl = r.pr_url }

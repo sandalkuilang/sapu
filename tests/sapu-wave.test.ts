@@ -62,7 +62,7 @@ const ARCHITECT = "senior-dev-team:senior-software-architect";
 const item = (issue: number, over: Item = {}) => ({ issue, title: `t${issue}`, tier: "green", worker: "sapu:sapu-sonnet-medium", ...over });
 const opened = (issue: number, over: Item = {}) => ({
   status: "pr_opened", guard_active: true, pr_number: 1000 + issue, pr_url: `u${issue}`, branch: `feat/${issue}`,
-  head_sha: "sha-a", worktree_path: `/wt/${issue}`, summary: "s", verification: "v", security_gaps: [], outside_writes: [], ...over,
+  head_sha: "sha-a", worktree_path: `/wt/${issue}`, summary: "s", verification: "v", security_gaps: [], outside_writes: [], step_budget: "counting", ...over,
 });
 const clean = { verdict: "clean", findings: [], notes: ["n1"], red_area_ran: true, red_areas: [], security_gaps: [], comment_markdown: "checked" };
 const finding = (invariant = false) => ({
@@ -433,6 +433,13 @@ describe("sapu-wave — escalation and continuing agents", () => {
     const ok = await runWave({ main: MAIN, items: [item(18)] }, (c) => (c.opts.phase === "Review" ? clean : opened(18, { step_budget: "counting" })));
     expect(ok.out[0].budgetWarnings).toEqual([]);
     expect(ok.logs.join("\n")).not.toMatch(/step budget off/);
+  });
+
+  it.each([[""], ["  "], [undefined], [null]])("a missing or empty step_budget answer (%j) is the same WARNING: nothing proves the budget counts", async (sb) => {
+    const { out, logs } = await runWave({ main: MAIN, items: [item(19)] }, (c) => (c.opts.phase === "Review" ? clean : opened(19, { step_budget: sb })));
+    expect(out[0]).toMatchObject({ status: "ready" });
+    expect(out[0].budgetWarnings).toEqual(["sapu:sapu-sonnet-medium: off: no step_budget in its return"]);
+    expect(logs.join("\n")).toMatch(/WARNING #19: step budget off — sapu:sapu-sonnet-medium: off: no step_budget in its return/);
   });
 
   it("without the Workflow (Phase A fixers, the Agent fallback) a handoff continues as continueOn does: the brief and the skill say so", () => {

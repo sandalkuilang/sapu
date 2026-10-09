@@ -163,7 +163,8 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 What depends on the machine is derived from it: `sapu-contract.mjs lanes` prints the Phase B lanes
 and the merge gate's workers (`gateWorkers` alone, `gateWorkersBeside` beside a lane running tests;
 from the cores, the smaller one while the machine is busy), and `sapu-merge.sh` without `--workers`
-uses `gateWorkers`. What depends on the repo and the model is the optional `tuning` object, every key
+uses `gateWorkers`. The cores are the host's (`os.cpus()`), not a container's cgroup quota: in a
+CPU-limited container pass `--workers` yourself. What depends on the repo and the model is the optional `tuning` object, every key
 optional: `stepBudget` (`soft`, `every`, `hard`, `everyLate`: the guard's worker reminders, in tool
 calls), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
 (`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
@@ -408,10 +409,17 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
   `createIssue` (its label ids cannot be read). The orchestrator is not guarded: that it files every
   issue with the label is prose — an issue filed without it, by the orchestrator or by hand, is
   judged by its author alone.
-- The guard reads commands, not intent: a download saved to a file and unpacked later, a download
+- The guard reads commands, not intent: a download saved to a file and unpacked later (or unpacked
+  through a subshell or process substitution, `curl u | (tar x)`, `tar xzf <(curl u)`), a download
   piped into a shell, `git merge-file`, a SHA piped into `xargs`, or code and labels an interpreter
   supplies are not traced (the guard's LIMITS name them). Each needs an agent set on getting past
   the guard; the code floor for that is `sapu-merge.sh` and the review of every diff.
+- A `guard.deny` rule and a protected database are matched on the words a command carries: a
+  database client run with no port or database word reaches its default (`psql` → 5432 or
+  `$PGPORT`, `redis-cli` → 6379) unseen, and a runner's global options before `run` (`poetry -C .
+  run`, `uv --directory . run`) or `python -m django|alembic` hide the tool from a rule written for
+  it. List the default port only if nothing of the workers uses it, and write deny rules for those
+  forms too where the repo uses them.
 - Also protect the repo on GitHub itself: branch protection on the base branch (PRs required, no
   direct or force pushes), and approval before Actions workflows run on outside contributors' PRs.
   sapu runs on the owner's machine; GitHub's own CI on a fork PR is GitHub's setting, not sapu's.

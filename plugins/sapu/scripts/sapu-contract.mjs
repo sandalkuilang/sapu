@@ -819,7 +819,10 @@ function tuningProblems(t) {
   return errs;
 }
 
-/** This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping. */
+/**
+ * This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping.
+ * LIMIT: `cpus` is the host's core count; a container's cgroup CPU quota is not read.
+ */
 export function machineNow() {
   let memFreePct = (os.freemem() / os.totalmem()) * 100;
   if (process.platform === "darwin") {
@@ -1456,7 +1459,7 @@ const PY = ["python", "python3", "manage.py"];
 export const ECOSYSTEMS = {
   rails: {
     markers: [["bin/rails"], ["config/application.rb", /Rails::Application/]],
-    deny: ["db:drop", "db:reset", "db:purge", "db:truncate_all", "db:migrate:reset", "db:schema:load", "db:seed:replant"].flatMap((t) => variants(["rails", "rake"], [t], `\`rails ${t}\``)),
+    deny: ["db:drop", "db:reset", "db:purge", "db:truncate_all", "db:migrate:reset", "db:schema:load", "db:seed:replant", "db:drop:all", "db:rollback"].flatMap((t) => variants(["rails", "rake"], [t], `\`rails ${t}\``)),
   },
   django: {
     markers: [["manage.py"]],

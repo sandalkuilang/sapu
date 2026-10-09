@@ -540,7 +540,7 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h5 = harness();
     seed(h5, ...provenBy(5, "apps/a.test.ts"));
     expect(h5.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ Unit Tests (api) 3.0s\n✗ E2E 9.1s" }).err).toMatch(/verdict: known-flake/);
-  });
+  }, 60_000); // five full merge runs: 17-19 s on a loaded machine, too close to the file's 20 s
 
   it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {
     const h = harness();

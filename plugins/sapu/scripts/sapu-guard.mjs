@@ -102,7 +102,8 @@
 // value-taking options, an unknown option refusing; also a shell's -c fed by `gh pr diff`/`gh api`/`curl`/
 // `wget`), and a `curl`/`wget` download piped (through any filter) into tar/bsdtar/unzip/cpio/7z.
 // NOT traced (named limits, each needing intent): a download saved to a file and unpacked later
-// (`curl -o x.tgz`, then `tar xf x.tgz`), a download piped into a shell (`curl … | sh`, an
+// (`curl -o x.tgz`, then `tar xf x.tgz`), or unpacked through a subshell or a process substitution
+// (`curl u | (tar x)`, `tar xzf <(curl u)`), a download piped into a shell (`curl … | sh`, an
 // interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
 // interpreter writes, and a label an interpreter or a file-reading program supplies (`gh issue edit
 // --add-label` with a word from `xargs` without a replace string is refused only when the option's
@@ -125,7 +126,12 @@
 // worker files no issue by any of those routes. A not-planned close (`gh issue close -r`, REST state_reason,
 // GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
-// known one by one; an unknown option that takes a value can hide the program after it — except
+// known one by one; global options before a runner's `run` (`poetry -C . run`, `uv --directory .
+// run`) are not peeled, and `python -m django|alembic` is not read as django-admin/alembic, so a deny
+// rule written for the bare tool does not match those forms. A database client run with no port or
+// database word (`psql`, `redis-cli FLUSHALL`) reaches its default (5432 or $PGPORT, 6379, …): it is
+// judged by the words it is given, so a protected default port is not caught when none is named.
+// An unknown option that takes a value can hide the program after it — except
 // xargs's (BSD and GNU, read as getopt reads them), where an unknown option is judged both as a flag
 // and as taking the next word. A command an unquoted `$( )` or backtick cuts is judged once more
 // whole, the substitution a word the shell builds. An
@@ -1090,7 +1096,9 @@ function sqliteTarget(values, t, here, main) {
   const want = [...t.dbs].map((f) => (path.isAbsolute(f) ? f : main ? path.join(main, f) : null)).filter(Boolean).flatMap((f) => [path.normalize(f), realpathOrSelf(f)]);
   if (!want.length) return false;
   return values.some((v) => {
-    const w = v.slice(v.lastIndexOf("=") + 1).replace(/^(?:sqlite3?:\/\/|file:)/, "").replace(/\?.*$/, "");
+    // the URI's query (`?mode=rw`) holds `=` too: cut it before taking the assignment's value
+    const u = v.replace(/\?.*$/, "");
+    const w = u.slice(u.lastIndexOf("=") + 1).replace(/^(?:sqlite3?:\/\/|file:)/, "");
     if (!w || (!path.isAbsolute(w) && (here === UNKNOWN || typeof here !== "string"))) return false;
     const abs = path.resolve(typeof here === "string" ? here : "/", w.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
     return want.includes(path.normalize(abs)) || want.includes(realpathOrSelf(abs));
