@@ -265,7 +265,10 @@ export async function configProblems(main, { lookup = defaultLookup, loaded = lo
     });
   }
   if (envFile && !errors.some((e) => e.startsWith("env_file must be a path inside the repo"))) {
-    if (run(["git", "-C", main, "ls-files", "--error-unmatch", "--", envFile]).status === 0) problems.push(`refused: env_file ${envFile} is tracked by git, so its values would be committed (git rm --cached it, and ignore it)`);
+    // A file name, never a glob, in any letter case (a case-insensitive file system holds .argus/LIVE.env as the same file).
+    if (run(["git", "-C", main, "ls-files", "--error-unmatch", "--", `:(literal,icase)${envFile}`]).status === 0) problems.push(`refused: env_file ${envFile} is tracked by git, so its values would be committed (git rm --cached it, and ignore it)`);
+    // Untracked but not ignored: the next `git add -A` commits it. --no-index: a glob in the path never matches a tracked file.
+    else if (run(["git", "-C", main, "check-ignore", "--no-index", "-q", "--", envFile]).status === 1) problems.push(`refused: env_file ${envFile} is not ignored by git, so it could be committed (add it to .gitignore)`);
     if (contract === null) problems.push(`refused: there is no sapu contract, so the guard keeps no agent out of env_file ${envFile} (/sapu:init writes it, with the file in guard.envFiles)`);
     else if (contract !== undefined && !guardsEnvFile(contract, envFile)) problems.push(`refused: env_file ${envFile} is not in the contract's guard.envFiles (/sapu:init adds it)`);
   }

@@ -2583,12 +2583,13 @@ describe("argus-live check", () => {
   /**
    * A committed repo holding `example()` (changed by `over`) as .argus/live.json, an .argus/live.env setting
    * every name it uses, and a contract (in the working tree, as /sapu:init drafts it) whose guard.envFiles
-   * holds that env file's name (`envFiles` to change it).
+   * holds that env file's name (`envFiles` to change it). A .gitignore ignores the env file (`ignore: false`: none).
    */
-  const checkRepo = (over: (c: Obj) => void = () => {}, { envFiles = ["live.env"], track = false } = {}) => {
+  const checkRepo = (over: (c: Obj) => void = () => {}, { envFiles = ["live.env"], track = false, ignore = true } = {}) => {
     const main = committed();
     const c = example();
     over(c);
+    if (ignore) writeFileSync(join(main, ".gitignore"), ".argus/live.env\n");
     mkdirSync(join(main, ".argus"), { recursive: true });
     writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
     writeFileSync(join(main, ".argus/live.env"), Object.entries(VALUES).map(([k, v]) => `${k}=${v}\n`).join(""));
@@ -2641,6 +2642,7 @@ describe("argus-live check", () => {
     const json = /## Example\n\n```json\n([\s\S]*?)\n```/.exec(doc)![1];
     mkdirSync(join(main, ".argus"), { recursive: true });
     writeFileSync(join(main, ".argus/live.json"), `${json}\n`);
+    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n");
     writeFileSync(join(main, ".argus/live.env"), Object.entries(VALUES).map(([k, v]) => `${k}=${v}\n`).join(""));
     mkdirSync(join(main, ".claude"), { recursive: true });
     writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["live.env"] } }));
@@ -2693,6 +2695,30 @@ describe("argus-live check", () => {
     expect(p.problems).toEqual(["refused: base_url names shop.example.test, which does not resolve to loopback only (the instance serves this machine alone)"]);
     expect((await configProblems(host, { lookup: async () => [{ address: "127.0.0.1", family: 4 }] })).problems).toEqual([]);
   }, 60_000);
+
+  it("check refuses an env file git does not ignore, and says to ignore it", () => {
+    const r = check(checkRepo(() => {}, { ignore: false }));
+    expect(r.code).toBe(1);
+    expect(r.err).toBe("refused: env_file .argus/live.env is not ignored by git, so it could be committed (add it to .gitignore)\n");
+  }, 30_000);
+
+  it("check refuses an env file git tracks in another letter case", () => {
+    const main = checkRepo();
+    // The index entry is made directly: a case-sensitive file system could not hold both spellings as one file.
+    const sha = gitIn(main, "hash-object", "-w", ".argus/live.env").trim();
+    gitIn(main, "update-index", "--add", "--cacheinfo", `100644,${sha},.argus/LIVE.env`);
+    const r = check(main);
+    expect(r.code).toBe(1);
+    expect(r.err).toBe("refused: env_file .argus/live.env is tracked by git, so its values would be committed (git rm --cached it, and ignore it)\n");
+  }, 30_000);
+
+  it("check reads env_file as a file name, never a glob of tracked files", () => {
+    const main = checkRepo((c) => (c.env_file = ".argus/*.env"), { envFiles: ["*.env"] });
+    writeFileSync(join(main, ".argus/*.env"), readFileSync(join(main, ".argus/live.env")));
+    writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/[*].env\n");
+    gitIn(main, "add", "-f", ".argus/live.env");
+    expect(check(main)).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\nnote: the committed contract's guard.envFiles does not hold *.env yet: up refuses until the contract is committed\n", err: "" });
+  }, 30_000);
 
   it("check names every unset name, each once", () => {
     const r = check(checkRepo((c) => Object.assign(c.env, { A: "${MISSING_ONE}", B: "${MISSING_TWO}", C: "${MISSING_ONE}" })));
