@@ -1451,7 +1451,9 @@ not starting with whitespace, only with `--create`) or `--comment <n>` (never bo
 create|comment … --body-file <file> [--attach <png>]…` with no shell. An issue's labels end with the
 contract's `labels.agentFiled` (default `sapu:agent-filed`; given once, whatever its case among the
 `--label`s; none under `policy.traces` `"none"`), as every agent-filed issue's do (CONTRACT.md,
-Agent-filed issues). `--create` is refused, with no gh run, when the committed contract's
+Agent-filed issues). `--create` is refused, with no gh run, when a committed contract cannot be read
+(`refused: scrub: the committed sapu contract cannot be read (<its first error line>): nothing is
+filed`; no contract at all files under the defaults), when the committed contract's
 `policy.fileIssues` is `false` (`refused: scrub: the contract's policy.fileIssues is false: nothing is
 filed (skills/sapu/policy.md)`) or a `--label` is its acceptance label in any case (`refused: scrub:
 label <i> is the acceptance label (<name>): only an acceptor applies it`). An issue or comment URL in gh's

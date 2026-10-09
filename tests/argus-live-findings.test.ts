@@ -1896,6 +1896,18 @@ describe("argus-live scrub — attachments and filing", () => {
     expect((await t.file({ create: false, comment: "9" }).done).out.at(-1)).toBe(`commented: ${URL9}#issuecomment-77`);
   }, 30_000);
 
+  it("a committed contract that cannot be read: scrub --create refuses first, never under the defaults, and nothing reaches gh", async () => {
+    const t = filing();
+    contractWith(t, (c) => ({ ...c, policy: { fileIssues: "sometimes" } }));
+    const r = await t.file({ labels: ["bug"] }).done;
+    expect(r.code).toBe(1);
+    expect(r.out).toHaveLength(1);
+    expect(r.out[0]).toMatch(/^refused: scrub: the committed sapu contract cannot be read \(.*is invalid:\): nothing is filed$/);
+    // A comment is refused too, by the secrets check: with the contract unread, the owner's env files are unknown.
+    expect((await t.file({ create: false, comment: "9" }).done).code).toBe(1);
+    expect(t.g.calls()).toEqual([]);
+  }, 30_000);
+
   it("a label is checked as the title and the body are, naming where and never what, and a refused one runs no gh", async () => {
     const t = filing();
     for (const [cls, v] of SCRUB_CLASSES) {

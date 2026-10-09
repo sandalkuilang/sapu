@@ -434,7 +434,8 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
  * `argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file>
  * [--attach <png>…] [--create [--label <l>…] | --comment <n>]` → `{code, out}`. The run is the one named, or
  * the one whose candidate `ref` reproduced two of two (scrubRun; a run that is down is read the same way);
- * its refusal → that line (exit 1); with `create`, the committed contract's `policy.fileIssues` false or a label
+ * its refusal → that line (exit 1); with `create`, a committed contract that cannot be read (no contract: the
+ * defaults), the committed contract's `policy.fileIssues` false or a label
  * that is its acceptance label (any case) → one `refused: scrub: …` line (exit 1, no gh run); then
  * scrubSecrets' refusal → that line (exit 1); a secret in the title, the body or a label as
  * given → one line per hit, `<title|body> <line>:<col> <class>` or `label <i> <class>`, then `refused:
@@ -456,9 +457,12 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   const { runId } = which;
   const t = String(title ?? "");
   if (/[\r\n]/.test(t)) return { code: 1, out: ["refused: scrub: a title is one line"] };
-  const contract = loadContract(main).contract ?? null;
+  const loaded = loadContract(main);
+  const contract = loaded.contract ?? null;
   const policy = resolvePolicy(contract);
   if (create) {
+    // A committed contract that cannot be read is never filed under the defaults: its policy and labels are unknown.
+    if (loaded.error && !loaded.missing) return { code: 1, out: [`refused: scrub: the committed sapu contract cannot be read (${loaded.error.split("\n")[0]}): nothing is filed`] };
     if (policy.fileIssues === false) return { code: 1, out: ["refused: scrub: the contract's policy.fileIssues is false: nothing is filed (skills/sapu/policy.md)"] };
     const accepted = acceptedLabel(contract);
     const i = labels.findIndex((l) => String(l).toLowerCase() === accepted.toLowerCase());
