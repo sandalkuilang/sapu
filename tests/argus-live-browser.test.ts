@@ -5,127 +5,34 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
-import { createServer as createNetServer, type Server, type Socket } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { alive, cleanTemps, fakeDocker, freePort, homeWithCli, liveRun, tempDir, until } from "./helpers/argus-live";
+import { alive, browserCleanup, browserLeftovers, browserRun, browserTools, cleanups, fakeDocker, homeWithCli, listen, PW, pwBrowserRun, runIds, SERVER, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { openSession } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { closeSessions, runCli, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { closeSessions, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { clean } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
-import { startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
-// @ts-expect-error — plain ESM script without types
 import { commandLogin, login, loginPlan, proveLogins } from "../plugins/sapu/scripts/argus-live-login.mjs";
-// @ts-expect-error — plain ESM script without types
-import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
-// @ts-expect-error — plain ESM script without types
-import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { blockedSince, startProxy } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
+import { blockedSince } from "../plugins/sapu/scripts/argus-live-proxy.mjs";
 // @ts-expect-error — plain ESM script without types
-import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+import { down, logsDir, readRun, updateRun } from "../plugins/sapu/scripts/argus-live-run.mjs";
 
 type Obj = Record<string, any>;
-
-const SERVER = join(__dirname, "fixtures/journey-app/server.mjs");
-const PW = 'Pa"ss\\wo:rd &+1';
 
 let cli: { dir: string; js: string };
 let chrome: { channel: string; path: string };
 beforeAll(() => {
-  cli = ensureCli();
-  const found = findChrome();
-  if (!found) throw new Error(`no Chrome-family browser: install Google Chrome, or run: node ${cli.js} install-browser chrome`);
-  chrome = found;
+  ({ cli, chrome } = browserTools());
 }, 600_000);
 
-const saved = { ...process.env };
-const runIds = new Set<string>();
-const cleanups: (() => unknown)[] = [];
-/** The fixture app's process groups the tests started: each must be gone once its run's `down` ran. */
-const apps: number[] = [];
-afterEach(async () => {
-  const errors: string[] = [];
-  for (const c of cleanups.splice(0).reverse()) {
-    try {
-      await c();
-    } catch (e) {
-      errors.push((e as Error).message); // the next cleanup still runs
-    }
-  }
-  const groupAlive = (g: number) => {
-    try {
-      process.kill(-g, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const left = apps.splice(0).filter(groupAlive);
-  for (const g of left) process.kill(-g, "SIGKILL");
-  for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
-  for (const [k, v] of Object.entries(saved)) if (process.env[k] !== v) process.env[k] = v;
-  cleanTemps();
-  if (left.length || errors.length) throw new Error(`the run's down left the fixture app running (groups ${left.join(", ")}): ${errors.join("; ") || "no cleanup failed"}`);
-}, 60_000);
-
-/** Listens on loopback; after the test every connection it holds is destroyed (a net.Server's close would wait for them) and it closes. */
-const listen = <T extends Server | HttpServer>(s: T) => {
-  const sockets = new Set<Socket>();
-  s.on("connection", (c: Socket) => (sockets.add(c), c.once("close", () => sockets.delete(c))));
-  return new Promise<number>((ok) =>
-    s.listen(0, "127.0.0.1", () => {
-      cleanups.push(() => new Promise((done) => (s.close(done), sockets.forEach((c) => c.destroy()))));
-      ok((s.address() as { port: number }).port);
-    }),
-  );
-};
-
-/**
- * A run as `up` leaves it once step 9 ran: the lock, worktree and HOME, the fixture app on `web`
- * (started with startEntry and recorded), run.json with its origins and `allowOrigins`, the run's proxy,
- * and slot 1's directory with its CLI config; run.json holds an instance id, as once `up` finished (an
- * explorer slot's session is recorded only then). `down` runs after the test.
- */
-const browserRun = async ({ allowOrigins = [] as string[], app = {} as Record<string, string> } = {}) => {
-  process.env.TMPDIR = tempDir();
-  const r = liveRun();
-  runIds.add(r.runId);
-  cleanups.push(() => down(r.main, { runId: r.runId, graceMs: 2000 }));
-  const cache = await listen(createNetServer((c) => c.on("error", () => {})));
-  const web = await freePort();
-  const data = join(tempDir(), "app_explore");
-  const appEnv = { PATH: process.env.PATH!, PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", CONTROL_TOKEN: "control-7", CACHE_URL: `tcp://127.0.0.1:${cache}`, ...app };
-  expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: appEnv }).status).toBe(0);
-  const groups: Obj[] = [];
-  const upstream: Record<string, string> = {};
-  const entry = { name: "web", cmd: `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)}`, env: appEnv, health: { url: `http://localhost:${web}/health` } };
-  const started = await startEntry(entry, { worktree: r.wt, env: { PATH: process.env.PATH! }, logs: logsDir(r.main, r.runId), groups });
-  apps.push(groups[0].pgid);
-  await waitHealth(entry, started, { timeoutS: 20, worktree: r.wt, env: {}, upstream });
-  expect(upstream).toEqual({ [String(web)]: "127.0.0.1" });
-  const origins = [`http://localhost:${web}`];
-  writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, home: r.home, origins, allowOrigins, upstream, groups, env: r.env, browser: { js: cli.js, channel: chrome.channel }, instanceId: "0123456789abcdef" });
-  // As up's recording array: each group in run.json as soon as it is pushed.
-  const recorded: Obj[] = [];
-  recorded.push = (g: Obj) => (updateRun(r.main, r.runId, (prev: Obj) => ({ ...prev, groups: [...prev.groups, g] })), Array.prototype.push.call(recorded, g));
-  const proxy = await startProxy(r.main, r.runId, { groups: recorded });
-  const home = join(r.home, "browser");
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  const dir = slotDir(r.main, r.runId, 1);
-  writeSlotConfig(dir, slotConfig({ dir, origins, allowOrigins, proxyPort: proxy.port, live: { locale: "en-US", timezone: "UTC" }, chrome }));
-  const base = origins[0];
-  const call = (session: string, ...args: string[]) => runCli({ js: cli.js, session, args, cwd: dir, home });
-  /** The page's text, through the wrapper's own `eval` (never the explorer's). */
-  const text = async (session: string) => (await call(session, "eval", "--", "() => document.body.innerText")).stdout;
-  return { ...r, web, base, home, dir, proxy, appEnv, call, text, open: (account: string, storageState: string | null = null) => openSession({ main: r.main, runId: r.runId, slot: 1, account, js: cli.js, home, storageState }) };
-};
+afterEach(browserCleanup, 60_000);
 
 describe("argus-live browser — sessions and network layers", () => {
   it("a session opens in the slot's workspace and is recorded with its daemon and its browser, each leading its own group", async () => {
@@ -484,33 +391,7 @@ process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
 });
 
 describe("argus-live pw in Chrome", () => {
-  /** browserRun plus what `up` leaves for the wrapper: .argus/live.json and its env file, the instance id and ports in run.json, slot 1 minted. */
-  const pwRun = async () => {
-    const b = await browserRun();
-    const c = {
-      start: [{ name: "web", cmd: "true" }],
-      base_url: "http://localhost:{port:web}",
-      login_url: "/login",
-      logged_in: "getByRole('button', { name: 'Account' })",
-      env_file: ".argus/live.env",
-      store: "app_explore",
-      store_check: "true",
-      reset: "true",
-      confirmed: { mocks: true, data: true },
-      port_range: [41000, 41999],
-      settle_ms: 5000,
-      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${PW}" }, { user: "buyer2@example.test", password: "${PW}" }] }, clerk: { users: [{ user: "clerk1@example.test", password: "${PW}", totp_secret: "${TOTP}" }] } },
-      limits: { max_cycle_minutes: 45 },
-    };
-    mkdirSync(join(b.main, ".argus"), { recursive: true });
-    writeFileSync(join(b.main, ".argus/live.json"), JSON.stringify(c));
-    writeFileSync(join(b.main, ".argus/live.env"), `PW='${PW}'\nTOTP=${b.appEnv.APP_TOTP}\n`);
-    updateRun(b.main, b.runId, (prev: Obj) => ({ ...prev, instanceId: "0123456789abcdef", ports: { web: b.web } }));
-    const m = await mintSlot(b.main, { slot: 1, journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test", "clerk.1": "clerk1@example.test", "anon.1": null } });
-    const call = (...args: string[]) => pw(b.main, [m.token, ...args]);
-    const stats = async () => (await (await fetch(`${b.base}/__test/stats`, { headers: { "x-test-control": "control-7" } })).json()).requests as Record<string, number>;
-    return { ...b, token: m.token, call, stats };
-  };
+  const pwRun = pwBrowserRun;
   const text = (r: { out: string[] }) => r.out.join("\n");
 
   it("first use opens the session and signs it in, invisibly; anon is never signed in; values go after --", async () => {
@@ -923,16 +804,4 @@ describe("argus-live — a cycle end to end", () => {
   }, 300_000);
 });
 
-/** No CLI daemon or browser of a run of this file outlives its test (whatever the test asserted): only this file's runs' sessions. */
-afterEach(() => {
-  const left = execFileSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "command="], { encoding: "utf8" })
-    .split("\n")
-    .filter((l) => [...runIds].some((id) => l.includes(`cliDaemon.js ${id}-`) || l.includes(`-${id}.home/browser/`)));
-  for (const l of left) {
-    try {
-      process.kill(-Number(l.trim().split(/\s+/)[0]), "SIGKILL"); // a daemon and Chrome's root each lead their group
-    } catch {
-      // gone
-    }
-  }
-});
+afterEach(browserLeftovers);

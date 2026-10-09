@@ -35,7 +35,9 @@
 //                 20000); each order appends a message to mail.json
 //   /popup        "Open details" opens /popup/child, whose toast "Details ready" goes after 1000 ms;
 //                 the link "Open linked details" (target=_blank rel=opener) opens /popup/linked, whose
-//                 toast "Linked ready" comes after 4000 ms and goes 1000 ms later
+//                 toast "Linked ready" comes after 4000 ms and goes 1000 ms later; the link "Open quick
+//                 details" (the same) opens /popup/quick, whose toast "Quick ready" comes 200 ms after
+//                 load and goes 300 ms later: gone before any command after the click can look
 //   /inject       text that imitates fence markers, terminal controls and an instruction to the
 //                 agent; with ?echo=1 also $APP_PW
 //   /leak?other=<port>&udp=<port>&allowed=<origin>
@@ -43,6 +45,14 @@
 //                 WebSocket to another loopback port, and a fetch from <allowed>; one #results line each
 //   /upload       a file input showing the chosen file's name
 //   /no-header    signed in, without the header
+//   /storage      signed in: sets localStorage.jwt (32 hex) and localStorage.theme ("dark-mode-on"),
+//                 fetches /api/me with the first bearer, /api/reset/<x> and /api/items/<id>, and
+//                 /api/me again 2000 ms after load with the second bearer; nothing of it is rendered.
+//                 Both bearers and the jwt are 32 random hex chosen at the app's start, kept in
+//                 $DATA_DIR/bearer.json ({bearers: [first, second], jwt}) for the tests to read
+//   /api/me, /api/reset/<x>, /api/items/<id>
+//                 signed in: {"user"}, {"ok": true}, and {"id": <id>, "token": "tok_<32 hex>", "code",
+//                 "ref"} (a code and a base64-JSON-looking ref, neither an id)
 //   POST /__test/expire, GET /__test/stats
 //                 with header x-test-control: $CONTROL_TOKEN only (else 404): drop every session; the
 //                 request counts ({"<METHOD> <path>": n}) and the number of orders
@@ -147,6 +157,9 @@ if (at("--login-state")) {
 }
 
 if (dataDir) fs.mkdirSync(dataDir, { recursive: true });
+const hex32 = () => randomBytes(16).toString("hex");
+const storageValues = { bearers: [hex32(), hex32()], jwt: hex32() };
+if (dataDir) writeJson("bearer.json", storageValues);
 
 if (args.includes("--spawn-child")) {
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
@@ -450,12 +463,16 @@ async function handle(req, res) {
     });
   }
   if (p === "/popup" && req.method === "GET") {
-    return send(res, 200, page("Popup", `<button type="button" onclick="window.open('/popup/child')">Open details</button> <a href="/popup/linked" target="_blank" rel="opener">Open linked details</a>`, { user }));
+    return send(res, 200, page("Popup", `<button type="button" onclick="window.open('/popup/child')">Open details</button> <a href="/popup/linked" target="_blank" rel="opener">Open linked details</a> <a href="/popup/quick" target="_blank" rel="opener">Open quick details</a>`, { user }));
   }
   if (p === "/popup/child" && req.method === "GET") return send(res, 200, page("Details", toast("Details ready"), { user }));
   if (p === "/popup/linked" && req.method === "GET") {
     const late = `<script>setTimeout(() => { document.querySelector("main").insertAdjacentHTML("beforeend", '<div role="status" id="toast">Linked ready</div>'); setTimeout(() => document.getElementById("toast").remove(), 1000); }, 4000);</script>`;
     return send(res, 200, page("Linked details", late, { user }));
+  }
+  if (p === "/popup/quick" && req.method === "GET") {
+    const soon = `<script>setTimeout(() => { document.querySelector("main").insertAdjacentHTML("beforeend", '<div role="status" id="toast">Quick ready</div>'); setTimeout(() => document.getElementById("toast").remove(), 300); }, 200);</script>`;
+    return send(res, 200, page("Quick details", soon, { user }));
   }
   if (p === "/inject" && req.method === "GET") {
     const lines = [...INJECT, ...(url.searchParams.get("echo") === "1" ? [process.env.APP_PW || ""] : [])];
@@ -467,6 +484,26 @@ async function handle(req, res) {
       send(res, 200, page("Upload", `<label>Receipt <input type="file" id="file" onchange="document.getElementById('uploaded').textContent = 'Uploaded: ' + this.files[0].name"></label><p id="uploaded"></p>`, { user })),
     );
   }
+  if (p === "/storage" && req.method === "GET") {
+    return signedIn(() => {
+      const [first, second] = storageValues.bearers;
+      const script = `localStorage.setItem("jwt", ${js(storageValues.jwt)}); localStorage.setItem("theme", "dark-mode-on");
+const me = (b) => fetch("/api/me", { headers: { authorization: "Bearer " + b } });
+me(${js(first)});
+fetch("/api/reset/rk7b6a5c4d3e2f1g0h9i8j7k6");
+fetch("/api/items/ck9a8b7c6d5e4f3g2h1i0j9k8");
+setTimeout(() => me(${js(second)}), 2000);`;
+      return send(res, 200, page("Storage", `<p>Stored.</p><script>${script}</script>`, { user }));
+    });
+  }
+  const json = (status, value) => {
+    res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(value));
+  };
+  if (p === "/api/me" && req.method === "GET") return signedIn(() => json(200, { user }));
+  if (/^\/api\/reset\/[A-Za-z0-9]+$/.test(p) && req.method === "GET") return signedIn(() => json(200, { ok: true }));
+  m = p.match(/^\/api\/items\/([A-Za-z0-9]+)$/);
+  if (m && req.method === "GET") return signedIn(() => json(200, { id: m[1], token: `tok_${hex32()}`, code: "cd4e5f6a7b8c9d0e1f2a3b4c5d", ref: "eyJhbGciOiJIUzI1NiJ9x1y2z3a4b5" }));
   if (p === "/no-header" && req.method === "GET") return signedIn(() => send(res, 200, page("Plain page", "<p>No header here.</p>", { user, header: false })));
   return send(res, 404, "");
 }

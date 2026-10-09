@@ -1,11 +1,12 @@
 // argus-live-session.mjs — one account's CLI session as the wrapper drives it (spec §9 "The wrapper",
-// "Login"): opened on first use and signed in, opened again when its browser is gone, observed after each
-// command, and signed in again when logged_in is lost from the page and from a probe tab. `pw`'s explorer
+// "Login"): opened on first use, hooked (the in-daemon listeners every document and popup is watched by)
+// and signed in, opened again when its browser is gone, observed after each command, and signed in again
+// when logged_in is lost from the page and from a probe tab. `pw`'s explorer
 // calls and the repro runner's steps share it, so neither keeps a copy of the session handling.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openSession } from "./argus-live-browser.mjs";
+import { openSession, SIGNAL_SCRIPT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
@@ -64,14 +65,17 @@ function logProbe(main, runId, entry) {
  * - `cli(args, timeoutMs)`: one CLI call in the slot's directory, under the run's browser HOME;
  *   `stage(which, payload)` a login stage (loginCode) and `code(text, timeoutMs)` a template the caller
  *   built, each through runCode.
- * - `ensure()` → `{record, opened}`: the recorded session with a daemon, else one opened now (stillLive;
- *   a login-command role's with the storage state commandLogin wrote, which signs it in; openSession).
+ * - `ensure()` → `{record, opened, events}`: the recorded session with a daemon, else one opened now
+ *   (stillLive; a login-command role's with the storage state commandLogin wrote, which signs it in;
+ *   openSession) and hooked: the `hook` stage with the run's origins, the signal script and `capBytes`
+ *   (the bytes of distinct header values its context records); a hook that failed is `harness: hook
+ *   failed` among `events`, and the session is used all the same.
  * - `signIn(c)` → login's answer (`failures`, when given, records a created account's failures);
  *   `state.signedIn` set on success.
  * - `gone(res, record)`: the command failed and the CLI said the browser is not open, or the recorded
  *   daemon no longer runs.
- * - `reopen(record)` → events: the session closed and opened again, signed in unless anon or a
- *   login-command role (`session-reopened: <role.k>`, and `harness: login failed` when that failed).
+ * - `reopen(record)` → events: the session closed and opened again (and hooked), signed in unless anon or
+ *   a login-command role (`session-reopened: <role.k>`, and `harness: login failed` when that failed).
  * - `observe()` → `{o, events}`: the observe stage (signals, logged_in, URL, aria); `state.lastState`
  *   the hash the loop rule reads; a failure → `harness: observation failed`.
  * - `relogin(o)` → events: when `o` lacks logged_in while the account is signed in, a probe tab at the
@@ -79,7 +83,7 @@ function logProbe(main, runId, entry) {
  *   sign-in (`re-logged-in: <role.k>` or `harness: login failed`; a login-command role's session is
  *   closed and opened again).
  */
-export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, runner = run, cliRunner = runAsync }) {
+export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, capBytes = 4 * 2 ** 20, runner = run, cliRunner = runAsync }) {
   const role = account.split(".")[0];
   const r = live.roles && live.roles[role];
   const plan = loginPlan(live, role);
@@ -103,22 +107,29 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     stage: (which, payload) => d.code(loginCode(which, payload)),
     code: (text, timeoutMs = 4 * plan.settleMs + 60_000) => runCode({ js, session: name, cwd: dir, home: home(), code: text, timeoutMs, runner: cliRunner }),
   };
-  /** Opens the session (a login-command role's with a fresh storage state, which signs it in) → its record. */
+  /** Opens the session (a login-command role's with a fresh storage state, which signs it in) and hooks it → the hook's events. */
   const open = async () => {
     stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
     let storageState = null;
     if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
     record = await openSession({ main, runId, slot, account, js, home: home(), storageState, runner, cliRunner });
     d.state = { signedIn: Boolean(storageState) };
-    return record;
+    const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
+    try {
+      await d.stage("hook", { runOrigins, signals: SIGNAL_SCRIPT, capBytes });
+      return [];
+    } catch {
+      return ["harness: hook failed"];
+    }
   };
   d.ensure = async () => {
     const found = (rec.sessions ?? []).find((x) => x && x.name === name && x.daemon);
     if (found) {
       record = found;
-      return { record, opened: false };
+      return { record, opened: false, events: [] };
     }
-    return { record: await open(), opened: true };
+    const events = await open();
+    return { record, opened: true, events };
   };
   /** Signs the open session in with the account's credentials (login, which never retries a failed account) → its answer. */
   d.signIn = async (c = d.credentials()) => {
@@ -129,8 +140,8 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   d.gone = (res, session) => res.code !== 0 && (NOT_OPEN.test(`${res.stdout}\n${res.stderr}`) || !sessionAlive(session, runner));
   d.reopen = async (session) => {
     await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
-    await open();
-    const events = [`session-reopened: ${account}`];
+    const hooked = await open();
+    const events = [`session-reopened: ${account}`, ...hooked];
     if (role !== "anon" && !d.state.signedIn && !(r && r.login) && !(await d.signIn()).ok) events.push("harness: login failed");
     return events;
   };
@@ -165,7 +176,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
       try {
         if (r && r.login) {
           await closeSessions([record], { js, runner, cliRunner, graceMs: 3000 });
-          await open();
+          events.push(...(await open()));
           ok = d.state.signedIn;
         } else ok = (await d.signIn()).ok;
       } catch {

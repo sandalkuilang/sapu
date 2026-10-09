@@ -364,15 +364,15 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: d.state } }, ifLive);
   };
 
-  // The session: opened on first use and signed in, invisibly (anon never is).
-  const { record: session } = await d.ensure();
+  // The session: opened on first use (and hooked: a hook that failed is told) and signed in, invisibly (anon never is).
+  const { record: session, events: opening } = await d.ensure();
   if (p.cmd === "login") {
     // An account the journey created: signed in on this session; kept for its re-logins only once it worked.
     const [u, password] = positionals;
     setSecrets({ ...secrets, "login:password": password });
     const done = await d.signIn({ user: u, password, totpSecret: null, created: true });
     save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
-    return { code: 0, out: [counter, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
+    return { code: 0, out: [counter, ...opening, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
   }
   if (role !== "anon" && !d.state.signedIn) {
     if (!(r && r.login) && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
@@ -380,7 +380,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
   let res = await d.cli(args);
-  const events = [];
+  const events = [...opening];
   // The browser is gone (it crashed, or was closed): the session opens again and signs in; the command is not run.
   if (d.gone(res, session)) {
     events.push(...(await d.reopen(session)));

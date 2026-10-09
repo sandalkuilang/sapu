@@ -229,9 +229,10 @@ export function slotDir(main, runId, slot) {
  * document (about:blank) but not in the page it then navigates to, which keeps that window; so the script
  * also wraps window.open and watches the popup's document from the opener once it is no longer about:blank
  * (same origin only: a cross-origin popup is outside the run anyway). A popup a link opened (target=_blank
- * rel=opener) has no such hook: `pw`'s observation evaluates this script again in every page (each
- * evaluation watches the current document once; the wrappers go on once per window), so it is watched from
- * the next call on, and a signal it raised before that is not seen.
+ * rel=opener) has no such hook: the session's in-daemon hook (argus-live-login.mjs's `hook` stage, run at
+ * every open) evaluates this script again at every page's domcontentloaded, and the observation in every
+ * page (each evaluation watches the current document once; the wrappers go on once per window), so it is
+ * watched from its first document.
  */
 export const SIGNAL_SCRIPT = `(() => {
   const kindOf = (el) => {

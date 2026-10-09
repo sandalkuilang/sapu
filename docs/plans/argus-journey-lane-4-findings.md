@@ -1503,3 +1503,19 @@ Interfaces:
   `NOT_OPEN` moved to the driver. The tests' CLI is the shim behind a wrapper whose `open` leaves a
   stand-in daemon (a process whose command names `cliDaemon.js <session>`), which `openSession`
   records and `down` stops.
+- **Task 3.** The probe, re-run with the pinned CLI and the local Chrome: a `run-code` hook whose
+  `ctx.on("page")` listener evaluates the signal script at every `domcontentloaded` caught `Linked ready`
+  in the linked popup; the hook added one `request` and one `page` listener (the CLI holds a `page`
+  listener of its own), and a second hook call answered `{installed: false}` and added none. The plan's
+  popup test passes without the hook (the click's own observation evaluates the signal script in the
+  popup long before its 4 s toast), so the fixture's `/popup` gained the link "Open quick details"
+  (`/popup/quick`, a toast 200 ms after load, gone 300 ms later) and both popup tests use it: they fail
+  without the hook. The header-once test drives buyer.1's session driver in-process (`pw` keeps no drain
+  until Task 4), and the small cap is that session reopened by a driver with `capBytes: 64`.
+  `ensure()` answers `{record, opened, events}` (`harness: hook failed`), which `pw` prints with its
+  other events; `reopen` and a login-command role's re-login add them too. In the page the hook keeps
+  only path segments and JSON leaves of the id shape (24+ characters, a letter and a digit) and drops a
+  pair already pending, so the 2000 per drain hold ids, not every segment; `runOrigins` are spelled as
+  `URL.origin` spells them. The fixture keeps both bearers and the jwt in `bearer.json` as `{bearers,
+  jwt}`. Phase 3's `browserRun`, its pw-in-Chrome run (`pwBrowserRun`) and the Chrome suites' cleanup
+  (`browserCleanup`, `browserLeftovers`) moved to the helpers file.

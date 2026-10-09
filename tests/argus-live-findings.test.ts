@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, example, liveRun, makeShim, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+// @ts-expect-error — plain ESM script without types
+import { loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
 import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -129,11 +131,22 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     expect(first.record).toMatchObject({ name: `${t.runId}-1-buyer.1`, slot: 1, account: "buyer.1", daemon: { pid: expect.any(Number) } });
     const opens = () => t.calls().filter((x) => x.argv[1] === "open");
     expect(opens().map((x) => [x.argv[0], x.cwd])).toEqual([[`-s=${t.runId}-1-buyer.1`, realpathSync(t.dir)]]);
-    // Opened, never signed in by ensure: that is the caller's.
-    expect(t.stages()).toEqual([]);
+    // Opened and hooked (one hook stage: the run's origins, the signal script, the byte cap), never signed in by ensure: that is the caller's.
+    expect(first.events).toEqual([]);
+    expect(t.stages()).toHaveLength(1);
+    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: SIGNAL_SCRIPT, capBytes: 4 * 2 ** 20 })};`);
+    expect(t.stages()[0].code).toContain("ctx.__argus = {");
     const again = await t.driver().ensure();
-    expect(again).toEqual({ record: first.record, opened: false });
+    expect(again).toEqual({ record: first.record, opened: false, events: [] });
     expect(opens()).toHaveLength(1);
+  });
+
+  it("a hook that fails is told among the open's events, and the session is used all the same", async () => {
+    const t = driverRun();
+    t.answer("run-code", "### Error\nError: boom\n");
+    const first = await t.driver().ensure();
+    expect(first).toMatchObject({ opened: true, events: ["harness: hook failed"], record: { name: `${t.runId}-1-buyer.1` } });
+    expect((readRun(t.main).sessions ?? []).map((x: Obj) => x.name)).toEqual([`${t.runId}-1-buyer.1`]);
   });
 
   it("a gone browser is reopened and the command is not run", async () => {
@@ -147,7 +160,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     const res = await d.cli(["goto", "--", `${BASE}/`]);
     expect(res.code).toBe(1);
     expect(d.gone(res, record)).toBe(true);
-    t.queue({ state: "in", status429: false, lockout: false, origins: [] });
+    t.queue({ installed: true }, { state: "in", status429: false, lockout: false, origins: [] });
     expect(await d.reopen(record)).toEqual(["session-reopened: buyer.1"]);
     expect(t.cmds().slice(0, 4)).toEqual(["open", "goto", "close", "open"]);
     expect(t.cmds().filter((x) => x === "goto")).toHaveLength(1);
@@ -204,5 +217,17 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     });
     expect(configuredUser(live, " Buyer1@Example.TEST ")).toBe(true);
     expect(configuredUser(live, "made9@example.test")).toBe(false);
+  });
+});
+
+describe("argus-live hook stage", () => {
+  it("the hook's code takes its payload only as JSON", () => {
+    const evil = 'http://x.test:1"); process.exit(); ("';
+    const code = loginCode("hook", { runOrigins: [evil], signals: SIGNAL_SCRIPT, capBytes: 64 });
+    const lines = code.split("\n").filter((l: string) => l.includes("process.exit"));
+    expect(lines).toEqual([`  const P = ${JSON.stringify({ runOrigins: [evil], signals: SIGNAL_SCRIPT, capBytes: 64 })};`]);
+    // Every stage's code parses: the payload never breaks out of its literal.
+    expect(() => new Function(`return (${code})`)).not.toThrow();
+    expect(() => new Function(`return (${loginCode("observe", { loggedIn: null })})`)).not.toThrow();
   });
 });

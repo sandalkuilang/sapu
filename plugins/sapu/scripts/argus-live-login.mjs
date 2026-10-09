@@ -90,7 +90,16 @@ export async function reserveStep(file, secret, { now = Date.now, sleep: wait = 
 // is a constant template; a stage's payload enters only as `const P = <JSON>;` and its targets only as
 // targetCode's output (every string a JSON literal), so no value and no config string becomes code.
 
-/** Helpers every stage has: waiting, visibility, waiting up to a time for a condition. */
+/** The longest header value the hook records; a longer one is cut (its prefix still finds its own leak). */
+const MAX_VALUE = 4096;
+
+/**
+ * Helpers every stage has: waiting, visibility, waiting up to a time for a condition; and `drain(c)`, what
+ * the hook (below) gathered in context `c` since the last drain, plus the context's cookies and every
+ * page's localStorage and sessionStorage → `{cookies: [{name, value, httpOnly, secure}], storage: [{key,
+ * value}], headers: [[name, value]], leaves: [[key, value]], paths: [[previous, segment]], errors,
+ * overflow}`, the pending arrays emptied (never `seen`). The observation and the repro's step templates drain.
+ */
 const HELPERS = `  const pause = (ms) => page.waitForTimeout(ms);
   const visible = async (loc) => {
     try {
@@ -122,6 +131,25 @@ const HELPERS = `  const pause = (ms) => page.waitForTimeout(ms);
     }
   };
   const LOCKOUT = /too many|\\blocked\\b|try again later/i;
+  const drain = async (c) => {
+    let cookies = [];
+    try {
+      cookies = (await c.cookies()).map((k) => ({ name: k.name, value: k.value, httpOnly: Boolean(k.httpOnly), secure: Boolean(k.secure) }));
+    } catch (e) {}
+    const storage = [];
+    for (const pg of c.pages()) {
+      try {
+        storage.push(...(await pg.evaluate(() => {
+          const out = [];
+          for (const s of [window.localStorage, window.sessionStorage]) for (let i = 0; i < s.length; i++) out.push({ key: s.key(i), value: s.getItem(s.key(i)) });
+          return out;
+        })));
+      } catch (e) {}
+    }
+    const A = c.__argus;
+    const take = (a) => (A ? a.splice(0, a.length) : []);
+    return { cookies, storage, headers: take(A && A.headers), leaves: take(A && A.leaves), paths: take(A && A.paths), errors: take(A && A.errors), overflow: Boolean(A && A.overflow) };
+  };
 `;
 
 /** What a login stage watches: the origin of every request and WebSocket of the context's pages (popups included), and any 429. */
@@ -177,6 +205,82 @@ const WATCH = `  const origins = new Set();
 `;
 
 const STAGES = {
+  // Once per context (ctx.__argus): listeners that outlive this call (probed: state and listeners a
+  // run-code attaches to the context persist across the session's later calls). Requests: the values of
+  // the Cookie, Authorization, Proxy-Authorization and *-Token headers, and the [previous, segment] pairs
+  // of a run origin's path; responses: Set-Cookie values, a 5xx, and the [key, value] string leaves of a
+  // run origin's JSON. A header value is recorded once (seen holds name\0value), until capBytes of values:
+  // past it nothing more and overflow. Every page and popup: console errors, page errors, and the signal
+  // script evaluated again at each domcontentloaded, so a popup a link opened is watched from its first
+  // document. Errors keep at most 200, ids 2000 of each kind, until the next drain.
+  hook: `  if (ctx.__argus) return { installed: false };
+  const A = (ctx.__argus = { seen: new Set(), bytes: 0, overflow: false, headers: [], errors: [], leaves: [], paths: [] });
+  const RUN = new Set(P.runOrigins);
+  const ofRun = (u) => {
+    try {
+      return RUN.has(new URL(u).origin);
+    } catch (e) {
+      return false;
+    }
+  };
+  const SECRET_HEADER = /^(cookie|authorization|proxy-authorization|[a-z0-9-]*-token)$/;
+  const record = (name, value) => {
+    if (A.overflow) return;
+    const v = String(value).slice(0, ${MAX_VALUE});
+    if (!v || A.seen.has(name + "\\0" + v)) return;
+    if (A.bytes + v.length > P.capBytes) {
+      A.overflow = true;
+      return;
+    }
+    A.seen.add(name + "\\0" + v);
+    A.bytes += v.length;
+    A.headers.push([name, v]);
+  };
+  const idLike = (v) => typeof v === "string" && v.length >= 24 && v.length <= ${MAX_VALUE} && /[A-Za-z]/.test(v) && /[0-9]/.test(v);
+  const pushId = (list, pair) => {
+    if (list.length < 2000 && !list.some((x) => x[0] === pair[0] && x[1] === pair[1])) list.push(pair);
+  };
+  const leaves = (v, key, depth) => {
+    if (depth > 32) return;
+    if (idLike(v)) pushId(A.leaves, [String(key), v]);
+    else if (Array.isArray(v)) v.forEach((x) => leaves(x, key, depth + 1));
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) leaves(x, k, depth + 1);
+  };
+  const error = (e) => {
+    if (A.errors.length < 200) A.errors.push(e);
+  };
+  ctx.on("request", async (r) => {
+    try {
+      if (ofRun(r.url())) {
+        const segs = new URL(r.url()).pathname.split("/").filter(Boolean);
+        segs.forEach((seg, i) => {
+          if (idLike(seg)) pushId(A.paths, [i ? segs[i - 1] : "", seg]);
+        });
+      }
+      for (const [k, v] of Object.entries(await r.allHeaders())) if (SECRET_HEADER.test(k.toLowerCase())) record(k.toLowerCase(), v);
+    } catch (e) {}
+  });
+  ctx.on("response", async (r) => {
+    try {
+      if (r.status() >= 500) error({ kind: "5xx", status: r.status(), url: r.url() });
+      const h = await r.allHeaders();
+      if (h["set-cookie"]) for (const v of String(h["set-cookie"]).split("\\n")) record("set-cookie", v);
+      if (ofRun(r.url()) && /json/i.test(h["content-type"] || "")) leaves(await r.json(), "", 0);
+    } catch (e) {}
+  });
+  const hookPage = (pg) => {
+    pg.on("console", (m) => {
+      if (m.type() === "error") error({ kind: "console", text: String(m.text()).slice(0, 500), url: pg.url() });
+    });
+    pg.on("pageerror", (e) => error({ kind: "pageerror", text: String((e && e.message) || e).slice(0, 500), url: pg.url() }));
+    pg.on("domcontentloaded", () => {
+      pg.evaluate(P.signals).catch(() => {});
+    });
+  };
+  ctx.pages().forEach(hookPage);
+  ctx.on("page", hookPage);
+  return { installed: true };
+`,
   // Opens the login page fresh, clicks P.open when set, fills the user field (an email input, else the
   // text input before the password field, else the single text input), submits it first when no password
   // field shows (two-step), fills and submits the password, then waits for logged_in or a one-time-code field.
@@ -252,7 +356,8 @@ const STAGES = {
   }
 `,
   // After an explorer's command: the signals every page buffered (drained), logged_in on the current
-  // page (null without a target), its URL and aria snapshot (the wrapper hashes them), the tab count.
+  // page (null without a target), its URL and aria snapshot (the wrapper hashes them), the tab count,
+  // and what the hook gathered (drain).
   // The signal script is evaluated again in every page first (it installs once per document): a popup a
   // link opened (target=_blank rel=opener) never ran the init script, and is watched from here on.
   observe: `  const signals = [];
@@ -271,7 +376,7 @@ const STAGES = {
   try {
     aria = await page.locator("body").ariaSnapshot({ timeout: 2000 });
   } catch (e) {}
-  return { signals, loggedIn: loggedIn ? await visible(loggedIn(page)) : null, url: page.url(), aria, tabs: ctx.pages().length };
+  return { signals, loggedIn: loggedIn ? await visible(loggedIn(page)) : null, url: page.url(), aria, tabs: ctx.pages().length, secrets: await drain(ctx) };
 `,
 };
 
@@ -282,12 +387,14 @@ function targetFn(s) {
 }
 
 /**
- * The code of login stage `stage` (`credentials`, `otp`, `probe`, `observe`) for `payload` (`url`,
- * `user`, `password`, `code`, `settleMs`, and the target strings `loggedIn` and `open`): the text of an
- * `async page => {…}` function. The payload enters as `const P = <JSON>;` only; `loggedIn` and `open`
- * also become `(pg) => <targetCode>` functions. A stage returns plain JSON: credentials and otp
- * `{state: "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?}`, probe `{in,
- * origins}`, observe `{signals, loggedIn, url, aria, tabs}`.
+ * The code of login stage `stage` (`credentials`, `otp`, `probe`, `hook`, `observe`) for `payload`
+ * (`url`, `user`, `password`, `code`, `settleMs`, the hook's `runOrigins` (as `URL.origin` spells them),
+ * `signals` and `capBytes`, and the target strings `loggedIn` and `open`): the text of an `async page =>
+ * {…}` function. The payload enters as `const P = <JSON>;` only; `loggedIn` and `open` also become `(pg)
+ * => <targetCode>` functions. A stage returns plain JSON: credentials and otp `{state:
+ * "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?}`, probe `{in, origins}`,
+ * hook `{installed}` (false when the context had it), observe `{signals, loggedIn, url, aria, tabs,
+ * secrets}` (`secrets` the drain).
  */
 export function loginCode(stage, payload) {
   if (!Object.hasOwn(STAGES, stage)) throw new Error(`failed: no login stage ${stage}`);
