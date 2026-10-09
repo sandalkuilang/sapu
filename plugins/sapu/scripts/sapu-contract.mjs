@@ -2026,6 +2026,8 @@ function main(argv) {
   if (cmd === "allowed") {
     if (!SKILLS.includes(arg)) fail(`allowed needs a skill name: ${SKILLS.join(", ")}`);
     if (!resolvePolicy(contract).skills.includes(arg)) fail(`${arg} is not allowed in this repo (policy.skills: ${resolvePolicy(contract).skills.join(", ")}); /sapu:init changes it`);
+    // The journey lane is an argus lane: it runs under argus's gates, so it needs argus allowed too.
+    if (arg === "journey" && !resolvePolicy(contract).skills.includes("argus")) fail(`journey runs under argus, which is not allowed in this repo (policy.skills: ${resolvePolicy(contract).skills.join(", ")}); /sapu:init changes it`);
     process.stdout.write(`${arg} allowed\n`);
     return;
   }

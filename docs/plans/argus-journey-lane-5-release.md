@@ -853,3 +853,6 @@ Refs #53
   keep "no agent". `BUDGETS["skills/sapu/SKILL.md"]` is 40 336, its size with that sentence (it was 40 222).
   The guard's refusal of an issue write whose body it cannot read now says so and names `gh issue edit <n>
   --body-file <file>`, rather than calling it a not-planned close.
+- **Phase-end review.** `/sapu:init`'s skills question selects `argus` whenever `journey` is selected,
+  and `allowed journey` also refuses while argus is not allowed (the review left that check optional; it
+  is one line, and a contract edited by hand gets the same answer as init's).

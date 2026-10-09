@@ -97,7 +97,9 @@ the command that opens the CLI's live session dashboard, for an owner who wants 
   session with `.argus/live.json` configured). In 2.9.0 the `/sapu:inspector` workflow's argus
   phase excludes the lane: it runs only from the main session.
 - `journey` joins `SKILLS` in `sapu-contract.mjs`. An explicit `policy.skills` list without `journey`
-  means not allowed; the 2.9.0 upgrade note tells the owner to re-run `/sapu:init`'s skills question.
+  means not allowed; `allowed journey` also refuses while argus is not allowed (`journey runs under
+  argus, which is not allowed in this repo …`), and `/sapu:init` selects `argus` whenever `journey` is
+  selected; the 2.9.0 upgrade note tells the owner to re-run `/sapu:init`'s skills question.
 - Version coupling (CONTRACT.md): `journey` in `policy.skills` and `labels.needsOwner` need plugin
   ≥ 2.9.0 — an older plugin rejects the contract.
 - The policy's `fileIssues` and `traces` govern journey filing as they govern argus's.

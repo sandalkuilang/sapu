@@ -1813,6 +1813,16 @@ describe("journey lane — the contract fields (2.9.0)", () => {
     expect(cli(repo, ["allowed", "journey"]).status).toBe(0);
   });
 
+  it("`allowed journey` also needs argus, which the lane runs under", () => {
+    const repo = join(root, "policy-journey-alone");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["sapu", "journey"] } }) });
+    const no = cli(repo, ["allowed", "journey"]);
+    expect(no.status).toBe(1);
+    expect(no.err).toMatch(/journey runs under argus, which is not allowed in this repo \(policy\.skills: sapu, journey\); \/sapu:init changes it/);
+  });
+
   it("refuses an acceptance label equal to the default needs-owner label when needsOwner is absent", () => {
     const c = clone();
     c.labels.accepted = "argus:needs-owner";

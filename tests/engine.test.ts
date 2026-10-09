@@ -1017,6 +1017,11 @@ describe("the journey lane's engine text", () => {
     expect(list).toEqual(SKILLS);
   });
 
+  it("init selects argus whenever the skills selection includes journey", () => {
+    const flat = read(INIT).replace(/\s+/g, " ");
+    expect(flat).toContain("selecting `journey` also selects `argus` (the lane runs under argus)");
+  });
+
   it("init proposes the live block as the lane needs it", () => {
     const text = read(INIT);
     const flat = text.replace(/\s+/g, " ");
