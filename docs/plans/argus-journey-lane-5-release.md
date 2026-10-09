@@ -894,3 +894,29 @@ Refs #53
   the owner deletes; journeys.md's map step drops the `list --rebuild` clause (the skill's `list` decides
   that) and its drift step names the needs-owner label to file with. journey-boundary gains an arrow from
   `.argus/live.env` to scrub (scrub reads the configuration's secrets too), and its alt text says so.
+- **QA re-review.** The guard reads an interpreter's argv once (`interpArgv`): the script is its first
+  operand past its options, the values of the options that take one (`-r`, `--import`, `--loader`, `-e`,
+  `-p` and the like, per runtime) and a run subcommand (`bun run`, `deno run`, `tsx watch`); a value after
+  `=` or a loading option's value counts as a file it runs too, and `node --check`/`-c` runs nothing. A
+  later operand is an argument, so eslint over the file and `node --test a.test.mjs argus-live.mjs` pass.
+  A script name or a loaded file the shell builds refuses a lane verb, or any built word, after the
+  script operand (`node "$S" "$V"`, `node --import=$S x up`). An option the table does not know to take
+  a value leaves its value read as the operand; the guard's LIMITS, CONTRACT.md and usage.md name what
+  stays uncaught (a copy under another name, an interpreter's own code that imports it), and the spec and
+  usage.md no longer say "however the script is reached".
+- **QA re-review.** `check` prints its committed-contract note only when `env_file` is set: without the
+  optional key it exited 2 after its `live: ok` line.
+- **QA re-review.** `configProblems` asks git about `env_file` as a file name in any letter case
+  (`:(literal,icase)`), so a tracked `.argus/LIVE.env` refuses `.argus/live.env` and a `*` in the name is
+  no glob; an untracked one git does not ignore is refused too (`git check-ignore --no-index`: with the
+  index, a glob in the path matched tracked files and read as not ignored), its line saying to add it to
+  .gitignore. `check`'s test repos ignore the env file.
+- **QA re-review.** `scrub --create` refuses, before any gh run, a committed contract that exists but cannot
+  be read (`refused: scrub: the committed sapu contract cannot be read (<its first error line>): nothing is
+  filed`), where its policy and acceptance-label checks read the defaults; the run's secrets check
+  (`scrubSecrets`) already refused such a contract before any gh run, for a comment too, so the gap was
+  those two checks, not a filed issue. No contract at all keeps the defaults, as the rest of the lane does.
+- **QA re-review.** Text `status` ends its first line with ` (stale: up recovers it)` once the lock's
+  deadline has passed, as `status --json` says `stale: true`. Labels a caller passes under `traces: "none"`
+  stay as given (policy.md: "no labels of yours"); literal secrets in `env` or a login command are a
+  follow-up, not this phase.
