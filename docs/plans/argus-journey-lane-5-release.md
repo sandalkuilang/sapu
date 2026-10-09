@@ -794,3 +794,11 @@ Refs #53
   one quoted argument, so its JSON is one line (the guard reads no line break inside a quoted word).
   `fenced` returns the block parsed as JSON; `section` (the lines of one `## ` section) is a third helper the
   table tests share.
+- **Task 4.** `journeys.md` is 11.9 KB (budget 12 000). The lock's refusal is `refused: cycle <run> holds the
+  lock until <time>` (`heldBy`), not "another cycle", and its error row quotes that. The error rows name
+  scrub without the `live` shorthand: "every line naming `live scrub` holds `--run`" reads lines, and a row
+  about scrub's refusals names no command to run. The order test also pins that the cycle has exactly the
+  ten steps; `cliCommands` reads the usage line's alternatives, so `check` and `show` count as commands.
+  The repro in an issue body is `min.json`'s when minimize confirmed it, else the return's (the RED test
+  follows the same rule); a screenshot to attach is `.argus/live/<runId>/<slot>/out/<name>`, the name as
+  the return lists it.

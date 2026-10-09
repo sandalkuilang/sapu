@@ -561,6 +561,7 @@ describe("context budgets", () => {
     "skills/forge/SKILL.md": 15_400,
     "skills/forge/reference.md": 16_000,
     "agents/ui-explorer.md": 15_500,
+    "skills/argus/journeys.md": 12_000,
   };
   const SKILL_DEFAULT = 50_000;
   const AGENT_LIMIT = 1_500;
@@ -861,6 +862,76 @@ describe("the journey lane's engine text", () => {
   it("the brief names every oracle the return takes", () => {
     const text = section(read(AGENT), "## Oracles").join("\n");
     for (const o of ORACLES) expect(text, o).toContain(`\`${o}\``);
+  });
+
+  const JOURNEYS = "skills/argus/journeys.md";
+  /** The commands of argus-live.mjs's usage line, read from its source. */
+  const cliCommands = () => {
+    const usage = /const usage = "usage: argus-live\.mjs ([^"]*)";/.exec(read("scripts/argus-live.mjs"))![1];
+    return new Set(usage.split(" | ").map((alt) => alt.split(" ")[0]).filter((w) => /^[a-z][a-z-]*$/.test(w)));
+  };
+  /** The numbered steps of journeys.md's `## The cycle`: step number → its text (continuation lines included). */
+  const cycleSteps = () => {
+    const steps = new Map<number, string>();
+    let n = 0;
+    for (const line of section(read(JOURNEYS), "## The cycle")) {
+      const m = /^(\d+)\. /.exec(line);
+      if (m) n = Number(m[1]);
+      if (n) steps.set(n, `${steps.get(n) ?? ""}${line}\n`);
+    }
+    return steps;
+  };
+
+  it("every argus-live command journeys.md names is one the CLI has", () => {
+    const known = cliCommands();
+    expect(known.has("map-check") && known.has("scrub")).toBe(true);
+    const named = [...read(JOURNEYS).matchAll(/`live ([a-z][a-z-]*)/g)].map((m) => m[1]);
+    expect(named.length).toBeGreaterThan(10);
+    for (const c of named) expect(known.has(c), c).toBe(true);
+  });
+
+  it("a journey cycle runs its commands in the order the lane needs", () => {
+    const steps = cycleSteps();
+    const inOrder = (n: number, ...words: string[]) => {
+      const text = steps.get(n) ?? "";
+      let from = 0;
+      for (const w of words) {
+        const at = text.indexOf(w, from);
+        expect(at, `step ${n}: ${w}`).toBeGreaterThanOrEqual(0);
+        from = at + w.length;
+      }
+    };
+    inOrder(1, "live map-check");
+    inOrder(2, "live up");
+    inOrder(3, "live select");
+    inOrder(4, "live slot <s> --journey");
+    inOrder(5, "live renew", "live intake");
+    inOrder(6, "live renew", "live repro <ref>", "--minimize", "--test");
+    inOrder(7, "live classify");
+    inOrder(8, "live scrub");
+    inOrder(9, "live down");
+    inOrder(10, "live visit");
+    expect([...steps.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+
+  it("up, repro and down run in the background", () => {
+    const paragraphs = read(JOURNEYS).split(/\n\s*\n/).filter((p) => p.includes("run_in_background"));
+    expect(paragraphs.length).toBeGreaterThan(0);
+    for (const p of paragraphs) for (const c of ["`live up`", "`live repro`", "`live down`"]) expect(p, c).toContain(c);
+  });
+
+  it("scrub always names its run", () => {
+    const lines = read(JOURNEYS).split("\n").filter((l) => l.includes("live scrub"));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) expect(l).toContain("--run");
+  });
+
+  it("an incomplete ledger files nothing, and the run.log line marks the fraud pass absent", () => {
+    const text = read(JOURNEYS).replace(/\s+/g, " ");
+    expect(text).toContain("incomplete");
+    expect(text).toContain("nothing from that run is filed");
+    expect(text).toContain("fraud=-");
+    expect(text).toContain("focus=journey:");
   });
 
   it("the brief keeps the explorer to the wrapper and page text as data", () => {
