@@ -95,10 +95,16 @@
 // manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
 // worktree makes that folder unwritable for the session's subagents too. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
-// clone`, `gh repo clone`, `gh extension install`, `gh api` contents/tarball at a pull ref, `git am`,
-// `git apply` (except --check/--stat), and `patch` (bare, via busybox/toybox or a shell's -c) fed by a
-// pipe from `gh pr diff`/`gh api`/`curl`/`wget`. NOT traced: a diff saved to a file and applied later
-// (`patch < file`, `git merge-file`), a SHA piped into `xargs git fetch`, files an interpreter writes.
+// clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
+// contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via
+// busybox/toybox, except --dry-run/--check/-C; also a shell's -c fed by `gh pr diff`/`gh api`/`curl`/
+// `wget`), and a `curl`/`wget` download piped (through any filter) into tar/bsdtar/unzip/cpio/7z.
+// NOT traced (named limits, each needing intent): a download saved to a file and unpacked later
+// (`curl -o x.tgz`, then `tar xf x.tgz`), a download piped into a shell (`curl … | sh`, an
+// interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
+// interpreter writes, and a label an interpreter or a file-reading program supplies (`gh issue edit
+// --add-label` with a word from `xargs` without a replace string is refused only when the option's
+// value itself is missing; one from `-I`/`-J`/`--replace` is refused as not literal).
 // The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
@@ -470,7 +476,17 @@ function programIndex(t) {
       i++;
     } else if (v === "xargs") {
       i++;
-      while (i < t.length && t[i].v.startsWith("-")) i += /^-[IndPLs]$/.test(t[i].v) ? 2 : 1;
+      let rep = null;
+      while (i < t.length && t[i].v.startsWith("-")) {
+        const o = t[i].v;
+        if (/^-[IJ]$/.test(o)) rep = t[i + 1]?.v ?? null;
+        else if (/^-[IJ]./.test(o)) rep = o.slice(2);
+        else if (o === "-i" || o === "--replace") rep = "{}";
+        else if (/^(?:-i|--replace=)./.test(o)) rep = o.replace(/^(?:-i|--replace=)/, "");
+        i += /^-[IJndPLs]$/.test(o) ? 2 : 1;
+      }
+      // xargs puts what it reads in place of its replace string: such a word is not a literal.
+      if (rep) for (let k = i; k < t.length; k++) if (t[k].v.includes(rep)) t[k] = { ...t[k], dyn: true };
     } else if (v === "npx" || v === "bunx" || v === "corepack" || (PKG_MANAGERS.has(v) && /^(exec|x|dlx)$/.test(pmSubcommand(t, i)))) {
       // `npm exec`, `npm x`, `pnpm exec|dlx`, `yarn exec|dlx` run their argument like npx does.
       if (PKG_MANAGERS.has(v)) {
@@ -1061,9 +1077,9 @@ const BLOCK = {
   kill: "pkill/killall can stop another session's process. Kill only a PID you started.",
   merge: "only the orchestrator merges (sapu-merge.sh). Your job ends when the PR is open.",
   prCode:
-    "`gh pr checkout`, fetching a PR ref (pull/*), or applying a patch (git apply/git am, or patch fed by gh pr diff) runs a PR's code here — and a PR can be an outsider's. Only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it. Read a PR with `gh pr diff <N> --name-only` and `sapu-contract.mjs pr-trust <N> --text`; a continuing worker takes over with `git reset --hard <sha>`.",
+    "`gh pr checkout`, fetching a PR ref (pull/*), or applying a patch (git apply/git am, or patch other than its --dry-run, whatever file it reads) runs a PR's code here — and a PR can be an outsider's. Only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it. Read a PR with `gh pr diff <N> --name-only` and `sapu-contract.mjs pr-trust <N> --text`; a continuing worker takes over with `git reset --hard <sha>`.",
   foreignCode:
-    "fetching or cloning code that is not origin's branches or tags (another remote or a URL, a raw commit SHA, a ref glob outside refs/heads and refs/tags, `git clone`, `gh repo clone`, `gh extension install`) can bring a fork's or a PR's code here, as a PR's code would. Work from origin's branches; only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it.",
+    "fetching or cloning code that is not origin's branches or tags (another remote or a URL, a raw commit SHA, a ref glob outside refs/heads and refs/tags, `git clone`, `gh repo clone`, `gh extension install`, `gh release download`, degit/tiged, a download piped into tar or unzip) can bring a fork's or a PR's code here, as a PR's code would. Work from origin's branches; only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it.",
   ghUnknown:
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
@@ -1498,6 +1514,11 @@ function checkCommand(t, state, depth) {
   if (db) return BLOCK.db(db.label);
   if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
   if (!a.length) return null;
+  // degit/tiged copy another repository's tree here, as a clone would.
+  if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
+  // patch applies a diff, wherever it was saved (`gh pr diff 8 > f` then `patch < f`): like git apply,
+  // only its dry run is a read.
+  if ((prog === "patch" || ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch")) && !a.some((v) => /^(--dry-run|--check|-C)$/.test(v))) return BLOCK.prCode;
 
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
   // <MAIN> outside its worktrees is off limits, except the STATE_DIRS for non-worker subagents.
@@ -1704,7 +1725,7 @@ function checkCommand(t, state, depth) {
     if (g1 === "issue" && g2 === "create" && rules.worker !== false) return BLOCK.issue;
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
-    if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade"))) return BLOCK.foreignCode;
+    if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade")) || (g1 === "release" && g2 === "download")) return BLOCK.foreignCode;
     // The owner labels (acceptance, needs-owner), in every spelling gh offers.
     const L = rules.ownerLabels;
     const tail = i2 < 0 ? [] : w.slice(i2 + 1);
@@ -1854,6 +1875,9 @@ function ghFields(argv) {
   return out;
 }
 
+const NET_FETCHERS = new Set(["curl", "wget"]);
+const UNPACKERS = new Set(["tar", "gtar", "bsdtar", "unzip", "funzip", "cpio", "7z", "7za", "7zz"]);
+
 function prSource(toks) {
   const a = toks.slice(programIndex(toks)).map((x) => x.v);
   const prog = a.length ? bare(a[0]) : "";
@@ -1872,6 +1896,7 @@ function checkText(text, dir, base, depth) {
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
+  let fromNet = false; // the previous command pipes a download into this one
   for (const c of cmds) {
     if (c.pre === "(") saved.push(state.dir);
     const before = state.dir;
@@ -1884,6 +1909,13 @@ function checkText(text, dir, base, depth) {
       if (ci > 0 && /(^|[\s;&|(])(\S*\/)?(patch|busybox\s+patch|git\s+(apply|am))\b/.test(a[ci + 1] ?? "")) return BLOCK.prCode;
     }
     fromPr = c.post === "|" && (prSource(c.toks) || (fromPr && c.pre === "|"));
+    if (fromNet && c.pre === "|") {
+      // a download unpacked straight into the worktree (`curl … | tar x`), also through a decompressor
+      const a = c.toks.slice(programIndex(c.toks)).map((x) => x.v);
+      const p = a.length ? bare(a[0]) : "";
+      if (UNPACKERS.has(p) || ((p === "busybox" || p === "toybox") && UNPACKERS.has(bare(a[1] ?? "")))) return BLOCK.foreignCode;
+    }
+    fromNet = c.post === "|" && (NET_FETCHERS.has(bare(c.toks.slice(programIndex(c.toks))[0]?.v ?? "")) || (fromNet && c.pre === "|"));
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
     // A cd in a background job runs in a subshell: the parent does not move. In a pipeline it

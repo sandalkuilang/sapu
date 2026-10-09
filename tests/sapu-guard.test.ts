@@ -217,7 +217,7 @@ describe("sapu-guard — a subagent never runs a PR's code locally (public repos
     expect(blocked(cmd)).toMatch(/runs a PR's code|PR's code/);
   });
 
-  it.each([["gh pr diff 42 --name-only"], ["gh pr diff 42 | head -50"], ["gh -R owner/app pr diff 42 | head -50"], ["git apply --check pr.diff"], ["git apply --stat pr.diff"], ["patch -p1 < x.diff"], ["git fetch origin main"], ["git fetch -q origin feat/x"]])(
+  it.each([["gh pr diff 42 --name-only"], ["gh pr diff 42 | head -50"], ["gh -R owner/app pr diff 42 | head -50"], ["git apply --check pr.diff"], ["git apply --stat pr.diff"], ["patch --dry-run -p1 < x.diff"], ["git fetch origin main"], ["git fetch -q origin feat/x"]])(
     "allows %s",
     (cmd) => {
       expect(blocked(cmd)).toBeNull();
@@ -1125,7 +1125,7 @@ describe("round 4 D — cheap closures", () => {
     ["git push origin feat/heads-main"],
     ["node --run test"],
     ["bun run build"],
-    ["patch -p1 < x.diff"],
+    ["patch --dry-run -p1 < x.diff"],
     ["docker exec pg psql -U x app_test_1"],
     ["echo x > .gitignore"],
     ["cat $'hello world'"],
@@ -2192,6 +2192,42 @@ describe("sapu-guard — the needs-owner label is the owner's, like the acceptan
     expect(reviewer("gh issue edit 8 --remove-label owner:decide", custom)).toMatch(/needs-owner label/);
     expect(reviewer("gh issue edit 8 --add-label sapu:accepted", custom)).toMatch(/acceptance label/);
     expect(reviewer("gh issue edit 8 --add-label argus:needs-owner", custom)).toBeNull();
+  });
+});
+
+describe("sapu-guard — deliberate-agent bypasses closed where cheap and precise", () => {
+  const reviewer = (command: string) => check({ command, cwd: wt, main, rules, worker: false });
+  it.each([
+    ["echo sapu:accepted | xargs -I{} gh issue edit 8 --add-label {}", /acceptance label/],
+    ["echo sapu:accepted | xargs -I @ gh issue edit 8 --add-label @", /acceptance label/],
+    ["echo sapu:accepted | xargs --replace gh issue edit 8 --remove-label {}", /acceptance label/],
+    ["echo sapu:accepted | xargs -J % gh issue edit 8 --add-label %", /acceptance label/],
+    ["gh release download v1 -R other/repo", /not origin's branches or tags/],
+    ["gh -R other/repo release download v1 --archive tar.gz", /not origin's branches or tags/],
+    ["npx degit other/repo dir", /not origin's branches or tags/],
+    ["degit other/repo#main dir", /not origin's branches or tags/],
+    ["pnpm dlx tiged other/repo dir", /not origin's branches or tags/],
+    ["curl -sL https://example.com/x.tgz | tar xz", /not origin's branches or tags/],
+    ["wget -qO- https://example.com/x.tgz | tar -xzf -", /not origin's branches or tags/],
+    ["curl -sL https://example.com/x.zip | bsdtar -xf -", /not origin's branches or tags/],
+    ["curl -sL https://example.com/x.tgz | gzip -d | tar x", /not origin's branches or tags/],
+    ["patch -p1 < pr.diff", /applying a patch/],
+    ["patch -p1 -i pr.diff", /applying a patch/],
+    ["busybox patch -p1 -i pr.diff", /applying a patch/],
+  ])("refuses %s", (cmd, msg) => {
+    expect(reviewer(cmd)).toMatch(msg);
+    expect(blocked(cmd)).toMatch(msg);
+  });
+
+  it.each([
+    ["echo 8 | xargs -I{} gh issue edit {} --add-label bug"],
+    ["patch --dry-run -p1 -i pr.diff"],
+    ["tar xzf vendor.tgz"],
+    ["curl -sL https://example.com/x.json | jq ."],
+    ["gh release list"],
+    ["gh release view v1"],
+  ])("still allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
   });
 });
 

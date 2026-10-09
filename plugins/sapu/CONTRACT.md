@@ -401,8 +401,10 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
   that rule is prose, and an agent talked into breaking it would plant trusted text. The
   agent-filed label marks them; `agentFiledNeedsAcceptance` makes them wait for an acceptor
   (§Agent-filed issues). The orchestrator is not guarded: that it never removes the label is prose.
-- The guard reads commands, not intent: a diff saved to a file and applied later, a SHA piped into
-  `xargs`, or code an interpreter writes are not traced (the guard's LIMITS name them).
+- The guard reads commands, not intent: a download saved to a file and unpacked later, a download
+  piped into a shell, `git merge-file`, a SHA piped into `xargs`, or code and labels an interpreter
+  supplies are not traced (the guard's LIMITS name them). Each needs an agent set on getting past
+  the guard; the code floor for that is `sapu-merge.sh` and the review of every diff.
 - Also protect the repo on GitHub itself: branch protection on the base branch (PRs required, no
   direct or force pushes), and approval before Actions workflows run on outside contributors' PRs.
   sapu runs on the owner's machine; GitHub's own CI on a fork PR is GitHub's setting, not sapu's.
@@ -708,12 +710,13 @@ could use them.
 - A PR's or a fork's code, the common ways (what is not traced: `sapu-guard.mjs`'s LIMITS): refused
   are `gh pr checkout` (also `gh co`), a fetch or pull of a `pull/*` ref, a raw commit SHA, a ref
   glob outside `refs/heads`/`refs/tags`, another remote or a URL, `git clone`, `gh repo clone`, `gh
-  extension install`, `gh api` contents or tarballs at a pull ref, `git am`, `git apply` (other than
-  its `--check`/`--stat` reads), and `patch` fed by `gh pr diff` (also through busybox or a shell's
-  `-c`). gh's `-R`/`--repo`/`--hostname` are dropped wherever they stand before the subcommand; a first word that is not
+  extension install`, `gh release download`, `degit`/`tiged`, a `curl`/`wget` download piped into
+  `tar`/`bsdtar`/`unzip`/`cpio`/`7z`, `gh api` contents or tarballs at a pull ref, `git am`, `git
+  apply` (other than its `--check`/`--stat` reads), and `patch` other than its `--dry-run` (also
+  through busybox or a shell's `-c`), whatever file it reads. gh's `-R`/`--repo`/`--hostname` are dropped wherever they stand before the subcommand; a first word that is not
   one of gh's own commands (an alias, an extension) is refused.
 - The acceptance label (`labels.accepted`): no subagent applies or removes it (`gh issue|pr edit
-  --add-label/--remove-label`, also with a label the shell builds — `$VAR`, `$( )`, backticks — that
+  --add-label/--remove-label`, also with a label the shell or `xargs` builds — `$VAR`, `$( )`, backticks, an `xargs -I` replace string — that
   the guard cannot read; a non-GET `gh api` naming it; a label write whose `--input` or `-F …=@file`
   body cannot be read, a query string or fragment on the route ignored), creates, edits, renames into
   it or deletes it (`gh label create|edit|delete`), clones labels (`gh label clone`), or runs a GraphQL
