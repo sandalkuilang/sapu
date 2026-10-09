@@ -787,3 +787,10 @@ Refs #53
   leaves its `dashboardApp.js` child running. `show` runs from the run's directory through `showDashboard`
   (`-cli.mjs`, beside `runCli`, which prepares the same TMPDIR and sockets directory), and is refused unless
   run.json names the lock's run and records its browser (a cycle still at step 1 or 2, or a map run, has none).
+- **Task 3.** The brief is 15.3 KB against the plan's target of 15 000 (the two tables and the two examples
+  hold most of it); `BUDGETS["agents/ui-explorer.md"]` is 15 500, its size rounded up to the next 500. The
+  explorer marks its objects with a marker of its own choosing (`argus-` and 8 hex characters, the shape the
+  runner's `{{marker}}` takes), which is "the run's marker" its created passwords hold. A submitted return is
+  one quoted argument, so its JSON is one line (the guard reads no line break inside a quoted word).
+  `fenced` returns the block parsed as JSON; `section` (the lines of one `## ` section) is a third helper the
+  table tests share.

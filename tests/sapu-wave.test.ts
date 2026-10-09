@@ -747,8 +747,8 @@ describe("sapu-wave — agent registry drift", () => {
     }
   });
 
-  it("the plugin ships only the ladder workers; every role defaults to a senior-dev-team agent, a declared dependency", () => {
-    expect(agentFiles.filter((f) => !/^sapu-(sonnet|opus)-/.test(f))).toEqual([]);
+  it("the plugin ships the ladder workers and the journey lane's explorer, nothing else; every role defaults to a senior-dev-team agent, a declared dependency", () => {
+    expect(agentFiles.filter((f) => !/^sapu-(sonnet|opus)-/.test(f))).toEqual(["ui-explorer.md"]);
     const manifest = JSON.parse(readFileSync(join(ROOT, "plugins/sapu/.claude-plugin/plugin.json"), "utf8"));
     expect(manifest.dependencies).toContain("senior-dev-team");
     const market = JSON.parse(readFileSync(join(ROOT, ".claude-plugin/marketplace.json"), "utf8"));
