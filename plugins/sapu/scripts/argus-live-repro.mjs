@@ -3,8 +3,9 @@
 // browser step runs as the wrapper's own `run-code` template in slot `r`'s sessions, through the session
 // driver, proxy and per-slot config an explorer's use; its answer is an exit code — 0 not reproduced, 3
 // reproduced, 2 a harness failure — and lines in the wrapper's own words, what the page showed fenced.
-// `repro` runs it twice and files only at two of two (decision 9).
-import { randomBytes } from "node:crypto";
+// `repro` runs it twice and files only at two of two (decision 9); `minimize` drops one role or step at a
+// time and keeps a drop only when the run still fails its final the same way (decision 10).
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
@@ -20,7 +21,7 @@ import { run, runAsync, sleep, tempBeside } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { CAP_BYTES, configuredUser, keepDrain, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { readSlotState, slotLockWaitMs, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
-import { CLICKS, parseRepro, provingExpect, stepCode, substitute } from "./argus-live-steps.mjs";
+import { CLICKS, parseRepro, provingExpect, reductions, stepCode, substitute } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
 
 /** A candidate's reference: `<slot>.<generation>.<k>`. */
@@ -84,6 +85,19 @@ function filesUnder(dir) {
   return out.sort();
 }
 
+/**
+ * The digest of what failed final `step` showed (`shown`), the values of the placeholders the final names
+ * (`{{marker}}`, a saved record id) put back as those placeholders: two runs that fail a final the same way
+ * have the same one, whatever marker or id each made.
+ */
+function shownDigest(shown, step, vars) {
+  let text = JSON.stringify(shown ?? null);
+  const used = new Set([...JSON.stringify(step).matchAll(/\{\{([a-z][a-z0-9_]*)\}\}/g)].map((m) => m[1]));
+  const names = [...used].filter((k) => Object.hasOwn(vars, k) && String(vars[k]) !== "").sort((a, b) => String(vars[b]).length - String(vars[a]).length);
+  for (const k of names) text = text.split(JSON.stringify(String(vars[k])).slice(1, -1)).join(`{{${k}}}`);
+  return createHash("sha256").update(text).digest("hex");
+}
+
 /** Writes `text` to `file` whole (beside, then renamed into place), mode 0600. */
 const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text, 0o600), file);
 
@@ -110,10 +124,11 @@ const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text, 0o600)
  * 6. the final: held → exit 0 `NOT REPRODUCED`; failed → exit 3, what was expected and what the page
  *    showed in one nonce fence, then `REPRODUCED step=<n> expected=<kind>[:<number>] observed=<enum>`;
  * 7. always: each account's last drain (`observe`), `tracing-stop`, its session closed and dropped from
- *    run.json; `run-<i>.json` `{exit, step, expected, observed, ms, saved, traces, changed}` (`saved`
- *    masked, `traces` the trace files under `r/out/traces/` the run wrote, `changed` the click-family
- *    steps that changed state) and `steps-<i>.jsonl` (0600) written to the candidate's directory, with
- *    `repro.json`.
+ *    run.json; `run-<i>.json` `{exit, step, expected, observed, shownSha256, ms, saved, traces, changed,
+ *    reduced}` (`shownSha256` the digest of what a failed final showed, `saved` masked, `traces` the trace
+ *    files under `r/out/traces/` the run wrote, `changed` the click-family steps that changed state,
+ *    `reduced` true for a run of a minimizer's `list`) and `steps-<i>.jsonl` (0600) written to the
+ *    candidate's directory, with `repro.json` unless the run was given a `list`.
  * Any other throw → exit 2 `HARNESS: failed: <message, masked>`; a ref reproRef refuses is thrown as is.
  */
 export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
@@ -124,7 +139,7 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
     lines.push(l);
     say(l);
   };
-  const result = { exit: 2, step: null, expected: null, observed: null, ms: 0, saved: {}, traces: [], changed: [] };
+  const result = { exit: 2, step: null, expected: null, observed: null, shownSha256: null, ms: 0, saved: {}, traces: [], changed: [], reduced: list !== null };
   const repro = list ?? candidate.repro;
   const created = [];
   const stepLog = [];
@@ -396,7 +411,7 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
             if (s.final === undefined) throw new Harness(`step ${s.n} expectation failed before the final step`);
             const expected = s.expect === "count" ? `count:${s.value}` : s.expect;
             finalFence(s, ans);
-            Object.assign(result, { step: s.n, expected, observed: ans.observed });
+            Object.assign(result, { step: s.n, expected, observed: ans.observed, shownSha256: shownDigest(ans.shown, s, vars) });
             emit(`REPRODUCED step=${s.n} expected=${expected} observed=${ans.observed}`);
             return 3;
           }
@@ -427,7 +442,7 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
         result.traces = now.filter((f) => !tracesBefore.has(f) || f.startsWith(`resources${path.sep}`));
       }
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      writePrivate(path.join(dir, "repro.json"), `${JSON.stringify({ ref, repro, ...(parsed ? parsed : {}) })}\n`);
+      if (list === null) writePrivate(path.join(dir, "repro.json"), `${JSON.stringify({ ref, repro, ...(parsed ? parsed : {}) })}\n`);
       writePrivate(path.join(dir, `run-${i}.json`), `${JSON.stringify(result)}\n`);
       writePrivate(path.join(dir, `steps-${i}.jsonl`), stepLog.map((x) => `${clean(JSON.stringify(x), { secrets })}\n`).join(""));
     } catch (e) {
@@ -476,6 +491,121 @@ export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   writePrivate(path.join(dir, "verdict.json"), `${JSON.stringify({ runs, verdict: word })}\n`);
   return { code, lines };
+}
+
+/** The candidate's run records in `dir` → `[{i, rec}]` by run number (an unreadable one left out). */
+function runRecords(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((f) => /^run-[1-9][0-9]*\.json$/.test(f));
+  } catch {
+    names = [];
+  }
+  const out = [];
+  for (const f of names) {
+    try {
+      out.push({ i: Number(f.slice(4, -5)), rec: JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) });
+    } catch {
+      // unreadable: not a record
+    }
+  }
+  return out.sort((a, b) => a.i - b.i);
+}
+
+/**
+ * Candidate `ref`'s repro minimized (spec §10 "Minimize"; decision 10) → `{code: 0, lines}`. Its base is the
+ * newest run of the whole list that reproduced (refused without one): its `changed` names the click-family
+ * steps that changed state, and how it failed its final (`expected`, `observed`, `shownSha256`) is what a
+ * kept reduction must match. The removal units (`reductions`, numbered as the whole list is) are tried in
+ * order, each once: a unit whose reduced list the static checks refuse is skipped without a run; any other
+ * is one run of `once` with that list (`run-<i>.json` numbered after the candidate's records), kept only
+ * when it exits 3 failing the final the same way. Runs stop at `max` (`limits.minimize_runs`, default 12),
+ * one of them kept for a confirming run of the result; with no unit left untried it stopped at its
+ * fixpoint. `min.json` (0600; the context element first) is written only when the confirm run failed the
+ * same way; `minimize.json` `{runs, max, stopped, from, to, confirmed, tried: [{label, exit}]}` (`exit`
+ * null for a skipped unit) always. Lines: `try <label>: exit <k>|skipped (…)`, `confirm: exit <k>`, then
+ * `minimized <ref>: steps <a> → <b>, runs <k>/<max>, stopped fixpoint|budget, confirmed yes|no`; never a
+ * page's text.
+ */
+export async function minimize(main, ref, { once = runOnce, max = null, say = () => {}, ...opts } = {}) {
+  const { candidate, slotRec, dir } = reproRef(main, ref);
+  const records = runRecords(dir);
+  const base = records.filter((r) => isObj(r.rec) && r.rec.exit === 3 && !r.rec.reduced).at(-1);
+  if (!base) throw new Error(`refused: repro: ${ref} has no reproducing run (repro ${ref} first)`);
+  const { config, errors, secrets } = loadLive(main);
+  if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
+  const rec = readRun(main);
+  const live = expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+  const budget = max ?? (live.limits && live.limits.minimize_runs) ?? 12;
+  const at = { accounts: slotRec.accounts, live };
+  const list = candidate.repro;
+  const parsed = parseRepro(list, at);
+  // Each element of the list (the context left out) → the numbers its steps carry: a parallel group's members each count.
+  const items = Array.isArray(list) && isObj(list[0]) && Object.hasOwn(list[0], "context") ? list.slice(1) : list;
+  const grouped = (item) => isObj(item) && Array.isArray(item.parallel);
+  let n = 0;
+  const numbers = items.map((item) => (grouped(item) ? item.parallel.map(() => (n += 1)) : [(n += 1)]));
+  /** The list holding the steps numbered in `keep`, the context element first. */
+  const listOf = (keep) => [
+    { context: parsed.context },
+    ...items.flatMap((item, j) => {
+      if (!grouped(item)) return keep.has(numbers[j][0]) ? [item] : [];
+      const members = item.parallel.filter((_, x) => keep.has(numbers[j][x]));
+      return members.length ? [{ ...item, parallel: members }] : [];
+    }),
+  ];
+  const sameFinal = (r) => Boolean(r && r.code === 3 && isObj(r.result) && r.result.expected === base.rec.expected && r.result.observed === base.rec.observed && r.result.shownSha256 === base.rec.shownSha256);
+  const changed = Array.isArray(base.rec.changed) ? base.rec.changed : [];
+  const lines = [];
+  const emit = (l) => {
+    lines.push(l);
+    say(l);
+  };
+  fs.rmSync(path.join(dir, "min.json"), { force: true });
+  let next = (records.at(-1)?.i ?? 0) + 1;
+  let keep = new Set(parsed.steps.map((s) => s.n));
+  const tried = [];
+  const done = new Set();
+  let runs = 0;
+  let stopped = "fixpoint";
+  for (;;) {
+    const unit = reductions(parsed.steps.filter((s) => keep.has(s.n)), { changed: changed.filter((x) => keep.has(x)) }).find((u) => !done.has(u.label));
+    if (!unit) break;
+    if (runs >= budget - 1) {
+      stopped = "budget";
+      break;
+    }
+    done.add(unit.label);
+    const without = new Set([...keep].filter((x) => !unit.drop.includes(x)));
+    const reduced = listOf(without);
+    try {
+      parseRepro(reduced, at);
+    } catch (e) {
+      if (!/^refused: /.test(e.message)) throw e;
+      tried.push({ label: unit.label, exit: null });
+      emit(`try ${unit.label}: skipped (the static checks refuse it)`);
+      continue;
+    }
+    runs += 1;
+    const r = await once(main, ref, { ...opts, list: reduced, i: next++ });
+    tried.push({ label: unit.label, exit: r.code });
+    emit(`try ${unit.label}: exit ${r.code}`);
+    if (sameFinal(r)) keep = without;
+  }
+  const result = listOf(keep);
+  let confirmed = false;
+  if (runs < budget) {
+    runs += 1;
+    const c = await once(main, ref, { ...opts, list: result, i: next++ });
+    confirmed = sameFinal(c);
+    emit(`confirm: exit ${c.code}`);
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (confirmed) writePrivate(path.join(dir, "min.json"), `${JSON.stringify(result)}\n`);
+  const from = parsed.steps.length;
+  writePrivate(path.join(dir, "minimize.json"), `${JSON.stringify({ runs, max: budget, stopped, from, to: keep.size, confirmed, tried })}\n`);
+  emit(`minimized ${ref}: steps ${from} → ${keep.size}, runs ${runs}/${budget}, stopped ${stopped}, confirmed ${confirmed ? "yes" : "no"}`);
+  return { code: 0, lines };
 }
 
 /**

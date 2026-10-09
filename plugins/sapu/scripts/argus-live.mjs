@@ -34,6 +34,11 @@
 //                                one run of candidate <k>'s repro on a fresh instance (spec §10): a line per
 //                                step in the wrapper's own words, what the page showed in a nonce fence,
 //                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2)
+//   argus-live.mjs repro <slot>.<generation>.<k> --minimize
+//                                drop one role or step at a time from a reproduced repro, each try a run on a
+//                                fresh instance (spec §10 "Minimize"): a line per try (its label and exit), the
+//                                confirm run's exit, then minimized <ref>: steps <a> → <b>, runs <k>/<max>,
+//                                stopped fixpoint|budget, confirmed yes|no; min.json when confirmed
 //   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
 //                                a journey finding's class, labels and starting severity (spec §10's table):
 //                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
@@ -48,7 +53,7 @@ import { readLock } from "./argus-live-lock.mjs";
 import { redact } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
-import { repro, runOnce } from "./argus-live-repro.mjs";
+import { minimize, repro, runOnce } from "./argus-live-repro.mjs";
 import { intake } from "./argus-live-return.mjs";
 import { down, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
@@ -68,7 +73,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]";
+const usage = "usage: argus-live.mjs up [--fresh] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 
@@ -102,6 +107,9 @@ try {
     // Each line is printed as it is made, already in the wrapper's words or fenced and masked (decision 8).
     const r = await runOnce(main, args[0], { say: printMasked });
     process.exit(r.code);
+  } else if (cmd === "repro" && args.length === 2 && args[1] === "--minimize") {
+    // Only the tried labels and exits: no browser output reaches the orchestrator (spec §10 "Minimize").
+    await minimize(main, args[0], { say: print });
   } else if (cmd === "repro" && args.length === 1) {
     // Two of two: each run's lines as they are made, prefixed with the run, then the verdict (decision 9).
     const r = await repro(main, args[0], { say: printMasked });

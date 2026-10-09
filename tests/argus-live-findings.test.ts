@@ -23,7 +23,7 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { repro } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { minimize, repro } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, logsDir, readRun, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -813,5 +813,126 @@ describe("argus-live classes", () => {
     expect(line("--oracle", "viewport-locale")).toBe("class A labels bug,argus,found-by:user severity by outcome because viewport or locale: rated by its outcome, as argus rates\n");
     const bad = spawnSync(process.execPath, [ARGUS_LIVE, "classify", "--oracle", "handoff", "--money", "--money"], { cwd: main, encoding: "utf8" });
     expect(bad.status).toBe(1);
+  });
+});
+
+describe("argus-live minimize", () => {
+  const S = {
+    1: { as: "buyer", do: "goto", path: "/orders/new" },
+    2: { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "2" },
+    3: { as: "buyer", do: "hover", target: { role: "heading", name: "New order" } },
+    4: { as: "buyer", do: "click", target: { role: "button", name: "Place order" } },
+    5: { as: "buyer", expect: "visible", target: { testId: "order-number" } },
+    6: { as: "clerk", do: "goto", path: "/inbox" },
+    7: { as: "clerk", do: "hover", target: { role: "heading", name: "Inbox" } },
+    8: { as: "clerk", expect: "visible", target: { text: "ORD-1" }, final: "handoff" },
+  } as Record<number, Obj>;
+  const EIGHT = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => S[n]);
+  const CONTEXT = { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } };
+  /** How the reproducing run failed its final: what a kept reduction must fail the same way. */
+  const FAILED = { expected: "visible", observed: "absent", shownSha256: "same" };
+  const has = (list: Obj[], step: Obj) => list.some((x) => JSON.stringify(x) === JSON.stringify(step));
+  /** The candidate's reproducing run (run 1, exit 3, step 4 changed state), as runOnce records it. */
+  const reproduced = (t: ReturnType<typeof returned>, ref: string, changed: number[]) => {
+    mkdirSync(t.dir(ref), { recursive: true });
+    writeFileSync(join(t.dir(ref), "run-1.json"), JSON.stringify({ exit: 3, step: 8, ...FAILED, ms: 1, saved: {}, traces: [], changed }));
+  };
+  /** A `once` answering 3 (failed as FAILED) exactly while steps 2 and 6 are both in its list, else 0; `force` overrides call k's exit. */
+  const essential = (force: Record<number, number> = {}) => {
+    const calls: Obj[] = [];
+    const once = async (_main: string, _ref: string, opts: Obj) => {
+      calls.push(opts);
+      const code = force[calls.length] ?? (has(opts.list, S[2]) && has(opts.list, S[6]) ? 3 : 0);
+      return { code, lines: ["fresh: instance 0123456789abcdef", code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? FAILED : {}) } };
+    };
+    return { once, calls };
+  };
+  const json = (t: ReturnType<typeof returned>, file: string) => JSON.parse(readFileSync(join(t.dir(t.refs[0]), file), "utf8"));
+
+  it("keeps the essential steps and every step it may not drop, to a fixpoint, and confirms", async () => {
+    const t = returned([EIGHT]);
+    reproduced(t, t.refs[0], [4]);
+    const s = essential();
+    const r = await minimize(t.main, t.refs[0], { once: s.once });
+    expect(r.code).toBe(0);
+    expect(json(t, "min.json")).toEqual([CONTEXT, S[2], S[4], S[5], S[6], S[8]]);
+    const m = json(t, "minimize.json");
+    expect(m.tried).toEqual([
+      { label: "role buyer", exit: 0 },
+      { label: "step 7", exit: 3 },
+      { label: "step 6", exit: 0 },
+      { label: "step 3", exit: 3 },
+      { label: "step 2", exit: 0 },
+      { label: "step 1", exit: 3 },
+    ]);
+    expect(m).toMatchObject({ runs: 7, max: 12, stopped: "fixpoint", from: 8, to: 5, confirmed: true });
+    expect(r.lines.at(-1)).toBe(`minimized ${t.refs[0]}: steps 8 → 5, runs 7/12, stopped fixpoint, confirmed yes`);
+    // Only the tried labels and exits: no browser output.
+    expect(r.lines.slice(0, -1)).toEqual([...m.tried.map((x: Obj) => `try ${x.label}: exit ${x.exit}`), "confirm: exit 3"]);
+    // Each try is a run of its own, numbered after the reproducing run; the confirm run is the last.
+    expect(s.calls.map((c) => c.i)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    expect(s.calls.at(-1)!.list).toEqual(json(t, "min.json"));
+    expect(statSync(join(t.dir(t.refs[0]), "min.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("stops at its budget, one run kept for the confirm; an unconfirmed result is not written", async () => {
+    const t = returned([EIGHT]);
+    reproduced(t, t.refs[0], [4]);
+    const s = essential();
+    const r = await minimize(t.main, t.refs[0], { once: s.once, max: 3 });
+    expect(json(t, "minimize.json")).toMatchObject({ runs: 3, max: 3, stopped: "budget", tried: [{ label: "role buyer", exit: 0 }, { label: "step 7", exit: 3 }], confirmed: true });
+    expect(json(t, "min.json")).toEqual([CONTEXT, ...EIGHT.filter((x) => x !== S[7])]);
+    expect(r.lines.at(-1)).toBe(`minimized ${t.refs[0]}: steps 8 → 7, runs 3/3, stopped budget, confirmed yes`);
+    const no = essential({ 3: 0 });
+    const u = await minimize(t.main, t.refs[0], { once: no.once, max: 3 });
+    expect(u.lines.at(-1)).toBe(`minimized ${t.refs[0]}: steps 8 → 7, runs 3/3, stopped budget, confirmed no`);
+    expect(existsSync(join(t.dir(t.refs[0]), "min.json"))).toBe(false);
+  });
+
+  it("a reduction that fails its final another way is not kept", async () => {
+    const t = returned([EIGHT]);
+    reproduced(t, t.refs[0], [4]);
+    // Every run reproduces, but what the final saw differs from the reproducing run's (a reversal without its cancel).
+    const other = async () => ({ code: 3, lines: ["REPRODUCED step=1 expected=visible observed=absent"], result: { exit: 3, ...FAILED, shownSha256: "other" } });
+    const r = await minimize(t.main, t.refs[0], { once: other });
+    const m = json(t, "minimize.json");
+    expect(m.tried.every((x: Obj) => x.exit === 3)).toBe(true);
+    expect([m.from, m.to, m.confirmed]).toEqual([8, 8, false]);
+    expect(r.lines.at(-1)).toBe(`minimized ${t.refs[0]}: steps 8 → 8, runs 7/12, stopped fixpoint, confirmed no`);
+  });
+
+  it("never tries a trigger or the final; a reduction the static checks refuse costs no run", async () => {
+    const example10 = [
+      CONTEXT,
+      { as: "customer", do: "goto", path: "/orders/new" },
+      { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
+      { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+      { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+      { as: "customer", expect: "visible", target: { text: "{{order}}" } },
+      { as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] },
+      { as: "customer", expect: "fact-equals", marker: "{{order}}", field: "status", value: "paid" },
+      { as: "sales", do: "goto", path: "/" },
+      { as: "sales", expect: "visible", target: { text: "{{order}}" }, final: "handoff" },
+    ];
+    const t = returned([example10]);
+    reproduced(t, t.refs[0], [3]);
+    const calls: Obj[] = [];
+    const always = async (_m: string, _r: string, opts: Obj) => {
+      calls.push(opts);
+      return { code: 3, lines: ["REPRODUCED step=1 expected=visible observed=absent"], result: { exit: 3, ...FAILED } };
+    };
+    const r = await minimize(t.main, t.refs[0], { once: always });
+    const labels = json(t, "minimize.json").tried.map((x: Obj) => x.label);
+    expect(labels).not.toContain("step 6");
+    expect(labels).not.toContain("step 9");
+    // Dropping customer, or the read that saves {{order}}, leaves a placeholder no read saves: skipped without a run.
+    expect(json(t, "minimize.json").tried.filter((x: Obj) => x.exit === null).map((x: Obj) => x.label)).toEqual(["role customer", "step 4"]);
+    expect(r.lines).toContain("try role customer: skipped (the static checks refuse it)");
+    expect(calls).toHaveLength(json(t, "minimize.json").runs);
+  });
+
+  it("refuses a candidate that never reproduced", async () => {
+    const t = returned([EIGHT]);
+    await expect(minimize(t.main, t.refs[0], { once: essential().once })).rejects.toThrow(`refused: repro: ${t.refs[0]} has no reproducing run (repro ${t.refs[0]} first)`);
   });
 });

@@ -1591,3 +1591,20 @@ Interfaces:
   a flag that does not move an oracle's row is accepted and ignored (`reversal --stock` is S1 either way),
   a flag given twice is refused. The CLI reads `labels.needsOwner` through `loadContract` (none → the
   default; an invalid contract is refused, as `up` refuses it).
+- **Task 10.** "Same `final`" is read as "fails the final the way the reproducing run did": the same
+  `expected`, `observed` and `shownSha256`, a digest `runOnce` now records in `run-<i>.json` of what the
+  failed final showed, the values of the placeholders the final names (`{{marker}}`, a saved id) put back
+  as those placeholders. Without it the reversal repro loses its cancel: with no cancel the stock is 2 under
+  `{{before}}`, with the defect 2 over, and both fail `fact-equals` as `differs`. The base is the newest
+  `run-<i>.json` of the whole list that exited 3 (refused without one: `refused: repro: <ref> has no
+  reproducing run (repro <ref> first)`), not `verdict.json`, so a `--once` run is enough to minimize from;
+  `run-<i>.json` gains `reduced` (a run of a minimizer's list), which is never a base. Each try and the
+  confirm run is a `runOnce` numbered after the candidate's records (`run-<i>.json` as `pruneTraces` reads
+  them), and `repro.json` is written only by a run of the whole list. Each unit is tried once (by its
+  label, numbered as the whole list is): with none left untried it stopped at its fixpoint; the budget is
+  checked before a unit, so a unit the static checks would skip still counts as budget-stopped. A skipped
+  unit's line is `try <label>: skipped (the static checks refuse it)` (a reason would name the reduced
+  list's step numbers) and its `tried` exit `null`. `min.json` always starts with the context element (the
+  parsed context, defaults included) and is removed when a later minimize does not confirm. The fixture's
+  repro cycle sets `limits.minimize_runs` 6, so the Chrome test stops at its budget after the four pads and
+  the cancel: it puts the pads after the cancel's proving expect, where minimize starts.

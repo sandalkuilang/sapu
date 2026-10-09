@@ -378,8 +378,8 @@ export const fixtureProcs = (mark: string) =>
  * HOME holding the pinned CLI and a docker whose daemon is not running. `mark` (an argument the app
  * ignores) marks the file's fixture processes (fixtureProcs): other test files run the fixture at the
  * same time. `data` is the app's DATA_DIR. With `repro` (the repro runner's cycle): `buyer` has buyer1 and
- * buyer2, `clerk` clerk1 (TOTP) and clerk2, settle_ms is 3000, the app's mail is a hook too, and its
- * seeded defects are read from a file `defects(...names)` writes (none at first).
+ * buyer2, `clerk` clerk1 (TOTP) and clerk2, settle_ms is 3000, limits.minimize_runs 6, the app's mail is a
+ * hook too, and its seeded defects are read from a file `defects(...names)` writes (none at first).
  */
 export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolean; mark: string; repro?: boolean }) => {
   const NODE = process.execPath;
@@ -418,7 +418,8 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
     reserved_ports: [],
     settle_ms: repro ? 3000 : 5000,
     roles,
-    limits: { max_cycle_minutes: 30, live_health_timeout_s: 20 },
+    // A repro cycle's minimize stops after 6 runs: the Chrome test needs no more, and each run is an up --fresh.
+    limits: { max_cycle_minutes: 30, live_health_timeout_s: 20, ...(repro ? { minimize_runs: 6 } : {}) },
   };
   execFileSync("git", ["-C", main, "init", "-q"]);
   mkdirSync(join(main, ".argus"));

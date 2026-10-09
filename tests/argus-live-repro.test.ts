@@ -451,6 +451,46 @@ describe("argus-live repro — one run", () => {
     for (const f of ownTrace(ok)) expect(existsSync(join(tracesDir, f)), f).toBe(false);
     for (const f of failed.traces) expect(existsSync(join(tracesDir, f)), f).toBe(true);
   }, 900_000);
+
+  describe("argus-live minimize in Chrome", () => {
+    it("drops what pads the reversal repro and keeps its essential steps, the cancel too", async () => {
+      const reversal = ORACLE_REPROS.find(([d]) => d === "double-release")![1];
+      // Padding after the cancel's proving expect, where minimize starts (from the last step back): a hover, a goto with its url expect, a read nobody uses.
+      const padded = [
+        ...reversal.slice(0, -1),
+        { as: "buyer.1", do: "hover", target: { testId: "order-number" } },
+        { as: "buyer.1", do: "goto", path: "/stock" },
+        { as: "buyer.1", expect: "url", value: "/stock" },
+        { as: "buyer.1", do: "read", target: { testId: "stock" }, save: "unused" },
+        reversal.at(-1)!,
+      ];
+      const t = await reproCycle([padded]);
+      t.c.defects("double-release");
+      const once = t.repro(t.refs[0]);
+      expect(once.code, `${once.lines.join(" | ")} ${once.last} ${once.err}`).toBe(3);
+      const m = t.c.cli("repro", t.refs[0], "--minimize");
+      expect(m.code, m.err).toBe(0);
+      // Only labels and exits (limits.minimize_runs 6 here): the four pads kept dropped; the cancel with its
+      // expect still fails the final, but another way (the stock 4 under, not 4 over), so it stays.
+      expect(m.out.trimEnd().split("\n")).toEqual([
+        "try step 13: exit 3",
+        "try step 12: exit 3",
+        "try step 11: exit 3",
+        "try step 10: exit 3",
+        "try steps 8+9: exit 3",
+        "confirm: exit 3",
+        `minimized ${t.refs[0]}: steps 14 → 10, runs 6/6, stopped budget, confirmed yes`,
+      ]);
+      const dir = join(t.c.main, ".argus/live", t.runId, "repro", t.refs[0]);
+      expect(JSON.parse(readFileSync(join(dir, "min.json"), "utf8"))).toEqual([{ context: { viewport: 1440, locale: "en-US", timezone: "UTC" } }, ...reversal]);
+      // The minimized list on a run of its own (the confirm, run 7) exits 3 as the reproducing run did.
+      expect(t.record(t.refs[0], 7)).toMatchObject({ exit: 3, reduced: true, expected: "fact-equals", observed: "differs", shownSha256: t.record(t.refs[0]).shownSha256 });
+      expect(t.record(t.refs[0], 6)).toMatchObject({ exit: 3, reduced: true });
+      expect(t.record(t.refs[0], 6).shownSha256).not.toBe(t.record(t.refs[0]).shownSha256);
+      // The candidate's own record is the whole list's, never a reduced one.
+      expect(JSON.parse(readFileSync(join(dir, "repro.json"), "utf8")).repro).toEqual(padded);
+    }, 900_000);
+  });
 });
 
 afterEach(browserLeftovers);
