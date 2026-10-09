@@ -112,10 +112,15 @@
 // session's contract; a place an interpreter reaches on its own is not resolved (see above).
 // gh: -R/--repo/--hostname are dropped wherever they stand before the subcommand; a first word outside gh's own command
 // set (an alias, an extension) is BLOCKED. The owner labels (contract labels.accepted, needsOwner,
-// agentFiled; the last two may still be given to a new issue by `gh issue create`): BLOCKED
-// when named by `gh issue|pr edit --add/--remove-label`, `gh label create|edit|delete`, a non-GET `gh
-// api` argument, or hidden in a label/issue write's --input; `gh label clone` and the GraphQL label
-// mutations are BLOCKED outright. A not-planned close (`gh issue close -r`, REST state_reason,
+// agentFiled; the last two may still be given to a new issue by `gh issue create`, `gh api` POST
+// …/issues or an MCP create tool): BLOCKED when named by `gh issue|pr edit --add/--remove-label`, `gh
+// label create|edit|delete`, a non-GET `gh api` argument, or hidden in a label/issue write's --input;
+// `gh label clone` and the GraphQL label mutations are BLOCKED outright, and so is replacing or
+// clearing an issue's labels, which drops them unnamed (`gh api` PUT/DELETE issues/N/labels, POST/
+// PATCH issues/N with labels, GraphQL updateIssue/updatePullRequest labelIds, an MCP issue or PR update
+// with a labels field). With agentFiledNeedsAcceptance a non-worker's new issue must carry the
+// agent-filed label as a literal (a GraphQL createIssue, naming labels by node id, is BLOCKED); a
+// worker files no issue by any of those routes. A not-planned close (`gh issue close -r`, REST state_reason,
 // GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
 // known one by one; an unknown option that takes a value can hide the program after it. An
@@ -804,6 +809,10 @@ export function compileRules(contract) {
     // outsider's issue, the one marking a finding only the owner can rule on, and the provenance of an
     // agent-filed issue (removing it would launder the issue into a plain trusted one).
     ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract), agentFiledLabel(contract)].map((l) => l.toLowerCase()),
+    accepted: acceptedLabel(contract).toLowerCase(),
+    agentFiled: agentFiledLabel(contract),
+    // agentFiledNeedsAcceptance: a subagent's new issue must carry the agent-filed label, written literally.
+    agentFiledGate: !!contract && contract.agentFiledNeedsAcceptance === true,
     // The worker step budget: the contract's tuning.stepBudget over the defaults.
     steps: resolveTuning(contract).stepBudget,
   };
@@ -1119,6 +1128,8 @@ const BLOCK = {
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
+  agentFiled: (label) =>
+    `the contract sets agentFiledNeedsAcceptance: an issue a subagent files carries the agent-filed label ${label}, written literally (\`gh issue create --label ${label}\`, \`gh api … -f 'labels[]=${label}'\`, an MCP tool's labels field), so it waits for the owner's acceptance; a GraphQL createIssue or an unread --input body cannot show it. File it with the label.`,
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
   noVerify: "--no-verify, commit -n, or git config that changes the hook path, defines an alias, includes a config file or runs code (filter.*, core.fsmonitor, core.sshCommand, core.attributesFile, diff.external) — via -c, --config-env, GIT_CONFIG_* or git config — can skip the hook gate or hide changes. Fix what the hook reports.",
   gitConfigKey: "a git config key the shell builds ($VAR, $( ), backticks — in -c, --config-env or git config) cannot be read: it may name a program git runs or switch off the hook gate. Write the key literally.",
@@ -1790,6 +1801,18 @@ function checkCommand(t, state, depth) {
         if (val && (val.dyn || namesLabel(val.v, L))) return BLOCK.acceptLabel;
       }
     }
+    // A new issue may carry the agent-filed and needs-owner labels, never the acceptance label; with
+    // agentFiledNeedsAcceptance it must carry the agent-filed label, written literally.
+    if (g1 === "issue" && g2 === "create") {
+      const labels = [];
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^(?:--label(?:=([\s\S]*))?|-l([\s\S]*))$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[1] !== undefined ? `=${m[1]}` : m[2] || null);
+        if (val) labels.push(val);
+      }
+      if (labels.some((x) => namesLabel(x.v, rules.accepted))) return BLOCK.acceptLabel;
+      if (rules.agentFiledGate && !labels.some((x) => !x.dyn && namesLabel(x.v, rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+    }
     // Closing as not planned is the owner's ruling (argus records it as intended).
     if (g1 === "issue" && g2 === "close") {
       for (let j = 0; j < tailT.length; j++) {
@@ -1801,6 +1824,13 @@ function checkCommand(t, state, depth) {
     if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tail.some((v) => namesLabel(v, L))))) return BLOCK.acceptLabel;
     if (g1 === "api") {
       if (a.some((v) => /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/.test(v))) return BLOCK.acceptLabel;
+      // labelIds on an update replaces the whole label set: the owner labels go without being named.
+      if (a.some((v) => /\b(updateIssue|updatePullRequest)\b/.test(v)) && a.some((v) => /\blabelIds\b/.test(v))) return BLOCK.acceptLabel;
+      // A GraphQL new issue names its labels by node id, which the guard cannot read.
+      if (a.some((v) => /\bcreateIssue\b/.test(v))) {
+        if (rules.worker !== false) return BLOCK.issue;
+        if (rules.agentFiledGate) return BLOCK.agentFiled(rules.agentFiled);
+      }
       // closeIssue: NOT_PLANNED inline, a variable exactly NOT_PLANNED, or any field the guard cannot read
       if (a.some((v) => /\bcloseIssue\b/.test(v)) && (a.some((v) => GQL_NOT_PLANNED.test(v)) || ghFields(argv).some((f) => f.dyn || f.file || f.v.slice(f.v.indexOf("=") + 1) === "NOT_PLANNED"))) return BLOCK.ownerRuling;
       if (a.some((v) => { let s = v; try { s = decodeURIComponent(v); } catch { /* raw */ } return /(?:[?&]ref=|\/(?:tarball|zipball)\/)(?:refs\/)?pull\//.test(s); })) return BLOCK.prCode;
@@ -1829,15 +1859,29 @@ function checkCommand(t, state, depth) {
       const m = a.findIndex((v) => v === "-X" || v === "--method");
       const inline = a.map((v) => /^(?:-X|--method=)(.+)$/.exec(v)?.[1]).find(Boolean);
       const method = (m > 0 ? a[m + 1] : inline) || (a.some((v) => /^(-f|-F|--field|--raw-field|--input)$/.test(v)) ? "POST" : "GET");
-      if (method.toUpperCase() !== "GET") {
+      const M = method.toUpperCase();
+      if (M !== "GET") {
         if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(v))) return BLOCK.merge;
         if (a.some((v) => /\/(contents|git|branches)\//.test(v))) return BLOCK.apiWrite;
         // REST state_reason not_planned, built by the shell, or read from a file.
         if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
-        // A write naming the label, or a label/issue write whose body the guard cannot read.
-        if (a.some((v) => namesLabel(v, L))) return BLOCK.acceptLabel;
-        const unread = a.some((v) => /^--input(=|$)/.test(v)) || ghFields(argv).some((f) => f.file);
         const route = (v) => v.replace(/[?#][\s\S]*$/, "");
+        const fields = ghFields(argv);
+        const labelField = (f) => /^labels(\[\])?=/.test(f.v);
+        // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,
+        // drops the owner labels without naming them.
+        if ((M === "PUT" || M === "DELETE") && a.some((v) => /\/issues\/\d+\/labels\/?$/.test(route(v)))) return BLOCK.acceptLabel;
+        if ((M === "POST" || M === "PATCH") && a.some((v) => /\/issues\/\d+\/?$/.test(route(v))) && fields.some(labelField)) return BLOCK.acceptLabel;
+        // A new issue (POST …/issues): never a worker's; it may carry the agent-filed and needs-owner
+        // labels, never the acceptance label; with agentFiledNeedsAcceptance it must carry the first.
+        const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/issues\/?$/.test(route(v)));
+        if (creates) {
+          if (rules.worker !== false) return BLOCK.issue;
+          if (rules.agentFiledGate && !fields.some((f) => labelField(f) && !f.dyn && !f.file && namesLabel(f.v.slice(f.v.indexOf("=") + 1), rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+        }
+        // A write naming the label, or a label/issue write whose body the guard cannot read.
+        if (a.some((v) => namesLabel(v, creates ? rules.accepted : L))) return BLOCK.acceptLabel;
+        const unread = a.some((v) => /^--input(=|$)/.test(v)) || fields.some((f) => f.file);
         if (unread && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
         if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.ownerRuling;
       }
@@ -2281,9 +2325,22 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     // a pull/merge request names the base it targets without moving it
     const targetsBase = words.some((w) => /^(pull|pr|request)$/.test(w));
     if (!targetsBase && f.some(([k, x]) => BRANCH_FIELD.test(k) && bases.has(x.replace(/^refs\/heads\//, "").trim()))) return BLOCK.pushBase(rules.base);
-    // only a label field, or any field of a label tool: a file's content may contain the word
+    // An issue tool (not its comments or sub-issues): a create is a new issue, an update with a labels
+    // list replaces the label set (an empty one clears it), dropping the owner labels unnamed.
+    const method = typeof ti.method === "string" ? ti.method.toLowerCase() : "";
+    const issueTool = words.some((w) => /^issues?$/.test(w)) && !words.some((w) => /^(comments?|sub)$/.test(w));
+    const creates = issueTool && (words.includes("create") || method === "create");
+    const labelKey = Object.keys(ti).some((k) => /^labels?$/i.test(k));
+    if (!creates && labelKey && (issueTool || words.some((w) => /^(pull|pr)$/.test(w))) && (words.some((w) => /^(update|edit)$/.test(w)) || /^(update|edit)$/.test(method))) return BLOCK.acceptLabel;
+    if (creates) {
+      if (worker && rules.worker !== false) return BLOCK.issue;
+      const filed = rules.agentFiled.toLowerCase();
+      if (rules.agentFiledGate && !f.some(([k, x]) => /^labels?$/i.test(k) && namesLabel(x, filed))) return BLOCK.agentFiled(rules.agentFiled);
+    }
+    // only a label field, or any field of a label tool: a file's content may contain the word; a new
+    // issue may carry the agent-filed and needs-owner labels, never the acceptance label
     const labelTool = words.some((w) => /^labels?$/.test(w));
-    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.ownerLabels))) return BLOCK.acceptLabel;
+    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, creates ? rules.accepted : rules.ownerLabels))) return BLOCK.acceptLabel;
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;

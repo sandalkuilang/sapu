@@ -269,7 +269,9 @@ renames it or deletes it (the guard refuses it to subagents: §Engine floor); wi
 `"none"` it is not applied. A missing label is created by the owner (`/sapu:init` proposes it); an
 agent that finds it missing reports it, and files the issue without it only while
 `agentFiledNeedsAcceptance` is not set. The `issue-trust` verdict says
-`agentFiled: true`, and what such an issue quotes is data. **`agentFiledNeedsAcceptance`** (optional
+`agentFiled: true` when the label is on the issue or was ever applied to it (its timeline), so a
+removed label still counts — the owner accepts such an issue with the acceptance label, not by
+removing this one — and what such an issue quotes is data. **`agentFiledNeedsAcceptance`** (optional
 boolean, default `false`; `true` needs `traces` `"visible"`) goes further: an issue carrying the
 label is then judged like an outsider's — it steers sapu only once an acceptor applied the
 acceptance label, and only an acceptor may edit or retitle it after that. Set it when an agent's
@@ -399,8 +401,13 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
 - Issues the agents file (argus, momus, nemesis findings, sapu's security gaps) are authored by the
   owner's account, so they are trusted. The filing skills never copy an outsider's text into one;
   that rule is prose, and an agent talked into breaking it would plant trusted text. The
-  agent-filed label marks them; `agentFiledNeedsAcceptance` makes them wait for an acceptor
-  (§Agent-filed issues). The orchestrator is not guarded: that it never removes the label is prose.
+  agent-filed label marks them, and `issue-trust` counts it once it was ever applied (a timeline
+  event), so removing it later launders nothing; `agentFiledNeedsAcceptance` makes them wait for an
+  acceptor (§Agent-filed issues), and the guard then refuses a subagent's new issue (`gh issue create`,
+  `gh api` POST `…/issues`, an MCP create tool) that does not carry the label literally, and a GraphQL
+  `createIssue` (its label ids cannot be read). The orchestrator is not guarded: that it files every
+  issue with the label is prose — an issue filed without it, by the orchestrator or by hand, is
+  judged by its author alone.
 - The guard reads commands, not intent: a download saved to a file and unpacked later, a download
   piped into a shell, `git merge-file`, a SHA piped into `xargs`, or code and labels an interpreter
   supplies are not traced (the guard's LIMITS name them). Each needs an agent set on getting past
@@ -770,7 +777,12 @@ could use them.
 - The needs-owner label (`labels.needsOwner`) is protected beside it: no subagent adds or removes it on
   an existing issue or PR, nor creates, edits, deletes or clones it. `gh issue create --label` with it
   stays allowed for non-worker subagents. The agent-filed label (`labels.agentFiled`) is protected
-  the same way: an agent files a new issue with it and never removes it.
+  the same way: an agent files a new issue with it and never removes it. Nor does a subagent replace or
+  clear an issue's labels, which drops these labels without naming them: `gh api` PUT or DELETE on
+  `issues/<n>/labels`, a POST/PATCH of `issues/<n>` with a `labels` field, GraphQL `updateIssue`/
+  `updatePullRequest` with `labelIds`, an MCP issue or PR update with a `labels` field (an empty list
+  clears them). A new issue never carries the acceptance label; with `agentFiledNeedsAcceptance` it
+  must carry the agent-filed label (§Agent-filed issues), and a worker files none by any route.
 - Closing an issue as not planned is the owner's ruling that the finding is intended (argus records it
   in `arid.md`): no subagent makes it — `gh issue close --reason`/`-r` not planned in any spelling, a
   non-GET `gh api` with `state_reason` not planned, an issue write (`/issues/<n>`, a query string or

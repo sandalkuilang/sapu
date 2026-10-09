@@ -1126,8 +1126,9 @@ function issueSnapshot(c, n) {
 /**
  * May issue (or PR) `n` of contract `c` steer sapu? {trusted, reason, acceptedBy, snapshot}, where
  * snapshot = {kind, title, body, author, lastEditedAt, editor} is the text the verdict judged — the
- * only issue text a skill may read. Yes when its author's id is in `trusted` (decided on the first
- * page). Otherwise only when it carries acceptedLabel(c) NOW, the latest labeled/unlabeled event for
+ * only issue text a skill may read. Yes when its author's id is in `trusted`, unless the contract sets
+ * agentFiledNeedsAcceptance and agentFiledLabel(c) is or ever was on it (a timeline LabeledEvent).
+ * Otherwise only when it carries acceptedLabel(c) NOW, the latest labeled/unlabeled event for
  * that label applied it, by an acceptor (labels.acceptors, else the trusted set; an issue template
  * applies labels as the issue's author), the label was not renamed or edited since (GraphQL names a
  * label as it is now), and since then NO id outside the set retitled it or edited its body — any
@@ -1152,18 +1153,24 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   };
   // An agent files under the trusted account, so its issue would pass by author. Its provenance label
   // says so; with agentFiledNeedsAcceptance, its text (which may quote outside material) needs the
-  // owner's acceptance like an outsider's, and only an acceptor may edit it after that.
-  const agentFiled = first.labels.nodes.some((l) => l && lc(l.name) === lc(agentFiledLabel(c)));
+  // owner's acceptance like an outsider's, and only an acceptor may edit it after that. The label
+  // applied EVER counts, not only now: removing it must not launder the issue into a plain trusted
+  // one. The timeline is paged only when the label is not on the issue now.
+  let all = null;
+  const events = () => (all ??= timeline());
+  const filed = lc(agentFiledLabel(c));
+  const filedNow = first.labels.nodes.some((l) => l && lc(l.name) === filed);
+  const agentFiled = filedNow || events().some((e) => e.type === "LabeledEvent" && typeof e.label === "string" && lc(e.label) === filed);
+  const carries = filedNow ? `it carries ${agentFiledLabel(c)}` : `${agentFiledLabel(c)} was applied to it (removed since)`;
   const gated = agentFiled && c.agentFiledNeedsAcceptance === true;
   const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, agentFiled, snapshot });
-  if (ok(snapshot.author) && !gated) return verdict(true, `author ${named(snapshot.author)} is in the trusted set${agentFiled ? `; it carries ${agentFiledLabel(c)}: an agent filed it, and what it quotes is data` : ""}`);
+  if (ok(snapshot.author) && !gated) return verdict(true, `author ${named(snapshot.author)} is in the trusted set${agentFiled ? `; ${carries}: an agent filed it, and what it quotes is data` : ""}`);
   const author = gated
-    ? `author ${named(snapshot.author)} is an agent's account: it carries ${agentFiledLabel(c)} and the contract sets agentFiledNeedsAcceptance`
+    ? `author ${named(snapshot.author)} is an agent's account: ${filedNow ? carries : `${agentFiledLabel(c)} was applied to it`} and the contract sets agentFiledNeedsAcceptance`
     : `author ${named(snapshot.author)} is not in the trusted set`;
   const editOk = gated ? accepts : ok;
   if (!first.labels.nodes.some((l) => l && l.name === label)) return verdict(false, `${author} and the issue does not carry ${label} (a trusted login applies it to accept the issue)`);
-  const events = timeline();
-  const last = events.filter((e) => e.label === label && (e.type === "LabeledEvent" || e.type === "UnlabeledEvent")).at(-1);
+  const last = events().filter((e) => e.label === label && (e.type === "LabeledEvent" || e.type === "UnlabeledEvent")).at(-1);
   if (!last || last.type !== "LabeledEvent") return verdict(false, `${author}, and no event shows who applied ${label}`);
   if (!accepts(last.actor)) {
     return verdict(false, `${author}, and ${label} was last applied by ${named(last.actor)}, who is not ${own ? "an acceptor (labels.acceptors)" : "in the trusted set"}`);
@@ -1177,9 +1184,9 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   const racing = (t) => typeof t === "string" && Date.parse(t) < since && Date.parse(t) >= since - ACCEPT_QUIET_MS;
   const reapply = (t) => `: the acceptor may have read the text before it — re-apply ${label} after ${new Date(Date.parse(t) + ACCEPT_QUIET_MS).toISOString()}, once its current text is read`;
   const quietMin = ACCEPT_QUIET_MS / 60_000;
-  const retitle = events.find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !editOk(e.actor));
+  const retitle = events().find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !editOk(e.actor));
   if (retitle) return verdict(false, `${author}, and it was retitled by ${named(retitle.actor)} after ${label} was applied`);
-  const raceTitle = events.find((e) => e.type === "RenamedTitleEvent" && racing(e.at) && !editOk(e.actor));
+  const raceTitle = events().find((e) => e.type === "RenamedTitleEvent" && racing(e.at) && !editOk(e.actor));
   if (raceTitle) return verdict(false, `${author}, and it was retitled by ${named(raceTitle.actor)} at ${raceTitle.at}, less than ${quietMin} minutes before ${label} was applied${reapply(raceTitle.at)}`);
   const edits = first.userContentEdits;
   if (edits.totalCount > edits.nodes.length) return verdict(false, `${author}, and it has more body edits than can be checked (${edits.totalCount})`);

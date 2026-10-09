@@ -2293,6 +2293,88 @@ describe("sapu-guard — the needs-owner label is the owner's, like the acceptan
     expect(reviewer("gh issue create --title t --body b --label sapu:agent-filed,bug")).toBeNull();
   });
 
+  const other = (tool: string, ti: Record<string, unknown>, r = rules, worker = false) => checkOther({ tool, ti, here: wt, main, rules: r, worker });
+
+  it.each([
+    ["gh api -X PUT repos/o/r/issues/8/labels -f 'labels[]=bug'"],
+    ["gh api -X DELETE repos/o/r/issues/8/labels"],
+    ["gh api --method=delete /repos/o/r/issues/8/labels?per_page=1"],
+    ["gh api -X PUT https://api.github.com/repos/o/r/issues/8/labels/"],
+    ["gh api -X PATCH repos/o/r/issues/8 -f 'labels[]=bug'"],
+    ["gh api repos/o/r/issues/8 -f labels[]=bug"],
+    ["gh api -X PATCH repos/o/r/issues/8 --raw-field=labels[]=bug"],
+    ["gh api -X PATCH repos/o/r/issues/8 -F labels=@labels.json"],
+    [`gh api graphql -f query='mutation{updateIssue(input:{id:"I_1",labelIds:["L_1"]}){issue{id}}}'`],
+    [`gh api graphql -f query='mutation{updatePullRequest(input:{pullRequestId:"P_1",labelIds:[]}){pullRequest{id}}}'`],
+  ])("refuses %s: replacing or clearing an issue's labels drops the owner labels without naming them", (cmd) => {
+    expect(reviewer(cmd)).toMatch(/agent-filed label/);
+    expect(blocked(cmd)).toMatch(/agent-filed label/);
+  });
+
+  it.each([
+    ["gh api -X POST repos/o/r/issues/8/labels -f 'labels[]=bug'"],
+    ["gh api repos/o/r/issues/8/labels"],
+    ["gh api -X PATCH repos/o/r/issues/8 -f title=t"],
+    ["gh api -X DELETE repos/o/r/issues/8/comments/3"],
+  ])("still allows %s", (cmd) => {
+    expect(reviewer(cmd)).toBeNull();
+  });
+
+  it("refuses an MCP issue update that sets the labels (the list replaces them, an empty one clears them)", () => {
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 8, labels: [] })).toMatch(/agent-filed label/);
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 8, labels: ["bug"] })).toMatch(/agent-filed label/);
+    expect(other("mcp__github__issue_write", { method: "update", owner: "o", repo: "r", issue_number: 8, labels: ["bug"] })).toMatch(/agent-filed label/);
+    expect(other("mcp__github__update_issue", { owner: "o", repo: "r", issue_number: 8, title: "t" })).toBeNull();
+  });
+
+  describe("with agentFiledNeedsAcceptance, a subagent's new issue must carry the agent-filed label", () => {
+    const gated = compileRules({ ...FIXTURE_CONTRACT, agentFiledNeedsAcceptance: true });
+    it.each([
+      ["gh issue create --title t --body b"],
+      ["gh issue create --title t --body b --label bug"],
+      ['gh issue create --title t --body b --label "$L"'],
+      ["gh issue create --title t --body b --label sapu:agent-filed-x"],
+      ["gh issue create --title t --body b --assignee sapu:agent-filed"],
+      ["gh api -X POST repos/o/r/issues -f title=t"],
+      ["gh api repos/o/r/issues -f title=t -f 'labels[]=bug'"],
+      ["gh api repos/o/r/issues --input body.json"],
+      [`gh api graphql -f query='mutation{createIssue(input:{repositoryId:"R_1",title:"t"}){issue{id}}}'`],
+    ])("refuses %s", (cmd) => {
+      expect(reviewer(cmd, gated)).toMatch(/agentFiledNeedsAcceptance.*sapu:agent-filed/);
+    });
+
+    it.each([
+      ["gh issue create --title t --body b --label sapu:agent-filed"],
+      ["gh issue create -t t -b b -l bug,Sapu:Agent-Filed"],
+      ["gh issue create -t t -b b --label=bug --label=sapu:agent-filed"],
+      ["gh issue create -t t -b b -lsapu:agent-filed"],
+      ["gh api repos/o/r/issues -f title=t -f 'labels[]=sapu:agent-filed'"],
+    ])("allows %s", (cmd) => {
+      expect(reviewer(cmd, gated)).toBeNull();
+    });
+
+    it("follows labels.agentFiled, and holds for MCP issue tools too", () => {
+      const named = compileRules({ ...FIXTURE_CONTRACT, agentFiledNeedsAcceptance: true, labels: { ...FIXTURE_CONTRACT.labels, agentFiled: "bot:filed" } });
+      expect(reviewer("gh issue create -t t -b b -l sapu:agent-filed", named)).toMatch(/agentFiledNeedsAcceptance.*bot:filed/);
+      expect(reviewer("gh issue create -t t -b b -l bot:filed", named)).toBeNull();
+      expect(other("mcp__github__create_issue", { owner: "o", repo: "r", title: "t" }, gated)).toMatch(/agentFiledNeedsAcceptance/);
+      expect(other("mcp__github__create_issue", { owner: "o", repo: "r", title: "t", labels: ["bug"] }, gated)).toMatch(/agentFiledNeedsAcceptance/);
+      expect(other("mcp__github__issue_write", { method: "create", owner: "o", repo: "r", title: "t" }, gated)).toMatch(/agentFiledNeedsAcceptance/);
+      expect(other("mcp__github__create_issue", { owner: "o", repo: "r", title: "t", labels: ["sapu:agent-filed"] }, gated)).toBeNull();
+    });
+
+    it("without it, a new issue needs no label", () => {
+      expect(reviewer("gh issue create --title t --body b")).toBeNull();
+      expect(reviewer("gh api repos/o/r/issues -f title=t")).toBeNull();
+      expect(other("mcp__github__create_issue", { owner: "o", repo: "r", title: "t" })).toBeNull();
+    });
+  });
+
+  it("a worker files no issue through gh api or an MCP tool either", () => {
+    expect(blocked("gh api repos/o/r/issues -f title=t -f 'labels[]=sapu:agent-filed'")).toMatch(/files no issues/);
+    expect(other("mcp__github__create_issue", { owner: "o", repo: "r", title: "t", labels: ["sapu:agent-filed"] }, rules, true)).toMatch(/files no issues/);
+  });
+
   it("follows labels.needsOwner, and still protects the acceptance label", () => {
     const custom = compileRules({ ...FIXTURE_CONTRACT, labels: { ...FIXTURE_CONTRACT.labels, needsOwner: "owner:decide" } });
     expect(reviewer("gh issue edit 8 --remove-label owner:decide", custom)).toMatch(/needs-owner label/);

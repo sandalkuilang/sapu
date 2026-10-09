@@ -1241,6 +1241,31 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
     }
   });
 
+  it("an issue the agent-filed label was EVER applied to stays agent-filed: removing the label launders nothing", () => {
+    const F = "sapu:agent-filed";
+    const removed = { author: "owner", labels: [] as string[], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "unlabeled" as const, label: F, actor: "owner", minute: 1 }] };
+    const plain = judge(removed);
+    expect(plain.status).toBe(0);
+    expect(plain.v).toMatchObject({ trusted: true, agentFiled: true });
+    expect(plain.v.reason).toMatch(/sapu:agent-filed was applied to it/);
+    // the event on a later timeline page counts too, and in another letter case
+    expect(judge({ ...removed, events: [{ event: "labeled", label: "Sapu:Agent-Filed", actor: "owner", minute: 0 }], pages: 3 }).v.agentFiled).toBe(true);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      const r = judge(removed);
+      expect(r.status).toBe(1);
+      expect(r.v.agentFiled).toBe(true);
+      expect(r.v.reason).toMatch(/sapu:agent-filed was applied to it and the contract sets agentFiledNeedsAcceptance.*does not carry sapu:accepted/);
+      // acceptance is still judged by who applied the acceptance label
+      const byOwner = { ...removed, labels: [L], events: [...removed.events, { event: "labeled" as const, label: L, actor: "owner", minute: 30 }] };
+      expect(judge(byOwner).v).toMatchObject({ trusted: true, agentFiled: true, acceptedBy: { login: "owner", id: 1 } });
+      const byStranger = { ...removed, labels: [L], events: [...removed.events, { event: "labeled" as const, label: L, actor: "stranger", minute: 30 }] };
+      expect(judge(byStranger).v.reason).toMatch(/last applied by stranger/);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
   it("with labels.acceptors, an agent-filed issue edited after acceptance by a non-acceptor (the agents' own account) refuses", () => {
     const F = "sapu:agent-filed";
     commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true, labels: { ...TRUSTING.labels, acceptors: [ALICE] } }) });
@@ -1414,12 +1439,18 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
     expect(judge(accepted("owner", { events: [{ event: "labeled", label: L, actor: "owner", minute: 5, labelUpdated: 3 }] })).status).toBe(0);
   });
 
-  it("decides a trusted author and a missing label from the first page, without paging the timeline", () => {
+  it("pages the timeline only when the agent-filed label is not on the issue now, and refuses a timeline it cannot read whole", () => {
     const events = [1, 2, 3].map((m) => ({ event: "renamed" as const, actor: "stranger", minute: m }));
-    expect(judge({ author: "alice", events, pages: 3, missingPages: true }).status).toBe(0);
-    const noLabel = judge({ author: "stranger", events, pages: 3, missingPages: true });
-    expect(noLabel.status).toBe(1);
-    expect(noLabel.v.reason).toMatch(/does not carry sapu:accepted/);
+    // a later page could hold the agent-filed label, applied and removed since: unread, nothing is trusted
+    const unread = judge({ author: "alice", events, pages: 3, missingPages: true });
+    expect(unread.status).toBe(1);
+    expect(unread.v.reason).toMatch(/cannot read issue #\d+ from GitHub/);
+    expect(judge({ author: "alice", events, pages: 3 }).status).toBe(0);
+    // carrying the label now settles it on the first page
+    const F = "sapu:agent-filed";
+    const now = judge({ author: "alice", labels: [F], events, pages: 3, missingPages: true });
+    expect(now.status).toBe(0);
+    expect(now.v.agentFiled).toBe(true);
   });
 
   it("pages the rest of the timeline with a light query only when the label must be traced", () => {
