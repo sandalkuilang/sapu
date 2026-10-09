@@ -20,14 +20,15 @@ const NAMED = { '"': "quot", "&": "amp", "<": "lt", ">": "gt", "'": "apos" };
 const SHORT_ESCAPES = { "\n": "n", "\t": "t", "\r": "r", "\b": "b", "\f": "f" };
 
 /**
- * The ways one character of a secret may be printed: as is, after a backslash (`\"`, PHP's `\/`), as a
- * C escape (`\n`), `\uXXXX` (any case; a surrogate pair beyond U+FFFF), `\xHH`, an HTML entity (decimal,
- * hex in any case, leading zeros, or named), its UTF-8 bytes as `%HH` (any case), `+` for a space, and `/`
- * for a backslash (a browser's URL path).
+ * The ways one character of a secret may be printed: as is or in its other case (a value an app upper- or
+ * lower-cased), after a backslash (`\"`, PHP's `\/`), as a C escape (`\n`), `\uXXXX` (any case; a
+ * surrogate pair beyond U+FFFF), `\xHH`, an HTML entity (decimal, hex in any case, leading zeros, or
+ * named), its UTF-8 bytes as `%HH` (any case), `+` for a space, and `/` for a backslash (a browser's URL path).
  */
 function charPattern(ch) {
   const cp = ch.codePointAt(0);
-  const alts = [`\\\\?${reEscape(ch)}`];
+  const cases = [...new Set([ch, ch.toLowerCase(), ch.toUpperCase()])].filter((c) => [...c].length === 1);
+  const alts = [`\\\\?${cases.length > 1 ? `(?:${cases.map(reEscape).join("|")})` : reEscape(ch)}`];
   if (SHORT_ESCAPES[ch]) alts.push(`\\\\${SHORT_ESCAPES[ch]}`);
   const units = cp > 0xffff ? [0xd800 + ((cp - 0x10000) >> 10), 0xdc00 + ((cp - 0x10000) & 0x3ff)] : [cp];
   alts.push(units.map((u) => `\\\\u${hexAnyCase(u, 4)}`).join(""));
@@ -89,21 +90,33 @@ function parts(v) {
   return out;
 }
 
+/** `v` and, when it holds `%HH` that decode, `v` decoded (a cookie recorded URL-encoded, `s%3A…`, shown as `s:…`). */
+function variants(v) {
+  if (!/%[0-9A-Fa-f]{2}/.test(v)) return [v];
+  try {
+    const d = decodeURIComponent(v);
+    return d && d !== v ? [v, d] : [v];
+  } catch {
+    return [v];
+  }
+}
+
 /**
  * The regular expressions for every form a secret value takes in what the CLI prints, whatever language
  * escaped it, one per part of it (a value of more than PATTERN_CHARS characters is matched part by part,
  * the parts overlapping: a prefix still finds the leak, and every part is masked): each character in any of
  * its encodings (charPattern: JSON from JavaScript, Go's `&`, Python's `ä`, PHP's `\/`, HTML
- * entities, URL and form encoding, mixed freely), or the part in base64 (padded, unpadded, URL-safe, at
- * any byte offset: base64Forms; a long value's parts start at any offset of its base64) when that is at
- * least 8 characters long. `prefix`: the first part only (enough to find a leak, not to mask one).
+ * entities, URL and form encoding, either case, mixed freely), or the part in base64 (padded, unpadded,
+ * URL-safe, at any byte offset: base64Forms) or in hex (either case), each at least 8 characters long; the
+ * same for the value URL-decoded. `prefix`: the first part only (enough to find a leak, not to mask one).
  * A pattern that cannot be built throws a PatternError.
  */
 export function secretPatterns(v, { prefix = false } = {}) {
-  const all = parts(String(v));
-  return (prefix ? all.slice(0, 1) : all).map((p) => {
-    const literal = [...new Set(base64Forms(Buffer.from(p, "utf8")))].filter((b) => b.length >= 8).map(reEscape);
-    return compile([...literal, [...p].map(charPattern).join("")].join("|"), "g");
+  return variants(String(v)).flatMap((x) => (prefix ? parts(x).slice(0, 1) : parts(x))).map((p) => {
+    const bytes = Buffer.from(p, "utf8");
+    const literal = [...new Set(base64Forms(bytes))].filter((b) => b.length >= 8).map(reEscape);
+    const hex = bytes.length >= 4 ? [[...bytes].map((b) => hexAnyCase(b, 2)).join("")] : [];
+    return compile([...literal, ...hex, [...p].map(charPattern).join("")].join("|"), "g");
   });
 }
 

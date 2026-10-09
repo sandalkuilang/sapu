@@ -44,7 +44,8 @@
 //                                drop one role or step at a time from a reproduced repro, each try a run on a
 //                                fresh instance (spec §10 "Minimize"): a line per try (its label and exit), the
 //                                confirm run's exit, then minimized <ref>: steps <a> → <b>, runs <k>/<max>,
-//                                stopped fixpoint|budget, confirmed yes|no; min.json when confirmed
+//                                stopped fixpoint|budget|down|deadline, confirmed yes|no; min.json when
+//                                confirmed; exit 2 when the cycle went down or its deadline came too near
 //   argus-live.mjs repro <slot>.<generation>.<k> --test
 //                                write the candidate's Playwright RED test (from min.json when minimize confirmed
 //                                it, else its whole repro) to red.spec.ts in its records: red test: <absolute path>;
@@ -124,7 +125,7 @@ const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice"
 
 try {
   // down and the reaper drain every session into the run's secret ledger before they close it.
-  if (cmd === "reap" && args.length === 1) await reap(main, args[0], { drain: (records) => drainSessions(main, args[0], records) });
+  if (cmd === "reap" && args.length === 1) await reap(main, args[0], { drain: (records, o) => drainSessions(main, args[0], records, o) });
   else if (cmd === "proxy" && args.length === 1) await serveProxy(main, args[0]);
   else if (cmd === "pw") {
     // The explorer's call: its lines (every page byte already fenced and masked), exit 0, 1 or 2 (decision 20).
@@ -156,7 +157,8 @@ try {
     process.exit(r.code);
   } else if (cmd === "repro" && args.length === 2 && args[1] === "--minimize") {
     // Only the tried labels and exits: no browser output reaches the orchestrator (spec §10 "Minimize").
-    await minimize(main, args[0], { say: print });
+    const r = await minimize(main, args[0], { say: print });
+    process.exit(r.code);
   } else if (cmd === "repro" && args.length === 2 && args[1] === "--test") print(`red test: ${redTestFile(main, args[0])}`);
   else if (cmd === "repro" && args.length === 1) {
     // Two of two: each run's lines as they are made, prefixed with the run, then the verdict (decision 9).
@@ -244,7 +246,7 @@ try {
     const lock = readLock(main);
     if (!lock) print("no journey cycle is running");
     else {
-      const { report } = await down(main, { runId: lock.runId, secrets, drain: (records) => drainSessions(main, lock.runId, records) });
+      const { report } = await down(main, { runId: lock.runId, secrets, drain: (records, o) => drainSessions(main, lock.runId, records, o) });
       for (const line of report) print(line);
       print(`cycle ${lock.runId} is down`);
     }

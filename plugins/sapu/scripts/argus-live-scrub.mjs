@@ -12,7 +12,7 @@ import path from "node:path";
 import { expand, LIVE_FILE, loadLive } from "./argus-live-config.mjs";
 import { PatternError } from "./argus-live-fence.mjs";
 import { normHost, ownerEnvFiles } from "./argus-live-endpoints.mjs";
-import { highEntropy, MIN_SECRET, readLedger, readSeen, SECRET_KEY, secretHits } from "./argus-live-ledger.mjs";
+import { highEntropy, readLedger, readSeen, SECRET_KEY, secretHits } from "./argus-live-ledger.mjs";
 import { liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run, tempBeside, within } from "./argus-live-proc.mjs";
 import { readRun, recordedSecrets, worktreeHeadFile } from "./argus-live-run.mjs";
@@ -20,17 +20,34 @@ import { loadContract, resolvePolicy } from "./sapu-contract.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
+/** A value a source that mixes configuration with secrets holds as configuration, never as a secret: a number, a switch word. */
+const PLAIN_VALUE = /^(?:[0-9]+|true|false|yes|no|on|off)$/i;
+/** Environment variables that say where and who, never a secret: the shell's, the terminal's, the locale's, XDG's homes, the SSH agent's socket, Claude Code's own. */
+const PLAIN_ENV = /^(?:PWD|OLDPWD|INIT_CWD|HOME|TMPDIR|TMP|TEMP|PATH|SHELL|USER|USERNAME|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM[A-Z_]*|XDG_[A-Z_]+_HOME|SSH_AUTH_SOCK|CLAUDE_CODE_[A-Z0-9_]*)$/;
+/** A name that says its value is a place (`…_DIR`, `…_PATH`, `…_HOME`, `…_PWD`, `…_CWD`, `…_ROOT`, `…_PREFIX`): never judged by its entropy. */
+const PATH_NAME = /(?:^|_)(?:DIR|PATH|HOME|PWD|CWD|ROOT|PREFIX)$/i;
+/** An absolute path: never judged by its entropy. */
+const ABS_PATH = /^(?:\/|~\/|[A-Za-z]:[\\/])\S*$/;
+/** The fewest characters a value of a mixed source has to be a secret: a shorter one is matched as a whole token from this length on. */
+const MIXED_MIN = 4;
+
 /**
- * A source that mixes configuration with secrets gives only what is secret-like: a SECRET_KEY name or a
- * highEntropy value, at least MIN_SECRET long — a shorter one is a flag (`CHILD_SESSION=1`), and as a
- * whole token it would refuse every issue, as a short ledger value would.
+ * A source that mixes configuration with secrets (a repo env file, the environment) gives only what is
+ * secret-like: never a value under MIXED_MIN characters, a number or a switch word (PLAIN_VALUE), nor a
+ * variable of PLAIN_ENV; else a SECRET_KEY name, or a highEntropy value that is no path (ABS_PATH) under
+ * no place's name (PATH_NAME). A short one is then a whole token: Claude Code's `CLAUDE_CODE_CHILD_SESSION=1`
+ * would refuse every issue holding a lone `1`.
  */
-const secretLike = (name, v) => String(v).length >= MIN_SECRET && (SECRET_KEY.test(String(name)) || highEntropy(v));
+const secretLike = (name, v) => {
+  const s = String(v);
+  if (s.length < MIXED_MIN || PLAIN_VALUE.test(s) || PLAIN_ENV.test(String(name))) return false;
+  return SECRET_KEY.test(String(name)) || (!PATH_NAME.test(String(name)) && !ABS_PATH.test(s) && highEntropy(s));
+};
 
 /**
  * Every secret scrub refuses for run `runId` → `{secrets: [{cls, label, v}], refusal}` (decision 17;
  * `label` names the source, never the value; empty values dropped): `env file` (every value of
- * `env_file`, now and as `up` read it), `repo env file` (the owner's env files, secret-like only), `role
+ * `env_file`, now and as `up` read it, but a number or a switch word), `repo env file` (the owner's env files, secret-like only), `role
  * password` and `TOTP secret` (`.argus/live.json`'s roles, expanded), `environment variable <NAME>`
  * (`env`, secret-like only) and the ledger's `cookie`, `header`, `storage` and `created password`.
  * `refusal` is the line that ends scrub instead: a ledger that is gone, damaged or incomplete (decision
@@ -45,7 +62,8 @@ export function scrubSecrets(main, { runId, env = process.env } = {}) {
   if (!config || errors.length) return { secrets, refusal: `refused: scrub: ${LIVE_FILE}: ${errors.join("; ")}; nothing is filed` };
   const c = loadContract(main);
   if (!c.contract && !c.missing) return { secrets, refusal: `refused: scrub: ${c.error}` };
-  for (const [k, v] of Object.entries({ ...recordedSecrets(main, config), ...envFile })) add("env file", `env file ${k}`, v);
+  // The env file holds the run's own secrets: every value, but a number or a switch word.
+  for (const [k, v] of Object.entries({ ...recordedSecrets(main, config), ...envFile })) if (!PLAIN_VALUE.test(String(v))) add("env file", `env file ${k}`, v);
   for (const { file, vars } of ownerEnvFiles(main, c.contract ?? null)) for (const [k, v] of Object.entries(vars)) if (secretLike(k, v)) add("repo env file", `${file} ${k}`, v);
   const expanded = (v) => {
     try {
@@ -151,10 +169,11 @@ export function redactIds(text, seen) {
 
 /**
  * What GitHub would turn into a notification, a cross-reference or a link: an `http(s)` URL or a `www.`
- * host (its trailing punctuation left out), `owner/repo#<n>`, `GH-<n>`, `#<n>` and an `@user` or
+ * host (its trailing punctuation left out), a protocol-relative link's or image's target (`[x](//host…)`,
+ * `![](//host…)`, `src=//…`, `href=//…`), `owner/repo#<n>`, `GH-<n>`, `#<n>` and an `@user` or
  * `@org/team` mention — each with the backslashes right before it, which a code span then holds.
  */
-const LIVE = /(\\*)((?:https?:\/\/|\bwww\.)[^\s<>"'`]+|\b[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+#[0-9]+|\bGH-[0-9]+\b|(?<!&)#[0-9]+|(?<![A-Za-z0-9_.+\-/])@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?)/g;
+const LIVE = /(\\*)((?:https?:\/\/|\bwww\.)[^\s<>"'`]+|(?<=\]\(\s*|\b(?:src|href)\s*=\s*["']?)\/\/[^\s<>"'`)]+|\b[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+#[0-9]+|\bGH-[0-9]+\b|(?<!&)#[0-9]+|(?<![A-Za-z0-9_.+\-/])@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?)/g;
 
 /** A URL's host is loopback (the run's own app): such a link stays. */
 const loopbackUrl = (u) => {

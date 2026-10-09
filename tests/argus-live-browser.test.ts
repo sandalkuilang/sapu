@@ -500,11 +500,19 @@ describe("argus-live pw in Chrome", () => {
     await t.call("buyer.1", "goto", "/orders/new");
     await t.call("buyer.1", "fill", "getByLabel('Quantity')", "1");
     await t.call("buyer.1", "click", PLACE);
+    // The text appears 4000 ms after the page loads, and the load follows the goto's start: timed from there,
+    // never from the find's own start (a slow goto leaves the find less to wait).
+    const gotoAt = Date.now();
     await t.call("buyer.1", "goto", "/orders/ORD-1?late=4000");
+    const findAt = Date.now();
     const found = await t.call("buyer.1", "find", "Ready for dispatch");
+    const doneAt = Date.now();
     expect(fenced(found)).toContain("Ready for dispatch");
     const ms = Number(/^found after (\d+) ms$/m.exec(outside(found).join("\n"))![1]);
-    expect(ms).toBeGreaterThanOrEqual(1500);
+    // It asked again at least once (500 ms apart), within the call, and was answered no earlier than the text appeared.
+    expect(ms).toBeGreaterThanOrEqual(500);
+    expect(ms).toBeLessThanOrEqual(doneAt - findAt);
+    expect(doneAt - gotoAt).toBeGreaterThanOrEqual(4000);
     const never = await t.call("buyer.1", "find", "Never shown");
     expect(Number(/^not found after (\d+) ms$/m.exec(outside(never).join("\n"))![1])).toBeGreaterThanOrEqual(5000);
   }, 180_000);

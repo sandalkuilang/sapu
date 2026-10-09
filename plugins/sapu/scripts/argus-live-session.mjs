@@ -39,9 +39,11 @@ export function keepDrain(main, runId, session, drained, capBytes) {
  * `down`): each whose daemon runs, the observe stage in its own cwd and HOME, its values kept (keepDrain;
  * `<session> could not be drained` marks the ledger incomplete when that fails); each whose daemon is
  * gone while its account's state (its slot's state.json) says `drained: false`, `<session> lost before
- * its drain`; one gone between commands lost nothing. `js` is run.json's CLI unless given.
+ * its drain`; one gone between commands lost nothing. `js` is run.json's CLI unless given. `drained(name)`
+ * is told each session whose values are kept, or that lost none: the teardown marks every other undrained
+ * when this throws part-way.
  */
-export async function drainSessions(main, runId, records, { js = null, runner = run, cliRunner = runAsync, capBytes = CAP_BYTES } = {}) {
+export async function drainSessions(main, runId, records, { js = null, runner = run, cliRunner = runAsync, capBytes = CAP_BYTES, drained = () => {} } = {}) {
   let cli = js;
   if (!cli) {
     try {
@@ -61,12 +63,14 @@ export async function drainSessions(main, runId, records, { js = null, runner = 
         state = null;
       }
       if (state && state.drained === false) marks.push({ c: "incomplete", v: `${s.name} lost before its drain` });
+      else drained(s.name);
       continue;
     }
     try {
       if (typeof cli !== "string" || !fs.existsSync(cli)) throw new Error("no CLI");
       const o = await runCode({ js: cli, session: s.name, cwd: s.cwd, home: s.home, code: loginCode("observe", { loggedIn: null }), timeoutMs: 60_000, runner: cliRunner });
       keepDrain(main, runId, s.name, o && o.secrets, capBytes);
+      drained(s.name);
     } catch {
       marks.push({ c: "incomplete", v: `${s.name} could not be drained` });
     }
@@ -124,7 +128,9 @@ function logProbe(main, runId, entry) {
  *   (stillLive; a login-command role's with the storage state commandLogin wrote, which signs it in;
  *   openSession) and hooked: the `hook` stage with the run's origins, the signal script and `capBytes`
  *   (the bytes of distinct header values its context records); a hook that failed is `harness: hook
- *   failed` among `events`, and the session is used all the same.
+ *   failed` among `events`, and the session is used all the same — its headers unrecorded, so the
+ *   ledger is marked incomplete, `<session> unhooked` (unless `markUnhooked` is false: a caller that
+ *   never uses an unhooked session).
  * - `signIn(c)` → login's answer (`failures`, when given, records a created account's failures);
  *   `state.signedIn` set on success.
  * - `gone(res, record)`: the command failed and the CLI said the browser is not open, or the recorded
@@ -141,7 +147,7 @@ function logProbe(main, runId, entry) {
  *   sign-in (`re-logged-in: <role.k>` or `harness: login failed`; a login-command role's session is
  *   closed and opened again).
  */
-export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, capBytes = CAP_BYTES, runner = run, cliRunner = runAsync }) {
+export function sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, credentials = null, failures = null, capBytes = CAP_BYTES, markUnhooked = true, runner = run, cliRunner = runAsync }) {
   const role = account.split(".")[0];
   const r = live.roles && live.roles[role];
   const plan = loginPlan(live, role);
@@ -177,6 +183,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
       await d.stage("hook", { runOrigins, signals: SIGNAL_SCRIPT, capBytes });
       return [];
     } catch {
+      if (markUnhooked) appendLedger(main, runId, [{ c: "incomplete", v: `${name} unhooked` }]);
       return ["harness: hook failed"];
     }
   };

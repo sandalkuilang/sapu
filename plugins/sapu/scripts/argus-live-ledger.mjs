@@ -239,8 +239,8 @@ export function readSeen(main, runId) {
   return out;
 }
 
-/** Whitespace, punctuation and symbols: what a value is spelled out with, and stripped of. */
-const SEPARATOR = /[\s\p{P}\p{S}]/u;
+/** Whitespace, punctuation, symbols and invisible format characters (a soft hyphen, U+200B, U+2060): what a value is spelled out with, and stripped of. */
+const SEPARATOR = /[\s\p{P}\p{S}\p{Cf}]/u;
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
 /** `text` without the characters `drop` matches → `{text, at}`, `at[i]` the index in `text` of the i-th kept character. */
@@ -284,15 +284,15 @@ function matchIndexes(re, s) {
   return out;
 }
 
-/** A short value as a whole token — not after or before a letter or digit —, raw or spelled out with separators between its characters. */
+/** A short value as a whole token — not after or before a letter or digit —, raw or spelled out with separators (SEPARATOR) between its characters. */
 const tokenPattern = (v) =>
-  new RegExp(`(?<![\\p{L}\\p{N}])${[...v].map(reEscape).join("[\\s\\p{P}\\p{S}]*")}(?![\\p{L}\\p{N}])`, "gu");
+  new RegExp(`(?<![\\p{L}\\p{N}])${[...v].map(reEscape).join("[\\s\\p{P}\\p{S}\\p{Cf}]*")}(?![\\p{L}\\p{N}])`, "gu");
 
 /**
  * Where `secrets` (`[{cls, v}]`) occur in `text` → `[{line, col, cls}]` (1-based), sorted by line,
  * column and class, distinct. Empty values are ignored; a value of a class in LEDGER_CLASSES counts only
  * at MIN_SECRET or more. A value of MIN_SECRET or more is found by secretPatterns (its every encoding,
- * base64 included, from its first PATTERN_CHARS characters: a prefix still finds the leak) or,
+ * base64 and hex included, from its first PATTERN_CHARS characters: a prefix still finds the leak) or,
  * the text and the value each stripped of SEPARATOR, as a substring (the stripped value MIN_SECRET or
  * more; a shorter one is matched as a short value is). A shorter value is found only as a whole token:
  * raw, URL-decoded, as its base64 (padded, unpadded or URL-safe) and spelled out with SEPARATOR between

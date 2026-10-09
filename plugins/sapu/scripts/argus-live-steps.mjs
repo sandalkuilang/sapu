@@ -218,6 +218,9 @@ function stepOf(raw, n, { accounts, live }) {
     if (typeof raw.as !== "string" || !raw.as.includes(".")) refuse("login's as names an account (<role>.<k>)");
     if (as.split(".")[0] === "anon") refuse("anon is never signed in");
     if (!/\{\{/.test(step.user) && configuredUser(live, step.user)) refuse("login takes an account the journey created, never a configured user");
+    // The password goes to the ledger as `created password` and into the repro the issue quotes: a literal one
+    // would refuse every issue of the finding, while one made from {{marker}} differs each run.
+    if (!step.password.includes("{{marker}}")) refuse("login's password holds {{marker}} (a literal password would make the finding unfileable)");
   }
   if (kind === "trigger") {
     const hook = live.triggers && Object.hasOwn(live.triggers, step.name) ? live.triggers[step.name] : null;

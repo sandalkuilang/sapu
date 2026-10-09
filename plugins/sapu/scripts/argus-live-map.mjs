@@ -59,11 +59,15 @@ const JOURNEY_KEYS = ["id", "domain", "title", "money", "global", "goal", "steps
 const STEP_KEYS = ["role", "route", "trigger", "goal", "claim", "sources"];
 const SOURCE_KEYS = ["file", "line", "text"];
 
+/** A C0 or C1 control character, DEL included. */
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
 /**
  * The map an explorer returns in map mode (decision 20) → `{value, errors}`: `{roots: [≤ 100 repo-relative
  * paths], journeys: [≤ 100 {id kebab-case, domain ≤ 60, title ≤ 120, money, global, goal ≤ 500, steps: [1–40
  * {role, route? (starts /, ≤ 200), trigger?, goal ≤ 500, claim?, sources: [1–10 {file, line ≥ 1, text 16–500}]}]}],
- * notes? ≤ 2000}`; every unknown key is an error. `value` is the map as given when there is none.
+ * notes? ≤ 2000}`; every unknown key is an error, and so is a control character in a domain, title, goal or
+ * the notes (the catalog prints them: no line of it can be forged). `value` is the map as given when there is none.
  */
 export function validateMap(obj) {
   const errors = [];
@@ -74,6 +78,8 @@ export function validateMap(obj) {
     for (const k of Object.keys(o)) if (!allowed.includes(k)) err(`${where}: unknown key ${word(k)}`);
   };
   const str = (v, where, max, min = 1) => (typeof v === "string" && v.length >= min && v.length <= max) || err(`${where} must be a string of ${min > 1 ? `${min} to ${max}` : `at most ${max}`} characters`);
+  // What the catalog prints holds no control character: a line break or an escape there could forge its lines.
+  const plain = (v, where, max) => (typeof v === "string" && CONTROL.test(v) ? err(`${where} must hold no control character`) : str(v, where, max));
   const bool = (v, where) => typeof v === "boolean" || err(`${where} must be true or false`);
   const list = (v, where, max, min = 0) => {
     if (!Array.isArray(v)) return (err(`${where} must be an array`), []);
@@ -93,16 +99,16 @@ export function validateMap(obj) {
   list(obj.roots, "roots", 100).forEach((r, i) => file(r, `roots[${i}]`));
   objects(obj.journeys, "journeys", 100, 0, JOURNEY_KEYS, (j, at) => {
     if (typeof j.id !== "string" || !KEBAB.test(j.id) || j.id.length > 100) err(`${at}.id must be kebab-case`);
-    str(j.domain, `${at}.domain`, 60);
-    str(j.title, `${at}.title`, 120);
+    plain(j.domain, `${at}.domain`, 60);
+    plain(j.title, `${at}.title`, 120);
     bool(j.money, `${at}.money`);
     bool(j.global, `${at}.global`);
-    str(j.goal, `${at}.goal`, 500);
+    plain(j.goal, `${at}.goal`, 500);
     objects(j.steps, `${at}.steps`, 40, 1, STEP_KEYS, (s, st) => {
       if (typeof s.role !== "string" || !ROLE_NAME.test(s.role) || s.role.length > 40) err(`${st}.role must be a role name`);
       if (s.route !== undefined && (typeof s.route !== "string" || !s.route.startsWith("/") || s.route.length > 200)) err(`${st}.route must start with / (at most 200 characters)`);
       if (s.trigger !== undefined && (typeof s.trigger !== "string" || !TRIGGER.test(s.trigger))) err(`${st}.trigger must be a trigger name (${TRIGGER.source})`);
-      str(s.goal, `${st}.goal`, 500);
+      plain(s.goal, `${st}.goal`, 500);
       if (s.claim !== undefined) bool(s.claim, `${st}.claim`);
       objects(s.sources, `${st}.sources`, 10, 1, SOURCE_KEYS, (a, sa) => {
         file(a.file, `${sa}.file`);
@@ -111,7 +117,7 @@ export function validateMap(obj) {
       });
     });
   });
-  if (obj.notes !== undefined) str(obj.notes, "notes", 2000);
+  if (obj.notes !== undefined) plain(obj.notes, "notes", 2000);
   return { value: obj, errors };
 }
 

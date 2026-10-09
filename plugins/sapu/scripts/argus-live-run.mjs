@@ -498,12 +498,14 @@ export function pruneTraces(main, runId) {
   walk("");
 }
 
-/** Runs one teardown step; an error is noted and the teardown goes on. */
+/** Runs one teardown step; an error is noted and the teardown goes on → true when the step ran through. */
 export async function guarded(what, note, fn) {
   try {
     await fn();
+    return true;
   } catch (e) {
     note(`${what}: ${e.message}`);
+    return false;
   }
 }
 
@@ -584,9 +586,13 @@ const TEARDOWN = [
   // Each session drained first (`drain`: its values into the run's secret ledger; else marked undrained),
   // closed by name, then its daemon and browser killed by identity (closeSessions).
   // Then whatever a session of the run left that no record holds (sweepSessions: its daemons by name, orphaned browsers by HOME).
+  // A drain that throws part-way marks the sessions it had not drained, as no drain would.
   ["CLI sessions", async (t) => {
-    if (t.drain) await guarded("draining the CLI sessions", t.note, () => t.drain(t.rec?.sessions ?? []));
-    else await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, t.rec?.sessions));
+    if (t.drain) {
+      const done = new Set();
+      const ok = await guarded("draining the CLI sessions", t.note, () => t.drain(t.rec?.sessions ?? [], { drained: (name) => done.add(name) }));
+      if (!ok) await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, (t.rec?.sessions ?? []).filter((x) => !x || !done.has(x.name))));
+    } else await guarded("the secret ledger", t.note, () => markUndrained(t.main, t.runId, t.rec?.sessions));
     await closeSessions(t.rec?.sessions, { js: t.rec?.browser?.js ?? null, runner: t.runner, cliRunner: t.asyncRunner, graceMs: t.graceMs, note: t.note });
     const homes = [...new Set([...(t.rec?.sessions ?? []).map((x) => x && x.home), t.rec?.home ? path.join(t.rec.home, "browser") : null].filter((h) => typeof h === "string"))];
     await sweepSessions({ match: (name) => name.startsWith(`${t.runId}-`), homes, runner: t.runner, graceMs: t.graceMs, note: t.note });

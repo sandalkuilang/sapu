@@ -5,9 +5,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, partsIn, tempDir, until } from "./helpers/argus-live";
+import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -35,7 +36,7 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { minimize, repro } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { minimize, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -112,6 +113,19 @@ describe("argus-live modules — the DAG", () => {
     // Doc drift reads git's blame and nothing else.
     expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
+  });
+
+  it("the instance module's header names every module, each after the modules it imports", () => {
+    const g = graph();
+    const text = readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8");
+    const header = text.slice(0, text.indexOf("\nimport ")).replace(/^\/\/ ?/gm, "");
+    const dag = header.slice(header.indexOf("argus-live-proc.mjs"), header.indexOf("Leaves:"));
+    const leaves = [...header.slice(header.indexOf("Leaves:")).split(/\.\s/)[0].matchAll(/-([a-z]+)\.mjs/g)].map((m) => `argus-live-${m[1]}`);
+    const order = [...dag.matchAll(/argus-live\.mjs|argus-live-[a-z]+\.mjs|-([a-z]+)\.mjs|this module/g)].map((m) => (m[0] === "this module" ? "argus-live-instance" : m[1] ? `argus-live-${m[1]}` : m[0].replace(/\.mjs$/, "")));
+    const at = (m: string) => order.indexOf(m);
+    for (const m of g.keys()) expect(leaves.includes(m) || at(m) >= 0, `${m} is named in the header`).toBe(true);
+    for (const leaf of leaves) expect(g.get(leaf), leaf).toEqual([]);
+    for (const [m, deps] of g) for (const d of deps) if (!leaves.includes(d)) expect(at(d) < at(m), `${m} imports ${d}, named after it`).toBe(true);
   });
 
   it("origins are compared as the run spells them", () => {
@@ -196,7 +210,15 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     const first = await t.driver().ensure();
     expect(first).toMatchObject({ opened: true, events: ["harness: hook failed"], record: { name: `${t.runId}-1-buyer.1` } });
     expect((readRun(t.main).sessions ?? []).map((x: Obj) => x.name)).toEqual([`${t.runId}-1-buyer.1`]);
-  }, 30_000);
+    // Its headers go unrecorded from here on: the run's ledger says so, and scrub refuses the run.
+    expect(readLedger(t.main, t.runId)!.incomplete).toBe(`${t.runId}-1-buyer.1 unhooked`);
+    // A driver that never uses an unhooked session (the repro runner: a HARNESS at once) leaves the ledger as it is.
+    const u = driverRun();
+    u.answer("run-code", "### Error\nError: boom\n");
+    const d = sessionDriver({ main: u.main, runId: u.runId, slot: 1, account: "buyer.1", rec: readRun(u.main), live: u.live, envSecrets: loadLive(u.main).secrets, slotRec: { journey: "order-to-cash", accounts: { "buyer.1": "buyer1@example.test" } }, dir: u.dir, js: u.js, markUnhooked: false });
+    expect((await d.ensure()).events).toEqual(["harness: hook failed"]);
+    expect(readLedger(u.main, u.runId)).toBeNull();
+  }, 60_000);
 
   it("a gone browser is reopened and the command is not run", async () => {
     const t = driverRun();
@@ -416,6 +438,22 @@ describe("argus-live ledger", () => {
     expect(readLedger(u.main, u.runId).incomplete).toBe(`${u.runId}-1-buyer.1 closed undrained`);
   }, 30_000);
 
+  it("a drain that throws mid-way leaves the sessions it had not drained marked undrained", async () => {
+    const u = liveRun();
+    writeRunFiles(u.main, { runId: u.runId, worktree: u.wt, home: u.home, origins: [], allowOrigins: [], groups: [], env: u.env, instanceId: "0123456789abcdef" });
+    const me = { pid: process.pid, pgid: process.pid, started: startTime(process.pid) };
+    const record = (account: string) => ({ name: `${u.runId}-1-${account}`, slot: 1, account, cwd: slotDir(u.main, u.runId, 1), home: join(u.home, "browser"), daemon: me, browser: null });
+    updateRun(u.main, u.runId, (prev: Obj) => ({ ...prev, sessions: [record("buyer.1"), record("buyer.2"), record("anon.1")] }));
+    const drain = async (records: Obj[], { drained }: { drained: (name: string) => void }) => {
+      drained(records[0].name);
+      throw new Error("the CLI died");
+    };
+    await down(u.main, { runId: u.runId, graceMs: 1000, drain });
+    expect(readLedger(u.main, u.runId)!.entries).toEqual([
+      { c: "incomplete", v: `${u.runId}-1-buyer.2 closed undrained` },
+      { c: "incomplete", v: `${u.runId}-1-anon.1 closed undrained` },
+    ]);
+  }, 30_000);
 });
 
 describe("argus-live repro sessions", () => {
@@ -558,6 +596,9 @@ describe("argus-live repro DSL", () => {
       [[{ as: "customer.2", do: "login", user: " Sales1@Example.test", password: "pw-1" }, FINAL], "step 1: login takes an account the journey created, never a configured user"],
       [[{ as: "customer.2", do: "login", user: "x@example.test" }, FINAL], "step 1: login takes a user and a password (strings, placeholders allowed)"],
       [[{ as: "customer.2", do: "login", user: "x@example.test", password: 7 }, FINAL], "step 1: login takes a user and a password (strings, placeholders allowed)"],
+      // A literal created password would be in the ledger and in the repro scrub files with the issue: never fileable.
+      [[{ as: "customer.2", do: "login", user: "x@example.test", password: "pw-1" }, FINAL], "step 1: login's password holds {{marker}} (a literal password would make the finding unfileable)"],
+      [[{ as: "customer.2", do: "login", user: "{{marker}}@example.test", password: "{{order}}" }, FINAL], "step 1: login's password holds {{marker}} (a literal password would make the finding unfileable)"],
       [[{ as: "system", do: "trigger", name: "nope", values: [] }, FINAL], "step 1: trigger nope is not in live.triggers"],
       [[{ as: "system", do: "trigger", name: "payment-settles", values: [] }, FINAL], "step 1: trigger payment-settles takes 1 value"],
       [[{ as: "customer", do: "fill", target: { label: "Note" }, value: "n".repeat(501) }, FINAL], "step 1: a string is at most 500 characters, without control characters"],
@@ -781,6 +822,21 @@ describe("argus-live repro — two of two", () => {
     expect([b.code, b.lines.at(-1)]).toEqual([2, "HARNESS: run 1: exit 3 without its REPRODUCED line"]);
   });
 
+  it("a run is numbered after the candidate's records, never over one", async () => {
+    const t = returned([LIST]);
+    mkdirSync(t.dir(t.refs[0]), { recursive: true });
+    for (const i of [1, 2]) writeFileSync(join(t.dir(t.refs[0]), `run-${i}.json`), JSON.stringify({ exit: 3, reduced: i === 2 }));
+    const s = stub([3, 3]);
+    expect((await repro(t.main, t.refs[0], { once: s.once })).code).toBe(3);
+    expect(s.calls.map((c) => c.i)).toEqual([3, 4]);
+    // One run (--once) on its own: the next number too, and the records before it untouched.
+    const failed = Object.assign(new Error("failed: x"), { step: "3 store" });
+    const r = await runOnce(t.main, t.refs[0], { fresh: async () => Promise.reject(failed) });
+    expect([r.code, r.lines.at(-1)]).toEqual([2, "HARNESS: up --fresh failed at 3 store"]);
+    expect(readdirSync(t.dir(t.refs[0])).filter((f) => /^run-\d+\.json$/.test(f)).sort()).toEqual(["run-1.json", "run-2.json", "run-3.json"]);
+    expect(JSON.parse(readFileSync(join(t.dir(t.refs[0]), "run-1.json"), "utf8"))).toEqual({ exit: 3, reduced: false });
+  }, 30_000);
+
   it("a candidate the return lacks is refused", async () => {
     const t = returned([LIST]);
     await expect(repro(t.main, "1.1.9", { once: stub([3]).once })).rejects.toThrow("refused: repro: return 1.1 has no candidate 9");
@@ -959,6 +1015,31 @@ describe("argus-live minimize", () => {
     expect(json(t, "minimize.json").tried.filter((x: Obj) => x.exit === null).map((x: Obj) => x.label)).toEqual(["role customer", "step 4"]);
     expect(r.lines).toContain("try role customer: skipped (the static checks refuse it)");
     expect(calls).toHaveLength(json(t, "minimize.json").runs);
+  });
+
+  it("stops before a try once the cycle is down, or too little of its deadline is left", async () => {
+    const t = returned([EIGHT]);
+    reproduced(t, t.refs[0], [4]);
+    const s = essential();
+    // The cycle goes down after the second try: no third try, no confirm run, nothing written as minimized.
+    const once = async (m: string, r: string, opts: Obj) => {
+      const a = await s.once(m, r, opts);
+      if (s.calls.length === 2) rmSync(join(t.main, ".argus/live/lock.json"));
+      return a;
+    };
+    const r = await minimize(t.main, t.refs[0], { once });
+    expect(r.code).toBe(2);
+    expect(r.lines).toEqual(["try role buyer: exit 0", "try step 7: exit 3", `minimized ${t.refs[0]}: steps 8 → 7, runs 2/12, stopped down, confirmed no`]);
+    expect(json(t, "minimize.json")).toMatchObject({ runs: 2, stopped: "down", confirmed: false });
+    expect(existsSync(join(t.dir(t.refs[0]), "min.json"))).toBe(false);
+    // A deadline closer than the longest run so far (a minute at least): stopped before the first try.
+    const u = returned([EIGHT]);
+    reproduced(u, u.refs[0], [4]);
+    setLock(u.main, { ...u.lock, deadline: now() + 30 });
+    const none = essential();
+    const d = await minimize(u.main, u.refs[0], { once: none.once });
+    expect([d.code, d.lines]).toEqual([2, [`minimized ${u.refs[0]}: steps 8 → 8, runs 0/12, stopped deadline, confirmed no`]]);
+    expect(none.calls).toEqual([]);
   });
 
   it("refuses a candidate that never reproduced", async () => {
@@ -1386,6 +1467,47 @@ describe("argus-live scrub", () => {
     }
   }, 120_000); // spawned CLIs over long values
 
+  it("a secret is refused case-folded, in hex, inside base64 at any offset, URL-decoded and split by invisible format characters", async () => {
+    const t = scrubRun();
+    appendLedger(t.main, t.runId, [{ c: "cookie", v: "s%3AAbc123.sig456XYZ" }]);
+    const one = async (text: string, cls: string) => expect(await t.run("x", t.body(`${text}\n`)), text).toEqual({ code: 1, out: [`body 1:1 ${cls}`, REFUSED(1)] });
+    await one(SCRUB.header.toUpperCase(), "header");
+    await one(SCRUB.storage.toLowerCase(), "storage");
+    await one(Buffer.from(SCRUB.cookie).toString("hex"), "cookie");
+    await one(Buffer.from(SCRUB.made).toString("hex").toUpperCase(), "created password");
+    for (const prefix of ["u", "us", "user:"]) {
+      const r = await t.run("x", t.body(`Basic ${Buffer.from(`${prefix}${SCRUB.role}`).toString("base64")}\n`));
+      expect(r.code, prefix).toBe(1);
+      expect(r.out.at(-2), prefix).toMatch(/^body 1:\d+ role password$/);
+    }
+    await one("s:Abc123.sig456XYZ", "cookie");
+    for (const mark of ["­", "​", "⁠"]) {
+      await one(`${SCRUB.cookie.slice(0, 5)}${mark}${SCRUB.cookie.slice(5)}`, "cookie");
+      // A short configuration secret split the same way, as a whole token.
+      expect(await t.run("x", t.body(`use p${mark}w${mark}1 here\n`)), JSON.stringify(mark)).toEqual({ code: 1, out: ["body 1:5 role password", REFUSED(1)] });
+    }
+  });
+
+  it("environment and repo env values: a short secret from 4 characters is refused, a number, a switch and a path never", async () => {
+    const t = scrubRun();
+    writeFileSync(join(t.main, ".env"), `DB_PASSWORD=ab1cd\nPORT=3000\nDEBUG=true\nFEATURE=on\n`);
+    const env = { ...SCRUB_ENV, API_TOKEN: "x9k2m", SESSION_COUNT: "1", AUTH_ENABLED: "true", PWD: t.main, OLDPWD: t.main, INIT_CWD: t.main, TMPDIR: tmpdir(), CLAUDE_CODE_SESSION_TOKEN_HINT: "q7w8e9r0", XDG_CONFIG_HOME: join(t.main, "Cfg-Dir_2") };
+    expect(await t.run("x", t.body("db ab1cd now\n"), {}, env)).toEqual({ code: 1, out: ["body 1:4 repo env file", REFUSED(1)] });
+    expect(await t.run("x", t.body("api x9k2m now\n"), {}, env)).toEqual({ code: 1, out: ["body 1:5 environment variable API_TOKEN", REFUSED(1)] });
+    const kept = `Quantity 1, true, on, 3000; built in ${t.main} under ${tmpdir()} with q7w8e9r0 and ${join(t.main, "Cfg-Dir_2")}\n`;
+    expect(await t.run("x", t.body(kept), {}, env)).toMatchObject({ code: 0 });
+    const classes = scrubSecrets(t.main, { runId: t.runId, env }).secrets.map((s: Obj) => s.cls);
+    for (const k of ["PWD", "OLDPWD", "INIT_CWD", "TMPDIR", "SESSION_COUNT", "AUTH_ENABLED", "CLAUDE_CODE_SESSION_TOKEN_HINT", "XDG_CONFIG_HOME"]) expect(classes, k).not.toContain(`environment variable ${k}`);
+  });
+
+  it("protocol-relative links and images are defanged too", () => {
+    const md = "a [x](//evil.test/a) b ![](//evil.test/p.png) <img src=//evil.test/i.png> <img src=\"//evil.test/q\"> <a href='//evil.test/r'>r</a>";
+    const d = defang(md);
+    expect(d.text).toBe("a [x](`//evil.test/a`) b ![](`//evil.test/p.png`) <img src=`//evil.test/i.png`> <img src=\"`//evil.test/q`\"> <a href='`//evil.test/r`'>r</a>");
+    expect(d.defanged).toBe(5);
+    // A path that is not a link stays: `a // comment`, `x//y`.
+    expect(defang("a // comment and x//y").text).toBe("a // comment and x//y");
+  });
 });
 
 describe("argus-live scrub — attachments and filing", () => {
@@ -1857,6 +1979,15 @@ describe("argus-live map mode", () => {
     ]);
     expect(errs(step({ why: "x" }))).toEqual(['journeys[0].steps[0]: unknown key "why"']);
     expect(errs({ ...MAP, journeys: Array.from({ length: 101 }, () => MAP.journeys[0]) })).toContain("journeys holds at most 100 entries");
+    // A control character (a line break, ESC) in what the catalog prints could forge its lines.
+    const J = MAP.journeys[0];
+    expect(errs({ ...MAP, journeys: [{ ...J, title: "Order\ndropped: x" }] })).toEqual(["journeys[0].title must hold no control character"]);
+    expect(errs({ ...MAP, journeys: [{ ...J, domain: "sa\u001b[2Jles" }] })).toEqual(["journeys[0].domain must hold no control character"]);
+    expect(errs({ ...MAP, journeys: [{ ...J, goal: "a\rb" }] })).toEqual(["journeys[0].goal must hold no control character"]);
+    expect(errs(step({ goal: "x\u0085y" }))).toEqual(["journeys[0].steps[0].goal must hold no control character"]);
+    expect(errs({ ...MAP, notes: "n\no" })).toEqual(["notes must hold no control character"]);
+    // An anchor's text is code: a tab stays.
+    expect(errs(step({ sources: [{ ...BUY.sources[0], text: '\trouter.post("/orders/new"' }] }))).toEqual([]);
   });
 
   it("a map slot can be minted while up is still starting", async () => {

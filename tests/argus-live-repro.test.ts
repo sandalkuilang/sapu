@@ -355,8 +355,10 @@ describe("argus-live repro — one run", () => {
       expect(off.last, defect).toBe("NOT REPRODUCED");
       for (const l of off.lines) expect(l, defect).toMatch(VOCABULARY);
     }
-    // What each reproduced: the oracle's final, and what the page showed in the run's words.
-    expect(t.record(t.refs[0])).toMatchObject({ exit: 0, step: 7 });
+    // What each reproduced: the oracle's final, and what the page showed in the run's words. Each run keeps its
+    // own record (none overwritten): the reproducing one, then the fixed variant's.
+    expect(t.record(t.refs[0], 1)).toMatchObject({ exit: 3, step: 7 });
+    expect(t.record(t.refs[0], 2)).toMatchObject({ exit: 0, step: 7 });
     t.c.defects("claim-race");
     const race = t.repro(t.refs[3]);
     expect(race.last).toBe("REPRODUCED step=13 expected=count:1 observed=count:2");
@@ -445,7 +447,7 @@ describe("argus-live repro — one run", () => {
     ];
     const t = await reproCycle([
       [...signUp, { as: "buyer.2", do: "login", user: "{{marker}}@example.test", password: "pw-{{marker}}" }, { as: "buyer.2", expect: "visible", target: { text: "Signed in as" } }, { as: "buyer.2", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" }],
-      [{ as: "buyer.2", do: "login", user: "{{marker}}@example.test", password: "pw-never" }, { as: "buyer.2", expect: "visible", target: { text: "Signed in as" } }, { as: "buyer.2", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" }],
+      [{ as: "buyer.2", do: "login", user: "{{marker}}@example.test", password: "pw-never-{{marker}}" }, { as: "buyer.2", expect: "visible", target: { text: "Signed in as" } }, { as: "buyer.2", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" }],
     ]);
     const ok = t.repro(t.refs[0]);
     expect(ok.code, `${ok.lines.join(" | ")} ${ok.last} ${ok.err}`).toBe(0);

@@ -3,15 +3,16 @@
 //
 // This module runs it: `up` (steps 1-11), `up --fresh`, `up --map`, `renew` and `status`; the bring-up blocks (ports,
 // the worktree, HOME and environment, setup, start and health, the store phase) live in
-// argus-live-start.mjs. The lane's modules, each importing only modules to its left (leaves import none):
-// argus-live-proc.mjs (processes) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) →
-// -docker.mjs (Compose, the runtime gate) and -egress.mjs (the egress check), and -cli.mjs (the browser
-// CLI's calls and sessions) → -run.mjs (run.json, teardown) → {-browser.mjs, -proxy.mjs, -hooks.mjs,
-// -slots.mjs, -start.mjs, -map.mjs, -ledger.mjs, -scrub.mjs, -drift.mjs} → -return.mjs → -login.mjs →
-// -session.mjs → {-pw.mjs, -steps.mjs} → {this module, -redtest.mjs} → -repro.mjs → argus-live.mjs.
-// Leaves: -fence.mjs, -targets.mjs, -origin.mjs, -classes.mjs. A module named here that does not exist
-// yet takes that place when it arrives. `pw` never imports this module, and -start.mjs never imports
-// -browser.mjs (tests/argus-live-findings.test.ts pins both).
+// argus-live-start.mjs. The lane's modules, each importing only modules named before it (the leaves below
+// import none, and any module may import them): argus-live-proc.mjs (processes) → -config.mjs (the
+// configuration) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose,
+// the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
+// -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs and
+// -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs) and -scrub.mjs (after -ledger.mjs) →
+// -return.mjs → -login.mjs → -session.mjs → -pw.mjs and -steps.mjs → this module and -redtest.mjs →
+// -repro.mjs → argus-live.mjs. Leaves: -fence.mjs, -targets.mjs, -origin.mjs, -classes.mjs. `pw` never
+// imports this module, and -start.mjs never imports -browser.mjs (tests/argus-live-findings.test.ts pins
+// both, and this order).
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
 import fs from "node:fs";
@@ -179,7 +180,7 @@ async function tearDown(main, state, { secrets, runner, log }) {
   }
   const record = { ...(onDisk && onDisk.runId === state.runId ? onDisk : {}), ...state };
   try {
-    const { report } = await down(main, { runId: state.runId, record, secrets, runner, drain: (records) => drainSessions(main, state.runId, records, { runner }) });
+    const { report } = await down(main, { runId: state.runId, record, secrets, runner, drain: (records, o) => drainSessions(main, state.runId, records, { ...o, runner }) });
     for (const l of report) log(`down: ${l}`);
   } catch (e) {
     log(`down: ${e.message}`);

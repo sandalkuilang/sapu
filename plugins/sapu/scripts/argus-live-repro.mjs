@@ -125,15 +125,16 @@ const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text, 0o600)
  * 6. the final: held → exit 0 `NOT REPRODUCED`; failed → exit 3, what was expected and what the page
  *    showed in one nonce fence, then `REPRODUCED step=<n> expected=<kind>[:<number>] observed=<enum>`;
  * 7. always: each account's last drain (`observe`), `tracing-stop`, its session closed and dropped from
- *    run.json; `run-<i>.json` `{exit, step, expected, observed, shownSha256, ms, saved, traces, changed,
+ *    run.json; `run-<i>.json` (`i` given, else numbered after the candidate's records: none is overwritten) `{exit, step, expected, observed, shownSha256, ms, saved, traces, changed,
  *    reduced}` (`shownSha256` the digest of what a failed final showed, `saved` masked, `traces` the trace
  *    files under `r/out/traces/` the run wrote, `changed` the click-family steps that changed state,
  *    `reduced` true for a run of a minimizer's `list`) and `steps-<i>.jsonl` (0600) written to the
  *    candidate's directory, with `repro.json` unless the run was given a `list`.
  * Any other throw → exit 2 `HARNESS: failed: <message, masked>`; a ref reproRef refuses is thrown as is.
  */
-export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
+export async function runOnce(main, ref, { list = null, i = null, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
   const { runId, candidate, slotRec, dir } = reproRef(main, ref);
+  const n = i ?? nextRun(dir);
   const started = Date.now();
   const lines = [];
   const emit = (l) => {
@@ -222,7 +223,8 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
         /** Account `a`'s session for step `n`: on first use opened and hooked, signed in (unless anon, a login-command role or a first step that is a login), then traced. */
         const use = async (a, n) => {
           if (drivers.has(a)) return drivers.get(a);
-          const d = sessionDriver({ main, runId, slot: "r", account: a, rec, live, envSecrets, slotRec, dir: rdir, js, failures: createdFailures, runner, cliRunner });
+          // An unhooked session is never used here (a HARNESS at once), so the ledger needs no mark for it.
+          const d = sessionDriver({ main, runId, slot: "r", account: a, rec, live, envSecrets, slotRec, dir: rdir, js, failures: createdFailures, markUnhooked: false, runner, cliRunner });
           const u = { account: a, d, record: null, tracing: false };
           drivers.set(a, u);
           const { record, events } = await d.ensure();
@@ -444,14 +446,17 @@ export async function runOnce(main, ref, { list = null, i = 1, fresh = upFresh, 
       }
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       if (list === null) writePrivate(path.join(dir, "repro.json"), `${JSON.stringify({ ref, repro, ...(parsed ? parsed : {}) })}\n`);
-      writePrivate(path.join(dir, `run-${i}.json`), `${JSON.stringify(result)}\n`);
-      writePrivate(path.join(dir, `steps-${i}.jsonl`), stepLog.map((x) => `${clean(JSON.stringify(x), { secrets })}\n`).join(""));
+      writePrivate(path.join(dir, `run-${n}.json`), `${JSON.stringify(result)}\n`);
+      writePrivate(path.join(dir, `steps-${n}.jsonl`), stepLog.map((x) => `${clean(JSON.stringify(x), { secrets })}\n`).join(""));
     } catch (e) {
       lines.push(`HARNESS: failed: the run's records could not be written (${String(e.message).slice(0, 200)})`);
     }
   }
   return { code: result.exit, lines, result };
 }
+
+/** The least time a minimize run is taken to need before the lock's deadline. */
+const MIN_RUN_MS = 60_000;
 
 /** A valid exit 3's last line (decision 8): enums and integers only. */
 const REPRODUCED = /^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)? observed=[a-z-]+(:\d+)?$/;
@@ -463,10 +468,12 @@ const REPRODUCED = /^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)? observed=[a-z-]
  * runs=<k>/<n>` (exit 0; `1/2` the intermittent case) or `HARNESS: run <i>: <reason>` (exit 2, at once): an
  * exit 3 without its REPRODUCED line, or any exit but 0, 2 and 3, is the harness's too. `verdict.json`
  * `{runs: [exit…], verdict: "reproduced"|"not-reproduced"|"intermittent"|"harness"}` (0600) goes to the
- * candidate's directory. `once` is the one-run seam (runOnce); `opts` reach it as they are.
+ * candidate's directory. Each run's records are numbered after the candidate's (`run <i>` in the lines is
+ * this repro's run). `once` is the one-run seam (runOnce); `opts` reach it as they are.
  */
 export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts } = {}) {
   const { dir } = reproRef(main, ref);
+  const first = nextRun(dir);
   const lines = [];
   const emit = (l) => {
     lines.push(l);
@@ -477,7 +484,7 @@ export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts
   let code = 0;
   for (let i = 1; i <= 2 && verdict === null; i++) {
     const prefix = (l) => (l.startsWith("<<<") ? l : `run ${i} ${l}`);
-    const r = await once(main, ref, { ...opts, i, say: (l) => say(prefix(l)) });
+    const r = await once(main, ref, { ...opts, i: first + i - 1, say: (l) => say(prefix(l)) });
     for (const l of r.lines) lines.push(prefix(l));
     runs.push(r.code);
     const last = r.lines.at(-1) ?? "";
@@ -500,6 +507,17 @@ function liveOf(main) {
   if (!config || errors.length) throw new Error(`failed: .argus/live.json: ${errors.join("; ")}`);
   const rec = readRun(main);
   return expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+}
+
+/** The number the candidate's next run record takes: one past its highest `run-<i>.json` (unreadable ones too). */
+function nextRun(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((f) => /^run-[1-9][0-9]*\.json$/.test(f));
+  } catch {
+    names = [];
+  }
+  return Math.max(0, ...names.map((f) => Number(f.slice(4, -5)))) + 1;
 }
 
 /** The candidate's run records in `dir` → `[{i, rec}]` by run number (an unreadable one left out). */
@@ -532,12 +550,14 @@ function runRecords(dir) {
  * one of them kept for a confirming run of the result; with no unit left untried it stopped at its
  * fixpoint. `min.json` (0600; the context element first) is written only when the confirm run failed the
  * same way; `minimize.json` `{runs, max, stopped, from, to, confirmed, tried: [{label, exit}]}` (`exit`
- * null for a skipped unit) always. Lines: `try <label>: exit <k>|skipped (…)`, `confirm: exit <k>`, then
- * `minimized <ref>: steps <a> → <b>, runs <k>/<max>, stopped fixpoint|budget, confirmed yes|no`; never a
- * page's text.
+ * null for a skipped unit) always. Before each run (a try or the confirm) the lock must still name the
+ * candidate's run (else `stopped down`) with the longest run so far, a minute at least, left before its
+ * deadline (else `stopped deadline`): no confirm then, and exit 2. Lines: `try <label>: exit <k>|skipped
+ * (…)`, `confirm: exit <k>`, then `minimized <ref>: steps <a> → <b>, runs <k>/<max>, stopped
+ * fixpoint|budget|down|deadline, confirmed yes|no`; never a page's text. → `{code: 0|2, lines}`.
  */
 export async function minimize(main, ref, { once = runOnce, max = null, say = () => {}, ...opts } = {}) {
-  const { candidate, slotRec, dir } = reproRef(main, ref);
+  const { runId, candidate, slotRec, dir } = reproRef(main, ref);
   const records = runRecords(dir);
   const base = records.filter((r) => isObj(r.rec) && r.rec.exit === 3 && !r.rec.reduced).at(-1);
   if (!base) throw new Error(`refused: repro: ${ref} has no reproducing run (repro ${ref} first)`);
@@ -568,7 +588,20 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
     say(l);
   };
   fs.rmSync(path.join(dir, "min.json"), { force: true });
-  let next = (records.at(-1)?.i ?? 0) + 1;
+  let next = nextRun(dir);
+  // Each run needs the cycle and time: the longest run so far (a minute at least) before the lock's deadline.
+  const need = Math.max(MIN_RUN_MS, ...records.map((r) => (isObj(r.rec) && Number.isFinite(r.rec.ms) ? r.rec.ms : 0)));
+  /** Why no run may start now: `down` (the lock names no run, or another), `deadline` (too little of it left), else null. */
+  const cannotRun = () => {
+    let lock = null;
+    try {
+      lock = readLock(main);
+    } catch {
+      lock = null;
+    }
+    if (!lock || lock.runId !== runId) return "down";
+    return lock.deadline * 1000 - Date.now() < need ? "deadline" : null;
+  };
   let keep = new Set(parsed.steps.map((s) => s.n));
   const tried = [];
   const done = new Set();
@@ -592,6 +625,11 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
       emit(`try ${unit.label}: skipped (the static checks refuse it)`);
       continue;
     }
+    const why = cannotRun();
+    if (why) {
+      stopped = why;
+      break;
+    }
     runs += 1;
     const r = await once(main, ref, { ...opts, list: reduced, i: next++ });
     tried.push({ label: unit.label, exit: r.code });
@@ -600,7 +638,9 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   }
   const result = listOf(keep);
   let confirmed = false;
-  if (runs < budget) {
+  const cutShort = () => stopped === "down" || stopped === "deadline";
+  if (!cutShort() && runs < budget) stopped = cannotRun() ?? stopped;
+  if (!cutShort() && runs < budget) {
     runs += 1;
     const c = await once(main, ref, { ...opts, list: result, i: next++ });
     confirmed = sameFinal(c);
@@ -611,7 +651,7 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   const from = parsed.steps.length;
   writePrivate(path.join(dir, "minimize.json"), `${JSON.stringify({ runs, max: budget, stopped, from, to: keep.size, confirmed, tried })}\n`);
   emit(`minimized ${ref}: steps ${from} → ${keep.size}, runs ${runs}/${budget}, stopped ${stopped}, confirmed ${confirmed ? "yes" : "no"}`);
-  return { code: 0, lines };
+  return { code: cutShort() ? 2 : 0, lines };
 }
 
 /**

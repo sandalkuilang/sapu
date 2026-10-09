@@ -878,6 +878,21 @@ describe("argus-live fences and targets", () => {
     }
   });
 
+  it("a secret is masked case-folded, in hex, inside base64 at any byte offset, and URL-decoded", () => {
+    const PW = "Ab3xYz9Qw2Lm";
+    expect(clean(`upper ${PW.toUpperCase()} lower ${PW.toLowerCase()}`, { secrets: { PW } })).toBe("upper *** lower ***");
+    const hex = Buffer.from(PW).toString("hex");
+    expect(clean(`hex ${hex} HEX ${hex.toUpperCase()}`, { secrets: { PW } })).toBe("hex *** HEX ***");
+    // base64("user:" + pw) and friends: the characters only the secret's bytes make are masked; at most two of either edge stay.
+    for (const prefix of ["", "u", "us", "user:"]) {
+      const b = Buffer.from(`${prefix}${PW}`).toString("base64");
+      const out = clean(`basic ${b}`, { secrets: { PW } });
+      expect(out, prefix).toMatch(/^basic [A-Za-z0-9+/]{0,8}\*\*\*[A-Za-z0-9+/=]{0,3}$/);
+    }
+    // A cookie recorded URL-encoded (`s%3A…`), shown decoded on the page.
+    expect(clean("sid s:Abc123.sig456XYZ end", { secrets: { C: "s%3AAbc123.sig456XYZ" } })).toBe("sid *** end");
+  });
+
   it("only real marker shapes are defused: business ids starting PAGE- or RETURN- stay as they are", () => {
     const n = nonce();
     expect(clean("PAGE-1 RETURN-42 RETURN-POLICY page-x")).toBe("PAGE-1 RETURN-42 RETURN-POLICY page-x");

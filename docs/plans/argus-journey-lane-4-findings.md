@@ -1733,3 +1733,42 @@ Interfaces:
   - *Filed only at two of two (architect).* With `--ref`, scrub refuses unless the candidate's `verdict.json`
     says `reproduced` (`did not reproduce two of two (<verdict>|never run)`), and so does `repro --test`;
     `REF` and `verdictOf` live in `-scrub.mjs`, which `-repro.mjs` imports (scrub sits below it).
+  - *A literal created password (architect).* `parseRepro` refuses a `login` whose password does not hold
+    `{{marker}}`: a literal one is in the ledger and in the repro the issue quotes, so the finding could never
+    be filed. The Chrome test's failing login uses `pw-never-{{marker}}`.
+  - *Minimize past its cycle (architect).* Before each run (a try or the confirm) the lock must still name the
+    candidate's run, with the longest run so far (a minute at least) left before its deadline; else it stops,
+    `stopped down|deadline`, runs no confirm and exits 2 (the CLI passes the exit on).
+  - *An unhooked session (QA).* The session driver marks the ledger `<session> unhooked` when the hook stage
+    fails at an open (pw's first use, a reopen, a login-command role's re-login): its headers go unrecorded,
+    so scrub refuses the run. The repro runner passes `markUnhooked: false`: it never uses such a session (a
+    HARNESS at once).
+  - *Invisible format characters (QA).* `\p{Cf}` (a soft hyphen, U+200B, U+2060) is a separator: stripped
+    with whitespace, punctuation and symbols, and allowed between a short value's characters.
+  - *The environment's floor (owner).* A repo env file's and the environment's values count from 4
+    characters (a shorter secret-like one is a whole token from there), never a number or a switch word
+    (`true`, `false`, `yes`, `no`, `on`, `off`), never a variable that says where or who (`PWD`, `OLDPWD`,
+    `INIT_CWD`, `HOME`, `TMPDIR`, `PATH`, `SHELL`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TERM*`, `XDG_*_HOME`,
+    `SSH_AUTH_SOCK`, `CLAUDE_CODE_*`), and never by entropy alone for an absolute path or a place's name
+    (`…_DIR`, `…_PATH`, `…_HOME`, `…_PWD`, `…_CWD`, `…_ROOT`, `…_PREFIX`). The run's env file gives every
+    value but a number or a switch word.
+  - *More encodings (owner).* Each character also in its other case; the value's bytes in hex (either case,
+    from 4 bytes); its base64 at byte offsets 1 and 2 (`base64("user:" + pw)`: the characters only its bytes
+    make), standard and URL-safe; and a value holding `%HH` decoded too (a cookie recorded `s%3A…`, shown
+    `s:…`). Every form is at least 8 characters.
+  - *Control characters in a map (owner).* `validateMap` refuses one in a domain, title, goal (a journey's or
+    a step's) or the notes: the catalog prints them. An anchor's text may hold a tab.
+  - *Protocol-relative links (owner).* `[x](//host…)`, `![](//host…)`, `src=//…` and `href=//…` (quoted or
+    not) have their target wrapped in a code span.
+  - *A drain that fails part-way (owner).* The teardown hands its drain a `drained(name)` callback;
+    `drainSessions` tells each session it kept (or that lost nothing), and when the drain throws the teardown
+    marks every other session `closed undrained`. `guarded` answers whether its step ran through.
+  - *Run numbers (owner).* `repro` and `--once` number their records after the candidate's highest
+    `run-<i>.json` (`run <i>` in the lines stays this repro's run), so a run never overwrites one minimize
+    reads.
+  - *The DAG comment (owner).* The instance module's header names every module in an order the imports keep
+    (`-config.mjs` after `-proc.mjs`, `-slots.mjs` after `-browser.mjs`, `-scrub.mjs` after `-ledger.mjs`);
+    a test now reads the header and checks it against the imports.
+  - *The flaky find test (owner).* `find waits…` times the late text from the goto's start (the load's lower
+    bound): the find asked again at least once (500 ms or more), within its own call, and was answered no
+    earlier than 4000 ms after the goto began.
