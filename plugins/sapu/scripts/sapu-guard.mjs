@@ -127,7 +127,7 @@
 // create|edit|delete` or `gh issue create --label` word, a gh subcommand (judged as each one a rule
 // names), a `gh api` method (every write method), and a `gh api` route (a non-GET call through it is
 // BLOCKED whole); a substitution glued mid-word (`--x=$(…)`, `a/$(…)/b`) makes the whole word built.
-// A not-planned close (`gh issue close -r`, REST state_reason,
+// gh api routes match in any letter case; …/import/issues is a new issue too. A not-planned close (`gh issue close -r`, REST state_reason,
 // GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
 // known one by one; global options before a runner's `run` (`poetry -C . run`, `uv --directory .
@@ -1659,8 +1659,10 @@ function checkCommand(t, state, depth) {
   if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
   // patch applies a diff, wherever it was saved (`gh pr diff 8 > f` then `patch < f`): like git apply,
   // only its dry run is a read.
-  if (prog === "patch" && !patchDryRun(a.slice(1))) return BLOCK.prCode;
-  if ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch" && !patchDryRun(a.slice(2))) return BLOCK.prCode;
+  // POSIXLY_CORRECT (set for the command, earlier in its text, or in the environment it inherits) ends
+  // patch's options at its first operand: a dry-run word after it is a file name.
+  if (prog === "patch" && !patchDryRun(a.slice(1), state.posix)) return BLOCK.prCode;
+  if ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch" && !patchDryRun(a.slice(2), state.posix)) return BLOCK.prCode;
 
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
   // <MAIN> outside its worktrees is off limits, except the STATE_DIRS for non-worker subagents.
@@ -2015,11 +2017,11 @@ const PATCH_LONG_FLAG = new Set(["backup", "check", "dry-run", "context", "remov
  * option of its own; never when that word is another option's value or follows `--`, and never
  * with an option the guard does not know (it may take the next word as its value).
  */
-function patchDryRun(args) {
+function patchDryRun(args, posix = false) {
   let dry = false;
   for (let i = 0; i < args.length; i++) {
     const v = args[i];
-    if (v === "--") break;
+    if (v === "--" || (posix && !(v.startsWith("-") && v.length > 1))) break;
     if (v.startsWith("--")) {
       const eq = v.indexOf("=");
       const name = v.slice(2, eq < 0 ? undefined : eq);
@@ -2101,27 +2103,27 @@ function ghApiMethods(argv) {
   return ghFields(argv).length || argv.some((x) => /^--input(=|$)/.test(x.v)) ? ["POST"] : ["GET"];
 }
 
-/** The reason a literal-route `gh api` write with method `M` is refused, or null. */
+/** The reason a literal-route `gh api` write with method `M` is refused, or null. Routes match in any case. */
 function ghApiWrite(M, argv, rules) {
   const a = argv.map((x) => x.v);
   const L = rules.ownerLabels;
-  const route = (v) => v.replace(/[?#][\s\S]*$/, "");
+  const route = (v) => v.replace(/[?#][\s\S]*$/, "").toLowerCase();
   if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(route(v)))) return BLOCK.merge;
   if (a.some((v) => /\/(contents|git|branches)\//.test(route(v)))) return BLOCK.apiWrite;
   // REST state_reason not_planned, built by the shell, or read from a file.
   if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
   const fields = ghFields(argv);
-  const labelField = (f) => /^labels(\[\])?=/.test(f.v);
+  const labelField = (f) => /^labels(\[\])?=/i.test(f.v);
   // a field whose name the shell builds (`-f "$K=x"`) may be labels or state_reason
   const dynKey = (f) => f.dyn && (!f.v.includes("=") || /[$`]/.test(f.v.slice(0, f.v.indexOf("="))));
   // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,
   // drops the owner labels without naming them.
   if ((M === "PUT" || M === "DELETE") && a.some((v) => /\/issues\/\d+\/labels\/?$/.test(route(v)))) return BLOCK.acceptLabel;
   if ((M === "POST" || M === "PATCH") && a.some((v) => /\/issues\/\d+\/?$/.test(route(v))) && fields.some((f) => labelField(f) || dynKey(f))) return BLOCK.acceptLabel;
-  // A new issue (POST …/issues): never a worker's; it may carry the agent-filed and
+  // A new issue (POST …/issues, …/import/issues): never a worker's; it may carry the agent-filed and
   // needs-owner labels, never the acceptance label (nor one the shell builds); with
   // agentFiledNeedsAcceptance it must carry the first, written literally.
-  const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/issues\/?$/.test(route(v)));
+  const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/(import\/)?issues\/?$/.test(route(v)));
   if (creates) {
     if (rules.worker !== false) return BLOCK.issue;
     if (rules.agentFiledGate && !fields.some((f) => labelField(f) && !f.dyn && !f.file && namesLabel(f.v.slice(f.v.indexOf("=") + 1), rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
@@ -2187,7 +2189,9 @@ function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   // A command text starts with OLDPWD = its cwd: Claude Code's Bash sets it so (measured), and a
   // fresh shell's `cd -` stays where it is (bash ignores an inherited OLDPWD, zsh starts it at $PWD).
-  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve };
+  // POSIXLY_CORRECT anywhere in the text (an env prefix, an export) or inherited from the guard's own environment
+  const posix = !!base.posix || "POSIXLY_CORRECT" in process.env || /\bPOSIXLY_CORRECT\b/.test(text);
+  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
@@ -2240,7 +2244,7 @@ function checkText(text, dir, base, depth) {
     if (c.post === ")" && saved.length) state.dir = saved.pop();
   }
   for (const n of nested) {
-    const reason = checkText(n, dir, base, depth + 1);
+    const reason = checkText(n, dir, { ...base, posix }, depth + 1);
     if (reason) return reason;
   }
   return null;

@@ -1168,13 +1168,14 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   // An agent files under the trusted account, so its issue would pass by author. Its provenance label
   // says so; with agentFiledNeedsAcceptance, its text (which may quote outside material) needs the
   // owner's acceptance like an outsider's, and only an acceptor may edit it after that. The label
-  // applied EVER counts, not only now: removing it must not launder the issue into a plain trusted
-  // one. The timeline is paged only when the label is not on the issue now.
+  // applied EVER counts then, not only now: removing it must not launder the issue into a plain
+  // trusted one. The timeline is paged only under that setting, when the label is not on the issue
+  // now; without it the author decides, and a history GitHub fails to return fails nothing.
   let all = null;
   const events = () => (all ??= timeline());
   const filed = lc(agentFiledLabel(c));
   const filedNow = first.labels.nodes.some((l) => l && lc(l.name) === filed);
-  const agentFiled = filedNow || events().some((e) => e.type === "LabeledEvent" && typeof e.label === "string" && lc(e.label) === filed);
+  const agentFiled = filedNow || (c.agentFiledNeedsAcceptance === true && events().some((e) => e.type === "LabeledEvent" && typeof e.label === "string" && lc(e.label) === filed));
   const carries = filedNow ? `it carries ${agentFiledLabel(c)}` : `${agentFiledLabel(c)} was applied to it (removed since)`;
   const gated = agentFiled && c.agentFiledNeedsAcceptance === true;
   const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, agentFiled, snapshot });
@@ -1786,12 +1787,14 @@ function textAt(root, ref, file) {
 }
 
 /**
- * The ways a file finds its own location (make, just, shell, node, python, ruby, php), each with
+ * The ways a file finds its own location (make, just, shell, node, python, ruby, perl, php), each with
  * the name a warning prints. sapu-merge.sh runs a pinned file from <MAIN>'s path, so a gate that
  * finds the tree it tests this way tests <MAIN>, not the PR's worktree.
  */
 const SELF_LOCATING = [
-  [/\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
+  // the makefile's own path (`lastword`/`firstword` of it, or the list inside abspath/realpath/dir),
+  // not a help target that only greps `$(MAKEFILE_LIST)`
+  [/\b(?:lastword|firstword)\s+\$[({]MAKEFILE_LIST[)}]|\$\((?:abspath|realpath|dir)\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
   [/\b(justfile_directory|justfile|source_directory|source_file)\s*\(\s*\)/, (m) => `${m[1]}()`],
   [/\bBASH_SOURCE\b/, "${BASH_SOURCE}"],
   [/\$\{0[%#:]/, (m) => m[0]],
@@ -1799,6 +1802,7 @@ const SELF_LOCATING = [
   [/\b__dirname\b|\b__filename\b/, (m) => m[0]],
   [/\bimport\.meta\.(?:url|dirname|filename)\b/, (m) => m[0]],
   [/\b__file__\b|\b__dir__\b|\b__FILE__\b|\b__DIR__\b/, (m) => m[0]],
+  [/\bFindBin\b/, "$FindBin::Bin"],
 ];
 
 /**

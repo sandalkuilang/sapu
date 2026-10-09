@@ -3046,3 +3046,54 @@ describe("sapu-guard — a shell-built label name, route or method counts as any
     expect(blocked("gh api repos/o/r/issues --raw-field=title=t")).toMatch(/files no issues/);
   });
 });
+
+describe("sapu-guard — POSIXLY_CORRECT ends patch's options at its first operand", () => {
+  it.each([
+    ["POSIXLY_CORRECT=1 patch -p1 x.orig --dry-run"],
+    ["POSIXLY_CORRECT= patch x.orig --check"],
+    ["env POSIXLY_CORRECT=1 patch -p1 x.orig --dry-run"],
+    ["export POSIXLY_CORRECT=1; patch -p1 x.orig --dry-run"],
+    ["export POSIXLY_CORRECT=1\npatch -p1 x.orig -C"],
+    ["export POSIXLY_CORRECT=1; bash -c 'patch -p1 x.orig --dry-run'"],
+    ["POSIXLY_CORRECT=1 busybox patch -p1 x.orig --dry-run"],
+  ])("refuses %s: the dry-run word after the first operand is a file name there", (cmd) => {
+    expect(blocked(cmd)).toMatch(/applying a patch/);
+  });
+
+  it.each([["POSIXLY_CORRECT=1 patch -p1 --dry-run x.orig"], ["patch -p1 x.orig --dry-run"], ["POSIXLY_CORRECT=1 patch --dry-run -p1 < x.diff"]])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+  });
+
+  it("holds when the guard's own environment sets it (the shell inherits it)", () => {
+    const saved = process.env.POSIXLY_CORRECT;
+    process.env.POSIXLY_CORRECT = "1";
+    try {
+      expect(blocked("patch -p1 x.orig --dry-run")).toMatch(/applying a patch/);
+      expect(blocked("patch -p1 --dry-run x.orig")).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.POSIXLY_CORRECT;
+      else process.env.POSIXLY_CORRECT = saved;
+    }
+  });
+});
+
+describe("sapu-guard — gh api routes match in any letter case, and an issue import files an issue", () => {
+  const reviewer = (command: string, r = rules) => check({ command, cwd: wt, main, rules: r, worker: false });
+  const gated = compileRules({ ...FIXTURE_CONTRACT, agentFiledNeedsAcceptance: true });
+  it("POST repos/o/r/import/issues is a new issue", () => {
+    expect(blocked("gh api -X POST repos/o/r/import/issues -f title=t")).toMatch(/files no issues/);
+    expect(blocked("gh api repos/o/r/import/issues --input issue.json")).toMatch(/files no issues/);
+    expect(reviewer("gh api -X POST repos/o/r/import/issues -f title=t", gated)).toMatch(/agentFiledNeedsAcceptance/);
+  });
+
+  it.each([
+    ["gh api REPOS/o/r/ISSUES -f title=t", /files no issues/],
+    ["gh api -X POST Repos/o/r/Import/Issues -f title=t", /files no issues/],
+    ["gh api -X DELETE repos/o/r/Issues/8/Labels", /agent-filed label/],
+    ["gh api -X PATCH repos/o/r/ISSUES/8 -f 'Labels[]=x'", /agent-filed label/],
+    ["gh api -X PUT repos/o/r/Pulls/8/Merge", /merges/],
+    ["gh api -X PUT repos/o/r/Contents/a.txt -f message=m", /contents/],
+  ])("refuses %s", (cmd, why) => {
+    expect(blocked(cmd)).toMatch(why);
+  });
+});

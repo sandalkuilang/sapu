@@ -274,9 +274,10 @@ renames it or deletes it (the guard refuses it to subagents: §Engine floor); wi
 `"none"` it is not applied. A missing label is created by the owner (`/sapu:init` proposes it); an
 agent that finds it missing reports it, and files the issue without it only while
 `agentFiledNeedsAcceptance` is not set. The `issue-trust` verdict says
-`agentFiled: true` when the label is on the issue or was ever applied to it (its timeline), so a
-removed label still counts — the owner accepts such an issue with the acceptance label, not by
-removing this one — and what such an issue quotes is data. **`agentFiledNeedsAcceptance`** (optional
+`agentFiled: true` when the label is on the issue or, under `agentFiledNeedsAcceptance`, was ever
+applied to it (its timeline, read only then), so there a removed label still counts — the owner
+accepts such an issue with the acceptance label, not by removing this one — and what such an issue
+quotes is data. **`agentFiledNeedsAcceptance`** (optional
 boolean, default `false`; `true` needs `traces` `"visible"`) goes further: an issue carrying the
 label is then judged like an outsider's — it steers sapu only once an acceptor applied the
 acceptance label, and only an acceptor may edit or retitle it after that. Set it when an agent's
@@ -408,12 +409,12 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
 - Issues the agents file (argus, momus, nemesis findings, sapu's security gaps) are authored by the
   owner's account, so they are trusted. The filing skills never copy an outsider's text into one;
   that rule is prose, and an agent talked into breaking it would plant trusted text. The
-  agent-filed label marks them, and `issue-trust` counts it once it was ever applied (a timeline
-  event), so removing it later launders nothing; `agentFiledNeedsAcceptance` makes them wait for an
-  acceptor (§Agent-filed issues) — and, as GitHub names a renamed or deleted label otherwise on every
+  agent-filed label marks them; `agentFiledNeedsAcceptance` makes them wait for an acceptor
+  (§Agent-filed issues), `issue-trust` then counting the label once it was ever applied (a timeline
+  event), so removing it later launders nothing — and, as GitHub names a renamed or deleted label otherwise on every
   issue it was on, `issue-trust` then trusts no author while the label is missing from the repository
   — and the guard then refuses a subagent's new issue (`gh issue create`,
-  `gh api` POST `…/issues`, an MCP create tool) that does not carry the label literally, and a GraphQL
+  `gh api` POST `…/issues` or `…/import/issues`, an MCP create tool) that does not carry the label literally, and a GraphQL
   `createIssue` (its label ids cannot be read). The orchestrator is not guarded: that it files every
   issue with the label is prose — an issue filed without it, by the orchestrator or by hand, is
   judged by its author alone.

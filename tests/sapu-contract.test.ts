@@ -41,6 +41,7 @@ import {
   sweepHold,
   sweepRelease,
   protectedCommand,
+  gateProtectionWarning,
   bodyRefs,
   gitCommonDir,
   detectStack,
@@ -1269,14 +1270,14 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   it("an issue the agent-filed label was EVER applied to stays agent-filed: removing the label launders nothing", () => {
     const F = "sapu:agent-filed";
     const removed = { author: "owner", labels: [] as string[], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "unlabeled" as const, label: F, actor: "owner", minute: 1 }] };
+    // without agentFiledNeedsAcceptance the author decides and no history is read: the label counts only while on
     const plain = judge(removed);
     expect(plain.status).toBe(0);
-    expect(plain.v).toMatchObject({ trusted: true, agentFiled: true });
-    expect(plain.v.reason).toMatch(/sapu:agent-filed was applied to it/);
-    // the event on a later timeline page counts too, and in another letter case
-    expect(judge({ ...removed, events: [{ event: "labeled", label: "Sapu:Agent-Filed", actor: "owner", minute: 0 }], pages: 3 }).v.agentFiled).toBe(true);
+    expect(plain.v).toMatchObject({ trusted: true, agentFiled: false });
     commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
     try {
+      // the event on a later timeline page counts too, and in another letter case
+      expect(judge({ ...removed, events: [{ event: "labeled", label: "Sapu:Agent-Filed", actor: "owner", minute: 0 }], pages: 3 }).v.agentFiled).toBe(true);
       const r = judge(removed);
       expect(r.status).toBe(1);
       expect(r.v.agentFiled).toBe(true);
@@ -1467,11 +1468,18 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
 
   it("pages the timeline only when the agent-filed label is not on the issue now, and refuses a timeline it cannot read whole", () => {
     const events = [1, 2, 3].map((m) => ({ event: "renamed" as const, actor: "stranger", minute: m }));
-    // a later page could hold the agent-filed label, applied and removed since: unread, nothing is trusted
-    const unread = judge({ author: "alice", events, pages: 3, missingPages: true });
-    expect(unread.status).toBe(1);
-    expect(unread.v.reason).toMatch(/cannot read issue #\d+ from GitHub/);
-    expect(judge({ author: "alice", events, pages: 3 }).status).toBe(0);
+    // without agentFiledNeedsAcceptance the author decides: no later page is read, so one GitHub fails to return fails nothing
+    expect(judge({ author: "alice", events, pages: 3, missingPages: true }).status).toBe(0);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      // gated, a later page could hold the agent-filed label, applied and removed since: unread, nothing is trusted
+      const unread = judge({ author: "alice", events, pages: 3, missingPages: true });
+      expect(unread.status).toBe(1);
+      expect(unread.v.reason).toMatch(/cannot read issue #\d+ from GitHub/);
+      expect(judge({ author: "alice", events, pages: 3 }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
     // carrying the label now settles it on the first page
     const F = "sapu:agent-filed";
     const now = judge({ author: "alice", labels: [F], events, pages: 3, missingPages: true });
@@ -2080,5 +2088,28 @@ describe("protectedCommand: the repo file a contract command pins, for any runne
     execFileSync("git", ["init", "-q", repo]);
     commit(repo, { "scripts/gate.sh": '#!/bin/sh\ncd "${SAPU_WT:-$PWD}" && npm test\n', ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge: "bash scripts/gate.sh" } }) });
     expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+  });
+});
+
+describe("gate.merge self-location: the idioms that find the tree, not a file merely read", () => {
+  const warn = (merge: string, text: string) => gateProtectionWarning({ gate: { merge } }, () => true, () => text);
+  it.each([
+    ["ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))\ngate:\n\tcd $(ROOT) && npm test\n"],
+    ["ROOT := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))\n"],
+    ["MK := $(lastword $(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
+    ["ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword ${MAKEFILE_LIST}))))\n"],
+    ["ROOT := $(realpath $(dir $(MAKEFILE_LIST)))\n"],
+  ])("warns on a makefile that finds its own place: %s", (text) => {
+    expect(warn("make gate", text)).toMatch(/finds the tree from its own location \(\$\(MAKEFILE_LIST\)\)/);
+  });
+
+  it("does not warn on the common help target, which only greps the makefiles", () => {
+    const help = "help:\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = \":.*?## \"}; {printf \"%s\\n\", $$1}'\ngate: ## run the gate\n\tnpm test\n";
+    expect(warn("make gate", help)).toBeNull();
+  });
+
+  it("warns on Perl's FindBin", () => {
+    expect(warn("perl scripts/gate.pl", "use FindBin;\nchdir \"$FindBin::Bin/..\" or die;\nsystem('npm test');\n")).toMatch(/\$FindBin::Bin/);
+    expect(warn("perl scripts/gate.pl", "use FindBin qw($RealBin);\nchdir \"$RealBin/..\";\n")).toMatch(/\$FindBin::Bin/);
   });
 });
