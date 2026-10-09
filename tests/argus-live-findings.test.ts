@@ -2647,6 +2647,20 @@ describe("argus-live check", () => {
     expect(check(commitContract(main))).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\n", err: "" });
   }, 30_000);
 
+  it("check passes a config with no env_file, an optional key, and says nothing of the guard", () => {
+    const main = committed();
+    const doc = readFileSync(join(__dirname, "../plugins/sapu/skills/journey/live.md"), "utf8");
+    const c = JSON.parse(/## Example\n\n```json\n([\s\S]*?)\n```/.exec(doc)![1]);
+    delete c.env_file;
+    c.env.DATABASE_URL = "postgres://app@localhost:{port:pg}/app_explore";
+    c.roles = { anon: {}, admin: c.roles.admin };
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    expect(check(commitContract(main))).toEqual({ code: 0, out: "live: ok — 2 roles, 1 accounts, 4 start entries\n", err: "" });
+  }, 30_000);
+
   it("a draft contract that covers the env file passes check, which says up refuses until it is committed", () => {
     const main = checkRepo();
     expect(check(main)).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\nnote: the committed contract's guard.envFiles does not hold live.env yet: up refuses until the contract is committed\n", err: "" });

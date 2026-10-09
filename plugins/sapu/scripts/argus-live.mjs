@@ -295,7 +295,7 @@ try {
     const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
     print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
     // up reads the committed contract: until the draft is committed, up still refuses the env file.
-    if (!guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
+    if (typeof r.config.env_file === "string" && !guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
 
   } else if (cmd === "show" && !args.length) {
     // The owner's window on the run's browsers: only once up has a browser for them (never a map run's).
