@@ -1564,7 +1564,7 @@ const liveRepo = (over: (c: Obj) => void = () => {}) => {
   over(c);
   mkdirSync(join(main, ".argus"));
   writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
-  writeFileSync(join(main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db\n");
+  writeFileSync(join(main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-pw-Kx7q\n");
   writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
   mkdirSync(join(main, "fixtures/sub"), { recursive: true });
   writeFileSync(join(main, "fixtures/receipt.txt"), "receipt\n");
@@ -1783,7 +1783,7 @@ describe("argus-live slots and tokens", () => {
     const h = cli("slot", "1", "--handoff");
     expect(h.status).toBe(0);
     expect(JSON.parse(h.stdout)).toMatchObject({ slot: 1, generation: 2, token: expect.stringMatching(/^[0-9a-f]{32}$/) });
-    writeFileSync(join(r.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db\n");
+    writeFileSync(join(r.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-pw-Kx7q\n");
     for (const bad of [["slot", "x", "--handoff"], ["slot", "1", "--handoff", "--journey", "j"], ["slot", "1", "--journey", "j"], ["slot", "1", "--accounts", "buyer.1=x", "--journey"]]) {
       const res = cli(...bad);
       expect(res.status, bad.join(" ")).toBe(1);
