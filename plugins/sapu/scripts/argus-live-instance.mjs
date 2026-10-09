@@ -15,6 +15,7 @@
 // both, and this order).
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
+import { isIP } from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -34,7 +35,7 @@ import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sam
 import { browserHome, down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, worktreeHeadFile, writeRunFiles } from "./argus-live-run.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { allocatePorts, bringUpRest, bringUpStore, instanceEnv, makeHome, makeWorktree, runSetup } from "./argus-live-start.mjs";
-import { loadContract } from "./sapu-contract.mjs";
+import { loadContract, protectedDatabases } from "./sapu-contract.mjs";
 import { compileRules } from "./sapu-guard.mjs";
 
 // ---------------------------------------------------------------------------------------------------
@@ -188,16 +189,24 @@ async function tearDown(main, state, { secrets, runner, log }) {
   }
 }
 
+/** A user's password or TOTP secret as live.json may hold it: exactly one `${NAME}`. */
+const SECRET_REF = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/** loadLive's errors as one refusal: a file that is missing or no JSON in its own words, else after the file's name, once. */
+const fileRefusal = (config, errors) => (config ? `refused: ${LIVE_FILE}: ${errors.map((e) => e.replace(/^\.argus\/live\.json:? /, "")).join("; ")}` : `refused: ${errors[0]}`);
+
 /** Whether the guard keeps every agent out of `file` under `contract` (null: no contract, the floor alone): its base name, in any case. */
 export const guardsEnvFile = (contract, file) => compileRules(contract).envFiles.has(path.basename(file).toLowerCase());
 
 /**
  * The configuration checks `up` makes before it touches anything, in step 2's words and order, shared with
- * `argus-live.mjs check` (init's verification of a draft): `loadLive`'s errors as one line; the first `${NAME}`
- * the env file leaves unset; each `base_url` or `roles.<r>.base_url` whose host does not resolve to loopback
- * only; each `services.<n>.env` neither `env` nor a set `pass_env` name gives the instance; given `contract`
- * (the repo's, or null without one), an `env_file` whose base name its `guard.envFiles` (with the guard's
- * floor) does not hold, which the guard would let an agent read. A file with
+ * `argus-live.mjs check` (init's verification of a draft): `loadLive`'s errors as one line; every `${NAME}`
+ * the env file leaves unset (none when the env file itself is at fault); each `base_url` or
+ * `roles.<r>.base_url` whose host name does not resolve to loopback only (a literal address is the
+ * schema's); each `services.<n>.env` neither `env` nor a set `pass_env` name gives the instance; a `store`
+ * the contract protects; a user's `password` or `totp_secret` that is not exactly one `${NAME}`; an
+ * `env_file` git tracks; given `contract` (the repo's, or null without one, which is said), an `env_file`
+ * whose base name its `guard.envFiles` (with the guard's floor) does not hold. A file with
  * schema errors is still checked for the rest, so `check` names every fault at once; a throw the schema
  * errors already explain is left out. Reads files and resolves hosts, nothing else: no lock, no process,
  * no write, no value in a problem. `loaded` (loadLive's answer) lets `up` check the file it already read;
@@ -205,21 +214,37 @@ export const guardsEnvFile = (contract, file) => compileRules(contract).envFiles
  */
 export async function configProblems(main, { lookup = defaultLookup, loaded = loadLive(main), contract } = {}) {
   const { config, errors, secrets, digest } = loaded;
-  const problems = errors.length ? [`refused: ${LIVE_FILE}: ${errors.join("; ")}`] : [];
   const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  if (!isObj(config)) return { config, secrets, digest, problems };
-  try {
-    const { names } = portNames(config);
-    expandConfig(config, { ports: Object.fromEntries(names.map((n) => [n, 1])), secrets });
-  } catch (e) {
-    const m = /^unset (\S+)$/.exec(e.message);
-    if (m) problems.push(`refused: \${${m[1]}} is unset (${config.env_file ?? "no env_file"} gives it no value)`);
-    else if (!errors.length) problems.push(e.message);
+  // The file itself missing or unparsable: that one line (its own words name the file).
+  if (!isObj(config)) return { config, secrets, digest, problems: errors.length ? [fileRefusal(config, errors)] : [] };
+  const problems = errors.length ? [fileRefusal(config, errors)] : [];
+  // An env file that cannot be read leaves every name unset, and one outside the repo is none of the repo's: the schema line says it once.
+  const envFile = typeof config.env_file === "string" ? config.env_file : null;
+  const envBad = errors.some((e) => e.startsWith("env_file "));
+  // Every unset ${NAME}, once each, in the order expandConfig meets them.
+  const { names } = portNames(config);
+  const filled = { ...secrets };
+  const unset = [];
+  for (;;) {
+    try {
+      expandConfig(config, { ports: Object.fromEntries(names.map((n) => [n, 1])), secrets: filled });
+      break;
+    } catch (e) {
+      const m = /^unset (\S+)$/.exec(e.message);
+      if (!m || unset.includes(m[1])) {
+        if (!m && !errors.length) problems.push(e.message);
+        break;
+      }
+      unset.push(m[1]);
+      filled[m[1]] = "x";
+    }
   }
+  if (!envBad) for (const n of unset) problems.push(`refused: \${${n}} is unset (${envFile ? `${envFile} gives it no value` : "there is no env_file to give it a value"})`);
   const roles = isObj(config.roles) ? Object.entries(config.roles) : [];
   const urls = [...(typeof config.base_url === "string" ? [["base_url", config.base_url]] : []), ...roles.filter(([, r]) => isObj(r) && typeof r.base_url === "string").map(([n, r]) => [`roles.${n}.base_url`, r.base_url])];
   for (const [where, url] of urls) {
     const host = hostOf(url);
+    if (host && isIP(host)) continue; // a literal address: the schema judges it (validateLive), with no lookup
     if (!host || !(await resolvesToLoopback(host, lookup))) problems.push(`refused: ${where} names ${host ?? "no host"}, which does not resolve to loopback only (the instance serves this machine alone)`);
   }
   // Every backing service the app reads must have its address in the instance env, or the app falls back to its default (the owner's).
@@ -230,8 +255,19 @@ export async function configProblems(main, { lookup = defaultLookup, loaded = lo
     const set = (Object.hasOwn(env, k) && env[k] !== "") || (passEnv.includes(k) && Boolean(process.env[k]));
     if (!set) problems.push(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
   }
-  if (contract !== undefined && typeof config.env_file === "string" && !guardsEnvFile(contract, config.env_file)) {
-    problems.push(`refused: env_file ${config.env_file} is not in the contract's guard.envFiles (/sapu:init adds it)`);
+  // The store is never a database the contract protects (checkStore says it again at step 6, once the store services run).
+  if (contract && typeof config.store === "string" && protectedDatabases(contract.guard ?? {}).databases.includes(config.store)) problems.push(`refused: the store "${config.store}" is a database guard.postgres/databases protects`);
+  // A password or TOTP secret written in the file would be committed with it: only a ${NAME} the env file gives.
+  for (const [r, role] of roles) {
+    if (!isObj(role) || !Array.isArray(role.users)) continue;
+    role.users.forEach((u, i) => {
+      for (const k of ["password", "totp_secret"]) if (isObj(u) && typeof u[k] === "string" && !SECRET_REF.test(u[k])) problems.push(`refused: roles.${r}.users[${i}].${k} must be a \${NAME} reference (its value goes in the env file), never a literal`);
+    });
+  }
+  if (envFile && !errors.some((e) => e.startsWith("env_file must be a path inside the repo"))) {
+    if (run(["git", "-C", main, "ls-files", "--error-unmatch", "--", envFile]).status === 0) problems.push(`refused: env_file ${envFile} is tracked by git, so its values would be committed (git rm --cached it, and ignore it)`);
+    if (contract === null) problems.push(`refused: there is no sapu contract, so the guard keeps no agent out of env_file ${envFile} (/sapu:init writes it, with the file in guard.envFiles)`);
+    else if (contract !== undefined && !guardsEnvFile(contract, envFile)) problems.push(`refused: env_file ${envFile} is not in the contract's guard.envFiles (/sapu:init adds it)`);
   }
   return { config, secrets, digest, problems };
 }
@@ -257,7 +293,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
   if (fresh) return upFresh(main, { runner, lookup, say });
   const { config, errors, secrets, digest } = loadLive(main);
   const max = config && config.limits && config.limits.max_cycle_minutes;
-  if (!Number.isInteger(max)) throw atStep(new Error(`refused: .argus/live.json: ${errors.join("; ") || "limits.max_cycle_minutes is missing"}`), "1 lock");
+  if (!Number.isInteger(max)) throw atStep(new Error(errors.length ? fileRefusal(config, errors) : "refused: .argus/live.json: limits.max_cycle_minutes is missing"), "1 lock");
   let lock;
   try {
     lock = takeLock(main, { maxCycleMinutes: max });
@@ -401,7 +437,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
 export async function upMap(main, { runner = run, say = () => {} } = {}) {
   const { config, errors, secrets } = loadLive(main);
   const max = config && config.limits && config.limits.max_cycle_minutes;
-  if (!Number.isInteger(max)) throw atStep(new Error(`refused: .argus/live.json: ${errors.join("; ") || "limits.max_cycle_minutes is missing"}`), "1 lock");
+  if (!Number.isInteger(max)) throw atStep(new Error(errors.length ? fileRefusal(config, errors) : "refused: .argus/live.json: limits.max_cycle_minutes is missing"), "1 lock");
   let lock;
   try {
     lock = takeLock(main, { maxCycleMinutes: max });

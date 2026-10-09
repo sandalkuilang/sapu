@@ -67,11 +67,12 @@ Also protect the repo on GitHub itself: branch protection on the base branch (PR
 - a base URL whose host does not resolve to loopback only;
 - a `services` entry the instance environment does not move to an address of its own (the app would fall back to your service);
 - a store that `guard.postgres` or `guard.databases` protects, and a `store_check` that prints any other store;
-- an `env_file` whose name the committed contract's `guard.envFiles` does not hold (any agent could read it);
+- an `env_file` whose name the committed contract's `guard.envFiles` does not hold (any agent could read it), or that git tracks;
+- a password or TOTP secret written into the file itself, rather than as a `${NAME}` the env file gives;
 - an environment value that reaches what your own env files (`.env`, `.env.local`, `guard.envFiles`) name, a protected port or database, a path inside your main checkout, or a port of the Docker host that is not the run's;
 - a file without both of your statements (`confirmed.mocks`: outbound integrations run in test or mock mode; `confirmed.data`: the data `reset` creates is synthetic).
 
-`argus-live.mjs check`, which `/sapu:init` runs on its draft, makes `up`'s checks of the file itself (its schema, an unset `${NAME}`, the base URLs, the `services`) and of the env file against the draft contract's `guard.envFiles`, without starting anything.
+`argus-live.mjs check`, which `/sapu:init` runs on its draft, makes `up`'s checks of the file itself (its schema, every unset `${NAME}`, the base URLs, the `services`, a protected `store`, a literal password or TOTP secret, a tracked env file) and of the env file against the draft contract's `guard.envFiles`, without starting anything.
 
 After start-up, an egress check compares what the run's processes connect to with what the run allows, and a Docker runtime gate ends the cycle when anything touches a Docker object older than the cycle (your own work on the same daemon included). `renew` runs both again.
 

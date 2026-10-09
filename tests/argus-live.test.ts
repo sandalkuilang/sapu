@@ -3281,7 +3281,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     ["no process identity (ps gives no start time)", () => {}, { noIdentity: true }, /^refused: process identity is unavailable here \(no start time from ps -o lstart=\): down could not tell the run's processes from others'$/],
     // The guard reads the committed contract: an env file it does not cover is one any agent could read.
     ["an env file the committed contract's guard.envFiles does not cover", () => {}, { envFiles: [".env.production"] }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
-    ["an env file with no contract committed (the guard's floor alone)", () => {}, { envFiles: null }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
+    ["an env file with no contract committed (the guard's floor alone)", () => {}, { envFiles: null }, /^refused: there is no sapu contract, so the guard keeps no agent out of env_file \.argus\/live\.env \(\/sapu:init writes it, with the file in guard\.envFiles\)$/],
   ])("step 2 refuses %s after taking the lock, then tears down (an end line)", async (_what, over, how, why) => {
     const h = how as Obj;
     const { main } = repo(over as (c: Obj) => void, h.env ?? `PW=${PW}\n`, h.envFiles === undefined ? ["live.env"] : h.envFiles);

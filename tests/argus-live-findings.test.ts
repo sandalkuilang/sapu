@@ -2585,7 +2585,7 @@ describe("argus-live check", () => {
    * every name it uses, and a contract (in the working tree, as /sapu:init drafts it) whose guard.envFiles
    * holds that env file's name (`envFiles` to change it).
    */
-  const checkRepo = (over: (c: Obj) => void = () => {}, { envFiles = ["live.env"] } = {}) => {
+  const checkRepo = (over: (c: Obj) => void = () => {}, { envFiles = ["live.env"], track = false } = {}) => {
     const main = committed();
     const c = example();
     over(c);
@@ -2594,6 +2594,10 @@ describe("argus-live check", () => {
     writeFileSync(join(main, ".argus/live.env"), Object.entries(VALUES).map(([k, v]) => `${k}=${v}\n`).join(""));
     mkdirSync(join(main, ".claude"), { recursive: true });
     writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles } }));
+    if (track) {
+      gitIn(main, "add", "-f", ".argus/live.env");
+      gitIn(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "env");
+    }
     return main;
   };
   const check = (main: string) => {
@@ -2601,14 +2605,20 @@ describe("argus-live check", () => {
     return { code: r.status, out: r.stdout, err: r.stderr };
   };
   const noValue = (text: string) => {
-    for (const v of Object.values(VALUES)) expect(text).not.toContain(v);
+    for (const v of [...Object.values(VALUES), ...Object.values(LITERAL)]) expect(text).not.toContain(v);
   };
-  const FAULTS: [string, (c: Obj) => void, { envFiles?: string[] }, RegExp][] = [
+  const LITERAL = { pw: "Literal-Pw-5521", totp: "KRSXG5CTMVRXEZLU" };
+  const FAULTS: [string, (c: Obj) => void, { envFiles?: string[]; track?: boolean }, RegExp][] = [
     ["an unknown top key", (c) => (c.bogus = 1), {}, /^refused: \.argus\/live\.json: .*unknown key "bogus"/],
     ["an unset name", (c) => (c.env.EXTRA = "${MISSING}"), {}, /^refused: \$\{MISSING\} is unset \(\.argus\/live\.env gives it no value\)$/],
     // .invalid never resolves (RFC 2606): no answer is not loopback only. A literal address the schema refuses itself.
     ["a base_url off loopback", (c) => (c.base_url = "http://shop.invalid:{port:web}"), {}, /^refused: base_url names shop\.invalid, which does not resolve to loopback only/],
     ["a service variable nothing sets", (c) => (c.services.search = { env: "SEARCH_URL" }), {}, /^refused: services\.search\.env names SEARCH_URL, which the instance env does not set/],
+    // Refused before anything starts: up met a protected store only at step 6, its store services already up.
+    ["a store the contract protects", (c) => (c.store = "app_dev"), {}, /^refused: the store "app_dev" is a database guard\.postgres\/databases protects$/],
+    ["a literal password", (c) => (c.roles.customer.users[0].password = LITERAL.pw), {}, /^refused: roles\.customer\.users\[0\]\.password must be a \$\{NAME\} reference \(its value goes in the env file\), never a literal$/],
+    ["a literal TOTP secret", (c) => (c.roles.sales.users[0].totp_secret = LITERAL.totp), {}, /^refused: roles\.sales\.users\[0\]\.totp_secret must be a \$\{NAME\} reference \(its value goes in the env file\), never a literal$/],
+    ["an env file git tracks", () => {}, { track: true }, /^refused: env_file \.argus\/live\.env is tracked by git, so its values would be committed \(git rm --cached it, and ignore it\)$/],
     ["an env file the guard does not cover", () => {}, { envFiles: [] }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
   ];
 
@@ -2657,7 +2667,7 @@ describe("argus-live check", () => {
       expect(lines[0], what).toMatch(line);
       noValue(r.out + r.err);
     }
-    const all = check(checkRepo((c) => FAULTS.forEach(([, over]) => over(c)), { envFiles: [] }));
+    const all = check(checkRepo((c) => FAULTS.forEach(([, over]) => over(c)), { envFiles: [], track: true }));
     expect(all.code).toBe(1);
     const lines = all.err.trim().split("\n");
     expect(lines).toHaveLength(FAULTS.length);
@@ -2670,8 +2680,33 @@ describe("argus-live check", () => {
     expect((await configProblems(host, { lookup: async () => [{ address: "127.0.0.1", family: 4 }] })).problems).toEqual([]);
   }, 60_000);
 
+  it("check names every unset name, each once", () => {
+    const r = check(checkRepo((c) => Object.assign(c.env, { A: "${MISSING_ONE}", B: "${MISSING_TWO}", C: "${MISSING_ONE}" })));
+    expect(r.code).toBe(1);
+    expect(r.err.trim().split("\n")).toEqual(["refused: ${MISSING_ONE} is unset (.argus/live.env gives it no value)", "refused: ${MISSING_TWO} is unset (.argus/live.env gives it no value)"]);
+  }, 30_000);
+
+  it("check gives one line per fault, never a fault's echoes", () => {
+    const lines = (main: string) => check(main).err.trim().split("\n");
+    const gone = checkRepo();
+    rmSync(join(gone, ".argus/live.env"));
+    expect(lines(gone)).toEqual(["refused: .argus/live.json: env_file .argus/live.env is missing"]);
+    expect(lines(checkRepo((c) => (c.env_file = "/etc/hosts")))).toEqual(["refused: .argus/live.json: env_file must be a path inside the repo: /etc/hosts"]);
+    const ip = lines(checkRepo((c) => (c.base_url = "http://10.0.0.5:{port:web}")));
+    expect(ip).toHaveLength(1);
+    expect(ip[0]).toMatch(/^refused: \.argus\/live\.json: base_url must name a loopback host/);
+    const none = checkRepo();
+    rmSync(join(none, ".argus/live.json"));
+    expect(lines(none)).toEqual(["refused: .argus/live.json is missing (/sapu:init writes it)"]);
+    const noEnv = lines(checkRepo((c) => delete c.env_file));
+    expect(noEnv[0]).toBe("refused: ${DB_PW} is unset (there is no env_file to give it a value)");
+    const loose = checkRepo();
+    rmSync(join(loose, ".claude/sapu.json"));
+    expect(lines(loose)).toEqual(["refused: there is no sapu contract, so the guard keeps no agent out of env_file .argus/live.env (/sapu:init writes it, with the file in guard.envFiles)"]);
+  }, 60_000);
+
   it("up refuses with check's words", async () => {
-    for (const [, over, opts] of [FAULTS[0], FAULTS[1], FAULTS[4]]) {
+    for (const [, over, opts] of FAULTS) {
       const main = checkRepo(over, opts);
       const first = check(main).err.split("\n")[0];
       const e = await up(commitContract(main)).then(() => null, (x: Error & { step?: string }) => x);

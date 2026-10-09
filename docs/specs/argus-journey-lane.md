@@ -528,8 +528,12 @@ defence in depth and not enforcement:
    recorded CLI session by name, the proxy, the worktree and its HOME. Then every earlier run's secret
    ledger (`logs/secrets.jsonl`, §10) is deleted (`dropLedgers`), before run.json and the reaper.
 2. **Refusals**, each naming its cause: no `reset`, `store` or `store_check`; a `confirmed` value not
-   true; no `logged_in`; an unset `${NAME}` (its value never printed); a host in `base_url` or a
-   `roles.<r>.base_url` that does not resolve to loopback (as nemesis requires);
+   true; no `logged_in`; every unset `${NAME}`, one line each (its value never printed; none when the
+   env file itself is missing or outside the repo, which the schema line says once); a host name in
+   `base_url` or a `roles.<r>.base_url` that does not resolve to loopback (as nemesis requires; a
+   literal address is the schema's); a `store` the contract's `guard.postgres`/`databases` protects
+   (checked again at step 6); a user's `password` or `totp_secret` that is not exactly one `${NAME}`;
+   an `env_file` git tracks;
    `~/.playwright/cli.config.json` present (the CLI merges it underneath ours); no Chrome-family
    browser (the install command named); the pinned CLI not installable (offline, empty npm cache);
    neither `lsof` nor `ss` available; no process identity (a start time for this very process, from
@@ -539,7 +543,8 @@ defence in depth and not enforcement:
    app would fall back to its default address, the owner's service; an `env_file` whose base name the
    committed contract's `guard.envFiles` (with the guard's `.env`/`.env.local` floor; no contract, the
    floor alone) does not hold — any agent could read it (`refused: env_file <f> is not in the contract's
-   guard.envFiles (/sapu:init adds it)`). `live check` makes the same checks against the draft contract
+   guard.envFiles (/sapu:init adds it)`, or, with no contract, `refused: there is no sapu contract, so the
+   guard keeps no agent out of env_file <f> …`). `live check` makes the same checks against the draft contract
    in the working tree, and adds `note: … up refuses until the contract is committed` while only the
    draft covers the file.
 3. **Ports and environment.** The **ports** first, since the environment names them:

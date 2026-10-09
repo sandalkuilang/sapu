@@ -876,3 +876,11 @@ Refs #53
   longer orphans `playwright-cli.js show` and `dashboardApp.js`; it is refused on a lock past its deadline,
   and names a missing run directory instead of spawnSync's ENOENT. `/sapu:journey` prints it as `cd <main
   checkout> && node <real path> show`.
+- **Phase-end review (QA).** `configProblems` (so `check` and `up`'s step 2) also refuses a `store` the
+  contract protects (before, only step 6 did, after the store services started), a user's `password` or
+  `totp_secret` that is not exactly one `${NAME}` (live.md and every example already write them so; the
+  check sits in `configProblems`, not `validateLive`, so scrub's reading of a configuration stays as it is),
+  and an `env_file` git tracks. Its lines changed too: every unset `${NAME}`, once each (expandConfig is
+  retried with each found name filled), none when the env file itself is at fault; no lookup of a literal
+  address the schema already refused; with no contract, that is the line; the missing-file line no longer
+  repeats the file's name. This supersedes the writer's "`check` names the first empty one only".
