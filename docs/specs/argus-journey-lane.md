@@ -531,7 +531,12 @@ defence in depth and not enforcement:
    field 22 of `/proc/<pid>/stat` on Linux — boot ticks, which never drift — else `ps -o lstart=`):
    every kill asks a process's identity first, so without one a teardown would be blind; a
    `services.<n>.env` variable the instance env (`env`, or a set `pass_env` name) does not set — the
-   app would fall back to its default address, the owner's service.
+   app would fall back to its default address, the owner's service; an `env_file` whose base name the
+   committed contract's `guard.envFiles` (with the guard's `.env`/`.env.local` floor; no contract, the
+   floor alone) does not hold — any agent could read it (`refused: env_file <f> is not in the contract's
+   guard.envFiles (/sapu:init adds it)`). `live check` makes the same checks against the draft contract
+   in the working tree, and adds `note: … up refuses until the contract is committed` while only the
+   draft covers the file.
 3. **Ports and environment.** The **ports** first, since the environment names them:
    `{port:<name>}` takes a free port from `port_range` outside `reserved_ports` (which `/sapu:init`
    fills with the repo's dev and E2E ports; `port_range` is required whenever a `{port:<name>}` is

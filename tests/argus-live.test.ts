@@ -8,7 +8,7 @@ import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, committed, example, freePort, git, homeWithCli, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, homeWithCli, liveContract, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -3151,14 +3151,18 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     over(c);
     return c;
   };
-  /** A repo whose .argus/live.json is tracked and whose env file is not. */
-  const repo = (over: (c: Obj) => void = () => {}, env = `PW=${PW}\n`) => {
+  /**
+   * A repo whose .argus/live.json is tracked and whose env file is not, with a committed contract whose
+   * guard.envFiles holds the env file's name (`envFiles` to change it, null for no contract).
+   */
+  const repo = (over: (c: Obj) => void = () => {}, env = `PW=${PW}\n`, envFiles: string[] | null = ["live.env"]) => {
     const main = tempDir();
     const data = join(tempDir(), "app_explore");
     git(main, "init", "-q");
     mkdirSync(join(main, ".argus"));
     writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
     writeFileSync(join(main, "app.txt"), "app\n");
+    if (envFiles) liveContract(main, envFiles);
     writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(config(data, over), null, 2)}\n`);
     git(main, "add", ".");
     git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
@@ -3260,9 +3264,12 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     ["a service whose variable the instance env does not set", (c: Obj) => (c.services.mail = { env: "SMTP_URL" }), {}, /^refused: services\.mail\.env names SMTP_URL, which the instance env does not set \(set it in env, to the instance's own mail\)$/],
     ["a service whose variable is a pass_env name the session does not set", (c: Obj) => ((c.services.mail = { env: "ARGUS_TEST_UNSET_SMTP" }), (c.pass_env = ["ARGUS_TEST_UNSET_SMTP"])), {}, /^refused: services\.mail\.env names ARGUS_TEST_UNSET_SMTP, which the instance env does not set/],
     ["no process identity (ps gives no start time)", () => {}, { noIdentity: true }, /^refused: process identity is unavailable here \(no start time from ps -o lstart=\): down could not tell the run's processes from others'$/],
+    // The guard reads the committed contract: an env file it does not cover is one any agent could read.
+    ["an env file the committed contract's guard.envFiles does not cover", () => {}, { envFiles: [".env.production"] }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
+    ["an env file with no contract committed (the guard's floor alone)", () => {}, { envFiles: null }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
   ])("step 2 refuses %s after taking the lock, then tears down (an end line)", async (_what, over, how, why) => {
     const h = how as Obj;
-    const { main } = repo(over as (c: Obj) => void, h.env ?? `PW=${PW}\n`);
+    const { main } = repo(over as (c: Obj) => void, h.env ?? `PW=${PW}\n`, h.envFiles === undefined ? ["live.env"] : h.envFiles);
     const ownerHome = tempDir();
     if (h.playwright) {
       mkdirSync(join(ownerHome, ".playwright"));
@@ -3279,6 +3286,9 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(e!.step).toBe("2 refusals");
     expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
     expect(balanced(main)).toBe(true);
+    // Before any worktree or process exists.
+    expect(git(main, "worktree", "list").split("\n")).toHaveLength(1);
+    expect(fixtureProcesses()).toEqual([]);
   });
 
   it("the fixture's cache fallback to a fixed local port is caught at up: refused, torn down", async () => {

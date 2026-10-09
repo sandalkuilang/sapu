@@ -8,7 +8,7 @@ import { createServer as createHttpServer } from "node:http";
 import { connect as netConnect, createServer as createNetServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { alive, cleanTemps, committed, example, freePort, git, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
+import { alive, cleanTemps, committed, example, freePort, git, liveContract, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1600,6 +1600,7 @@ const liveRepo = (over: (c: Obj) => void = () => {}) => {
   writeFileSync(join(main, "fixtures/bad name.txt"), "x\n");
   writeFileSync(join(main, "fixtures/sub/deep.txt"), "x\n");
   execFileSync("ln", ["-s", "receipt.txt", join(main, "fixtures/link.txt")]);
+  liveContract(main);
   git(main, "add", ".");
   git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "live");
   writeFileSync(join(main, "fixtures/untracked.txt"), "x\n");

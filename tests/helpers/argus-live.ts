@@ -9,6 +9,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
+import { FIXTURE_CONTRACT } from "../fixture-contract";
 // @ts-expect-error — plain ESM script without types
 import { cliCacheRoot, cliInstallDir, ensureCli, findChrome, openSession, slotConfig, slotDir, writeSlotConfig } from "../../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -99,6 +100,15 @@ export const committed = () => {
   git(main, "add", ".");
   git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
   return main;
+};
+
+/**
+ * Writes `<main>/.claude/sapu.json` (the caller commits it: up reads the committed contract): the fixture
+ * contract with guard.envFiles `envFiles`, the env file's name as /sapu:init writes it.
+ */
+export const liveContract = (main: string, envFiles: string[] = ["live.env"]) => {
+  mkdirSync(join(main, ".claude"), { recursive: true });
+  writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles } }));
 };
 
 /** A loopback port free at the moment of the call. */
@@ -440,6 +450,7 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
   mkdirSync(join(main, ".argus"));
   writeFileSync(join(main, ".gitignore"), ".argus/live.env\n.argus/live/\n");
   writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(config, null, 2)}\n`);
+  liveContract(main);
   execFileSync("git", ["-C", main, "add", "."]);
   execFileSync("git", ["-C", main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
   writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\n`);

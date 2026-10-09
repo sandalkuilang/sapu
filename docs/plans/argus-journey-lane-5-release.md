@@ -832,3 +832,11 @@ Refs #53
   `--label` that is the acceptance label in any case and a policy with `fileIssues: false`: under
   `agentFiledNeedsAcceptance` an issue built from page text would otherwise have skipped acceptance. A
   comment gets no label, and `fileIssues: false` leaves comments to policy.md as it does for argus.
+- **Phase-end review.** `up` refuses at step 2, before any worktree or process, an `env_file` whose base
+  name the committed contract's `guard.envFiles` does not hold (no contract: the guard's floor alone):
+  `configProblems` takes `contract` and asks `guardsEnvFile`, which `check` shares, so `check` no longer
+  imports the guard. `check` asks the working-tree draft (its refusal unchanged) and adds `note: the
+  committed contract's guard.envFiles does not hold <name> yet: up refuses until the contract is committed`
+  after `live: ok` while only the draft covers the file. Every test repo that runs `up` now commits a
+  contract (`liveContract`). `BUDGETS["skills/journey/live.md"]` is 14 500 (it was 14 000): the
+  committed-contract note took it past.

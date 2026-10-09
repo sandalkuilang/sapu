@@ -111,7 +111,7 @@ import { showDashboard } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { drift } from "./argus-live-drift.mjs";
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, selectJourneys, visitJourney, writeJourneys } from "./argus-live-map.mjs";
-import { configProblems, renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
+import { configProblems, guardsEnvFile, renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { redact, run } from "./argus-live-proc.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
@@ -123,7 +123,6 @@ import { scrub } from "./argus-live-scrub.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
-import { compileRules } from "./sapu-guard.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 const main = findMain(process.cwd());
@@ -281,17 +280,18 @@ try {
   } else if (cmd === "up" && args.length === 1 && args[0] === "--map") print(JSON.stringify(await upMap(main, { say: print })));
   else if (cmd === "up" && (args.length === 0 || (args.length === 1 && args[0] === "--fresh"))) print(JSON.stringify(await up(main, { fresh: args[0] === "--fresh", say: print })));
   else if (cmd === "check" && !args.length) {
-    // up's own configuration checks, then the contract: the guard must keep every agent out of the env file.
-    const r = await configProblems(main);
-    const problems = [...r.problems];
+    // up's own configuration checks, against the draft contract in the working tree (init runs check before committing it).
     const c = loadContract(main, { workingTree: true });
-    if (!c.contract && !c.missing) problems.push(`refused: ${c.error}`);
-    else if (r.config && typeof r.config.env_file === "string" && !compileRules(c.contract ?? null).envFiles.has(path.basename(r.config.env_file).toLowerCase())) problems.push(`refused: env_file ${r.config.env_file} is not in the contract's guard.envFiles (/sapu:init adds it)`);
+    const r = await configProblems(main, { contract: c.contract ?? (c.missing ? null : undefined) });
+    const problems = [...r.problems, ...(!c.contract && !c.missing ? [`refused: ${c.error}`] : [])];
     for (const p of problems) process.stderr.write(`${redact(p, secrets)}\n`);
     if (problems.length) process.exit(1);
     const roles = Object.values(r.config.roles);
     const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
     print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
+    // up reads the committed contract: until the draft is committed, up still refuses the env file.
+    if (!guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
+
   } else if (cmd === "show" && !args.length) {
     // The owner's window on the run's browsers: only once up has a browser for them (never a map run's).
     const lock = readLock(main);

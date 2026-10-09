@@ -35,6 +35,7 @@ import { down, guarded, logsDir, readRun, recover, replayStop, startReaper, upda
 import { drainSessions } from "./argus-live-session.mjs";
 import { allocatePorts, bringUpRest, bringUpStore, instanceEnv, makeHome, makeWorktree, runSetup } from "./argus-live-start.mjs";
 import { loadContract } from "./sapu-contract.mjs";
+import { compileRules } from "./sapu-guard.mjs";
 
 // ---------------------------------------------------------------------------------------------------
 // up, up --fresh, renew, status (spec §8 `up` steps 1-11, `up --fresh`, `renew`).
@@ -187,17 +188,22 @@ async function tearDown(main, state, { secrets, runner, log }) {
   }
 }
 
+/** Whether the guard keeps every agent out of `file` under `contract` (null: no contract, the floor alone): its base name, in any case. */
+export const guardsEnvFile = (contract, file) => compileRules(contract).envFiles.has(path.basename(file).toLowerCase());
+
 /**
  * The configuration checks `up` makes before it touches anything, in step 2's words and order, shared with
  * `argus-live.mjs check` (init's verification of a draft): `loadLive`'s errors as one line; the first `${NAME}`
  * the env file leaves unset; each `base_url` or `roles.<r>.base_url` whose host does not resolve to loopback
- * only; each `services.<n>.env` neither `env` nor a set `pass_env` name gives the instance. A file with
+ * only; each `services.<n>.env` neither `env` nor a set `pass_env` name gives the instance; given `contract`
+ * (the repo's, or null without one), an `env_file` whose base name its `guard.envFiles` (with the guard's
+ * floor) does not hold, which the guard would let an agent read. A file with
  * schema errors is still checked for the rest, so `check` names every fault at once; a throw the schema
  * errors already explain is left out. Reads files and resolves hosts, nothing else: no lock, no process,
  * no write, no value in a problem. `loaded` (loadLive's answer) lets `up` check the file it already read;
  * `lookup` is a test seam. Returns {config, secrets, digest, problems}.
  */
-export async function configProblems(main, { lookup = defaultLookup, loaded = loadLive(main) } = {}) {
+export async function configProblems(main, { lookup = defaultLookup, loaded = loadLive(main), contract } = {}) {
   const { config, errors, secrets, digest } = loaded;
   const problems = errors.length ? [`refused: ${LIVE_FILE}: ${errors.join("; ")}`] : [];
   const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -223,6 +229,9 @@ export async function configProblems(main, { lookup = defaultLookup, loaded = lo
     const k = isObj(svc) ? svc.env : undefined;
     const set = (Object.hasOwn(env, k) && env[k] !== "") || (passEnv.includes(k) && Boolean(process.env[k]));
     if (!set) problems.push(`refused: services.${n}.env names ${k}, which the instance env does not set (set it in env, to the instance's own ${n})`);
+  }
+  if (contract !== undefined && typeof config.env_file === "string" && !guardsEnvFile(contract, config.env_file)) {
+    problems.push(`refused: env_file ${config.env_file} is not in the contract's guard.envFiles (/sapu:init adds it)`);
   }
   return { config, secrets, digest, problems };
 }
@@ -281,9 +290,9 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
 
     step = "2 refusals";
     // The configuration's own faults first, in check's words (one function): the first one refuses.
-    const { problems } = await configProblems(main, { lookup, loaded: { config, errors, secrets, digest } });
-    if (problems.length) throw new Error(problems[0]);
     const contract = contractOf(main);
+    const { problems } = await configProblems(main, { lookup, loaded: { config, errors, secrets, digest }, contract });
+    if (problems.length) throw new Error(problems[0]);
     const { names, fixed } = portNames(config);
     const pw = path.join(ownerHome, ".playwright", "cli.config.json");
     if (fs.existsSync(pw)) throw new Error(`refused: ${pw} exists; the browser CLI would merge it underneath the run's own config (move it aside)`);

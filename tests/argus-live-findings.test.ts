@@ -2605,11 +2605,39 @@ describe("argus-live check", () => {
     ["an env file the guard does not cover", () => {}, { envFiles: [] }, /^refused: env_file \.argus\/live\.env is not in the contract's guard\.envFiles \(\/sapu:init adds it\)$/],
   ];
 
+  const commitContract = (main: string) => {
+    gitIn(main, "add", ".claude/sapu.json");
+    gitIn(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract");
+    return main;
+  };
+
   it("check passes the example config and starts nothing", () => {
-    const main = checkRepo();
+    const main = commitContract(checkRepo());
     const r = check(main);
     expect(r).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\n", err: "" });
     expect(existsSync(join(main, ".argus/live"))).toBe(false);
+  }, 30_000);
+
+  it("check passes live.md's own example as init would verify it", () => {
+    const main = committed();
+    const doc = readFileSync(join(__dirname, "../plugins/sapu/skills/journey/live.md"), "utf8");
+    const json = /## Example\n\n```json\n([\s\S]*?)\n```/.exec(doc)![1];
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), `${json}\n`);
+    writeFileSync(join(main, ".argus/live.env"), Object.entries(VALUES).map(([k, v]) => `${k}=${v}\n`).join(""));
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["live.env"] } }));
+    expect(check(commitContract(main))).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\n", err: "" });
+  }, 30_000);
+
+  it("a draft contract that covers the env file passes check, which says up refuses until it is committed", () => {
+    const main = checkRepo();
+    expect(check(main)).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\nnote: the committed contract's guard.envFiles does not hold live.env yet: up refuses until the contract is committed\n", err: "" });
+    // A committed contract that lacks it, under a draft that has it: the same note.
+    const head = checkRepo(() => {}, { envFiles: [] });
+    commitContract(head);
+    writeFileSync(join(head, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["LIVE.env"] } }));
+    expect(check(head).out.split("\n")[1]).toMatch(/^note: .* up refuses until the contract is committed$/);
   }, 30_000);
 
   it("check names every fault up would refuse, and never a value", async () => {
@@ -2636,10 +2664,10 @@ describe("argus-live check", () => {
   }, 60_000);
 
   it("up refuses with check's words", async () => {
-    for (const over of [FAULTS[0][1], FAULTS[1][1]]) {
-      const main = checkRepo(over);
+    for (const [, over, opts] of [FAULTS[0], FAULTS[1], FAULTS[4]]) {
+      const main = checkRepo(over, opts);
       const first = check(main).err.split("\n")[0];
-      const e = await up(main).then(() => null, (x: Error & { step?: string }) => x);
+      const e = await up(commitContract(main)).then(() => null, (x: Error & { step?: string }) => x);
       expect(e!.message).toBe(first);
       expect(e!.step).toBe("2 refusals");
       expect(existsSync(join(main, ".argus/live/lock.json"))).toBe(false);
