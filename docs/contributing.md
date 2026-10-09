@@ -7,6 +7,7 @@
 ```
 .claude-plugin/marketplace.json   marketplace "sapu" → plugins/sapu, plugins/senior-dev-team
 .claude/sapu.json                 this repo's own sapu contract (its maintainer's identity)
+.claude/sapu/*.md                 this repo's own profiles (sapu, worker, forge, dream), as /sapu:init writes them
 plugins/sapu/
   .claude-plugin/plugin.json      version; dependencies: senior-dev-team
   CONTRACT.md                     the repo contract format
