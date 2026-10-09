@@ -856,3 +856,6 @@ Refs #53
 - **Phase-end review.** `/sapu:init`'s skills question selects `argus` whenever `journey` is selected,
   and `allowed journey` also refuses while argus is not allowed (the review left that check optional; it
   is one line, and a contract edited by hand gets the same answer as init's).
+- **Phase-end review (QA).** The explorer's brief says `values[].value`, `candidates[].measured` and every
+  `cw` field are JSON strings, as `validateReturn` takes them (it refuses a number or a boolean there); the
+  brief is 15 467 bytes, inside its 15 500 budget.

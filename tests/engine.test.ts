@@ -847,6 +847,12 @@ describe("the journey lane's engine text", () => {
     expect(fm.tools).toBe("Bash, Read, StructuredOutput");
   });
 
+  it("the explorer's return names the fields that are strings, as validateReturn takes them", () => {
+    const ret = read(AGENT).split("\n## Return")[1].split("\n## ")[0];
+    expect(ret).toContain("`values[].value`, `candidates[].measured` and every `cw` field are JSON strings");
+    expect(ret).toContain('`"49.5"`, never `49.5`');
+  });
+
   it("the explorer's example repro is one the runner accepts", () => {
     const list = fenced(read(AGENT), "## Repro lists");
     const accounts = { "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "anon.1": null };

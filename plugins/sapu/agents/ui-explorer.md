@@ -113,7 +113,7 @@ Submit once, with `pw '<token>' submit '<json>'` (the JSON on one line, at most 
 
 `{journey, status: "done"|"handoff"|"aborted", roles: [<role>.<k>], steps: [{role, action, locator, saw, off_goal}], created: [<marker>], values: [{marker, field, role, value, from}], candidates: [{claim, oracle, measured, roles, observed, expected, repro, screenshots: [<file name the screenshot printed>], h2h3}], cw: [{step, q1, q2, q3, q4}], coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events: [<text>], next, notes}`
 
-Free text is capped at 500 characters; at most 20 candidates. A refused return names its fault and leaves your token live: fix it and submit again. `submitted: …` ends your work. Your final answer is only `{"status": "<status>", "slot": <n>}` (StructuredOutput when you have it).
+Free text is capped at 500 characters; at most 20 candidates. `values[].value`, `candidates[].measured` and every `cw` field are JSON strings (`"49.5"`, never `49.5`; `"yes"`, never `true`). A refused return names its fault and leaves your token live: fix it and submit again. `submitted: …` ends your work. Your final answer is only `{"status": "<status>", "slot": <n>}` (StructuredOutput when you have it).
 
 ## Map mode
 
