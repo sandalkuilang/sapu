@@ -1493,3 +1493,13 @@ Interfaces:
   `sapu-contract.mjs`; `-instance.mjs` keeps `up`, `up --fresh`, `renew` and `status` (523 lines), its
   header the DAG above, with the modules later tasks add named in their places. `canonicalOrigin`'s own
   default ports fill `ws:` and `wss:` too (the endpoints table has neither); no caller passes them.
+- **Task 2.** `credentials` is optional: by default the driver's `credentials()` (also exposed, `pw`
+  reads it for the HARNESS check) is those of an account the journey created (the slot's state.json
+  `created`), else the allocated user's from `slotRec`, so the lookup moved out of `pw` whole.
+  `failures` reaches `login` for a created account only (never as `null`, which would replace login's
+  default). `gone(res, record)` holds `pw`'s whole test, a failed command first. `relogin(o)` closes
+  the record `ensure()` (or the last open) gave, as `pw` did. `createdFailures` stays in `pw` (its
+  writes re-check the run under `pw`'s `ifLive`) and is passed as `failures`; `logProbe` and
+  `NOT_OPEN` moved to the driver. The tests' CLI is the shim behind a wrapper whose `open` leaves a
+  stand-in daemon (a process whose command names `cliDaemon.js <session>`), which `openSession`
+  records and `down` stops.

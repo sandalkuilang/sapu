@@ -7,26 +7,23 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openSession, slotDir } from "./argus-live-browser.mjs";
-import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
+import { slotDir } from "./argus-live-browser.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { submit } from "./argus-live-return.mjs";
-import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince } from "./argus-live-proxy.mjs";
-import { logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
-import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, stillLive, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
+import { readRun } from "./argus-live-run.mjs";
+import { configuredUser, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
+import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
 export const DEFAULT_CALLS = 120;
 /** The same command on the same state this many times is a loop. */
 const LOOP_AT = 3;
-/** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
-const NOT_OPEN = /is not open, please run open first/;
 /** `find`'s answer when nothing matched (0.1.22: "No matches found for …"). */
 const NO_MATCH = /^### Result\nNo matches found for /m;
 /** A URL in a console line (Chrome names the request it failed, and where). */
@@ -206,40 +203,7 @@ function checkArg(kind, value, { origins, base, files }) {
   }
 }
 
-/** Every value the output must never show: the env_file's (now and as `up` read them), every role password and TOTP secret, and the passwords of accounts the journey created. */
-function secretsOf(main, config, live, state) {
-  const out = { ...recordedSecrets(main, config), ...loadLive(main).secrets };
-  for (const [role, r] of Object.entries((live && live.roles) || {})) {
-    (r && Array.isArray(r.users) ? r.users : []).forEach((u, i) => {
-      if (u && typeof u.password === "string") out[`role:${role}.${i}.password`] = u.password;
-      if (u && typeof u.totp_secret === "string") out[`role:${role}.${i}.totp`] = u.totp_secret;
-    });
-  }
-  for (const [a, c] of Object.entries(state.created ?? {})) if (c && typeof c.password === "string") out[`created:${a}`] = c.password;
-  return out;
-}
-
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
-
-/**
- * Appends one re-login probe to the run's `logs/probes.jsonl` (0600): `{slot, account, url, start, end}`
- * (epoch ms), so the probe tab's request to the role's base_url is told apart from the page's own.
- */
-function logProbe(main, runId, entry) {
-  try {
-    const logs = logsDir(main, runId);
-    fs.mkdirSync(logs, { recursive: true, mode: 0o700 });
-    fs.appendFileSync(path.join(logs, "probes.jsonl"), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
-  } catch {
-    // the `probed:` line still tells it
-  }
-}
-
-/** True when `u` is a user of some role of the expanded config `live`, compared trimmed and without case. */
-function configuredUser(live, u) {
-  const norm = (x) => String(x).trim().toLowerCase();
-  return Object.values((live && live.roles) || {}).some((r) => (r && Array.isArray(r.users) ? r.users : []).some((x) => x && typeof x.user === "string" && norm(x.user) === norm(u)));
-}
 
 /**
  * One explorer call (spec §9): `argv` = `[token, <role>[.<k>] | <role-free command>, …]` → `{code, out}`
@@ -318,7 +282,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const live = expandConfig(config, { ports: { ...(rec.ports ?? {}) }, secrets: envSecrets });
   const max = (live.limits && live.limits.explorer_pw_calls) || DEFAULT_CALLS;
   const state = readSlotState(dir);
-  const secrets = secretsOf(main, config, live, state);
+  const secrets = maskSecrets(main, config, live, state);
   setSecrets(secrets);
   if (state.calls >= max) return { code: 1, out: ["BUDGET: submit status handoff"] };
   const ifLive = { main, runId }; // each write of the slot's state re-checks the run (stillLive)
@@ -355,27 +319,6 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     return { code: 0, out: [body, counter, ...(done.code !== 0 && done.code !== null ? [`exit ${done.code}`] : []), ...done.events, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
   }
 
-  const role = account.split(".")[0];
-  const plan = loginPlan(live, role);
-  let positionals;
-  try {
-    positionals = p.positionals.map((v, i) => checkArg(COMMANDS[p.cmd].args[Math.min(i, COMMANDS[p.cmd].args.length - 1)], v, { origins: rec.origins ?? [], base: plan.base, files: path.join(dir, "files") }));
-    if (p.cmd === "login" && role === "anon") throw new Error("refused: anon is never signed in");
-    // A configured user (any slot's, any role's, spelled in any case) is the wrapper's to sign in: an explorer's
-    // failed attempt would end another slot's journey and count towards the app's lockout of that user.
-    if (p.cmd === "login" && configuredUser(live, positionals[0])) throw new Error("refused: login takes an account the journey created, never a configured user");
-  } catch (e) {
-    return refused(e);
-  }
-
-  // The account's credentials: those of an account the journey created and signed in with `login`, else its allocated user's.
-  const r = live.roles && live.roles[role];
-  const credentials = () => {
-    const c = (readSlotState(dir).created ?? {})[account];
-    if (c && typeof c.user === "string" && typeof c.password === "string") return { user: c.user, password: c.password, totpSecret: null, created: true };
-    const u = ((r && r.users) || []).find((x) => x && x.user === slotRec.accounts[account]);
-    return u ? { user: u.user, password: u.password, totpSecret: u.totp_secret ?? null, created: false } : null;
-  };
   // A created account's failed logins are kept in the slot's state.json `createdFailed`, never in run.json `loginFailed`.
   const createdFailures = {
     get: (key) => {
@@ -387,69 +330,60 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
       writeSlotState(dir, { ...cur, createdFailed: { ...(cur.createdFailed ?? {}), [key]: reason } }, ifLive);
     },
   };
-  const c0 = credentials();
+  const js = cli ?? (rec.browser && rec.browser.js);
+  // The account's session (argus-live-session.mjs): its credentials, its state and every CLI call it makes.
+  const d = sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, failures: createdFailures, runner, cliRunner });
+  const { role, plan } = d;
+  const r = live.roles && live.roles[role];
+  let positionals;
+  try {
+    positionals = p.positionals.map((v, i) => checkArg(COMMANDS[p.cmd].args[Math.min(i, COMMANDS[p.cmd].args.length - 1)], v, { origins: rec.origins ?? [], base: plan.base, files: path.join(dir, "files") }));
+    if (p.cmd === "login" && role === "anon") throw new Error("refused: anon is never signed in");
+    // A configured user (any slot's, any role's, spelled in any case) is the wrapper's to sign in: an explorer's
+    // failed attempt would end another slot's journey and count towards the app's lockout of that user.
+    if (p.cmd === "login" && configuredUser(live, positionals[0])) throw new Error("refused: login takes an account the journey created, never a configured user");
+  } catch (e) {
+    return refused(e);
+  }
+
+  const c0 = d.credentials();
   const user = (c0 ?? {}).user ?? slotRec.accounts[account];
   const failedBefore = c0 && c0.created ? createdFailures.get(`${role}/${user}`) : user && rec.loginFailed && Object.hasOwn(rec.loginFailed, `${role}/${user}`);
   if (p.cmd !== "login" && failedBefore) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
   // The loop rule: the same command on the same state (the last observation's hash) a third time.
-  let st = { ...((state.sessions ?? {})[account] ?? {}) };
-  const key = sha256(JSON.stringify([account, p.cmd, p.flags, p.positionals, st.lastState ?? null]));
+  const key = sha256(JSON.stringify([account, p.cmd, p.flags, p.positionals, d.state.lastState ?? null]));
   const seen = (state.loops[key] ?? 0) + 1;
   state.loops = { ...state.loops, [key]: seen };
   writeSlotState(dir, state, ifLive);
   if (seen >= LOOP_AT) return { code: 1, out: ["LOOP: submit status handoff", counter] };
 
-  const js = cli ?? (rec.browser && rec.browser.js);
   if (typeof js !== "string" || !fs.existsSync(js)) throw new Error("failed: the browser CLI is not installed (run.json names none, or it is gone)");
-  const home = path.join(rec.home, "browser");
-  const name = sessionName(runId, slot, account);
-  const cliCall = (args, timeoutMs = plan.settleMs + 60_000) => runCli({ js, session: name, args, cwd: dir, home, timeoutMs, runner: cliRunner });
-  const stage = (which, payload) => runCode({ js, session: name, cwd: dir, home, code: loginCode(which, payload), timeoutMs: 4 * plan.settleMs + 60_000, runner: cliRunner });
-  /** Opens the session (a login-command role's with a fresh storage state, which signs it in) → its record. */
-  const open = async () => {
-    stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
-    let storageState = null;
-    if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
-    const s = await openSession({ main, runId, slot, account, js, home, storageState, runner, cliRunner });
-    st = { signedIn: Boolean(storageState) };
-    return s;
-  };
-  /** Signs the open session in with the account's credentials (login, which never retries a failed account) → its answer. */
-  const signIn = async (c = credentials()) => {
-    const res = c ? await login({ main, runId, session: name, account, user: c.user, password: c.password, totpSecret: c.totpSecret, plan, js, home, cwd: dir, runner: cliRunner, ...(c.created ? { failures: createdFailures } : {}) }) : { ok: false, reason: "rejected" };
-    if (res.ok) st.signedIn = true;
-    return res;
-  };
   const save = (extra = {}) => {
     const after = readSlotState(dir);
-    writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: st } }, ifLive);
+    writeSlotState(dir, { ...after, ...extra, sessions: { ...(after.sessions ?? {}), [account]: d.state } }, ifLive);
   };
 
   // The session: opened on first use and signed in, invisibly (anon never is).
-  let session = (rec.sessions ?? []).find((x) => x && x.name === name && x.daemon);
-  if (!session) session = await open();
+  const { record: session } = await d.ensure();
   if (p.cmd === "login") {
     // An account the journey created: signed in on this session; kept for its re-logins only once it worked.
     const [u, password] = positionals;
     setSecrets({ ...secrets, "login:password": password });
-    const done = await signIn({ user: u, password, totpSecret: null, created: true });
+    const done = await d.signIn({ user: u, password, totpSecret: null, created: true });
     save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
     return { code: 0, out: [counter, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
   }
-  if (role !== "anon" && !st.signedIn) {
-    if (!(r && r.login) && !(await signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
+  if (role !== "anon" && !d.state.signedIn) {
+    if (!(r && r.login) && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
   }
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
-  let res = await cliCall(args);
+  let res = await d.cli(args);
   const events = [];
   // The browser is gone (it crashed, or was closed): the session opens again and signs in; the command is not run.
-  if (res.code !== 0 && (NOT_OPEN.test(`${res.stdout}\n${res.stderr}`) || !sessionAlive(session, runner))) {
-    await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
-    await open();
-    events.push(`session-reopened: ${account}`);
-    if (role !== "anon" && !st.signedIn && !(r && r.login) && !(await signIn()).ok) events.push("harness: login failed");
+  if (d.gone(res, session)) {
+    events.push(...(await d.reopen(session)));
     save();
     return { code: 0, out: [counter, ...events] };
   }
@@ -458,7 +392,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     const start = Date.now();
     while (res.code === 0 && NO_MATCH.test(res.stdout) && Date.now() - start < plan.settleMs) {
       await sleep(Math.min(500, Math.max(0, plan.settleMs - (Date.now() - start))));
-      res = await cliCall(args);
+      res = await d.cli(args);
     }
     // A retry the CLI failed prints its error (in the fence) and no verdict.
     if (res.code === 0) events.push(`${NO_MATCH.test(res.stdout) ? "not found" : "found"} after ${Date.now() - start} ms`);
@@ -468,14 +402,9 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 
   // Observation: the signals of every page (popups included), the state hash, logged_in; then the console's new errors and warnings.
   const pageLines = [];
-  let o = null;
-  try {
-    o = await stage("observe", { loggedIn: role === "anon" ? null : plan.loggedIn });
-  } catch {
-    events.push("harness: observation failed");
-  }
+  const { o, events: observed } = await d.observe();
+  events.push(...observed);
   if (o && typeof o === "object") {
-    st.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
     for (const x of Array.isArray(o.signals) ? o.signals : []) if (x && typeof x.text === "string") pageLines.push(`signal ${String(x.kind ?? "")}: ${x.text}`);
   }
   // Requests the run blocked: reported once per slot as `blocked: <origin>`, never as console errors. The
@@ -497,9 +426,9 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     return hit.length === 0;
   };
   if (p.cmd === "console") text = text.split("\n").filter((l) => !/^\[[A-Z]+\] /.test(l) || consoleLine(l)).join("\n");
-  const consoleSeen = new Set(st.consoleSeen ?? []);
+  const consoleSeen = new Set(d.state.consoleSeen ?? []);
   try {
-    const c = await cliCall(["console", "warning"], 30_000);
+    const c = await d.cli(["console", "warning"], 30_000);
     for (const l of String(c.stdout).split("\n")) {
       const m = /^\[(ERROR|WARNING)\] (.*)$/.exec(l);
       if (!m || !consoleLine(l)) continue;
@@ -511,39 +440,12 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   } catch {
     events.push("harness: observation failed");
   }
-  st.consoleSeen = [...consoleSeen].slice(-1000);
+  d.state.consoleSeen = [...consoleSeen].slice(-1000);
   for (const x of blockedNow) pageLines.push(`blocked: ${new URL(x).origin}`);
 
   // Re-login: logged_in gone from the page while the account was signed in, and gone from a probe tab at
   // its base_url too (a page without the header is not a lost session). The command is not repeated.
-  if (o && o.loggedIn === false && role !== "anon" && st.signedIn) {
-    // The probe tab's request is the wrapper's: told outside the fence and logged with its times.
-    const start = Date.now();
-    let probe = null;
-    try {
-      probe = await stage("probe", { url: plan.base, loggedIn: plan.loggedIn, settleMs: plan.settleMs });
-    } catch {
-      probe = null;
-    }
-    events.push(`probed: ${account}`);
-    logProbe(main, runId, { slot, account, url: plan.base, start, end: Date.now() });
-    if (!probe) events.push("harness: probe failed");
-    const gone = Boolean(probe) && !probe.in;
-    if (gone) {
-      st.signedIn = false;
-      let ok = false;
-      try {
-        if (r && r.login) {
-          await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
-          await open();
-          ok = st.signedIn;
-        } else ok = (await signIn()).ok;
-      } catch {
-        ok = false;
-      }
-      events.push(ok ? `re-logged-in: ${account}` : "harness: login failed");
-    }
-  }
+  events.push(...(await d.relogin(o)));
   save({ blockedOffset: fromProxy.offset, proxyBlocked: [...proxyBlocked].slice(-500), blockedReported: [...reported, ...blockedNow].slice(-500) });
   const { body, truncated } = fence([text, ...pageLines].filter((x) => x !== "").join("\n"), { secrets });
   return { code: 0, out: [body, counter, ...(seen > 1 ? [`loop ${seen}/${LOOP_AT}`] : []), ...events, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
