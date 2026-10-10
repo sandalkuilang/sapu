@@ -15,7 +15,7 @@ The journey lane's regression net: the catalog's critical journeys as a generate
 
 `n` is argus's cycle number, as in journeys.md.
 
-1. **PLAN.** journeys.md step 1, then `live smoke plan`: one line per journey, in rank order: `keep`, `capture` (no path yet), `heal`, `quarantined`, `pending <id> <url>` (an open `argus/` pull request changes it), `drop <id> (<reason>)`, and `upgrade <from> → <to> (baseline run needed)`. A `note:` line is journalled.
+1. **PLAN.** journeys.md step 1, then `live smoke plan`: one line per journey, in rank order: `keep`, `capture` (no path yet), `heal`, `quarantined`, `pending <id> <url>` (an open `argus/` pull request changes it), `pending-regression <id> <url>` (its heal was closed: Filing), `drop <id> (<reason>)`, and `upgrade <from> → <to> (baseline run needed)`. A `note:` line is journalled; a `quarantine <id>: …` line is staged for step 7.
 2. **UP.** `live up` in the background, the map as journeys.md step 2. Nothing below starts before its summary.
 3. **RUN.** `live smoke run --slot <r>`, `<r>` a slot nothing holds (from 2): `seed: <n>`, then per path `held`, `broke step=<n> kind=<k>` (two of two, the second after `up --fresh`), `flaky …` or `harness: …`; exit 3 a break, 2 the harness. Its first `expect-failed` break is written as `regression <id>: step <n> written as <r>.1.1`: journeys.md steps 6 to 8 for that ref, its class from `live classify --oracle regression [--money]`. Then, before any explorer slot exists (a live one refuses it), `live smoke run --perf`: per path `baseline set`, `ok`, `regressed …`, `flaky …` or `not measured`; exit 3 a confirmed regression (Perf, below).
 4. **CI.** `live smoke ci` (the newest completed run of `ci.workflow`), and `live smoke ci --run <id>` for the newest completed run of each `pending` pull request's branch (`gh run list --workflow <ci.workflow> --branch <branch> --json databaseId,status,event`). Exit 3 a failure, 2 a harness line. Act on each line as Filing says.
@@ -41,8 +41,11 @@ The orchestrator files what the verbs leave to it, only through `live scrub --ru
 | `baseline-missing <id> <project>` | step 8 |
 | `harness setup <account>: …`, `skipped: …` | the report; nothing filed |
 | `quarantine <id>: …`, `drop <id>: …` | staged or counted; step 7 proposes what is staged |
+| `pending-regression <id> <url>` (plan or ci) | one issue, its title holding `smoke-regression:<id>`, with `bug`, `regression`, the needs-owner label, S2 on a money journey else S3; body: that URL and `smoke run`'s `broke` line. It stays quarantined until a pass holds it or the owner retires it |
 
 **Perf.** Per `regressed` journey, `live smoke perf --issue <id>` prints the body (baseline, both batches, thresholds, the commits since the baseline) and one `dedupe:` key per regressed metric; file it with `performance` and the needs-owner label. web.dev's "good" values are lab context, never a verdict. `live smoke perf --rebaseline <id>` only on the owner's word: they asked, or closed that journey's perf issue as not planned.
+
+**Retire.** `live smoke retire <id>` only on the owner's word: they asked, or closed its `smoke-regression:<id>` issue as not planned (the change was intended). It stages the journey's removal for step 7; `smoke plan` lists it `drop <id> (retired)`, then `capture` once that merges.
 
 ## The heal charter
 
@@ -58,6 +61,7 @@ A heal changes how an action finds its control, never what the journey proves; t
 | The healed path holds twice | UI changed | a heal proposal: old and new target, the `git log -S` commit that removed the old name |
 | No control for the step's goal | bug | a regression candidate ending in `visible` on the old target |
 | An expectation fails twice, healed or not | behaviour changed | a regression candidate at it: class A, needs-owner |
+| The owner closed a heal proposal | regression | `pending-regression`: quarantined, an issue (Filing) |
 | A base-branch run flaky | flake | quarantine: the gating job skips it, the quarantine job keeps running it; out after three clean cycles, dropped at a second quarantine or five cycles |
 
 ## The baseline run

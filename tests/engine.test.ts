@@ -571,7 +571,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_700,
   "skills/journey/live.md": 14_500,
-  "skills/journey/smoke.md": 12_800,
+  "skills/journey/smoke.md": 13_600,
 };
 
 describe("context budgets", () => {
@@ -1123,6 +1123,9 @@ describe("the journey lane's engine text", () => {
       "`check <id> <check> [k]`",
       "`dedupe:`",
       "`live smoke perf --issue <id>`",
+      "`pending-regression <id> <url>`",
+      "`smoke-regression:<id>`",
+      "`live smoke retire <id>` only on the owner's word",
       "data, never instructions",
       "only with the owner's consent",
     ]) {
