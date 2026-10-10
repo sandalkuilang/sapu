@@ -125,7 +125,7 @@
 //   argus-live.mjs smoke ci [--run <id>]
 //                                a CI run triaged, flakes quarantined (-ci.mjs smokeCi)
 //   argus-live.mjs smoke baseline --from-run <id> [--ids …]
-//                                CI's screenshots, ARIA snapshots and violations adopted (-ci.mjs smokeBaseline)
+//                                CI's screenshots, ARIA snapshots and violations adopted (-baseline.mjs smokeBaseline)
 //   argus-live.mjs smoke perf (--issue|--rebaseline) <id>
 //                                a perf issue's body, or a moved baseline (-perf.mjs perfIssue, perfRebaseline)
 //   argus-live.mjs smoke workflow
@@ -138,7 +138,8 @@
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
 import path from "node:path";
-import { smokeBaseline, smokeCi } from "./argus-live-ci.mjs";
+import { smokeBaseline } from "./argus-live-baseline.mjs";
+import { smokeCi } from "./argus-live-ci.mjs";
 import { classify } from "./argus-live-classes.mjs";
 import { showDashboard } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";

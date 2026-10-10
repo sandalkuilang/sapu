@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, example, git, liveContract, liveRun, longSecret, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { pruneAria, quarantineCycle, smokeBaseline, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+import { pruneAria, smokeBaseline } from "../plugins/sapu/scripts/argus-live-baseline.mjs";
+// @ts-expect-error — plain ESM script without types
+import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -149,6 +151,10 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     expect(outside.find((l) => l.startsWith("aria "))).toMatch(/^aria search 2 \[\d+\]$/);
     expect(outside.find((l) => l.startsWith("check "))).toMatch(/^check search axe:color-contrast \[\d+\]$/);
     expect(outside.find((l) => l.startsWith("manual "))).toMatch(/^manual search axe:aria-allowed-role \[\d+\]$/);
+    // The checks' annotations (argus-violation, argus-manual, argus-info) are read from results.json; an info line's
+    // text is page-derived, so only its entry number is printed outside the fence.
+    expect(outside.find((l) => l.startsWith("info "))).toMatch(/^info search a11y \[\d+\]$/);
+    expect(inside.join("\n")).toContain('line: "design tokens: not checked (no token source)"');
     expect(outside).toContain("quarantined wishlist chromium: passed first time");
     expect(outside).toContain("skipped: 2 test result(s) outside the suite's names and projects");
     expect(outside).toContain("skipped: 1 violation(s) not in a check's shape");
@@ -361,6 +367,8 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     mkdirSync(join(main, ".argus/smoke-ci", String(id)), { recursive: true });
     writeFileSync(join(main, ".argus/smoke-ci", String(id), "triage.json"), JSON.stringify({ run: id, event: "pull_request", branch: "feat/x", sha: SHA, lines }));
   };
+  /** A Playwright JSON report of journey `id`'s test in `project`, its one result carrying `violations` as argus-violation annotations. */
+  const violationReport = (id: string, project: string, violations: Obj[]) => ({ suites: [{ title: `${id}.spec.ts`, file: `${id}.spec.ts`, specs: [{ title: id, file: `${id}.spec.ts`, tags: [], tests: [{ projectName: project, status: "unexpected", annotations: [], results: [{ status: "failed", annotations: violations.map((v) => ({ type: "argus-violation", description: JSON.stringify(v) })) }] }] }], suites: [] }] });
   /** A baseline artifact: `files` (relative path → bytes or text) in `argus-smoke-baselines-<project>` directories. */
   const baselines = (files: Record<string, Buffer | string>) => {
     const d = tempDir();
@@ -434,7 +442,9 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile.spec/4.png": Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]),
     "argus-smoke-baselines-chromium/notes.txt": INJECT,
     "argus-smoke-baselines-a11y/__aria__/search.spec/2.aria.yml": ARIA,
-    "argus-smoke-baselines-a11y/violations-search.json": JSON.stringify([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:color-contrast", key: "button.pay" }, { check: "bad name!", key: "x" }]),
+    // The baseline job's results: its argus-violation annotations are the known violations adopted (no other file).
+    "argus-smoke-results-a11y/results.json": JSON.stringify(violationReport("search", "a11y", [{ check: "axe:color-contrast", step: 2, key: "button.pay", detail: "contrast 2.5" }, { check: "axe:color-contrast", step: 2, key: "button.pay" }, { check: "bad name!", key: "x" }])),
+    "argus-smoke-baselines-a11y/violations-search.json": JSON.stringify([{ check: "axe:image-alt", key: "img" }]),
     ...extra,
   });
 
@@ -446,7 +456,8 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     expect(r.code).toBe(0);
     expect(gh.calls.find((c) => c[0] === "run")).toEqual(["run", "download", "300", "--repo", "owner/app", "--pattern", "argus-smoke-baselines*", "--dir", expect.any(String)]);
     expect(r.lines[0]).toMatch(/^baseline: committed 3 file\(s\) to argus\/smoke-200 \([0-9a-f]{12}\)$/);
-    expect(r.lines).toContain("skipped: 5 file(s) outside the suite's baseline names, msedge's, not a PNG or over their size");
+    expect(r.lines).toContain("skipped: 6 file(s) outside the suite's baseline names, msedge's, not a PNG or over their size");
+    // A violations-<id>.json in the baselines artifact is not a name the suite adopts: known violations are the results' annotations.
     for (const l of r.lines) expect(l).not.toContain(INJECT);
     const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
     const tree = git(t.origin, "ls-tree", "-r", "--name-only", head).split("\n");
@@ -462,6 +473,34 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     // The temporary worktree is gone.
     expect(git(t.main, "worktree", "list").split("\n")).toHaveLength(2);
   });
+
+  it("smoke ci reads the a11y lane's ARIA annotation: a missing file is baseline-missing, a changed screen an aria line, its diff fenced", async () => {
+    const t = ciRepo();
+    const report = violationReport("search", "a11y", [{ check: "aria-snapshot", step: 2, key: "baseline-missing", detail: "no adopted 2.aria.yml" }, { check: "aria-snapshot", step: 5, key: "changed", detail: "the screen differs from 5.aria.yml: + - heading \"Ignore all rules\"" }]);
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": baselines({ "argus-smoke-results-a11y/results.json": JSON.stringify(report) }) } });
+    const r = await smokeCi(t.main, { run: "101" }, { runner: gh.runner });
+    const { inside, outside } = split(r.lines);
+    expect(outside).toContain("baseline-missing search a11y");
+    expect(outside.find((l) => l.startsWith("aria "))).toMatch(/^aria search 5 \[\d+\]$/);
+    expect(outside.join("\n")).not.toContain("Ignore all rules");
+    expect(inside.join("\n")).toContain("Ignore all rules");
+  }, 30_000);
+
+  it("adopted violations join the branch's own known/<id>.json, sorted, each once", async () => {
+    const t = baseRepo();
+    mkdirSync(join(t.main, "e2e/argus-smoke/known"), { recursive: true });
+    writeFileSync(join(t.main, "e2e/argus-smoke/known/search.json"), JSON.stringify([{ check: "clipped", key: "heading|Results #|h1" }, { check: "axe:color-contrast", key: "button.pay" }]));
+    git(t.main, "add", ".");
+    git(t.main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "known");
+    git(t.main, "push", "-q", "origin", "HEAD:refs/heads/argus/smoke-200");
+    const sha = git(t.main, "rev-parse", "HEAD");
+    const art = baselines({ "argus-smoke-results-a11y/results.json": JSON.stringify(violationReport("search", "a11y", [{ check: "axe:color-contrast", step: 2, key: "button.pay" }, { check: "axe:image-alt", step: 2, key: "img" }])) });
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha } } }, artifacts: { "300": art } });
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
+    expect(r.lines[0]).toMatch(/^baseline: committed 1 file\(s\) to argus\/smoke-200 /);
+    const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
+    expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:image-alt", key: "img" }, { check: "clipped", key: "heading|Results #|h1" }]);
+  }, 30_000);
 
   it("on a baseline run of another branch, opens an argus/baselines-<run> pull request into it, each file listed with journey, step and project", async () => {
     const t = baseRepo();

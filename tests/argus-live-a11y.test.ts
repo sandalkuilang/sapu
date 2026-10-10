@@ -280,7 +280,7 @@ describe("argus-live a11y — the report: known violations, allowed ones, manual
   const fakeExpect = (soft: Obj[]) => ({ soft: (actual: unknown, message: string) => ({ toEqual: (e: unknown) => soft.push({ actual, message, e }) }) });
   const V = (check: string, key: string, extra: Obj = {}) => ({ check, step: 2, key, detail: "d", ...extra });
 
-  it("a violation soft-fails once, a known or allowed one does not, and a manual one is an annotation", () => {
+  it("a violation soft-fails once, a known or allowed one does not, and each reported one is an annotation smoke ci reads", () => {
     const api = sourceApi({ require: (m: string) => (m === "node:fs" ? { readFileSync: () => JSON.stringify([{ check: "name", key: "button known" }]) } : nodeRequire(m)) });
     const soft: Obj[] = [];
     const info = { annotations: [] as Obj[] };
@@ -288,7 +288,10 @@ describe("argus-live a11y — the report: known violations, allowed ones, manual
     expect(soft).toHaveLength(1);
     expect(soft[0].actual).toEqual([expect.stringContaining("name (step 2) button new")]);
     expect(soft[0].actual).toHaveLength(1);
-    expect(info.annotations).toEqual([{ type: "a11y-manual", description: expect.stringContaining("tab-order (step 2) a -> b") }]);
+    expect(info.annotations.map((a: Obj) => [a.type, JSON.parse(a.description)])).toEqual([
+      ["argus-violation", { check: "name", step: 2, key: "button new", detail: "d" }],
+      ["argus-manual", { check: "tab-order", step: 2, key: "a -> b", detail: "d" }],
+    ]);
   });
 
   it("an unreadable or malformed known file is no known violation", () => {
@@ -624,7 +627,7 @@ describe("argus-live a11y — design tokens", () => {
       for (const repo of repos) expect(await sourceApi({ REPO: repo }).a11yTokens(page, 1, info)).toEqual([]);
       const api = sourceApi({ REPO: repos[0] });
       await api.a11yTokens(page, 2, info);
-      const notes = info.annotations.filter((a) => a.type === "a11y-note");
+      const notes = info.annotations.filter((a) => a.type === "argus-info");
       expect(notes).toHaveLength(1);
       expect(notes[0].description).toBe("design tokens: not checked (no token source)");
     } finally {
@@ -861,7 +864,7 @@ describe("argus-live a11y — inside the generated suite", () => {
     expect(first.out).toMatch(/page\.screenshot started/);
     expect(first.out).toMatch(/locator\.ariaSnapshot|toMatchAriaSnapshot|ariaSnapshot/);
     const annotations = (x: Obj): Obj[] => [...(x.specs ?? []).flatMap((sp: Obj) => sp.tests.filter((t: Obj) => t.projectName === "a11y").flatMap((t: Obj) => t.annotations)), ...(x.suites ?? []).flatMap(annotations)];
-    expect(first.results.suites.flatMap(annotations)).toEqual([{ type: "a11y-note", description: "design tokens: not checked (no token source)" }]);
+    expect(first.results.suites.flatMap(annotations)).toEqual([{ type: "argus-info", description: "design tokens: not checked (no token source)" }]);
     expect(existsSync(join(dir, "__aria__/place-order.spec/4.aria.yml")), first.out).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, "axe-calls.json"), "utf8"))).toEqual([["new", true], ["tags", "wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa"], ["off", "target-size"], ["include", "main"]]);
     // 3. A normal run compares it; a deleted baseline reads as baseline-missing, a soft failure of the a11y test.

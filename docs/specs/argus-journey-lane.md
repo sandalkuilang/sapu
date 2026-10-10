@@ -2063,7 +2063,8 @@ depends on `setup`.
 Each check is an in-page source in a leaf module (`argus-live-layout.mjs`, `argus-live-a11y.mjs`),
 embedded verbatim into `support.ts` and run by the lane through `run-code`; each reports violations
 as `{check, step, key, detail}`, `key` stable across runs (role, accessible name with digit runs
-written `#`, tag). Checks are soft assertions (`expect.soft`), so one run reports every violation.
+written `#`, tag), each a test annotation in the JSON report: `argus-violation`, `argus-manual` (a human's
+call) or `argus-info` (a report line). `detail` is page text: fenced wherever it is printed. Checks are soft assertions (`expect.soft`), so one run reports every violation.
 **Known violations:** a violation in `known/<id>.json` (adopted from CI and reviewed, §19.8) is not a
 failure; a new one is. **Allowed:** `smoke.json`'s `journeys.<id>.allow` lists `{check, key}` the
 owner rules out (WCAG's equivalent or essential exceptions, which a script cannot decide).
@@ -2203,8 +2204,10 @@ ids the owner names with `--ids` after reading `smoke ci`'s diff (no mismatch is
 unasked); it prints the dispatched run. On a baseline run it downloads the artifact with `gh run
 download` into a 0700 temporary directory and adopts only files whose names the suite defines
 (`__screenshots__/<project>/<platform>/<id>.spec/*.png` with a PNG signature under 5 MB, never `msedge`;
-`__aria__/<id>.spec/*.aria.yml` under 1 MB, pruned as §19.7 says; `violations-<id>.json` under 1 MB);
-nothing else is read, no artifact text is printed outside a fence, and a run on another repository
+`__aria__/<id>.spec/*.aria.yml` under 1 MB, pruned as §19.7 says), and reads the run's results
+(`results.json` at each `argus-smoke-results-<project>` artifact's root): the `argus-violation` annotations of
+the adopted journeys become `known/<id>.json`, a JSON list of `{check, key}` merged with the branch's own,
+sorted (the collected annotations are the artifact; there is no violations file); nothing else is read, no artifact text is printed outside a fence, and a run on another repository
 (a fork) or a run whose head is no longer its branch's head (`stale`) is refused. Without the right
 to dispatch, the `gh workflow run` line is printed for the owner.
 

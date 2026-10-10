@@ -121,14 +121,14 @@ describe("argus-live modules — the DAG", () => {
 
   it("admits phase 6's modules, each with the imports it may have (spec §19)", () => {
     const g = graph();
-    const PHASE6 = ["argus-live-layout", "argus-live-a11y", "argus-live-perf", "argus-live-seed", "argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-report"];
+    const PHASE6 = ["argus-live-layout", "argus-live-a11y", "argus-live-perf", "argus-live-seed", "argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
     for (const m of PHASE6) expect(g.has(m), m).toBe(true);
     // The in-page check sources are leaves: embedded verbatim in the suite, run by the lane through run-code.
     for (const leaf of ["argus-live-layout", "argus-live-a11y"]) expect(g.get(leaf), leaf).toEqual([]);
     // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
     for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
     // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
-    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-report"];
+    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
     for (const m of g.keys()) {
       if (m === "argus-live" || UPPER.includes(m)) continue;
       for (const u of UPPER) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);

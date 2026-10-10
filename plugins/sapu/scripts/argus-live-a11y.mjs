@@ -34,13 +34,17 @@ export function a11yKnown(id) {
   }
 }
 
-/** Reports found violations: manual ones as annotations, the rest as one soft failure; known and allowed ones are dropped. Returns what was reported. */
+/**
+ * Reports found violations: each as an annotation ("argus-violation", or "argus-manual" for a human's call; JSON
+ * "{check, step, key, detail}", the channel smoke ci and smoke baseline read from results.json), the non-manual ones
+ * also as one soft failure; known and allowed ones are dropped. Returns what was reported.
+ */
 export function a11yReport(expect, info, found, id, allow) {
   const listed = (list, v) => list.some((k) => k.check === v.check && k.key === v.key);
   const known = a11yKnown(id);
   const live = found.filter((v) => !listed(known, v) && !listed(allow || [], v));
   const say = (v) => v.check + " (step " + v.step + ") " + v.key + ": " + v.detail;
-  for (const v of live) if (v.manual) info.annotations.push({ type: "a11y-manual", description: say(v) });
+  for (const v of live) info.annotations.push({ type: v.manual ? "argus-manual" : "argus-violation", description: JSON.stringify({ check: v.check, step: v.step, key: v.key, detail: v.detail }) });
   expect.soft(live.filter((v) => !v.manual).map(say), "accessibility violations").toEqual([]);
   const hard = live.find((v) => v.hard && !v.manual);
   if (hard) throw new Error("accessibility: " + say(hard) + ": the test ends here"); // a state-changing submit: the path's later steps no longer start from its state
@@ -359,7 +363,8 @@ export function a11yTokenValues(kind, text) {
  */
 export async function a11yTokens(page, step, info) {
   const note = (why) => {
-    if (!info.annotations.some((a) => a.type === "a11y-note")) info.annotations.push({ type: "a11y-note", description: "design tokens: not checked (" + why + ")" });
+    const line = "design tokens: not checked (" + why + ")";
+    if (!info.annotations.some((a) => a.type === "argus-info" && String(a.description).startsWith("design tokens: "))) info.annotations.push({ type: "argus-info", description: line });
     return [];
   };
   const path = require("node:path");
