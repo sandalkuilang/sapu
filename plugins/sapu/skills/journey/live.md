@@ -77,7 +77,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `login_spacing_ms` — 0 to 60 000 between the proving logins. `timezone` — an IANA zone; `locale` — a BCP 47 tag.
 - `fixtures` — a repo-relative directory (no absolute path, no `..`) holding the files `upload` may use.
 - `roles` — below. `viewports` — widths from 200 to 4000; the first is the explorers'. `locales` — the locales the viewport-and-locale oracle repeats a critical step in.
-- Smoke suite: `test_id_attribute` — the app's test-id attribute (`data-testid`); `pseudo_locales` — codes the app serves as pseudo-locales (`en-XA`); `tokens` — `{css|json: <tracked file>}`, its design tokens.
+- Smoke suite: `test_id_attribute` — the app's test-id attribute (`data-testid`); `pseudo_locales` — codes the app serves as pseudo-locales (`en-XA`); `tokens` — `{css|json: <tracked file>}`, its design tokens, read from the repo's root when the suite runs.
 - `settle_ms` — 0 to 120 000: how long anything judged missing is waited for.
 - `prohibited` — actions the explorer must never take, copied into its charter.
 - `limits` — below.
@@ -97,7 +97,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 
 ## Roles
 
-`roles.<name>`: names match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<k>` names an account). `anon` is reserved for the signed-out visitor and is `{}`; `system` is reserved for scheduled and external steps; the wrapper's role-free commands `submit`, `code`, `trigger`, `facts` and `mail` are not role names. Every other role signs in by exactly one of:
+`roles.<name>`: names match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<k>` names an account). `anon` is reserved for the signed-out visitor and is `{}`; `system` is reserved for scheduled and external steps; the wrapper's role-free commands `submit`, `code`, `trigger`, `facts`, `mail` and `source` are not role names. Every other role signs in by exactly one of:
 - `users` — a non-empty list of `{user, password, totp_secret?}`: `user` written literally (SELECT prints the accounts), `password` and `totp_secret` as `${NAME}`. Account `<role>.<k>` is the k-th user, from 1.
 - `login` — `{"command": <command>}`, run at every session open, printing a fresh Playwright storage state (`{cookies, origins}`). One journey a cycle may use such a role.
 
