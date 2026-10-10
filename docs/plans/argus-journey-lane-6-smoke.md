@@ -1306,3 +1306,81 @@ the path templates; `--project` is variadic, so a file filter must come before i
 - **Lane A (A3 `smoke check`, `smoke propose`) and any test that runs a generated suite under `CI=1`:** needs
   `--update-snapshots=missing` or committed baselines, or it fails by design.
 - **Z4:** this section's `changed` result replaces the "documented, not probed" line of open risk 8.
+
+### Lane C1 — layout, locale, links, dynamic states
+
+**Locked for the lanes** (`-layout.mjs`, a leaf; 665 lines of the 750 cap).
+- Exports: `CHECKS`, `PAGE_FN`, `pageExpression(kind, opts)` and `LAYOUT_KINDS`. `PAGE_FN` is one plain-script
+  function, `({kind, opts}) → answer`, so the same text is the support file's `page.evaluate` source and the
+  exploratory lane's `run-code` source: Z1 runs `pageExpression("layout")`. Its kinds are `layout` ({only?}),
+  `format` ({locale}), `lang`, `text` ({exclude}), `links` ({origin}), `loading`, `empty`, `toast-arm`,
+  `toast-take` ({next}) and `toast-state` ({ids}).
+- `CHECKS` holds six entries: `layout`, `locale` (project `i18n`), `links`, `loading`, `empty` and `toast`. The
+  `layout` entry's `source` carries the shared core (the in-page function, project gating, known and allowed
+  violations, annotations) and every later source calls it, so the entries must stay together. Names in the
+  sources start with `layout`, `locale`, `links`, `loading`, `empty` or `toast`, so another lane's source cannot
+  collide with them.
+- Each `emit` writes one `expect.soft(await (await import("./support")).<fn>(…), "<what>: step <n>").toEqual([])`
+  per account step, none for a `system` step (`links` also writes `linksStep` and, after the last step, `linksFinal`
+  even when that step is a `system` proof). The account is passed as its index in the order accounts first act,
+  which is the order of `opened`. The functions: `layoutStep`, `localeStep`, `linksStep`, `linksFinal`,
+  `loadingStep`, `emptyStep`, `toastStep`. The import is dynamic because the spec's static import list is
+  codegen's; both load the same module instance (probed under the pinned runner).
+- Gating is by project name: `a11y` and `i18n` are those two projects, and every other project is a viewport
+  project. The viewport projects run layout, links, loading, empty and toast; only `i18n` runs locale; `a11y` runs
+  none of them.
+- A violation is `{check, step, key, detail}`. A kept one is a soft failure and an annotation `argus-violation`
+  (JSON in `description`). The owner's own judgements are annotations `argus-manual` (`{check, step, key, detail}`)
+  and report lines are `argus-info`. Those annotations are the structured channel for `smoke ci` and the report:
+  `results.json` carries them per result. Keys are `<role>|<name with digit runs as #>|<tag>`, and `detail` holds a
+  clipped page string (a name, at most 30 characters; a key, at most 60), so a reader must fence it, never print it
+  bare.
+- Check names and keys: `page-scroll` (key `page-scroll`), `clipped`, `covered`, `target-size`, `locale-page-scroll`,
+  `locale-clipped` (key `<code>|<key>`), `locale-format` (`<code>|number|<shape>` or `<code>|date|<shape>|order|separator`),
+  `link` (`link|<pathname, digit runs #>`), `cta-route` (`<role>|<route>`), `loading`, `empty`, `toast` (key suffixes
+  `|covers` and `|persistent`). A `manual` one is `locale` (`<code>|not localized`) or `link`.
+- `known/<id>.json` is an array of `{check, key}` rows (a missing file holds none; a corrupt one throws). `allow`
+  comes from `smoke.json` `journeys.<id>.allow`, embedded as a JSON literal.
+- The `i18n` project reads its codes at run time from `<repo>/.argus/live.json` (`locales`, `pseudo_locales`,
+  `locale`, `timezone`), because a check's `source` is static. It also opens each account's `.auth/<account>.json`
+  when it exists.
+- `ctx.routes` is optional: `[{role, route}]`, the journey's map steps that have a `route`. Without it the CTA-route
+  check emits nothing (see "Needs coordinator").
+
+**Deviations.**
+- *Locale, dedupe.* A URL is looked at once per account unless the step may change server state (`click`, `dblclick`,
+  `press`, `reload`, `login`, `go-back`); a sibling context per code per step otherwise costs more than it finds.
+- *Toasts.* The recorder is armed after step 1 (an init script for later documents, plus the current one), so a toast
+  of step 1 is not seen. A fixed element that appears, has text and goes within `SETTLE` must be in a live region; a
+  live one must not cover the next action's target (matched by the target's name or value) and, if it stays, must be
+  dismissible. Text added to a fixed region that was already there is a status update, not a new toast. Dialogs,
+  menus, navigation, headers and footers are not toasts.
+- *Links.* A redirect loop (more than 5) fails. Any 4xx but 404 and 410 is `manual`, and a failed request is `manual`
+  too (never a false fail). Another origin's redirect target ends the walk and holds the link.
+- *Loading.* The final step is judged as every other step is: a loader still visible after `SETTLE` fails.
+- *Empty state.* Headings, the table's own header and caption, scripts and styles do not count as "text near it", so a
+  section title alone does not excuse an empty table.
+- *Page scroll.* A page that scrolls sideways with no element found past the edge is still reported.
+- *Target size.* The circle test also counts an undersized neighbour by its box, and the exceptions are the inline
+  link in a text block and a native checkbox, radio or range whose computed size equals the browser's default. The
+  equivalent and essential exceptions are the owner's, through `allow`.
+- *Covered.* A coverer that is fixed or sticky is skipped only when it does not contain the control (a modal dialog is
+  itself fixed). A control partly clipped by a scrolling ancestor, a multi-line inline link and `pointer-events: none`
+  are skipped.
+
+**Needs coordinator.**
+1. `tests/argus-live-codegen.test.ts` ("runs green for the fixture app") goes red once the layout oracle merges: the
+   fixture app's header really fails WCAG 2.5.8 (the 64 x 21 px "Account" button sits directly under the "Home" link,
+   key `button|Account|button`, check `target-size`). Either add `journeys.<id>.allow` for that key to the `smoke` the
+   test builds (as lane C1's own suite run does), or give the button a 24 px minimum height in
+   `tests/fixtures/journey-app/server.mjs` (shared with C3's screenshots, so the allow is the safer one). The file is
+   C3's after lane 0.
+2. The CTA-route check needs `ctx.routes`. `smokeSpec` in `-codegen.mjs` (C3) builds `ctx = {id, steps, smoke}`; it should
+   add `routes`, read from the journey's map steps (or from a `routes` member A2 stages in `journeys/<id>.json`).
+3. C3's projects must be named `a11y` and `i18n` (spec §19.6) for the gating above to hold; a differently named
+   project would run as a viewport project.
+4. B2 and F read the annotations above (`argus-violation`, `argus-manual`, `argus-info`) from `results.json`; B3's
+   adoption of known violations writes `known/<id>.json` as `{check, key}` rows. §19.8 names a `violations-<id>.json`
+   artifact that no lane in this plan writes: B decides whether it is the annotations, collected.
+5. Z: spec §19.7 still describes the empty state as "visible text near it beyond its own headers" (the build also
+   excludes section headings), the toast's blind first step, and the locale dedupe above.

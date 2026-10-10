@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Clipped text</title>
+<style>
+.cut { width: 80px; overflow: hidden; white-space: nowrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+</style></head>
+<body>
+<main>
+<h1>Catalog</h1>
+<!-- the violation: text cut off with nothing that carries the rest -->
+<p class="cut" id="bad">A long product description that does not fit</p>
+<!-- the excluded twins -->
+<p class="cut" id="titled" style="text-overflow: ellipsis" title="A long product name that is cut">A long product name that is cut</p>
+<span class="sr-only" id="hidden">Skip to the content and the main navigation</span>
+<div style="width: 120px; height: 40px; overflow: auto" id="scroller"><p class="cut" id="inside">A long line inside a scroll container</p></div>
+<input id="field" value="A long value in a form field that scrolls" style="width: 80px">
+</main>
+</body></html>
