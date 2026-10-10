@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { authSetup, CODEGEN_VERSION, generateSuite, headerDigest, packageJson, SMOKE_PLAYWRIGHT, smokeConfig, smokeSpec, suiteGitignore, supportFile, TOTP_SOURCE } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+import { authSetup, CODEGEN_VERSION, generateSuite, headerDigest, packageJson, SMOKE_AXE, SMOKE_PLAYWRIGHT, smokeConfig, smokeSpec, suiteGitignore, supportFile, TOTP_SOURCE } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
 import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -173,7 +173,7 @@ describe("argus-live codegen — config, setup, support, package", () => {
     const dir = tempDir();
     mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
     writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), "module.exports = { defineConfig: (c) => c };\n");
-    writeFileSync(join(dir, "playwright.config.cjs"), text.replace('import { defineConfig } from "@playwright/test";', 'const { defineConfig } = require("@playwright/test");').replace('import path from "node:path";', 'const path = require("node:path");').replace("export default defineConfig(", "module.exports = defineConfig("));
+    writeFileSync(join(dir, "playwright.config.cjs"), text.replace('import { defineConfig } from "@playwright/test";', 'const { defineConfig } = require("@playwright/test");').replace('import path from "node:path";', 'const path = require("node:path");').replace('import fs from "node:fs";', 'const fs = require("node:fs");').replace("export default defineConfig(", "module.exports = defineConfig("));
     const load = (url: string) => spawnSync(process.execPath, ["-e", 'console.log(JSON.stringify(require("./playwright.config.cjs").use.baseURL))'], { cwd: dir, encoding: "utf8", env: { ...process.env, ARGUS_SMOKE_BASE_URL: url } });
     for (const url of ["http://example.test", "http://10.0.0.5:3000", "https://localhost.example.test"]) {
       const r = load(url);
@@ -182,7 +182,7 @@ describe("argus-live codegen — config, setup, support, package", () => {
     }
     for (const url of ["http://localhost:4100", "http://127.0.0.1:9", "http://[::1]:4100"]) {
       const r = load(url);
-      expect([r.status, r.stdout.trim()], url).toEqual([0, JSON.stringify(url)]);
+      expect([r.status, r.stdout.trim().split("\n").pop()], url).toEqual([0, JSON.stringify(url)]);
     }
   }, 30_000);
 
@@ -227,7 +227,8 @@ describe("argus-live codegen — config, setup, support, package", () => {
 
   it("package.json pins @playwright/test exactly, on the pinned CLI's minor; the suite's .gitignore lists .auth/", () => {
     const pkg = JSON.parse(packageJson());
-    expect(pkg.devDependencies).toEqual({ "@playwright/test": SMOKE_PLAYWRIGHT });
+    expect(pkg.devDependencies).toEqual({ "@axe-core/playwright": SMOKE_AXE, "@playwright/test": SMOKE_PLAYWRIGHT });
+    expect(SMOKE_AXE).toMatch(/^\d+\.\d+\.\d+$/);
     expect(SMOKE_PLAYWRIGHT).toMatch(/^\d+\.\d+\.\d+$/);
     const lock = JSON.parse(readFileSync(join(__dirname, "../plugins/sapu/scripts/pw/package-lock.json"), "utf8"));
     const core = lock.packages["node_modules/playwright-core"].version as string;
@@ -253,6 +254,114 @@ describe("argus-live codegen — config, setup, support, package", () => {
     expect([...a["auth.setup.ts"].matchAll(/"account": "([a-z0-9.-]+)"/g)].map((m) => m[1])).toEqual(["customer.1", "customer.2", "sales.1"]);
     expect(headerDigest("no header").ok).toBe(false);
     expect(SMOKE_DEFAULTS.dir).toBe("e2e/argus-smoke");
+  });
+});
+
+/** The generated config evaluated under a stub `@playwright/test` (its `defineConfig` the identity) → its settings (regexes as strings) and what it printed. `edge`: where msedge's executable is looked for. */
+function evalConfig(text: string, { edge = ["/nonexistent/msedge"], env = {} as Record<string, string> } = {}) {
+  const dir = tempDir();
+  mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
+  writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), "module.exports = { defineConfig: (c) => c };\n");
+  const js = stripTypeScriptTypes(text)
+    .replace('import { defineConfig } from "@playwright/test";', 'const { defineConfig } = require("@playwright/test");')
+    .replace('import path from "node:path";', 'const path = require("node:path");')
+    .replace('import fs from "node:fs";', 'const fs = require("node:fs");')
+    .replace("export default defineConfig(", "module.exports = defineConfig(")
+    .replace(/^const EDGE\s*=.*$/m, `const EDGE = ${JSON.stringify(edge)};`);
+  writeFileSync(join(dir, "playwright.config.cjs"), js);
+  const code = 'console.log(JSON.stringify(require("./playwright.config.cjs"), (k, v) => (v instanceof RegExp ? String(v) : v)))';
+  const r = spawnSync(process.execPath, ["-e", code], { cwd: dir, encoding: "utf8", env: { ...process.env, ARGUS_SMOKE_BASE_URL: "http://localhost:4100", ...env } });
+  expect(r.status, r.stderr).toBe(0);
+  const lines = r.stdout.trim().split("\n");
+  return { config: JSON.parse(lines[lines.length - 1]) as Obj, printed: lines.slice(0, -1) };
+}
+const projectNames = (c: Obj): string[] => c.projects.map((p: Obj) => p.name);
+
+describe("argus-live codegen — projects and browsers", () => {
+  it("setup, the three engines, a project per further viewport and the a11y project; i18n only with locales", () => {
+    const { config } = evalConfig(smokeConfig({ live: LIVE(), smoke: SMOKE() }));
+    expect(projectNames(config)).toEqual(["setup", "chromium", "firefox", "webkit", "chromium-390", "a11y"]);
+    const byName = Object.fromEntries(config.projects.map((p: Obj) => [p.name, p]));
+    expect(byName.firefox.use).toEqual({ browserName: "firefox" });
+    expect(byName.webkit.use).toEqual({ browserName: "webkit" });
+    expect(byName["chromium-390"].use).toEqual({ browserName: "chromium", viewport: { width: 390, height: 900 } });
+    expect(byName.a11y.use).toEqual({ browserName: "chromium" });
+    // The first viewport is every other project's.
+    expect(config.use.viewport).toEqual({ width: 1440, height: 900 });
+    for (const live of [{ ...LIVE(), locales: ["de-DE"] }, { ...LIVE(), pseudo_locales: ["en-XA"] }]) expect(projectNames(evalConfig(smokeConfig({ live, smoke: SMOKE() })).config)).toContain("i18n");
+    expect(projectNames(evalConfig(smokeConfig({ live: { ...LIVE(), viewports: [1280] }, smoke: SMOKE() })).config)).toEqual(["setup", "chromium", "firefox", "webkit", "a11y"]);
+  });
+
+  it("every project but setup depends on setup, and smoke.json's browsers choose the engines", () => {
+    const { config } = evalConfig(smokeConfig({ live: LIVE(), smoke: SMOKE() }));
+    for (const p of config.projects.filter((x: Obj) => x.name !== "setup")) expect(p.dependencies, p.name).toEqual(["setup"]);
+    const only = validateSmoke({ browsers: ["chromium", "webkit"] }).value;
+    expect(projectNames(evalConfig(smokeConfig({ live: LIVE(), smoke: only })).config)).toEqual(["setup", "chromium", "webkit", "chromium-390", "a11y"]);
+    // Without chromium there is no chromium-engine project either (a11y, further viewports).
+    const noChromium = validateSmoke({ browsers: ["firefox"] }).value;
+    expect(projectNames(evalConfig(smokeConfig({ live: LIVE(), smoke: noChromium })).config)).toEqual(["setup", "firefox"]);
+  });
+
+  it("a journey's own browsers leave its spec out of the other engines' projects", () => {
+    const smoke = validateSmoke({ journeys: { checkout: { browsers: ["chromium"] }, "refund-flow": { browsers: ["chromium", "msedge"] } } }).value;
+    const { config } = evalConfig(smokeConfig({ live: LIVE(), smoke }), { edge: [process.execPath] });
+    const ignore = Object.fromEntries(config.projects.map((p: Obj) => [p.name, p.testIgnore]));
+    expect(ignore.chromium).toBeUndefined();
+    expect(ignore["chromium-390"]).toBeUndefined();
+    expect(ignore.a11y).toBeUndefined();
+    expect(ignore.firefox).toBe("/(?:^|[\\\\/])(?:checkout|refund-flow)\\.spec\\.ts$/");
+    expect(ignore.webkit).toBe(ignore.firefox);
+    expect(ignore.msedge).toBe("/(?:^|[\\\\/])(?:checkout)\\.spec\\.ts$/");
+    // The regex means what it says: it ignores those files and no other.
+    const re = new RegExp(/\/(.*)\/$/.exec(ignore.firefox)![1]);
+    expect([re.test("/s/checkout.spec.ts"), re.test("/s/refund-flow.spec.ts"), re.test("/s/checkout-2.spec.ts"), re.test("/s/x-checkout.spec.ts")]).toEqual([true, true, false, false]);
+    // A journey that excludes chromium leaves the chromium-engine projects.
+    const away = validateSmoke({ journeys: { checkout: { browsers: ["firefox"] } } }).value;
+    const proj = Object.fromEntries(evalConfig(smokeConfig({ live: LIVE(), smoke: away })).config.projects.map((p: Obj) => [p.name, p.testIgnore]));
+    for (const n of ["chromium", "chromium-390", "a11y"]) expect(proj[n], n).toBe("/(?:^|[\\\\/])(?:checkout)\\.spec\\.ts$/");
+    expect(proj.firefox).toBeUndefined();
+  });
+
+  it("msedge is a project only where its executable exists, else the config says so", () => {
+    const text = smokeConfig({ live: LIVE(), smoke: SMOKE() });
+    const present = evalConfig(text, { edge: [process.execPath] });
+    expect(projectNames(present.config)).toContain("msedge");
+    expect(present.config.projects.find((p: Obj) => p.name === "msedge").use).toEqual({ browserName: "chromium", channel: "msedge" });
+    expect(present.printed).toEqual([]);
+    const absent = evalConfig(text, { edge: ["/nonexistent/msedge", "/also/not/there"] });
+    expect(projectNames(absent.config)).not.toContain("msedge");
+    expect(absent.printed).toEqual(["msedge: skipped (not installed)"]);
+    // smoke.json can leave msedge out: no probe, no line.
+    const off = evalConfig(smokeConfig({ live: LIVE(), smoke: validateSmoke({ browsers: ["chromium"] }).value }), { edge: [process.execPath] });
+    expect(projectNames(off.config)).not.toContain("msedge");
+    expect(off.printed).toEqual([]);
+    // Edge's documented places for the host are the config's own.
+    expect(text).toContain("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge");
+    expect(text).toContain("/opt/microsoft/msedge/msedge");
+  });
+
+  it("WebKit is named as not Safari", () => {
+    expect(smokeConfig({ live: LIVE(), smoke: SMOKE() })).toMatch(/\/\/ WebKit .*not Safari/);
+  });
+
+  it("a check's project gates its lines: the project it names, a group, an array; an unknown name is refused", async () => {
+    const layout = await import("../plugins/sapu/scripts/argus-live-layout.mjs");
+    const SHORT = [{ as: "customer", do: "goto", path: "/" }, { as: "customer", expect: "visible", target: { role: "heading", name: "Shop" } }];
+    const gated = (project: unknown) => {
+      layout.CHECKS.push({ name: "probe", project, when: "every step", source: "", emit: (s: Obj) => [`await probe(${s.n});`] });
+      try {
+        return spec({ path: SHORT });
+      } finally {
+        layout.CHECKS.length = 0;
+      }
+    };
+    expect(gated("a11y")).toContain('    if (inProject(["a11y"])) {\n      await probe(2);\n    }');
+    expect(gated("viewport")).toContain('if (inProject(["chromium","firefox","webkit","msedge","chromium-390"])) {');
+    expect(gated("browser")).toContain('if (inProject(["chromium","firefox","webkit","msedge"])) {');
+    expect(gated(["i18n", "a11y"])).toContain('if (inProject(["a11y"])) {');
+    expect(gated("i18n")).not.toContain("probe(");
+    for (const open of ["all", undefined]) expect(gated(open)).toMatch(/\n {4}await probe\(2\);\n/);
+    expect(() => gated("a11y-ish")).toThrow("failed: codegen: check probe names project a11y-ish, which the suite does not define");
   });
 });
 
