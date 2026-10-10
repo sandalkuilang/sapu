@@ -487,6 +487,15 @@ describe("issue and PR text reaches an agent only through the trust commands", (
     expect(skill).toContain("gh pr list --head <branch> --json number,isCrossRepository");
   });
 
+  it("an argus/ pull request (the journey lane's suite proposal) is the owner's: sapu never reviews, fixes, merges or closes it", () => {
+    const skill = readFileSync(join(PLUGIN, "skills/sapu/SKILL.md"), "utf8");
+    const line = skill.split("\n").find((l) => l.startsWith("- **OWNER-ONLY** —"));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/head branch starts with `argus\/`/);
+    expect(line).toMatch(/never reviewed, fixed, merged or closed/);
+    expect(line).toMatch(/final report/);
+  });
+
   it("the orchestrator never removes the needs-owner label nor closes an issue as not planned: the owner's rulings", () => {
     const RULE = /never removes `labels\.needsOwner`[^.]*and never closes an issue as not planned/;
     for (const f of ["skills/sapu/SKILL.md", "skills/journey/SKILL.md"]) expect(readFileSync(join(PLUGIN, f), "utf8"), f).toMatch(RULE);
@@ -564,7 +573,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 40_336,
+  "skills/sapu/SKILL.md": 40_610,
   "skills/sapu/subagent-brief.md": 14_000,
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,
@@ -573,7 +582,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_700,
   "skills/journey/live.md": 14_500,
-  "skills/journey/smoke.md": 14_800,
+  "skills/journey/smoke.md": 14_850,
 };
 
 describe("context budgets", () => {
