@@ -257,16 +257,25 @@ function accountRows(live, accounts) {
 function loginPath(u) {
   if (typeof u !== "string") throw fail("live.json names no login_url");
   if (u.startsWith("/")) return u;
-  const x = new URL(u.replace(/\{port:[A-Za-z0-9_-]+\}/g, "1"));
+  let x;
+  try {
+    x = new URL(u.replace(/\{port:[^}]*\}/g, "1"));
+  } catch {
+    throw fail(`login_url ${/^[\x21-\x7e]{1,200}$/.test(u) ? u : "(not shown)"} is not a URL or a path`);
+  }
   return `${x.pathname}${x.search}`;
 }
 
-/** `{port:<name>}` in a hook's argv → smoke.json `ci.ports`' port (CI starts the app on those). */
+/**
+ * `{port:<name>}` in a hook's argv → smoke.json `ci.ports`' port (CI starts the app on those); `{port:<name>=<n>}` →
+ * that port, else `n`. `${NAME}` stays: the hook reads it from the job's environment when it runs (support's `hook`).
+ */
 function ciArgv(argv, ports, what) {
   return argv.map((el) =>
-    String(el).replace(/\{port:([A-Za-z0-9_-]+)\}/g, (_m, name) => {
-      if (!Object.hasOwn(ports, name)) throw fail(`${what} names {port:${name}}, which smoke.json ci.ports lacks`);
-      return String(ports[name]);
+    String(el).replace(/\{port:([A-Za-z0-9_-]+)(?:=(\d+))?\}/g, (_m, name, fixed) => {
+      if (Object.hasOwn(ports, name)) return String(ports[name]);
+      if (fixed !== undefined) return fixed;
+      throw fail(`${what} names {port:${name}}, which smoke.json ci.ports lacks`);
     }),
   );
 }
@@ -351,7 +360,8 @@ export const READ_VALUE = `async function readValue(target: Locator): Promise<st
  * `support.ts` (spec §19.2): SETTLE; the marker (`argus-` + the test id's hash + time + random, made in
  * the test); `open` (an account's page from its storageState, its context kept in the test's `opened` for
  * closing); the hooks (live.json's argv run with no shell from the repo's root, each value checked against
- * the hook's `args`, else the wrapper's VALUE shape); the RED test's `readValue` and error collector; TOTP
+ * the hook's `args`, else the wrapper's VALUE shape, `${NAME}` read from the job's environment at run time, a
+ * failure named by its hook and exit only; live.json's `env` block is not reproduced: the job's environment is); the RED test's `readValue` and error collector; TOTP
  * as the wrapper computes it (Node's crypto); the wrapper's login template verbatim and `signInPage`, which
  * takes the password and TOTP secret as values the caller read from the environment; `login` for a created
  * account; every registered check's source.
@@ -391,8 +401,19 @@ export function supportFile({ live, smoke, roles }) {
     '    const re = typeof h.args[i] === "string" ? new RegExp("^(?:" + h.args[i] + ")$") : VALUE;',
     '    if (v.startsWith("-") || !re.test(v)) throw new Error("argus-smoke: value " + (i + 1) + " of " + name + " does not match its args");',
     "  });",
-    "  const argv = h.argv.map((el) => el.replace(/\\{(\\d+)\\}/g, (_m, k) => values[Number(k) - 1]));",
-    '  return execFileSync(argv[0], argv.slice(1), { cwd: REPO, env: process.env, encoding: "utf8", timeout: SETTLE + 30_000, stdio: ["ignore", "pipe", "pipe"] });',
+    "  // One pass: a value's {k}, and live.json's ${NAME} from the job's environment (the workflow passes those secrets by name).",
+    "  const argv = h.argv.map((el) => el.replace(/\\{(\\d+)\\}|\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}/g, (_m, k, n) => {",
+    "    if (k !== undefined) return values[Number(k) - 1];",
+    "    const v = process.env[n];",
+    '    if (v === undefined) throw new Error("argus-smoke: " + name + ": the environment has no " + n);',
+    "    return v;",
+    "  }));",
+    "  try {",
+    '    return execFileSync(argv[0], argv.slice(1), { cwd: REPO, env: process.env, encoding: "utf8", timeout: SETTLE + 30_000, stdio: ["ignore", "pipe", "pipe"] });',
+    "  } catch (e) {",
+    "    // results.json is an artifact: the hook and its exit only, never its stderr (it may echo a secret).",
+    '    throw new Error("argus-smoke: " + name + " exited " + String((e as { status?: number | null }).status ?? "on a signal"));',
+    "  }",
     "}",
     "",
     "export async function trigger(name: string, values: string[]): Promise<void> {",

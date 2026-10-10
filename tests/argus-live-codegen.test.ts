@@ -241,6 +241,43 @@ describe("argus-live codegen — config, setup, support, package", () => {
     expect(supportFile({ live, smoke: validateSmoke({ ci: { ports: { api: 4200 } } }).value, roles: [] })).toContain('"http://localhost:4200/settle/{1}"');
   });
 
+  it("support's hooks in CI: ${NAME} from the job's environment at run time, {port:<name>=<n>} as CI's port or n, a failure named without its stderr", () => {
+    const live = LIVE();
+    live.triggers.reset = { argv: ["psql", "--password=${DB_PW}", "--port={port:db=5432}", "--api={port:api=4000}", "{1}"] };
+    const text = supportFile({ live, smoke: validateSmoke({ ci: { ports: { api: 4200 } } }).value, roles: [] });
+    // The file holds the name, never a value; the =<n> form takes CI's port when it names one, else n.
+    expect(text).toContain('"reset": {"argv": ["psql", "--password=${DB_PW}", "--port=5432", "--api=4200", "{1}"], "args": []}');
+    const js = stripTypeScriptTypes(text);
+    const src = js.slice(js.indexOf("function hook("), js.indexOf("export async function trigger("));
+    const calls: unknown[][] = [];
+    let fail: Obj | null = null;
+    const exec = (cmd: string, args: string[]) => {
+      if (fail) throw fail;
+      calls.push([cmd, args]);
+      return "";
+    };
+    const hook = new Function("execFileSync", "REPO", "SETTLE", "VALUE", "process", `${src}\nreturn hook;`)(exec, "/repo", 1000, /^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$/, { env: { DB_PW: "s3cret-{1}" } });
+    hook({ argv: ["psql", "--password=${DB_PW}", "{1}"], args: [] }, ["m1"], "trigger reset");
+    // Substituted in one pass: an environment value holding {1} stays as it is.
+    expect(calls).toEqual([["psql", ["--password=s3cret-{1}", "m1"]]]);
+    expect(() => hook({ argv: ["x", "${NOPE}"], args: [] }, [], "trigger reset")).toThrow("argus-smoke: trigger reset: the environment has no NOPE");
+    // results.json is an artifact kept 7 days: a failed hook names itself and its exit, never its stderr.
+    fail = Object.assign(new Error("Command failed: psql\nFATAL: password s3cret rejected"), { status: 3, stderr: "FATAL: password s3cret rejected" });
+    let message = "";
+    try {
+      hook({ argv: ["psql"], args: [] }, [], "trigger reset");
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe("argus-smoke: trigger reset exited 3");
+  });
+
+  it("a login_url with {port:<name>=<n>} resolves to its path; one that is no URL is codegen's refusal, not a TypeError", () => {
+    const live = { ...LIVE(), login_url: "http://localhost:{port:web=3000}/sign-in?next=/" };
+    expect(supportFile({ live, smoke: SMOKE(), roles: ["customer"] })).toContain('"customer": { url: "/sign-in?next=/",');
+    expect(() => supportFile({ live: { ...LIVE(), login_url: "http://[bad/x" }, smoke: SMOKE(), roles: ["customer"] })).toThrow("failed: codegen: login_url http://[bad/x is not a URL or a path");
+  });
+
   it("package.json pins @playwright/test exactly, on the pinned CLI's minor; the suite's .gitignore lists .auth/", () => {
     const pkg = JSON.parse(packageJson());
     expect(pkg.devDependencies).toEqual({ "@axe-core/playwright": SMOKE_AXE, "@playwright/test": SMOKE_PLAYWRIGHT });

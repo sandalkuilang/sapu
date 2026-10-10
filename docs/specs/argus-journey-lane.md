@@ -2337,7 +2337,10 @@ its written files as `argus-smoke-baselines-<project>` (rooted at the suite dire
 `.argus/live.env` holds, from the repo's CI secrets, set only in the env of the step that runs the suite
 (never `npm ci`'s or an action's); the generated support reads them by name.
 Without a `workflow` scope on the owner's gh token, init hands the file to the owner instead.
-`ci.web_server` is the owner's statement of how CI starts the app; `/sapu:init` proposes it from
+The suite's hooks run from the repo's root with the step's environment: `${NAME}` in their argv is read
+from it at run time, `{port:<name>}` takes `ci.ports`' port (`{port:<name>=<n>}` it, else `n`), live.json's
+`env` block is not reproduced, and a failed hook is reported by name and exit code only (no stderr: the
+results are an artifact). `ci.web_server` is the owner's statement of how CI starts the app; `/sapu:init` proposes it from
 `live.json`'s `start` entries with `{port:<name>}` replaced by `ci.ports`. The lane's isolation
 (worktree outside the repo, ports from `port_range`, HOME, proxy, reaper, `store_check`, `reset`) is
 not reproduced in CI: a disposable runner is the isolation there, and the loopback-only base URL keeps
