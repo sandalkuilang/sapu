@@ -130,7 +130,10 @@ describe("argus-live modules — the DAG", () => {
     // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
     for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
     // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
-    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
+    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-artifacts", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
+    // CI's runs and artifacts are read through one module, below both verbs that read them.
+    for (const m of ["argus-live-ci", "argus-live-baseline"]) expect(g.get(m), m).toContain("argus-live-artifacts");
+    expect(g.get("argus-live-baseline")).not.toContain("argus-live-ci");
     for (const m of g.keys()) {
       if (m === "argus-live" || UPPER.includes(m)) continue;
       for (const u of UPPER) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);

@@ -31,7 +31,7 @@ import { ORACLES } from "./argus-live-return.mjs";
 import { worktreeHeadFile } from "./argus-live-run.mjs";
 import { defang, filedFile, redactIds, REF, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { readPass } from "./argus-live-smoke.mjs";
-import { readTriage } from "./argus-live-ci.mjs";
+import { readTriage } from "./argus-live-artifacts.mjs";
 
 /** Where the reports go, from the repo's root. */
 export const REPORTS_DIR = path.join(".argus", "reports");

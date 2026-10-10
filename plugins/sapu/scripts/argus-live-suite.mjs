@@ -1,5 +1,7 @@
-// argus-live-suite.mjs — the smoke suite's membership (spec §19.3–§19.5): `smoke plan` ranks the catalog into
-// the suite's members, `smoke admit` stages a path that held twice, fresh then dirty, and `smoke check`
+// argus-live-suite.mjs — the smoke suite's membership (spec §19.3–§19.5) and the owner of the lane's smoke state,
+// `.argus/smoke-state.json` (readState, writeState, stage, the digests, the owner's rulings on proposals; every
+// smoke verb reads and writes it here). `smoke plan` ranks the catalog into the suite's members, `smoke admit`
+// stages a path that held at every width and dirty, `smoke retire` stages the owner's ruling, and `smoke check`
 // regenerates the suite in memory and names every file that differs. check writes nothing (the guard lets a
 // subagent run it); every change to the committed suite goes through a proposal.
 import { createHash, randomInt } from "node:crypto";

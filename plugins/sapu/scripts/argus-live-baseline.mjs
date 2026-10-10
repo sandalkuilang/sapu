@@ -1,10 +1,10 @@
 // argus-live-baseline.mjs — the suite's baselines from CI (spec §19.8): `smoke baseline` dispatches CI's baseline
 // job for a triaged run, and adopts a baseline run's screenshots, ARIA snapshots and known violations as a
-// proposal. Artifacts are read through argus-live-ci.mjs, by name and shape; their text is untrusted.
+// proposal. Artifacts are read through argus-live-artifacts.mjs, by name and shape; their text is untrusted.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { anySuite, noWiring, ARTIFACT, BASELINES, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, readTriage, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
+import { anySuite, ARTIFACT, BASELINES, download, fetchRun, ghOut, home, isPng, noWiring, notesOf, PNG_MAX, PROJECT, readTriage, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-artifacts.mjs";
 import { knownText, loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";

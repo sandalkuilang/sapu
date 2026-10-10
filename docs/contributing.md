@@ -18,7 +18,7 @@ plugins/sapu/
   workflows/inspector.js          the momus → argus → nemesis sequence as code
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
-                                  the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -ci, -baseline, -perf, -seed and -report)
+                                  the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report)
   scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files

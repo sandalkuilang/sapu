@@ -9,7 +9,9 @@ import { cleanTemps, example, git, liveContract, liveRun, longSecret, tempDir } 
 // @ts-expect-error — plain ESM script without types
 import { pruneAria, smokeBaseline } from "../plugins/sapu/scripts/argus-live-baseline.mjs";
 // @ts-expect-error — plain ESM script without types
-import { quarantineCycle, readTriage, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+// @ts-expect-error — plain ESM script without types
+import { readTriage } from "../plugins/sapu/scripts/argus-live-artifacts.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
