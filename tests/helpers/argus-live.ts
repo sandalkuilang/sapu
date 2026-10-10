@@ -234,7 +234,8 @@ if (Object.hasOwn(answers, cmd)) {
 };
 
 // ---------------------------------------------------------------------------------------------------
-// The Chrome suites' runs (argus-live-browser.test.ts, argus-live-repro.test.ts). Each such file calls
+// The Chrome suites' runs (argus-live-browser.test.ts, argus-live-repro.test.ts and its siblings
+// argus-live-oracles.test.ts and argus-live-paths.test.ts). Each such file calls
 // browserTools() in its beforeAll and registers browserCleanup and browserLeftovers as its afterEach.
 
 type Obj = Record<string, any>;

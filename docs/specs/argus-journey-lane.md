@@ -1732,8 +1732,7 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
   removes it", "a created account's password is in the ledger".
 - **Screenshot verdicts:** "each screenshot gets a verdict at capture time, after its call's drain,
   over every frame, hashed, holding no page text".
-- **One run:** "each seeded oracle defect reproduces, and its fixed variant does not", "a viewport
-  defect reproduces at 390 and not at 1440; the delayed handoff is not a defect", "exit 2 on a broken
+- **One run:** "exit 2 on a broken
   target, a dropped prerequisite, a missing proving expect and an uncaught error", "a run's records are
   absent from the next run, and values with quotes are substituted as literals", "a login step signs in
   an account the run created, and its failure is the run's only", "an account whose login failed this
@@ -1742,6 +1741,11 @@ second, pages that reach another loopback port (by `fetch` and WebSocket) and an
 - **End to end:** "a candidate goes from an explorer's submit to a filed issue, and down leaves no
   secret outside the ledger" (submit → `repro` 2 of 2 → `--minimize` → `--test` → scrub and filing
   through a fake `gh`).
+
+`tests/argus-live-oracles.test.ts` (in Chrome, on the fixture app; its own file so it runs beside the one
+above): "each seeded oracle defect reproduces, and its fixed variant does not", "a viewport defect
+reproduces at 390 and not at 1440; the delayed handoff is not a defect", and the layout expectation's.
+`tests/argus-live-paths.test.ts` holds the path mode's PATH verdicts and the smoke pass (§19.4, §19.9).
 
 `tests/argus-live-pw.test.ts` also holds "the findings and map commands are the orchestrator's: none
 passes the explorer's guard", and for the fence's long and re-encoded secrets "a secret thousands of
