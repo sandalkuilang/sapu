@@ -2089,7 +2089,9 @@ modal dialog is open, everything outside it.
   native checkbox, radio or range the author did not size (2.5.8's inline and user-agent
   exceptions).
 - **Locale** (`i18n`): after each step, a sibling context with the step's account storageState and
-  each `locales` and `pseudo_locales` code opens the step's URL and runs *page-scroll* and *clipped*;
+  each `locales` and `pseudo_locales` code opens the step's URL and runs *page-scroll* and *clipped*; a URL
+  is looked at once per account unless the step may change server state (`click`, `dblclick`, `press`,
+  `reload`, `login`, `go-back`); the codes are read from `.argus/live.json` when the suite runs;
   for real locales also the format check — numbers with both group and decimal separators in the
   wrong roles for the locale (`Intl.NumberFormat` parts), dates whose separator differs from the
   locale's or whose day above 12 proves the field order wrong (`Intl.DateTimeFormat` parts); ISO 8601
@@ -2103,7 +2105,9 @@ modal dialog is open, everything outside it.
   fail [mozilla-pseudo]. Without one the report says `pseudo-localization: not done (no pseudo-locale
   listed)`. No hook is ever invented.
 - **Keyboard** (`a11y`, before each `click`, `check`, `uncheck`, `select` or `fill` of the path):
-  Tab from the page's start until focus reaches the target (pass), cycles back to the first stop
+  Tab from the page's start (a node focused and removed at the document's start, then Shift+Tab, which leaves
+  the page, so the next Tab is the first stop of the true order, a positive `tabindex` group included) until
+  focus reaches the target (pass), cycles back to the first stop
   (fail: not in the tab order, 2.1.1) or 500 presses pass (undetermined, never a fail). A target
   inside a composite widget (`radiogroup`, `tablist`, `menu`, `menubar`, `listbox`, `grid`, `tree`,
   `toolbar`) passes when focus enters its widget: a composite has one tab stop and arrows move inside
@@ -2117,9 +2121,11 @@ modal dialog is open, everything outside it.
   center's `elementFromPoint` is it or inside it) [u-2.4.11]. `hover` and `dblclick` targets are excluded (the
   function may have a keyboard path elsewhere). Then focus is blurred and the step runs.
 - **Names** (`a11y`): every action target `toHaveAccessibleName(/\S/)` (4.1.2).
-- **ARIA snapshot** (`a11y`, at the path's screens): `toMatchAriaSnapshot({name: "<n>.aria.yml"})`
-  of `main` (else `body`), stored as `__aria__/<id>.spec/<n>.aria.yml`, `children: "contain"` (partial
-  matching, Playwright's default) [pw-aria]. A missing file compares as the empty string and fails
+- **ARIA snapshot** (`a11y`, at the path's screens: smoke.json's `journeys.<id>.screens`, else the
+  path's last step that acts on a page; the screenshots take the same list): `toMatchAriaSnapshot({name:
+  "<n>.aria.yml"})` of `main` (else `body`), stored as `__aria__/<id>.spec/<n>.aria.yml`, with no
+  `children` option: matching is already partial [pw-aria], and `children: "contain"`, probed, makes a
+  missing or empty baseline match. A missing file compares as the empty string and fails
   (`baseline-missing`); a mismatch reports a line diff only, no file [probe]. Baselines therefore come
   only from the baseline run (§19.8); on adoption, names holding a digit become regexes with each
   digit run as `\d+`, the marker shape `argus-[0-9a-z]+`.
@@ -2131,8 +2137,9 @@ modal dialog is open, everything outside it.
   violation node is `{check: "axe:<rule>", key: <its target>}`, filtered by `known/<id>.json` like
   every check; `incomplete` nodes are `manual`, never a fail (axe returns as incomplete what it
   cannot decide, and holds itself to zero false positives) [pw-a11y] [axe-readme] [axe-api].
-- **Tokens** (`a11y`, only with `live.tokens`): the token values (CSS custom properties of the named
-  file, or the JSON's string leaves and `$value`s), normalized in the page by setting each on a probe
+- **Tokens** (`a11y`, only with `live.tokens`, read from the repo's `.argus/live.json` when the suite runs,
+  the file inside the repo): the token values (CSS custom properties of the named file, or the JSON's string
+  leaves and `$value`s), normalized in the page by setting each on a probe
   element; each journey control's computed `color`, non-transparent `background-color`, first
   `font-family` and `font-size` must be one of them. No `tokens` → skipped, reported `design tokens:
   not checked (no token source)`. Tokens are never inferred.
@@ -2158,16 +2165,19 @@ modal dialog is open, everything outside it.
   within `SETTLE`, and none at the final step. ARIA-marked loaders only; class names are never read.
 - **Empty state** (every step; also measured by the explorer): a visible `table` or `grid` with a
   header and no body rows, or a `list`, `listbox` or `feed` with no items, must have visible text
-  near it (its section or landmark) beyond its own headers.
+  near it (its section or landmark) beyond its own headers: headings, the table's header and caption,
+  scripts and styles do not count, so a section title alone does not excuse an empty table.
 - **Toasts** (every step): an element that appears after an action with `position: fixed` and text,
   and goes by itself within `SETTLE`, must be inside a live region (`role=status`, `alert`,
   `aria-live`; 4.1.3); a live region's toast must not cover the path's next target (the covered
-  check) and must be dismissible or go by itself.
+  check) and must be dismissible or go by itself. The recorder is armed after step 1, so a toast of
+  step 1 is not seen; text added to a fixed region that was already there is a status update, not a toast.
 - **Modals** (`a11y`, when an action opens a modal dialog: `role=dialog` or `alertdialog` with
   `aria-modal="true"`, or a `dialog` opened modal): Escape closes it, an `alertdialog` included
   [apg-alertdialog]; Tab stays inside it (2.1.2's trap is allowed only where Escape leaves) [u-2.1.2]; the
   path's control reopens it; focus returns to the control that opened it — exempt when that control
-  is gone, a fail when focus is lost to `body`, `manual` when it lands elsewhere (the workflow
+  is gone (then only Tab is checked: Escape and the backdrop would close a dialog the path cannot reopen,
+  so `modal-escape` is reported `manual`, not tested), a fail when focus is lost to `body`, `manual` when it lands elsewhere (the workflow
   exception) [apg-dialog]; and the backdrop click (a point outside its box) behaves the same in every
   modal dialog of the journey. A non-modal dialog is exempt from the Escape and Tab rules
   [mdn-dialog].
@@ -2280,10 +2290,12 @@ the app started by the config's `webServer` from `smoke.json` `ci.web_server`
 `mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` container with `--ipc=host --init`
 [pw-ci] [pw-docker], `msedge` on the plain runner; in the suite directory `npm ci` and `npx playwright
 test --shuffle --grep-invert @quarantine --project setup --project <p>` in a matrix over the
-projects (each job its own app instance), plus the non-gating `quarantine` job and the dispatch-only
-`baseline` job (§19.8). `test-results/` is uploaded as `argus-smoke-results`, the baseline job's
-written files as `argus-smoke-baselines`, both with `retention-days: 7` [gh-artifacts], never
-`.auth/`. The secrets the job passes are the names
+projects (codegen's `suiteProjects`, the generated config's own list, every one but `msedge`; each job its
+own app instance), plus the non-gating `quarantine` job and the dispatch-only
+`baseline` job (§19.8, the same matrix). Each job uploads `test-results/` as
+`argus-smoke-results-<project>` (`results.json` at its root; `-msedge`, `-quarantine`), the baseline job also
+its written files as `argus-smoke-baselines-<project>` (rooted at the suite directory: `__screenshots__/`,
+`__aria__/`), all with `retention-days: 7` [gh-artifacts], never `.auth/`. The secrets the job passes are the names
 `.argus/live.env` holds, from the repo's CI secrets; the generated support reads them by name.
 Without a `workflow` scope on the owner's gh token, init hands the file to the owner instead.
 `ci.web_server` is the owner's statement of how CI starts the app; `/sapu:init` proposes it from
@@ -2301,18 +2313,24 @@ first input, so a perf run waits for the document's `load` event before its firs
 [webdev-cls], `inp_ms` (the worst interaction: `event` entries observed with `durationThreshold: 16`,
 grouped by `interactionId`) [webdev-inp], `duration_ms` (the steps' time to effect, seed triggers
 excluded), `requests` and `bytes` (resource and navigation entries, `transferSize`) [webdev-budgets],
-from an init script of `PerformanceObserver`s installed with the signal script (§7) and drained after
-every step. A batch is one warm-up run, then `perf.runs` runs on one instance; its value is each
+from a script of `PerformanceObserver`s (`buffered`, so entries from before it ran are read) that the
+session hook installs beside the signal script (§7) only in a perf pass, at each `domcontentloaded` and again
+before each measured step, and read after every step. A batch is one warm-up run, then `perf.runs` runs on one instance; its value is each
 metric's median (five runs' median is about twice as stable as one) [lh-variability]
 [lhci-config]. A batch is refused while another slot of the run is live (`refused: smoke run
 --perf: <n> other slot(s) live`): concurrent load on one machine skews every timing
-[lh-variability]. Baseline per journey in `.argus/perf.json` `{pathSha, head, machine, n, medians}`:
-the first batch; void when the path's digest or the machine (CPU model and count, memory, platform,
+[lh-variability]. Baseline per journey in `.argus/perf.json` `{pathSha, head, machine, n, medians, latest}`
+(`latest`: the newest pass's `{pathSha, head, machine, n, batches, regressed}`, what `--issue` reads and
+`--rebaseline` moves the baseline to): the first batch; void when the path's digest or the machine (CPU model and count, memory, platform,
 Chrome version) differs; moved only by `smoke perf --rebaseline <id>` (the owner's command, or the
 owner closing a perf issue as not planned). Default thresholds `[relative, absolute]`: `lcp_ms` [0.2,
 250], `inp_ms` [0.25, 50], `cls` [0.25, 0.05], `duration_ms` [0.2, 500], `requests` [0.2, 5], `bytes`
 [0.2, 102400]. A metric regresses when its median exceeds the baseline by more than both; a
-regression counts only when a second batch after `up --fresh` regresses too. Filed through `scrub
+regression counts only when a second batch after `up --fresh` regresses too. Each path's verdict is one
+of five: `baselined` (a first batch, or a void baseline), `ok`, `regressed` (both batches), `flaky` (the
+second batch was within the thresholds), `not-measured` (the path broke or the harness failed), one
+`<run>/smoke/perf.jsonl` row a path `{id, verdict, baseline, batches, regressed[, why]}`. `smoke run
+--perf` exits 3 for a confirmed regression or a path that broke, else 2 for the harness, else 0. Filed through `scrub
 --create` with `perf`, `argus`, `found-by:user` and the needs-owner label, deduplicated by
 `perf:<id>:<metric>`, its body from `smoke perf --issue <id>`: baseline, both batches, thresholds,
 and `git log --format='%h %s' <baseline head>..HEAD -- <anchor files>`. web.dev's "good" values
@@ -2323,9 +2341,10 @@ nothing: shared CI runners are too noisy for a gate, and perf APIs are complete 
 ### 19.12 Journeys from issues and docs
 
 `argus-live.mjs seed --issue <n> | --doc <file>:<a>-<b>` in a run with a worktree (`up --map` or a full
-`up`): an issue only when `sapu-contract.mjs issue-trust <n>` passes; a doc only tracked at HEAD.
-It writes `<run>/seed.json` (0600: kind, ref, URL or file and range, the text, its digest) and prints
-`seed: <kind> <ref> <sha12> <k> characters`. `slot <n> --map --seed` mints a map token that also takes
+`up`): an issue only when `sapu-contract.mjs issue-trust <n>` passes; a doc only a regular file tracked at
+the run worktree's HEAD, read from git's object. It writes `<run>/seed.json` (0600: kind, ref, URL or file and range, the
+text, its digest) and prints `seed: <kind> <ref> <sha12> <k> characters`; one seed a run: a later `seed`
+replaces it, and a slot minted before then refuses `source`. `slot <n> --map --seed` mints a map token that also takes
 `pw <token> source`, which prints the text in a fresh `<<<SOURCE-<nonce>` fence, capped, marker
 shapes escaped, as data; the charter says to extend the map with the journeys the text describes.
 The returned map passes `validateMap` and `map-check` like any other: a journey whose steps the code
@@ -2343,8 +2362,11 @@ proposal [owasp-llm01].
 `argus-live.mjs report [--run <runId>]` (no lock) writes `.argus/reports/<runId>.md` (0600) from the
 run's records only: journeys walked (status, steps, coverage per oracle), candidates (ref, oracle,
 verdict, minimized steps, filed URL), issues filed (`<run>/filed.jsonl`, which `scrub --create` and
-`--comment` append), smoke (held, broke, flaky, healed, admitted, quarantined), perf (baseline →
-batches, verdict), visual and checks (the newest `smoke ci` summary), proposals, harness events.
+`--comment` append), smoke (`<run>/smoke/pass.jsonl`: held, broke, flaky; `<run>/smoke/events.jsonl`,
+which the smoke verbs append: healed, admitted, quarantined, unquarantined, dropped), perf
+(`<run>/smoke/perf.jsonl`: baseline → batches, verdict; `.argus/perf.json`'s baseline now), visual and
+checks (the newest `.argus/smoke-ci/<run>/triage.json`, only its triage lines), proposals (`events.jsonl`),
+harness events.
 Free text is at most 200 characters an item, defanged, and the whole file passes scrub's matcher,
 each hit replaced by `*** (<class>)`. It prints `report: <path>`.
 
