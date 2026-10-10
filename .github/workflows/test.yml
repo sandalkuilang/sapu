@@ -19,6 +19,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The runner's Ubuntu restricts unprivileged user namespaces through AppArmor, and Chrome's sandbox
+      # needs one: without this every browser session fails to start. The lane keeps the sandbox on.
+      - name: Let Chrome's sandbox create its user namespace
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: The live instance's tests
         run: npx vitest run tests/argus-live.test.ts
       - name: The rest of the suite
