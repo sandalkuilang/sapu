@@ -35,6 +35,20 @@ beforeAll(() => {
 afterEach(browserCleanup, 60_000);
 
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
+/**
+ * A `/storage?hold=1` page asks with its second bearer only once the fixture app at `base` lets it: this lets it,
+ * then waits until the app counted `n` requests to `path` from the page (`/api/me`: the second bearer was sent;
+ * `/api/shown`, with `?show=1`: it is on the screen too), up to 60 s.
+ */
+const release = async (base: string, stats: () => Promise<Record<string, number>>, path: string, n: number) => {
+  expect((await stats())[`GET ${path}`] ?? 0, "held until released").toBeLessThan(n);
+  expect((await fetch(`${base}/__test/release`, { method: "POST", headers: { "x-test-control": "control-7" } })).status).toBe(200);
+  const end = Date.now() + 60_000;
+  while (((await stats())[`GET ${path}`] ?? 0) < n) {
+    if (Date.now() > end) throw new Error(`the page did not ask for ${path} ${n} times`);
+    await sleep(100);
+  }
+};
 /** The fence's body (the first line of a pw answer) and the lines outside it. */
 const fenced = (r: { out: string[] }) => r.out[0];
 const outside = (r: { out: string[] }) => r.out.slice(1);
@@ -176,21 +190,26 @@ describe("argus-live ledger in Chrome", () => {
     expect(statSync(seenFile(t.main, t.runId)).mode & 0o777).toBe(0o600);
   }, 180_000);
 
-  /** A full up of the fixture app, slot 1 holding buyer.1, and `pw goto /storage` returned before the page's second bearer → the cycle, its run id and that bearer. */
-  const storageCycle = () => {
+  /**
+   * A full up of the fixture app, slot 1 holding buyer.1, `pw goto /storage?hold=1`, then the page let ask with its
+   * second bearer and that request seen by the app → the cycle, its run id and that bearer, which only a later drain
+   * can have recorded.
+   */
+  const storageCycle = async () => {
     const c = appCycle({ clerk: false, mark: MARK });
     const { summary } = c.up();
     const token = c.slot(1, "buyer.1=buyer1@example.test");
-    expect(c.cli("pw", token, "buyer.1", "goto", "/storage").code).toBe(0);
+    expect(c.cli("pw", token, "buyer.1", "goto", "/storage?hold=1").code).toBe(0);
     const second = storageOf(c.data).bearers[1];
-    // The pw call's own drain ran before the page asked with its second bearer (2000 ms after load).
+    // The page holds its second bearer back until released, so the pw call's own drain ran before the page asked
+    // with it (a 2000 ms timer raced that drain on a loaded machine).
     expect(values(c.main, summary.runId)).not.toContain(second);
+    await release(`http://localhost:${c.runJson().ports.web}`, c.stats, "/api/me", 2);
     return { c, runId: summary.runId as string, second };
   };
 
   it("down drains every session before it closes it", async () => {
-    const { c, runId, second } = storageCycle();
-    await sleep(3000);
+    const { c, runId, second } = await storageCycle();
     const d = c.cli("down");
     expect(d.code, d.err).toBe(0);
     expect(values(c.main, runId)).toContain(second);
@@ -198,8 +217,7 @@ describe("argus-live ledger in Chrome", () => {
   }, 300_000);
 
   it("up --fresh drains every session it closes", async () => {
-    const { c, runId, second } = storageCycle();
-    await sleep(3000);
+    const { c, runId, second } = await storageCycle();
     const f = c.cli("up", "--fresh");
     expect(f.code, f.err).toBe(0);
     expect(values(c.main, runId)).toContain(second);
@@ -208,7 +226,7 @@ describe("argus-live ledger in Chrome", () => {
   }, 300_000);
 
   it("the ledger survives down and the next up removes it", async () => {
-    const { c, runId } = storageCycle();
+    const { c, runId } = await storageCycle();
     expect(c.cli("down").code).toBe(0);
     expect(statSync(ledgerFile(c.main, runId)).mode & 0o777).toBe(0o600);
     expect(existsSync(seenFile(c.main, runId))).toBe(true);
@@ -261,10 +279,10 @@ describe("argus-live screenshot verdicts", () => {
     shots.push(await shoot("buyer.1"));
     expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["secret"] });
     // The second bearer reaches the ledger only through the screenshot call's own drain, before its verdict.
-    expect((await t.call("buyer.1", "goto", "/storage?show=1")).code).toBe(0);
+    expect((await t.call("buyer.1", "goto", "/storage?show=1&hold=1")).code).toBe(0);
     const second = JSON.parse(readFileSync(join(t.appEnv.DATA_DIR, "bearer.json"), "utf8")).bearers[1];
     expect((readLedger(t.main, t.runId)?.entries ?? []).map((e: Obj) => e.v)).not.toContain(second);
-    await sleep(3000);
+    await release(t.base, t.stats, "/api/shown", 1);
     shots.push(await shoot("buyer.1"));
     expect(shots.at(-1)!.v).toMatchObject({ passed: false, reasons: ["secret"] });
     for (const s of shots) {
