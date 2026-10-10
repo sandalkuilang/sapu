@@ -16,7 +16,8 @@ The contract has three layers:
 **The journey lane's files.** Tracked in a repo home: `.argus/live.json`, `.argus/smoke.json` and the
 smoke suite's directory (`smoke.json` `dir`; its `.auth/` is ignored). Local state, ignored under `.argus/`:
 `.argus/live/<runId>/` (a run's records; its `filed.jsonl` lists each issue or comment `scrub` filed),
-`.argus/smoke-state.json` (staged suite changes, rejected digests, quarantine streaks), `.argus/smoke-ci/<run>/`
+`.argus/smoke-state.json` (staged suite changes, rejected digests, quarantine streaks, a closed heal's
+pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
 (`smoke ci`'s triage), `.argus/perf.json` (perf baselines) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
 smoke suite's are `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-ci`, `argus-live-baseline.mjs`,

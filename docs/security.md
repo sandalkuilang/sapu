@@ -121,7 +121,7 @@ Known limits, in short: process groups bound every kill and listing, so a proces
 
 **Healing is reviewed.** A heal changes only how an action finds its control, at most `heal_max_steps` of them; it cannot add a step, change an expectation or a value, add a wait or skip a test. It is decided by re-running the unchanged expectations, never applied while a test runs, and arrives only as a pull request showing the old and new target.
 
-**The commands.** The `smoke` verbs other than `check`, and `seed` and `report`, are the orchestrator's: the guard refuses them to every subagent. `smoke check` writes nothing and may be run by one. The explorer's `pw` wrapper is unchanged; a seed token adds the read-only `source` command.
+**The commands.** The `smoke` verbs other than `check`, and `seed` and `report`, are the orchestrator's: the guard refuses them to every subagent. `smoke check` writes nothing and may be run by one. `smoke retire` records your ruling that a journey's break was intended, so the orchestrator runs it only on your word. The explorer's `pw` wrapper is unchanged; a seed token adds the read-only `source` command.
 
 Known limits, in short:
 - The guard binds subagents only. A skill you start yourself runs unguarded, and the smoke commands are the orchestrator's by the skills' rule and the guard's.
