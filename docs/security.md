@@ -60,7 +60,7 @@ Also protect the repo on GitHub itself: branch protection on the base branch (PR
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/journey-boundary-dark.svg">
-  <img src="img/journey-boundary.svg" alt="The journey lane's trust boundary: the orchestrator in the main session dispatches a guarded explorer whose Bash runs only the pw wrapper and whose Read reaches only files committed in the run's worktree; the wrapper drives one browser session per account through a filtering proxy to an isolated instance with its own worktree, ports, data and HOME, never the owner's servers; page text returns only inside nonce fences; and a candidate leaves the machine only after a script reproduced it two of two and scrub found no secret the run saw (its 0600 ledger) or the configuration holds in it." width="100%">
+  <img src="img/journey-boundary.svg" alt="The journey lane's trust boundary: the orchestrator in the main session dispatches a guarded explorer whose Bash runs only the pw wrapper and whose Read reaches only files committed in the run's worktree; the wrapper drives one browser session per account through a filtering proxy to an isolated instance with its own worktree, ports, data and HOME, never the owner's servers; page text returns only inside nonce fences; and a candidate leaves the machine only after a script reproduced it two of two and scrub found no secret the run saw (its 0600 ledger) or the configuration holds in it; the smoke suite reaches the owner's repo only as a pull request that scrub's matcher has checked and the owner merges, its CI workflow runs read-only with pinned actions, and text from issues, docs and CI artifacts is read only as fenced data." width="100%">
 </picture>
 
 **An instance of its own.** `argus-live.mjs up` builds every cycle's instance: a worktree at HEAD, ports from the file's `port_range` (never one of `reserved_ports`), its own HOME and browser HOME, its own Docker client and Compose project, the one datastore `store` names (which `reset` recreates with synthetic data), and an environment holding only what the file names. One cycle runs per repo, under a lock with a deadline; a reaper runs `down` at that deadline if the session dies, and `down` stops only what `up` started. `up` refuses, and tears down whatever it already started:
@@ -91,3 +91,43 @@ After start-up, an egress check compares what the run's processes connect to wit
 **Findings you rule on.** A finding only you can judge carries the needs-owner label, which `/sapu` skips. Removing that label, or closing the issue as not planned, is your ruling, and the guard refuses both to every subagent.
 
 Known limits, in short: process groups bound every kill and listing, so a process that leaves its group (`setsid`, a double fork) is neither killed nor listed; the egress check samples, and does not list processes inside containers; a custom Docker bridge subnet escapes the host-name checks; a slot's token is in the process list while a browser call runs, so the lane assumes a single-user machine; and nothing is enforced by the operating system. The full list is in [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md#known-limits), and the guard's rules for the explorer are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Engine floor.
+
+
+## The smoke suite
+
+`/journey smoke` leaves a test suite in your repo and a workflow in your CI, so it adds two things the exploratory lane does not have: code that runs on a CI runner with your secrets, and text from outside the machine (CI artifacts, issues, docs) that the lane reads back. The lane's own stance is unchanged: `.argus/live.json`, `.argus/smoke.json` and the repo are yours and trusted; pages, CI artifacts and issue text are not. The lower half of the trust-boundary diagram above shows where the new flows cross it. What each layer does and what it does not do:
+
+**What reaches your repo, and how.**
+- Every change to the suite (a path, a heal, a quarantine, a drop, a baseline, a regenerated file) is a pull request on an `argus/` branch, labelled agent-filed. sapu works issues and its own branches are not `argus/`, so it never merges one. Your merge is the acceptance. A pull request you close unmerged is remembered by the change's digest and is not proposed again.
+- Before a push, `smoke propose` and `smoke baseline` run every file and the pull request body through `scrub`'s matcher over the secrets the run saw and the configuration holds. A hit refuses the whole proposal and names where, never what. PNG baselines cannot be scanned as text: the screenshot masks cover the values a path typed or read, and you review the images in the pull request.
+- The suite is generated from data by the generator alone: every string of a path is a JSON literal or a variable, no path data goes into a template literal, and test titles hold only ids, step numbers and kinds. A password or TOTP secret that is not a `${NAME}` reference is refused when the suite is generated. A header digest in each generated file lets `smoke check` name a hand edit.
+- `smoke propose` commits with `--no-verify`: a fresh worktree has none of your hook tooling installed. CI runs the suite either way.
+
+**What runs in CI.**
+- The workflow has `permissions: contents: read`, never `pull_request_target`, and checks out without persisted credentials. Every action is pinned to a full commit SHA, resolved when the file is printed. A pull request from a fork runs no job.
+- Dispatch inputs reach the shell only through `env:` and are checked against fixed shapes first (`missing` or `changed`; journey ids joined by `|`).
+- The secrets a job gets are the `${NAME}` names that `.argus/live.json` uses, passed by name, and only to jobs for same-repository events. The generated code reads them from the environment by name, and the workflow file holds names, never a value.
+- The suite drives loopback only: the generated config throws unless its base URL is on a loopback host. The lane's isolation (its own worktree, ports, HOME, proxy and datastore) is not reproduced in CI. There, a disposable runner is the isolation, and the datastore holds the users `live.json` names.
+
+**Sessions, traces and artifacts.**
+- A signed-in state is a file of session cookies: `.auth/<role>.<k>.json` in the suite directory, written with mode 0600, gitignored by the suite's own `.gitignore` and never uploaded.
+- The `setup` project signs each account in through the real sign-in page and records no trace, video or screenshot, because a typed password would reach the artifact. Other tests keep a trace on the first retry; it stays in a CI artifact kept for 7 days, and `smoke ci` and `smoke baseline` never read it and never attach it to an issue.
+- The lane reads a CI run only through the files it names: `results.json` and the screenshots and snapshots of the suite's own baseline names (a PNG under a size cap, never `msedge`, an ARIA file under a cap). It reads only runs of your own repository, never a fork's, and refuses a run whose branch has moved on. Text from a result (a check's key and detail, a failure message) is page text: it is fenced wherever it is printed, and the per-cycle report shows only triage lines of known shape, at most 200 characters each.
+
+**Text from outside the machine.**
+- A seed from an issue is read only when `sapu-contract.mjs issue-trust` passes for it, from the verdict's own snapshot. A seed from a doc is read from git's object for a regular tracked file at the cycle's worktree HEAD, never the working tree or a symlink.
+- The text is cleaned and handed to the seeded map explorer in a `<<<SOURCE-…` fence. That explorer's token takes only `code`, `source` and `submit`; nothing in the text reaches a command line, a file name or a label. A journey the text names but your code does not anchor is dropped by `map-check`, and anything the explorer suspects still needs a two-of-two replay and your merge.
+- **Fences are hygiene, not a boundary.** An injected instruction in an issue can at most waste the explorer's budget or yield a candidate that the replay refuses. The guarantees are the explorer's confinement (only the `pw` wrapper, no network out), the deterministic gates (`validateMap`, anchors, the two-of-two replay, the heal decision table) and your merge. sapu uses no model-based filter for this: such a filter is itself open to injection.
+
+**Healing is reviewed.** A heal changes only how an action finds its control, at most `heal_max_steps` of them; it cannot add a step, change an expectation or a value, add a wait or skip a test. It is decided by re-running the unchanged expectations, never applied while a test runs, and arrives only as a pull request showing the old and new target.
+
+**The commands.** The `smoke` verbs other than `check`, and `seed` and `report`, are the orchestrator's: the guard refuses them to every subagent. `smoke check` writes nothing and may be run by one. The explorer's `pw` wrapper is unchanged; a seed token adds the read-only `source` command.
+
+Known limits, in short:
+- The guard binds subagents only. A skill you start yourself runs unguarded, and the smoke commands are the orchestrator's by the skills' rule and the guard's.
+- A pull request from a branch in your repository runs its own copy of the suite and the workflow with your CI secrets. Whoever can push such a branch can read them from CI: keep the secrets to test accounts, protect the base branch, and review a pull request that touches the workflow or the suite before it runs, as you would any workflow change.
+- A heal can pass off a regression as a UI change when a control moved to a place the role still reaches in the same number of steps. Read the old and new target and the `git log -S` evidence in the proposal.
+- Screenshots are masked, not scanned: a secret that the app shows and the path never typed or read is visible in a baseline until you review it out.
+- Every check exclusion has a fixture that pins it, and a result a script cannot decide is `manual`, not red. A check that still misfires is yours to silence with an `allow` entry, which sits in `.argus/smoke.json` for reviewers to see.
+- `smoke perf` state (`.argus/perf.json`) is local, and a baseline measured on one machine is void on another.
+- The full list for the lane the suite shares is in [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md#known-limits), and the guard's rules are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Engine floor.

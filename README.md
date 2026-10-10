@@ -131,7 +131,7 @@ claude plugin marketplace add sandalkuilang/sapu
 claude plugin install sapu@sapu --scope project
 ```
 
-A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once. From a version before 2.9.0, read [what changes](docs/usage.md#upgrading-from-a-version-before-290) first.
+A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once. From a version before 2.10.0, read [what changes](docs/usage.md#upgrading-from-a-version-before-2100) first.
 
 **3 · Start a new session in that repo, then**
 
@@ -150,7 +150,7 @@ A new install also installs its dependency [senior-dev-team](#senior-dev-team) a
 | `/sapu:sapu` | **Orchestrator.** Drains every open PR, then works every issue in parallel lanes until the backlog is clean. |
 | `/sapu:forge` | One issue → one tested, reviewed PR, merged through the merge script when its risk tier allows. |
 | `/sapu:argus` | Autonomous QA against the local dev app. |
-| `/sapu:journey` | Walks your app's business journeys through the real UI as every role, on an isolated instance of its own; files only what a script reproduced twice. |
+| `/sapu:journey` | Walks your app's business journeys through the real UI as every role, on an isolated instance of its own; files only what a script reproduced twice. `/sapu:journey smoke` also builds a regression net: a generated Playwright suite in your repo that your CI runs on every pull request, with reviewed screenshot baselines and checks for layout, locales, accessibility, links and performance. Every change to it reaches you as a pull request. |
 | `/sapu:momus` | Release-readiness audit. |
 | `/sapu:nemesis` | Red team against the local dev app (explicitly authorized targets only). |
 | `/sapu:inspector` | Runs momus → argus → nemesis in sequence, each on its own model and effort, with one combined summary. |
@@ -207,7 +207,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | **Guard hook** | Checks every subagent's shell, file, search and MCP tool calls: no direct push to the main branch, no merge, no touching the dev database or `.env` files, no writing into the main checkout or into the plugins they run under. |
 | **Scope lock** | `sapu-contract.mjs check` refuses to run in a checkout outside the roots the machine config allows, with the wrong account, or with a moved `HOME`; a second `/sapu` session on the same repo stops at its Step 0. |
 | **Trust checks** | In public repos, sapu works only issues and PRs from trusted authors (or accepted by a trusted account). |
-| **Journey lane** | Runs on an instance of its own (worktree, ports, data and HOME), never on your servers. Its explorer agent runs nothing but the lane's browser wrapper and reads page text only as fenced data. A finding is filed only after a script reproduced it twice and `scrub` found no secret the run saw in it. |
+| **Journey lane** | Runs on an instance of its own (worktree, ports, data and HOME), never on your servers. Its explorer agent runs nothing but the lane's browser wrapper and reads page text only as fenced data. A finding is filed only after a script reproduced it twice and `scrub` found no secret the run saw in it. The smoke suite changes your repo only through pull requests you merge, and its CI workflow runs read-only with pinned actions. |
 
 > [!IMPORTANT]
 > The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token. Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#day-to-day).
@@ -216,8 +216,8 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 
 | | |
 |---|---|
-| [Install and use](docs/usage.md) | Setup, day-to-day commands, requirements and limits, cleanup, updating, rolling back, a new machine, common problems |
-| [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories, the journey lane |
+| [Install and use](docs/usage.md) | Setup, day-to-day commands, the smoke suite, requirements and limits, cleanup, updating, rolling back, a new machine, common problems |
+| [Safety and trust](docs/security.md) | Where sapu may run, machine config, public repositories, the journey lane, the smoke suite |
 | [How the agents work](docs/agents.md) | One diagram per skill |
 | [Contributing](docs/contributing.md) | Repo layout, the gate, rule guard, versioning |
 | [Contract format](plugins/sapu/CONTRACT.md) | What a repo's contract holds |

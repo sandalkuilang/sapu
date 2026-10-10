@@ -1935,3 +1935,53 @@ the filing words, init's and CONTRACT.md's statements, and that every budget nam
    `performance` only. Z4 aligns the spec (or argus's list).
 4. **Z1.** If its `layout` checks or answer differ from the above, ui-explorer.md's layout sentence follows.
 5. **Z3.** The docs gain `/sapu:journey seed --issue|--doc` beside `/sapu:journey smoke`.
+
+### Lane Z3 — docs and diagrams
+
+**Built.** README, `docs/usage.md`, `docs/security.md`, `docs/agents.md`, `docs/contributing.md` and three diagrams.
+- **Usage** gains the `/journey smoke` row, init's opt-in bullet, a requirements bullet, a `### The smoke suite` section
+  (what you get, before you start, set-up, the CI workflow's jobs and safety properties, the commands with `smoke ci`'s
+  finding lines, baselines and their update rules, self-healing and its decision table, flaky and quarantine policy, the
+  checks by project, performance, seeds and their trust rules, the report, the files, limits), an `Upgrading from a version
+  before 2.10.0` section, and one Common problems row for each `refused:` family the verbs can print (`smoke`'s trace gate,
+  `smoke.json`, plan, admit, run, perf, heal, propose, workflow, ci, baseline, perf issue, seed, source, report, the state
+  file, path mode, the new `live.json` keys, `failed: codegen:`, and `smoke check`'s findings).
+- **Security** gains `## The smoke suite`: what reaches the repo and how, what runs in CI, sessions, traces and artifacts,
+  outside text and fences as hygiene, healing, the guard, and the known limits.
+- **Agents** gains `### /journey smoke` with the new diagram, and the `/journey` card names path capture, `seed` and `report`.
+- **Contributing** names the new modules, the six browser-test files, the stub for `@playwright/test`, and what to do when
+  `SMOKE_PLAYWRIGHT`, `SMOKE_AXE` or `CODEGEN_VERSION` moves.
+- **Diagrams** (built with `node docs/img/src/build.mjs smoke journey journey-boundary`, both themes, rendered in Chrome
+  and read for overlaps): `smoke` is new (the lane, the pull request, CI's jobs, what a break is, the baseline run, the
+  hard limits; `a11y/smoke.json`); `journey` gains the path-for-the-smoke-suite card and `visit · report`;
+  `journey-boundary` gains the smoke suite's two flows across the boundary and the "fences are hygiene" limit. The `alt`
+  of each `<picture>` equals its `label`. Every other diagram rebuilds byte for byte.
+- **Not written, because the code is not here yet:** the explorer's `pw <token> <role>.<k> layout` and the `layout`
+  expectation of the `viewport-locale` oracle (Z1); the text of `/sapu:init`'s smoke questions, `skills/journey/smoke.md`
+  and CONTRACT.md (Z2). The docs link to `skills/journey/smoke.md` for `smoke.json`'s format, as the plan says.
+
+**Verified live.** `argus-live.mjs smoke check` (a repo with no suite: `smoke check: no suite (…)`, exit 0; a scratch repo
+with a bad `.argus/smoke.json`: one `refused: smoke check: .argus/smoke.json: …` line listing every fault, exit 1), and
+`smoke plan|workflow|ci|run|baseline|perf|admit|heal`, `seed` and `report` against a repo with no cycle, catalog or
+suite, each answering the refusal the docs quote (`smoke propose --dry-run` answers `smoke propose: nothing to propose`). A sample `smoke.json` passes `validateSmoke`.
+`tests/engine.test.ts` and `node scripts/rule-guard.ts` are green. No full suite (Z4).
+
+**Needs coordinator.**
+1. **Version heading.** Plan decision 17: `plugin.json` still says 2.9.0 and `git ls-remote --tags` shows no `v2.9.0`, so
+   phase 6 may ride in 2.9.0. I wrote the notes under `Upgrading from a version before 2.10.0` (and the README link to it).
+   If Z4 keeps 2.9.0, fold those bullets into the existing `before 2.9.0` section and fix the README anchor.
+2. **Init's behaviour is taken from spec §19.2 and §19.10, not from Z2's text:** the smoke opt-in question, drafting
+   `.argus/smoke.json`, the `!/.argus/smoke.json` exception, and writing the workflow only with consent in a pull request
+   of its own (handing the file over without the `workflow` scope). Check `skills/init/SKILL.md` says the same.
+3. **`skills/journey/smoke.md` and `live.md` must carry** what the docs point to: `smoke.json`'s keys, defaults and the
+   example (the usage page's example passes `validateSmoke`), and the four new `live.json` keys.
+4. **Spec §19.9's retire flow has no code writer.** `smoke plan` reads `journeys.<id>.retire === true`, but nothing sets
+   it: a heal proposal closed becoming a needs-owner regression issue, and that issue closed as not planned retiring the
+   journey, are the orchestrator's text (Z2) or a gap for lane 0's owner. The docs claim only what the code does: a closed
+   proposal's digest is rejected and skipped by `smoke propose`, and `exclude` makes `smoke plan` print `excluded`.
+5. **Spec §19 still says "not built yet"** in its title and status line, and open risk 8 still says "documented, not
+   probed" (C3's probe answered it). Both are Z4's.
+6. **`smoke check` validates `.argus/smoke.json`** before it looks for a suite, so it doubles as the format check; the docs
+   say so, and `live.md`/`smoke.md` should too.
+7. **Z1** must add the explorer's `layout` command and expectation before the docs can name them (spec §19.15); until then
+   the upgrade note lists only `slot <n> --map --seed` and `pw <token> source` among the explorer's new commands.

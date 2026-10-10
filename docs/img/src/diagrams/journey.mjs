@@ -3,7 +3,7 @@ import { card, rect, text, lines, arrow, iconTile, brandTile, badge, m, b, c, tw
 const A11Y = JSON.parse(readFileSync(new URL("../a11y/journey.json", import.meta.url), "utf8"));
 
 export default {
-  h: 1040,
+  h: 1238,
   ...A11Y,
   eyebrow: "JOURNEY LANE · /journey",
   heading: "One journey cycle, end to end",
@@ -30,7 +30,7 @@ export default {
       ["TRIAGE", "classify · drift", "class, labels, starting severity"],
       ["REPORT", "scrub --create", "no secret the run saw, then filed"],
       ["DOWN", "down", "stops only what up started"],
-      ["PERSIST", "visit", "coverage, run.log, the next picks"],
+      ["PERSIST", "visit · report", "coverage, run.log, the next picks"],
     ];
     const colW = (856 - 48) / 2;
     P.forEach(([n, cmd, what], i) => {
@@ -75,8 +75,32 @@ export default {
       `${b("doc drift", "tb c-violet")}: ${m("drift")} decides class B(a), or the needs-owner label`,
     ], "cap", 20);
 
+    // ---- a path for the smoke suite
+    const py = fy + fh + 20, ph = 178;
+    s += card(32, py, 856, ph, "card", 14);
+    s += brandTile("hammer", 48, py + 16, 36);
+    s += text(96, py + 32, "A path for the smoke suite", "ttl");
+    s += text(96, py + 50, `an explorer charted ${m("path: wanted")} returns its steps too; scripts decide the rest`, "cap");
+    const Pn = [
+      ["path", "explorer returns it", "k-violet", "c-violet"],
+      ["admit", "2 runs: fresh, used", "k-amber", "c-amber"],
+      ["staged", "no secret in a value", "sunken", ""],
+      ["propose", "scrub · argus/ PR", "k-red", "c-red"],
+      ["merged", "the suite grows", "k-green", "c-green"],
+    ];
+    const pw = 140, pg = (824 - 5 * pw) / 4, pny = py + 70;
+    Pn.forEach(([t, sub, cls, tc], i) => {
+      const x = 48 + i * (pw + pg);
+      s += rect(x, pny, pw, 50, cls, 10);
+      s += text(x + pw / 2, pny + 21, t, `tb ${tc}`.trim(), "middle");
+      s += text(x + pw / 2, pny + 39, sub, "cap", "middle");
+      if (i < 4) s += arrow([[x + pw + 3, pny + 25], [x + pw + pg - 3, pny + 25]], i === 3 ? "ar-g" : "ar");
+    });
+    s += text(48, pny + 74, `${m("seed")} (an issue the trust check passes, or lines of a tracked doc) gives a map explorer text to read, fenced as data;`, "cap");
+    s += text(48, pny + 92, `a journey it names is kept only where the code anchors it. ${m("report")} writes the cycle's record. The rest of the smoke cycle has its own diagram.`, "cap");
+
     // ---- hard limits
-    const hy = fy + fh + 20;
+    const hy = py + ph + 20;
     s += card(32, hy, 856, 168, "k-red", 14);
     s += iconTile("stop", 44, hy + 16, "red", 34);
     s += text(90, hy + 30, b("Hard limits", "tb c-red"), "t");

@@ -1,0 +1,244 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1498" width="920" height="1498" role="img" aria-label="The smoke cycle: the journey lane captures a path from an explorer, admits it after two runs, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request.">
+  <title>/journey smoke — one smoke cycle</title>
+  <desc>One smoke cycle of /journey smoke has three places. In the lane, run from the main session on an instance of its own, smoke plan ranks the catalog and marks the journeys that need a path; a ui-explorer charted with path: wanted returns a path; smoke admit runs it twice, on a fresh and then a used instance, and stages it; smoke run re-runs the suite's paths in a seeded order, and with --perf measures them on Chrome; smoke propose checks every file and the pull request body with scrub and opens one pull request on an argus branch. In your repo, you review that pull request: merging accepts it, closing rejects it and the same change is never proposed again. In CI, the generated workflow runs the suite on every pull request: a matrix of browser projects in the pinned Playwright container (chromium, firefox, webkit, further viewports, a11y and i18n), msedge on the plain runner without screenshots, a non-gating quarantine job, and a baseline job that only a dispatch starts; each uploads its results for seven days. Back in the lane, smoke ci triages the run: a flake on the base branch is quarantined, never hidden; a moved control is healed after the unchanged expectations hold twice; a lost control or a failed expectation becomes a regression candidate that is replayed two of two and filed only after scrub finds no secret; a screenshot or ARIA difference is the owner's call; a missing baseline starts the baseline run, whose files smoke baseline adopts into a pull request that the owner reviews in the image view. Nothing is applied at run time, and sapu never merges a proposal.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1497" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1498" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">JOURNEY LANE · /journey smoke</text>
+  <text x="32" y="78" class="h1">One smoke cycle, from a path to a pull request</text>
+  <text x="32" y="102" class="sub">A generated Playwright suite that your CI runs with no LLM. The lane proposes every change; you merge or close it.</text>
+  <path d="M32,136 L58,136" class="ar" marker-end="url(#mn)"/>
+  <text x="66" y="140" class="cap">calls</text>
+  <path d="M113.2,136 L139.2,136" class="ar-g" marker-end="url(#mg)"/>
+  <text x="147.2" y="140" class="cap">proposes</text>
+  <path d="M217.2,136 L243.2,136" class="ar-b" marker-end="url(#mb)"/>
+  <text x="251.2" y="140" class="cap">reads CI</text>
+  <rect x="32" y="162" width="856" height="178" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="178" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,184.75) scale(0.9375)"><path d="M20 12a8 8 0 1 1-2.4-5.7 M20 4v4.5h-4.5" class="ico ico-w"/></g>
+  <text x="96" y="194" class="ttl">In the lane</text>
+  <text x="96" y="212" class="cap">the orchestrator, from the main session · an instance of its own · <tspan class="mono">argus-live.mjs</tspan></text>
+  <rect x="48" y="234" width="152" height="62" rx="10" class="sunken" />
+  <text x="124" y="255" class="tb" text-anchor="middle">plan</text>
+  <text x="124" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke plan</tspan></text>
+  <text x="124" y="289" class="cap" text-anchor="middle">rank · capture · keep</text>
+  <path d="M202,265 L214,265" class="ar" marker-end="url(#mn)"/>
+  <rect x="216" y="234" width="152" height="62" rx="10" class="k-violet" />
+  <text x="292" y="255" class="tb c-violet" text-anchor="middle">capture</text>
+  <text x="292" y="273" class="cap" text-anchor="middle"><tspan class="mono">ui-explorer</tspan></text>
+  <text x="292" y="289" class="cap" text-anchor="middle"><tspan class="mono">path: wanted</tspan></text>
+  <path d="M370,265 L382,265" class="ar" marker-end="url(#mn)"/>
+  <rect x="384" y="234" width="152" height="62" rx="10" class="sunken" />
+  <text x="460" y="255" class="tb" text-anchor="middle">admit</text>
+  <text x="460" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke admit</tspan></text>
+  <text x="460" y="289" class="cap" text-anchor="middle">2 runs: fresh, then used</text>
+  <path d="M538,265 L550,265" class="ar" marker-end="url(#mn)"/>
+  <rect x="552" y="234" width="152" height="62" rx="10" class="sunken" />
+  <text x="628" y="255" class="tb" text-anchor="middle">re-run</text>
+  <text x="628" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke run</tspan></text>
+  <text x="628" y="289" class="cap" text-anchor="middle">seeded order · --perf</text>
+  <path d="M706,265 L718,265" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="720" y="234" width="152" height="62" rx="10" class="k-green" />
+  <text x="796" y="255" class="tb c-green" text-anchor="middle">propose</text>
+  <text x="796" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke propose</tspan></text>
+  <text x="796" y="289" class="cap" text-anchor="middle">scrub every file first</text>
+  <text x="48" y="324" class="cap"><tspan class="tb">A path</tspan> is a short, fixed list of actions that ends in an expectation proving the journey's goal. <tspan class="tb">Admitted</tspan> only after both runs hold.</text>
+  <rect x="32" y="366" width="856" height="136" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="382" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,388.75) scale(0.9375)"><path d="M6 4.5a2 2 0 1 0 0.01 0 M6 15.5a2 2 0 1 0 0.01 0 M18 15.5a2 2 0 1 0 0.01 0 M6 8.5v7 M18 15.5V10a3 3 0 0 0-3-3h-4 M13 4.5L10.5 7 13 9.5" class="ico ico-w"/></g>
+  <text x="96" y="398" class="ttl">Your repo: one pull request per proposal</text>
+  <text x="96" y="416" class="cap">on an <tspan class="mono">argus/</tspan> branch · labelled agent-filed · sapu never merges it</text>
+  <rect x="48" y="432" width="126" height="22" rx="11" class="chip"/>
+  <text x="58" y="447" class="chipt muted mono">journeys/*.json</text>
+  <rect x="180" y="432" width="84" height="22" rx="11" class="chip"/>
+  <text x="190" y="447" class="chipt muted mono">*.spec.ts</text>
+  <rect x="270" y="432" width="140" height="22" rx="11" class="chip"/>
+  <text x="280" y="447" class="chipt muted mono">package-lock.json</text>
+  <rect x="48" y="460" width="126" height="22" rx="11" class="chip"/>
+  <text x="58" y="475" class="chipt muted mono">quarantine.json</text>
+  <rect x="180" y="460" width="64" height="22" rx="11" class="chip"/>
+  <text x="190" y="475" class="chipt muted mono">known/</text>
+  <rect x="250" y="460" width="112" height="22" rx="11" class="chip"/>
+  <text x="260" y="475" class="chipt muted mono">changes.jsonl</text>
+  <rect x="540" y="396" width="332" height="76" rx="10" class="sunken" />
+  <text x="554" y="418" class="t"><tspan class="tb c-green">Merge</tspan> = accepted.</text>
+  <text x="554" y="438" class="t"><tspan class="tb c-red">Close</tspan> = rejected, remembered by digest,</text>
+  <text x="554" y="456" class="t">and never proposed again.</text>
+  <path d="M796,298 L796,364" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="32" y="528" width="856" height="226" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="544" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,550.75) scale(0.9375)"><path d="M12 3a9 9 0 1 0 0.01 0 M10 8.5l5.5 3.5-5.5 3.5z" class="ico ico-w"/></g>
+  <text x="96" y="560" class="ttl">In CI: your workflow, on every pull request</text>
+  <text x="96" y="578" class="cap"><tspan class="mono">argus-smoke.yml</tspan> · read-only token · actions pinned to SHAs · a fork's pull request runs nothing</text>
+  <rect x="48" y="598" width="330" height="108" rx="10" class="k-blue" />
+  <text x="62" y="620" class="tb c-blue">test</text>
+  <rect x="392" y="598" width="136" height="108" rx="10" class="sunken" />
+  <text x="406" y="620" class="tb">msedge</text>
+  <rect x="542" y="598" width="136" height="108" rx="10" class="sunken" />
+  <text x="556" y="620" class="tb">quarantine</text>
+  <rect x="692" y="598" width="180" height="108" rx="10" class="k-amber" />
+  <text x="706" y="620" class="tb c-amber">baseline</text>
+  <text x="112" y="620" class="cap">matrix · the pinned container</text>
+  <rect x="62" y="632" width="77" height="22" rx="11" class="k-blue"/>
+  <text x="72" y="647" class="chipt c-blue mono">chromium</text>
+  <rect x="145" y="632" width="70" height="22" rx="11" class="k-blue"/>
+  <text x="155" y="647" class="chipt c-blue mono">firefox</text>
+  <rect x="221" y="632" width="64" height="22" rx="11" class="k-blue"/>
+  <text x="231" y="647" class="chipt c-blue mono">webkit</text>
+  <rect x="62" y="658" width="147" height="22" rx="11" class="chip"/>
+  <text x="72" y="673" class="chipt muted mono">chromium-&lt;w&gt;</text>
+  <rect x="215" y="658" width="50" height="22" rx="11" class="chip"/>
+  <text x="225" y="673" class="chipt muted mono">a11y</text>
+  <rect x="271" y="658" width="50" height="22" rx="11" class="chip"/>
+  <text x="281" y="673" class="chipt muted mono">i18n</text>
+  <text x="406" y="642" class="cap">Edge on the</text>
+<text x="406" y="658" class="cap">plain runner:</text>
+<text x="406" y="674" class="cap">no screenshots</text>
+  <text x="556" y="642" class="cap">@quarantine tests,</text>
+<text x="556" y="658" class="cap">run but never</text>
+<text x="556" y="674" class="cap">gating</text>
+  <text x="706" y="642" class="cap">only by dispatch:</text>
+<text x="706" y="658" class="cap">writes baselines</text>
+<text x="706" y="674" class="cap">(missing | changed)</text>
+  <text x="48" y="736" class="cap">Every job uploads <tspan class="mono">test-results/</tspan> for 7 days. The suite runs <tspan class="mono">--shuffle</tspan>, retries once, and writes no baseline.</text>
+  <path d="M200,504 L200,526" class="ar" marker-end="url(#mn)"/>
+  <text x="212" y="520" class="cap">runs on every pull request</text>
+  <path d="M200,756 L200,778" class="ar-b" marker-end="url(#mb)"/>
+  <text x="212" y="772" class="cap"><tspan class="mono">smoke ci</tspan> downloads the results</text>
+  <rect x="32" y="780" width="856" height="352" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="796" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,802.75) scale(0.9375)"><path d="M10.5 4a6.5 6.5 0 1 0 0.01 0 M15.5 15.5L20 20" class="ico ico-w"/></g>
+  <text x="96" y="812" class="ttl">Back in the lane: what a break is</text>
+  <text x="96" y="830" class="cap"><tspan class="mono">smoke ci</tspan> reads the run; a script, never the explorer's word, decides</text>
+  <rect x="48" y="850" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="871" class="t">flaky on a push to the base branch</text>
+  <rect x="372" y="855" width="60" height="22" rx="11" class="k-amber"/>
+  <circle cx="384" cy="866" r="4" class="f-amber"/>
+  <text x="393" y="870" class="chipt c-amber">flake</text>
+  <path d="M482,866 L502,866" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="871" class="t">quarantine PR · tracking issue · still runs</text>
+  <rect x="48" y="888" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="909" class="t">flaky only on a pull request's head</text>
+  <rect x="372" y="893" width="85" height="22" rx="11" class="k-amber"/>
+  <circle cx="384" cy="904" r="4" class="f-amber"/>
+  <text x="393" y="908" class="chipt c-amber">flaky-new</text>
+  <path d="M482,904 L502,904" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="909" class="t">a comment there · never quarantined</text>
+  <rect x="48" y="926" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="947" class="t">a target matches nothing or several</text>
+  <rect x="372" y="931" width="95" height="22" rx="11" class="k-green"/>
+  <circle cx="384" cy="942" r="4" class="f-green"/>
+  <text x="393" y="946" class="chipt c-green">UI changed</text>
+  <path d="M482,942 L502,942" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="947" class="t">heal-mode explorer · expectations hold twice · heal PR</text>
+  <rect x="48" y="964" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="985" class="t">an expectation fails twice, or no control</text>
+  <rect x="372" y="969" width="50" height="22" rx="11" class="k-red"/>
+  <circle cx="384" cy="980" r="4" class="f-red"/>
+  <text x="393" y="984" class="chipt c-red">bug</text>
+  <path d="M482,980 L502,980" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="985" class="t">regression candidate · 2 of 2 · scrub · issue</text>
+  <rect x="48" y="1002" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="1023" class="t">failed on every attempt in CI, holds on Chrome</text>
+  <rect x="372" y="1007" width="70" height="22" rx="11" class="k-red"/>
+  <circle cx="384" cy="1018" r="4" class="f-red"/>
+  <text x="393" y="1022" class="chipt c-red">ci-only</text>
+  <path d="M482,1018 L502,1018" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="1023" class="t">needs-owner issue with the run's link</text>
+  <rect x="48" y="1040" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="1061" class="t">a screenshot or ARIA snapshot differs</text>
+  <rect x="372" y="1045" width="79" height="22" rx="11" class="k-violet"/>
+  <circle cx="384" cy="1056" r="4" class="f-violet"/>
+  <text x="393" y="1060" class="chipt c-violet">your call</text>
+  <path d="M482,1056 L502,1056" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="1061" class="t"><tspan class="mono">smoke ci</tspan> shows the diff · <tspan class="mono">--ids</tspan> re-baselines</text>
+  <rect x="48" y="1078" width="824" height="32" rx="8" class="sunken" />
+  <text x="62" y="1099" class="t">a baseline is missing</text>
+  <rect x="372" y="1083" width="101" height="22" rx="11" class="k-blue"/>
+  <circle cx="384" cy="1094" r="4" class="f-blue"/>
+  <text x="393" y="1098" class="chipt c-blue">not reviewed</text>
+  <path d="M482,1094 L502,1094" class="ar" marker-end="url(#mn)"/>
+  <text x="512" y="1099" class="t">the baseline run (below)</text>
+  <path d="M200,1134 L200,1156" class="ar" marker-end="url(#mn)"/>
+  <text x="212" y="1150" class="cap">a missing baseline starts it</text>
+  <rect x="32" y="1158" width="856" height="168" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="1174" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,1180.75) scale(0.9375)"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z M3.5 12.5l8.5 4.5 8.5-4.5 M3.5 16.5l8.5 4.5 8.5-4.5" class="ico ico-w"/></g>
+  <text x="96" y="1190" class="ttl">The baseline run</text>
+  <text x="96" y="1208" class="cap">only CI's baseline job, on the pinned container, writes a screenshot or an ARIA baseline</text>
+  <rect x="48" y="1230" width="152" height="62" rx="10" class="k-red" />
+  <text x="124" y="1251" class="tb c-red" text-anchor="middle">red first run</text>
+  <text x="124" y="1269" class="cap" text-anchor="middle">baseline-missing</text>
+  <text x="124" y="1285" class="cap" text-anchor="middle">nothing to adopt</text>
+  <path d="M202,1261 L214,1261" class="ar" marker-end="url(#mn)"/>
+  <rect x="216" y="1230" width="152" height="62" rx="10" class="sunken" />
+  <text x="292" y="1251" class="tb" text-anchor="middle">dispatch</text>
+  <text x="292" y="1269" class="cap" text-anchor="middle"><tspan class="mono">smoke baseline</tspan></text>
+  <text x="292" y="1285" class="cap" text-anchor="middle"><tspan class="mono">--from-run</tspan> &lt;id&gt;</text>
+  <path d="M370,1261 L382,1261" class="ar" marker-end="url(#mn)"/>
+  <rect x="384" y="1230" width="152" height="62" rx="10" class="k-amber" />
+  <text x="460" y="1251" class="tb c-amber" text-anchor="middle">baseline job</text>
+  <text x="460" y="1269" class="cap" text-anchor="middle">container projects</text>
+  <text x="460" y="1285" class="cap" text-anchor="middle">writes the files</text>
+  <path d="M538,1261 L550,1261" class="ar" marker-end="url(#mn)"/>
+  <rect x="552" y="1230" width="152" height="62" rx="10" class="sunken" />
+  <text x="628" y="1251" class="tb" text-anchor="middle">adopt</text>
+  <text x="628" y="1269" class="cap" text-anchor="middle"><tspan class="mono">smoke baseline</tspan></text>
+  <text x="628" y="1285" class="cap" text-anchor="middle">prune · scrub · commit</text>
+  <path d="M706,1261 L718,1261" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="720" y="1230" width="152" height="62" rx="10" class="k-green" />
+  <text x="796" y="1251" class="tb c-green" text-anchor="middle">review</text>
+  <text x="796" y="1269" class="cap" text-anchor="middle">PR image view</text>
+  <text x="796" y="1285" class="cap" text-anchor="middle">merge = accepted</text>
+  <text x="48" y="1310" class="cap">A baseline that conflicts with the base branch is dropped and regenerated, never merged. <tspan class="mono">msedge</tspan> takes no screenshot.</text>
+  <rect x="32" y="1352" width="856" height="122" rx="14" class="k-red" />
+  <rect x="44" y="1368" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,1374.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="90" y="1382" class="t"><tspan class="tb c-red">Hard limits</tspan></text>
+  <text x="90" y="1406" class="cap">· No LLM runs when the suite runs; the generator writes path data as JSON literals only.</text>
+<text x="90" y="1424" class="cap">· A normal CI run never writes a baseline, and a heal is never applied while a test runs.</text>
+<text x="90" y="1442" class="cap">· Every change is a pull request that sapu never merges; text from issues, docs and CI is fenced data.</text>
+<text x="90" y="1460" class="cap">· The suite drives loopback only. Fences are hygiene: the gates and your merge are the boundary.</text>
+</svg>

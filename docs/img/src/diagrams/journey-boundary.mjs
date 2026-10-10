@@ -3,7 +3,7 @@ import { card, rect, text, lines, arrow, iconTile, brandTile, chipsWrap, legend,
 const A11Y = JSON.parse(readFileSync(new URL("../a11y/journey-boundary.json", import.meta.url), "utf8"));
 
 export default {
-  h: 1054,
+  h: 1330,
   ...A11Y,
   eyebrow: "JOURNEY LANE · TRUST BOUNDARY",
   heading: "Yours is trusted; the pages are not",
@@ -119,15 +119,47 @@ export default {
     s += arrow([[400, ly - 2], [400, ly - 11], [470, ly - 11], [470, fy3 + 52]], "ar-b");
     s += lines(704, ly + 19, [`${b("ledger incomplete,", "tb c-red")}`, "gone or damaged: nothing filed"], "cap", 17);
 
+    // ---- the smoke suite
+    const ys = y3 + h3 + 20, hs = 232;
+    s += card(32, ys, 856, hs, "card", 14);
+    s += brandTile("pr", 48, ys + 16, 36);
+    s += text(96, ys + 32, "The smoke suite: into your repo and your CI", "ttl");
+    s += text(96, ys + 50, `same stance: yours is trusted, text from outside is data · ${m("/journey smoke")}`, "cap");
+    const S = [["staged change", "path · heal · baseline", "sunken", ""], ["scrub's matcher", "every file and the PR body", "k-red", "c-red"], ["argus/ pull request", "sapu never merges it", "k-violet", "c-violet"], ["you merge or close", "the only way in", "k-green", "c-green"]];
+    const sw = 190, sg = (824 - 4 * sw) / 3, sy = ys + 66;
+    S.forEach(([t, sub, cls, tc], i) => {
+      const x = 48 + i * (sw + sg);
+      s += rect(x, sy, sw, 50, cls, 10);
+      s += text(x + sw / 2, sy + 21, t, `tb${tc ? ` ${tc}` : ""}`, "middle");
+      s += text(x + sw / 2, sy + 39, sub, "cap", "middle");
+      if (i < 3) s += arrow([[x + sw + 3, sy + 25], [x + sw + sg - 3, sy + 25]], i === 2 ? "ar-g" : "ar");
+    });
+    const by = sy + 66, bh = 84, bw = 404;
+    s += rect(48, by, bw, bh, "sunken", 10);
+    s += lines(62, by + 22, [
+      `${b("Text from outside is data", "tb")}`,
+      `an issue (after ${m("issue-trust")}) or doc lines, in a ${m("SOURCE")} fence;`,
+      `a seed token takes only ${m("code")}, ${m("source")}, ${m("submit")}; CI`,
+      "artifacts are read by name and shape, never a fork's run",
+    ], "cap", 17);
+    s += rect(48 + bw + 16, by, bw, bh, "sunken", 10);
+    s += lines(48 + bw + 30, by + 22, [
+      `${b("CI runs read-only", "tb")}`,
+      "token, SHA-pinned actions, no pull_request_target, no fork;",
+      `secrets by name; ${m(".auth/")} 0600, gitignored, never uploaded;`,
+      "the setup project records no trace, video or screenshot",
+    ], "cap", 17);
+
     // ---- limits
-    const y4 = y3 + h3 + 20;
-    s += card(32, y4, 856, 122, "k-red", 14);
+    const y4 = ys + hs + 20;
+    s += card(32, y4, 856, 140, "k-red", 14);
     s += iconTile("shield", 44, y4 + 16, "red", 34);
     s += text(90, y4 + 30, b("Defence in depth, not a sandbox", "tb c-red"), "t");
     s += lines(90, y4 + 54, [
       "· Process groups bound every kill and listing: a process that leaves its group is neither killed nor listed.",
       "· The egress check samples, and lists no process inside a container.",
       "· An explorer's wrapper token is in the process list while a pw call runs: the lane assumes a single-user machine.",
+      "· Fences are hygiene, not a boundary: the gates and your merge are. The guard binds subagents only.",
       `· The full list: ${m("plugins/sapu/skills/journey/live.md")}, section Known limits.`,
     ], "cap", 18);
     return s;
