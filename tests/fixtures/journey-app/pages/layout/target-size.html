@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Target size</title></head>
+<body style="margin:10px">
+<main>
+<h1>Rows</h1>
+<!-- the violation: two 16 px buttons with a 2 px gap, each circle meets the other -->
+<p>
+<button id="edit" aria-label="Edit row" style="width:16px;height:16px;padding:0;margin:0 2px 0 0">e</button><button id="del" aria-label="Delete row" style="width:16px;height:16px;padding:0;margin:0">d</button>
+</p>
+<!-- the excluded twins: footnote links in a sentence and a native checkbox the author did not size -->
+<p style="margin-top:120px">I read the terms <a id="n1" href="/notes/1">1</a> <a id="n2" href="/notes/2">2</a> <a id="n3" href="/notes/3">3</a><input id="agree" type="checkbox" aria-label="Agree"> of sale.</p>
+</main>
+</body></html>
