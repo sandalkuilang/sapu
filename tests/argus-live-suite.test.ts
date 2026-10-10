@@ -949,7 +949,7 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     const { lines } = flow().out();
     const text = lines.join("\n");
     expect(text).not.toMatch(/- run: npm ci$/m);
-    expect(text.match(/npm ci --ignore-scripts/g)).toHaveLength(4);
+    expect(text.match(/npm ci --ignore-scripts/g)).toHaveLength(5);
     for (const name of ["test", "msedge", "quarantine", "baseline"]) {
       const j = job(lines, name);
       const steps = j.slice(j.indexOf("    steps:") + 1).join("\n").split(/\n(?= {6}- )/);
@@ -968,9 +968,9 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     const f = flow();
     const { lines } = f.out();
     expect(f.calls.find((c) => c[0] === "curl")).toEqual(["curl", "-sSfI", "--max-time", "30", "--proto", "=https", "-H", "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json", `https://mcr.microsoft.com/v2/playwright/manifests/v${SMOKE_PLAYWRIGHT}-noble`]);
-    expect(lines.filter((l) => l.includes("image: "))).toEqual(Array(3).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble@${DIGEST}`));
+    expect(lines.filter((l) => l.includes("image: "))).toEqual(Array(4).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble@${DIGEST}`));
     const tag = flow({ noDigest: true }).out().lines;
-    expect(tag.filter((l) => l.includes("image: "))).toEqual(Array(3).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`));
+    expect(tag.filter((l) => l.includes("image: "))).toEqual(Array(4).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`));
     expect(tag).toContain(`# The Playwright image is pinned by its tag only: its digest could not be resolved when this file was printed (curl exited 6). Pin it by digest when you can.`);
   });
 
@@ -992,8 +992,8 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
       const full = validateSmoke(smoke).value;
       const names = suiteProjects({ live: writtenLive, smoke: full }).map((p: Obj) => p.name);
       const matrix = (j: string) => /^ {8}project: \[(.*)\]$/.exec(job(lines, j).find((l) => l.startsWith("        project: ["))!)![1].split(", ");
-      expect(matrix("test"), JSON.stringify(smoke)).toEqual(names.filter((n: string) => n !== "msedge"));
-      expect(matrix("baseline")).toEqual(matrix("test"));
+      expect(matrix("test"), JSON.stringify(smoke)).toEqual(names.filter((n: string) => n !== "msedge" && n !== "taste"));
+      expect(matrix("baseline")).toEqual(names.filter((n: string) => n !== "msedge"));
       expect(lines.includes("  msedge:")).toBe(names.includes("msedge"));
       // The config names the same projects (after setup), so --project "$PROJECT" always finds one.
       const config = smokeConfig({ live: writtenLive, smoke: full });
@@ -1043,7 +1043,7 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     const text = lines.join("\n");
     expect(text).not.toContain(".auth");
     const uploads = lines.flatMap((l, i) => (l.includes("uses: actions/upload-artifact@") ? [lines.slice(i, i + 8).join("\n")] : []));
-    expect(uploads.length).toBe(5);
+    expect(uploads.length).toBe(6);
     for (const u of uploads) expect(u).toContain("          retention-days: 7");
     expect(text).toContain("          name: argus-smoke-results-${{ matrix.project }}\n          path: e2e/argus-smoke/test-results/");
     expect(job(lines, "baseline").join("\n")).toContain("          name: argus-smoke-baselines-${{ matrix.project }}\n          path: |\n            e2e/argus-smoke/__screenshots__/\n            e2e/argus-smoke/__aria__/");

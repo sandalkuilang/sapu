@@ -2530,21 +2530,21 @@ describe("argus-live select", () => {
     writeFileSync(join(t.main, "README.md"), "not an anchor\n");
     commitAll(t.main, "readme");
     const r = selectJourneys(t.main, { cycle: 100 });
-    expect(r.picks.map((p: Obj) => [p.id, p.score])).toEqual([["b", 100], ["a", 60]]);
-    expect(selectJourneys(t.main, { cycle: 100, flagged: ["a"] }).picks.map((p: Obj) => [p.id, p.score])).toEqual([["a", 120], ["b", 100]]);
+    expect(r.picks.map((p: Obj) => [p.id, p.score])).toEqual([["b", 150], ["a", 90]]);
+    expect(selectJourneys(t.main, { cycle: 100, flagged: ["a"] }).picks.map((p: Obj) => [p.id, p.score])).toEqual([["a", 180], ["b", 150]]);
   }, 30_000);
 
   it("a global journey is selected alone, or waits", () => {
     const t = selectRepo([journey("g", [ANON], { global: true }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
     expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
-      picks: [{ id: "g", score: 100, accounts: { "anon.1": null } }],
-      waits: [{ id: "n", score: 50, why: "global journey selected alone" }, { id: "m", score: 40, why: "global journey selected alone" }, { id: "o", score: 30, why: "global journey selected alone" }],
+      picks: [{ id: "g", score: 150, accounts: { "anon.1": null } }],
+      waits: [{ id: "n", score: 75, why: "global journey selected alone" }, { id: "m", score: 60, why: "global journey selected alone" }, { id: "o", score: 45, why: "global journey selected alone" }],
       displaced: [],
     });
     t.map([journey("g", [ANON], { global: true, lastCycle: 90 }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
     expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
-      picks: [{ id: "n", score: 50, accounts: { "anon.1": null } }, { id: "m", score: 40, accounts: { "anon.1": null } }],
-      waits: [{ id: "o", score: 30, why: "limit 2 reached" }, { id: "g", score: 10, why: "a global journey waits for a cycle of its own" }],
+      picks: [{ id: "n", score: 75, accounts: { "anon.1": null } }, { id: "m", score: 60, accounts: { "anon.1": null } }],
+      waits: [{ id: "o", score: 45, why: "limit 2 reached" }, { id: "g", score: 15, why: "a global journey waits for a cycle of its own" }],
       displaced: [],
     });
   });
@@ -2553,33 +2553,33 @@ describe("argus-live select", () => {
     const t = selectRepo([journey("x", [BUY, APPROVE]), journey("y", [BUY, APPROVE])]);
     const r = t.cli("--cycle", "3");
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toEqual(["select x score 3 accounts buyer.1=buyer1@example.test,clerk.1=clerk1@example.test", "wait y score 3 (no free account for clerk)"]);
+    expect(r.out).toEqual(["select x score 4.5 accounts buyer.1=buyer1@example.test,clerk.1=clerk1@example.test", "wait y score 4.5 (no free account for clerk)"]);
   }, 30_000);
 
   it("a claim step gets a second account when one is free", () => {
     const claim = { ...BUY, claim: true };
     const t = selectRepo([journey("c", [claim, SETTLE, ANON]), journey("d", [BUY], { lastCycle: 1 })], { limits: { max_parallel_journeys: 3 } });
     const r = selectJourneys(t.main, { cycle: 3 });
-    expect(r.picks).toEqual([{ id: "c", score: 3, accounts: { "buyer.1": "buyer1@example.test", "buyer.2": "buyer2@example.test", "anon.1": null } }]);
-    expect(r.waits).toEqual([{ id: "d", score: 2, why: "no free account for buyer" }]);
+    expect(r.picks).toEqual([{ id: "c", score: 4.5, accounts: { "buyer.1": "buyer1@example.test", "buyer.2": "buyer2@example.test", "anon.1": null } }]);
+    expect(r.waits).toEqual([{ id: "d", score: 3, why: "no free account for buyer" }]);
     // Ranked after a journey holding buyer1, the claim journey gets the one buyer left.
     t.map([journey("c", [claim], { lastCycle: 1 }), journey("d", [BUY])]);
-    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 3, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 2, accounts: { "buyer.1": "buyer2@example.test" } }]);
+    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 4.5, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 3, accounts: { "buyer.1": "buyer2@example.test" } }]);
   });
 
   it("a login-command role serves one journey a cycle", () => {
     const ADMIN = { ...APPROVE, role: "admin" };
     const t = selectRepo([journey("p", [ADMIN]), journey("q", [ADMIN])]);
-    expect(t.cli("--cycle", "1").out).toEqual(["select p score 1 accounts admin.1", "wait q score 1 (no free account for admin)"]);
+    expect(t.cli("--cycle", "1").out).toEqual(["select p score 1.5 accounts admin.1", "wait q score 1.5 (no free account for admin)"]);
   }, 30_000);
 
   it("explicit ids print what they displaced", () => {
     const t = selectRepo([journey("a", [ANON]), journey("b", [ANON], { lastCycle: 1 }), journey("c", [ANON], { lastCycle: 2 })]);
     const r = t.cli("--cycle", "4", "--ids", "c,a");
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toEqual(["select c score 2 accounts anon.1", "select a score 4 accounts anon.1", "displaced b score 3"]);
+    expect(r.out).toEqual(["select c score 3 accounts anon.1", "select a score 6 accounts anon.1", "displaced b score 4.5"]);
     expect(t.cli("--cycle", "4", "--ids", "zz").err).toBe("refused: select: no journey zz in .argus/journeys.json\n");
-    expect(t.cli("--cycle", "4", "--flagged", "b").out).toEqual(["select b score 6 accounts anon.1", "select a score 4 accounts anon.1", "wait c score 2 (limit 2 reached)"]);
+    expect(t.cli("--cycle", "4", "--flagged", "b").out).toEqual(["select b score 9 accounts anon.1", "select a score 6 accounts anon.1", "wait c score 3 (limit 2 reached)"]);
     for (const bad of [[], ["--cycle", "0"], ["--cycle", "x"], ["--cycle", "1", "--ids"]]) expect(t.cli(...bad).code, bad.join(" ")).toBe(1);
   }, 30_000);
 
@@ -2595,7 +2595,7 @@ describe("argus-live select", () => {
     const t = selectRepo([journey("x", [{ ...BUY, role: "auditor" }])]);
     const r = t.cli("--cycle", "1");
     expect(r.code).toBe(1);
-    expect(r.out).toEqual(["wait x score 1 (no free account for auditor)"]);
+    expect(r.out).toEqual(["wait x score 1.5 (no free account for auditor)"]);
     expect(r.err).toBe("refused: no journey is selectable\n");
   }, 30_000);
 
