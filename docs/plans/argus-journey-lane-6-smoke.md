@@ -2163,6 +2163,60 @@ Every item below has a test that failed first; one commit per item or small grou
   test-id locator (a container's too), never `locator(…)`, a title or XPath.
 - **QA test.** The journey-app cycle's `settle_ms` (repro 3000 → 6000, else 5000 → 8000) and `live_health_timeout_s` (20 →
   90) were short for a loaded machine; the tests' own timeouts were already generous.
+- **Load, before the push: the perf test.** `appCycle`'s `cli` killed every command after 240 s (spawnSync), and a killed
+  command answers code null: the perf browser test's first `smoke run --perf` (two batches, each an up --fresh and four
+  path runs, `perf.runs` already at its least, 3) took longer on a loaded machine and failed `expected null to be +0`
+  three times of three under a CPU burner (load ~37 on 10 cores; light load: 281 s and green). Cutting work was not
+  possible without dropping the baseline or the second pass, so `cli` takes a last `{ timeoutMs }` argument; both `--perf`
+  passes get 600 s and the test 1,700 s (up, two passes, the rebaseline: spawnSync blocks vitest's own timeout, so it
+  must cover the sum). A killed command's `err` now says so. Measured after, under the same burner: green twice, passes
+  of 289 s + 391 s (load ~67, 721 s in all) and 467 s + 175 s (load ~50-71, 717 s); a third run's first pass took 443 s,
+  then at load 86 its second pass was refused by the product's own gate (`the machine is busy … perf.max_load`), as
+  designed and far above any CI runner's load (the test's `max_load` is 8 of each core). The other
+  spawnSync bounds are well above their runs (codegen's runner 240 s for ~45 s runs, the a11y runners 120 s and 240 s for
+  ~20 s and ~45 s runs), so they stay.
+- **Load, before the push: the ledger tests' flake (test timing, not a race in the lane).** `second` is the fixture
+  page's second bearer, which `/storage` sent 2000 ms after its script ran; `not.toContain(second)` on the run's ledger
+  checks the test's premise (pw's own drain ran before the page asked with it, so only the later drain of `down` or `up
+  --fresh` can record it). The ledger is where the lane keeps every secret a drain found, by design. Reproduced under a
+  CPU burner (load 10-113): 1 failure in 69 storageCycle runs, with the full suite's output (`expected [ …(9) ] to not
+  include '<32 hex>'`). A temporary probe (the app logging each `/api/me` time) shows, in the failing run, the second
+  request 1,986 ms after the first, inside the pw call, and the value held by two `header` entries (that call's drain),
+  in neither pw's stdout nor stderr. In 49 of the 68 passing runs the second request also came inside the pw call (up to
+  7.7 s before it returned), only after its drain had read the hook: whether the page's timer or the drain went first
+  decided the assertion, nothing else. The same premise sat in the screenshot-verdict test (`?show=1`).
+  Fix: `/storage?hold=1` holds the second request until `POST /__test/release` (sticky: a later `/api/hold` answers at
+  once), so pw's drain cannot see it; the tests then release the page and poll the app's request counts for that
+  request (`GET /api/me` 2, or `GET /api/shown` 1 once the bearer is on the screen, which `?show=1` now asks for) instead
+  of sleeping 3000 ms, which on a slow enough machine could also run `down` before the page asked. The assertions are
+  unchanged, and a new one says the page had not asked before the release. After the fix, under the same burner, 76 runs
+  (load 13-96) had no premise failure, but once, early, a control fetch failed `ECONNRESET`; it did not come back in the
+  52 runs after it, with a probe ready to log the step, the app's `/health` and the port's listeners. The polling reused
+  keep-alive connections, and a reused one the server closes at that moment resets, so the fixture's `/__test/*` answers
+  now close their connection (`res.shouldKeepAlive = false`): each control request has its own. 32 more runs after that
+  (load 17-60), all green; the browser and pw files, which also call `/__test/*`, pass too.
+- **Load, before the push: CI.** One job held every file and its `timeout-minutes: 30`; the phase's Chrome files add up
+  to over an hour of work. The job is now a matrix of six, `fail-fast: false`, each with the same 30 minutes, steps and
+  permissions. Each entry's `files:` line names its test files; the `rest` job runs the live instance's tests first, on
+  their own (the Linux-only paths), then every file no `files:` line names, so a new test file runs there by default; it
+  fails when a file is named on two lines or is gone. Per-file seconds below are local runs with several Chrome files at
+  once on a loaded machine (`(CI)`: the last CI run, where non-Chrome files ran 2-4x faster):
+
+  | Job | Files | Work (s) | Est. wall |
+  |---|---|---|---|
+  | `repro` | argus-live-repro | 1045 | ~17 min |
+  | `oracles` | argus-live-oracles | 957 | ~16 min |
+  | `browser` | argus-live-browser, argus-live-pw | 724 + 260 (492 + 77 CI) | ~12 min |
+  | `paths-perf` | argus-live-paths, argus-live-perf | 459 + 363 | ~8-12 min |
+  | `generated-suite` | argus-live-codegen, argus-live-a11y, argus-live-layout | 310 + 310 + 183 | ~6-10 min |
+  | `rest` | argus-live (own step, 246 CI); then argus-live-ci, -findings, -heal, -report, -seed, -smoke, -suite, engine, inspector, rule-guard, sapu-cleanup, -contract, -guard, -merge, -metrics, -wave | 246 CI; merge 181 CI, the rest < 50 each | ~9 min |
+
+  Each job also spends about a minute on checkout and `npm ci`. The workflow's wall time is its longest job, about 17-19
+  minutes at worst. `repro` and `oracles` are single files a little over 15 minutes in that loaded measurement; a CI
+  runner runs each alone, so they should finish sooner. If CI shows either near 25 minutes, the next step is splitting
+  the file, as the repro file was split. Checked locally: the YAML parses (Ruby), and the `rest` step, run under bash,
+  selects exactly the 16 files above, so every test file runs in exactly one job; with a file named twice or a missing
+  one, it exits 1.
 
 **Engine-text budgets.**
 
