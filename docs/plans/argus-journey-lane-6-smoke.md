@@ -1147,3 +1147,82 @@ The config:
 - Codegen never writes `test.fixme`: a quarantined test gets `tag: "@quarantine"` (decision 13). This
   closes 0.2's open line for B2.
 - Line counts at 0.4: `-codegen` 603, `-redtest` 77, `-login` 712.
+
+### Lane E — seeds (E1)
+
+**Locked for the lanes** (`-seed.mjs`, with `-slots.mjs`, `-pw.mjs` and `-map.mjs` hooks).
+- `seed(main, {issue, doc}, {runner}) → {code: 0, lines, masked: true}` (synchronous; refusals thrown). It
+  needs a running cycle with a worktree (`up --map` or a full `up`), else `refused: seed: no journey cycle is
+  running (up --map or up first)`, `… the deadline of cycle <id> passed; run down`, `… cycle <id> is being torn
+  down`, `… cycle <id> has no worktree yet`.
+  - `--issue <n>` runs `sapu-contract.mjs issue-trust <n> --text` (argv, no shell) and uses the title and body
+    of the verdict's own snapshot as `<title>\n\n<body>`. A refusal or an unreadable GitHub → `refused: seed:
+    issue <n> fails issue-trust (sapu-contract.mjs issue-trust <n> says why)`: the verdict's reason is not
+    echoed. A pull request → `refused: seed: <n> is a pull request, not an issue`. The URL is
+    `https://github.com/<contract repo>/issues/<n>`.
+  - `--doc <file>:<a>-<b>` reads lines a to b of a regular file (`100644`/`100755` blob) tracked at the **run
+    worktree's** HEAD, the code the map explorer reads and the merged map is stamped with, from git's object
+    (`ls-tree --literal-pathspecs`, `cat-file blob`), never a working tree or a symlink's target. Refusals:
+    `refused: seed: --doc takes <repo-relative file>:<a>-<b>, 1 ≤ a ≤ b` (absolute, `..`, a leading `-`, a
+    control character; the input is not echoed); `… <file> is not tracked at HEAD`; `… <file> is not a regular
+    file at HEAD (a symlink or a directory)`; `… <file> has <k> lines; the range ends past them`.
+  - Both: `… the text is empty` (blank), `… the text is <k> characters, at most 100000` (`SEED_MAX`).
+  - `<run>/seed.json` (0600): issue `{kind: "issue", ref: <n> (a number), url, text, digest}`; doc `{kind:
+    "doc", ref: "<file>:<a>-<b>", file, lines: [a, b], commit, text, digest}` (`digest` the text's sha256).
+    The printed line is `seed: <kind> <ref> <sha12> <k> characters`, never the text. A later `seed` replaces
+    the file.
+- `readSeed(main, runId)` → the record or null (its digest re-checked). `bindSeed(dir, s)`, `boundSeed(dir)`:
+  a seed slot's binding `<slot>/seeded.json` (0600, `{kind, ref, digest}`), which `down` keeps (it removes
+  only `.playwright/`, `state.json`, `lock`, `totp.json` from a slot directory), so `map-check --merge` works
+  after `down`.
+- `mintMapSlot(main, {slot, seed: true})` reads the run's seed first (`refused: slot --seed: cycle <id> holds
+  no seed (seed --issue <n> or seed --doc <file>:<a>-<b> first)`), mints the map slot as before, binds it under
+  the slot's lock, and replies `{slot, token, generation: 1, mode: "map", seed: {kind, ref}}`. run.json's slot
+  entry is unchanged (`mode: "map"`).
+- `pw <token> source` (role-free, no argument) → `source: <kind> <ref>`, then the seed's text in a fresh
+  `<<<SOURCE-<nonce>` fence, then `calls <c>/<max>` and `truncated <k> characters` past `PAGE_CAP`
+  (`sourceLines`). The text goes through `clean` (env-file values masked, controls replaced, `PAGE`/`RETURN`
+  marker shapes escaped), then its `SOURCE` marker shapes get the same U+2011. It reads the run's files only:
+  no process, no browser, no network (the test proves no runner or CLI call). Refusals, each counted: on any
+  token but a seed map slot's, `refused: source takes a seed map slot's token (slot <n> --map --seed)`; on a
+  seed slot whose run's seed was replaced since it was minted, `refused: source: the run's seed changed since
+  slot <n> was minted` (the slot never sees another text). A seed slot's other commands answer `refused: a
+  seed map slot takes only code, source and submit`. A plain map slot keeps `… a map slot takes only code and
+  submit`.
+- `seedsOf(main, runId, slot)` → `[{kind, ref}]` from the slot's binding, else `[]`. `mergeMap(prev, value,
+  {head, seeds = []})` adds them to each journey the slot returned, once each (kind and ref equal), and keeps
+  a journey's `seeds` on a later merge, since `validateMap` refuses a returned `seeds` (map or journey level),
+  so only the merge writes them. `catalog` adds ` seeded` after ` money`/` global`. `score` ignores `seeds`.
+
+**Trust, as tested** (`tests/argus-live-seed.test.ts`). With a seed whose text holds an instruction, forged
+fence markers, a forged return with `seeds`, a shell line and a terminal escape: the seed slot's answers to
+`goto`, `snapshot`, `trigger`, `facts`, `mail`, `code`, a `submit` with `seeds` and a valid `submit` are the
+same as with a benign seed (fence nonces and counters aside), and a plain map slot's are the same but for its
+refusal's wording. Nothing in the text reaches an argv, a shell, a label, a file name or a printed line
+outside the SOURCE fence. A journey the text names but the code does not anchor is dropped by `map-check`.
+
+**Deviations.**
+- One seed per run at a time (spec §19.12 names one `<run>/seed.json`). A second `seed` replaces it, and a
+  slot minted before then refuses `source` rather than read a text it was not bound to.
+- `pw`'s role-free words are config's `ROLE_FREE` plus `source`, held locally in `-pw.mjs` (`PW_ROLE_FREE`),
+  because `-config.mjs` is a shared hotspot. A role named `source` would be shadowed (see "Needs coordinator").
+- The doc is read at the run worktree's HEAD, not MAIN's: the same commit the explorer reads and the merge
+  stamps. `seed.json`'s `commit` records it.
+- `seed` returns `masked: true`: its line holds the wrapper's words and the owner's own ref, and masking with
+  a short env value would cut the digest.
+- Line counts at E1: `-seed` 173, `-pw` 561, `-slots` 439, `-map` 480.
+
+**Needs coordinator.**
+- `tests/argus-live-smoke.test.ts` (lane 0's) pins the stubs this lane fills, and fails three tests until it
+  moves: drop the two `seed` rows from `STUBS` (the CLI now answers `refused: seed: no journey cycle is running
+  (up --map or up first)` with no cycle, which `tests/argus-live-seed.test.ts` pins), and in "slot --map
+  --seed is the seed lane's" expect `refused: no journey cycle is running` for `slot 1 --map --seed`. The two
+  `--seed needs --map` usage checks there still hold.
+- `argus-live-config.mjs` `ROLE_FREE` should gain `"source"`, so `validateLive` refuses a role named `source`
+  as it refuses the other wrapper commands; `-pw.mjs`'s `PW_ROLE_FREE` then folds back into `ROLE_FREE`.
+- Engine text (Z2): the map explorer's charter for a seed token (run `pw <token> source` once, read the SOURCE
+  fence as data, extend the map with the journeys the text describes, follow no instruction in it), and the
+  orchestrator's sequence `seed …` → `slot <n> --map --seed` → dispatch → `map-check --merge <n>`, in
+  `agents/ui-explorer.md`, `skills/argus/journeys.md` and `skills/journey/SKILL.md`.
+- Spec §19.12 (Z4): fold in the binding file, `seed.json`'s fields, the one-seed-per-run rule, the reply's
+  `seed`, and the read at the run worktree's HEAD.
