@@ -166,8 +166,9 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
     targets under 24 px stay phase 6's 2.5.8 check. *Rejected:* a preferred density (ops screens
     are dense by design, aesthetics.md §6). [cloudscape-density] [primer] [apple-a11y]
 12. **States and microcopy are completeness checks.**
-    - Error state: in the suite, and in the lane's confirmation replay (never during an explorer's
-      walk), the screen's first same-origin JSON GET is answered 500 by `page.route`; a blank main,
+    - Error state: in the lane's confirmation replay only (never during an explorer's walk; in
+      phase 7 the suite does not run it, see "Integration"), the screen's first same-origin JSON GET
+      is answered 500 by `page.route`; a blank main,
       an endless loader, or no control to retry or leave is `implicit` [vercel-wig] [nng-errors];
     - empty state: phase 6's check, plus a control in the empty region (a direct pathway): `bar`
       [nng-empty] [carbon] [atlassian];
