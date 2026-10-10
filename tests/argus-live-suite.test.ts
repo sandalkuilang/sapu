@@ -26,7 +26,7 @@ import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { changeDigest, readStaged, smokeAdmit, smokeCheck, smokePlan, stageChange } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
-import { smokePropose } from "../plugins/sapu/scripts/argus-live-propose.mjs";
+import { smokePropose, smokeWorkflow } from "../plugins/sapu/scripts/argus-live-propose.mjs";
 
 type Obj = Record<string, any>;
 
@@ -583,4 +583,134 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect(p.calls.gh.filter((a) => a[1] === "create")).toEqual([]);
     expect(spawnSync("git", ["--git-dir", p.bare, "rev-parse", "--verify", `argus/smoke-${RUN}`]).status).not.toBe(0);
   }, 60_000);
+});
+
+describe("smoke workflow — the CI job /sapu:init writes with consent (spec §19.10)", () => {
+  const SHAS: Record<string, string> = { "actions/checkout": "1".repeat(40), "actions/setup-node": "2".repeat(40), "actions/upload-artifact": "3".repeat(40) };
+  /** A repo with the contract, live.json (two viewports, a locale) and `smoke`; gh resolves each action's tag to its SHA unless `unresolved`. */
+  const flow = ({ smoke = {} as Obj, live = {} as Obj, unresolved = "" } = {}) => {
+    const main = committed();
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    git(main, "add", ".");
+    commit(main, "contract");
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ ...pathLive(), locales: ["de-DE"], ...live }));
+    writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify(smoke));
+    const calls: string[][] = [];
+    const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] !== "gh") return run(argv, opts);
+      calls.push(argv.slice(1));
+      const m = /^repos\/([^/]+\/[^/]+)\/commits\/(.+)$/.exec(argv[2] ?? "");
+      if (!m || m[1] === unresolved) return { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
+      return { status: 0, stdout: `${SHAS[m[1]]}\n`, stderr: "" };
+    };
+    return { main, calls, out: () => smokeWorkflow(main, { runner }) };
+  };
+  /** The lines of job `name` (from `  <name>:` to the next job). */
+  const job = (lines: string[], name: string) => {
+    const i = lines.indexOf(`  ${name}:`);
+    expect(i, name).toBeGreaterThan(-1);
+    const end = lines.findIndex((l, k) => k > i && /^ {2}[a-z]/.test(l));
+    return lines.slice(i, end < 0 ? undefined : end);
+  };
+
+  it("triggers on pull requests, pushes to the base branch and a dispatch with the baseline and grep inputs", () => {
+    const { lines, code, masked } = flow().out();
+    expect(code).toBe(0);
+    expect(masked).toBe(true);
+    const text = lines.join("\n");
+    expect(text).toContain("\non:\n  pull_request:\n  push:\n    branches: [main]\n  workflow_dispatch:\n    inputs:\n      baseline:\n");
+    expect(text).toMatch(/\n {6}baseline:\n(?: {8}.*\n)* {8}options: \[missing, changed\]\n/);
+    expect(text).toMatch(/\n {6}grep:\n(?: {8}.*\n)* {8}type: string\n/);
+    expect(text).toContain("\npermissions:\n  contents: read\n");
+    expect(text).not.toContain("pull_request_target");
+    expect(lines.every((l) => !l.includes("\t") && !/\s$/.test(l))).toBe(true);
+  });
+
+  it("pins every action to a full commit SHA gh resolves, its tag in a comment; an unresolvable tag prints nothing", () => {
+    const f = flow();
+    const { lines } = f.out();
+    const uses = lines.filter((l) => /\buses:/.test(l));
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect(u).toMatch(/^ +- uses: (actions\/[a-z-]+)@([0-9a-f]{40}) # v\d+$/);
+    for (const u of uses) expect(u).toContain(SHAS[/uses: ([^@]+)@/.exec(u)![1]]);
+    expect(f.calls.every((c) => c[0] === "api" && /^repos\/actions\/[a-z-]+\/commits\/v\d+$/.test(c[1]))).toBe(true);
+    expect(() => flow({ unresolved: "actions/setup-node" }).out()).toThrow(/^refused: smoke workflow: actions\/setup-node@v\d+ could not be resolved to a commit \(gh exited 1\)$/);
+  });
+
+  it("skips a fork's pull request, checks out without persisted credentials, and runs the suite's npm ci and the shuffled, gating run in the pinned container", () => {
+    const { lines } = flow().out();
+    const test = job(lines, "test");
+    expect(test).toContain("    if: github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)");
+    expect(test).toContain(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`);
+    expect(test).toContain("      options: --ipc=host --init");
+    expect(test).toContain("        project: [chromium, firefox, webkit, chromium-390, a11y, i18n]");
+    expect(test).toContain("        working-directory: e2e/argus-smoke");
+    expect(test).toContain("      - run: npm ci");
+    expect(test).toContain('      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"');
+    expect(test).toContain("      PROJECT: ${{ matrix.project }}");
+    for (const name of ["test", "msedge", "quarantine", "baseline"]) {
+      const j = job(lines, name);
+      const k = j.findIndex((l) => l.includes("uses: actions/checkout@"));
+      expect(j.slice(k + 1, k + 3), name).toEqual(["        with:", "          persist-credentials: false"]);
+    }
+  });
+
+  it("runs msedge on the plain runner with no container, and only when smoke.json lists it", () => {
+    const { lines } = flow().out();
+    const edge = job(lines, "msedge");
+    expect(edge.join("\n")).not.toContain("container:");
+    expect(edge).toContain("    runs-on: ubuntu-24.04");
+    expect(edge).toContain("      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project msedge");
+    expect(flow({ smoke: { browsers: ["chromium", "webkit"] } }).out().lines.join("\n")).not.toContain("msedge");
+    expect(job(flow({ smoke: { browsers: ["chromium", "webkit"] }, live: { locales: [], viewports: [1440] } }).out().lines, "test")).toContain("        project: [chromium, webkit, a11y]");
+  });
+
+  it("keeps quarantined tests running in a non-gating job", () => {
+    const q = job(flow().out().lines, "quarantine");
+    expect(q).toContain("    continue-on-error: true");
+    expect(q).toContain("      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project chromium");
+  });
+
+  it("the baseline job runs only on dispatch, its inputs reaching the shell through env and checked before use", () => {
+    const b = job(flow().out().lines, "baseline");
+    const text = b.join("\n");
+    expect(b).toContain("    if: github.event_name == 'workflow_dispatch'");
+    expect(text).toContain("          MODE: ${{ inputs.baseline }}");
+    expect(text).toContain("          GREP: ${{ inputs.grep }}");
+    // The inputs appear in ${{ }} only as env values, never inside a run script.
+    for (const l of b.filter((x) => x.includes("inputs."))) expect(l).toMatch(/^ +(MODE|GREP): \$\{\{ inputs\.(baseline|grep) \}\}$/);
+    const check = b.findIndex((l) => l.includes('case "$MODE" in missing|changed)'));
+    const use = b.findIndex((l) => l.includes('--update-snapshots="$MODE" --grep "$GREP"'));
+    expect(check).toBeGreaterThan(-1);
+    expect(use).toBeGreaterThan(check);
+    expect(text).toContain(`if [ -z "$GREP" ] || [ "$(printf '%s.' "$GREP" | LC_ALL=C tr -d 'a-z0-9|-')" != . ]; then`);
+    // The shell check: run it on good and bad inputs.
+    const script = b.slice(b.findIndex((l) => l.includes("run: |")) + 1, use).map((l) => l.trim()).join("\n");
+    const sh = (MODE: string, GREP: string) => spawnSync("sh", ["-c", script], { env: { PATH: process.env.PATH, MODE, GREP } }).status;
+    expect(sh("missing", "checkout|refund-v2")).toBe(0);
+    expect(sh("changed", "checkout")).toBe(0);
+    for (const [m, g] of [["all", "checkout"], ["missing", ""], ["missing", "a;rm -rf /"], ["missing", "a\nb"], ["missing", "A"], ["missing", "$(id)"]]) expect(sh(m, g), `${m} ${JSON.stringify(g)}`).not.toBe(0);
+  });
+
+  it("uploads the results and the written baselines for seven days, never the signed-in states", () => {
+    const { lines } = flow().out();
+    const text = lines.join("\n");
+    expect(text).not.toContain(".auth");
+    const uploads = lines.flatMap((l, i) => (l.includes("uses: actions/upload-artifact@") ? [lines.slice(i, i + 8).join("\n")] : []));
+    expect(uploads.length).toBe(5);
+    for (const u of uploads) expect(u).toContain("          retention-days: 7");
+    expect(text).toContain("          name: argus-smoke-results-${{ matrix.project }}\n          path: e2e/argus-smoke/test-results/");
+    expect(job(lines, "baseline").join("\n")).toContain("          name: argus-smoke-baselines-${{ matrix.project }}\n          path: |\n            e2e/argus-smoke/__screenshots__/\n            e2e/argus-smoke/__aria__/");
+  });
+
+  it("passes exactly the ${NAME} names live.json uses, each from the repo's secrets, and no value", () => {
+    const f = flow();
+    const text = f.out().lines.join("\n");
+    const names = [...text.matchAll(/^ +([A-Z][A-Z0-9_]*): \$\{\{ secrets\.([A-Z0-9_]+) \}\}$/gm)].map((m) => [m[1], m[2]]);
+    expect(new Set(names.map(([a]) => a))).toEqual(new Set(["DB_PW", "PW", "SALES_TOTP"]));
+    for (const [a, b] of names) expect(a).toBe(b);
+    expect(text).not.toMatch(/pw-1|db-now|GEZDGNBVGY3TQOJQ/);
+  });
 });

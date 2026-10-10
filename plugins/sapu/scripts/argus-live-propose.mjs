@@ -5,7 +5,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadSmoke, SMOKE_DEFAULTS, LIVE_FILE } from "./argus-live-config.mjs";
+import { SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
+import { LIVE_FILE, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
@@ -300,7 +301,174 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
   }
 }
 
-/** `smoke workflow` → `{code, lines}`: the CI workflow's YAML, one line each. */
-export function smokeWorkflow(main) {
-  throw new Error("refused: smoke workflow: not built yet");
+// ---------------------------------------------------------------------------------------------------
+// smoke workflow (spec §19.10).
+
+/** The actions the workflow uses, each at the tag whose commit `gh api` resolves when the file is printed. */
+const ACTIONS = Object.freeze({ checkout: ["actions/checkout", "v4"], node: ["actions/setup-node", "v4"], upload: ["actions/upload-artifact", "v4"] });
+/** The jobs' runner: its image ships Edge (the msedge job's browser). */
+const RUNNER = "ubuntu-24.04";
+
+/** `action@tag` → `action@<40-hex commit> # tag`, through `gh api repos/<action>/commits/<tag>`; refused when gh cannot say. */
+function pinned([action, tag], { runner, gh, cwd }) {
+  const r = runner([gh, "api", `repos/${action}/commits/${tag}`, "--jq", ".sha"], { cwd });
+  const sha = String(r.stdout ?? "").trim();
+  if (r.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`refused: smoke workflow: ${action}@${tag} could not be resolved to a commit (gh ${r.error ? "could not run" : `exited ${r.status ?? "on a signal"}`})`);
+  return `${action}@${sha} # ${tag}`;
+}
+
+/**
+ * The suite's CI projects (spec §19.6): those that run in the pinned container (the screenshot projects
+ * chromium, firefox and webkit as smoke.json's browsers list them, `chromium-<width>` for each further
+ * viewport, `a11y`, and `i18n` with a locale or pseudo-locale), and whether `msedge` runs on the plain runner.
+ */
+function projectsOf(live, smoke) {
+  const browsers = smoke.browsers ?? SMOKE_DEFAULTS.browsers;
+  const widths = Array.isArray(live.viewports) ? live.viewports.slice(1) : [];
+  const i18n = (Array.isArray(live.locales) && live.locales.length > 0) || (Array.isArray(live.pseudo_locales) && live.pseudo_locales.length > 0);
+  const container = [...["chromium", "firefox", "webkit"].filter((b) => browsers.includes(b)), ...widths.map((w) => `chromium-${w}`), "a11y", ...(i18n ? ["i18n"] : [])];
+  return { container, msedge: browsers.includes("msedge") };
+}
+
+/** Every `${NAME}` live.json names (passwords, TOTP secrets, env values): the CI secrets the suite reads by name. */
+const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]))].sort();
+
+/**
+ * `smoke workflow` → `{code, lines, masked}`: `.github/workflows/<smoke.ci.workflow>` as /sapu:init writes it,
+ * only with the owner's consent (spec §19.10): on pull requests, pushes to the base branch and a dispatch
+ * (`baseline`: missing|changed, `grep`); `contents: read` and never `pull_request_target`; a fork's pull
+ * request skipped; every action pinned to the commit `gh api` resolves, its tag in a comment; checkout without
+ * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`), a
+ * matrix over the container projects, `npm ci` then `--shuffle --grep-invert @quarantine`; `msedge` on the
+ * plain runner; the non-gating `quarantine` job; the dispatch-only `baseline` job, whose inputs reach the
+ * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9|-]+$` first; results
+ * and written baselines uploaded for 7 days, never `.auth/`; the `${NAME}` names live.json uses as
+ * `secrets.<NAME>`. The lines hold names, never a value (`masked`: printed as they are).
+ */
+export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
+  const c = loadContract(main);
+  if (!c.contract) throw new Error(`refused: smoke workflow: ${c.error ?? "no sapu contract"}`);
+  const loaded = loadSmoke(main);
+  if (loaded.errors.length) throw new Error(`refused: smoke workflow: ${loaded.errors.join("; ")}`);
+  const smoke = loaded.smoke ?? structuredClone(SMOKE_DEFAULTS);
+  let liveText;
+  try {
+    liveText = fs.readFileSync(path.join(main, LIVE_FILE), "utf8");
+  } catch {
+    throw new Error(`refused: smoke workflow: no ${LIVE_FILE}`);
+  }
+  const live = liveAsWritten(liveText, "smoke workflow");
+  const use = {};
+  for (const [k, a] of Object.entries(ACTIONS)) use[k] = pinned(a, { runner, gh, cwd: main });
+  const { container, msedge } = projectsOf(live, smoke);
+  const dir = smoke.dir;
+  const artifact = smoke.ci.artifact;
+  const fork = "(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)";
+  const env = (extra = []) => ["    env:", ...extra, ...secretNames(live).map((n) => `      ${n}: \${{ secrets.${n} }}`)];
+  const checkout = [`      - uses: ${use.checkout}`, "        with:", "          persist-credentials: false"];
+  const image = ["    container:", `      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`, "      options: --ipc=host --init"];
+  const matrix = ["    strategy:", "      fail-fast: false", "      matrix:", `        project: [${container.join(", ")}]`];
+  const workdir = ["    defaults:", "      run:", `        working-directory: ${dir}`];
+  const upload = (name, paths) => [`      - uses: ${use.upload}`, "        if: ${{ !cancelled() }}", "        with:", `          name: ${name}`, ...(paths.length === 1 ? [`          path: ${paths[0]}`] : ["          path: |", ...paths.map((p) => `            ${p}`)]), "          retention-days: 7"];
+  const results = (name) => upload(name, [`${dir}/test-results/`]);
+  const lines = [
+    `# ${smoke.ci.workflow}: the argus smoke suite (${dir}), generated by sapu's argus-live.mjs smoke workflow.`,
+    "# /sapu:init writes it with the owner's consent; change .argus/smoke.json and regenerate rather than edit it.",
+    "name: argus-smoke",
+    "on:",
+    "  pull_request:",
+    "  push:",
+    `    branches: [${c.contract.baseBranch}]`,
+    "  workflow_dispatch:",
+    "    inputs:",
+    "      baseline:",
+    '        description: "Write screenshot and ARIA baselines: missing (new ones) or changed (the journeys named in grep)"',
+    "        required: true",
+    "        type: choice",
+    "        options: [missing, changed]",
+    "      grep:",
+    '        description: "The journey ids to run, joined by |"',
+    "        required: true",
+    "        type: string",
+    "permissions:",
+    "  contents: read",
+    "concurrency:",
+    "  group: argus-smoke-${{ github.ref }}-${{ github.event_name }}",
+    "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    "jobs:",
+    "  test:",
+    "    # A pull request from a fork gets no secrets: skipped.",
+    `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
+    `    runs-on: ${RUNNER}`,
+    "    timeout-minutes: 70",
+    ...image,
+    ...matrix,
+    ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
+    ...workdir,
+    "    steps:",
+    ...checkout,
+    "      - run: npm ci",
+    '      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"',
+    ...results(`${artifact}-\${{ matrix.project }}`),
+    ...(msedge
+      ? [
+          "  msedge:",
+          "    # Edge is the runner image's own (never installed by sapu), so it has no screenshot baseline.",
+          `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
+          `    runs-on: ${RUNNER}`,
+          "    timeout-minutes: 70",
+          ...env(),
+          ...workdir,
+          "    steps:",
+          ...checkout,
+          `      - uses: ${use.node}`,
+          "        with:",
+          "          node-version: 22",
+          "      - run: npm ci",
+          "      - run: npx playwright install chromium",
+          "      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project msedge",
+          ...results(`${artifact}-msedge`),
+        ]
+      : []),
+    "  quarantine:",
+    "    # Quarantined tests leave the critical path, never sight: this job runs them and never gates.",
+    `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
+    `    runs-on: ${RUNNER}`,
+    "    timeout-minutes: 70",
+    "    continue-on-error: true",
+    ...image,
+    ...env(["      HOME: /root"]),
+    ...workdir,
+    "    steps:",
+    ...checkout,
+    "      - run: npm ci",
+    "      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project chromium",
+    ...results(`${artifact}-quarantine`),
+    "  baseline:",
+    "    # Dispatched by smoke baseline: writes the baselines the pull request then proposes for review.",
+    "    if: github.event_name == 'workflow_dispatch'",
+    `    runs-on: ${RUNNER}`,
+    "    timeout-minutes: 70",
+    ...image,
+    ...matrix,
+    ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
+    ...workdir,
+    "    steps:",
+    ...checkout,
+    "      - run: npm ci",
+    "      - name: Check the dispatch inputs, then write the baselines",
+    "        env:",
+    "          MODE: ${{ inputs.baseline }}",
+    "          GREP: ${{ inputs.grep }}",
+    "        run: |",
+    '          case "$MODE" in missing|changed) ;; *) echo "baseline must be missing or changed" >&2; exit 1 ;; esac',
+    `          if [ -z "$GREP" ] || [ "$(printf '%s.' "$GREP" | LC_ALL=C tr -d 'a-z0-9|-')" != . ]; then`,
+    '            echo "grep must be journey ids joined by |" >&2',
+    "            exit 1",
+    "          fi",
+    '          npx playwright test --update-snapshots="$MODE" --grep "$GREP" --project setup --project "$PROJECT"',
+    ...results(`${artifact}-\${{ matrix.project }}`),
+    ...upload("argus-smoke-baselines-${{ matrix.project }}", [`${dir}/__screenshots__/`, `${dir}/__aria__/`]),
+  ];
+  return { code: 0, lines, masked: true };
 }
