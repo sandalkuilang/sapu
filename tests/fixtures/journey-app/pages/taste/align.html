@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sibling edges</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+section { margin-bottom: 24px; width: 600px; }
+</style></head>
+<body>
+<main>
+<section>
+<div>Name</div>
+<!-- the violation: 2 px off its siblings' left edge -->
+<div style="margin-left: 2px">Email</div>
+<!-- the excluded twin: 8 px reads as an intended indent -->
+<div style="margin-left: 8px">Phone</div>
+<div>Address</div>
+</section>
+<!-- the excluded twin: centred blocks of different widths -->
+<section><div style="width: 200px; margin: 0 auto">One</div><div style="width: 204px; margin: 0 auto">Two</div></section>
+<!-- the excluded twin: right-aligned blocks of different widths -->
+<section><div style="width: 100px; margin-left: auto">Three</div><div style="width: 98px; margin-left: auto">Four</div></section>
+<!-- the excluded twin: a row of items side by side -->
+<section style="display: flex; gap: 2px"><div style="margin-left: 1px">Five</div><div>Six</div></section>
+</main>
+</body></html>
