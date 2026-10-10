@@ -19,6 +19,8 @@ import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
+import { score, selectJourneys, tasteFactor } from "../plugins/sapu/scripts/argus-live-map.mjs";
+// @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
@@ -31,7 +33,7 @@ import { mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts
 // @ts-expect-error — plain ESM script without types
 import { makeHome, makeWorktree } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
-import { MEDIA_READ, readTasteState, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { MEDIA_READ, readTasteState, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { confirmSink, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 
@@ -914,3 +916,58 @@ describe("argus-live taste confirm — the replay in slot r (J2)", () => {
   }, 900_000);
 });
 
+// ---------------------------------------------------------------------------------------------------
+// SELECT's taste factor (J3).
+
+describe("argus-live SELECT weighs taste and usability debt (J3)", () => {
+  const RUN = "20000101000000-0123abcd";
+  const row = (rule: string, severity: string, state: string, screen = "/a|1440|light") => [`taste:${rule}:${screen}`, { rule, screen, class: "derived", severity, state, issue: null, first: RUN, last: RUN }];
+  const judged = (rows: [string, Obj][]) => ({ judged: RUN, best: null, rows: Object.fromEntries(rows) });
+
+  it("taste = 1 + min(1, debt / 4): S1 and S2 weigh 2, S3 1, S4 0.5; only open or queued rows; never judged is ×1.5; the cap is ×2", () => {
+    const state = (j: Obj) => ({ version: 1, journeys: { j } });
+    expect(tasteFactor({ version: 1, journeys: {} }, "j")).toBe(1.5);
+    expect(tasteFactor(state({ judged: null, best: null, rows: {} }), "j")).toBe(1.5);
+    // An id that names a property of every object is no journey of the state.
+    expect(tasteFactor({ version: 1, journeys: {} }, "constructor")).toBe(1.5);
+    expect(tasteFactor(state(judged([])), "j")).toBe(1);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open")])), "j")).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S1", "queued")])), "j")).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S3", "queued"), row("scale.spacing", "S4", "open")])), "j")).toBe(1.375);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "closed"), row("scale.spacing", "S2", "accepted")])), "j")).toBe(1);
+    const lots = judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "open"), row("scale.radii", "S2", "queued"), row("states.error", "S3", "open")]);
+    expect(tasteFactor(state(lots), "j")).toBe(2);
+    // The owner's accept rows (taste.json) weigh nothing, matched by rule and screen key.
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "open", "/b|1440|light")])), "j", [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }])).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open")])), "j", [{ rule: "copy.broken", key: "/b|1440|light", why: "another screen" }])).toBe(1.5);
+    // score multiplies it in; without it the score is as before.
+    expect(score({ id: "j", lastCycle: 90 }, { cycle: 100, taste: 1.5 })).toBe(15);
+    expect(score({ id: "j", lastCycle: 90 }, { cycle: 100 })).toBe(10);
+  });
+
+  /** A repo with live.json's anon role and a map of journeys `js` ({id, money}), each one anon step. */
+  const selectRepo = (js: Obj[]) => {
+    const main = committed();
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ roles: { anon: {} }, limits: { max_cycle_minutes: 30, max_parallel_journeys: 5 } }));
+    const journeys = js.map(({ id, money = false }) => ({ id, domain: "sales", title: id, money, global: false, goal: "a goal", steps: [{ role: "anon", route: "/", goal: "look" }], lastCycle: 4 }));
+    writeFileSync(join(main, ".argus/journeys.json"), JSON.stringify({ head: "0".repeat(40), roots: ["src"], dropped: [], journeys }));
+    return main;
+  };
+  const scores = (main: string) => Object.fromEntries(selectJourneys(main, { cycle: 10 }).picks.map((p: Obj) => [p.id, p.score]));
+
+  it("selectJourneys: a money journey with no debt ties a non-money journey at full debt; an unjudged one sits between", () => {
+    const main = selectRepo([{ id: "money", money: true }, { id: "debt" }, { id: "clean" }, { id: "never" }]);
+    writeTasteState(main, { version: 1, journeys: { money: judged([]), clean: judged([]), debt: judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "queued")]) } });
+    expect(scores(main)).toEqual({ money: 12, debt: 12, clean: 6, never: 9 });
+    // The owner accepts one of the debt rows: it weighs nothing (debt 2: ×1.5).
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ accept: [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }] }));
+    expect(scores(main).debt).toBe(9);
+    // A taste.json the owner broke, or a state of another shape, stops SELECT rather than guess.
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ cap: 0 }));
+    expect(() => selectJourneys(main, { cycle: 10 })).toThrow("refused: select: .argus/taste.json: cap must be an integer from 1 to 20");
+    writeFileSync(join(main, ".argus/taste.json"), "{}");
+    writeFileSync(join(main, ".argus/taste-state.json"), "{}");
+    expect(() => selectJourneys(main, { cycle: 10 })).toThrow("failed: .argus/taste-state.json is not {version: 1, journeys}");
+  }, 30_000);
+});
