@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSy
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import nodePath, { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
+import { FIXTURE_CONTRACT } from "./fixture-contract";
+import { browserTools, cleanTemps, committed, example, freePort, git, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { authSetup, CODEGEN_VERSION, generateSuite, headerDigest, packageJson, SMOKE_AXE, SMOKE_PLAYWRIGHT, smokeConfig, smokeSpec, suiteGitignore, supportFile, TOTP_SOURCE } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -26,6 +27,10 @@ import { FAMILIES, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN } from "../plu
 import { suiteProjects, TASTE_LANE_ONLY, TASTE_MEDIA_RULES, tasteCheckName, tasteSource, tasteTable, withHeader } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
 import { smokeCheck } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+// @ts-expect-error — plain ESM script without types
+import { smokeWorkflow, TASTE_SUMMARY } from "../plugins/sapu/scripts/argus-live-propose.mjs";
+// @ts-expect-error — plain ESM script without types
+import { run as runProc } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 
 type Obj = Record<string, any>;
 
@@ -663,7 +668,7 @@ describe("argus-live codegen — the generated suite under the pinned runner", (
 });
 
 // ---------------------------------------------------------------------------------------------------
-// Phase 7, lane S: the taste project (S1). The probes are lanes T1's and T2's:
+// Phase 7, lane S: the taste project (S1) and the workflow's taste job (S2). The probes are lanes T1's and T2's:
 // here they are stood in (tasteTable's `expression`, or the probe modules mocked for one generation).
 
 /** Stand-in probe sources, long enough to be written once in support.ts. */
@@ -926,14 +931,16 @@ const RSRC = `(rule) => {
   if (rule === "copy.broken") return dark || reduce ? [{ rule, key: "media-left-emulated", measured: 1, expected: 0 }] : [];
   return [];
 }`;
+/** The scorecard script as the taste job runs it: from the suite's directory, the step summary in `summary`. */
+const scorecard = (dir: string, summary: string) => spawnSync(process.execPath, ["-", "test-results/results.json", "../../.argus/taste.json", "support.ts"], { cwd: dir, input: TASTE_SUMMARY, encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary } });
 /** A test's notes of `type` in a Playwright JSON report, for the project `project`. */
 const notesIn = (results: Obj, type: string, project = "taste"): Obj[] => {
   const tests = (s: Obj): Obj[] => [...(s.specs ?? []).flatMap((x: Obj) => x.tests), ...(s.suites ?? []).flatMap(tests)];
   return results.suites.flatMap(tests).filter((t: Obj) => t.projectName === project).flatMap((t: Obj) => t.results.at(-1).annotations ?? []).filter((a: Obj) => a.type === type).map((a: Obj) => (type === "argus-info" ? a.description : JSON.parse(a.description)));
 };
 
-describe("argus-live codegen — the taste project under the pinned runner", () => {
-  it("advisory by default (notes, green, the media put back); a gated rule fails its step; its known row passes again", async () => {
+describe("argus-live codegen — the taste project and its scorecard under the pinned runner", () => {
+  it("advisory by default (notes, green, the media put back); a gated rule fails its step and the job; its known row passes again", async () => {
     vi.resetModules();
     const expression = (rule: string) => `(${RSRC})(${JSON.stringify(rule)})`;
     vi.doMock("../plugins/sapu/scripts/argus-live-taste.mjs", async (orig) => ({ ...(await orig<Obj>()), TASTE_SOURCE: RSRC, ruleExpression: expression }));
@@ -949,7 +956,8 @@ describe("argus-live codegen — the taste project under the pinned runner", () 
     const path = [{ as: "anon", do: "goto", path: "/login" }, { as: "anon", do: "fill", target: { label: "Email" }, value: "taste@example.test" }, { as: "anon", expect: "visible", target: { role: "heading", name: "Sign in" } }];
     const { dir, files, run } = await fixtureSuite({ paths: [{ id: "sign-in-page", path }], smokeExtra: { journeys: { "sign-in-page": { screens: [1] } } }, generate, projects: ["taste"] });
     expect(files["support.ts"].split(JSON.stringify(RSRC).slice(1, -1)).length - 1).toBe(1);
-    // 1. No .argus/taste.json: advisory notes and a green run.
+    const summary = join(tempDir(), "summary.md");
+    // 1. No .argus/taste.json: advisory notes, a green run and a green scorecard.
     const advisory = run([]);
     expect(advisory.status, advisory.out).toBe(0);
     const heading = { rule: "hierarchy.primary-actions", step: 1, key: "heading|Sign in", measured: 2, expected: 1 };
@@ -959,7 +967,11 @@ describe("argus-live codegen — the taste project under the pinned runner", () 
     // Each rule measured in its own medium only, and the step after the screen in the page's own again.
     expect(advisory.out).not.toMatch(/measured-outside|media-left-emulated/);
     expect(JSON.stringify(advisory.results)).not.toMatch(/measured-outside|media-left-emulated/);
-    // 2. The owner gates the rule: its finding is phase 6's violation, and the step fails.
+    const s1 = scorecard(dir, summary);
+    expect(s1.status, s1.stderr).toBe(0);
+    expect(readFileSync(summary, "utf8")).toContain("advisory: .argus/taste.json gates no rule, so this job stays green");
+    expect(readFileSync(summary, "utf8")).toContain("| `sign-in-page` | 1 | `hierarchy.primary-actions` | `heading\\|Sign in` | `2` | `1` |  |");
+    // 2. The owner gates the rule: its finding is phase 6's violation, the step fails, so does the scorecard.
     mkdirSync(join(dir, "../../.argus"), { recursive: true });
     writeFileSync(join(dir, "../../.argus/taste.json"), JSON.stringify({ gate: ["hierarchy.primary-actions"] }));
     const gated = run([]);
@@ -967,11 +979,213 @@ describe("argus-live codegen — the taste project under the pinned runner", () 
     const violation = { check: "taste-hierarchy-primary-actions", step: 1, key: "heading|Sign in", detail: "measured 2, expected 1" };
     expect(notesIn(gated.results, "argus-violation")).toEqual([violation]);
     expect(notesIn(gated.results, "argus-taste").map((n) => n.rule)).toEqual(["colour.dark-surface"]);
+    writeFileSync(summary, "");
+    const s2 = scorecard(dir, summary);
+    expect(s2.status).toBe(1);
+    expect(readFileSync(summary, "utf8")).toContain("**gated**");
+    expect(readFileSync(summary, "utf8")).toContain("**The taste job fails:**");
     // 3. Adopted as known (phase 6's known/<id>.json): green again, under the gate.
     mkdirSync(join(dir, "known"), { recursive: true });
     writeFileSync(join(dir, "known/sign-in-page.json"), JSON.stringify([{ check: violation.check, key: violation.key }]));
     const known = run([]);
     expect(known.status, known.out).toBe(0);
     expect(notesIn(known.results, "argus-violation")).toEqual([]);
+    writeFileSync(summary, "");
+    const s3 = scorecard(dir, summary);
+    expect(s3.status, readFileSync(summary, "utf8")).toBe(0);
+    expect(readFileSync(summary, "utf8")).toContain("gating: `hierarchy.primary-actions`");
   }, 600_000);
+});
+
+describe("smoke workflow — the taste job (phase 7, S2)", () => {
+  const SHAS: Record<string, string> = { "actions/checkout": "1".repeat(40), "actions/setup-node": "2".repeat(40), "actions/upload-artifact": "3".repeat(40) };
+  const DIGEST = `sha256:${"d".repeat(64)}`;
+  /** A repo with the contract, live.json, smoke.json (a web server, `smoke` over it) and one suite path; gh and the registry answer. */
+  const flow = ({ smoke = {} as Obj, live = {} as Obj } = {}) => {
+    const main = committed();
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify(FIXTURE_CONTRACT));
+    git(main, "add", ".");
+    git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract");
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ ...LIVE(), ...live }));
+    writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify({ ci: { web_server: [{ command: "npm run start:ci", url: "http://localhost:3100/" }] }, ...smoke }));
+    mkdirSync(join(main, "e2e/argus-smoke/journeys"), { recursive: true });
+    writeFileSync(join(main, "e2e/argus-smoke/journeys/checkout.json"), JSON.stringify({ journey: "checkout", path: PATH(), admitted: null }));
+    const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] === "curl") return { status: 0, stdout: `HTTP/2 200\r\ndocker-content-digest: ${DIGEST}\r\n\r\n`, stderr: "" };
+      if (argv[0] !== "gh") return runProc(argv, opts);
+      const m = /^repos\/([^/]+\/[^/]+)\/commits\/(.+)$/.exec(argv[2] ?? "");
+      return m ? { status: 0, stdout: `${SHAS[m[1]]}\n`, stderr: "" } : { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
+    };
+    return { main, lines: smokeWorkflow(main, { runner }).lines as string[] };
+  };
+  const job = (lines: string[], name: string) => {
+    const i = lines.indexOf(`  ${name}:`);
+    expect(i, name).toBeGreaterThan(-1);
+    const end = lines.findIndex((l, k) => k > i && /^ {2}[a-z]/.test(l));
+    return lines.slice(i, end < 0 ? undefined : end);
+  };
+  const stepsOf = (j: string[]) => j.slice(j.indexOf("    steps:") + 1).join("\n").split(/\n(?= {6}- )/);
+  const matrix = (lines: string[], j: string) => /^ {8}project: \[(.*)\]$/.exec(job(lines, j).find((l) => l.startsWith("        project: ["))!)![1].split(", ");
+  const SUITE = "hashFiles('e2e/argus-smoke/package.json') != ''";
+
+  it("a separate taste job in the test job's container, checkout, install and env-only inputs; its run never fails the job, its secrets in that step only", () => {
+    const { lines } = flow();
+    const taste = job(lines, "taste");
+    const test = job(lines, "test");
+    for (const same of ["    if: ", "    runs-on: ", "      image: ", "      options: ", "    timeout-minutes: ", "        working-directory: "]) expect(taste.find((l) => l.startsWith(same)), same).toBe(test.find((l) => l.startsWith(same)));
+    expect(taste.join("\n")).not.toContain("strategy:");
+    expect(taste.slice(0, taste.indexOf("    steps:"))).toEqual(expect.arrayContaining(["    env:", "      HOME: /root"]));
+    // The job itself gates: only its run step may fail without failing it.
+    expect(taste).not.toContain("    continue-on-error: true");
+    const steps = stepsOf(taste);
+    expect(steps[0]).toMatch(/^ {6}- uses: actions\/checkout@[0-9a-f]{40} # v\d+\n {8}with:\n {10}persist-credentials: false$/);
+    expect(steps[1]).toBe(`      - run: npm ci --ignore-scripts\n        if: ${SUITE}`);
+    expect(steps[2].split("\n").slice(0, 3)).toEqual(["      - run: npx playwright test --grep-invert @quarantine --project setup --project taste", "        continue-on-error: true", `        if: ${SUITE}`]);
+    for (const s of steps.slice(1)) expect(s, s.split("\n")[0]).toMatch(new RegExp(`\\n {8}if: (\\$\\{\\{ !cancelled\\(\\) && ${SUITE.replace(/[()'.]/g, "\\$&")} \\}\\}|${SUITE.replace(/[()'.]/g, "\\$&")})(\\n|$)`));
+    // Secrets: in the step that runs the suite, never npm ci, the scorecard or an action; no input of the dispatch.
+    expect(taste.slice(0, taste.indexOf("    steps:")).join("\n")).not.toContain("secrets.");
+    expect(steps.filter((s) => s.includes("secrets."))).toEqual([steps[2]]);
+    expect(taste.join("\n")).not.toContain("inputs.");
+    // The results kept 7 days under a name outside ci.artifact's prefix (smoke ci triages the gating jobs only); never the signed-in states.
+    expect(steps.at(-1)).toBe(`      - uses: actions/upload-artifact@${SHAS["actions/upload-artifact"]} # v4\n        if: \${{ !cancelled() && ${SUITE} }}\n        with:\n          name: taste-argus-smoke-results\n          path: e2e/argus-smoke/test-results/\n          retention-days: 7`);
+    expect(taste.join("\n")).not.toContain(".auth");
+    expect(lines.every((l) => !l.includes("\t") && !/\s$/.test(l))).toBe(true);
+  }, 60_000);
+
+  it("one project list, codegen's suiteProjects: the test and quarantine matrices leave taste to its job, the baseline run holds it; no chromium, no taste job", () => {
+    for (const [smoke, live] of [[{}, {}], [{ browsers: ["firefox", "msedge"] }, { viewports: [1280, 390] }], [{ browsers: ["webkit", "chromium"] }, { locales: ["de-DE"] }]] as [Obj, Obj][]) {
+      const { main, lines } = flow({ smoke, live });
+      const names = suiteProjects({ live: JSON.parse(readFileSync(join(main, ".argus/live.json"), "utf8")), smoke: validateSmoke({ ...smoke }).value }).map((p: Obj) => p.name);
+      expect(matrix(lines, "test"), JSON.stringify(smoke)).toEqual(names.filter((n: string) => n !== "msedge" && n !== "taste"));
+      expect(matrix(lines, "quarantine")).toEqual(matrix(lines, "test"));
+      expect(matrix(lines, "baseline")).toEqual(names.filter((n: string) => n !== "msedge"));
+      expect(lines.includes("  taste:"), JSON.stringify(smoke)).toBe(names.includes("taste"));
+    }
+  }, 60_000);
+
+  it("the scorecard step runs TASTE_SUMMARY from the suite's directory by a quoted heredoc, nothing of GitHub's expressions inside", () => {
+    const { lines } = flow();
+    const steps = stepsOf(job(lines, "taste"));
+    const card = steps[3].split("\n");
+    expect(card.slice(0, 3)).toEqual(["      - name: The taste scorecard, in the job summary", `        if: \${{ !cancelled() && ${SUITE} }}`, "        run: |"]);
+    const block = card.slice(3).map((l) => (l === "" ? "" : l.slice(10)));
+    expect(card.slice(3).every((l) => l === "" || l.startsWith("          "))).toBe(true);
+    expect(block[0]).toBe("node - test-results/results.json ../../.argus/taste.json support.ts <<'ARGUS_TASTE'");
+    expect(block.slice(1, -1).join("\n")).toBe(TASTE_SUMMARY);
+    expect(block.at(-1)).toBe("ARGUS_TASTE");
+    for (const banned of ["${{", "\t", "ARGUS_TASTE"]) expect(TASTE_SUMMARY, banned).not.toContain(banned);
+    // The block as the runner's shell gets it: from the suite's directory, with no results yet.
+    const repo = tempDir();
+    const dir = join(repo, "e2e/argus-smoke");
+    mkdirSync(dir, { recursive: true });
+    const summary = join(repo, "summary.md");
+    const r = spawnSync("bash", ["-e", "-c", block.join("\n")], { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(readFileSync(summary, "utf8")).toContain("No results.json: the taste project did not run");
+  }, 60_000);
+
+  /** A suite directory holding `results` (a Playwright JSON report), support.ts's header and, unless null, taste.json. */
+  const suiteWith = (results: Obj | string | null, taste: Obj | string | null = null) => {
+    const repo = tempDir();
+    const dir = join(repo, "e2e/argus-smoke");
+    mkdirSync(join(dir, "test-results"), { recursive: true });
+    if (results !== null) writeFileSync(join(dir, "test-results/results.json"), typeof results === "string" ? results : JSON.stringify(results));
+    writeFileSync(join(dir, "support.ts"), `// Generated by sapu (argus-live codegen 1, taste-bar 4, digest ${"0".repeat(64)}) from x: do not edit; smoke propose regenerates it.\n`);
+    if (taste !== null) {
+      mkdirSync(join(repo, ".argus"), { recursive: true });
+      writeFileSync(join(repo, ".argus/taste.json"), typeof taste === "string" ? taste : JSON.stringify(taste));
+    }
+    const summary = join(repo, "summary.md");
+    const r = scorecard(dir, summary);
+    return { status: r.status, text: existsSync(summary) ? readFileSync(summary, "utf8") : "", log: r.stdout };
+  };
+  const report = (...tests: Obj[]) => ({ suites: [{ title: "x.spec.ts", specs: tests.map(({ title, project = "taste", status = "expected", notes = [], tries = null }) => ({ title, tests: [{ projectName: project, status, results: tries ?? [{ status: status === "expected" ? "passed" : "failed", annotations: notes }] }] })) }] });
+  const taste = (v: Obj) => ({ type: "argus-taste", description: JSON.stringify(v) });
+  /** Markdown `md` split into its code spans' words and the text outside them (a span: a run of n backticks to the next run of exactly n). */
+  const spansOf = (md: string) => {
+    const spans: string[] = [];
+    let outside = "";
+    for (let i = 0; i < md.length; ) {
+      const n = (/^`+/.exec(md.slice(i)) ?? [""])[0].length;
+      if (!n) {
+        outside += md[i];
+        i += 1;
+        continue;
+      }
+      const close = new RegExp(`(?<!\`)\`{${n}}(?!\`)`, "g");
+      close.lastIndex = i + n;
+      const end = close.exec(md);
+      if (!end) throw new Error(`an unclosed code span at ${i}`);
+      spans.push(md.slice(i + n, end.index).replace(/^ (.*) $/s, "$1"));
+      i = end.index + n;
+    }
+    return { spans, outside };
+  };
+
+  it("the scorecard: findings by family and in full, the bar's version, advisory green; another project's notes and a retry's first notes left out", () => {
+    const r = suiteWith(report(
+      { title: "checkout", notes: [taste({ rule: "hierarchy.primary-actions", step: 5, key: "button|Save", measured: 2, expected: 1 }), taste({ rule: "copy.broken", step: 3, key: "text|undefined", measured: "undefined", expected: "no broken copy" }), { type: "argus-info", description: "taste contrast.headroom step 5: body: 5.2 (expected 7)" }, { type: "argus-info", description: "design tokens: not the taste project's" }] },
+      { title: "checkout", project: "chromium", notes: [taste({ rule: "copy.broken", step: 1, key: "elsewhere", measured: 1, expected: 0 })] },
+      { title: "refund", status: "flaky", tries: [{ status: "failed", annotations: [taste({ rule: "copy.broken", step: 2, key: "first-try", measured: 1, expected: 0 })] }, { status: "passed", annotations: [taste({ rule: "copy.broken", step: 2, key: "last-try", measured: 1, expected: 0 })] }] },
+    ));
+    expect(r.status, r.text).toBe(0);
+    expect(r.log).toBe("taste: 3 finding(s), advisory\n");
+    expect(r.text).toContain("## Taste and usability\n\ntaste-bar 4 · advisory: .argus/taste.json gates no rule, so this job stays green\n\n**3** finding(s) in **2** journey(s) · **0** gated · **1** information line(s) · 2 of 2 taste test(s) passed\n");
+    expect(r.text).toContain("| Family | Findings |\n|---|---:|\n| `copy` | 2 |\n| `hierarchy` | 1 |\n");
+    expect(r.text).toContain("| `checkout` | 5 | `hierarchy.primary-actions` | `button\\|Save` | `2` | `1` |  |");
+    expect(r.text).toContain("| `refund` | 2 | `copy.broken` | `last-try` | `1` | `0` |  |");
+    expect(r.text).toContain("- `checkout`: `taste contrast.headroom step 5: body: 5.2 (expected 7)`");
+    for (const gone of ["elsewhere", "first-try", "design tokens"]) expect(r.text, gone).not.toContain(gone);
+    expect(r.text).toContain("The taste job passes.");
+  }, 60_000);
+
+  it("the scorecard: page words inert in Markdown, one line, at most 200 characters", () => {
+    const evil = "<img src=x onerror=alert(1)> @owner https://evil.example/x [link](https://evil.example) ``` | `code` \u202enoisrev\u202c\nnext line " + "k".repeat(400);
+    const r = suiteWith(report({ title: "checkout", notes: [taste({ rule: "copy.broken", step: 3, key: evil, measured: evil, expected: 0 }), { type: "argus-info", description: `taste copy.vague step 3: ${evil}` }] }));
+    expect(r.status).toBe(0);
+    const { spans, outside } = spansOf(r.text);
+    for (const live of ["<img", "@owner", "https://", "](", "\u202e", "kkkk"]) expect(outside, live).not.toContain(live);
+    const long = spans.filter((w) => w.includes("onerror"));
+    expect(long.length).toBe(3);
+    for (const w of long) {
+      expect(Array.from(w.replace(/\\\|/g, "|")).length, w).toBeLessThanOrEqual(200);
+      expect(w.endsWith("…"), w).toBe(true);
+      expect(w).not.toMatch(/[\u202a-\u202e]/);
+    }
+    // One table row a finding: the newline in the page's words did not split it.
+    expect(r.text.split("\n").filter((l) => l.startsWith("| `checkout` |")).length).toBe(1);
+  }, 60_000);
+
+  it("the scorecard gates only when taste.json gates a rule: a gated violation, a taste test that did not pass, or no results fail it; a taste.json that is not JSON fails it", () => {
+    const violation = { type: "argus-violation", description: JSON.stringify({ check: "taste-hierarchy-primary-actions", step: 5, key: "button|Delete", detail: "measured 2, expected 1" }) };
+    const gate = { gate: ["hierarchy.primary-actions"] };
+    const failed = suiteWith(report({ title: "checkout", status: "unexpected", notes: [violation] }), gate);
+    expect(failed.status).toBe(1);
+    expect(failed.text).toContain("gating: `hierarchy.primary-actions`");
+    expect(failed.text).toContain("| `checkout` | 5 | `hierarchy.primary-actions` | `button\\|Delete` | `measured 2, expected 1` |  | **gated** |");
+    expect(failed.text).toContain("**The taste job fails:** a gated rule is violated, or a taste test did not pass so a gated rule went unmeasured.");
+    expect(failed.log).toBe("taste: failed\n");
+    // Under a gate, a run that measured nothing fails too; an advisory one stays green whatever happened.
+    expect(suiteWith(report({ title: "checkout", status: "unexpected" }), gate).status).toBe(1);
+    // The suite's own refusal of taste.json is shown; any other error (it may quote the page) is not.
+    const refusal = "argus-smoke: .argus/taste.json gate names ai.stop: no rule the suite measures in taste-bar 4";
+    const why = suiteWith(report({ title: "checkout", status: "unexpected", tries: [{ status: "failed", annotations: [], error: { message: `${refusal}\n    at tasteConfig` } }] }, { title: "refund", status: "unexpected", tries: [{ status: "failed", annotations: [], error: { message: "expect(locator).toHaveText(expected) <b>page words</b>" } }] }), { gate: ["ai.stop"] });
+    expect(why.status).toBe(1);
+    expect(why.text).toContain(`- \`${refusal}\``);
+    expect(why.text).not.toContain("page words");
+    expect(suiteWith(report({ title: "checkout", status: "skipped" }), gate).status).toBe(1);
+    expect(suiteWith(null, gate).status).toBe(1);
+    expect(suiteWith(report(), gate).status).toBe(1);
+    expect(suiteWith(report({ title: "checkout" }), gate).status).toBe(0);
+    for (const advisory of [report({ title: "checkout", status: "unexpected", notes: [violation] }), null, "not json"]) expect(suiteWith(advisory).status, JSON.stringify(advisory)).toBe(0);
+    expect(suiteWith(report({ title: "checkout", status: "unexpected" })).text).toContain("Not passed: `checkout` (`unexpected`). The test job gates the paths themselves.");
+    expect(suiteWith("not json").text).toContain("results.json is not Playwright's JSON report.");
+    for (const bad of ["{not json", JSON.stringify({ gate: "x" }), JSON.stringify({ gate: ["Not A Rule"] }), "[]"]) {
+      const r = suiteWith(report({ title: "checkout" }), bad);
+      expect(r.status, bad).toBe(1);
+      expect(r.text).toContain("**.argus/taste.json is not JSON with a list of rule ids under gate: the taste job cannot tell what gates, so it fails.**");
+    }
+  }, 60_000);
 });
