@@ -118,7 +118,7 @@ describe("smoke.json — the suite's schema", () => {
   it("dir: a repo-relative directory outside .git and .argus", () => {
     expect(validateSmoke({ dir: "test/e2e/smoke" }).value.dir).toBe("test/e2e/smoke");
     for (const dir of ["/abs", "../x", "a/../b", ".", "", "a//b", "a/./b", "-x", ":x", "a\\b", ".git/x", ".argus/smoke", ".GIT", 3]) {
-      expect(validateSmoke({ dir }).errors, String(dir)).toEqual(["dir must be a repo-relative directory (no absolute path, no . or .., no leading - or :, not under .git or .argus)"]);
+      expect(validateSmoke({ dir }).errors, String(dir)).toEqual(["dir must be a repo-relative directory of letters, digits, ., _, - and / (no absolute path, no . or .., no leading - or :, not under .git, .github or .argus)"]);
     }
   });
 
@@ -137,6 +137,12 @@ describe("smoke.json — the suite's schema", () => {
     for (const b of [[], ["safari"], ["chromium", "chromium"], "chromium"]) expect(validateSmoke({ browsers: b }).errors, JSON.stringify(b)).toEqual(["browsers must be a non-empty array of distinct names from chromium, firefox, webkit, msedge"]);
     expect(validateSmoke({ journeys: { checkout: { browsers: ["edge"] } } }).errors).toEqual(["journeys.checkout.browsers must be a non-empty array of distinct names from chromium, firefox, webkit, msedge"]);
     expect(validateSmoke({ journeys: { checkout: { viewports: [1440, 390] } } }).errors).toEqual([]);
+    // dir is written raw into the workflow's YAML: plain path characters only, never under .git, .github or .argus.
+    for (const dir of ["e2e/a b #c", "e2e/x: y", "e2e/${{ github.token }}", ".github/workflows", ".GitHub/x", ".git/x", ".argus/s", "e2e/'q'"]) expect(validateSmoke({ dir }).errors, dir).toEqual(["dir must be a repo-relative directory of letters, digits, ., _, - and / (no absolute path, no . or .., no leading - or :, not under .git, .github or .argus)"]);
+    expect(validateSmoke({ dir: "tests/e2e_smoke-1.x" }).errors).toEqual([]);
+    // A mask is a role, text, label or test-id locator (§19.5's selector order): no CSS, XPath or title.
+    for (const m of ["locator('.clock')", "locator('xpath=//div')", "getByTitle('t')", "getByRole('main').locator('.x')"]) expect(validateSmoke({ masks: [m] }).errors, m).toEqual(["masks[0] must be a Playwright locator such as getByTestId('clock')"]);
+    expect(validateSmoke({ masks: ["getByTestId('clock')", "getByRole('img', { name: 'Avatar' })", "getByText('Today')", "getByLabel('Date')", "getByRole('main').getByText('x')"] }).errors).toEqual([]);
     for (const v of [[], [100], [1440, 1440], "1440"]) expect(validateSmoke({ journeys: { checkout: { viewports: v } } }).errors, JSON.stringify(v)).toEqual(["journeys.checkout.viewports must be a non-empty array of distinct widths from 200 to 4000"]);
   });
 

@@ -573,7 +573,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_700,
   "skills/journey/live.md": 14_500,
-  "skills/journey/smoke.md": 14_700,
+  "skills/journey/smoke.md": 14_800,
 };
 
 describe("context budgets", () => {

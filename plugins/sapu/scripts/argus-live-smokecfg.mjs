@@ -34,13 +34,18 @@ const SMOKE_RANGES = { max: [1, 50], heal_max_steps: [1, 10], form_cases_max: [0
 const isJourneyId = (v) => typeof v === "string" && v.length <= 100 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(v);
 /** A check's name (`covered`, `target-size`, …) as an `allow` entry names it. */
 const CHECK_NAME = /^[a-z][a-z0-9-]{0,39}$/;
-/** The suite's directory: repo-relative, every segment a name, never under .git or .argus (gitignored). */
-const isSuiteDir = (p) => repoFile(p) && p.split("/").every((x) => x !== "" && x !== ".") && ![".git", ".argus"].includes(p.split("/")[0].toLowerCase());
-/** A mask: a Playwright locator parseTarget reads, never a snapshot ref or a bare CSS string. */
+/**
+ * The suite's directory: repo-relative, plain path characters only (it is written raw into the workflow's YAML),
+ * every segment a name, never under .git, .github (the workflows) or .argus (gitignored).
+ */
+const isSuiteDir = (p) => repoFile(p) && /^[A-Za-z0-9._/-]{1,200}$/.test(p) && p.split("/").every((x) => x !== "" && x !== ".") && ![".git", ".github", ".argus"].includes(p.split("/")[0].toLowerCase());
+/** A mask: a role, text, label or test-id locator parseTarget reads (a container's too), never CSS, XPath, a title or a snapshot ref. */
+const MASK_BY = ["role", "text", "label", "testId"];
 const isLocator = (v) => {
   try {
     const t = isStr(v) ? parseTarget(v) : null;
-    return Boolean(t) && t.ref === undefined;
+    const ok = (x) => isObj(x) && MASK_BY.includes(x.by) && x.ref === undefined && x.css === undefined && (x.within === undefined || ok(x.within));
+    return ok(t);
   } catch {
     return false;
   }
@@ -73,7 +78,7 @@ export function validateSmoke(raw) {
   const has = (k) => k in raw;
 
   unknown(raw, SMOKE_FILE, SMOKE_KEYS);
-  if (has("dir")) need(isSuiteDir(raw.dir), "dir must be a repo-relative directory (no absolute path, no . or .., no leading - or :, not under .git or .argus)");
+  if (has("dir")) need(isSuiteDir(raw.dir), "dir must be a repo-relative directory of letters, digits, ., _, - and / (no absolute path, no . or .., no leading - or :, not under .git, .github or .argus)");
   for (const k of ["max", "heal_max_steps", "form_cases_max", "link_cap"]) if (has(k)) int(raw[k], k);
   for (const k of ["pin", "exclude"]) if (has(k)) need(Array.isArray(raw[k]) && raw[k].every(isJourneyId) && new Set(raw[k]).size === raw[k].length, `${k} must be an array of distinct journey ids (kebab-case)`);
   // A pin of an id the catalog lacks is kept: smoke plan refuses it against the catalog it reads.
