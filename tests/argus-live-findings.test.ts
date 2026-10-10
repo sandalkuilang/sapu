@@ -37,7 +37,9 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { minimize, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { minimize } from "../plugins/sapu/scripts/argus-live-minimize.mjs";
+// @ts-expect-error — plain ESM script without types
+import { repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -102,9 +104,10 @@ describe("argus-live modules — the DAG", () => {
     expect(g.has("argus-live-steps")).toBe(true);
     for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
-    // The generated RED test reads targets and oracles only; the runner above it writes it.
+    // The generated RED test reads targets and oracles only; minimize, above the runner, writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
-    expect(g.get("argus-live-repro")).toContain("argus-live-redtest");
+    expect(g.get("argus-live-minimize")).toContain("argus-live-redtest");
+    expect(g.get("argus-live-minimize")).toContain("argus-live-repro");
     // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
     expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-fence", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");

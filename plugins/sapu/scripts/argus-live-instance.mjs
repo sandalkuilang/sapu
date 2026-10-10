@@ -11,9 +11,9 @@
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
 // -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -login.mjs → -session.mjs →
 // -pw.mjs and -steps.mjs → this module, -codegen.mjs (the smoke suite's generator) and -redtest.mjs →
-// -repro.mjs → -smoke.mjs (the lane's smoke pass) → -suite.mjs (membership) → -propose.mjs (proposals) →
-// -heal.mjs and -ci.mjs → -report.mjs → argus-live.mjs. Leaves: -fence.mjs, -targets.mjs, -origin.mjs,
-// -classes.mjs, -layout.mjs, -a11y.mjs (the in-page checks). `pw` never imports this module, and -start.mjs
+// -repro.mjs → -minimize.mjs (minimize, the RED test) → -smoke.mjs (the lane's smoke pass) → -suite.mjs
+// (membership) → -propose.mjs (proposals) → -heal.mjs and -ci.mjs → -report.mjs → argus-live.mjs.
+// Leaves: -fence.mjs, -targets.mjs, -origin.mjs, -classes.mjs, -layout.mjs, -a11y.mjs (the in-page checks). `pw` never imports this module, and -start.mjs
 // never imports -browser.mjs (tests/argus-live-findings.test.ts pins both, and this order).
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
