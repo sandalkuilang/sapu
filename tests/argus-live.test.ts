@@ -1962,8 +1962,9 @@ describe("argus-live instance — Compose and egress checks", () => {
 
     it("docker missing or failing is a refusal (fail closed), every secret masked", () => {
       const w = world(good());
+      // No docker on PATH at all: on Linux it lives in /usr/bin, so a PATH holding that would find it.
       const empty = tempDir();
-      expect(compose({ ...w, env: { ...w.env, PATH: `${empty}:/usr/bin:/bin` } })).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: /);
+      expect(compose({ ...w, env: { ...w.env, PATH: empty } })).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: /);
       const f = world(good(), { status: 1, stderr: "bad interpolation near s3cret" });
       const m = compose(f, { secrets: { PW: "s3cret" } });
       expect(m).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*bad interpolation near \*\*\*/);
@@ -2564,10 +2565,15 @@ describe("argus-live instance — Compose and egress checks", () => {
         };
         expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner }))).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
         // A netstat that fails is reported on macOS, where it is the only way to see another user's server.
-        const blind = (argv: string[], o: Obj = {}) => (argv[0] === "netstat" ? { status: 1, stdout: "", stderr: "netstat: sysctl: Operation not permitted" } : runner(argv, o));
+        // On Linux `ss -xp` names the server's path itself (lsof is its fallback): netstat is never asked.
+        const asked: string[] = [];
+        const blind = (argv: string[], o: Obj = {}) => (asked.push(argv[0]), argv[0] === "netstat" ? { status: 1, stdout: "", stderr: "netstat: sysctl: Operation not permitted" } : runner(argv, o));
         const said = await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }));
         if (process.platform === "darwin") expect(said).toBe("failed: netstat -an -f unix exited 1: netstat: sysctl: Operation not permitted");
-        else expect(said).toBe("ok");
+        else {
+          expect(said).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
+          expect(asked).not.toContain("netstat");
+        }
       }, 30_000);
 
       it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {
