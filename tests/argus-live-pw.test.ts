@@ -2014,7 +2014,9 @@ describe("argus-live pw — refusals and limits", () => {
     t.answer("request", "### Result\n#1 [GET] http://localhost:41002/\n  Request headers\n    Cookie: sid=abc\n    Authorization: Bearer xyz\n    X-Csrf-Token: t\n    accept: */*\n  Response headers\n    set-cookie: sid=def; HttpOnly\n");
     const text = (await t.call("buyer.1", "request", "1")).out.join("\n");
     for (const l of ["    Cookie: <masked>", "    Authorization: <masked>", "    X-Csrf-Token: <masked>", "    set-cookie: <masked>", "    accept: */*"]) expect(text).toContain(l);
-    for (const v of ["abc", "xyz", "def"]) expect(text).not.toContain(v);
+    // The fence's nonce is random hex, which may hold "abc" or "def": only the page's lines are searched.
+    const page = text.split("\n").filter((l) => !/^(?:<<<)?PAGE-[0-9a-f]{32}(?:>>>)?$/.test(l)).join("\n");
+    for (const v of ["abc", "xyz", "def"]) expect(page).not.toContain(v);
   }, 30_000);
 
   it("BUDGET: past explorer_pw_calls every call answers BUDGET without acting; submit is not refused for it", async () => {
