@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orders</title>
+<style>
+  .spin { width: 24px; height: 24px; border: 3px solid gray; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style></head>
+<body>
+<nav><a href="/states.html?mode=__MODE__">Orders</a> <a href="/copy-clean.html">Help</a></nav>
+<main id="main">
+<div class="spin" role="progressbar" aria-label="Loading orders" id="spin"></div>
+</main>
+<script>
+  // The screen's data request; what it shows when that request fails depends on the mode:
+  // blank (nothing in main), retry (a message and a Retry button), spin (the loader never goes).
+  const mode = "__MODE__";
+  const main = document.getElementById("main");
+  const load = () => fetch("/api/items").then((r) => {
+    if (!r.ok) throw new Error("status " + r.status);
+    return r.json();
+  }).then((items) => {
+    main.innerHTML = "<h1>Orders</h1><ul>" + items.map((i) => "<li>" + i.name + "</li>").join("") + "</ul>";
+  }).catch(() => {
+    if (mode === "blank") main.innerHTML = "";
+    if (mode === "retry") {
+      main.innerHTML = '<h1>Orders</h1><p role="alert">The orders could not be loaded.</p><button id="retry">Retry</button>';
+      document.getElementById("retry").addEventListener("click", load);
+    }
+  });
+  load();
+</script>
+</body></html>
