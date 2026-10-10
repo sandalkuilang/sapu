@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, example, git, liveRun } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { healOnly, healPath, readState, smokeHeal, stage } from "../plugins/sapu/scripts/argus-live-heal.mjs";
+import { healOnly, healPath, smokeHeal } from "../plugins/sapu/scripts/argus-live-heal.mjs";
+// @ts-expect-error — plain ESM script without types
+import { readState, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { reproRef } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types

@@ -12,7 +12,7 @@ import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { readSuitePaths } from "./argus-live-smoke.mjs";
-import { changeDigest, generated, liveAsWritten, readStaged, readState, STATE_FILE, writeStaged } from "./argus-live-suite.mjs";
+import { changeDigest, generated, liveAsWritten, readState, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel, loadContract } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -20,14 +20,6 @@ const PR_URL = /https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
 /** Where the suite's baselines and adopted violations live (spec §19.2): a conflict there is never resolved by picking a side. */
 const BASELINE_DIRS = ["__screenshots__", "__aria__", "known"];
 const NEEDED = (id) => `baseline: needed ${id} (smoke baseline --from-run after this PR's first CI run)`;
-
-/** Writes the lane's local state whole (0600). */
-function writeState(main, state) {
-  const file = path.join(main, STATE_FILE);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(tmp, file);
-}
 
 /** A code fence around `text` longer than any backtick run in it, so nothing in it closes the fence. */
 function fenced(text, lang = "") {
@@ -37,17 +29,20 @@ function fenced(text, lang = "") {
 }
 
 /** A change's line in `changes.jsonl` (spec §19.8): `{kind, id, step?, from?, to?, evidence, run}`. */
-const logLine = (c) => JSON.stringify({ kind: c.kind, id: c.id, ...(c.step !== undefined ? { step: c.step } : {}), ...(c.from !== undefined ? { from: c.from } : {}), ...(c.to !== undefined ? { to: c.to } : {}), evidence: String(c.evidence ?? ""), run: c.run });
+const logLine = (c) => JSON.stringify({ kind: c.kind, id: c.id, ...(c.step !== undefined ? { step: c.step } : {}), ...(c.from !== undefined ? { from: c.from } : {}), ...(c.to !== undefined ? { to: c.to } : {}), evidence: c.evidence ?? "", run: c.run });
+/** A staged entry's changes.jsonl lines: its own `changes`, else one line of its kind. */
+const changesOf = (e) => (Array.isArray(e.changes) && e.changes.length ? e.changes.filter(isObj).map((c) => ({ ...c, kind: c.kind ?? e.kind, id: e.id, run: c.run ?? e.run })) : [{ kind: e.kind, id: e.id, evidence: "", run: e.run }]);
 const changeLine = (c) => `change ${c.kind} ${c.id}${Number.isInteger(c.step) ? ` step ${c.step}` : ""}`;
 
 /**
  * The outcome of each open proposal asked of gh (`gh pr view <url> --json state`): MERGED → merged (accepted),
- * CLOSED → closed (rejected, remembered by its digest). `state` is updated in place; true when anything changed.
+ * CLOSED → closed (rejected: its digest moves into `rejected`, so no verb stages that change again). `state` is
+ * updated in place; true when anything changed.
  */
 function refreshOutcomes(state, { runner, gh, cwd }) {
   const asked = new Map();
   let changed = false;
-  for (const p of Object.values(state.proposals)) {
+  for (const [digest, p] of Object.entries(state.proposals)) {
     if (!isObj(p) || p.outcome !== "open" || typeof p.url !== "string" || !PR_URL.test(p.url)) continue;
     if (!asked.has(p.url)) {
       const r = runner([gh, "pr", "view", p.url, "--json", "state", "--jq", ".state"], { cwd });
@@ -56,6 +51,7 @@ function refreshOutcomes(state, { runner, gh, cwd }) {
     const word = asked.get(p.url);
     const outcome = word === "MERGED" ? "merged" : word === "CLOSED" ? "closed" : null;
     if (outcome) [p.outcome, changed] = [outcome, true];
+    if (outcome === "closed" && !state.rejected.includes(digest)) state.rejected.push(digest);
   }
   return changed;
 }
@@ -103,8 +99,12 @@ function carryBranch(g, { wt, dir, base, branch, generatedNames }) {
   return { dropped, log };
 }
 
-/** Applies the staged changes to the suite directory `at` (spec §19.8, §19.9). */
-function applyChanges(at, changes) {
+/**
+ * Applies the staged entries to the suite directory `at` (spec §19.8, §19.9): an add's or a heal's `path` as
+ * `journeys/<id>.json` (a heal keeps the file's admission record and routes: it changes targets, not the admission),
+ * a drop or retire as the journey's removal, a quarantine or unquarantine on quarantine.json (codegen's @quarantine tag).
+ */
+function applyChanges(at, changes, base) {
   const qFile = path.join(at, "quarantine.json");
   let quarantine = null;
   try {
@@ -117,9 +117,19 @@ function applyChanges(at, changes) {
   const rm = (p) => fs.rmSync(path.join(at, p), { recursive: true, force: true });
   for (const c of changes) {
     if (c.kind === "add" || c.kind === "heal") {
-      if (!isObj(c.journey) || c.journey.journey !== c.id || !Array.isArray(c.journey.path)) throw new Error(`refused: smoke propose: the staged ${c.kind} of ${c.id} holds no journey file`);
+      if (!Array.isArray(c.path)) throw new Error(`refused: smoke propose: the staged ${c.kind} of ${c.id} holds no path`);
+      const file = path.join(at, "journeys", `${c.id}.json`);
+      let was = null;
+      try {
+        was = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        was = null;
+      }
+      if (c.kind === "heal" && !(isObj(was) && was.journey === c.id)) throw new Error(`refused: smoke propose: the staged heal of ${c.id} names a journey origin/${base}'s suite does not hold`);
+      const routes = c.kind === "add" ? c.routes : was.routes;
+      const doc = { journey: c.id, path: c.path, admitted: (c.kind === "add" ? c.admitted : was.admitted) ?? null, ...(Array.isArray(routes) && routes.length ? { routes } : {}) };
       fs.mkdirSync(path.join(at, "journeys"), { recursive: true });
-      fs.writeFileSync(path.join(at, "journeys", `${c.id}.json`), `${JSON.stringify(c.journey, null, 2)}\n`);
+      fs.writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
     } else if (c.kind === "drop" || c.kind === "retire") {
       // Baseline directories are the runner's {testFileBaseName}: the spec file's name without .ts, <id>.spec.
       for (const p of [`journeys/${c.id}.json`, `${c.id}.spec.ts`, `known/${c.id}.json`, `__aria__/${c.id}.spec`]) rm(p);
@@ -178,34 +188,38 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
   if (!c.contract) throw new Error(`refused: smoke propose: ${c.error ?? "no sapu contract"}`);
   const { repo, baseBranch: base, gitEmail } = c.contract;
   const state = readState(main);
-  const staged = readStaged(main);
+  const staged = state.staged;
   const refreshed = refreshOutcomes(state, { runner, gh, cwd: main });
   const lines = [];
   const todo = [];
   const skipped = new Set();
   for (const ch of staged) {
-    const p = state.proposals[changeDigest(ch)];
-    if (isObj(p) && (p.outcome === "closed" || p.outcome === "open")) {
-      lines.push(`skip ${ch.kind} ${ch.id}: ${p.outcome === "closed" ? "rejected" : "proposed already"} in ${p.url}`);
+    const digest = ch.digest ?? changeDigest(ch);
+    const p = state.proposals[digest];
+    const rejected = state.rejected.includes(digest);
+    if (rejected || (isObj(p) && p.outcome === "open")) {
+      lines.push(`skip ${ch.kind} ${ch.id}: ${rejected ? "rejected" : "proposed already"}${isObj(p) && typeof p.url === "string" ? ` in ${p.url}` : ""}`);
       skipped.add(ch);
     } else todo.push(ch);
   }
-  const runId = lastRun(main) ?? todo.at(-1)?.run;
+  const all = todo.flatMap(changesOf);
+  const runId = lastRun(main) ?? todo.map((ch) => ch.run).findLast((r) => RUN_ID.test(r));
   if (todo.length && !RUN_ID.test(String(runId))) throw new Error("refused: smoke propose: no run names the proposal's branch");
   const branch = `argus/smoke-${runId}`;
   if (dryRun) {
     if (!todo.length) return { code: 0, lines: [...lines, "smoke propose: nothing to propose"] };
-    return { code: 0, lines: [...lines, `would propose on ${branch}: ${todo.length} change(s)`, ...todo.map(changeLine)] };
+    return { code: 0, lines: [...lines, `would propose on ${branch}: ${all.length} change(s)`, ...all.map(changeLine)] };
   }
   const settle = () => {
-    if (refreshed) writeState(main, state);
-    if (skipped.size) writeStaged(main, staged.filter((ch) => !skipped.has(ch)));
+    state.staged = staged.filter((ch) => !skipped.has(ch));
+    if (refreshed || skipped.size) writeState(main, state);
   };
   if (!todo.length) {
     settle();
     return { code: 0, lines: [...lines, "smoke propose: nothing to propose"] };
   }
-  const secrets = secretsOf(main, [...new Set([...todo.map((ch) => ch.run)])], env);
+  // The lane runs' ledgers: an entry smoke ci staged names a CI run (digits), whose change carries no page value.
+  const secrets = secretsOf(main, [...new Set([runId, ...todo.map((ch) => ch.run).filter((r) => !/^[0-9]{1,20}$/.test(r))])], env);
   const g0 = gitIn(main, runner);
   const lease = String(g0(["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).stdout ?? "").trim().split(/\s/)[0] ?? "";
   g0(["fetch", "--quiet", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`, ...(lease ? [`+refs/heads/${branch}:refs/remotes/origin/${branch}`] : [])]);
@@ -227,16 +241,16 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
     const at = path.join(wt, dir);
     const before = generated(wt, { live, smoke, verb: "smoke propose" });
     const carried = lease ? carryBranch(g, { wt, dir, base, branch, generatedNames: [...Object.keys(before), "fixtures.ts"] }) : { dropped: [], log: [] };
-    applyChanges(at, todo);
+    applyChanges(at, todo, base);
     const files = generated(wt, { live, smoke, verb: "smoke propose" });
     fs.mkdirSync(at, { recursive: true });
     // fixtures.ts is the owner's: created when missing, never overwritten.
     for (const [name, text] of Object.entries(files)) if (name !== "fixtures.ts" || !fs.existsSync(path.join(at, name))) fs.writeFileSync(path.join(at, name), text);
     const ids = readSuitePaths(wt, dir).map((p) => p.id);
     for (const f of fs.readdirSync(at).filter((n) => n.endsWith(".spec.ts") && !ids.includes(n.slice(0, -8)))) fs.rmSync(path.join(at, f));
-    const log = [...carried.log, ...todo.map(logLine)];
+    const log = [...carried.log, ...all.map(logLine)];
     const logFile = path.join(at, "changes.jsonl");
-    fs.appendFileSync(logFile, todo.map((ch) => `${logLine(ch)}\n`).join(""));
+    fs.appendFileSync(logFile, all.map((ch) => `${logLine(ch)}\n`).join(""));
     const npmRun = runner([npm, "install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: at, env });
     if (npmRun.status !== 0) throw new Error(`refused: smoke propose: npm install --package-lock-only failed (exit ${npmRun.status ?? "on a signal"})`);
     g(["add", "-A", "--", dir]);
@@ -255,6 +269,7 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
       ...(needed.length ? needed.map((id) => `- ${NEEDED(id)}`) : ["- none needed"]),
       ...carried.dropped.map((f) => `- dropped \`${f}\`: it conflicted with the base; a baseline run regenerates it`),
       "",
+      ...(todo.some((ch) => Array.isArray(ch.body) && ch.body.length) ? ["## Details", ...todo.flatMap((ch) => (Array.isArray(ch.body) ? [...ch.body.map(String), ""] : []))] : []),
       "## Change log",
       fenced(log.join("\n"), "json"),
       "",
@@ -285,12 +300,12 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
         : runner([gh, "pr", "create", ...repoFlag, "--base", base, "--head", branch, "--title", title, "--body-file", msg, "--label", agentFiledLabel(c.contract)], { cwd: main });
       const url = open && PR_URL.test(open) && r.status === 0 ? open : (PR_URL.exec(String(r.stdout ?? "")) ?? [null])[0];
       if (!url) return { code: 2, lines: [...lines, `branch: ${branch}`, `failed: gh pr ${open ? "edit" : "create"} exited ${r.status ?? "on a signal"} after ${branch} was pushed; the changes stay staged`] };
-      for (const ch of todo) state.proposals[changeDigest(ch)] = { kind: ch.kind, id: ch.id, branch, url, outcome: "open" };
+      for (const ch of todo) state.proposals[ch.digest ?? changeDigest(ch)] = { kind: ch.kind, id: ch.id, branch, url, outcome: "open" };
+      state.staged = staged.filter((ch) => !skipped.has(ch) && !todo.includes(ch));
       writeState(main, state);
-      writeStaged(main, staged.filter((ch) => !skipped.has(ch) && !todo.includes(ch)));
       return {
         code: 0,
-        lines: [...lines, `branch: ${branch}`, ...todo.map(changeLine), ...carried.dropped.map((f) => `baseline: dropped ${f} (it conflicts with origin/${base})`), ...needed.map(NEEDED), `proposed: ${url}`],
+        lines: [...lines, `branch: ${branch}`, ...all.map(changeLine), ...carried.dropped.map((f) => `baseline: dropped ${f} (it conflicts with origin/${base})`), ...needed.map(NEEDED), `proposed: ${url}`],
       };
     } finally {
       fs.rmSync(msg, { force: true });

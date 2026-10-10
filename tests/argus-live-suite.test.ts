@@ -24,7 +24,7 @@ import { down, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs"
 // @ts-expect-error — plain ESM script without types
 import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { changeDigest, readStaged, smokeAdmit, smokeCheck, smokePlan, stageChange } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+import { changeDigest, readState, smokeAdmit, smokeCheck, smokePlan, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { smokePropose, smokeWorkflow } from "../plugins/sapu/scripts/argus-live-propose.mjs";
 
@@ -271,17 +271,23 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     // The slot's customer.1 is buyer2, the suite's customer.2; sales1 is the suite's sales.1.
     const want = PATH().map((el) => (el.as && el.as !== "system" ? { ...el, as: el.as === "customer" ? "customer.2" : "sales.1" } : el));
     for (const c of s.calls) expect(c.path).toEqual({ id: "checkout", list: want });
-    const staged = readStaged(t.main);
+    const staged = readState(t.main).staged;
     expect(staged).toHaveLength(1);
-    expect(staged[0]).toMatchObject({ kind: "add", id: "checkout", run: t.runId });
+    expect(staged[0]).toMatchObject({ kind: "add", id: "checkout", run: t.runId, changes: [{ kind: "add", id: "checkout", evidence: `held fresh and dirty in run ${t.runId} (seed 5)`, run: t.runId }], digest: changeDigest(staged[0]) });
     const routes = [{ role: "customer", route: "/orders/new" }, { role: "sales", route: "/inbox" }];
-    expect(staged[0].journey).toEqual({ journey: "checkout", path: want, admitted: { run: t.runId, head: "a".repeat(40), pathSha: expect.stringMatching(/^[0-9a-f]{64}$/), seed: 5 }, routes });
-    expect(statSync(join(t.main, ".argus/smoke-staged.json")).mode & 0o777).toBe(0o600);
+    expect({ path: staged[0].path, admitted: staged[0].admitted, routes: staged[0].routes }).toEqual({ path: want, admitted: { run: t.runId, head: "a".repeat(40), pathSha: expect.stringMatching(/^[0-9a-f]{64}$/), seed: 5 }, routes });
+    expect(statSync(join(t.main, ".argus/smoke-state.json")).mode & 0o777).toBe(0o600);
     // Without a seed one is drawn, printed and recorded.
     const u = await admit(t.main, "1.1", stub().once, null);
     const seed = Number(/^seed: (\d+)$/.exec(u.lines[0])![1]);
-    expect(readStaged(t.main)[0].journey.admitted.seed).toBe(seed);
-    expect(readStaged(t.main)).toHaveLength(1);
+    expect(readState(t.main).staged[0].admitted.seed).toBe(seed);
+    expect(readState(t.main).staged).toHaveLength(1);
+    // A path a closed proposal rejected is not staged again.
+    const state = readState(t.main);
+    writeFileSync(join(t.main, ".argus/smoke-state.json"), JSON.stringify({ ...state, staged: [], rejected: [state.staged[0].digest] }));
+    const again = await admit(t.main, "1.1", stub().once, 5);
+    expect(again.lines.at(-1)).toBe(`admit checkout: held fresh and dirty; not staged (a closed proposal rejected this path; digest ${state.staged[0].digest.slice(0, 12)})`);
+    expect(readState(t.main).staged).toEqual([]);
   }, 30_000);
 
   it("a break in either run refuses with the run, the kind and the step, and stages nothing", async () => {
@@ -293,8 +299,8 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     const harness = await admit(t.main, "1.1", stub([2]).once);
     expect(harness.code).toBe(2);
     expect(harness.lines.at(-1)).toBe("admit checkout: harness (fresh): step 2 system trigger exited 1");
-    expect(readStaged(t.main)).toEqual([]);
-    expect(existsSync(join(t.main, ".argus/smoke-staged.json"))).toBe(false);
+    expect(readState(t.main).staged).toEqual([]);
+    expect(existsSync(join(t.main, ".argus/smoke-state.json"))).toBe(false);
   }, 30_000);
 
   it("refuses a journey smoke plan does not list as capture", async () => {
@@ -422,8 +428,8 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
    * A repo with a contract and a suite pushed to a local bare origin, a cycle directory `RUN` whose ledger
    * holds `cookie`, and stand-ins for gh (`gh(argv)` answers) and npm (writes a lockfile, records its call).
    */
-  const proposeRepo = ({ gh = (argv: string[]) => ({ status: 0, stdout: argv[1] === "create" ? "https://github.com/owner/app/pull/41\n" : "" }) } = {}) => {
-    const main = suiteRepo({});
+  const proposeRepo = ({ gh = (argv: string[]) => ({ status: 0, stdout: argv[1] === "create" ? "https://github.com/owner/app/pull/41\n" : "" }), paths = {} as Record<string, Obj[]> } = {}) => {
+    const main = suiteRepo(paths);
     git(main, "branch", "-M", "main");
     mkdirSync(join(main, ".claude"), { recursive: true });
     writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["live.env"] } }));
@@ -452,11 +458,13 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     const bareShow = (ref: string, file: string) => spawnSync("git", ["--git-dir", bare, "show", `${ref}:${file}`], { encoding: "utf8" });
     return { main, bare, cookie, calls, runner, bareShow, propose: (dryRun = false) => smokePropose(main, { dryRun }, { runner }) };
   };
-  const ADD = (path: Obj[] = SUITE_PATH(), evidence = `held fresh and dirty in run ${RUN} (seed 5)`) => ({ kind: "add", id: "checkout", evidence, run: RUN, journey: { journey: "checkout", path, admitted: { run: RUN, head: "a".repeat(40), pathSha: "2".repeat(64), seed: 5 } } });
+  const ADMITTED = { run: RUN, head: "a".repeat(40), pathSha: "2".repeat(64), seed: 5 };
+  /** smoke admit's staged entry for checkout. */
+  const ADD = (path: Obj[] = SUITE_PATH(), evidence = `held fresh and dirty in run ${RUN} (seed 5)`) => ({ kind: "add", id: "checkout", run: RUN, changes: [{ kind: "add", id: "checkout", evidence, run: RUN }], body: ["### Add: checkout"], path, admitted: ADMITTED });
 
   it("builds the proposal from origin/<base>: the staged path, the regenerated files, changes.jsonl and the lockfile; commits signed off, pushes argus/smoke-<run>, opens the pull request", async () => {
     const p = proposeRepo();
-    stageChange(p.main, ADD());
+    stage(p.main, ADD());
     const before = git(p.main, "status", "--porcelain", "--untracked-files=no");
     const r = await p.propose();
     expect(r.code).toBe(0);
@@ -469,10 +477,10 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     const branch = `argus/smoke-${RUN}`;
     const want = generateSuite({ paths: [{ id: "checkout", path: SUITE_PATH() }], live: pathLive(), smoke: structuredClone(SMOKE_DEFAULTS), quarantine: [] });
     for (const [f, text] of Object.entries(want)) expect(p.bareShow(branch, `e2e/argus-smoke/${f}`).stdout, f).toBe(text);
-    expect(JSON.parse(p.bareShow(branch, "e2e/argus-smoke/journeys/checkout.json").stdout)).toEqual(ADD().journey);
+    expect(JSON.parse(p.bareShow(branch, "e2e/argus-smoke/journeys/checkout.json").stdout)).toEqual({ journey: "checkout", path: SUITE_PATH(), admitted: ADMITTED });
     expect(p.bareShow(branch, "e2e/argus-smoke/package-lock.json").stdout).toBe('{"lockfileVersion": 3}\n');
     const log = p.bareShow(branch, "e2e/argus-smoke/changes.jsonl").stdout.trim().split("\n").map((l: string) => JSON.parse(l));
-    expect(log).toEqual([{ kind: "add", id: "checkout", evidence: ADD().evidence, run: RUN }]);
+    expect(log).toEqual(ADD().changes);
     expect(p.calls.npm).toEqual([{ argv: ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], cwd: expect.stringMatching(/e2e\/argus-smoke$/) }]);
     // One commit on main's head, by the contract's gitEmail, signed off.
     const head = spawnSync("git", ["--git-dir", p.bare, "log", "-1", "--format=%ae%n%B", branch], { encoding: "utf8" }).stdout;
@@ -485,7 +493,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect([flag("--repo"), flag("--base"), flag("--head"), flag("--label")]).toEqual(["owner/app", "main", branch, "sapu:agent-filed"]);
     expect(p.calls.gh.some((a) => a[0] === "pr" && a[1] === "merge")).toBe(false);
     // Staged changes leave the stage, the proposal is remembered, the owner's checkout is untouched, the worktree gone.
-    expect(readStaged(p.main)).toEqual([]);
+    expect(readState(p.main).staged).toEqual([]);
     const state = JSON.parse(readFileSync(join(p.main, ".argus/smoke-state.json"), "utf8"));
     expect(state.proposals[changeDigest(ADD())]).toEqual({ kind: "add", id: "checkout", branch, url: "https://github.com/owner/app/pull/41", outcome: "open" });
     expect(git(p.main, "status", "--porcelain", "--untracked-files=no")).toBe(before);
@@ -496,7 +504,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
   it("the body: the change list, the baselines still needed and the change log, fenced", async () => {
     let body = "";
     const p = proposeRepo({ gh: (argv) => (argv[1] === "create" ? ((body = readFileSync(argv[argv.indexOf("--body-file") + 1], "utf8")), { status: 0, stdout: "https://github.com/owner/app/pull/41\n" }) : { status: 0, stdout: "" }) });
-    stageChange(p.main, ADD(SUITE_PATH(), "evidence with ``` and @someone"));
+    stage(p.main, ADD(SUITE_PATH(), "evidence with ``` and @someone"));
     await p.propose();
     expect(body).toContain("- add `checkout`\n");
     expect(body).toContain("baseline: needed checkout (smoke baseline --from-run after this PR's first CI run)");
@@ -530,7 +538,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     git(p.main, "add", ".");
     commit(p.main, "baseline v3");
     git(p.main, "push", "-q", "origin", "main");
-    stageChange(p.main, ADD());
+    stage(p.main, ADD());
     const r = await p.propose();
     expect(r.code).toBe(0);
     expect(r.lines).toContain("baseline: dropped e2e/argus-smoke/__screenshots__/chromium/linux/checkout.spec/1.png (it conflicts with origin/main)");
@@ -542,7 +550,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
 
   it("a file or the body holding a ledger secret refuses before any push, naming file:line:col and class", async () => {
     const p = proposeRepo();
-    stageChange(p.main, ADD(SUITE_PATH(`x-${p.cookie}`)));
+    stage(p.main, ADD(SUITE_PATH(`x-${p.cookie}`)));
     let msg = "";
     await p.propose().catch((e: Error) => (msg = e.message));
     expect(msg).toMatch(/^refused: smoke propose: \d+ secret\(s\): /);
@@ -551,14 +559,14 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect(msg).not.toContain(p.cookie.slice(0, 10));
     expect(msg).toMatch(/; nothing is pushed$/);
     const q = proposeRepo();
-    stageChange(q.main, ADD(SUITE_PATH(), `evidence ${q.cookie}`));
+    stage(q.main, ADD(SUITE_PATH(), `evidence ${q.cookie}`));
     msg = "";
     await q.propose().catch((e: Error) => (msg = e.message));
     expect(msg).toMatch(/body:\d+:\d+ cookie/);
     for (const x of [p, q]) {
       expect(spawnSync("git", ["--git-dir", x.bare, "rev-parse", "--verify", `argus/smoke-${RUN}`]).status).not.toBe(0);
       expect(x.calls.gh.some((a) => a[1] === "create")).toBe(false);
-      expect(readStaged(x.main)).toHaveLength(1);
+      expect(readState(x.main).staged).toHaveLength(1);
       expect(git(x.main, "worktree", "list").split("\n")).toHaveLength(1);
     }
   }, 60_000);
@@ -568,17 +576,73 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     const p = proposeRepo({ gh: (argv) => (argv[1] === "view" ? { status: 0, stdout: "CLOSED\n" } : { status: 0, stdout: argv[1] === "create" ? "https://github.com/owner/app/pull/41\n" : "" }) });
     writeFileSync(join(p.main, ".argus/smoke-state.json"), JSON.stringify({ proposals: { [changeDigest(ADD())]: { kind: "add", id: "checkout", branch: "argus/smoke-x", url: closedUrl, outcome: "open" } } }));
     // A later run finds the same path again: same digest.
-    stageChange(p.main, { ...ADD(), run: "20300102000000-0123abcd", evidence: "again" });
+    const other = "20300102000000-0123abcd";
+    stage(p.main, { ...ADD(), run: other, changes: [{ kind: "add", id: "checkout", evidence: "again", run: other }] });
     const r = await p.propose();
     expect(r.lines).toEqual([`skip add checkout: rejected in ${closedUrl}`, "smoke propose: nothing to propose"]);
     expect(p.calls.gh.filter((a) => a[1] === "create")).toEqual([]);
-    expect(JSON.parse(readFileSync(join(p.main, ".argus/smoke-state.json"), "utf8")).proposals[changeDigest(ADD())].outcome).toBe("closed");
-    expect(readStaged(p.main)).toEqual([]);
+    const state = readState(p.main);
+    expect(state.proposals[changeDigest(ADD())].outcome).toBe("closed");
+    expect(state.rejected).toEqual([changeDigest(ADD())]);
+    expect(state.staged).toEqual([]);
+    // The digest is rejected now: no verb stages that change again.
+    expect(stage(p.main, ADD())).toEqual({ staged: false, digest: changeDigest(ADD()) });
+  }, 60_000);
+
+  it("applies every staged kind: a heal keeps the admission and routes, a drop removes the journey and its baselines, quarantine.json follows", async () => {
+    let body = "";
+    const p = proposeRepo({ paths: { checkout: SUITE_PATH(), refund: SUITE_PATH(), wishlist: SUITE_PATH() }, gh: (argv) => (argv[1] === "create" ? ((body = readFileSync(argv[argv.indexOf("--body-file") + 1], "utf8")), { status: 0, stdout: "https://github.com/owner/app/pull/41\n" }) : { status: 0, stdout: "" }) });
+    const dir = join(p.main, "e2e/argus-smoke");
+    const put = (f: string, text: string) => {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), text);
+    };
+    const routes = [{ role: "sales", route: "/inbox" }];
+    const checkout = JSON.parse(readFileSync(join(dir, "journeys/checkout.json"), "utf8"));
+    put("journeys/checkout.json", JSON.stringify({ ...checkout, routes }));
+    put("known/refund.json", "[]\n");
+    put("__aria__/refund.spec/1.aria.yml", "- main:\n");
+    put("__screenshots__/chromium/linux/refund.spec/1.png", "\x89PNG");
+    put("__screenshots__/chromium/linux/checkout.spec/1.png", "\x89PNG");
+    put("quarantine.json", JSON.stringify([{ id: "checkout", issue: null, since: "90" }]));
+    git(p.main, "add", ".");
+    commit(p.main, "baselines and quarantine");
+    git(p.main, "push", "-q", "origin", "main");
+    const healed = SUITE_PATH("3");
+    const heal = { kind: "heal", id: "checkout", step: 3, from: { label: "Quantity" }, to: { label: "Qty" }, evidence: ["git log: no commit removed it"], run: RUN };
+    stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [heal], body: ["### Heal: checkout", "", "held twice"], path: healed });
+    stage(p.main, { kind: "unquarantine", id: "checkout", run: "100", changes: [{ kind: "unquarantine", id: "checkout", evidence: ["3 clean cycles"], run: "100" }], body: ["### Leave quarantine: checkout"] });
+    stage(p.main, { kind: "drop", id: "refund", run: "100", changes: [{ kind: "drop", id: "refund", evidence: ["quarantined for 5 cycles"], run: "100" }], body: ["### Drop: refund"] });
+    stage(p.main, { kind: "quarantine", id: "wishlist", run: "100", changes: [{ kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }], body: ["### Quarantine: wishlist"], quarantine: { id: "wishlist", issue: null, since: "100" } });
+    const r = await p.propose();
+    expect(r.code).toBe(0);
+    expect(r.lines.slice(0, 5)).toEqual([`branch: argus/smoke-${RUN}`, "change heal checkout step 3", "change unquarantine checkout", "change drop refund", "change quarantine wishlist"]);
+    const branch = `argus/smoke-${RUN}`;
+    const show = (f: string) => p.bareShow(branch, `e2e/argus-smoke/${f}`);
+    expect(JSON.parse(show("journeys/checkout.json").stdout)).toEqual({ ...checkout, path: healed, routes });
+    for (const gone of ["journeys/refund.json", "refund.spec.ts", "known/refund.json", "__aria__/refund.spec/1.aria.yml", "__screenshots__/chromium/linux/refund.spec/1.png"]) expect(show(gone).status, gone).not.toBe(0);
+    expect(show("__screenshots__/chromium/linux/checkout.spec/1.png").status).toBe(0);
+    expect(JSON.parse(show("quarantine.json").stdout)).toEqual([{ id: "wishlist", issue: null, since: "100" }]);
+    expect(show("wishlist.spec.ts").stdout).toContain('"tag": "@quarantine"');
+    expect(show("checkout.spec.ts").stdout).not.toContain("@quarantine");
+    const log = show("changes.jsonl").stdout.trim().split("\n").map((l: string) => JSON.parse(l));
+    expect(log).toEqual([heal, { kind: "unquarantine", id: "checkout", evidence: ["3 clean cycles"], run: "100" }, { kind: "drop", id: "refund", evidence: ["quarantined for 5 cycles"], run: "100" }, { kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }]);
+    expect(body).toContain("## Details\n### Heal: checkout\n\nheld twice\n");
+    const state = readState(p.main);
+    expect(state.staged).toEqual([]);
+    expect(Object.values(state.proposals).map((x: Obj) => [x.kind, x.id, x.outcome])).toEqual([["heal", "checkout", "open"], ["unquarantine", "checkout", "open"], ["drop", "refund", "open"], ["quarantine", "wishlist", "open"]]);
+  }, 60_000);
+
+  it("a heal of a journey the base does not hold refuses, nothing pushed", async () => {
+    const p = proposeRepo();
+    stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [{ kind: "heal", id: "checkout", step: 3, from: {}, to: {}, evidence: [], run: RUN }], body: [], path: SUITE_PATH() });
+    await expect(p.propose()).rejects.toThrow("refused: smoke propose: the staged heal of checkout names a journey origin/main's suite does not hold");
+    expect(readState(p.main).staged).toHaveLength(1);
   }, 60_000);
 
   it("--dry-run prints the change list and writes nothing", async () => {
     const p = proposeRepo();
-    stageChange(p.main, ADD());
+    stage(p.main, ADD());
     const before = tree(p.main);
     const r = await p.propose(true);
     expect(r).toEqual({ code: 0, lines: [`would propose on argus/smoke-${RUN}: 1 change(s)`, "change add checkout"] });

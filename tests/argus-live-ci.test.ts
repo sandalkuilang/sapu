@@ -11,7 +11,7 @@ import { pruneAria, quarantineCycle, smokeBaseline, smokeCi } from "../plugins/s
 // @ts-expect-error — plain ESM script without types
 import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
-import { readState } from "../plugins/sapu/scripts/argus-live-heal.mjs";
+import { readState } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down } from "../plugins/sapu/scripts/argus-live-run.mjs";
 

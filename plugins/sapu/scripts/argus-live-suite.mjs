@@ -20,7 +20,8 @@ import { loadContract } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const JOURNEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** The local state the lane keeps beside the catalog (spec §19.2): gitignored, never committed. */
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+/** The lane's local smoke state (spec §19.2): gitignored, never committed (readState). */
 export const STATE_FILE = ".argus/smoke-state.json";
 
 /** `.argus/smoke.json` as validateSmoke fills it (the defaults without one); refused when it is broken. */
@@ -37,17 +38,6 @@ export function suitePaths(main, dir, verb) {
   } catch (e) {
     throw new Error(String(e.message).replace(/^refused: smoke run: /, `refused: ${verb}: `));
   }
-}
-
-/** `.argus/smoke-state.json` (spec §19.2) → `{journeys: {<id>: {…}}, proposals: {<digest>: {…}}}`, empty parts when absent or unreadable. */
-export function readState(main) {
-  let raw = null;
-  try {
-    raw = JSON.parse(fs.readFileSync(path.join(main, STATE_FILE), "utf8"));
-  } catch {
-    raw = null;
-  }
-  return { journeys: isObj(raw) && isObj(raw.journeys) ? raw.journeys : {}, proposals: isObj(raw) && isObj(raw.proposals) ? raw.proposals : {} };
 }
 
 /** The suite's `quarantine.json` (spec §19.9): `[{id, issue, since}]` → the quarantined ids; none when absent or not that shape. */
@@ -206,58 +196,97 @@ export function smokePlan(main, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Staged changes (spec §19.8): what the next `smoke propose` opens as a pull request. Local, gitignored, 0600.
+// The lane's local smoke state (spec §19.2, §19.8, §19.9): gitignored, 0600, one file every smoke verb shares.
+// smoke admit, smoke heal and smoke ci stage into it; smoke propose turns the staged changes into a pull request.
 
-export const STAGED_FILE = ".argus/smoke-staged.json";
+/** `v` as JSON with every object's keys sorted: one change, one text. */
+export const canonical = (v) => JSON.stringify(v, (_k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
+
 /**
- * A staged change's kinds: `add` and `heal` carry the journey file (`journey`: `{journey, path, admitted}`),
- * `drop` and `retire` remove the journey from the suite, `quarantine` carries quarantine.json's entry
- * (`quarantine`: `{id, issue, since}`), `unquarantine` removes it.
+ * A staged change's kinds: `add` and `heal` carry the journey's `path` (an add its `admitted` record and the map's
+ * `routes` too), `drop` and `retire` remove the journey from the suite, `quarantine` carries quarantine.json's
+ * entry (`quarantine`: `{id, issue, since}`), `unquarantine` removes it.
  */
 export const CHANGE_KINDS = Object.freeze(["add", "heal", "drop", "retire", "quarantine", "unquarantine"]);
 
-const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+/** An empty smoke state. */
+const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [], proposals: {} });
+const isEntry = (e) => isObj(e) && CHANGE_KINDS.includes(e.kind) && typeof e.id === "string" && JOURNEY.test(e.id) && typeof e.run === "string" && (e.changes === undefined || Array.isArray(e.changes));
 
 /**
- * A change's digest (spec §19.8: a rejected change is remembered by it and never proposed again): its kind,
- * journey, step, old and new target and path, never its run or evidence, so the same change found again by a
- * later run has the same digest.
+ * The lane's smoke state → `{version: 1, staged, rejected, journeys, comments, proposals}` (an empty one when the file
+ * is missing): `staged` the changes the next proposal holds (`{kind, id, run, changes, body, path?, admitted?,
+ * routes?, quarantine?, digest}`), `rejected` the digests of changes a closed proposal held, `journeys.<id>` the
+ * per-journey streaks (`retire`, flakes, quarantine), `comments` the pull request comments made, `proposals` each
+ * proposal by digest (`{kind, id, branch, url, outcome: open|merged|closed}`). A file that is not that shape is
+ * refused, never overwritten: it may hold an outcome the owner gave.
  */
-export function changeDigest(c) {
-  return sha256(JSON.stringify([c.kind, c.id, c.step ?? null, c.from ?? null, c.to ?? null, isObj(c.journey) ? (c.journey.path ?? null) : null]));
-}
-
-const isChange = (c) => isObj(c) && CHANGE_KINDS.includes(c.kind) && typeof c.id === "string" && JOURNEY.test(c.id) && typeof c.run === "string";
-
-/** The staged changes, oldest first; none when there is no file. A file that is not `{changes: [...]}` is refused. */
-export function readStaged(main) {
+export function readState(main) {
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(path.join(main, STAGED_FILE), "utf8"));
+    raw = fs.readFileSync(path.join(main, STATE_FILE), "utf8");
   } catch (e) {
-    if (e && e.code === "ENOENT") return [];
-    throw new Error(`refused: ${STAGED_FILE} is not a list of staged changes`);
+    if (e && e.code === "ENOENT") return EMPTY();
+    throw new Error(`refused: ${STATE_FILE} cannot be read (${(e && e.code) || "error"})`);
   }
-  if (!isObj(raw) || !Array.isArray(raw.changes) || !raw.changes.every(isChange)) throw new Error(`refused: ${STAGED_FILE} is not a list of staged changes`);
-  return raw.changes;
+  let s;
+  try {
+    s = JSON.parse(raw);
+  } catch {
+    s = null;
+  }
+  const lists = ["staged", "rejected", "comments"];
+  const bad = !isObj(s) || (s.version !== undefined && s.version !== 1) || (s.journeys !== undefined && !isObj(s.journeys)) || (s.proposals !== undefined && !isObj(s.proposals));
+  if (bad || lists.some((k) => s[k] !== undefined && !Array.isArray(s[k])) || !(s.staged ?? []).every(isEntry)) {
+    throw new Error(`refused: ${STATE_FILE} is not the smoke state (remove it to start over)`);
+  }
+  return { ...EMPTY(), ...s, version: 1 };
 }
 
-/** Writes the staged changes whole (0600, a temp file renamed over it); none removes the file. */
-export function writeStaged(main, changes) {
-  const file = path.join(main, STAGED_FILE);
-  if (!changes.length) return fs.rmSync(file, { force: true });
+/** Writes the smoke state whole (0600, a temp file renamed over it): every part, proposals included, as read. */
+export function writeState(main, state) {
+  const file = path.join(main, STATE_FILE);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.renameSync(tempBeside(file, `${JSON.stringify({ changes }, null, 2)}\n`, 0o600), file);
+  fs.renameSync(tempBeside(file, `${JSON.stringify(state, null, 2)}\n`, 0o600), file);
 }
 
 /**
- * Stages `change` (`{kind, id, step?, from?, to?, evidence, run, journey?, quarantine?}`) for the next
- * proposal, replacing an earlier staged change of the same kind and journey. Lanes B's heal, quarantine and
- * drop stage through it too.
+ * A staged change's digest (spec §19.8: a rejected change is remembered by it and never proposed again): sha256 of
+ * its kind, journey, changes, path and quarantine entry, never the run, the evidence or the body, so the same change
+ * found again by a later run has the same digest.
  */
-export function stageChange(main, change) {
-  if (!isChange(change)) throw new Error("refused: a staged change is {kind, id, run, …} with a known kind");
-  writeStaged(main, [...readStaged(main).filter((c) => !(c.kind === change.kind && c.id === change.id)), change]);
+export function changeDigest(entry) {
+  const changes = (entry.changes ?? []).map(({ run: _r, evidence: _e, ...c }) => c);
+  return createHash("sha256").update(canonical({ kind: entry.kind, id: entry.id, changes, path: entry.path ?? null, quarantine: entry.quarantine ?? null })).digest("hex");
+}
+
+/**
+ * Stages `entry` (`{kind, id, run, changes: [changes.jsonl lines], body: [markdown lines], …}`) into smoke state
+ * `state` (changed in place) → `{staged, digest}`. A staged entry of the same kind and journey is replaced; a digest
+ * the owner rejected (a closed proposal) is never staged again (`staged: false`).
+ */
+export function stageInto(state, entry) {
+  if (!isEntry(entry)) throw new Error("refused: a staged change is {kind, id, run, …} with a known kind");
+  const digest = changeDigest(entry);
+  if (state.rejected.includes(digest)) return { staged: false, digest };
+  state.staged = [...state.staged.filter((s) => !(s.kind === entry.kind && s.id === entry.id)), { ...entry, digest }];
+  return { staged: true, digest };
+}
+
+/** stageInto on the state file: read, staged, written. */
+export function stage(main, entry) {
+  const state = readState(main);
+  const r = stageInto(state, entry);
+  if (r.staged) writeState(main, state);
+  return r;
+}
+
+/** A markdown code fence around `lines` that no backtick run inside them can close. */
+export function codeBlock(lines) {
+  const text = lines.join("\n");
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const f = "`".repeat(Math.max(3, longest + 1));
+  return [`${f}text`, ...lines, f];
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -375,8 +404,10 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
   }
   const admitted = { run: lock.runId, head: rec.worktreeHead ?? null, pathSha: sha256(JSON.stringify(list)), seed: used };
   const routes = mapRoutes(main, id);
-  stageChange(main, { kind: "add", id, evidence: `held fresh and dirty in run ${lock.runId} (seed ${used})`, run: lock.runId, journey: { journey: id, path: list, admitted, ...(routes.length ? { routes } : {}) } });
-  lines.push(`admit ${id}: held fresh and dirty; staged for smoke propose`);
+  const evidence = `held fresh and dirty in run ${lock.runId} (seed ${used})`;
+  const body = [`### Add: ${id}`, "", `The path held twice, after up --fresh and then dirty, in run ${lock.runId} (seed ${used}).`];
+  const r = stage(main, { kind: "add", id, run: lock.runId, changes: [{ kind: "add", id, evidence, run: lock.runId }], body, path: list, admitted, ...(routes.length ? { routes } : {}) });
+  lines.push(r.staged ? `admit ${id}: held fresh and dirty; staged for smoke propose` : `admit ${id}: held fresh and dirty; not staged (a closed proposal rejected this path; digest ${r.digest.slice(0, 12)})`);
   return { code: 0, lines };
 }
 
