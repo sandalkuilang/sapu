@@ -117,7 +117,8 @@ describe("smoke plan — the catalog ranked into the suite's members (spec §19.
     // d's last lane pass broke at a locator: a heal decides it.
     const runId = "20300101000000-0123abcd";
     mkdirSync(join(main, ".argus/live", runId, "smoke"), { recursive: true });
-    writeFileSync(join(main, ".argus/live", runId, "smoke/pass.jsonl"), `${JSON.stringify({ id: "d", verdict: "broke", step: 3, kind: "target-missing", seed: 1 })}\n${JSON.stringify({ id: "a", verdict: "held", step: null, kind: null, seed: 1 })}\n`);
+    // c's broke at an action on its one control: a regression candidate, never a heal (nor keep).
+    writeFileSync(join(main, ".argus/live", runId, "smoke/pass.jsonl"), `${JSON.stringify({ id: "d", verdict: "broke", step: 3, kind: "target-missing", seed: 1 })}\n${JSON.stringify({ id: "a", verdict: "held", step: null, kind: null, seed: 1 })}\n${JSON.stringify({ id: "c", verdict: "broke", step: 2, kind: "action-failed", seed: 1 })}\n`);
     writeFileSync(join(dir, "quarantine.json"), JSON.stringify([{ id: "b", issue: 12, since: "20300101000000-0123abcd" }]));
     // old's issue was closed as not planned: retired.
     writeFileSync(join(main, ".argus/smoke-state.json"), JSON.stringify({ journeys: { old: { retire: true } } }));
@@ -134,7 +135,7 @@ describe("smoke plan — the catalog ranked into the suite's members (spec §19.
       "keep e",
       "heal d",
       "quarantined b",
-      "keep c",
+      "regression-candidate c step 2 action-failed",
       "keep a",
       "pending h https://github.com/owner/app/pull/7",
       "drop f (excluded)",

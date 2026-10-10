@@ -1987,7 +1987,8 @@ other journey reads, so CI order would decide outcomes) and dropped ones: pinned
 distinct roles, then id. Members already in the suite rank before non-members of the same tier (no
 flapping). The first `max` minus `exclude` are the target set. Output, one line each: `keep <id>`,
 `capture <id>` (no path yet), `drop <id> (<reason>)` (excluded, out of the map, global, past the
-cap, retired), `heal <id>`, `quarantined <id>`, `pending <id> <pr url>`, `pending-regression <id> <pr url>`
+cap, retired), `heal <id>`, `regression-candidate <id> step <n> <kind>` (an `expect-failed` or
+`action-failed` last pass: `smoke run --slot` writes the candidate), `quarantined <id>`, `pending <id> <pr url>`, `pending-regression <id> <pr url>`
 (§19.9), and `upgrade <from> → <to>
 (baseline run needed)` when the suite's pin is behind the generator's (a new Playwright renders
 differently, so every screenshot is re-baselined in the upgrade's pull request) [pw-snap]. Pinning a global or dropped

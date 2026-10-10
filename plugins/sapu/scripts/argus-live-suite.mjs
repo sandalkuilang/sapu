@@ -168,6 +168,8 @@ export function planOf(main, { runner = run, gh = "gh", state: given = null } = 
           ? `quarantined ${id}`
           : members.has(id) && last && last.verdict === "broke" && /^target-/.test(String(last.kind))
             ? `heal ${id}`
+            : members.has(id) && last && last.verdict === "broke" && /^(action|expect)-failed$/.test(String(last.kind)) && Number.isInteger(last.step)
+              ? `regression-candidate ${id} step ${last.step} ${last.kind}`
             : members.has(id)
               ? `keep ${id}`
               : `capture ${id}`;
