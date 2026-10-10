@@ -1,0 +1,10 @@
+services:
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    environment:
+      MONGO_INITDB_DATABASE: ledger_dev
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "6379:6379"

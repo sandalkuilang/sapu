@@ -4,7 +4,7 @@ Lookup material for the forge skill (SKILL.md in this skill's directory). Repo f
 
 ## Issue priority ladder
 
-Only consider issues that are open, not `needs-clarification`/`<blocked>`, not already owned by an open PR, and passing `sapu-contract.mjs issue-trust <n>` (a trusted author, or the contract's acceptance label applied by a trusted login). `needs-ai` (and any legacy spelling of it in profile §Labels) does **not** exclude an issue — it means the work starts with a research dossier instead of with code.
+Only consider issues that are open, not `needs-clarification`/`<blocked>`/`<labels.needsOwner>` (default `argus:needs-owner`: it waits for the owner's ruling), not already owned by an open PR, and passing `sapu-contract.mjs issue-trust <n>` (a trusted author, or the contract's acceptance label applied by a trusted login). `needs-ai` (and any legacy spelling of it in profile §Labels) does **not** exclude an issue — it means the work starts with a research dossier instead of with code.
 
 1. **p0** — production broken, security, data loss, `<base>` build red.
 2. **p1** — high-value bug or committed feature.
@@ -37,7 +37,7 @@ Only consider issues that are open, not `needs-clarification`/`<blocked>`, not a
 
 - Worktree + branch per issue off `origin/<base>`; never commit directly to `<base>`, never `checkout`/`pull`/`stash` in the main checkout. Never force-push a shared/protected branch or rewrite published history.
 - Conventional commits, atomic and self-describing.
-- Squash-merge to keep `<base>` linear; delete the branch after.
+- Merge with the contract's `mergeMethod` (default squash, which keeps `<base>` linear); delete the branch after.
 - One issue → one branch → one PR. Small PRs, small blast radius — even with no human reading them.
 
 ```bash
@@ -65,7 +65,8 @@ Never add, remove, rename or create the acceptance label (`labels.accepted`): ac
 File only well-formed issues: title, context, repro or rationale, clear acceptance criteria, a priority label, severity if relevant. No spam — if everything's fine, file nothing. Never open a 🔴-tier issue and auto-merge your own fix for it in the same breath; red stays red regardless of who opened it.
 
 ```bash
-gh issue create --repo <repo> --title "..." --body "..." --label "<type>,<priority>"   # label names: profile §Labels
+# <agentFiled> = the contract's labels.agentFiled (default sapu:agent-filed; none with policy.traces "none"): every agent-filed issue carries it (CONTRACT.md, Agent-filed issues)
+gh issue create --repo <repo> --title "..." --body "..." --label "<type>,<priority>,<agentFiled>"   # label names: profile §Labels
 ```
 
 ## State & labels

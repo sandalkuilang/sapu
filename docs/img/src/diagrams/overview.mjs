@@ -1,10 +1,10 @@
-import { card, rect, text, lines, arrow, iconTile, brandTile, chip, chips, badge, legend, m, b, c, tw } from "../lib.mjs";
+import { card, rect, text, lines, arrow, iconTile, brandTile, chip, chips, chipsWrap, badge, legend, m, b, c, tw } from "../lib.mjs";
 
 export default {
-  h: 956,
+  h: 1098,
   title: "sapu — how the pieces fit",
-  desc: "The sapu plugin is an engine (skills, worker agents, guard hook, workflows, scripts) that knows no repo; its specialist agents come from the senior-dev-team plugin, installed with it and called by role. Each repo supplies a contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init), committed in the repo or kept local under ~/.config/sapu/repos/, plus the QA configs .argus/, .momus/ and .nemesis/ config.yml; nemesis targets are not in it but in an owner-signed, gitignored authorization.yml. An optional per-machine config (~/.config/sapu/config.json: allowedRoots, projectScopeOnly) limits where sapu may run. /sapu runs one forge worker per issue in parallel lanes, a reviewer by tier that is never the author, and merges ready PRs through the merge gate sapu-merge.sh; /inspector runs momus, then argus, then nemesis, one after another; /dream runs standalone and read-only and writes one local report under dreams/. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate. GitHub issues are filed by argus and nemesis; by sapu only for security gaps and a proven base flake; by momus only when asked. momus and inspector write reports; state lives in the main checkout under .argus/, .momus/, .nemesis/ and dreams/.",
-  label: "How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config, with specialists from the senior-dev-team plugin; the sapu orchestrator runs one forge worker per issue in parallel lanes, inspector runs momus then argus then nemesis, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.",
+  desc: "The sapu plugin is an engine (skills, worker agents and the journey lane's explorer, guard hook, workflows, scripts) that knows no repo; its specialist agents come from the senior-dev-team plugin, installed with it and called by role. Each repo supplies a contract (.claude/sapu.json and .claude/sapu/*.md profiles, written by /sapu:init), committed in the repo or kept local under ~/.config/sapu/repos/, plus the QA configs .argus/, .momus/ and .nemesis/ config.yml and the journey lane's .argus/live.json; nemesis targets are not in it but in an owner-signed, gitignored authorization.yml. An optional per-machine config (~/.config/sapu/config.json: allowedRoots, projectScopeOnly) limits where sapu may run. /sapu runs one forge worker per issue in parallel lanes, as many as the machine's cores, memory and load allow, a reviewer by tier that is never the author, and merges ready PRs through the merge gate sapu-merge.sh; /inspector runs momus, then argus, then nemesis, one after another, and its argus phase never runs the journey lane; /journey, from the main session only, walks business journeys with one guarded ui-explorer agent per journey on an isolated instance of its own and files a finding only after a script reproduced it two of two and scrub found no secret in it; /dream runs standalone and read-only and writes one local report under dreams/. The guard hook polices every subagent but never the orchestrator, and only the orchestrator merges, through the merge gate. GitHub issues are filed by argus (journey findings only through scrub) and nemesis; by sapu only for security gaps and a proven base flake; by momus only when asked; every issue an agent files carries the agent-filed label. A defect of the engine itself is filed by sapu on the plugin's own repository, never patched around in the repo. momus and inspector write reports; state lives in the main checkout under .argus/, .momus/, .nemesis/ and dreams/.",
+  label: "How sapu fits together: a repo-agnostic engine plus a per-repo contract, optionally scope-locked by a machine config, with specialists from the senior-dev-team plugin; the sapu orchestrator runs one forge worker per issue in parallel lanes, inspector runs momus then argus then nemesis, /journey walks business journeys on an isolated instance and files only what a script reproduced twice, dream runs standalone, a guard hook polices every subagent, and only the orchestrator merges through the merge gate.",
   eyebrow: "ARCHITECTURE",
   heading: "How the pieces fit",
   sub: "A repo-agnostic engine, a per-repo contract, and an optional machine scope lock.",
@@ -21,7 +21,7 @@ export default {
     s += text(96, y1 + 50, `${m(".claude/sapu.json")} + ${m(".claude/sapu/*.md")} — drafted by /sapu:init`, "cap");
     s += lines(48, y1 + 76, [
       `or local, nothing in the repo: ${m("~/.config/sapu/repos/&lt;owner&gt;__&lt;name&gt;/")}`,
-      `+ QA configs: ${m(".argus/ .momus/ .nemesis/")} config.yml`,
+      `+ QA configs: ${m(".argus/ .momus/ .nemesis/")} config.yml, ${m(".argus/live.json")}`,
       `not in it: nemesis targets — owner-signed, gitignored ${m("authorization.yml")}`,
     ], "cap", 19);
 
@@ -39,38 +39,39 @@ export default {
     s += text(640, y1 + 160, "scope lock", "cap");
 
     // ---- engine
-    s += `<rect x="32" y="${y2}" width="640" height="214" rx="16" class="card" filter="url(#sh)"/><rect x="32" y="${y2}" width="640" height="214" rx="16" fill="none" stroke="url(#brand)" stroke-width="1.6"/>`;
+    const EH = 242;
+    s += `<rect x="32" y="${y2}" width="640" height="${EH}" rx="16" class="card" filter="url(#sh)"/><rect x="32" y="${y2}" width="640" height="${EH}" rx="16" fill="none" stroke="url(#brand)" stroke-width="1.6"/>`;
     s += brandTile("lanes", 48, y2 + 16, 36);
     s += text(96, y2 + 32, "sapu plugin — the engine", "ttl");
     s += text(96, y2 + 50, "knows no repo; every repo fact comes from its contract", "cap");
     s += text(48, y2 + 80, "SKILLS", "lbl");
-    const sk1 = [["/sapu", "neutral", { mono: true }], ["/forge", "neutral", { mono: true }], ["/inspector", "neutral", { mono: true }], ["/momus", "neutral", { mono: true }], ["/argus", "neutral", { mono: true }], ["/nemesis", "neutral", { mono: true }], ["/dream", "neutral", { mono: true }], ["/sapu:init", "neutral", { mono: true }]];
-    s += chips(48, y2 + 88, sk1, 6)[0];
+    const sk1 = [["/sapu", "neutral", { mono: true }], ["/forge", "neutral", { mono: true }], ["/inspector", "neutral", { mono: true }], ["/momus", "neutral", { mono: true }], ["/argus", "neutral", { mono: true }], ["/journey", "neutral", { mono: true }], ["/nemesis", "neutral", { mono: true }], ["/dream", "neutral", { mono: true }], ["/sapu:init", "neutral", { mono: true }]];
+    s += chipsWrap(48, y2 + 88, sk1, 608, 6)[0];
     const mods = [
-      ["agents/", ["the worker", "ladder only"], "card2"],
+      ["agents/", ["the worker ladder,", "the ui-explorer"], "card2"],
       ["hooks/ · guard", ["every subagent's", "tool calls"], "k-red"],
       ["workflows/", ["sapu-wave.js", "inspector.js"], "card2", true],
       ["scripts/", ["merge · cleanup", "checks"], "card2"],
     ];
     mods.forEach(([t, l, cls, mono], i) => {
-      const x = 48 + i * 154, y = y2 + 124;
+      const x = 48 + i * 154, y = y2 + 152;
       s += rect(x, y, 144, 74, cls === "card2" ? "sunken" : cls, 10);
       s += text(x + 14, y + 24, t, "tb mono");
       s += lines(x + 14, y + 45, l, mono ? "cap mono" : "cap", 18);
     });
 
     // senior-dev-team
-    s += card(708, y2, 180, 214, "k-violet", 16);
+    s += card(708, y2, 180, EH, "k-violet", 16);
     s += brandTile("users", 724, y2 + 16, 36);
     s += text(724, y2 + 76, "senior-dev-team", "ttl");
     s += lines(724, y2 + 98, ["second plugin, installed", "with sapu", "", "8 senior specialists:", "reviewers and advisers,", "called by role"], "cap", 17);
-    s += arrow([[706, y2 + 107], [676, y2 + 107]], "ar-v");
+    s += arrow([[706, y2 + 121], [676, y2 + 121]], "ar-v");
 
     // ---- how a run flows
-    const y3 = y2 + 262;
+    const y3 = y2 + EH + 48;
     s += badge(46, y3 - 5, "▸");
     s += text(70, y3, "How a run flows", "sec");
-    const r1 = y3 + 40, r2 = r1 + 74, r3 = r2 + 74, eh = 52;
+    const r1 = y3 + 40, r2 = r1 + 74, r3 = r2 + 74, r4 = r3 + 74, eh = 52;
     // guard region
     s += `<rect x="168" y="${r1 - 26}" width="452" height="${r2 + eh + 12 - (r1 - 26)}" rx="14" class="guard"/>`;
     s += text(184, r1 - 10, "guard hook polices every subagent and every dispatch", "cap c-red");
@@ -81,7 +82,7 @@ export default {
     s += entry(r1 + 2, "/sapu", "orchestrator");
     s += arrow([[152, r1 + 28], [182, r1 + 28]]);
     s += text(167, r1 + 18, "", "cap");
-    s += node(186, r1 + 2, 196, "forge worker × N", "one lane per issue", "sunken");
+    s += node(186, r1 + 2, 196, "forge worker × N", "a lane per issue, N per machine", "sunken");
     s += arrow([[384, r1 + 28], [404, r1 + 28]]);
     s += node(408, r1 + 2, 196, "reviewer by tier", "never the author", "sunken");
     s += arrow([[606, r1 + 28], [644, r1 + 28]]);
@@ -99,17 +100,30 @@ export default {
     s += text(648, r2 + 23, "one after another,", "cap");
     s += text(648, r2 + 41, "never in parallel", "cap");
 
-    s += entry(r3 + 4, "/dream", "read-only");
-    s += arrow([[152, r3 + 30], [644, r3 + 30]], "ar-g");
-    s += text(398, r3 + 22, "research → hypotheses → experiments; no GitHub writes", "cap", "middle");
-    s += node(648, r3 + 4, 240, "one local report", "dreams/", "k-green", "tb", "cap mono");
+    s += entry(r3, "/journey", "main session");
+    s += arrow([[152, r3 + 26], [182, r3 + 26]]);
+    s += `<rect x="178" y="${r3 - 6}" width="212" height="${eh + 12}" rx="14" class="guard"/>`;
+    s += node(186, r3, 196, "ui-explorer × N", "wrapper only, own instance", "k-violet");
+    s += arrow([[384, r3 + 26], [404, r3 + 26]]);
+    s += node(408, r3, 196, "repro 2 of 2", "fresh instance each run", "sunken");
+    s += arrow([[606, r3 + 26], [644, r3 + 26]]);
+    s += node(648, r3, 130, "scrub", "no secret leaves", "k-red");
+    s += arrow([[780, r3 + 26], [796, r3 + 26]], "ar-g");
+    s += node(800, r3, 88, "issue", "filed", "k-green");
+
+    s += entry(r4 + 4, "/dream", "read-only");
+    s += arrow([[152, r4 + 30], [644, r4 + 30]], "ar-g");
+    s += text(398, r4 + 22, "research → hypotheses → experiments; no GitHub writes", "cap", "middle");
+    s += node(648, r4 + 4, 240, "one local report", "dreams/", "k-green", "tb", "cap mono");
 
     // produced
-    const y4 = r3 + 80;
-    s += rect(32, y4, 856, 66, "sunken", 12);
-    s += iconTile("flag", 46, y4 + 16, "violet", 34) ;
+    const y4 = r4 + 80;
+    s += rect(32, y4, 856, 106, "sunken", 12);
+    s += iconTile("flag", 46, y4 + 36, "violet", 34);
     s += text(94, y4 + 28, `${b("GitHub issues")}  argus, nemesis · sapu only for security gaps and a proven base flake · momus only when asked`, "cap");
-    s += text(94, y4 + 48, `${b("Reports + state")}  momus, inspector write reports · state in the main checkout: ${m(".argus/ .momus/ .nemesis/ dreams/")}`, "cap");
+    s += text(94, y4 + 48, `${b("Agent-filed label")}  on every issue an agent files · a defect of the engine itself: filed on the plugin's own repo`, "cap");
+    s += text(94, y4 + 68, `${b("Journey findings")}  only reproduced two of two, filed only through scrub · needs-owner ones wait for the owner`, "cap");
+    s += text(94, y4 + 88, `${b("Reports + state")}  momus, inspector write reports · state in the main checkout: ${m(".argus/ .momus/ .nemesis/ dreams/")}`, "cap");
     return s;
   },
 };

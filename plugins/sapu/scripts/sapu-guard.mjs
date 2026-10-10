@@ -21,35 +21,47 @@
 // `&`, redirection operators as words of their own, subshells, `$( )` and backticks — also inside
 // double quotes), wrappers are peeled (`env`, `nice`, `time`, `exec`, `xargs`, `npx`, `bunx`,
 // `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, ...),
-// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec` and heredocs
-// fed to a shell are checked recursively (nesting deeper than MAX_DEPTH is blocked, never waved
+// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec`/`fd -x|-X`/
+// `parallel`/`sem`/`rush` and heredocs fed to a shell are checked recursively, the words xargs, find,
+// fd, parallel and rush fill in at run
+// time counted as words the shell builds (nesting deeper than MAX_DEPTH is blocked, never waved
 // through), and `cd`/`pushd`/`env -C`/`git -C`/`--git-dir`/`--work-tree`/`GIT_DIR` are followed
 // (a `cd` inside `( )`, a pipeline or `&` does not move the parent) to know which checkout a
 // command acts on. A regex over the raw text was the first version and the review rounds showed
 // how it leaked; every leak they found is a test in sapu-guard.test.ts. Read/Write/Edit/
 // MultiEdit/NotebookEdit calls are checked by path: no env file (any letter case) is read or
-// written, no git file (`.git`, ~/.gitconfig, ~/.config/git/) and nothing in sapu's machine config
-// (~/.config/sapu/, whose loss lifts the scope lock) is written by any subagent, and a worker writes
+// written, no git file (`.git`, ~/.gitconfig, ~/.config/git/), nothing in sapu's machine config
+// (~/.config/sapu/, whose loss lifts the scope lock) and nothing of a plugin agents run under (its
+// folder, Claude Code's plugin store and user settings, a local marketplace's plugin sources:
+// pluginDirs; these three in any letter case too) is written by any subagent, and a worker writes
 // nothing into the main checkout outside its `.claude/worktrees/` (symlinks resolved, so a
 // worktree's linked node_modules counts as <MAIN>). The same holds for the common Bash write
-// forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), where a glob target
-// is judged by what its literal prefix can expand into. Grep/Glob calls are
+// forms (redirections, tee, cp/mv/install/ln, sed -i, perl -i, rm, patch), with brace lists
+// expanded, `~`, `~user`, `~+`, `~-` and `cd -` read as the shell reads them, a copy, move or link
+// judged also where it lands (`<dest>/<name>`, or `<dest>` itself for a recursive copy of a
+// source's contents, where a directory above a protected path counts), and a glob target judged
+// by what it can expand into, segment by segment. Grep/Glob calls are
 // checked by their path and path glob: none may name or be able to match an env file.
 //
 // RULES. The engine rules (git/gh/stash/force/refs/base branch/main checkout, .env/.env.local,
 // installs through symlinked node_modules, destructive prisma) hold in every repo. The repo adds
 // its own through `guard` in its contract .claude/sapu.json (CONTRACT.md): protected Postgres
-// ports/databases, more env files, and `deny` rules; its `gate.merge` command is denied
-// automatically. The contract is read from <MAIN>'s COMMITTED HEAD, never from a working tree.
+// ports/databases (`postgres`), those of MySQL, MongoDB, Redis and SQLite (`databases`), more env
+// files, and `deny` rules; its `gate.merge` command is denied
+// automatically. The contract is read from <MAIN>'s COMMITTED HEAD, never from a working tree,
+// and <MAIN> is the repo a call touches, not the session's folder (TOUCHED REPO, before decide()).
 // A contract that exists but is broken blocks every call except the canary; a repo with no
 // contract yet keeps the engine floor, except for a sapu worker, which never works without one.
 //
 // STEP BUDGET. A ladder worker's tool calls are counted per agent id (stepBudget below): a reminder
 // block at STEP_SOFT, every STEP_EVERY after and every STEP_EVERY_LATE past STEP_HARD; never a hard stop.
+// It is off without an agent_id or a writable counter, so the worker canary's answer also carries
+// whether it counts (stepProbe), and the wave logs a WARNING when it does not.
 //
 // SCOPE. Wired through the plugin's hooks/hooks.json, which fires for every Bash, file and search
-// tool call in the session; the CLI acts for every call whose hook input carries an `agent_type`
-// (a subagent, a subagent's subagent, ...); the orchestrator — the main session, which merges,
+// tool call in the session; the CLI acts for every call whose hook input carries an `agent_id`
+// (a subagent, a subagent's subagent, ...; a ladder worker or the explorer by its `agent_type`
+// alone too); the orchestrator — the main session, also one started with `--agent`, which merges,
 // runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
 // agents from (HOME CHECKOUT below: checkHome). Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
@@ -63,39 +75,104 @@
 // hook is live with a canary command (`sapu-guard-canary`) before trusting a worker.
 //
 // LIMITS (deliberate, known — see THREAT MODEL): an interpreter running its own code (`node -e`,
-// `python -c`, a script, `expect`, `tmux send-keys`, `parallel`, `watch`, a pty wrapper such as
-// `script` fed through stdin) is not parsed; shell variables are not expanded (except a leading
+// `python -c`, a script, `expect`, `tmux send-keys`, commands `parallel` reads from stdin or a file,
+// `watch`, a pty wrapper such as `script` fed through stdin) is not parsed, nor is a command held in
+// a variable (`$CMD`, `eval "$CMD"`, `bash -c "$CMD"`); shell variables are not expanded (except a leading
 // `$HOME`/`${HOME}`, read like `~`) — a mutating git command whose target is a variable is
 // BLOCKED, but a Bash write whose target is another variable (`> "$M/x"`) or comes from stdin
 // (`xargs rm`), or whose cwd is such a variable while the path is relative, is allowed. A write
-// target with a glob (`*`, `?`, `[`) is judged by its literal prefix: blocked when what it can
-// expand into reaches git's own files under HOME or sapu's machine config (or an ancestor of
-// them); elsewhere only the literal word is checked. A symlink whose target does not exist yet
+// target with a glob (`*`, `?`, `[`) is matched segment by segment with the shell's dotfile rule
+// (`**` reaches any depth): blocked when it can expand into git's own files under HOME, a `.git`,
+// or sapu's machine config (or an ancestor of them, or something inside); elsewhere only the
+// literal word is checked. A quoted `{a,b}` is expanded like an unquoted one (a false block, never
+// a miss); a brace sequence (`{a..z}`) reads as `*`; a zsh named directory (`~name` set by `hash
+// -d`) and the directory stack (`~1`, `cd +1`) are not known. A symlink whose target does not exist yet
 // is judged by the link's own path (a dangling link inside a state dir can point a later write
 // elsewhere: tampering-grade, two deliberate steps). Bash writes are recognised only in the forms above: not `dd of=`,
 // `rsync`, `tar -C`, `unzip -d`, `curl -o`, `touch`, `truncate`, `mkdir`, `chmod`,
 // `find -delete`, nor files written by the programs a command runs. `HOME=`/`XDG_CONFIG_HOME=`
-// are refused only in front of git itself, not when exported earlier or given to a program that
-// runs git. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// and the program variables (`GIT_PAGER`, `GIT_EDITOR`, `GIT_SSH_COMMAND`, `PAGER`, …) are refused
+// only in front of git itself, not when exported earlier or given to a program that runs git; a git
+// config key names a program by the list in git-config(1) (GIT_CONFIG_PROGRAM), so a key a newer git
+// adds is unknown until it is listed. Plugins: `claude plugin` changes are refused (also run as
+// `npx @anthropic-ai/claude-code`, and after an option's value), and so is a mutating git command in
+// a plugin folder or a checkout holding one; a plugin manager other than the claude CLI is not known; a plugin loaded with `--plugin-dir` from a
+// worktree makes that folder unwritable for the session's subagents too. The journey lane's script
+// (argus-live.mjs) is known as an interpreter's first operand or a file its option loads (-r, --import),
+// by its name, the real file behind a path, or a shell-built name a verb of it or a built word follows:
+// a copy under another name, or an interpreter's own code importing it, is not. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
-// clone`, `gh repo clone`, `gh extension install`, `gh api` contents/tarball at a pull ref, `git am`,
-// `git apply` (except --check/--stat), and `patch` (bare, via busybox/toybox or a shell's -c) fed by a
-// pipe from `gh pr diff`/`gh api`/`curl`/`wget`. NOT traced: a diff saved to a file and applied later
-// (`patch < file`, `git merge-file`), a SHA piped into `xargs git fetch`, files an interpreter writes.
+// clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
+// contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via
+// busybox/toybox, except a dry run: --dry-run/--check/-C standing as an option, read past patch's
+// value-taking options, an unknown option refusing; also a shell's -c fed by `gh pr diff`/`gh api`/`curl`/
+// `wget`), and a `curl`/`wget` download piped (through any filter) into tar/bsdtar/unzip/cpio/7z.
+// NOT traced (named limits, each needing intent): a download saved to a file and unpacked later
+// (`curl -o x.tgz`, then `tar xf x.tgz`), or unpacked through a subshell or a process substitution
+// (`curl u | (tar x)`, `tar xzf <(curl u)`), a download piped into a shell (`curl … | sh`, an
+// interpreter running its own code), `git merge-file`, a SHA piped into `xargs git fetch`, files an
+// interpreter writes, and a label an interpreter supplies. The words a wrapper fills in at run time
+// count as built by the shell: xargs's (in place of `-I`/`-J`/`--replace`'s string, else one appended
+// to the command), `{}` in `find -exec|-execdir|-ok|-okdir`, fd's (`{}`, `{/}`, `{//}`, `{.}`, `{/.}`
+// after -x/-X, else one appended), parallel's and sem's (its replacement strings, else one appended)
+// and rush's (its `{…}` placeholders in the shell text, else one appended); in `gh issue|pr edit` any word the shell or a wrapper builds beside a literal
+// owner label is refused, since it can be the option name.
+// gh's token: `gh auth token`, `gh auth status -t|--show-token`, `gh auth git-credential`, `gh config
+// get oauth_token|token` (or a key the shell builds), `git credential …` and every program named
+// `git-credential*` (except `git credential-cache exit`, which prints nothing), and reading gh's
+// hosts.yml or git's store-helper files (~/.git-credentials, $XDG_CONFIG_HOME/git/credentials,
+// ~/.config/git/credentials) are BLOCKED for every subagent, since with the token `curl` reaches the
+// API around every gh rule. A read counts the file, its directory (not for a lister: `ls`, `stat`,
+// `tree`, `cd`, …, nor the Glob tool), a glob reaching the file, a brace list and a `${VAR:-default}`
+// either way, judged by the path a word resolves to (`~`, HOME, XDG_CONFIG_HOME, GH_CONFIG_DIR, the
+// cwd, `..`), so `fixtures/gh/hosts.yml` passes; a word the guard cannot resolve (another variable, a
+// cut substitution) counts when it ends like one. NOT covered: a recursive read from a directory
+// above (`grep -r … ~/.config`), a tool whose own directory option moves where a relative path
+// resolves (`tar -C ~/.config -c gh`, `rsync`, `git -C` for a file read), an interpreter reading the
+// file (`python`, `node -e`, `perl`), the OS keychain read directly (`security
+// find-internet-password`, `secret-tool`), a script piped into a shell (`… | sh`), and a token
+// already in the environment (GH_TOKEN, GITHUB_TOKEN), which curl can send as it is.
+// The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
+// a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
+// session's contract; a place an interpreter reaches on its own is not resolved (see above).
 // gh: -R/--repo/--hostname are dropped wherever they stand before the subcommand; a first word outside gh's own command
-// set (an alias, an extension) is BLOCKED. The acceptance label (contract labels.accepted): BLOCKED
-// when named by `gh issue|pr edit --add/--remove-label`, `gh label create|edit|delete`, a non-GET `gh
-// api` argument, or hidden in a label/issue write's --input; `gh label clone` and the GraphQL label
-// mutations are BLOCKED outright. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
+// set (an alias, an extension) is BLOCKED. The owner labels (contract labels.accepted, needsOwner,
+// agentFiled; the last two may still be given to a new issue by `gh issue create`, `gh api` POST
+// …/issues or an MCP create tool): BLOCKED when named by `gh issue|pr edit --add/--remove-label`, `gh
+// label create|edit|delete`, a non-GET `gh api` argument, or hidden in a label/issue write's --input;
+// `gh label clone` and the GraphQL label mutations are BLOCKED outright, and so is replacing or
+// clearing an issue's labels, which drops them unnamed (`gh api` PUT/DELETE issues/N/labels, POST/
+// PATCH issues/N with labels, GraphQL updateIssue/updatePullRequest labelIds, an MCP issue or PR update
+// with a labels field). With agentFiledNeedsAcceptance a non-worker's new issue must carry the
+// agent-filed label as a literal (a GraphQL createIssue, naming labels by node id, is BLOCKED); a
+// worker files no issue by any of those routes. What the shell builds counts as any value: a `gh label
+// create|edit|delete` or `gh issue create --label` word, a gh subcommand (judged as each one a rule
+// names), a `gh api` method (every write method), and a `gh api` route (a non-GET call through it is
+// BLOCKED whole); a substitution glued mid-word (`--x=$(…)`, `a/$(…)/b`) makes the whole word built.
+// gh api routes match in any letter case; …/import/issues is a new issue too. A not-planned close (`gh issue close -r`, REST state_reason,
+// GraphQL closeIssue, MCP fields) is BLOCKED: it is the owner's ruling. Grep over a directory relies on ripgrep's ignore rules (an env file is normally
 // gitignored); only a path or glob naming one is refused. Package-manager and wrapper options are
-// known one by one; an unknown option that takes a value can hide the program after it. An
+// known one by one; global options before a runner's `run` (`poetry -C . run`, `uv --directory .
+// run`) are not peeled, and `python -m django|alembic` is not read as django-admin/alembic, so a deny
+// rule written for the bare tool does not match those forms. A database client run with no port or
+// database word (`psql`, `redis-cli FLUSHALL`) reaches its default (5432 or $PGPORT, 6379, …): it is
+// judged by the words it is given, so a protected default port is not caught when none is named.
+// An unknown option that takes a value can hide the program after it — except
+// xargs's (BSD and GNU, read as getopt reads them), where an unknown option is judged both as a flag
+// and as taking the next word. A command an unquoted `$( )` or backtick cuts is judged once more
+// whole, the substitution a word the shell builds. An
 // exception while checking a call BLOCKS it; only a guard that cannot start at all fails open
-// (non-2 exit) — the canary is what catches a dead guard.
+// (non-2 exit) — the canary is what catches a dead guard. A subagent is known by the hook input's
+// agent_id (SCOPE): a ladder worker or the explorer keeps the floor by its agent_type alone, but any
+// other agent_type without an agent_id reads as a `--agent` main session, the orchestrator, so a host
+// that dropped agent_id for those subagents would leave them unguarded (not yet probed live; the
+// worker canary proves agent_id only for the ladder).
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, checkoutRoot, findMain, loadContract } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -103,6 +180,119 @@ const MAX_DEPTH = 6;
 
 /** The plugin's own worker ladder: the only subagents that never run without a contract. */
 export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
+
+/** The argus journey lane's explorer (docs/specs/argus-journey-lane.md §11). */
+export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
+/** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
+export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
+/** What any subagent may run of the journey lane's script (argus-live.mjs): its reads, which write nothing. */
+const LIVE_READS = [["status"], ["status", "--json"], ["check"]];
+/** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */
+const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy"]);
+// The first character excludes `#` (comment) and `=` (zsh `=cmd` expansion); no `#` at all
+// (extendedglob operator) and no `==` (magicequalsubst). A leading `-` is harmless to the shell;
+// option filtering is the wrapper's job.
+const EXPLORER_WORD = /^[A-Za-z0-9./_-][A-Za-z0-9._:/=@,+-]*$/;
+// A single-quoted word, its segments joined only by `\'` (the POSIX apostrophe idiom: 'O'\''Brien').
+const EXPLORER_QUOTED = /^'([^']*)'((?:(?:\\')+'[^']*')*)/;
+
+/**
+ * The explorer's Bash as argv lists, one per `;`, `&&` or newline, every argument a single-quoted
+ * literal or a plain word; null for anything else (expansion, glob, pipe, redirection, substitution).
+ */
+export function explorerArgv(command) {
+  if (typeof command !== "string" || !command.trim()) return null;
+  const runs = [[]];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (ch === " " || ch === "\t") {
+      i++;
+    } else if (ch === "\n" || ch === ";") {
+      runs.push([]);
+      i++;
+    } else if (command.startsWith("&&", i)) {
+      runs.push([]);
+      i += 2;
+    } else if (ch === "'") {
+      const m = EXPLORER_QUOTED.exec(command.slice(i));
+      if (!m || /[\r\n]/.test(m[0])) return null;
+      const end = i + m[0].length;
+      if (end < command.length && !/[\s;&]/.test(command[end])) return null;
+      runs.at(-1).push(m[1] + m[2].replace(/((?:\\')+)'([^']*)'/g, (_, q, seg) => "'".repeat(q.length / 2) + seg));
+      i = end;
+    } else {
+      let j = i;
+      while (j < command.length && !/[\s;'&]/.test(command[j])) j++;
+      const word = command.slice(i, j);
+      if (!EXPLORER_WORD.test(word) || word.includes("==") || command[j] === "'" || (command[j] === "&" && !command.startsWith("&&", j))) return null;
+      runs.at(-1).push(word);
+      i = j;
+    }
+  }
+  return runs.filter((r) => r.length);
+}
+
+/** Same file, by real path; an unresolvable path is never the wrapper. */
+function isWrapper(p, wrapper) {
+  try {
+    return path.isAbsolute(p) && fs.realpathSync(p) === fs.realpathSync(wrapper);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The explorer's Bash: one or more `node <wrapper> pw …` runs (the wrapper named by an absolute path
+ * that resolves to this plugin's own), so no expansion, glob, pipe, redirection, substitution or
+ * environment prefix can reach a shell. A reason, or null.
+ */
+export function checkExplorerBash(command, wrapper = WRAPPER) {
+  const runs = explorerArgv(command);
+  if (!runs || !runs.length || runs.some((r) => r[0] !== "node" || !isWrapper(r[1] ?? "", wrapper) || r[2] !== "pw")) return BLOCK.explorerBash;
+  return null;
+}
+
+/** The worktree of the live journey run (`<MAIN>/.argus/live/run.json`), real path, or null. */
+function liveWorktree(main) {
+  try {
+    const w = JSON.parse(fs.readFileSync(path.join(main, ".argus/live/run.json"), "utf8")).worktree;
+    return typeof w === "string" && w ? fs.realpathSync.native(w) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The explorer's Read: only a file whose real path lies in the run's worktree, outside `.argus/`
+ * (compared case-folded: macOS is case-insensitive), and committed at HEAD (not merely staged).
+ * Page content and code search reach the explorer only through the wrapper.
+ */
+export function checkExplorerRead({ input, worktree, cwd }) {
+  if (!worktree) return BLOCK.explorerRead;
+  const raw = input.file_path;
+  if (typeof raw !== "string" || !raw) return BLOCK.explorerRead;
+  let real;
+  try {
+    real = fs.realpathSync.native(path.resolve(cwd, raw));
+  } catch {
+    return BLOCK.explorerRead;
+  }
+  const rel = path.relative(worktree, real);
+  const low = rel.toLowerCase();
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel) || low === ".argus" || low.startsWith(`.argus${path.sep}`)) return BLOCK.explorerRead;
+  try {
+    if (!fs.statSync(real).isFile()) return BLOCK.explorerRead;
+    const posix = rel.split(path.sep).join("/");
+    // exactly one entry, a blob (file or symlink) at that very path: never a tree or a gitlink
+    const out = execFileSync("git", ["--literal-pathspecs", "-C", worktree, "ls-tree", "-z", "HEAD", "--", posix], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const m = /^(100644|100755|120000) blob [0-9a-f]+\t([^\0]*)\0$/.exec(out);
+    if (!m || m[2] !== posix) return BLOCK.explorerRead;
+  } catch {
+    return BLOCK.explorerRead;
+  }
+  return null;
+}
 
 /**
  * Drop heredoc bodies (PR bodies, review files) — unless the heredoc feeds a shell, or its
@@ -148,7 +338,10 @@ function closingParen(src, open) {
 /**
  * Shell-like tokenizer. Returns simple commands, each {toks: [{v, dyn}], pre, post} where
  * pre/post are the operators around it ("|", "&", "(", ")", ";" ...), plus `nested`: the text
- * of every command substitution found inside double quotes, to be checked on its own.
+ * of every command substitution found inside double quotes, to be checked on its own. An unquoted
+ * $( ) or backtick glued to a word (`--x=$(…)`, `$(…)/y`) makes that word one the shell builds
+ * (dyn): `gluedOpen` marks a command whose last word runs on into the substitution, `gluedFirst`
+ * one whose first word runs on from the substitution before it.
  */
 export function tokenize(src) {
   const cmds = [];
@@ -158,19 +351,30 @@ export function tokenize(src) {
   let pre = ";";
   let preCond = false; // the separator before this command was && or || (pre still reads ";")
   let inBacktick = false;
+  let glueNext = false; // a substitution just closed: a word starting here is glued to it
+  let gluedFirst = false; // this command's first word is glued to the substitution before it
+  const open = () => {
+    if (tok !== null) return;
+    tok = { v: "", dyn: glueNext };
+    if (glueNext && !toks.length) gluedFirst = true;
+    glueNext = false;
+  };
   const push = () => {
     if (tok !== null) toks.push(tok);
     tok = null;
   };
-  const end = (op, cond = false) => {
+  const end = (op, cond = false, gluedOpen = false) => {
     push();
+    glueNext = false;
+    const first = gluedFirst;
+    gluedFirst = false;
     const kept = toks.filter((t) => t.v !== "{" && t.v !== "}");
     // A line break (or comment) right after `|`, `&&` or `||` continues that list: `a |⏎ b` is a pipeline.
     if (!kept.length && op === ";" && (pre === "|" || preCond)) {
       toks = [];
       return;
     }
-    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond });
+    if (kept.length) cmds.push({ toks: kept, pre, post: op, cond: preCond, gluedOpen, gluedFirst: first });
     else if (cmds.length && (op === ")" || op === "|" || op === "&")) {
       // `(…) | x` / `(…) &`: keep the subshell's ")" so its directory is restored; the pipe or job
       // applies to the subshell as a whole, which never moves this shell anyway.
@@ -182,7 +386,7 @@ export function tokenize(src) {
     preCond = cond;
   };
   const add = (c, dyn = false) => {
-    if (tok === null) tok = { v: "", dyn: false };
+    open();
     tok.v += c;
     if (dyn) tok.dyn = true;
   };
@@ -196,7 +400,7 @@ export function tokenize(src) {
       add(src.slice(i + 1, j === -1 ? src.length : j));
       i = j === -1 ? src.length : j;
     } else if (c === '"') {
-      if (tok === null) tok = { v: "", dyn: false };
+      open();
       let j = i + 1;
       for (; j < src.length && src[j] !== '"'; j++) {
         if (src[j] === "\\" && j + 1 < src.length) add(src[++j]);
@@ -242,6 +446,7 @@ export function tokenize(src) {
       // A redirection operator is a word of its own (`cat<.env` is cat, <, .env), with the file
       // descriptor number written right before it (`2>`).
       let op = "";
+      glueNext = false;
       if (tok !== null && !tok.dyn && /^\d+$/.test(tok.v)) {
         op = tok.v;
         tok = null;
@@ -251,25 +456,34 @@ export function tokenize(src) {
       i += m[0].length - 1;
       toks.push({ v: op, dyn: false });
     } else if (c === "$" && src[i + 1] === "(") {
-      end("(");
+      // glued to the word before it: that word is the shell's to finish
+      if (tok !== null) tok.dyn = true;
+      end("(", false, tok !== null);
       i++;
     } else if (c === "`") {
-      end(inBacktick ? ")" : "(");
+      if (inBacktick) end(")");
+      else {
+        if (tok !== null) tok.dyn = true;
+        end("(", false, tok !== null);
+      }
       inBacktick = !inBacktick;
+      glueNext = !inBacktick;
     } else if (c === ";" || c === "\n") {
       end(";");
     } else if (c === "(" || c === ")") {
       end(c);
+      glueNext = c === ")";
     } else if (c === "&" || c === "|") {
       if (src[i + 1] === c) {
         end(";", true);
         i++;
       } else end(c);
-    } else if (c === "#" && tok === null) {
+    } else if (c === "#" && tok === null && !glueNext) {
       while (i < src.length && src[i] !== "\n") i++;
       end(";");
     } else if (/\s/.test(c)) {
       push();
+      glueNext = false;
     } else {
       add(c, c === "$");
     }
@@ -286,11 +500,41 @@ const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const ENV_SPLIT = /^(?:-[a-zA-Z]*?S|--split-string(?:=|$))([\s\S]*)$/;
 /** `npx -c <string>`, `npm exec --call=<string>`, `script -c|--command <string>`: the string is a shell command. */
 const EXEC_CALL = /^(?:-c|--call(?:=|$)|--command(?:=|$))([\s\S]*)$/;
+/** `uv run` options whose value is the next word (`uv run --with x pytest`). */
+const UV_VALUE_OPTS = /^(--with|--with-editable|--with-requirements|--extra|--group|--only-group|--no-group|--package|-p|--python|--env-file|--directory|--project|--index|--default-index|-i|--index-url|--extra-index-url|-f|--find-links)$/;
 /** Package-manager options that take a value before the subcommand (`pnpm --filter api exec …`). */
 const PM_VALUE_OPTS = /^(--filter|-F|-C|--dir|--prefix|-w|--workspace|--cwd)$/;
 
-/** Peel env assignments and wrappers; returns the index of the real program in the command. */
-function programIndex(t) {
+// xargs's options (BSD/macOS and GNU): taking a value, taking one only glued (`-i{}`, `--eof=x`), none.
+const XARGS_SHORT_VALUE = "adEIJLnPRSs";
+const XARGS_SHORT_OPTIONAL = "eil";
+const XARGS_SHORT_FLAG = "0oprtx";
+const XARGS_LONG_VALUE = new Set(["arg-file", "delimiter", "max-args", "max-procs", "max-chars", "process-slot-var"]);
+const XARGS_LONG_OPTIONAL = new Set(["eof", "replace", "max-lines"]);
+const XARGS_LONG_FLAG = new Set(["null", "interactive", "no-run-if-empty", "verbose", "exit", "show-limits", "version", "help", "open-tty"]);
+// GNU parallel's: the input separators, its replacement strings, options taking a value, flags.
+const PARALLEL_SEP = /^::::?\+?$/;
+const PARALLEL_REPLACE = /\{(?:=[\s\S]*?=|[0-9]*[./#%+]*)\}/;
+const PARALLEL_SHORT_VALUE = "aCdEIjLnNPsS";
+const PARALLEL_SHORT_FLAG = "0gkmpqrtuvX";
+const PARALLEL_LONG_VALUE = new Set(["id", "semaphorename", "semaphoretimeout", "st", "arg-file", "arg-file-sep", "arg-sep", "basefile", "bf", "block", "block-size", "colsep", "delay", "delimiter", "env", "eof", "halt", "jobs", "joblog", "load", "max-args", "max-chars", "max-lines", "max-procs", "max-replace-args", "memfree", "nice", "process-slot-var", "res", "results", "retries", "return", "rpl", "slf", "ssh", "sshlogin", "sshloginfile", "tag-string", "tagstring", "template", "tf", "timeout", "tmpdir", "transferfile", "wd", "workdir"]);
+// fd's exec options (`-x`/`--exec`, `-X`/`--exec-batch`, glued after its flags: `-Hx`) and the
+// placeholders it fills with each path found; without one it appends the path.
+const FD_EXEC = /^(?:-[HIusigFalLp0q1]*[xX]|--exec|--exec-batch)$/;
+const FD_PLACEHOLDER = /\{(?:|\/|\/\/|\.|\/\.)\}/;
+// rush's options taking a value, and its placeholders ({}, {.}, {/}, {#}, {1}, {^suffix}, {@re}, …).
+const RUSH_VALUE = /^(-[vCDdjnJiorTt]|--(assign|continue-file|record-delimiter|records-delimiter|field-delimiter|jobs|nrecords|records-join-sep|infile|out-file|retries|retry-interval|timeout|trim|cleanup-time))$/;
+const RUSH_FLAG = /^(-[ckeqIh]|--(continue|keep-order|stop-on-error|propagate-exit-status|immediate-output|dry-run|verbose|eta|help|version))$/;
+const RUSH_PLACEHOLDER = /\{[^{}\s]*\}/g;
+const PARALLEL_LONG_FLAG = new Set(["fg", "bg", "wait", "semaphore", "bar", "dry-run", "dryrun", "eta", "group", "interactive", "keep-order", "lb", "line-buffer", "no-notice", "no-run-if-empty", "null", "pipe", "pipe-part", "pipepart", "progress", "quote", "tag", "ungroup", "verbose", "will-cite", "xargs"]);
+
+/**
+ * Peel env assignments and wrappers; returns the index of the real program in the command. `alts`,
+ * when given, collects the index of each wrapper option the guard does not know (an xargs option):
+ * read here as a flag, it may instead take the next word as its value. `out`, when given, counts in
+ * `out.appends` the words a wrapper appends to the command at run time (xargs without a replace string).
+ */
+function programIndex(t, alts = null, out = null) {
   let i = 0;
   while (i < t.length) {
     const v = path.basename(t[i].v);
@@ -322,6 +566,10 @@ function programIndex(t) {
         else if (o.startsWith("-") || ASSIGN.test(o)) i++;
         else break;
       }
+    } else if ((v === "bundle" && t[i + 1]?.v === "exec") || ((v === "uv" || v === "poetry" || v === "pipenv") && t[i + 1]?.v === "run")) {
+      // `bundle exec`, `uv run`, `poetry run`, `pipenv run` run the command after them.
+      i += 2;
+      while (i < t.length && t[i].v.startsWith("-")) i += v === "uv" && UV_VALUE_OPTS.test(t[i].v) ? 2 : 1;
     } else if (v === "nice") {
       i++;
       if (t[i]?.v === "-n") i += 2;
@@ -332,7 +580,51 @@ function programIndex(t) {
       i++;
     } else if (v === "xargs") {
       i++;
-      while (i < t.length && t[i].v.startsWith("-")) i += /^-[IndPLs]$/.test(t[i].v) ? 2 : 1;
+      let rep = null;
+      // xargs's options as getopt reads them (BSD and GNU): a short option taking a value takes the
+      // rest of its word or the next word, short options bundle (`-0n1`), a long one takes `=value`
+      // or the next word (the optional ones only `=value`), `--` ends them. An option not known may
+      // or may not take the next word: both readings are judged (alts, checkCommand).
+      while (i < t.length && t[i].v.startsWith("-") && t[i].v !== "-") {
+        const o = t[i].v;
+        if (o === "--") {
+          i++;
+          break;
+        }
+        let used = 1;
+        if (o.startsWith("--")) {
+          const eq = o.indexOf("=");
+          const name = o.slice(2, eq < 0 ? undefined : eq);
+          if (XARGS_LONG_VALUE.has(name)) used = eq < 0 ? 2 : 1;
+          else if (XARGS_LONG_OPTIONAL.has(name)) {
+            if (name === "replace") rep = eq < 0 ? "{}" : o.slice(eq + 1);
+          } else if (!XARGS_LONG_FLAG.has(name) || eq >= 0) alts?.push(i);
+        } else {
+          for (let k = 1; k < o.length; k++) {
+            const ch = o[k];
+            if (XARGS_SHORT_VALUE.includes(ch)) {
+              const val = k < o.length - 1 ? o.slice(k + 1) : (t[i + 1]?.v ?? null);
+              if (k === o.length - 1) used = 2;
+              if (ch === "I" || ch === "J") rep = val;
+              break;
+            }
+            if (XARGS_SHORT_OPTIONAL.includes(ch)) {
+              if (ch === "i") rep = k < o.length - 1 ? o.slice(k + 1) : "{}";
+              break;
+            }
+            if (!XARGS_SHORT_FLAG.includes(ch)) {
+              alts?.push(i);
+              break;
+            }
+          }
+        }
+        i += used;
+      }
+      // xargs puts what it reads in place of its replace string: such a word is not a literal.
+      // Without one it appends what it reads to the command: one word the shell builds, at its end.
+      if (rep) {
+        for (let k = i; k < t.length; k++) if (t[k].v.includes(rep)) t[k] = { ...t[k], dyn: true };
+      } else if (out) out.appends = (out.appends ?? 0) + 1;
     } else if (v === "npx" || v === "bunx" || v === "corepack" || (PKG_MANAGERS.has(v) && /^(exec|x|dlx)$/.test(pmSubcommand(t, i)))) {
       // `npm exec`, `npm x`, `pnpm exec|dlx`, `yarn exec|dlx` run their argument like npx does.
       if (PKG_MANAGERS.has(v)) {
@@ -348,6 +640,21 @@ function programIndex(t) {
   }
   // A wrapper or redirection with nothing after it (`exec >`, `script -q`) must not point past the end.
   return Math.min(i, t.length);
+}
+
+/**
+ * Is this `git-credential-cache exit` (`git credential-cache exit`)? It stops the cache daemon and
+ * prints nothing: the one credential helper call that hands out no credential.
+ */
+function cacheExit(helper, rest) {
+  if (helper !== "git-credential-cache") return false;
+  const ops = [];
+  for (let j = 0; j < rest.length; j++) {
+    if (rest[j].dyn) return false;
+    if (/^--(socket|timeout)$/.test(rest[j].v)) j++;
+    else if (!rest[j].v.startsWith("-")) ops.push(rest[j].v);
+  }
+  return ops.length === 1 && ops[0] === "exit";
 }
 
 /** The first word after a package manager's leading options (`pnpm --filter api exec` → exec). */
@@ -490,12 +797,103 @@ const RUN_ALIASES = { "run-script": "run", rum: "run", urn: "run" };
  * one, an fsmonitor hook, an ssh command, an external diff.
  */
 const GIT_CONFIG_DANGER = /^(core\.hookspath|alias\.|include\.|includeif\.|filter\.|core\.attributesfile|core\.fsmonitor|core\.sshcommand|diff\.external)/i;
+/**
+ * The other git config keys whose value is a program git runs (git-config(1)): pager, editors,
+ * askpass, proxy and alternate-refs commands, credential helpers (`credential.<url>.helper` too),
+ * gpg programs, diff/merge drivers and textconv, difftool/mergetool/browser/man/guitool commands,
+ * config hooks (`hook.*`), trailer, tar, sendemail and imap commands, upload-pack and gc hooks.
+ * `submodule.<name>.update` runs only a `!command`; `protocol[.ext].allow` lets an `ext::` URL run one.
+ */
+const GIT_CONFIG_PROGRAM = /^(core\.(pager|editor|askpass|gitproxy|alternaterefscommand)|sequence\.editor|pager\..+|interactive\.difffilter|credential\.(.+\.)?helper|gpg\.((.+\.)?program|ssh\.defaultkeycommand)|diff\..+\.(textconv|command)|merge\..+\.driver|(difftool|mergetool|browser|man)\..+\.(cmd|path)|guitool\..+\.cmd|hook\..+|trailer\..+\.(cmd|command)|tar\..+\.command|sendemail\.(smtpserver|tocmd|cccmd|headercmd|sendmailcmd)|imap\.tunnel|instaweb\.httpd|uploadpack\.packobjectshook|gc\.recentobjectshook)$/i;
+/** The variables git reads for the same programs (a protocol list naming `ext`, a command directory). */
+const GIT_PROGRAM_ENV = /^(GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|PAGER|EDITOR|VISUAL|GIT_EXEC_PATH|GIT_ALLOW_PROTOCOL)=([\s\S]*)$/;
+/** A value that runs nothing worth checking: a no-op program, a boolean (`pager.<cmd>`), or empty (resets a helper list). */
+const GIT_NOOP = /^(|true|false|:|cat|yes|no|on|off|0|1)$/i;
+
+/**
+ * Does setting git config `key` to `value` make git run a program? `value` undefined = unknown (a
+ * config-file write, `--config-env`, or a value the shell builds): only the value tells a no-op apart.
+ */
+function gitConfigRuns(key, value) {
+  if (/^submodule\..+\.update$/i.test(key)) return value === undefined || value.trimStart().startsWith("!");
+  if (/^protocol\.(ext\.)?allow$/i.test(key)) return value === undefined || !/^never$/i.test(value.trim());
+  return GIT_CONFIG_PROGRAM.test(key) && (value === undefined || !GIT_NOOP.test(value.trim()));
+}
+
+/** Does `NAME=value` in front of git hand it a program to run? A value the shell builds is unknown. */
+function gitEnvRuns(tok) {
+  const m = GIT_PROGRAM_ENV.exec(tok.v);
+  if (!m) return false;
+  if (m[1] === "GIT_EXEC_PATH") return true;
+  if (m[1] === "GIT_ALLOW_PROTOCOL") return tok.dyn || /(^|:)ext(:|$)/.test(m[2]);
+  return tok.dyn || !GIT_NOOP.test(m[2].trim());
+}
+
+/**
+ * The commands a git command hands to a shell through its options: `rebase -x|--exec`, `bisect run`,
+ * `submodule foreach`, `filter-branch --*-filter`, `difftool -x|--extcmd`, `grep -O|--open-files-in-pager`,
+ * `--upload-pack`/`--receive-pack`/`--exec` (`ls-remote -u`), `send-email --to-cmd|--cc-cmd|
+ * --header-cmd|--sendmail-cmd|--smtp-server`, `instaweb -d|--httpd`; long ones by any prefix, short
+ * ones bundled too. Each is {text} (a shell string) or {argv} (words run as a command). `rest` is the
+ * argv after the subcommand.
+ */
+function gitOptionCommands(sub, rest) {
+  const out = [];
+  const a = rest.map((x) => x.v);
+  if (sub === "bisect" && a[0] === "run") return a.length > 1 ? [{ argv: rest.slice(1) }] : [];
+  // `git submodule` takes its own options before its subcommand (`submodule --quiet foreach`).
+  let s = 0;
+  while (sub === "submodule" && s < a.length && a[s].startsWith("-") && a[s] !== "--") s++;
+  if (sub === "submodule" && a[s] === "foreach") {
+    let k = s + 1;
+    while (k < a.length && a[k].startsWith("-")) k++;
+    return k < a.length ? [{ text: a.slice(k).join(" ") }] : [];
+  }
+  const long = ["--exec", "--upload-pack", "--receive-pack", "--extcmd", "--open-files-in-pager"];
+  if (sub === "filter-branch") long.push("--env-filter", "--tree-filter", "--index-filter", "--parent-filter", "--msg-filter", "--commit-filter", "--tag-name-filter");
+  // The options that name what a config key would (sendemail.toCmd, …, instaweb.httpd).
+  if (sub === "send-email") long.push("--to-cmd", "--cc-cmd", "--header-cmd", "--sendmail-cmd", "--smtp-server");
+  if (sub === "instaweb") long.push("--httpd");
+  const short = { rebase: "x", difftool: "x", "ls-remote": "u", instaweb: "d" }[sub];
+  for (let k = 0; k < a.length; k++) {
+    const v = a[k];
+    if (v === "--") break;
+    const eq = v.indexOf("=");
+    const name = eq > 0 ? v.slice(0, eq) : v;
+    // git takes any unambiguous prefix of a long option (`--exe`, `--upload-pa=`): a word that is a
+    // prefix of one of these is read as it (an ambiguous one git refuses, so nothing is missed).
+    const hits = /^--[^-]/.test(name) ? long.filter((l) => l.startsWith(name)) : [];
+    if (hits.length) {
+      if (eq > 0) out.push({ text: v.slice(eq + 1) });
+      else if (hits.some((h) => h !== "--open-files-in-pager") && k + 1 < a.length) out.push({ text: a[++k] });
+    } else if (/^-[A-Za-z0-9]/.test(v)) {
+      // Short options bundle (`-qx cmd`, `-qx'cmd'`): the one that takes a value takes the rest of
+      // the word, or the next word; grep's -O takes only an attached value.
+      for (let j = 1; j < v.length && /[A-Za-z0-9]/.test(v[j]); j++) {
+        if (v[j] === short) {
+          if (j + 1 < v.length) out.push({ text: v.slice(j + 1) });
+          else if (k + 1 < a.length) out.push({ text: a[++k] });
+          break;
+        }
+        if (sub === "grep" && v[j] === "O") {
+          if (j + 1 < v.length) out.push({ text: v.slice(j + 1) });
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+/** Is the key of `key[=value]` built by the shell (a variable, `$( )`, backticks)? */
+const dynamicKey = (kv) => /[$`]/.test(kv.split("=")[0]);
 /** Git config that redirects where git pushes or fetches: a remote's url/pushurl/push refspec, a url rewrite. */
 const GIT_REMOTE_CONFIG = /^(remote\.|url\.|push\.)/i;
 /** Environment that swaps the config file git reads (and with it hooksPath, aliases, includes). */
 const GIT_HOME_ENV = /^(HOME|XDG_CONFIG_HOME)=/;
 /** Environment that injects git config into every git command. */
 const GIT_CONFIG_ENV = /^GIT_CONFIG_(COUNT|KEY_\d+|PARAMETERS|GLOBAL|SYSTEM)=/;
+// Programs that name files without reading them: a credential file may be listed, never read.
+const LISTERS = new Set(["ls", "tree", "stat", "du", "eza", "exa", "lsd", "test", "[", "realpath", "readlink", "dirname", "basename", "cd", "pushd", "echo", "printf"]);
 const SCRIPT_EXT = /\.(sh|js|mjs|cjs|ts|mts|cts|py)$/;
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -542,15 +940,25 @@ export function compileRules(contract) {
   const g = contract ? contract.guard : { envFiles: [], postgres: null, deny: [] };
   const deny = g.deny.map((r) => (r.argv ? { ...r, argv: peel(r.argv) } : r));
   if (contract) deny.push(...gateRules(contract.gate.merge, contract.gate.fast));
-  const pg = g.postgres;
+  // guard.postgres, then each guard.databases entry: one matcher per engine and entry.
+  const dbEntry = (engine, d) => ({ engine, ports: new Set(d.ports.map(Number)), dbs: new Set(d.databases), label: `${engine === "postgres" ? "" : `${engine} `}${[...d.ports.map((p) => `:${p}`), ...d.databases].join(", ")}` });
+  const dbs = [...(g.postgres ? [["postgres", g.postgres]] : []), ...(Array.isArray(g.databases) ? g.databases.map((d) => [d.engine, d]) : [])];
   return {
     base: contract ? contract.baseBranch : null,
     // lowercase: a case-insensitive filesystem (macOS) opens `.ENV` as `.env`
     envFiles: new Set([...ENV_FLOOR, ...g.envFiles].map((f) => f.toLowerCase())),
-    pg: pg && pg.ports.length + pg.databases.length > 0 ? { ports: new Set(pg.ports.map(Number)), dbs: new Set(pg.databases), label: [...pg.ports.map((p) => `:${p}`), ...pg.databases].join(", ") } : null,
+    dbs: dbs.filter(([, d]) => d.ports.length + d.databases.length > 0).map(([engine, d]) => dbEntry(engine, d)),
     deny,
-    // The label whose application accepts an outsider's issue (compared without case, as GitHub does).
-    acceptLabel: acceptedLabel(contract).toLowerCase(),
+    // The labels only the owner applies (compared without case, as GitHub does): the one accepting an
+    // outsider's issue, the one marking a finding only the owner can rule on, and the provenance of an
+    // agent-filed issue (removing it would launder the issue into a plain trusted one).
+    ownerLabels: [acceptedLabel(contract), needsOwnerLabel(contract), agentFiledLabel(contract)].map((l) => l.toLowerCase()),
+    accepted: acceptedLabel(contract).toLowerCase(),
+    agentFiled: agentFiledLabel(contract),
+    // agentFiledNeedsAcceptance: a subagent's new issue must carry the agent-filed label, written literally.
+    agentFiledGate: !!contract && contract.agentFiledNeedsAcceptance === true,
+    // The worker step budget: the contract's tuning.stepBudget over the defaults.
+    steps: resolveTuning(contract).stepBudget,
   };
 }
 
@@ -564,15 +972,23 @@ const GH_COMMANDS = new Set([
 ]);
 // Options of `git fetch`/`git pull` that take their value as the next word.
 const FETCH_VALUE_OPTS = new Set(["--depth", "--deepen", "--shallow-since", "--shallow-exclude", "-j", "--jobs", "--upload-pack", "-o", "--server-option", "--negotiation-tip", "--refmap", "--filter", "-s", "--strategy", "-X", "--strategy-option"]);
-/** The words of `v` a label name could be (URL-decoded, lower case): does one of them name `label`? */
-const namesLabel = (v, label) => {
-  let s = v;
-  try {
-    s = decodeURIComponent(v);
-  } catch {
-    /* not URL-encoded */
+/**
+ * The words of `v` a label name could be (lower case): does one of them name one of `labels`? Read as
+ * written, and as a route: without its query string or fragment (`labels/<name>?x=1`, `…#`), each
+ * read URL-decoded whole and also `%XX` by `%XX`, so a malformed escape elsewhere hides nothing.
+ */
+const namesLabel = (v, labels) => {
+  const words = new Set();
+  for (const s of [v, v.replace(/[?#][\s\S]*$/, "")]) {
+    const reads = [s, pct(s)];
+    try {
+      reads.push(decodeURIComponent(s));
+    } catch {
+      /* a malformed escape: the %XX reading above stands */
+    }
+    for (const r of reads) for (const w of r.toLowerCase().split(/[\s,="'/[\]{}()]+/)) words.add(w);
   }
-  return s.toLowerCase().split(/[\s,="'/[\]{}()]+/).includes(label);
+  return [].concat(labels).some((l) => words.has(l));
 };
 
 const ENGINE_ONLY = compileRules(null);
@@ -723,6 +1139,69 @@ function dbTarget(values, prog, pg) {
   return false;
 }
 
+// ---- protected databases of the other engines (guard.databases) -----------------------------------
+
+/** Each engine's clients, and the flags that name its port and database. */
+const DB_CLIENTS = {
+  mysql: { tools: new Set(["mysql", "mysqldump", "mysqladmin", "mysqlimport", "mysqlcheck", "mysqlshow", "mysqlsh", "mycli", "mariadb", "mariadb-dump", "mariadb-admin", "mariadb-import", "mariadb-check", "mariadb-show"]), port: ["-P", "--port"], db: ["-D", "--database"], env: /^MYSQL_TCP_PORT=(\d+)$/ },
+  mongodb: { tools: new Set(["mongosh", "mongo", "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongofiles", "mongostat", "mongotop"]), port: ["--port"], db: ["-d", "--db"] },
+  redis: { tools: new Set(["redis-cli", "valkey-cli", "keydb-cli"]), port: ["-p"], db: ["-n"] },
+};
+
+/**
+ * Does a command reach protected database `t` (mysql, mongodb, redis)? From any program: a URL with
+ * its port or database (`mysql://…:3307/x`, `mongodb://…/app_dev`), MYSQL_TCP_PORT. From the
+ * engine's own clients (also through docker/kubectl/ssh): the port and database flags (`-P 3307`,
+ * `-P3307`, `--port=3307`, `-D app`, `--db app`, redis `-p`/`-n`), a word naming the database
+ * (`mysql app_dev`, `mysqladmin drop app_dev`, SQL in `-e`), and mongosh's `host:port/db`.
+ */
+function engineTarget(values, prog, t) {
+  const c = DB_CLIENTS[t.engine];
+  if (REMOTE_EXEC.has(prog)) {
+    const flat = values.flatMap((v) => v.split(/\s+/)).filter(Boolean);
+    const k = flat.findIndex((v) => c.tools.has(bare(v)));
+    if (k >= 0 && engineTarget(flat.slice(k + 1), bare(flat[k]), t)) return true;
+  }
+  const isPort = (x) => /^\d+$/.test(x ?? "") && t.ports.has(Number(x));
+  const isDb = (x) => x !== undefined && t.dbs.has(x);
+  const client = c.tools.has(prog);
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v.includes("://") && urlTarget(v, isPort, isDb)) return true;
+    if (c.env && isPort(c.env.exec(v)?.[1])) return true;
+    if (!client) continue;
+    if ((c.port.includes(v) && isPort(values[i + 1])) || (c.db.includes(v) && isDb(values[i + 1]))) return true;
+    const eq = /^(--[\w-]+)=(.*)$/.exec(v);
+    if (eq && ((c.port.includes(eq[1]) && isPort(eq[2])) || (c.db.includes(eq[1]) && isDb(eq[2])))) return true;
+    for (const o of [...c.port, ...c.db]) if (/^-[A-Za-z]$/.test(o) && v.length > 2 && v.startsWith(o) && (c.port.includes(o) ? isPort(v.slice(2)) : isDb(v.slice(2)))) return true;
+    if (t.engine === "redis") continue; // redis's other words are commands and keys
+    if (v.split(/[\s`'";,()=]+/).some(isDb)) return true;
+    if (t.engine === "mongodb" && !v.includes("://")) {
+      for (const part of v.split(",")) {
+        if (isPort(/:(\d+)(?:\/|$)/.exec(part)?.[1]) || isDb(/^[\w.-]+(?::\d+)?\/([\w.-]+)$/.exec(part)?.[1])) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Does a word of the command name a protected SQLite file (absolute, or relative to <MAIN>), as the
+ * cwd resolves it? Any program counts: opening it with a client and deleting it are both a reach.
+ */
+function sqliteTarget(values, t, here, main) {
+  const want = [...t.dbs].map((f) => (path.isAbsolute(f) ? f : main ? path.join(main, f) : null)).filter(Boolean).flatMap((f) => [path.normalize(f), realpathOrSelf(f)]);
+  if (!want.length) return false;
+  return values.some((v) => {
+    // the URI's query (`?mode=rw`) holds `=` too: cut it before taking the assignment's value
+    const u = v.replace(/\?.*$/, "");
+    const w = u.slice(u.lastIndexOf("=") + 1).replace(/^(?:sqlite3?:\/\/|file:)/, "");
+    if (!w || (!path.isAbsolute(w) && (here === UNKNOWN || typeof here !== "string"))) return false;
+    const abs = path.resolve(typeof here === "string" ? here : "/", w.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
+    return want.includes(path.normalize(abs)) || want.includes(realpathOrSelf(abs));
+  });
+}
+
 // ---- contract deny rules ------------------------------------------------------------------------------
 
 /** Every word of `need` appears in `args`, in this order (not necessarily adjacent). */
@@ -774,41 +1253,153 @@ function denied(a, prog, deny, dir) {
   return null;
 }
 
+/**
+ * A word naming the journey lane's script: by its name in any case, by the real file behind a path (a
+ * symlink), or a word the shell builds that names it anywhere (`$(echo …/argus-live.mjs)`).
+ */
+function isLiveCli(w, dir) {
+  if (bare(w.v).toLowerCase() === "argus-live.mjs" || (w.dyn && /argus-live\.mjs/i.test(w.v))) return true;
+  if (w.dyn || dir === UNKNOWN || !w.v.includes("/")) return false;
+  return path.basename(realpathOrSelf(path.resolve(dir, w.v))).toLowerCase() === "argus-live.mjs";
+}
+
+/** JS runtimes' options whose value is the next word (code, a preload, a config), not the script. */
+const NODE_VALUE_OPTS = ["-r", "--require", "--import", "--loader", "--experimental-loader", "-e", "--eval", "-p", "--print", "-C", "--conditions", "--env-file", "--input-type", "--title", "--watch-path", "--test-name-pattern", "--test-reporter", "--test-reporter-destination", "--redirect-warnings", "--disable-warning"];
+const VALUE_OPTS = {
+  node: new Set(NODE_VALUE_OPTS),
+  tsx: new Set([...NODE_VALUE_OPTS, "--tsconfig"]),
+  "ts-node": new Set([...NODE_VALUE_OPTS, "-P", "--project", "-O", "--compiler-options", "--compiler"]),
+  bun: new Set(["-r", "--preload", "-e", "--eval", "-p", "--print", "-c", "--config", "--cwd", "--env-file", "--tsconfig-override", "--conditions"]),
+  deno: new Set(["-c", "--config", "--import-map", "--location", "--cert", "-L", "--log-level", "--env-file"]),
+};
+/** Shells, python, ruby, perl: code (`-c`, `-e`) or a module (`-m`) as the next word. */
+const OTHER_VALUE_OPTS = new Set(["-c", "-e", "-m"]);
+/** A runtime's subcommand before the script it runs (`bun run x`, `deno run x`, `tsx watch x`). */
+const RUN_SUBCOMMANDS = { bun: new Set(["run"]), deno: new Set(["run", "test", "bench", "serve"]), tsx: new Set(["watch"]) };
+
+/**
+ * An interpreter's argv read once: `op`, the index of its first operand — the script it runs, past its
+ * options, their values and a run subcommand (-1: none, or the runtime only checks its syntax) — and
+ * `values`, the option values that can load code (`-r x`, `--import=x`) or are code.
+ */
+function interpArgv(argv, prog) {
+  const takes = VALUE_OPTS[prog] ?? OTHER_VALUE_OPTS;
+  const values = [];
+  let sub = false;
+  let checkOnly = false;
+  let op = -1;
+  for (let i = 1; i < argv.length && op < 0; i++) {
+    const v = argv[i].v;
+    if (v === "--") op = i + 1 < argv.length ? i + 1 : -1;
+    else if (!v.startsWith("-") || v === "-") {
+      if (!sub && RUN_SUBCOMMANDS[prog]?.has(v)) sub = true;
+      else op = i;
+    } else if (v.includes("=")) values.push({ v: v.slice(v.indexOf("=") + 1), dyn: argv[i].dyn });
+    else if (takes.has(v)) {
+      if (argv[i + 1]) values.push(argv[i + 1]);
+      i++;
+    } else if (prog === "node" && (v === "-c" || v === "--check")) checkOnly = true;
+  }
+  return { op: checkOnly ? -1 : op, values, args: op < 0 ? [] : argv.slice(op + 1) };
+}
+
+/** A script name the shell builds whole (`"$S"`, `$(…)`) and does not show as some other script file. */
+const builtName = (w) => w.dyn && !/^[\w.-]+\.[cm]?[jt]sx?$/i.test(bare(w.v));
+
+/**
+ * The journey lane's script run by its path, or by an interpreter as its first operand or a preload,
+ * with words other than LIVE_READS — or `pw` for the explorer — after it: the refusal. Every later
+ * word must be literal: a verb the shell or xargs fills in may be any verb. A script name the shell
+ * builds is unknown: a verb of the script, or any built word, after it refuses it.
+ */
+function liveCliRun(all, dir, explorer) {
+  const argv = withoutRedirects(all);
+  if (!argv.length) return null;
+  let rest;
+  if (isLiveCli(argv[0], dir)) rest = argv.slice(1);
+  else if (INTERPRETERS.has(bare(argv[0].v))) {
+    const { op, values, args } = interpArgv(argv, bare(argv[0].v));
+    const named = [...values, ...(op > 0 ? [argv[op]] : [])];
+    // A first operand the shell builds may be an option it fills in (`node "$OPT" argus-live.mjs up`): a later word naming the script is then the script.
+    const later = op > 0 && argv[op].dyn ? argv.findIndex((w, i) => i > op && isLiveCli(w, dir)) : -1;
+    if (named.some((w) => isLiveCli(w, dir))) rest = args;
+    else if (later > 0) rest = argv.slice(later + 1);
+    else return named.some(builtName) && (LIVE_VERBS.has(args[0]?.v) || args.some((w) => w.dyn)) ? BLOCK.liveCli : null;
+  } else return null;
+  if (rest.some((w) => w.dyn)) return BLOCK.liveCli;
+  const words = rest.map((w) => w.v);
+  if (explorer && words[0] === "pw") return null;
+  return LIVE_READS.some((r) => r.length === words.length && r.every((v, i) => v === words[i])) ? null : BLOCK.liveCli;
+}
+
+/** GraphQL's inline enum; a variable counts only as exactly NOT_PLANNED. */
+const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
+/** "not planned" in any spelling gh and GitHub take: not_planned, NOT_PLANNED, "Not Planned", not-planned. */
+const notPlanned = (v) => typeof v === "string" && /^not[\s_-]*planned$/i.test(v.trim());
+
 const BLOCK = {
+  explorerBash:
+    "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
+  explorerRead:
+    "the journey explorer reads only files committed at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
+  explorerTool: "the journey explorer has only Bash (its wrapper), Read and StructuredOutput; it searches code through the wrapper's `code` command.",
+  liveCli:
+    "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`), every word literal, and the journey explorer only `pw` through its wrapper.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
   kill: "pkill/killall can stop another session's process. Kill only a PID you started.",
   merge: "only the orchestrator merges (sapu-merge.sh). Your job ends when the PR is open.",
   prCode:
-    "`gh pr checkout`, fetching a PR ref (pull/*), or applying a patch (git apply/git am, or patch fed by gh pr diff) runs a PR's code here — and a PR can be an outsider's. Only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it. Read a PR with `gh pr diff <N> --name-only` and `sapu-contract.mjs pr-trust <N> --text`; a continuing worker takes over with `git reset --hard <sha>`.",
+    "`gh pr checkout`, fetching a PR ref (pull/*), or applying a patch (git apply/git am, or patch other than its --dry-run, whatever file it reads) runs a PR's code here — and a PR can be an outsider's. Only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it. Read a PR with `gh pr diff <N> --name-only` and `sapu-contract.mjs pr-trust <N> --text`; a continuing worker takes over with `git reset --hard <sha>`.",
   foreignCode:
-    "fetching or cloning code that is not origin's branches or tags (another remote or a URL, a raw commit SHA, a ref glob outside refs/heads and refs/tags, `git clone`, `gh repo clone`, `gh extension install`) can bring a fork's or a PR's code here, as a PR's code would. Work from origin's branches; only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it.",
+    "fetching or cloning code that is not origin's branches or tags (another remote or a URL, a raw commit SHA, a ref glob outside refs/heads and refs/tags, `git clone`, `gh repo clone`, `gh extension install`, `gh release download`, degit/tiged, a download piped into tar or unzip) can bring a fork's or a PR's code here, as a PR's code would. Work from origin's branches; only the orchestrator runs a PR, after `sapu-contract.mjs pr-trust` passes it.",
   ghUnknown:
     "that first word is not one of gh's own commands: an alias or an extension, which the guard cannot see through. Run the gh command itself.",
   acceptLabel:
-    "the acceptance label is the owner's own act: no agent applies, removes, creates, renames, deletes or clones it — every agent works under the owner's token, so GitHub would record the change as the owner's acceptance of an outsider's issue. Report the issue instead.",
+    "the acceptance label, the needs-owner label and the agent-filed label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them (an agent only files a new issue with the agent-filed or needs-owner label) — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
+  ghToken:
+    "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `gh config get oauth_token`, `git credential …`/`git-credential-*`, gh's hosts.yml, git's ~/.git-credentials or ~/.config/git/credentials) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
+  ownerRuling:
+    "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
+  issueBody:
+    "the guard cannot read this issue write's body (`--input <file>`, `-F <field>=@<file>`), so it could close the issue as not planned, the owner's ruling. Edit an issue's body with `gh issue edit <n> --body-file <file>`.",
   apiWrite: "`gh api` writing repository contents, git objects/refs or branches bypasses review. Push commits with git to your own branch; the orchestrator merges.",
   issue: "sapu files no issues from a subagent. Put the finding in the PR body; a security gap goes in your return (security_gaps).",
+  agentFiled: (label) =>
+    `the contract sets agentFiledNeedsAcceptance: an issue a subagent files carries the agent-filed label ${label}, written literally (\`gh issue create --label ${label}\`, \`gh api … -f 'labels[]=${label}'\`, an MCP tool's labels field), so it waits for the owner's acceptance; a GraphQL createIssue or an unread --input body cannot show it. File it with the label.`,
   orchestrator: "merging is the orchestrator's (sapu-merge.sh).",
   noVerify: "--no-verify, commit -n, or git config that changes the hook path, defines an alias, includes a config file or runs code (filter.*, core.fsmonitor, core.sshCommand, core.attributesFile, diff.external) — via -c, --config-env, GIT_CONFIG_* or git config — can skip the hook gate or hide changes. Fix what the hook reports.",
+  gitConfigKey: "a git config key the shell builds ($VAR, $( ), backticks — in -c, --config-env or git config) cannot be read: it may name a program git runs or switch off the hook gate. Write the key literally.",
+  gitProgram:
+    "this names a program git runs (core.pager, core.editor, sequence.editor, credential.helper, gpg.program, a merge/diff driver or textconv, pager.<cmd>, hook.*, … through -c, --config-env or git config; or GIT_PAGER, GIT_EDITOR, GIT_SEQUENCE_EDITOR, GIT_SSH_COMMAND, GIT_ASKPASS, GIT_EXTERNAL_DIFF, PAGER, EDITOR … in front of git): code the guard cannot check. For one command only a no-op value passes (true, false, :, cat, or empty — GIT_EDITOR=true, -c core.pager=cat); a config file takes none, since every worktree and the orchestrator read it.",
   force: "plain force push (--force, -f, +refspec). Use --force-with-lease, and only on a branch whose commits are all yours.",
   remote: "git config or `git remote` that redirects where git pushes or fetches (remote.*, url.*) is the orchestrator's: every worktree shares it. Push your own branch to origin.",
   gitHome: "HOME=/XDG_CONFIG_HOME= in front of git swaps the config git reads (hooks path, aliases, includes). Run git with the environment it has.",
+  apiDynamic:
+    "`gh api` writing (any method but GET) through a route or method the shell builds (`$VAR`, `${VAR}`, `$( )`, backticks): it may be any route — an issue's labels, a label, a new issue, a merge, the repo's contents — so it is judged as every one and refused. Write the route and method literally (gh fills `{owner}/{repo}` itself).",
   graphqlFile: "`gh api graphql` with --input, a query read from a file (-F query=@…) or a query built by the shell ($( ), backticks, a variable): the mutation cannot be inspected. Pass the query inline with -f query='…'.",
   ghAlias: "`gh alias set/import` defines a command the guard cannot see through (an alias can be `pr merge`). Run the gh command itself.",
   worktrees: "--ignore-other-worktrees / `git worktree add --force` check out a branch another worktree holds; the orchestrator's alone.",
   index: "low-level index and object commands (update-index, checkout-index, read-tree, replace) can hide changes from git status and diff. Use ordinary git commands in your own worktree.",
   gitFiles: "a write to git's own files (a `.git` file or directory, ~/.gitconfig, ~/.config/git/, git config --global/--system/--file) can switch off hooks or redirect git for every checkout.",
   machineConfig: "a write to sapu's machine config (~/.config/sapu/, or removing ~/.config or ~ that holds it) can lift the scope lock its owner set for every repo on this machine. Only the person at this machine edits it.",
+  pluginFiles:
+    "a write to a plugin agents run under — its folder (CLAUDE_PLUGIN_ROOT), Claude Code's plugin store (~/.claude/plugins/: every installed copy, marketplace clone and the install records), a local marketplace's plugin sources, or the user settings (~/.claude/settings.json: hooks, enabledPlugins) — or `claude plugin install|update|uninstall|enable|disable|marketplace …` changes the rules every agent runs under. Only the person at this machine installs or updates plugins; change a plugin through a PR to its own repo.",
   pushBase: (base) => `a push to the base branch (${base || "main"}), main or master, or with --all/--mirror: only the orchestrator's merge moves those. Push your own branch.`,
   prisma: "can drop data or write an unreviewed migration. Use `prisma migrate dev --create-only` and review the SQL.",
   nodeModules: "a whole-directory node_modules symlink makes every workspace package resolve to <MAIN>'s unedited source. Use the repo's worktree setup (.claude/sapu/worker.md).",
   env: "real env files hold secrets and are never linked, copied, sourced, read or written in a worktree. Tests run on the repo's committed test env (.claude/sapu/worker.md).",
-  db: (label) => `protected database (${label}; .claude/sapu.json guard.postgres): other sessions use it. Use your own throwaway test DB (.claude/sapu/worker.md).`,
+  db: (label) => `protected database (${label}; .claude/sapu.json guard.postgres or guard.databases): other sessions use it. Use your own throwaway test DB (.claude/sapu/worker.md).`,
   refs: "branch deletion/force-moves (local or remote), worktree removal and ref rewrites touch refs every worktree shares; they are the orchestrator's.",
   mainWrite: (main) => `a write into the main checkout (${main}) outside its .claude/worktrees/ (and, for a subagent that is not a sapu worker, outside ${STATE_DIRS.map((d) => `${d}/`).join(", ")}): other sessions share it. Write only inside your own worktree.`,
+  brokenContract: (main, error) => `the sapu contract of ${main}, which this call touches, is unreadable, so nothing there is allowed: ${error}`,
 };
+
+/** The main checkout among `mains` that `real` is written into (outside its worktrees and, for a non-worker, its state dirs), or null. */
+function mainWrittenOf(real, mains, worker) {
+  return mains.find((m) => m && inMain(real, m) && !(!worker && inStateDir(real, m))) || null;
+}
 
 /** The text a wrapper runs as a command of its own — `env -S '<cmd>'`, `npx -c`/`npm exec -c '<cmd>'` — or null. */
 function innerCommand(t, at) {
@@ -842,16 +1433,63 @@ function inMain(real, main) {
   return inside(real, m) && !inside(real, path.join(m, ".claude", "worktrees"));
 }
 
+const USER_HOMES = new Map();
+/** The home directory the shell gives `~name` (the passwd entry, not $HOME), or null for no such user. */
+function userHome(name) {
+  if (!USER_HOMES.has(name)) {
+    let home = null;
+    try {
+      const me = os.userInfo();
+      if (name === me.username) home = me.homedir;
+      else {
+        // `name` is [A-Za-z0-9._-] only: nothing in it reaches the shell as syntax.
+        const out = execFileSync("/bin/sh", ["-c", `printf %s ~${name}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 });
+        home = out && !out.startsWith("~") ? out : null;
+      }
+    } catch {
+      home = null;
+    }
+    USER_HOMES.set(name, home);
+  }
+  return USER_HOMES.get(name);
+}
+
 /**
- * The word `tok` with a leading `~`, `$HOME` or `${HOME}` read as HOME (those spellings only, and
- * only at the start); null while another variable, `$( )` or backtick is left in it: unknown.
+ * The word `tok` with a leading `~`, `$HOME` or `${HOME}` read as HOME, `~name` as that user's home,
+ * `~+` as the cwd `dir` and `~-` as the previous one `prev` (only at the start); null while another
+ * variable, `$( )` or backtick is left in it, or for a `~+`/`~-` whose directory is unknown. `~name`
+ * of no such user stays a literal word, as in the shell.
  */
-function expandHome(tok) {
+function expandHome(tok, dir = UNKNOWN, prev = UNKNOWN) {
   const home = process.env.HOME;
-  const m = home ? /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/.exec(tok.v) : null;
+  let m = home ? /^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/.exec(tok.v) : null;
+  let base = home;
+  if (!m) {
+    const u = /^~([+-]|[A-Za-z0-9_][A-Za-z0-9._-]*)(?=\/|$)/.exec(tok.v);
+    if (u && (u[1] === "+" || u[1] === "-")) {
+      base = u[1] === "+" ? dir : prev;
+      if (typeof base !== "string") return null;
+      m = u;
+    } else if (u && (base = userHome(u[1])) !== null) m = u;
+  }
   const rest = m ? tok.v.slice(m[0].length) : tok.v;
   if (tok.dyn && /[$`]/.test(rest)) return null;
-  return m ? home + rest : tok.v;
+  return m ? base + rest : tok.v;
+}
+
+/**
+ * The words the shell's brace expansion makes of `tok` (`a{,.bak}` → `a a.bak`). A sequence
+ * (`{a..z}`), or a list too long to expand, reads as `*`: judged as a glob.
+ */
+function braceWords(tok) {
+  if (!/\{[^{}]*(,|\.\.)[^{}]*\}/.test(tok.v)) return [tok];
+  let ws = expandBraces(tok.v);
+  if (ws === null) {
+    let v = tok.v;
+    while (/\{[^{}]*\}/.test(v)) v = v.replace(/\{[^{}]*\}/g, "*");
+    ws = [v];
+  }
+  return ws.map((v) => ({ v: v.replace(/\{[^{}]*\.\.[^{}]*\}/g, "*"), dyn: tok.dyn }));
 }
 
 /**
@@ -859,22 +1497,30 @@ function expandHome(tok) {
  * it cannot be known (a variable other than a leading $HOME, or a relative path from an unknown
  * cwd). `follow` = the write goes through a final symlink (`>`, cp); removing or replacing a link
  * (`rm link`, `ln`, `mv`) does not, unless the word ends in `/`. `glob` = for a word with `*`, `?`
- * or `[`, the absolute literal prefix before the first of them (what it can expand into starts
- * with it); null otherwise.
+ * or `[`, the absolute pattern, spelled as written and through the real path of its literal
+ * directories; null otherwise. `prev` is the previous cwd (`~-`).
  */
-function writeTarget(tok, follow, dir) {
+function writeTarget(tok, follow, dir, prev = UNKNOWN) {
   if (!tok || tok.v === "") return null;
-  const t = expandHome(tok);
+  const t = expandHome(tok, dir, prev);
   if (t === null || (!path.isAbsolute(t) && dir === UNKNOWN)) return null;
   const base = dir === UNKNOWN ? "/" : dir;
   const abs = path.resolve(base, t);
   const real = follow || t.endsWith("/") ? realPathOf(abs) : path.join(realPathOf(path.dirname(abs)), path.basename(abs));
-  const g = t.search(/[*?[]/);
-  return { abs, real, glob: g < 0 ? null : path.resolve(base, t.slice(0, g)) };
+  if (!/[*?[]/.test(t)) return { abs, real, glob: null };
+  const segs = abs.split(path.sep);
+  const g = segs.findIndex((s) => /[*?[]/.test(s));
+  return { abs, real, glob: [abs, path.join(realPathOf(segs.slice(0, g).join(path.sep) || path.sep), ...segs.slice(g))] };
 }
 
 /** Is `x` inside `dir` or `dir` itself? */
 const inside = (x, dir) => x === dir || x.startsWith(dir + path.sep);
+/**
+ * `inside` with letter case ignored, for the protected names: a case-insensitive disk (macOS) opens
+ * `.git` as `.GIT`, and the real path of a name that does not exist yet, or of a removed entry's last
+ * segment, keeps the case it was written in. On a case-sensitive disk this is a false block, never a miss.
+ */
+const insideAnyCase = (x, dir) => inside(x.toLowerCase(), dir.toLowerCase());
 
 /** Git's own files under HOME: ~/.gitconfig and git's config dir, for HOME and its real path. */
 function gitHomePaths() {
@@ -883,9 +1529,21 @@ function gitHomePaths() {
   return [home, realPathOf(home)].flatMap((h) => [path.join(h, ".gitconfig"), path.join(process.env.XDG_CONFIG_HOME || path.join(h, ".config"), "git")]);
 }
 
-/** Is this one of git's own files: a `.git` file or directory (or anything in one), ~/.gitconfig, ~/.config/git/…? */
+/**
+ * Is `p`, or a directory above it, a git directory (HEAD, objects/ and refs/ in it)? That is git's
+ * own directory wherever it lies and however it is named: a `--separate-git-dir` store, a
+ * submodule's under `.git/modules/`, a bare repository.
+ */
+function inGitDir(p) {
+  for (let d = p; ; d = path.dirname(d)) {
+    if (["HEAD", "objects", "refs"].every((x) => fs.existsSync(path.join(d, x)))) return true;
+    if (path.dirname(d) === d) return false;
+  }
+}
+
+/** Is this one of git's own files: a `.git` file or directory (or anything in one), any other git directory, ~/.gitconfig, ~/.config/git/…? */
 function isGitFile(p) {
-  return p.split(path.sep).includes(".git") || gitHomePaths().some((x) => inside(p, x));
+  return p.split(path.sep).some((s) => s.toLowerCase() === ".git") || inGitDir(p) || gitHomePaths().some((x) => insideAnyCase(p, x));
 }
 
 /**
@@ -902,31 +1560,187 @@ function machineConfigDirs() {
 /**
  * Does writing `p` touch sapu's machine config, whose absence or loosening lifts the scope lock its
  * owner set? Anything inside machineConfigDirs(). With `replaces` (the write removes or replaces
- * the entry itself: rm, mv's source, ln) also `~/.config` and `~`, which take the config with them.
+ * the entry itself, or writes a whole tree there: rm, mv, ln, a recursive copy, install -d) also
+ * every directory above it (`~/.config`, `~`, …), which takes the config with it.
  */
 function isMachineConfigFile(p, replaces = false) {
-  if (machineConfigDirs().some((d) => inside(p, d))) return true;
-  const home = process.env.HOME;
-  if (!replaces || !home) return false;
-  return [home, realPathOf(home)].some((h) => p === h || p === path.join(h, ".config") || p === realPathOf(path.join(h, ".config")));
+  return machineConfigDirs().some((d) => insideAnyCase(p, d) || (replaces && insideAnyCase(d, p)));
+}
+
+/** This plugin's own folder, wherever it was loaded from (an installed copy, or `--plugin-dir`). */
+const OWN_PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * What the rules a subagent runs under come from, besides the contract: the active plugin's folder
+ * (CLAUDE_PLUGIN_ROOT, which Claude Code sets for the hook, and this script's own plugin root),
+ * Claude Code's plugin store (`<CLAUDE_CONFIG_DIR or ~/.claude>/plugins/`: every installed copy,
+ * every marketplace clone, the install and marketplace records), its user settings (hooks,
+ * enabledPlugins, disableAllHooks), and for a marketplace whose source is a local directory
+ * (known_marketplaces.json) its `.claude-plugin/` and every plugin source it lists. Real paths too.
+ */
+let pluginCache = { key: null, dirs: [] };
+function pluginDirs() {
+  const cd = process.env.CLAUDE_CONFIG_DIR || (process.env.HOME ? path.join(process.env.HOME, ".claude") : "");
+  const key = `${cd}\0${process.env.CLAUDE_PLUGIN_ROOT ?? ""}`;
+  if (pluginCache.key === key) return pluginCache.dirs;
+  const out = [OWN_PLUGIN_ROOT];
+  if (process.env.CLAUDE_PLUGIN_ROOT) out.push(path.resolve(process.env.CLAUDE_PLUGIN_ROOT));
+  const readJson = (f) => {
+    try {
+      return JSON.parse(fs.readFileSync(f, "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  if (cd) {
+    const c = path.resolve(cd);
+    out.push(path.join(c, "plugins"), path.join(c, "settings.json"), path.join(c, "settings.local.json"));
+    const known = readJson(path.join(c, "plugins", "known_marketplaces.json"));
+    for (const m of known && typeof known === "object" ? Object.values(known) : []) {
+      for (const p of [m?.installLocation, m?.source?.path]) {
+        if (typeof p !== "string" || !p) continue;
+        let r = path.resolve(p);
+        try {
+          if (fs.statSync(r).isFile()) r = path.basename(path.dirname(r)) === ".claude-plugin" ? path.dirname(path.dirname(r)) : path.dirname(r);
+        } catch {
+          continue;
+        }
+        out.push(path.join(r, ".claude-plugin"));
+        const list = readJson(path.join(r, ".claude-plugin", "marketplace.json"))?.plugins;
+        for (const pl of Array.isArray(list) ? list : []) if (typeof pl?.source === "string") out.push(path.resolve(r, pl.source));
+      }
+    }
+  }
+  pluginCache = { key, dirs: [...new Set(out.flatMap((p) => [p, realPathOf(p)]))] };
+  return pluginCache.dirs;
+}
+
+/** A checkout's worktrees are not what a marketplace serves, even when a plugin's source is that checkout's root. */
+const inPluginDir = (p, d) => insideAnyCase(p, d) && !insideAnyCase(p, path.join(d, ".claude", "worktrees"));
+
+/** Does writing `p` change a plugin a subagent runs under? With `replaces`, a directory above one counts. */
+function isPluginFile(p, replaces = false) {
+  return pluginDirs().some((d) => inPluginDir(p, d) || (replaces && insideAnyCase(d, p)));
+}
+
+const isGlob = (s) => /[*?[]/.test(s);
+
+/**
+ * The files that hold a credential gh or git hands out: gh's hosts.yml (its OAuth token where no
+ * keyring stores it) wherever gh reads it ($GH_CONFIG_DIR, $XDG_CONFIG_HOME/gh, ~/.config/gh), and
+ * the files git's store helper keeps (~/.git-credentials, $XDG_CONFIG_HOME/git/credentials,
+ * ~/.config/git/credentials), each also through the real path of its directory. `dirs`: the
+ * directories holding them below HOME (gh's and git's config dirs), which a recursive read, copy or
+ * archive takes the file along from.
+ */
+let tokenCache = { key: null, files: [], dirs: [] };
+function tokenPaths() {
+  const { HOME: home, GH_CONFIG_DIR: gh, XDG_CONFIG_HOME: xdg } = process.env;
+  const key = `${home}\0${gh}\0${xdg}`;
+  if (tokenCache.key === key) return tokenCache;
+  const both = (d) => [path.resolve(d), realPathOf(path.resolve(d))];
+  const ghDirs = [gh, xdg && path.join(xdg, "gh"), home && path.join(home, ".config", "gh")].filter(Boolean).flatMap(both);
+  const gitDirs = [xdg && path.join(xdg, "git"), home && path.join(home, ".config", "git")].filter(Boolean).flatMap(both);
+  const homes = home ? both(home) : [];
+  const files = [...ghDirs.map((d) => path.join(d, "hosts.yml")), ...gitDirs.map((d) => path.join(d, "credentials")), ...homes.map((h) => path.join(h, ".git-credentials"))];
+  tokenCache = { key, files: [...new Set(files)], dirs: [...new Set([...ghDirs, ...gitDirs])] };
+  return tokenCache;
+}
+
+/** Is `p` a credential file of gh or git, or (with `dirs`) a directory holding one? Any letter case. */
+function isTokenFile(p, dirs = true) {
+  const { files, dirs: ds } = tokenPaths();
+  const l = p.toLowerCase();
+  return files.some((f) => f.toLowerCase() === l) || (dirs && ds.some((d) => d.toLowerCase() === l));
 }
 
 /**
- * Can a glob whose literal prefix is `prefix` expand into one of `paths`, an ancestor of one
- * (removing it takes the path along), or anything inside one? Its matches all start with the
- * prefix, so a path that starts with it, or that the prefix already lies inside, is in reach.
+ * A word that can still name a credential file once the guard has resolved what it can: a variable
+ * left, or a part the shell or a wrapper fills in, before `gh/hosts.yml`, `git/credentials`,
+ * `.git-credentials` or `<variable>/hosts.yml`.
  */
-const globMayTouch = (prefix, paths) => paths.some((x) => x.startsWith(prefix) || prefix.startsWith(x + path.sep));
+const TOKEN_TAIL = /(?:^|\/)(?:gh\/hosts\.yml|git\/credentials|\.git-credentials|[^/]*[$`][^/]*\/hosts\.yml)$/i;
+/** The variables that place gh's and git's config: expanded from the environment when set. */
+const TOKEN_VARS = new Set(["HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR"]);
 
-/** The block reason when write target `w` is, or as a glob may expand into, git's own files or sapu's machine config; else null. */
-function protectedTarget(w, follow) {
-  if (w.glob) {
-    const reach = [w.glob, realPathOf(w.glob)];
-    if (reach.some((g) => globMayTouch(g, machineConfigDirs()))) return BLOCK.machineConfig;
-    if (reach.some((g) => globMayTouch(g, gitHomePaths()))) return BLOCK.gitFiles;
+/**
+ * The spellings the word `v` can take: `${NAME:-default}` (`-`, `:=`, `=` too) read both as the
+ * variable and as its default, then HOME, XDG_CONFIG_HOME and GH_CONFIG_DIR replaced by their value
+ * when set (an unset one stays, as it may be set earlier in the command).
+ */
+function tokenSpellings(v) {
+  const out = [];
+  const walk = (s, n) => {
+    const m = n > 0 ? /\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=]([^{}]*)\}/.exec(s) : null;
+    if (!m) return void out.push(s);
+    walk(`${s.slice(0, m.index)}\${${m[1]}}${s.slice(m.index + m[0].length)}`, n - 1);
+    walk(s.slice(0, m.index) + m[2] + s.slice(m.index + m[0].length), n - 1);
+  };
+  walk(v, 4);
+  return out.map((s) => s.replace(/\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g, (all, a, b) => (TOKEN_VARS.has(a ?? b) && process.env[a ?? b] ? process.env[a ?? b] : all)));
+}
+
+/**
+ * Does the word `tok` (or an option's glued value, `--file=<path>`) read a credential file: one
+ * resolved (`~`, `~user`, the variables above, `${…:-…}` defaults, the cwd, `..`) to the file, its
+ * directory, or a glob that can expand into the file? A word the guard cannot resolve counts when it
+ * ends like one (TOKEN_TAIL); a word only ending like one (`fixtures/gh/hosts.yml`) does not. A
+ * directory above them is not counted (LIMITS).
+ */
+function readsToken(tok, dir, prev) {
+  const eq = tok.v.indexOf("=");
+  // A word holding no variable yet built by the shell or a wrapper: a cut `$( )` or a `{}` before it.
+  const cut = tok.dyn && !/[$`]/.test(tok.v);
+  for (const v of eq > 0 ? [tok.v, tok.v.slice(eq + 1)] : [tok.v]) {
+    for (const s of tokenSpellings(v)) {
+      const w = /[$`]/.test(s) ? null : writeTarget({ v: s, dyn: false }, true, dir, prev);
+      if (!w || cut) {
+        if (TOKEN_TAIL.test(s)) return true;
+        if (!w) continue;
+      }
+      if (isTokenFile(w.abs) || isTokenFile(w.real)) return true;
+      const deep = (g) => tokenPaths().files.some((f) => g.split(path.sep).filter(Boolean).length >= f.split(path.sep).filter(Boolean).length && globReaches(g, [f]));
+      if (w.glob && w.glob.some(deep)) return true;
+    }
   }
+  return false;
+}
+
+/**
+ * Can the absolute glob `pattern` expand into one of `paths`, an ancestor of one (removing it takes
+ * the path along), or anything inside one? Matched segment by segment as the shell expands it (a
+ * leading `*`/`?` never matches a leading `.`; `**` reaches any depth), case-insensitively, so
+ * `~/.conf/*` and `*.log` in HOME reach nothing of `~/.config/sapu`.
+ */
+function globReaches(pattern, paths) {
+  const ps = pattern.split(path.sep).filter(Boolean);
+  return paths.some((x) => {
+    const xs = x.split(path.sep).filter(Boolean);
+    for (let k = 0; k < Math.min(ps.length, xs.length); k++) {
+      if (ps[k] === "**") return true;
+      if (isGlob(ps[k]) ? !globRegex(ps[k]).test(xs[k]) : ps[k].toLowerCase() !== xs[k].toLowerCase()) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * The block reason when write target `w` is, or as a glob may expand into, git's own files (a
+ * `.git` anywhere included) or sapu's machine config; else null. `tree`: the write lands a whole
+ * tree there (a recursive copy, install -d), so a directory above a protected path counts.
+ */
+function protectedTarget(w, follow, tree = false) {
+  if (w.glob) {
+    if (w.glob.some((g) => globReaches(g, machineConfigDirs()))) return BLOCK.machineConfig;
+    if (w.glob.some((g) => globReaches(g, gitHomePaths()) || g.split(path.sep).some((s) => isGlob(s) && globRegex(s).test(".git")))) return BLOCK.gitFiles;
+    const literal = (g) => g.split(path.sep).slice(0, g.split(path.sep).findIndex(isGlob)).join(path.sep);
+    if (w.glob.some((g) => pluginDirs().some((d) => globReaches(g, [d]) && !inside(literal(g), path.join(d, ".claude", "worktrees"))))) return BLOCK.pluginFiles;
+  }
+  const replaces = !follow || tree;
   if (isGitFile(w.abs) || isGitFile(w.real)) return BLOCK.gitFiles;
-  if (isMachineConfigFile(w.abs, !follow) || isMachineConfigFile(w.real, !follow)) return BLOCK.machineConfig;
+  if (isMachineConfigFile(w.abs, replaces) || isMachineConfigFile(w.real, replaces)) return BLOCK.machineConfig;
+  if (replaces && gitHomePaths().some((x) => insideAnyCase(x, w.abs) || insideAnyCase(x, w.real))) return BLOCK.gitFiles;
+  if (isPluginFile(w.abs, replaces) || isPluginFile(w.real, replaces)) return BLOCK.pluginFiles;
   return null;
 }
 
@@ -957,9 +1771,15 @@ function nonOptions(argv, takesValue = () => false) {
   return out;
 }
 
-/** The files a write command writes or removes: tee, cp/mv/install/ln destinations, sed -i/perl -i files, rm, patch. */
+/**
+ * The files a write command writes or removes: tee, cp/mv/install/ln destinations, sed -i/perl -i
+ * files, rm, patch; brace lists expanded. A copy, move or link into a directory also lands at
+ * `<dest>/<name>` (with --parents, `<dest>/<source path>`), and a recursive copy of a source's
+ * contents (`x/`, `x/.`, `.`, -T, or a source the shell builds) in `<dest>` itself; `tree` marks a
+ * target written as a whole tree (recursive copy, mv, install -d), where an ancestor counts.
+ */
 function writeTargets(prog, words) {
-  const argv = withoutRedirects(words);
+  const argv = withoutRedirects(words).flatMap(braceWords);
   const a = argv.map((x) => x.v);
   const each = (toks, follow) => toks.map((tok) => ({ tok, follow }));
   // The value of an option (`-t DIR`, `--target-directory=DIR`, `-tDIR`), or null.
@@ -984,11 +1804,23 @@ function writeTargets(prog, words) {
     const args = nonOptions(argv, (v) => /^(-t|--target-directory|-S|--suffix)$/.test(v) || (prog === "install" && /^-[mog]$/.test(v)));
     const dir = targetDir();
     const last = args[args.length - 1];
-    if (prog === "mv") return [...each(args, false), ...each([dir ?? last].filter(Boolean), true)];
-    if (dir) return each([dir], true);
-    if (prog === "install" && a.some((v) => /^-[a-zA-Z]*d/.test(v))) return each(args, true);
-    if (prog === "ln") return args.length === 1 ? each([{ v: path.basename(args[0].v), dyn: args[0].dyn }], false) : each([last].filter(Boolean), false);
-    return each([last].filter(Boolean), true);
+    if (prog === "install" && a.some((v) => /^-[a-zA-Z]*d/.test(v))) return args.map((tok) => ({ tok, follow: true, tree: true }));
+    const sources = dir ? args : args.slice(0, -1);
+    const dest = dir ?? (args.length > 1 ? last : null);
+    const tree = prog === "mv" || (prog === "cp" && a.some((v) => /^-[a-zA-Z]*[rRa]/.test(v) || /^--(recursive|archive)$/.test(v)));
+    const noTargetDir = a.some((v) => v === "--no-target-directory" || /^-[a-zA-Z]*T/.test(v));
+    const follow = prog === "cp" || prog === "install";
+    const landings = !dest
+      ? []
+      : sources.map((s) => {
+          const contents = s.dyn || noTargetDir || /(^|\/)\.\.?\/?$/.test(s.v) || (tree && s.v.endsWith("/"));
+          const name = a.includes("--parents") ? s.v.replace(/^\/+/, "") : path.basename(s.v);
+          return { tok: contents ? dest : { v: `${dest.v.replace(/\/+$/, "")}/${name}`, dyn: dest.dyn }, follow, tree };
+        });
+    if (prog === "mv") return [...each(sources, false), ...each([dest].filter(Boolean), true), ...landings];
+    if (dir) return [...each([dir], true), ...landings];
+    if (prog === "ln") return args.length === 1 ? each([{ v: path.basename(args[0].v), dyn: args[0].dyn }], false) : [...each([last].filter(Boolean), false), ...landings];
+    return [...each([last].filter(Boolean), true), ...landings];
   }
   if (prog === "sed" || prog === "perl") {
     if (!a.slice(1).some((v) => (prog === "sed" ? /^(-[a-zA-Z]*i|--in-place)/ : /^-[a-zA-Z]*i/).test(v))) return [];
@@ -1016,11 +1848,23 @@ function checkCommand(t, state, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   const values = t.map((x) => x.v);
   if (values.includes("sapu-guard-canary")) return BLOCK.canary;
-  const rules = state.rules;
-  const at = programIndex(t);
+  const alts = [];
+  const peeled = {};
+  const at = programIndex(t, alts, peeled);
+  // An unknown wrapper option read the other way too: taking the next word as its value.
+  for (const k of alts) {
+    const r = checkCommand([...t.slice(0, k), ...t.slice(k + 2)], state, depth + 1);
+    if (r) return r;
+  }
+  if (peeled.appends && at < t.length) t = [...t, ...Array.from({ length: peeled.appends }, () => ({ v: "", dyn: true }))];
   const here = envChdir(t, at, state.dir) ?? state.dir;
+  // The repo this command runs in, and its contract (TOUCHED REPO in decide()); without a resolver,
+  // or where the place cannot be told, the scope the caller gave.
+  const scope = (state.resolve && state.resolve(here)) || state;
+  if (scope.error) return BLOCK.brokenContract(scope.main, scope.error);
+  const { rules, main } = scope;
   const inner = innerCommand(t, at);
-  if (inner !== null) return checkText(inner, here, state.main, rules, depth + 1);
+  if (inner !== null) return checkText(inner, here, state, depth + 1);
   const argv = t.slice(at);
   const a = argv.map((x) => x.v);
   const prog = a.length ? bare(a[0]) : "";
@@ -1044,52 +1888,179 @@ function checkCommand(t, state, depth) {
   // Assignments before the program count (`X=.env`, `PGPORT=…`), also with no program at all.
   const scanned = [...values.slice(0, at), ...a.filter((_, i) => i > 0 && !skip.has(i)), ...optValues];
   if (scanned.some((v) => GIT_CONFIG_ENV.test(v))) return BLOCK.noVerify;
-  if (dbTarget(scanned, prog, rules.pg)) return BLOCK.db(rules.pg.label);
+  const db = rules.dbs.find((d) => (d.engine === "postgres" ? dbTarget(scanned, prog, d) : d.engine === "sqlite" ? sqliteTarget(scanned, d, here, main) : engineTarget(scanned, prog, d)));
+  if (db) return BLOCK.db(db.label);
   if (scanned.some((v) => isEnvFile(v, rules)) || globTargets.some((v) => isEnvFile(v, rules, { dotfiles: true, escapes: true }))) return BLOCK.env;
   if (!a.length) return null;
+  // git's credential programs run by their own name (`git-credential fill`, `git-credential-store get`).
+  if (prog.startsWith("git-credential") && !cacheExit(prog, argv.slice(1))) return BLOCK.ghToken;
+  // degit/tiged copy another repository's tree here, as a clone would.
+  if (prog === "degit" || prog === "tiged") return BLOCK.foreignCode;
+  // patch applies a diff, wherever it was saved (`gh pr diff 8 > f` then `patch < f`): like git apply,
+  // only its dry run is a read.
+  // POSIXLY_CORRECT (set for the command, earlier in its text, or in the environment it inherits) ends
+  // patch's options at its first operand: a dry-run word after it is a file name.
+  if (prog === "patch" && !patchDryRun(a.slice(1), state.posix)) return BLOCK.prCode;
+  if ((prog === "busybox" || prog === "toybox") && bare(a[1] ?? "") === "patch" && !patchDryRun(a.slice(2), state.posix)) return BLOCK.prCode;
 
   // Writes: redirections of any command, and the write commands. Git's own files are nobody's;
   // <MAIN> outside its worktrees is off limits, except the STATE_DIRS for non-worker subagents.
   const scan = [...t.slice(0, at), ...argv.filter((_, i) => !skip.has(i))];
-  for (const { tok, follow } of [...redirectTargets(scan), ...writeTargets(prog, argv)]) {
-    const w = writeTarget(tok, follow, here);
+  // zsh writes a redirection to every word its braces make (MULTIOS); bash refuses it: judge them all.
+  const redirects = redirectTargets(scan).flatMap((r) => braceWords(r.tok).map((tok) => ({ ...r, tok })));
+  for (const { tok, follow, tree } of [...redirects, ...writeTargets(prog, argv)]) {
+    const w = writeTarget(tok, follow, here, state.prev);
     if (!w) continue;
-    const own = protectedTarget(w, follow);
+    const own = protectedTarget(w, follow, tree);
     if (own) return own;
-    if (state.main && inMain(w.real, state.main) && !(rules.worker === false && inStateDir(w.real, state.main))) return BLOCK.mainWrite(state.main);
+    // The target's own repo decides; the main checkouts already in scope stay closed whatever it resolves to.
+    const ts = (state.resolve && state.resolve(w.real)) || scope;
+    if (ts.error) return BLOCK.brokenContract(ts.main, ts.error);
+    const into = mainWrittenOf(w.real, [ts.main, main, state.main], rules.worker !== false);
+    if (into) return BLOCK.mainWrite(into);
   }
-  if (prog === "bun" && a[1] === "exec") return checkText(a.slice(2).join(" "), here, state.main, rules, depth + 1);
+  // A credential file read, copied or archived (after the writes: removing one is judged as a write) (brace lists expanded); a lister only names it, so
+  // only what is redirected into one counts.
+  const lists = LISTERS.has(prog);
+  const reads = [...t.slice(0, at), ...argv.filter((_, i) => i > 0 && !skip.has(i) && (!lists || REDIRECT_OP.test(argv[i - 1].v)))];
+  if (reads.flatMap(braceWords).some((x) => readsToken(x, here, state.prev))) return BLOCK.ghToken;
+  if (prog === "bun" && a[1] === "exec") return checkText(a.slice(2).join(" "), here, state, depth + 1);
 
   const repoRule = denied(a, prog, rules.deny, here);
   if (repoRule) return repoRule;
 
   if (SHELLS.has(prog)) {
     const c = a.findIndex((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v));
-    if (c > 0 && a[c + 1] !== undefined) return checkText(a[c + 1], here, state.main, rules, depth + 1);
+    if (c > 0 && a[c + 1] !== undefined) return checkText(a[c + 1], here, state, depth + 1);
     const script = a.findIndex((v, i) => i > 0 && !v.startsWith("-") && !/^[-+]o$/.test(a[i - 1]));
     return script > 0 ? checkCommand(argv.slice(script), { ...state, dir: here }, depth + 1) : null;
   }
-  if (prog === "eval") return checkText(a.slice(1).join(" "), here, state.main, rules, depth + 1);
+  if (prog === "eval") return checkText(a.slice(1).join(" "), here, state, depth + 1);
   if (prog === "find") {
     for (let i = 1; i < argv.length; i++) {
       if (!/^-(exec|execdir|ok|okdir)$/.test(a[i])) continue;
       let j = i + 1;
       while (j < argv.length && a[j] !== ";" && a[j] !== "+") j++;
-      const r = checkCommand(argv.slice(i + 1, j), { ...state, dir: here }, depth + 1);
+      // find puts each path it finds where `{}` stands: such a word is not a literal.
+      const r = checkCommand(argv.slice(i + 1, j).map((x) => (x.v.includes("{}") ? { ...x, dyn: true } : x)), { ...state, dir: here }, depth + 1);
       if (r) return r;
       i = j;
     }
     return null;
   }
+  if (prog === "fd" || prog === "fdfind") {
+    // fd -x|-X runs the words after it (up to `;`) for the paths it finds, each placeholder a path.
+    for (let i = 1; i < argv.length; i++) {
+      if (!FD_EXEC.test(a[i])) continue;
+      let j = i + 1;
+      while (j < argv.length && a[j] !== ";") j++;
+      const cmd = argv.slice(i + 1, j);
+      const fills = cmd.some((x) => FD_PLACEHOLDER.test(x.v));
+      const words = [...cmd.map((x) => (FD_PLACEHOLDER.test(x.v) ? { ...x, dyn: true } : x)), ...(fills ? [] : [{ v: "", dyn: true }])];
+      const r = checkCommand(words, { ...state, dir: here }, depth + 1);
+      if (r) return r;
+      i = j;
+    }
+    return null;
+  }
+  if (prog === "rush") {
+    // rush joins its command words into shell text run for each input record, a placeholder standing
+    // for the record (appended when the text has none). An option not known is also read as taking
+    // the next word, as xargs's are.
+    let k = 1;
+    while (k < a.length && a[k].startsWith("-") && a[k] !== "-") {
+      if (a[k] === "--") {
+        k++;
+        break;
+      }
+      if (!RUSH_VALUE.test(a[k]) && !RUSH_FLAG.test(a[k])) {
+        const r = checkCommand([...t.slice(0, at + k), ...t.slice(at + k + 2)], state, depth + 1);
+        if (r) return r;
+      }
+      k += RUSH_VALUE.test(a[k]) ? 2 : 1;
+    }
+    const cmd = a.slice(k).join(" ");
+    if (!cmd.trim()) return null;
+    const arg = "$SAPU_PARALLEL_INPUT";
+    const text = cmd.replace(RUSH_PLACEHOLDER, arg);
+    return checkText(text === cmd ? `${cmd} ${arg}` : text, here, state, depth + 1);
+  }
+  if (prog === "parallel" || prog === "sem") {
+    // GNU parallel: options, a command, then its input after `:::`/`::::` (or from stdin). It joins the
+    // command's words and runs them through a shell, a replacement string ({}, {.}, {/}, {#}, {1},
+    // {= … =}, or -I's own) standing for each input, which it appends when the command has none. So
+    // the command is judged both as that shell text and as words, each input a word the shell builds;
+    // with no command, each `:::` word is a command of its own. An option not known is judged both as
+    // a flag and as taking the next word, as xargs's are. `sem` is parallel --semaphore.
+    let k = 1;
+    let rep = null;
+    while (k < a.length && a[k].startsWith("-") && a[k] !== "-" && !PARALLEL_SEP.test(a[k])) {
+      const o = a[k];
+      if (o === "--") {
+        k++;
+        break;
+      }
+      const long = /^--([^=]+)(=?)/.exec(o);
+      const name = long ? long[1] : o[1];
+      let used = 1;
+      if (long ? name === "replace" : name === "i") rep = (long ? long[2] && o.slice(o.indexOf("=") + 1) : o.slice(2)) || "{}";
+      else if (long ? PARALLEL_LONG_VALUE.has(name) : PARALLEL_SHORT_VALUE.includes(name)) {
+        const glued = long ? !!long[2] : o.length > 2;
+        if (name === "I") rep = glued ? o.slice(2) : (a[k + 1] ?? null);
+        used = glued ? 1 : 2;
+      } else if (!(long ? PARALLEL_LONG_FLAG.has(name) && !long[2] : [...o.slice(1)].every((ch) => PARALLEL_SHORT_FLAG.includes(ch)))) {
+        const r = checkCommand([...t.slice(0, at + k), ...t.slice(at + k + 2)], state, depth + 1);
+        if (r) return r;
+      }
+      k += used;
+    }
+    const sep = a.findIndex((v, j) => j >= k && PARALLEL_SEP.test(v));
+    const cmd = argv.slice(k, sep < 0 ? argv.length : sep);
+    if (!cmd.length) {
+      for (const x of sep < 0 ? [] : argv.slice(sep + 1)) {
+        const r = PARALLEL_SEP.test(x.v) ? null : checkText(x.v, here, state, depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+    const replaces = (v) => (rep ? v.includes(rep) : PARALLEL_REPLACE.test(v));
+    const fills = cmd.some((x) => replaces(x.v));
+    const built = { v: "", dyn: true };
+    const words = [...cmd.map((x) => (replaces(x.v) ? { ...x, dyn: true } : x)), ...(fills ? [] : [built])];
+    const r = checkCommand(words, { ...state, dir: here }, depth + 1);
+    if (r) return r;
+    const arg = "$SAPU_PARALLEL_INPUT";
+    const text = cmd.map((x) => (rep ? x.v.split(rep).join(arg) : x.v.replace(new RegExp(PARALLEL_REPLACE.source, "g"), arg))).join(" ");
+    return checkText(fills ? text : `${text} ${arg}`, here, state, depth + 1);
+  }
   if (prog === "cd" || prog === "pushd") {
-    const target = argv[1];
-    if (!target) state.dir = process.env.HOME || state.dir;
-    else if (state.dir === UNKNOWN || expandHome(target) === null) state.dir = UNKNOWN;
-    else if (target.v !== "-") state.dir = path.resolve(state.dir, expandHome(target));
+    let k = 1;
+    while (k < argv.length && /^-[LPe@]+$/.test(argv[k].v)) k++;
+    if (argv[k]?.v === "--") k++;
+    const target = argv[k];
+    const from = state.dir;
+    // `cd -` returns to the previous directory (the command's cwd before the first cd); an absolute or `~`
+    // target is known from anywhere, a relative one only from a known cwd.
+    const e = target && target.v !== "-" ? expandHome(target, from, state.prev) : null;
+    if (!target) state.dir = process.env.HOME || from;
+    else if (target.v === "-") state.dir = state.prev ?? UNKNOWN;
+    else if (e === null || /^[+-]\d+$/.test(target.v) || (from === UNKNOWN && !path.isAbsolute(e))) state.dir = UNKNOWN;
+    else state.dir = path.resolve(from === UNKNOWN ? "/" : from, e);
+    state.prev = from;
     return null;
   }
   if (prog === "pkill" || prog === "killall") return BLOCK.kill;
+  // The claude CLI's plugin changes rewrite the plugin store; its reads (list, validate) are fine.
+  // An option's value may stand before the subcommand (`claude --model x plugin …`), so the first
+  // `plugin(s)` word starts it; `npx @anthropic-ai/claude-code` (or `claude-code`) is the same CLI.
+  if (prog === "claude" || prog === "claude-code") {
+    const p = a.findIndex((v, k) => k > 0 && /^plugins?$/.test(v));
+    const w = p < 0 ? [] : a.slice(p).filter((v) => !v.startsWith("-"));
+    if (p > 0 && !/^(list|validate|help)$/.test(w[1] ?? "list") && !(w[1] === "marketplace" && /^(list|help)$/.test(w[2] ?? "list"))) return BLOCK.pluginFiles;
+  }
   if (prog === "sapu-merge.sh") return a.includes("--dry-run") ? null : BLOCK.orchestrator;
+  const live = liveCliRun(argv, here, state.explorer);
+  if (live) return live;
 
   if (prog === "git") {
     let i = 1;
@@ -1103,10 +2074,19 @@ function checkCommand(t, state, depth) {
     };
     for (const e of t.slice(0, at)) {
       if (GIT_HOME_ENV.test(e.v)) return BLOCK.gitHome;
+      if (gitEnvRuns(e)) return BLOCK.gitProgram;
       const m = /^GIT_(DIR|WORK_TREE)=(.*)$/.exec(e.v);
       if (m) dir = target({ v: m[2], dyn: e.dyn }, m[1] === "DIR");
     }
-    const configRisk = (kv) => (GIT_CONFIG_DANGER.test(kv) ? BLOCK.noVerify : GIT_REMOTE_CONFIG.test(kv) ? BLOCK.remote : null);
+    // `-c key=value` (a key alone is a boolean); `--config-env` reads the value from a variable: unknown.
+    // A key the shell builds is unknown too: it may be any key, so it is refused whatever its value.
+    const configRisk = (kv, known, dyn) => {
+      if (dyn && dynamicKey(kv)) return BLOCK.gitConfigKey;
+      if (GIT_CONFIG_DANGER.test(kv)) return BLOCK.noVerify;
+      if (GIT_REMOTE_CONFIG.test(kv)) return BLOCK.remote;
+      const eq = kv.indexOf("=");
+      return gitConfigRuns(eq < 0 ? kv : kv.slice(0, eq), !known ? undefined : eq < 0 ? "" : kv.slice(eq + 1)) ? BLOCK.gitProgram : null;
+    };
     while (i < argv.length && argv[i].v.startsWith("-")) {
       const v = argv[i].v;
       const long = /^--(git-dir|work-tree)(=(.*))?$/.exec(v);
@@ -1117,17 +2097,22 @@ function checkCommand(t, state, depth) {
         dir = target(long[2] ? { v: long[3], dyn: argv[i].dyn } : argv[i + 1], long[1] === "git-dir");
         i += long[2] ? 1 : 2;
       } else if (v === "-c" || v === "--config-env") {
-        const risk = configRisk(argv[i + 1]?.v ?? "");
+        const risk = configRisk(argv[i + 1]?.v ?? "", v === "-c" && argv[i + 1] && !argv[i + 1].dyn, argv[i + 1]?.dyn);
         if (risk) return risk;
         i += 2;
       } else if (v.startsWith("--config-env=")) {
-        const risk = configRisk(v.slice("--config-env=".length));
+        const risk = configRisk(v.slice("--config-env=".length), false, argv[i].dyn);
         if (risk) return risk;
         i++;
       } else i++;
     }
     const sub = a[i];
     const rest = a.slice(i + 1);
+    // git's credential helpers hand out the token gh stores for git (`git credential fill`)
+    if (/^credential(-|$)/.test(sub ?? "") && !cacheExit(`git-${sub}`, argv.slice(i + 1))) return BLOCK.ghToken;
+    // The repository git acts on (-C, --git-dir, …) is the touched repo: its base branch and main checkout.
+    const gs = (dir !== here && state.resolve && state.resolve(dir)) || scope;
+    if (gs.error) return BLOCK.brokenContract(gs.main, gs.error);
     if (sub === "config") {
       if (rest.some((v) => /^core\.hookspath$/i.test(v))) return BLOCK.noVerify;
       // A read: an explicit read option or subcommand, or a lone key (`git config user.name`).
@@ -1140,6 +2125,8 @@ function checkCommand(t, state, depth) {
         rest.some((v) => /^(--get(-all|-regexp|-urlmatch)?|-l|--list)$/.test(v)) ||
         (!writeFlag && positional.length === 1 && !["set", "unset", "edit", "rename-section", "remove-section"].includes(positional[0]));
       if (!reads && rest.some((v) => /^--(global|system)$/.test(v))) return BLOCK.gitFiles;
+      const key = argv.slice(i + 1).find((t, k) => !t.v.startsWith("-") && !(fileOpt >= 0 && k === fileOpt + 1) && !["set", "unset", "edit", "rename-section", "remove-section"].includes(t.v));
+      if (!reads && key?.dyn && dynamicKey(key.v)) return BLOCK.gitConfigKey;
       const cfgFile = fileOpt >= 0 ? rest[fileOpt + 1] : rest.find((v) => v.startsWith("--file="))?.slice("--file=".length);
       if (!reads && cfgFile) {
         const w = writeTarget({ v: cfgFile, dyn: false }, true, dir);
@@ -1149,6 +2136,12 @@ function checkCommand(t, state, depth) {
       }
       if (!reads && rest.some((v) => /^(alias\..|include\.path$|includeif\.|filter\..|core\.(attributesfile|fsmonitor|sshcommand)$|diff\.external$)/i.test(v))) return BLOCK.noVerify;
       if (!reads && rest.some((v) => /^(remote\..+\..|url\..+\..|push\..)/i.test(v))) return BLOCK.remote;
+      // A config file keeps the program for every later git command, of every worktree: no value passes.
+      if (!reads && rest.some((v) => gitConfigRuns(v, undefined))) return BLOCK.gitProgram;
+    }
+    for (const c of gitOptionCommands(sub, argv.slice(i + 1))) {
+      const r = c.argv ? checkCommand(c.argv, { ...state, dir: here }, depth + 1) : checkText(c.text, here, state, depth + 1);
+      if (r) return r;
     }
     if (sub === "remote" && ["add", "set-url", "set-branches", "set-head", "rename", "remove", "rm", "prune", "update"].includes(rest[0])) return BLOCK.remote;
     const flags = rest.filter((v, k) => v.startsWith("-") && !skip.has(i + 1 + k)).map(longName);
@@ -1176,6 +2169,8 @@ function checkCommand(t, state, depth) {
     if (sub === "apply" && !(rest.some((v) => /^--(check|stat|numstat|summary)$/.test(v)) && !rest.some((v) => /^--(apply|index|cached|3way)$|^-3$/.test(v)))) return BLOCK.prCode;
     if (["replace", "update-index", "checkout-index", "read-tree"].includes(sub)) return BLOCK.index;
     if (sub === "stash") {
+      // a subcommand the shell or a wrapper builds may be pop or clear
+      if (argv[i + 1]?.dyn) return BLOCK.stash;
       const op = rest[0] === undefined || rest[0].startsWith("-") ? "push" : rest[0];
       if (rest[0] === undefined || op === "pop" || op === "clear") return BLOCK.stash;
       if (op === "drop" && rest.length < 2) return BLOCK.stash;
@@ -1185,52 +2180,103 @@ function checkCommand(t, state, depth) {
     if (sub === "push") {
       if (flags.some((f) => f === "--force" || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(f)) || rest.some((v) => v.startsWith("+"))) return BLOCK.force;
       if (flags.some((f) => f === "--delete" || f === "-d") || rest.some((v) => v.startsWith(":"))) return BLOCK.refs;
-      if (flags.some((f) => f === "--all" || f === "--mirror" || f === "--branches")) return BLOCK.pushBase(rules.base);
+      if (flags.some((f) => f === "--all" || f === "--mirror" || f === "--branches")) return BLOCK.pushBase(gs.rules.base);
       // Destination of each refspec: after the last `:`, else the refspec itself; the first word is the remote.
       const pos = [];
       for (let k = 0; k < rest.length; k++) {
         if (/^(-o|--push-option|--receive-pack|--exec|--repo)$/.test(rest[k])) k++;
         else if (!rest[k].startsWith("-")) pos.push(rest[k]);
       }
-      const bases = new Set(["main", "master", rules.base].filter(Boolean));
+      const bases = new Set(["main", "master", gs.rules.base].filter(Boolean));
       // as git resolves a destination: `main`, `heads/main`, `refs/heads/main`
       const dest = (spec) => spec.slice(spec.lastIndexOf(":") + 1).replace(/^refs\/heads\//, "").replace(/^heads\//, "");
-      if (pos.slice(1).some((spec) => bases.has(dest(spec)))) return BLOCK.pushBase(rules.base);
+      if (pos.slice(1).some((spec) => bases.has(dest(spec)))) return BLOCK.pushBase(gs.rules.base);
     }
     if (sub === "worktree" && ["remove", "prune", "move"].includes(rest[0])) return BLOCK.refs;
     if (sub === "branch" && flags.some((f) => ["-D", "-d", "-f", "-M", "--delete", "--force"].includes(f))) return BLOCK.refs;
     if (sub === "update-ref" || sub === "symbolic-ref") return BLOCK.refs;
-    if (state.main && MUTATING_GIT.has(sub)) {
+    // A plugin folder, or a checkout holding one (a marketplace clone, a local marketplace), is the
+    // plugin's: no git command changes its files, as no write does.
+    if (MUTATING_GIT.has(sub) && dir !== UNKNOWN) {
+      const top = gitRoot(dir) ?? dir;
+      if ([top, realPathOf(top)].some((p) => isPluginFile(p, true))) return BLOCK.pluginFiles;
+    }
+    if ((gs.main || state.main) && MUTATING_GIT.has(sub)) {
       if (dir === UNKNOWN) return `\`git ${sub}\` in a directory that cannot be told (a path held in a shell variable, or after a cd inside a pipeline): write the literal path of your own worktree, with git -C or a plain cd.`;
-      if (realpathOrSelf(dir) === realpathOrSelf(state.main)) {
-        return `\`git ${sub}\` in the main checkout (${state.main}). Other sessions share it: work only in your own worktree.`;
-      }
+      const m = [gs.main, main, state.main].find((x) => x && realpathOrSelf(dir) === realpathOrSelf(x));
+      if (m) return `\`git ${sub}\` in the main checkout (${m}). Other sessions share it: work only in your own worktree.`;
     }
     return null;
   }
 
   if (prog === "gh") {
-    const { w, i1, i2 } = ghWords(a);
+    const { w, i1, i2, ix } = ghWords(a);
     let [g1, g2] = [i1 < 0 ? undefined : w[i1], i2 < 0 ? undefined : w[i2]];
     if (g1 === "co") [g1, g2] = ["pr", "checkout"];
     if (g1 !== undefined && !g1.startsWith("-") && !GH_COMMANDS.has(g1)) return BLOCK.ghUnknown;
+    // A subcommand the shell builds (`gh label $S …`, `gh pr $(…) 1`) is judged as each one a rule names.
+    if (g1 !== "api" && i2 >= 0 && argv[ix[i2]].dyn) {
+      for (const sub of GH_RULED_SUBCOMMANDS) {
+        const r = checkCommand([...t.slice(0, at + ix[i2]), { v: sub, dyn: false }, ...t.slice(at + ix[i2] + 1)], state, depth + 1);
+        if (r) return r;
+      }
+    }
     if (g1 === "pr" && g2 === "merge") return BLOCK.merge;
+    if (g1 === "auth" && ghTokenShown(g2, i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]))) return BLOCK.ghToken;
+    if (g1 === "config" && g2 === "get" && ghConfigToken(ix.slice(i2 + 1).map((k) => argv[k]))) return BLOCK.ghToken;
     if (g1 === "issue" && g2 === "create" && rules.worker !== false) return BLOCK.issue;
     if (g1 === "alias" && (g2 === "set" || g2 === "import")) return BLOCK.ghAlias;
     if (g1 === "pr" && g2 === "checkout") return BLOCK.prCode;
-    if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade"))) return BLOCK.foreignCode;
-    // The acceptance label, in every spelling gh offers.
-    const L = rules.acceptLabel;
-    const tail = i2 < 0 ? [] : w.slice(i2 + 1);
+    if ((g1 === "repo" && g2 === "clone") || (g1 === "extension" && (g2 === "install" || g2 === "upgrade")) || (g1 === "release" && g2 === "download")) return BLOCK.foreignCode;
+    // The owner labels (acceptance, needs-owner), in every spelling gh offers.
+    const L = rules.ownerLabels;
+    const tailT = i2 < 0 ? [] : ix.slice(i2 + 1).map((k) => argv[k]);
+    // A label or reason the shell builds cannot be read: refused like the owner's own.
     if ((g1 === "issue" || g1 === "pr") && g2 === "edit") {
-      for (let j = 0; j < tail.length; j++) {
-        const m = /^--(add|remove)-label(?:=([\s\S]*))?$/.exec(tail[j]);
-        if (m && namesLabel(m[2] ?? tail[j + 1] ?? "", L)) return BLOCK.acceptLabel;
+      // An option name the shell or xargs builds (`$O sapu:accepted`, `xargs -I Z … Z <label>`) beside
+      // a literal owner label could be --add-label or --remove-label.
+      if (tailT.some((x) => x.dyn) && tailT.some((x) => !x.dyn && namesLabel(x.v, L))) return BLOCK.acceptLabel;
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^--(add|remove)-label(?:=([\s\S]*))?$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[2] === undefined ? null : `=${m[2]}`);
+        if (val && (val.dyn || namesLabel(val.v, L))) return BLOCK.acceptLabel;
       }
     }
-    if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tail.some((v) => namesLabel(v, L))))) return BLOCK.acceptLabel;
+    // A new issue may carry the agent-filed and needs-owner labels, never the acceptance label; with
+    // agentFiledNeedsAcceptance it must carry the agent-filed label, written literally.
+    if (g1 === "issue" && g2 === "create") {
+      const labels = [];
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^(?:--label(?:=([\s\S]*))?|-l([\s\S]*))$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[1] !== undefined ? `=${m[1]}` : m[2] || null);
+        if (val) labels.push(val);
+      }
+      if (labels.some((x) => namesLabel(x.v, rules.accepted))) return BLOCK.acceptLabel;
+      if (rules.agentFiledGate && !labels.some((x) => !x.dyn && namesLabel(x.v, rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+      // a label the shell builds may be the acceptance label
+      if (labels.some((x) => x.dyn)) return BLOCK.acceptLabel;
+    }
+    // Closing as not planned is the owner's ruling (argus records it as intended).
+    if (g1 === "issue" && g2 === "close") {
+      for (let j = 0; j < tailT.length; j++) {
+        const m = /^(?:--reason(?:=([\s\S]*))?|-r([\s\S]*))$/.exec(tailT[j].v);
+        const val = m && optionValue(tailT, j, m[1] !== undefined ? `=${m[1]}` : m[2] || null);
+        if (val && (val.dyn || notPlanned(val.v))) return BLOCK.ownerRuling;
+      }
+    }
+    // A label word the shell builds (`gh label edit $(…) --name x`, `--name "$N"`) may be an owner label.
+    if (g1 === "label" && (g2 === "clone" || (["create", "edit", "delete"].includes(g2) && tailT.some((x) => x.dyn || namesLabel(x.v, L))))) return BLOCK.acceptLabel;
     if (g1 === "api") {
       if (a.some((v) => /\b(addLabelsToLabelable|removeLabelsFromLabelable|clearLabelsFromLabelable|createLabel|updateLabel|deleteLabel)\b/.test(v))) return BLOCK.acceptLabel;
+      // labelIds on an update replaces the whole label set: the owner labels go without being named.
+      if (a.some((v) => /\b(updateIssue|updatePullRequest)\b/.test(v)) && a.some((v) => /\blabelIds\b/.test(v))) return BLOCK.acceptLabel;
+      // A GraphQL new issue names its labels by node id, which the guard cannot read.
+      if (a.some((v) => /\bcreateIssue\b/.test(v))) {
+        if (rules.worker !== false) return BLOCK.issue;
+        if (rules.agentFiledGate) return BLOCK.agentFiled(rules.agentFiled);
+      }
+      // closeIssue: NOT_PLANNED inline, a variable exactly NOT_PLANNED, or any field the guard cannot read
+      if (a.some((v) => /\bcloseIssue\b/.test(v)) && (a.some((v) => GQL_NOT_PLANNED.test(v)) || ghFields(argv).some((f) => f.dyn || f.file || f.v.slice(f.v.indexOf("=") + 1) === "NOT_PLANNED"))) return BLOCK.ownerRuling;
       if (a.some((v) => { let s = v; try { s = decodeURIComponent(v); } catch { /* raw */ } return /(?:[?&]ref=|\/(?:tarball|zipball)\/)(?:refs\/)?pull\//.test(s); })) return BLOCK.prCode;
       if (a.some((v) => /mergePullRequest|enablePullRequestAutoMerge/.test(v))) return BLOCK.merge;
       if (a.includes("graphql")) {
@@ -1243,10 +2289,10 @@ function checkCommand(t, state, depth) {
             val = argv[k + 1];
             fromFile = /^(-F|--field)$/.test(a[k]);
           } else {
-            const m = /^(-f|-F|--field=|--raw-field=)(query=[\s\S]*)$/.exec(a[k]);
+            const m = /^(?:(-f|-F)=?|(--field=|--raw-field=))(query=[\s\S]*)$/.exec(a[k]);
             if (m) {
-              val = { v: m[2], dyn: argv[k].dyn };
-              fromFile = /^(-F|--field=)$/.test(m[1]);
+              val = { v: m[3], dyn: argv[k].dyn };
+              fromFile = m[1] === "-F" || m[2] === "--field=";
             }
           }
           // an empty `query=` was cut by an unquoted $( ) or backtick
@@ -1254,16 +2300,15 @@ function checkCommand(t, state, depth) {
         }
       }
       if (a.some((v) => /\b(createCommitOnBranch|createRef|updateRefs?|deleteRef|mergeBranch)\b/.test(v))) return BLOCK.apiWrite;
-      const m = a.findIndex((v) => v === "-X" || v === "--method");
-      const inline = a.map((v) => /^(?:-X|--method=)(.+)$/.exec(v)?.[1]).find(Boolean);
-      const method = (m > 0 ? a[m + 1] : inline) || (a.some((v) => /^(-f|-F|--field|--raw-field|--input)$/.test(v)) ? "POST" : "GET");
-      if (method.toUpperCase() !== "GET") {
-        if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(v))) return BLOCK.merge;
-        if (a.some((v) => /\/(contents|git|branches)\//.test(v))) return BLOCK.apiWrite;
-        // A write naming the label, or a label/issue write whose body the guard cannot read.
-        if (a.some((v) => namesLabel(v, L))) return BLOCK.acceptLabel;
-        const unread = a.some((v) => /^--input(=|$)/.test(v)) || a.some((v, j) => /^(-F|--field)$/.test(a[j - 1] ?? "") && /=@/.test(v));
-        if (unread && a.some((v) => /\/labels\b|\/issues\/\d+\/?$/.test(v))) return BLOCK.acceptLabel;
+      // Every method given (a shell-built or cut-off one is any method), else POST with a body, else
+      // GET; a route the shell builds (`repos/$R/issues`, `issues/$(…)/labels`) may be any route, so
+      // a write through it is refused whole, and each method is judged by the strictest rule it meets.
+      const dynRoute = ghApiRoutes(argv, ix[i1]).some((x) => x.dyn);
+      for (const M of ghApiMethods(argv)) {
+        if (M === "GET") continue;
+        if (dynRoute) return BLOCK.apiDynamic;
+        const r = ghApiWrite(M, argv, rules);
+        if (r) return r;
       }
     }
     return null;
@@ -1297,6 +2342,47 @@ function checkCommand(t, state, depth) {
   return null;
 }
 
+// patch's options (GNU and BSD/macOS patch, busybox's subset), read as getopt reads them: a short
+// option taking a value takes the rest of its word or the next word (`-z --dry-run` is a suffix),
+// short options bundle (`-sNp1`), a long one takes `=value` or the next word, `--` ends them.
+const PATCH_SHORT_VALUE = "BDdFgioprVxYz";
+const PATCH_SHORT_FLAG = "bCcEeflNnRstTuvZ";
+const PATCH_LONG_VALUE = new Set(["prefix", "ifdef", "directory", "fuzz", "get", "input", "output", "strip", "reject-file", "version-control", "debug", "basename-prefix", "suffix", "quoting-style", "reject-format", "read-only"]);
+const PATCH_LONG_FLAG = new Set(["backup", "check", "dry-run", "context", "remove-empty-files", "ed", "force", "ignore-whitespace", "forward", "normal", "reverse", "quiet", "silent", "batch", "unified", "version", "posix", "binary", "set-utc", "set-time", "verbose", "help", "backup-if-mismatch", "no-backup-if-mismatch", "follow-symlinks", "merge"]);
+
+/**
+ * Is patch with these arguments only a dry run? Yes when --dry-run, --check or -C stands as an
+ * option of its own; never when that word is another option's value or follows `--`, and never
+ * with an option the guard does not know (it may take the next word as its value).
+ */
+function patchDryRun(args, posix = false) {
+  let dry = false;
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (v === "--" || (posix && !(v.startsWith("-") && v.length > 1))) break;
+    if (v.startsWith("--")) {
+      const eq = v.indexOf("=");
+      const name = v.slice(2, eq < 0 ? undefined : eq);
+      if (PATCH_LONG_VALUE.has(name)) {
+        if (eq < 0) i++;
+      } else if (PATCH_LONG_FLAG.has(name) && (eq < 0 || name === "merge")) {
+        if (name === "dry-run" || name === "check") dry = true;
+      } else return false;
+    } else if (v.startsWith("-") && v.length > 1) {
+      for (let k = 1; k < v.length; k++) {
+        const ch = v[k];
+        if (PATCH_SHORT_VALUE.includes(ch)) {
+          if (k === v.length - 1) i++;
+          break;
+        }
+        if (!PATCH_SHORT_FLAG.includes(ch)) return false;
+        if (ch === "C") dry = true;
+      }
+    }
+  }
+  return dry;
+}
+
 /** Does this command print a PR's diff or patch (`gh pr diff`, `gh api …/pulls/…`, curl/wget of a PR URL)? */
 /**
  * gh's argument words with its repo/host flags removed. gh accepts -R/--repo/--hostname anywhere
@@ -1306,14 +2392,165 @@ function checkCommand(t, state, depth) {
  */
 function ghWords(a) {
   const w = [];
+  const ix = []; // each word's index in `a`
   for (let j = 1; j < a.length; j++) {
     if (a[j] === "-R" || a[j] === "--repo" || a[j] === "--hostname") j++;
-    else if (!/^(?:--repo|--hostname)=|^-R./.test(a[j])) w.push(a[j]);
+    else if (!/^(?:--repo|--hostname)=|^-R./.test(a[j])) {
+      w.push(a[j]);
+      ix.push(j);
+    }
   }
   const i1 = w.findIndex((v) => !v.startsWith("-"));
   const i2 = i1 < 0 ? -1 : w.findIndex((v, j) => j > i1 && !v.startsWith("-"));
-  return { w, i1, i2 };
+  return { w, i1, i2, ix };
 }
+
+// The gh subcommands a rule names: a shell-built one is judged as each of them.
+const GH_RULED_SUBCOMMANDS = ["merge", "checkout", "create", "edit", "close", "clone", "delete", "set", "import", "install", "upgrade", "download", "token", "status", "git-credential", "get"];
+
+/**
+ * Does `gh config get <tail…>` print a token? Its key `oauth_token` (or `token`) does, read from the
+ * keyring too; a key the shell builds may be it. -h/--host take a value.
+ */
+function ghConfigToken(tail) {
+  for (let j = 0; j < tail.length; j++) {
+    if (/^(-h|--host)$/.test(tail[j].v)) j++;
+    else if (tail[j].dyn) return true;
+    else if (!tail[j].v.startsWith("-")) return /^(oauth_)?token$/i.test(tail[j].v);
+  }
+  return false;
+}
+
+/**
+ * Does `gh auth <sub> <tail…>` print gh's token? `token` and `git-credential` do; `status` with
+ * -t/--show-token (any value, short options bundled: `-at`) or a word the shell builds, which may be it.
+ */
+function ghTokenShown(sub, tail) {
+  if (sub === "token" || sub === "git-credential") return true;
+  if (sub !== "status") return false;
+  for (let j = 0; j < tail.length; j++) {
+    const v = tail[j].v;
+    if (tail[j].dyn || /^--show-token(=|$)/.test(v)) return true;
+    if (/^--(hostname|jq|template)$/.test(v)) j++;
+    else if (/^-[^-]/.test(v)) {
+      for (let k = 1; k < v.length; k++) {
+        if (v[k] === "t") return true;
+        // -h, -q and -T take the rest of the word, or the next word
+        if ("hqT".includes(v[k])) {
+          if (k === v.length - 1) j++;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+// gh api's options that take a value (the next word, unless glued).
+const GH_API_VALUE_OPTS = /^(-X|--method|-f|-F|--field|--raw-field|-H|--header|--input|-q|--jq|-t|--template|-p|--preview|--cache|--hostname|-R|--repo)$/;
+
+/** gh api's route words ({v, dyn}): its operands after `api` at index `from`, option values skipped. */
+function ghApiRoutes(argv, from) {
+  const out = [];
+  for (let k = from + 1; k < argv.length; k++) {
+    if (argv[k].v === "--") return [...out, ...argv.slice(k + 1)];
+    if (GH_API_VALUE_OPTS.test(argv[k].v)) k++;
+    else if (!argv[k].v.startsWith("-")) out.push(argv[k]);
+  }
+  return out;
+}
+
+/**
+ * The methods a `gh api` call may use, upper case: each -X/--method given (one the shell builds, or
+ * one an unquoted $( ) cut off, may be any write), else POST when a field or --input gives a body, else GET.
+ */
+function ghApiMethods(argv) {
+  const given = [];
+  for (let k = 1; k < argv.length; k++) {
+    let tok = null;
+    if (argv[k].v === "-X" || argv[k].v === "--method") tok = argv[++k] ?? { v: "", dyn: true };
+    else {
+      // pflag reads a short option's glued value after one `=` (`-X=POST`), a long one's after `=`
+      const m = /^(?:-X=?|--method=)([\s\S]*)$/.exec(argv[k].v);
+      if (m) tok = { v: m[1], dyn: argv[k].dyn };
+    }
+    if (tok) given.push(tok.dyn || !tok.v ? null : tok.v.toUpperCase());
+  }
+  if (given.includes(null)) return ["POST", "PUT", "PATCH", "DELETE"];
+  if (given.length) return given;
+  return ghFields(argv).length || argv.some((x) => /^--input(=|$)/.test(x.v)) ? ["POST"] : ["GET"];
+}
+
+/** The reason a literal-route `gh api` write with method `M` is refused, or null. Routes match in any case. */
+function ghApiWrite(M, argv, rules) {
+  const a = argv.map((x) => x.v);
+  const L = rules.ownerLabels;
+  const route = (v) => v.replace(/[?#][\s\S]*$/, "").toLowerCase();
+  if (a.some((v) => /\/pulls\/\d+\/merge\b|\/merges\b/.test(route(v)))) return BLOCK.merge;
+  if (a.some((v) => /\/(contents|git|branches)\//.test(route(v)))) return BLOCK.apiWrite;
+  // REST state_reason not_planned, built by the shell, or read from a file.
+  if (argv.some((t) => { const r = /state_reason=([\s\S]*)$/i.exec(t.v); return r && (t.dyn || notPlanned(r[1]) || r[1].startsWith("@")); })) return BLOCK.ownerRuling;
+  const fields = ghFields(argv);
+  // `labels=`, `labels[]=`, and an import's `issue[labels][]=`
+  const labelField = (f) => /^(?:labels|[^=[]*\[labels\])(\[\])?=/i.test(f.v);
+  // a field whose name the shell builds (`-f "$K=x"`) may be labels or state_reason
+  const dynKey = (f) => f.dyn && (!f.v.includes("=") || /[$`]/.test(f.v.slice(0, f.v.indexOf("="))));
+  // Replacing (PUT) or clearing (DELETE) an issue's labels, or an issue update with a labels list,
+  // drops the owner labels without naming them.
+  if ((M === "PUT" || M === "DELETE") && a.some((v) => /\/issues\/\d+\/labels\/?$/.test(route(v)))) return BLOCK.acceptLabel;
+  if ((M === "POST" || M === "PATCH") && a.some((v) => /\/issues\/\d+\/?$/.test(route(v))) && fields.some((f) => labelField(f) || dynKey(f))) return BLOCK.acceptLabel;
+  // A new issue (POST …/issues, …/import/issues): never a worker's; it may carry the agent-filed and
+  // needs-owner labels, never the acceptance label (nor one the shell builds); with
+  // agentFiledNeedsAcceptance it must carry the first, written literally.
+  const creates = M === "POST" && a.some((v) => /(^|\/)repos\/[^/]+\/[^/]+\/(import\/)?issues\/?$/.test(route(v)));
+  if (creates) {
+    if (rules.worker !== false) return BLOCK.issue;
+    if (rules.agentFiledGate && !fields.some((f) => labelField(f) && !f.dyn && !f.file && namesLabel(f.v.slice(f.v.indexOf("=") + 1), rules.agentFiled.toLowerCase()))) return BLOCK.agentFiled(rules.agentFiled);
+    if (fields.some((f) => (labelField(f) && f.dyn) || dynKey(f))) return BLOCK.acceptLabel;
+  }
+  // A write naming the label, or a label/issue write whose body the guard cannot read (a label
+  // write's field the shell builds may name an owner label).
+  if (a.some((v) => namesLabel(v, creates ? rules.accepted : L))) return BLOCK.acceptLabel;
+  const unread = a.some((v) => /^--input(=|$)/.test(v)) || fields.some((f) => f.file);
+  if ((unread || fields.some((f) => f.dyn)) && a.some((v) => /\/labels\b/.test(route(v)))) return BLOCK.acceptLabel;
+  if (unread && a.some((v) => /\/issues\/\d+\/?$/.test(route(v)))) return BLOCK.issueBody;
+  return null;
+}
+
+/**
+ * The value of an option at `tail[j]` ({v, dyn}): glued (`--x=v`, `-xv`) or the next word. A value
+ * the shell builds is dyn; one an unquoted $( ) or backtick cut off is missing, read as dyn too.
+ */
+function optionValue(tail, j, glued) {
+  if (glued) return { v: glued.replace(/^=/, ""), dyn: tail[j].dyn };
+  return tail[j + 1] ?? { v: "", dyn: true };
+}
+
+/** gh api's field values ({v: "key=value", dyn, file}), separate or glued; `file`: -F/--field reading `@path`. */
+function ghFields(argv) {
+  const out = [];
+  for (let k = 1; k < argv.length; k++) {
+    const x = argv[k].v;
+    let f = null;
+    let typed = false;
+    if (/^(-f|-F|--field|--raw-field)$/.test(x)) {
+      f = argv[k + 1] ?? { v: "", dyn: true };
+      typed = /^(-F|--field)$/.test(x);
+      k++;
+    } else {
+      // glued: `-fk=v`, pflag's `-f=k=v`, `--field=k=v`
+      const m = /^(?:(-f|-F)=?|(--field=|--raw-field=))([\s\S]+)$/.exec(x);
+      if (m) {
+        f = { v: m[3], dyn: argv[k].dyn };
+        typed = m[1] === "-F" || m[2] === "--field=";
+      }
+    }
+    if (f) out.push({ v: f.v, dyn: f.dyn, file: typed && /^[^=]*=@/.test(f.v) });
+  }
+  return out;
+}
+
+const NET_FETCHERS = new Set(["curl", "wget"]);
+const UNPACKERS = new Set(["tar", "gtar", "bsdtar", "unzip", "funzip", "cpio", "7z", "7za", "7zz"]);
 
 function prSource(toks) {
   const a = toks.slice(programIndex(toks)).map((x) => x.v);
@@ -1326,12 +2563,18 @@ function prSource(toks) {
   return (prog === "curl" || prog === "wget") && a.some((v) => /\/pull\/\d+|\/pulls\/\d+|\.(diff|patch)(\?|$)/.test(v));
 }
 
-function checkText(text, dir, main, rules, depth) {
+/** `base` = the caller's scope: {main, rules, resolve}; each command of `text` re-resolves its own place. */
+function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
-  const state = { dir, main, rules };
+  // A command text starts with OLDPWD = its cwd: Claude Code's Bash sets it so (measured), and a
+  // fresh shell's `cd -` stays where it is (bash ignores an inherited OLDPWD, zsh starts it at $PWD).
+  // POSIXLY_CORRECT anywhere in the text (an env prefix, an export) or inherited from the guard's own environment
+  const posix = !!base.posix || "POSIXLY_CORRECT" in process.env || /\bPOSIXLY_CORRECT\b/.test(text);
+  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix, explorer: !!base.explorer };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
+  let fromNet = false; // the previous command pipes a download into this one
   for (const c of cmds) {
     if (c.pre === "(") saved.push(state.dir);
     const before = state.dir;
@@ -1344,8 +2587,34 @@ function checkText(text, dir, main, rules, depth) {
       if (ci > 0 && /(^|[\s;&|(])(\S*\/)?(patch|busybox\s+patch|git\s+(apply|am))\b/.test(a[ci + 1] ?? "")) return BLOCK.prCode;
     }
     fromPr = c.post === "|" && (prSource(c.toks) || (fromPr && c.pre === "|"));
+    if (fromNet && c.pre === "|") {
+      // a download unpacked straight into the worktree (`curl … | tar x`), also through a decompressor
+      const a = c.toks.slice(programIndex(c.toks)).map((x) => x.v);
+      const p = a.length ? bare(a[0]) : "";
+      if (UNPACKERS.has(p) || ((p === "busybox" || p === "toybox") && UNPACKERS.has(bare(a[1] ?? "")))) return BLOCK.foreignCode;
+    }
+    fromNet = c.post === "|" && (NET_FETCHERS.has(bare(c.toks.slice(programIndex(c.toks))[0]?.v ?? "")) || (fromNet && c.pre === "|"));
     const reason = checkCommand(c.toks, state, depth);
     if (reason) return reason;
+    // A command an unquoted $( ) or backtick cuts (`gh issue edit 1 $(…) <label>`) goes on after the
+    // substitution: it is judged once more whole, each substitution a word the shell builds, and one
+    // glued to the words around it (`--x=$(…)`, `a/$(…)/b`) one word with them.
+    if (c.post === "(") {
+      const built = { v: "", dyn: true };
+      const whole = c.gluedOpen ? [...c.toks] : [...c.toks, built];
+      for (let k = cmds.indexOf(c) + 1; k < cmds.length && (cmds[k].pre === "(" || cmds[k].pre === ")"); k++) {
+        if (cmds[k].pre !== ")") continue;
+        let rest = cmds[k].toks;
+        if (cmds[k].gluedFirst && whole.length) {
+          whole.push({ v: whole.pop().v + rest[0].v, dyn: true });
+          rest = rest.slice(1);
+        }
+        whole.push(...rest);
+        if (cmds[k].post === "(" && !cmds[k].gluedOpen) whole.push(built);
+      }
+      const r = checkCommand(whole, { ...state }, depth);
+      if (r) return r;
+    }
     // A cd in a background job runs in a subshell: the parent does not move. In a pipeline it
     // depends on the shell (bash: every element is a subshell; zsh: the last runs in this shell),
     // so a cd there leaves the directory unknowable: what follows is judged fail-closed.
@@ -1354,19 +2623,21 @@ function checkText(text, dir, main, rules, depth) {
     if (c.post === ")" && saved.length) state.dir = saved.pop();
   }
   for (const n of nested) {
-    const reason = checkText(n, dir, main, rules, depth + 1);
+    const reason = checkText(n, dir, { ...base, posix }, depth + 1);
     if (reason) return reason;
   }
   return null;
 }
 
 /**
- * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>}} input
+ * @param {{command: string, cwd: string, main?: string|null, rules?: ReturnType<typeof compileRules>, worker?: boolean, resolve?: Function, explorer?: boolean}} input
+ * `resolve` (scopeResolver) makes each command judged by the repo it touches; without it, `main`/`rules` judge all.
+ * `explorer`: the journey explorer, whose `pw` through the lane's script passes (checkExplorerBash judged its form).
  * @returns {string|null} the reason to block, or null to allow
  */
-export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true }) {
+export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null, explorer = false }) {
   if (typeof command !== "string" || !command.trim()) return null;
-  return checkText(command, cwd, main, worker ? rules : { ...rules, worker: false }, 0);
+  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve, explorer }, 0);
 }
 
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -1378,15 +2649,20 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
  * the real path, so a worktree's symlink into <MAIN> (a linked node_modules) is <MAIN>.
  * @returns {string|null} the reason to block, or null to allow
  */
-export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONLY, worker = true }) {
+export function checkFile({ tool, filePath, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null }) {
   if (!FILE_TOOLS.has(tool) || typeof filePath !== "string" || !filePath) return null;
   const abs = path.resolve(cwd || process.cwd(), filePath.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
   const real = realPathOf(abs);
-  if ([abs, real].some((p) => rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
+  // The file's own repo and contract decide (TOUCHED REPO in decide()); `main` stays closed whatever it resolves to.
+  const s = (resolve && resolve(real)) || { main, rules };
+  if (s.error) return BLOCK.brokenContract(s.main, s.error);
+  if ([abs, real].some((p) => s.rules.envFiles.has(path.basename(p).toLowerCase()))) return BLOCK.env;
+  if (isTokenFile(abs) || isTokenFile(real)) return BLOCK.ghToken;
   if (WRITE_TOOLS.has(tool) && (isGitFile(abs) || isGitFile(real))) return BLOCK.gitFiles;
   if (WRITE_TOOLS.has(tool) && (isMachineConfigFile(abs) || isMachineConfigFile(real))) return BLOCK.machineConfig;
-  if (WRITE_TOOLS.has(tool) && main && inMain(real, main) && !(!worker && inStateDir(real, main))) return BLOCK.mainWrite(main);
-  return null;
+  if (WRITE_TOOLS.has(tool) && (isPluginFile(abs) || isPluginFile(real))) return BLOCK.pluginFiles;
+  const into = WRITE_TOOLS.has(tool) && mainWrittenOf(real, [s.main, main], worker);
+  return into ? BLOCK.mainWrite(into) : null;
 }
 
 const SEARCH_TOOLS = new Set(["Grep", "Glob"]);
@@ -1398,13 +2674,17 @@ const SEARCH_TOOLS = new Set(["Grep", "Glob"]);
  * names and keeps the shell's rule. Grep's `pattern` is a content regex, not a path.
  * @returns {string|null} the reason to block, or null to allow
  */
-export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
+export function checkSearch({ tool, input = {}, cwd, rules: given = ENGINE_ONLY, resolve = null }) {
   if (!SEARCH_TOOLS.has(tool)) return null;
   const p = input.path;
-  if (typeof p === "string" && p) {
-    const abs = path.resolve(cwd || process.cwd(), p.replace(/^~(?=\/|$)/, process.env.HOME || "~"));
-    if ([abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
-  }
+  const abs = typeof p === "string" && p ? path.resolve(cwd || process.cwd(), p.replace(/^~(?=\/|$)/, process.env.HOME || "~")) : null;
+  // The searched place's repo decides: the path's, else the cwd's.
+  const s = (resolve && resolve(abs ? realPathOf(abs) : cwd || process.cwd())) || { rules: given };
+  if (s.error) return BLOCK.brokenContract(s.main, s.error);
+  const rules = s.rules;
+  if (abs && [abs, realPathOf(abs)].some((x) => isEnvFile(x, rules))) return BLOCK.env;
+  // Grep reads what it searches; Glob only lists names, so listing gh's config dir passes.
+  if (tool === "Grep" && abs && (isTokenFile(abs) || isTokenFile(realPathOf(abs)))) return BLOCK.ghToken;
   const g = tool === "Grep" ? input.glob : input.pattern;
   if (typeof g === "string" && g && isEnvFile(g, rules, { dotfiles: tool === "Grep", escapes: true })) return BLOCK.env;
   return null;
@@ -1421,47 +2701,71 @@ export function checkSearch({ tool, input = {}, cwd, rules = ENGINE_ONLY }) {
 // may shift a reminder by one, which is harmless); ladder workers only, and only calls the guard's
 // own rules let through. ponytail: hooked tools only (Bash, Monitor, PowerShell, file, search and MCP tools), not WebFetch or
 // Agent calls; an unwritable counter switches the budget off rather than block work.
-export const STEP_SOFT = 120;
-export const STEP_EVERY = 15;
-export const STEP_HARD = 170;
-export const STEP_EVERY_LATE = 5;
+// The defaults; a contract's `tuning.stepBudget` overrides each (resolveTuning, through compileRules).
+export const STEP_SOFT = DEFAULT_TUNING.stepBudget.soft;
+export const STEP_EVERY = DEFAULT_TUNING.stepBudget.every;
+export const STEP_HARD = DEFAULT_TUNING.stepBudget.hard;
+export const STEP_EVERY_LATE = DEFAULT_TUNING.stepBudget.everyLate;
 const STEP_PRUNE_MS = 3 * 24 * 3600 * 1000;
-// A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
-// echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
-// a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
-const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
-const isHandoff = (command) => {
-  // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
-  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
-  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
-  const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
-  return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
-};
+// A handoff command (isHandoffCommand, in sapu-contract.mjs so /sapu:init's profile check reads the same test).
+const isHandoff = isHandoffCommand;
 
 /**
  * The step budget's verdict for one call of a ladder worker: the reminder to block it with, or null.
  * @param {{ main: string|null, agentId?: string, tool: string, command?: string }} i
  */
-export function stepBudget({ main, agentId, tool, command }) {
-  if (!main || typeof agentId !== "string" || !agentId) return null;
-  const dir = path.join(main, ".git", "sapu-steps");
+/** The counters' directory: sapu-steps/ in the repository's git directory (gitCommonDir), or null when there is none. */
+const stepsDir = (main) => {
+  const gd = gitCommonDir(main);
+  return gd ? path.join(gd, "sapu-steps") : null;
+};
+
+/** Count one call of `agentId` in <MAIN>/.git/sapu-steps/ and return the count so far; throws when the counter cannot be written. */
+function countStep(main, agentId) {
+  const dir = stepsDir(main);
+  if (!dir) throw Object.assign(new Error("no git directory"), { code: "ENOGITDIR" });
   const file = path.join(dir, agentId.replace(/[^\w.-]/g, "_"));
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(file, ".");
+  const n = fs.statSync(file).size;
+  if (n === 1) for (const f of fs.readdirSync(dir)) {
+    const p = path.join(dir, f);
+    if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
+  }
+  return n;
+}
+
+/**
+ * Whether the step budget counts this worker, as the worker canary reports it: "counting" (the canary
+ * call is counted), or "off: <why>". The budget switches itself off silently (no agent_id in the hook
+ * input, an unwritable counter), so the canary is what proves it on first use in a host.
+ * @param {{ main: string|null, agentId?: string }} i
+ */
+export function stepProbe({ main, agentId }) {
+  if (!main) return "off: no main checkout (this call is outside a repo), so there is nowhere to count";
+  if (typeof agentId !== "string" || !agentId) return "off: this hook input carries no agent_id, so no call of this worker is counted";
+  try {
+    countStep(main, agentId);
+    return "counting";
+  } catch (e) {
+    return `off: ${stepsDir(main) ?? `the git directory of ${main} (none found)`} cannot be written (${e && e.code ? e.code : "error"})`;
+  }
+}
+
+export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget }) {
+  if (!main || typeof agentId !== "string" || !agentId) return null;
   let n;
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.appendFileSync(file, ".");
-    n = fs.statSync(file).size;
-    if (n === 1) for (const f of fs.readdirSync(dir)) {
-      const p = path.join(dir, f);
-      if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
-    }
+    n = countStep(main, agentId);
   } catch {
     return null;
   }
+  const file = path.join(stepsDir(main), agentId.replace(/[^\w.-]/g, "_"));
   // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
   // never skipped. The last one given is kept in `<id>.r`.
-  const soft = Math.floor((Math.min(n, STEP_HARD) - STEP_SOFT) / STEP_EVERY) + 1;
-  const dueSlots = n < STEP_SOFT ? 0 : soft + (n > STEP_HARD ? Math.floor((n - STEP_HARD) / STEP_EVERY_LATE) : 0);
+  const { soft: SOFT, every: EVERY, hard: HARD, everyLate: LATE } = steps;
+  const soft = Math.floor((Math.min(n, HARD) - SOFT) / EVERY) + 1;
+  const dueSlots = n < SOFT ? 0 : soft + (n > HARD ? Math.floor((n - HARD) / LATE) : 0);
   let given = 0;
   try {
     given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
@@ -1472,7 +2776,7 @@ export function stepBudget({ main, agentId, tool, command }) {
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${STEP_EVERY} calls, every ${STEP_EVERY_LATE} past ${STEP_HARD}.`;
+  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`;
 }
 
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
@@ -1559,28 +2863,46 @@ function fieldsOf(v, key = "", out = []) {
 }
 
 /** The reason to refuse an MCP (non-context-mode), Monitor or PowerShell call, or null. */
-export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker = true }) {
-  if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker }) : null;
+export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker = true, resolve = null }) {
+  if (tool === "Monitor" || tool === "PowerShell") return typeof ti.command === "string" && ti.command.trim() ? check({ command: ti.command, cwd: here, main, rules, worker, resolve }) : null;
   const server = tool.slice(5, Math.max(5, tool.lastIndexOf("__")));
   const words = tool.slice(tool.lastIndexOf("__") + 2).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_\-.]+/).filter(Boolean);
   const writes = words.some((w) => WRITE_VERB.test(w)); // a write verb wins over a read verb (get_or_create, search_and_replace)
   const f = fieldsOf(ti);
   // merges: merge_pull_request, accept_merge_request, set_auto_merge; not update/approve/list_merge_request(s)
   if ((words[0] === "merge" || (words.includes("merge") && words.some((w) => /^(accept|auto)$/.test(w))) || words.includes("automerge")) && !words.some((w) => /^(get|list|status|check)$/.test(w))) return BLOCK.merge;
-  // GraphQL mutations only in a graphql tool's query: a search or a file may name them
-  if (words.some((w) => /^(graphql|gql)$/.test(w))) {
-    const q = f.filter(([k]) => /^(query|mutation|body)$/i.test(k)).map(([, x]) => x);
-    if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
-    if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
-  }
+  // GraphQL mutations only in a graphql tool's query, or in a field holding a mutation document:
+  // a search or a file's prose may name them
+  const gqlTool = words.some((w) => /^(graphql|gql)$/.test(w));
+  const q = f.filter(([k, x]) => (gqlTool && /^(query|mutation|body|document)$/i.test(k)) || /^\s*mutation\b/.test(x)).map(([, x]) => x);
+  if (q.some((x) => GQL_MERGE.test(x))) return BLOCK.merge;
+  if (q.some((x) => GQL_LABEL.test(x))) return BLOCK.acceptLabel;
+  // any field naming closeIssue makes every field GraphQL: NOT_PLANNED inline, or a value exactly NOT_PLANNED
+  if (f.some(([, x]) => /\bcloseIssue\b/.test(x)) && f.some(([, x]) => GQL_NOT_PLANNED.test(x) || x.trim() === "NOT_PLANNED")) return BLOCK.ownerRuling;
+  // a reason field, at any depth and whatever the verb, unless the tool only reads (a list filter)
+  const reads = !writes && (words.some((w) => /^(get|list|search|read|find|fetch|view|show)$/.test(w)) || f.some(([k, x]) => /^method$/i.test(k) && /^get$/i.test(x.trim())));
+  if (!reads && f.some(([k, x]) => /reason/i.test(k) && notPlanned(x))) return BLOCK.ownerRuling;
   if (writes) {
     const bases = new Set([rules.base, "main", "master"].filter(Boolean));
     // a pull/merge request names the base it targets without moving it
     const targetsBase = words.some((w) => /^(pull|pr|request)$/.test(w));
     if (!targetsBase && f.some(([k, x]) => BRANCH_FIELD.test(k) && bases.has(x.replace(/^refs\/heads\//, "").trim()))) return BLOCK.pushBase(rules.base);
-    // only a label field, or any field of a label tool: a file's content may contain the word
+    // An issue tool (not its comments or sub-issues): a create is a new issue, an update with a labels
+    // list replaces the label set (an empty one clears it), dropping the owner labels unnamed.
+    const method = typeof ti.method === "string" ? ti.method.toLowerCase() : "";
+    const issueTool = words.some((w) => /^issues?$/.test(w)) && !words.some((w) => /^(comments?|sub)$/.test(w));
+    const creates = issueTool && (words.includes("create") || method === "create");
+    const labelKey = Object.keys(ti).some((k) => /^labels?$/i.test(k));
+    if (!creates && labelKey && (issueTool || words.some((w) => /^(pull|pr)$/.test(w))) && (words.some((w) => /^(update|edit)$/.test(w)) || /^(update|edit)$/.test(method))) return BLOCK.acceptLabel;
+    if (creates) {
+      if (worker && rules.worker !== false) return BLOCK.issue;
+      const filed = rules.agentFiled.toLowerCase();
+      if (rules.agentFiledGate && !f.some(([k, x]) => /^labels?$/i.test(k) && namesLabel(x, filed))) return BLOCK.agentFiled(rules.agentFiled);
+    }
+    // only a label field, or any field of a label tool: a file's content may contain the word; a new
+    // issue may carry the agent-filed and needs-owner labels, never the acceptance label
     const labelTool = words.some((w) => /^labels?$/.test(w));
-    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, rules.acceptLabel))) return BLOCK.acceptLabel;
+    if (f.some(([k, x]) => (labelTool || /label/i.test(k)) && namesLabel(x, creates ? rules.accepted : rules.ownerLabels))) return BLOCK.acceptLabel;
   }
   const cwdF = f.find(([k]) => CWD_FIELD.test(k));
   const cwd = cwdF ? path.resolve(here, cwdF[1]) : main || here;
@@ -1591,14 +2913,14 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     const on = (v) => v === true || v === "true";
     const flags = Object.entries(ti).flatMap(([k, v]) => (/^force_?with_?lease$/i.test(k) && on(v) ? ["--force-with-lease"] : /^force$/i.test(k) && on(v) ? ["--force"] : /^(options|flags|extra_?args)$/i.test(k) && Array.isArray(v) ? v.filter((x) => typeof x === "string") : []));
     const force = flags.length ? ` ${flags.join(" ")}` : "";
-    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker });
+    const reason = check({ command: `git ${gitVerb}${force}${gitVerb === "push" || gitVerb === "checkout" ? ` ${gitVerb === "push" ? "origin " : ""}${branch ? branch[1] : ""}` : ""}`, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   // typed text is a command only on a shell-like server's terminal/process tool (not a chat message or a browser field)
   const typed = LOCAL_SERVER.test(server) && words.some((w) => /^(terminal|process|keys|interact|send|write|input|run|exec|execute)$/.test(w));
   for (const [k, x] of f) {
     if (!(CMD_FIELD.test(k) || (typed && TYPED_FIELD.test(k))) || !x.trim()) continue;
-    const reason = check({ command: x, cwd, main, rules, worker });
+    const reason = check({ command: x, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   if (f.some(([k]) => REMOTE_FIELD.test(k))) return null; // paths of a remote (a repo, a bucket, a page), not of this disk
@@ -1607,15 +2929,55 @@ export function checkOther({ tool, ti, here, main, rules = ENGINE_ONLY, worker =
     const home = x === "~" || x.startsWith("~/");
     if (!home && !path.isAbsolute(x) && !cwdF && !LOCAL_SERVER.test(server)) continue;
     const filePath = home ? path.join(process.env.HOME || "/", x.slice(1)) : path.resolve(cwd, x);
-    const reason = checkFile({ tool: writes ? "Write" : "Read", filePath, cwd, main, rules, worker });
+    const reason = checkFile({ tool: writes ? "Write" : "Read", filePath, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   return null;
 }
 
+// TOUCHED REPO. The rules come from the repo a call touches, not from the session's folder: each
+// command is judged by the repo of the directory it runs in (after cd, pushd, env -C), a git
+// command by the repository it acts on (-C, --git-dir, --work-tree, GIT_DIR), a write by its
+// target's repo, a file or search tool by its path's — that repo's main checkout (<MAIN>) and its
+// COMMITTED contract. A repo with no contract gets the engine floor; one whose contract is broken
+// refuses every call that touches it. The session's own <MAIN> stays closed to writes whatever a
+// path resolves to. A place outside every repo, or one that cannot be told (a variable), keeps the
+// session's own contract (the floor when the session has none): a protected database or a denied
+// gate of the session's repo is not reached by first leaving the repo.
+const isDir = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+/**
+ * The scope a place belongs to, per TOUCHED REPO: `resolve(p)` → {main, rules, error} for the repo
+ * holding `p` (its nearest existing directory), or null for a place that cannot be told (UNKNOWN).
+ * `main`/`rules` are the session's own (the repo of `cwd`). Cached per directory and per repo.
+ */
+export function scopeResolver({ cwd = null, main = null, rules = ENGINE_ONLY, worker = true }) {
+  const tier = (r) => (worker ? r : { ...r, worker: false });
+  const own = { main, rules: tier(rules), error: null };
+  const outsideAny = { main: null, rules: own.rules, error: null };
+  const ownKey = main ? realpathOrSelf(main) : null;
+  const mains = new Map(cwd ? [[path.resolve(cwd), main]] : []);
+  const scopes = new Map();
+  return (p) => {
+    if (typeof p !== "string" || !p) return null;
+    let d = path.resolve(p);
+    while (!mains.has(d) && !isDir(d) && path.dirname(d) !== d) d = path.dirname(d);
+    if (!mains.has(d)) mains.set(d, findMain(d));
+    const m = mains.get(d);
+    if (!m) return outsideAny;
+    const key = realpathOrSelf(m);
+    if (key === ownKey) return own;
+    if (!scopes.has(key)) {
+      const c = loadContract(m);
+      scopes.set(key, { main: m, rules: tier(c.contract ? compileRules(c.contract) : ENGINE_ONLY), error: c.error && !c.missing ? c.error : null });
+    }
+    return scopes.get(key);
+  };
+}
+
 /**
  * The hook's decision for one PreToolUse input: the reason to block, or null. The orchestrator
- * (no agent_type) is policed only where it dispatches agents from; every subagent is.
+ * (no agent_id) is policed only where it dispatches agents from; every subagent is.
  */
 const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 
@@ -1628,10 +2990,20 @@ const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 // that worktree, to be lost with it. So, in a repo with a sapu contract and a main session whose
 // project directory is <MAIN>: (1) the main session never moves its cwd into a linked worktree
 // inside <MAIN> — unless CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR resets it after every command,
-// which closes this at the source; (2) it never dispatches from one; (3) no subagent but a sapu
-// worker (which may not write into <MAIN>) writes agent memory into one. A session whose project
-// directory is a worktree (a desktop worktree session) is left alone. Subagents never carry a cd
-// over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
+// which closes this at the source (/sapu:init writes it into .claude/settings.local.json); (2) it
+// never dispatches from one; (3) no subagent but a sapu worker (which may not write into <MAIN>)
+// writes agent memory into one (init also links .claude/agent-memory into new worktrees through
+// worktree.symlinkDirectories, when that directory is untracked, and excludes the link in
+// .git/info/exclude). A session
+// whose project directory is a worktree (a desktop worktree session) is left alone. Subagents never
+// carry a cd over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
+// From the hooks and tools references, not probed live: agent_id marks a subagent and agent_type
+// alone a `--agent` main session; a main-session cd carries over inside the project directory, a
+// subagent's never. Still to probe live: CLAUDE_PROJECT_DIR in a `claude --worktree` session and
+// after EnterWorktree (homeIsMain also trusts a transcript filed under a worktree slug); whether a
+// run_in_background command's cd carries over (rule (1) skips those); whether a Workflow's
+// `agent({isolation: 'worktree'})` worktree honours worktree.symlinkDirectories (rule (3) keeps
+// memory writes in <MAIN> either way).
 
 /** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
 const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
@@ -1696,7 +3068,7 @@ function dropHeredocBodies(command) {
  */
 export function topLevelStops(command, dir) {
   let cur = dir;
-  let prev = null;
+  let prev = dir; // OLDPWD = the cwd when a command starts (checkText)
   const saved = [];
   const stack = [];
   const stops = [];
@@ -1723,8 +3095,8 @@ export function topLevelStops(command, dir) {
       let next;
       if (!target) next = prog === "cd" && c.post !== "(" ? process.env.HOME || cur : UNKNOWN; // `cd $(…)`: the target is the substitution
       else if (target.v === "-") next = prev ?? UNKNOWN;
-      else if (cur === UNKNOWN || expandHome(target) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
-      else next = path.resolve(cur, expandHome(target));
+      else if (cur === UNKNOWN || expandHome(target, cur, prev ?? UNKNOWN) === null || /^[+-]\d+$/.test(target.v)) next = UNKNOWN;
+      else next = path.resolve(cur, expandHome(target, cur, prev ?? UNKNOWN));
       if (prog === "pushd") stack.push(cur);
       prev = cur;
       cur = next;
@@ -1775,7 +3147,7 @@ function checkHome(input, main) {
     }
     if (!wt) return null;
     const already = linkedWorktreeOf(here, main);
-    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1, which resets the cwd after every command; never change settings yourself to get past this.`;
+    return `${already ? `the session's cwd is already the linked worktree ${already} — start with cd "${main}" && … — and this command` : "this command"} moves the session's cwd into the linked worktree ${wt}; every agent spawned while it stays there (a running Workflow's too) takes its project memory and settings from it. Run worktree work as git -C "${wt}" … or inside a ( cd "${wt}" && … ) subshell (or a cd back that always runs). The user can also set CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1 (/sapu:init writes it into .claude/settings.local.json), which resets the cwd after every command; never change settings yourself to get past this.`;
   }
   if (sub && !SAPU_AGENT.test(input.agent_type || "") && WRITE_TOOLS.has(tool)) {
     const f = ti.file_path ?? ti.notebook_path;
@@ -1808,11 +3180,27 @@ function checkHomeSafe(input) {
 
 export function decide(input) {
   if (!input) return null;
-  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
-  if (home || DISPATCH_TOOLS.has(input.tool_name)) return home;
-  if (!(input.agent_type || input.agent_id)) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
+  // The explorer first: it dispatches nothing, so Agent/Task/Workflow are refused here too.
+  if (EXPLORER_AGENT.test(input.agent_type || "")) {
+    if (tool === "StructuredOutput") return null;
+    const m = tool === "Read" ? findMain(input.cwd || process.cwd()) : null;
+    const why =
+      tool === "Bash"
+        ? checkExplorerBash(ti.command)
+        : tool === "Read"
+          ? checkExplorerRead({ input: ti, worktree: m ? liveWorktree(m) : null, cwd: input.cwd || process.cwd() })
+          : BLOCK.explorerTool;
+    if (why) return why;
+  }
+  const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
+  if (home || DISPATCH_TOOLS.has(tool)) return home;
+  // A subagent's hook input carries agent_id ("present only when the hook fires inside a subagent
+  // call", hooks reference); a main session started with --agent carries agent_type alone and is the
+  // orchestrator. A ladder worker or the explorer is never a main session: their type alone keeps the
+  // floor, so a host that dropped agent_id would not unguard them (and the worker canary still fires).
+  if (!(input.agent_id || SAPU_AGENT.test(input.agent_type || "") || EXPLORER_AGENT.test(input.agent_type || ""))) return null;
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
@@ -1828,25 +3216,28 @@ export function decide(input) {
   // Two tiers: a sapu worker keeps the whole floor; any other subagent (reviewers, specialists,
   // argus/momus/nemesis) may also file issues and write its state into <MAIN>.
   const worker = SAPU_AGENT.test(input.agent_type || "");
+  const resolve = scopeResolver({ cwd: here, main, rules, worker });
   if (ctx) {
     for (const c of ctx) {
-      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker }) : null;
+      const reason = c.filePath ? checkFile({ tool: "Read", filePath: c.filePath, cwd, main, rules, worker, resolve }) : typeof c.command === "string" && c.command.trim() ? check({ command: c.command, cwd, main, rules, worker, resolve }) : null;
       if (reason) return `${reason} (inside ${tool.replace(/^.*__/, "")}, checked like Bash/Read)`;
     }
   } else if (other) {
-    const reason = checkOther({ tool, ti, here, main, rules, worker });
+    const reason = checkOther({ tool, ti, here, main, rules, worker, resolve });
     if (reason) return `${reason} (${tool}, judged by its name and fields like Bash/Read/Write)`;
   } else if (tool === "Bash") {
-    const reason = check({ command: ti.command, cwd, main, rules, worker });
+    const reason = check({ command: ti.command, cwd, main, rules, worker, resolve, explorer: EXPLORER_AGENT.test(input.agent_type || "") });
+    // A ladder worker's canary also proves the step budget counts it (agent_id present, counter writable).
+    if (reason === BLOCK.canary && worker) return `${reason} Step budget: report step_budget: "${stepProbe({ main, agentId: input.agent_id })}".`;
     if (reason || typeof ti.command !== "string" || !ti.command.trim()) return reason;
   } else {
-    const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker });
+    const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules, resolve }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker, resolve });
     if (reason) return reason;
   }
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
-  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command }) : null;
+  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps }) : null;
 }
 
 /** True when this file is the process's entry point, however it was reached (symlink, relative path). */

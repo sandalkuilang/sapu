@@ -5,7 +5,7 @@ description: Use when picking up an open GitHub issue in a repo that carries a s
 
 # Forge — Issue-to-PR Engineering Loop
 
-Fixer to `/sapu:argus`/`/sapu:nemesis`: they file, forge closes. **Attended** workflow — normal tool-approval prompts stay in effect; branch → PR `Closes #N` → squash-merge. An unattended `--dangerously-skip-permissions` loop is NOT configured and must not be inferred from this skill.
+Fixer to `/sapu:argus`/`/sapu:nemesis`: they file, forge closes. **Attended** workflow — normal tool-approval prompts stay in effect; branch → PR `Closes #N` → merge per `mergeMethod`. An unattended `--dangerously-skip-permissions` loop is NOT configured and must not be inferred from this skill.
 
 Engine only: every repo fact comes from the contract (`.claude/sapu.json`) and the repo profile (`<profiles>/forge.md`, cited as *profile §…*; `<profiles>` = `dir` of `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" home`: the repo's `.claude/sapu`, or its local home outside the repo). *reference* = `${CLAUDE_PLUGIN_ROOT}/skills/forge/reference.md`.
 

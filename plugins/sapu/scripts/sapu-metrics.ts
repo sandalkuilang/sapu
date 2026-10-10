@@ -45,10 +45,44 @@
 //
 // USAGE
 //   node scripts/sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--gates-log <file>] [--baseline <file>] [--json]
+//   node scripts/sapu-metrics.ts --marker <run-marker> [--main <MAIN>] …   finds the transcript itself
+//     (findTranscript: under $CLAUDE_CONFIG_DIR, else ~/.claude, the newest one holding the marker)
 // Exit: 0 = ok, 1 = worse than baseline by more than 50%, 2 = usage error.
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+/**
+ * Where Claude Code keeps the session transcripts of checkout `main`: `<config>/projects/<slug>/`,
+ * `<config>` = $CLAUDE_CONFIG_DIR, else ~/.claude; `<slug>` = the absolute path with every
+ * non-alphanumeric character replaced by `-` (`/srv/src/app` → `-srv-src-app`).
+ */
+export function projectDir(main: string, env: Record<string, string | undefined> = process.env): string {
+  const config = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
+  return join(config, "projects", main.replace(/[^A-Za-z0-9]/g, "-"));
+}
+
+/**
+ * This session's transcript: of the 20 newest in projectDir, the newest that holds `marker` (the
+ * sweep's run marker, echoed at its Step 0); the newest file alone may be a parallel session's.
+ * null when none holds it.
+ */
+export function findTranscript(main: string, marker: string, env: Record<string, string | undefined> = process.env): string | null {
+  const dir = projectDir(main, env);
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+  } catch {
+    return null;
+  }
+  const newest = names
+    .map((n) => join(dir, n))
+    .map((p) => ({ p, t: statSync(p).mtimeMs }))
+    .sort((a, b) => b.t - a.t)
+    .slice(0, 20);
+  return newest.find(({ p }) => readFileSync(p, "utf8").includes(marker))?.p ?? null;
+}
 
 export const WORSE_FACTOR = 1.5;
 
@@ -429,10 +463,19 @@ function fmt(n: number): string {
 
 function main(argv: readonly string[]): number {
   const valueOf = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const flagValues = new Set(["--baseline", "--merges-log", "--gates-log"].map((f) => argv.indexOf(f) + 1).filter((i) => i > 0));
-  const path = argv.find((a, i) => !a.startsWith("--") && !flagValues.has(i));
+  const flagValues = new Set(["--baseline", "--merges-log", "--gates-log", "--marker", "--main"].map((f) => argv.indexOf(f) + 1).filter((i) => i > 0));
+  let path = argv.find((a, i) => !a.startsWith("--") && !flagValues.has(i));
+  const marker = valueOf("--marker");
+  if (!path && marker) {
+    const main = valueOf("--main") || process.cwd();
+    path = findTranscript(main, marker) ?? undefined;
+    if (!path) {
+      console.error(`sapu-metrics: no transcript under ${projectDir(main)} holds ${marker} (CLAUDE_CONFIG_DIR, else ~/.claude, is where Claude Code keeps them)`);
+      return 2;
+    }
+  }
   if (!path) {
-    console.error("usage: sapu-metrics.ts <transcript.jsonl> [--with-subagents] [--merges-log <file>] [--gates-log <file>] [--baseline <file>] [--json]");
+    console.error("usage: sapu-metrics.ts <transcript.jsonl> | --marker <run-marker> [--main <MAIN>]  [--with-subagents] [--merges-log <file>] [--gates-log <file>] [--baseline <file>] [--json]");
     return 2;
   }
   if (/[\\/]subagents[\\/]/.test(path)) {

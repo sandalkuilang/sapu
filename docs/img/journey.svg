@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1040" width="920" height="1040" role="img" aria-label="One journey cycle: argus's journey lane checks the catalog, brings up an isolated instance of its own, picks the top journeys, walks each with a ui-explorer agent through the browser wrapper only, reproduces every candidate two of two on a fresh instance, minimizes it into a RED test, classifies it, files it only after scrub finds no secret the run saw, tears the instance down and records the visit.">
+  <title>/journey — one journey cycle</title>
+  <desc>One invocation of /journey is one bounded argus cycle of ten steps, each run through argus-live.mjs: ORIENT checks the journey catalog against HEAD with map-check; up builds an isolated instance (its own worktree, ports, data and HOME, never the owner's servers) while a map-mode explorer rebuilds a stale catalog; SELECT scores the journeys and allocates accounts; CHARTER mints one token and one charter per explorer; one sapu:ui-explorer per journey walks it as every role through the pw wrapper only, reading page text as fenced data; repro replays each candidate on a freshly reset instance and only two of two goes on, minimized and written as a Playwright RED test; classify gives the class, labels and starting severity, and drift sends a doc contradiction to the owner with the needs-owner label; scrub refuses an issue holding any secret the run saw and files the rest; down stops only what up started; PERSIST records each journey's visit, its coverage and the next picks. A candidate that does not reproduce two of two, a harness failure and a run whose secret ledger is incomplete are journalled and never filed. The lane runs from the main session only, never inside /inspector.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#f8fafc;stroke:#e2e8f0;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#4338ca}
+    .h1{font-size:25px;font-weight:750;fill:#0f172a;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#475569}
+    .sec{font-size:15px;font-weight:700;fill:#0f172a}
+    .sec2{font-size:12.5px;fill:#475569}
+    .ttl{font-size:14px;font-weight:650;fill:#0f172a}
+    .t{font-size:13px;fill:#1e293b}
+    .tb{font-size:13px;font-weight:650;fill:#0f172a}
+    .cap{font-size:12px;fill:#475569}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#475569}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#0f172a} .muted{fill:#475569} .accent{fill:#4338ca} .tealt{fill:#0f766e}
+    .card{fill:#ffffff;stroke:#d9e1ea;stroke-width:1}
+    .sunken{fill:#f1f5f9;stroke:#e2e8f0;stroke-width:1}
+    .chip{fill:#f1f5f9;stroke:#d9e1ea;stroke-width:1}
+    .ar{stroke:#64748b;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#16a34a;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#d97706;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#1d4ed8;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#7c3aed;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#dc2626;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#64748b} .m-g{stroke:#16a34a} .m-a{stroke:#d97706} .m-b{stroke:#1d4ed8} .m-v{stroke:#7c3aed}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#475569} .ico-w{stroke:#ffffff}
+    .rule{stroke:#d9e1ea;stroke-width:1}
+    .c-blue{fill:#1d4ed8} .k-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1.25} .s-blue{stroke:#1d4ed8} .f-blue{fill:#1d4ed8} .tile-blue{fill:#eff6ff;stroke:#93c5fd;stroke-width:1}
+    .c-green{fill:#15803d} .k-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1.25} .s-green{stroke:#16a34a} .f-green{fill:#16a34a} .tile-green{fill:#f0fdf4;stroke:#86efac;stroke-width:1}
+    .c-amber{fill:#b45309} .k-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1.25} .s-amber{stroke:#d97706} .f-amber{fill:#d97706} .tile-amber{fill:#fffbeb;stroke:#fcd34d;stroke-width:1}
+    .c-red{fill:#b91c1c} .k-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1.25} .s-red{stroke:#dc2626} .f-red{fill:#dc2626} .tile-red{fill:#fef2f2;stroke:#fca5a5;stroke-width:1}
+    .c-violet{fill:#6d28d9} .k-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1.25} .s-violet{stroke:#7c3aed} .f-violet{fill:#7c3aed} .tile-violet{fill:#f5f3ff;stroke:#c4b5fd;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1039" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1040" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">JOURNEY LANE · /journey</text>
+  <text x="32" y="78" class="h1">One journey cycle, end to end</text>
+  <text x="32" y="102" class="sub">Walk the app's business journeys through the real UI as every role. Suspect freely; file only what a script reproduced twice.</text>
+  <rect x="32" y="128" width="856" height="46" rx="12" class="k-blue" />
+  <rect x="44" y="134" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(50.375,140.375) scale(0.8854166666666667)"><path d="M7 3h7l4.5 4.5V21H7z M14 3v4.5h4.5 M10 12h5.5 M10 16h5.5" class="ico s-blue"/></g>
+  <text x="90" y="156" class="t"><tspan class="tb">Reads</tspan>  profile <tspan class="mono">.claude/sapu/argus.md</tspan> + <tspan class="mono">.argus/live.json</tspan> (the instance) + <tspan class="mono">.argus/journeys.json</tspan> (the catalog)</text>
+  <rect x="32" y="196" width="856" height="430" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="212" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,218.75) scale(0.9375)"><path d="M20 12a8 8 0 1 1-2.4-5.7 M20 4v4.5h-4.5" class="ico ico-w"/></g>
+  <text x="96" y="228" class="ttl">The cycle</text>
+  <text x="96" y="246" class="cap">ten steps, each a command of <tspan class="mono">argus-live.mjs</tspan> · one invocation = one bounded cycle</text>
+  <rect x="48" y="272" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="299" r="12" fill="url(#brand)"/>
+  <text x="70" y="303.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">1</text>
+  <text x="92" y="294" class="t"><tspan class="tb">ORIENT</tspan>  <tspan class="mono cap">map-check</tspan></text>
+  <text x="92" y="313" class="cap">the catalog checked against HEAD; refresh due?</text>
+  <rect x="48" y="336" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="363" r="12" fill="url(#brand)"/>
+  <text x="70" y="367.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">2</text>
+  <text x="92" y="358" class="t"><tspan class="tb">INSTANCE</tspan>  <tspan class="mono cap">up</tspan></text>
+  <text x="92" y="377" class="cap">an instance of its own; a map explorer if stale</text>
+  <rect x="48" y="400" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="427" r="12" fill="url(#brand)"/>
+  <text x="70" y="431.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">3</text>
+  <text x="92" y="422" class="t"><tspan class="tb">SELECT</tspan>  <tspan class="mono cap">select</tspan></text>
+  <text x="92" y="441" class="cap">journeys scored; accounts allocated</text>
+  <rect x="48" y="464" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="70" cy="491" r="12" fill="url(#brand)"/>
+  <text x="70" y="495.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">4</text>
+  <text x="92" y="486" class="t"><tspan class="tb">CHARTER</tspan>  <tspan class="mono cap">slot &lt;s&gt; --journey</tspan></text>
+  <text x="92" y="505" class="cap">one token and one charter per explorer</text>
+  <rect x="48" y="528" width="404" height="54" rx="10" class="k-violet" />
+  <circle cx="70" cy="555" r="12" fill="url(#brand)"/>
+  <text x="70" y="559.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">5</text>
+  <text x="92" y="550" class="t"><tspan class="tb">EXPLORE</tspan>  <tspan class="mono cap">ui-explorer × N</tspan></text>
+  <text x="92" y="569" class="cap">every role, through the wrapper only</text>
+  <rect x="468" y="272" width="404" height="54" rx="10" class="k-amber" />
+  <circle cx="490" cy="299" r="12" fill="url(#brand)"/>
+  <text x="490" y="303.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">6</text>
+  <text x="512" y="294" class="t"><tspan class="tb">REPRODUCE</tspan>  <tspan class="mono cap">repro</tspan></text>
+  <text x="512" y="313" class="cap">two of two on a fresh instance; RED test</text>
+  <rect x="468" y="336" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="490" cy="363" r="12" fill="url(#brand)"/>
+  <text x="490" y="367.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">7</text>
+  <text x="512" y="358" class="t"><tspan class="tb">TRIAGE</tspan>  <tspan class="mono cap">classify · drift</tspan></text>
+  <text x="512" y="377" class="cap">class, labels, starting severity</text>
+  <rect x="468" y="400" width="404" height="54" rx="10" class="k-red" />
+  <circle cx="490" cy="427" r="12" fill="url(#brand)"/>
+  <text x="490" y="431.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">8</text>
+  <text x="512" y="422" class="t"><tspan class="tb">REPORT</tspan>  <tspan class="mono cap">scrub --create</tspan></text>
+  <text x="512" y="441" class="cap">no secret the run saw, then filed</text>
+  <rect x="468" y="464" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="490" cy="491" r="12" fill="url(#brand)"/>
+  <text x="490" y="495.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">9</text>
+  <text x="512" y="486" class="t"><tspan class="tb">DOWN</tspan>  <tspan class="mono cap">down</tspan></text>
+  <text x="512" y="505" class="cap">stops only what up started</text>
+  <rect x="468" y="528" width="404" height="54" rx="10" class="sunken" />
+  <circle cx="490" cy="555" r="12" fill="url(#brand)"/>
+  <text x="490" y="559.5" class="white" text-anchor="middle" style="font-size:11.5px;font-weight:700">10</text>
+  <text x="512" y="550" class="t"><tspan class="tb">PERSIST</tspan>  <tspan class="mono cap">visit</tspan></text>
+  <text x="512" y="569" class="cap">coverage, run.log, the next picks</text>
+  <text x="48" y="608" class="cap c-violet">argus's phases: ORIENT · SELECT (steps 2–3) · CHARTER · EXECUTE / OBSERVE · MINIMIZE · TRIAGE · REPORT (8–9) · PERSIST / ROTATE</text>
+  <rect x="32" y="646" width="856" height="186" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="662" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,668.75) scale(0.9375)"><path d="M9 8.5a3 3 0 0 1 6 0 M8 9.5h8v4.5a4 4 0 0 1-8 0z M12 10v8 M8 12H4.5 M19.5 12H16 M8.3 16.2L5 18 M15.7 16.2L19 18 M8.5 9.5L6 7 M15.5 9.5L18 7" class="ico ico-w"/></g>
+  <text x="96" y="678" class="ttl">A candidate's way to an issue</text>
+  <text x="96" y="696" class="cap">the explorer only suspects; scripts decide</text>
+  <rect x="48" y="718" width="124" height="50" rx="10" class="k-violet" />
+  <text x="110" y="739" class="tb c-violet" text-anchor="middle">candidate</text>
+  <text x="110" y="757" class="cap" text-anchor="middle">explorer suspects</text>
+  <path d="M175,743 L185,743" class="ar" marker-end="url(#mn)"/>
+  <rect x="188" y="718" width="124" height="50" rx="10" class="k-amber" />
+  <text x="250" y="739" class="tb c-amber" text-anchor="middle">repro</text>
+  <text x="250" y="757" class="cap" text-anchor="middle">2 of 2, fresh instance</text>
+  <path d="M315,743 L325,743" class="ar" marker-end="url(#mn)"/>
+  <rect x="328" y="718" width="124" height="50" rx="10" class="sunken" />
+  <text x="390" y="739" class="tb" text-anchor="middle">minimize</text>
+  <text x="390" y="757" class="cap" text-anchor="middle">→ Playwright RED test</text>
+  <path d="M455,743 L465,743" class="ar" marker-end="url(#mn)"/>
+  <rect x="468" y="718" width="124" height="50" rx="10" class="sunken" />
+  <text x="530" y="739" class="tb" text-anchor="middle">classify</text>
+  <text x="530" y="757" class="cap" text-anchor="middle">labels · severity</text>
+  <path d="M595,743 L605,743" class="ar" marker-end="url(#mn)"/>
+  <rect x="608" y="718" width="124" height="50" rx="10" class="k-red" />
+  <text x="670" y="739" class="tb c-red" text-anchor="middle">scrub</text>
+  <text x="670" y="757" class="cap" text-anchor="middle">no secret leaves</text>
+  <path d="M735,743 L745,743" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="748" y="718" width="124" height="50" rx="10" class="k-green" />
+  <text x="810" y="739" class="tb c-green" text-anchor="middle">filed</text>
+  <text x="810" y="757" class="cap" text-anchor="middle">issue + RED test</text>
+  <text x="48" y="792" class="cap"><tspan class="tb c-amber">not reproduced</tspan> (<tspan class="mono">runs=1/2</tspan>) or a <tspan class="tb c-amber">harness failure</tspan>: journalled, never filed</text>
+<text x="48" y="812" class="cap"><tspan class="tb c-red">ledger incomplete</tspan>, gone or damaged: nothing from that run is filed</text>
+  <text x="480" y="792" class="cap"><tspan class="tb c-red">scrub hit</tspan>: names <tspan class="mono">&lt;title|body&gt; &lt;line&gt;:&lt;col&gt;</tspan>, never the value</text>
+<text x="480" y="812" class="cap"><tspan class="tb c-violet">doc drift</tspan>: <tspan class="mono">drift</tspan> decides class B(a), or the needs-owner label</text>
+  <rect x="32" y="852" width="856" height="168" rx="14" class="k-red" />
+  <rect x="44" y="868" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,874.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="90" y="882" class="t"><tspan class="tb c-red">Hard limits</tspan></text>
+  <text x="90" y="906" class="cap">· Its own instance — worktree, ports, data and HOME — never the owner's servers; up refuses what would touch them.</text>
+<text x="90" y="924" class="cap">· Main session only: never inside /inspector or a subagent. One cycle per repo, under a lock with a deadline.</text>
+<text x="90" y="942" class="cap">· The explorer runs only the pw wrapper and reads page text as fenced data, never as instructions.</text>
+<text x="90" y="960" class="cap">· Filed only at two of two, and only through scrub: a secret the run saw refuses the issue.</text>
+<text x="90" y="978" class="cap">· A finding only the owner can rule on carries the needs-owner label; no agent removes it or closes it as not planned.</text>
+<text x="90" y="996" class="cap">· The reaper runs down at the deadline if the session dies.</text>
+</svg>

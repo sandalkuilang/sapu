@@ -14,7 +14,8 @@
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
 #                          "Notes (recorded, not filed)". The gate summary is appended to a
 #                          COPY of it before it is posted (the input file is not modified).
-#   --workers N            passed to the gate as SAPU_WORKERS (default 8; use 4 while another
+#   --workers N            passed to the gate as SAPU_WORKERS (default: this machine's gateWorkers
+#                          from `sapu-contract.mjs lanes`; pass its gateWorkersBeside while another
 #                          worker is running tests).
 #   --dry-run              run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, worktree resolution) and print the plan; no
@@ -35,14 +36,15 @@
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
 # it keeps. Every gate run is one line of <MAIN>/.git/sapu-gates.log; a red one names its failing
 # test files and a flake verdict (`known-flake`: each proven flaky, i.e. red then green on one tree
-# in another PR's gates, and nothing but tests failed; else `unknown`).
+# in another PR's gates, and nothing but tests failed; else `unknown`). `<MAIN>/.git` here and below
+# is the repository's git directory ($GITDIR: a file `.git` names it in a submodule or a
+# --separate-git-dir checkout). The merge method is the contract's `mergeMethod` (default squash).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
 # credentials. This script is the backstop against tampering (the guard hook only catches honest
 # mistakes): it trusts nothing local. The contract is read from a FRESHLY FETCHED origin/<base>,
-# and the repo file a contract command runs (a relative first word with a `/`, or an interpreter's
-# script word) must be byte-identical in <MAIN> to origin/<base>'s blob (git hash-object --no-filters, so
+# and the repo file a contract command runs (its protected word: see protect() below) must be byte-identical in <MAIN> to origin/<base>'s blob (git hash-object --no-filters, so
 # skip-worktree, assume-unchanged or a local commit cannot hide a change) — or, when origin has no
 # such file yet, the PR's copy runs. So neither a PR nor another session can relax the hooks that
 # judge it; <MAIN>'s own refs and index are never consulted for that.
@@ -55,7 +57,7 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=8; DRY=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
@@ -67,9 +69,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PR" ] && [ -n "$COMMENT_FILE" ] || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--dry-run]"
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
+command -v jq >/dev/null || die "jq is required"
+# No --workers: the machine decides (its cores, fewer while it is already busy).
+if [ -z "$WORKERS" ]; then
+  WORKERS="$(node "$SCRIPT_DIR/sapu-contract.mjs" lanes | jq -r .gateWorkers)" || die "cannot read this machine's gate workers (sapu-contract.mjs lanes): pass --workers N"
+fi
 case "$WORKERS" in ''|*[!0-9]*) die "--workers must be a number" ;; esac
 [ "$WORKERS" -ge 1 ] || die "--workers must be >= 1"
-command -v jq >/dev/null || die "jq is required"
 
 BLOCKERS=0
 # In a dry run a failed check is reported and counted instead of aborting, so one run
@@ -78,10 +84,17 @@ check_fail() { if [ "$DRY" = 1 ]; then say "WOULD REFUSE: $*"; BLOCKERS=$((BLOCK
 plan() { [ "$DRY" = 1 ] && printf 'PLAN  %s\n' "$*" >&2 || true; }
 
 # --- contract ---------------------------------------------------------------------------------
-# <MAIN> = the first entry of `git worktree list` seen from the cwd (resolved first: the lock lives in its .git).
-# awk reads to the end (no `exit`): an early exit would SIGPIPE git, and pipefail would fail the assignment.
-MAIN="$(git worktree list --porcelain 2>/dev/null | awk 'NR==1 && $1=="worktree"{sub(/^worktree /,""); print}')"
-[ -n "$MAIN" ] && [ -d "$MAIN" ] || die "run this from inside the repo (cannot resolve <MAIN> from git worktree list)"
+# <MAIN> = the main checkout seen from the cwd (resolved first: the lock lives in its git directory):
+# the first entry of `git worktree list`, or for a submodule or a --separate-git-dir checkout, whose
+# git directory git lists there, the checkout itself (sapu-contract.mjs main, findMain).
+MAIN="$(node "$SCRIPT_DIR/sapu-contract.mjs" main)" || die "run this from inside the repo (cannot resolve <MAIN>: see above)"
+[ -n "$MAIN" ] && [ -d "$MAIN" ] || die "run this from inside the repo (cannot resolve <MAIN>)"
+# A bare clone has no files to compare against origin and no base branch checked out to fast-forward.
+[ "$(git -C "$MAIN" rev-parse --is-bare-repository 2>/dev/null)" != true ] \
+  || die "<MAIN> ($MAIN) is a bare repository: sapu needs a main checkout of the base branch as the first worktree, not a bare clone with worktrees"
+# The repository's git directory: <MAIN>/.git in a plain clone; for a submodule or a --separate-git-dir
+# checkout (<MAIN>/.git is a file) the directory it names. The lock and every ledger live there.
+GITDIR="$(cd "$MAIN" && cd "$(git rev-parse --git-common-dir)" && pwd)" || die "cannot find the git directory of $MAIN"
 # Only the base branch's NAME comes from <MAIN>'s own contract. The contract itself is read from a
 # freshly fetched origin/<base> (an explicit refspec, so a rewritten fetch config cannot redirect
 # it), and origin's contract must name the same base.
@@ -93,6 +106,12 @@ CONTRACT="$(cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" show --ref "$BASE
 cget() { printf '%s' "$CONTRACT" | jq -r "$1 // empty"; }
 [ "$(cget .baseBranch)" = "$BASE" ] || die "origin/$BASE's contract names base '$(cget .baseBranch)', <MAIN>'s names '$BASE': reconcile them first"
 REPO="$(cget .repo)"; GH_USER="$(cget .ghUser)"; GIT_EMAIL="$(cget .gitEmail)"
+# How the PR is merged (squash unless the contract says the repo allows only merge or rebase), and
+# on which GitHub host: a GitHub Enterprise host reaches every gh call below as GH_HOST.
+METHOD="$(printf '%s' "$CONTRACT" | jq -r '.mergeMethod // "squash"')"
+case "$METHOD" in squash|merge|rebase) ;; *) die "contract mergeMethod '$METHOD' is not squash, merge or rebase" ;; esac
+HOST="$(cget .host)"
+if [ -n "$HOST" ] && [ "$HOST" != github.com ]; then export GH_HOST="$HOST"; fi
 # origin commits whose files <MAIN>'s copies may equal: the fetched origin/<base>, and after the merge the new one.
 TRUSTED=("$BASE_SHA")
 GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"
@@ -105,47 +124,39 @@ P_REVIEWERS="$(printf '%s' "$CONTRACT" | jq -r '(.policy.reviewers // []) | join
 
 CONTRACT_FILE=".claude/sapu.json"
 
-# The index of the word of a contract command that names repo code, or nothing: a relative first
-# word with a `/` (`scripts/gate.sh`), or an interpreter's script — its first non-option word
-# (node's --import/--require/-r/--loader values skipped, deno/bun `run` skipped) when that is
-# relative with a `/`. An absolute first word (`/bin/bash`) runs as-is.
-protected_index() { # <words...>
-  [ "$#" -gt 0 ] || return 0
-  case "$1" in /*) ;; */*) echo 0; return 0 ;; esac
-  local prog="${1##*/}" j=1 n=$#
-  local -a w=("$@")
-  case "$prog" in bash|sh|zsh|dash|node|tsx|python|python3|ruby|perl|deno|bun) ;; *) return 0 ;; esac
-  while [ "$j" -lt "$n" ]; do
-    case "${w[$j]}" in
-      -r|--require|--import|--loader|--experimental-loader) j=$((j+2)); continue ;;
-      -*) j=$((j+1)); continue ;;
-      run) case "$prog" in deno|bun) j=$((j+1)); continue ;; esac ;;
-    esac
-    case "${w[$j]}" in /*) ;; */*) echo "$j" ;; esac
-    return 0
-  done
-}
-
-# The repo path a contract command protects (see protected_index), or nothing.
-protected_path() { # <command>
-  local -a w; local k
+# A contract command as it is run, and the word of it that names repo code (its protected word):
+# `sapu-contract.mjs protect`, the one implementation (protectedCommand), answering from the files
+# origin/<base> holds. A relative program with a `/` (`scripts/gate.sh`); an interpreter's script
+# (`bash`/`node`/`python`/… its first non-option word, when relative with a `/`); make's makefile
+# and just's justfile (written out with -f/--justfile when the command relies on the default);
+# behind `uv run`, `poetry run`, `pipenv run`, `npx`, `pnpm exec` or `env`. An absolute program
+# runs as-is. Printed as JSON {words, index, file, why}: index null = nothing protected (why says so).
+protect() { # <command>
+  local -a w
   read -r -a w <<<"$1"
-  [ "${#w[@]}" -gt 0 ] || return 0
-  k="$(protected_index "${w[@]}")"
-  [ -z "$k" ] || printf '%s\n' "${w[$k]}"
+  (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
+}
+P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
+P_AFTER=""; P_RED=""
+if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
+if [ -n "$RED_AREAS" ]; then P_RED="$(protect "$RED_AREAS")" || die "cannot read which file redAreas runs (see above)"; fi
+
+# The repo path a protected command pins, or nothing.
+protected_path() { # <protect JSON>
+  [ -z "$1" ] || jq -r '.file // empty' <<<"$1"
 }
 
 blob_at() { git -C "$MAIN" rev-parse -q --verify "$1:$2" 2>/dev/null; } # <commit> <path>: its blob id
 on_origin() { local r; for r in "${TRUSTED[@]}"; do blob_at "$r" "$1" >/dev/null && return 0; done; return 1; }
 
-# Run a contract command (split on whitespace, no shell syntax) with cwd <dir>. Its protected word
-# runs <MAIN>'s copy when origin/<base> has that file (main_mismatch proved the copy identical),
-# else <fallback>'s copy; with no fallback it does not run (see SAFETY).
-run_contract() { # <dir> <fallback-dir or ""> <command> [extra args...]
-  local dir="$1" fb="$2" cmd="$3" k; shift 3
-  local -a w
-  read -r -a w <<<"$cmd"
-  k="$(protected_index "${w[@]}")"
+# Run a contract command (its protect JSON: words split on whitespace, no shell syntax) with cwd
+# <dir>. Its protected word runs <MAIN>'s copy when origin/<base> has that file (main_mismatch proved
+# the copy identical), else <fallback>'s copy; with no fallback it does not run (see SAFETY).
+run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
+  local dir="$1" fb="$2" pj="$3" k x; shift 3
+  local -a w=()
+  while IFS= read -r x; do w+=("$x"); done < <(jq -r '.words[]' <<<"$pj")
+  k="$(jq -r '.index // empty' <<<"$pj")"
   if [ -n "$k" ]; then
     if on_origin "${w[$k]}"; then w[$k]="$MAIN/${w[$k]}"
     elif [ -n "$fb" ]; then say "warning: origin/$BASE has no ${w[$k]} yet; using $fb's copy"; w[$k]="$fb/${w[$k]}"
@@ -162,8 +173,7 @@ run_contract() { # <dir> <fallback-dir or ""> <command> [extra args...]
 main_mismatch() {
   local -a p=("$CONTRACT_FILE") bad=()
   local c x r have ok
-  for c in "$GATE_MERGE" "$MERGE_AFTER" "$RED_AREAS"; do
-    [ -n "$c" ] || continue
+  for c in "$P_GATE" "$P_AFTER" "$P_RED"; do
     x="$(protected_path "$c")"
     [ -z "$x" ] || p+=("$x")
   done
@@ -206,7 +216,7 @@ run_after() { # <merged|not-merged>
   # cwd <MAIN>; a hook <MAIN> does not have yet runs from the PR worktree, which exists on every path here.
   SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
     SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" \
-    run_contract "$MAIN" "$WT" "$MERGE_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
+    run_contract "$MAIN" "$WT" "$P_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
 }
 
 on_exit() {
@@ -222,7 +232,7 @@ trap on_exit EXIT
 # path under <MAIN>/.git — NOT $TMPDIR, which differs between sandboxed and unsandboxed
 # processes and would let two runs miss each other.
 if [ "$DRY" = 0 ]; then
-  LOCK="$MAIN/.git/sapu-merge.lock"
+  LOCK="$GITDIR/sapu-merge.lock"
   mkdir "$LOCK" 2>/dev/null || die "another sapu-merge run holds $LOCK. If a previous run was killed (SIGKILL/power loss) and none is active, remove it: rmdir '$LOCK'"
   LOCK_HELD=1
 fi
@@ -297,9 +307,10 @@ done
 # --- 4. worktree resolution ---------------------------------------------------------------------
 
 # Path of the worktree that already holds refs/heads/<HEAD>, if any.
+# The first entry is <MAIN>, whatever path git prints for it (its git directory, see MAIN above).
 worktree_for_branch() {
-  git -C "$MAIN" worktree list --porcelain | awk -v ref="refs/heads/$1" '
-    $1=="worktree"{sub(/^worktree /,""); p=$0}
+  git -C "$MAIN" worktree list --porcelain | awk -v ref="refs/heads/$1" -v main="$MAIN" '
+    $1=="worktree"{sub(/^worktree /,""); p=(n++ ? $0 : main)}
     $1=="branch" && $2==ref && !found {print p; found=1}'
 }
 
@@ -327,10 +338,12 @@ if [ "$DRY" = 1 ]; then
   plan "git fetch origin $BASE $HEAD; rebase onto origin/$BASE only if every commit origin/$BASE..HEAD is by $GIT_EMAIL, else merge; push only after a green gate (--force-with-lease only after rebase)"
   if [ -n "$RED_AREAS" ]; then plan "red-area check (<MAIN>: $RED_AREAS --ref <sha>): red areas without a 'Review tier: red' first line in the comment = refuse"
   else plan "no red-area classifier in the contract (redAreas: null)"; fi
-  plan "gate in $WT: $GATE_MERGE  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $MAIN/.git/sapu-gates.log)"
-  plan "(real runs hold a lock dir $MAIN/.git/sapu-merge.lock; a second run dies)"
+  if [ -n "$(protected_path "$P_GATE")" ]; then plan "gate.merge pins <MAIN>'s $(protected_path "$P_GATE") (origin/$BASE's blob; the PR's copy only while origin has none)"
+  else plan "gate.merge pins no repo file ($(jq -r '.why' <<<"$P_GATE")): the PR's own copy of the gate's logic runs"; fi
+  plan "gate in $WT: $(jq -r '.words | join(" ")' <<<"$P_GATE")  (env SAPU_PR SAPU_MAIN SAPU_WT SAPU_WORKERS=$WORKERS SAPU_BASE; red = stop, keep worktree; exit 75 = setup failed, stop; every run -> $GITDIR/sapu-gates.log)"
+  plan "(real runs hold a lock dir $GITDIR/sapu-merge.lock; a second run dies)"
   if [ "$P_MERGE" = human ]; then plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "gh pr comment"), gh pr ready $PR, request review${P_REVIEWERS:+ from $P_REVIEWERS}; no merge (policy merge: human)"
-  else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --squash --delete-branch --match-head-commit <gated SHA>"; fi
+  else plan "green: $([ "$P_TRACES" = none ] && echo "keep review + gate summary locally" || echo "append gate summary to review comment, gh pr comment"), gh pr merge $PR --$METHOD --delete-branch --match-head-commit <gated SHA>"; fi
   plan "relabel issues from every 'Closes/Fixes/Resolves #N[, #M...]' in PR body: $L_IN_PROGRESS -> $L_DONE (Refs #N untouched)"
   plan "after merge: fetch origin $BASE; git -C $MAIN merge --ff-only origin/$BASE ONLY if <MAIN> is on $BASE with a clean tree (else WARNING, continue)"
   if [ -n "$MERGE_AFTER" ]; then plan "mergeAfter once on every exit after the gate started, while $WT still exists: $MERGE_AFTER (SAPU_OUTCOME=merged|not-merged)"; fi
@@ -448,7 +461,7 @@ MISMATCH="$(main_mismatch)"
 [ -z "$MISMATCH" ] || die "$(mismatch_msg "$MISMATCH")"
 if [ -n "$RED_AREAS" ]; then
   # No fallback to the PR's copy: a classifier origin/<base> lacks means the red areas are unknown.
-  RED="$(run_contract "$MAIN" "" "$RED_AREAS" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
+  RED="$(run_contract "$MAIN" "" "$P_RED" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
     || die "red-area check failed: a PR whose red areas are unknown is not merged"
   # Line 1 only: sapu-wave.js writes it there, and reviewer text further down must not satisfy it.
   # Here-strings, not pipes into `grep -q`: an early-exiting reader SIGPIPEs the writer under pipefail.
@@ -463,22 +476,41 @@ say "gate running at $SHA (workers=$WORKERS) — log: $LOG"
 GATE_RC=0
 AFTER_PENDING=1
 GATE_START=$SECONDS
+GATE_T0="$(date +%s)"
 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
-  run_contract "$WT" "$WT" "$GATE_MERGE" >"$LOG" 2>&1 || GATE_RC=$?
+  run_contract "$WT" "$WT" "$P_GATE" >"$LOG" 2>&1 || GATE_RC=$?
 # Gate wall-clock goes into the merges log: SKILL.md B3 drops an overlapping wave to one test runner
 # when the gate measures more than 50% slower.
 GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
 # steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
 # (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
-GATES_LOG="$MAIN/.git/sapu-gates.log"
+GATES_LOG="$GITDIR/sapu-gates.log"
 TREE="$(git -C "$WT" rev-parse -q --verify "$SHA^{tree}" 2>/dev/null || echo -)"
+# A gate that overlapped a journey cycle ran beside its browsers and dev servers. argus-live.mjs
+# appends to <MAIN>/.git/sapu-live.log, in epoch seconds, under a run id unique per run:
+# `<run> start <epoch> deadline <epoch>` when `up` takes the lock, `<run> deadline <epoch>` at every
+# `renew`, `<run> end <epoch>` from `down` and from an `up` that fails after its start line. A run
+# stops at its end, else at its latest deadline. The gate's line says live=1, and no flake proof uses it.
+LIVE_LOG="$GITDIR/sapu-live.log"
+live_overlap() { # <gate start epoch> <gate end epoch>
+  [ -f "$LIVE_LOG" ] || return 1
+  awk -v s="$1" -v e="$2" '
+    function later(r, t) { if (!(r in dl) || t + 0 > dl[r] + 0) dl[r] = t }
+    $2 == "start" && $3 ~ /^[0-9]+$/ && $4 == "deadline" && $5 ~ /^[0-9]+$/ { st[$1] = $3; later($1, $5) }
+    $2 == "deadline" && $3 ~ /^[0-9]+$/ { later($1, $3) }
+    $2 == "end" && $3 ~ /^[0-9]+$/ { en[$1] = $3 }
+    END { for (r in st) { stop = (r in en) ? en[r] : dl[r]; if (st[r] + 0 <= e + 0 && stop + 0 >= s + 0) hit = 1 } exit !hit }' "$LIVE_LOG" 2>/dev/null
+}
+LIVE=""
+if live_overlap "$GATE_T0" "$(date +%s)"; then LIVE=1; fi
+LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
-  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" >>"$GATES_LOG"; } 2>/dev/null \
+  { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
 }
 # 75 (EX_TEMPFAIL) = the gate could not even start (infra, DB setup, a PR that needs a clean
@@ -500,18 +532,51 @@ if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; 
 if [ -n "$RED" ]; then
   FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
-  # The failing test FILES, from anywhere in the log, colour codes stripped: vitest/jest
-  # ` FAIL  [|project| ]<file> > …`, pytest `FAILED <file>::…`. Only a path with an extension and
-  # no space or comma is taken (the ledger is space- and comma-separated). ponytail: two runners'
-  # formats; any other runner records failed=- and gets no verdict.
+  # The failing test FILES, from anywhere in the log, colour codes stripped: per runner, a file
+  # where it names one, else its most stable name for the failing unit. Go `FAIL\t<package>\t<n>s`
+  # (a package that did not build is no test failure); cargo nextest `FAIL [ <n>s] <binary> <test>`
+  # (as <binary>/<test>); vitest/jest ` FAIL  [|project| ]<file> > …`; pytest `FAILED <file>::…`;
+  # rspec `rspec ./<file>[:line|[id]] # …`; cargo `test <path> ... FAILED`; Maven surefire's class
+  # line `Tests run: … <<< FAILURE!|ERROR! -- in <class>`; Gradle `<class> > <test> FAILED`; mocha's
+  # `N failing` section, each failure's first stack path under the worktree that looks like a test
+  # file (mocha prints absolute paths). Only a name without a space or comma is taken (the ledger
+  # is space- and comma-separated); one line, one runner (`t` stops at the first that matched).
+  # ponytail: these formats only; another runner records failed=- and gets no verdict.
   CLEAN="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG")"
+  TAB=$'\t'
   FILES="$(sed -nE \
-    -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' \
-    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' <<<"$CLEAN")"
+    -e '/^FAIL[[:space:]].*\[(build|setup) failed\]$/d' \
+    -e "s/^FAIL${TAB}([^[:space:],]+)${TAB}[0-9.]+s\$/\\1/p" -e t \
+    -e 's/^[[:space:]]*FAIL \[[^]]*\] ([^[:space:],]+) ([^[:space:],]+)$/\1\/\2/p' -e t \
+    -e 's/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?([^[:space:],|]+\.[A-Za-z0-9]+)([[:space:]].*)?$/\2/p' -e t \
+    -e 's/^FAILED ([^[:space:],:]+\.[A-Za-z0-9]+)::.*/\1/p' -e t \
+    -e 's/^rspec (\.\/)?([^[:space:],]+\.rb)(:[0-9]+|\[[0-9:]+\])? # .*/\2/p' -e t \
+    -e 's/^test ([^[:space:],]+) \.\.\. FAILED$/\1/p' -e t \
+    -e 's/^(\[ERROR\] )?Tests run: .*<<< (FAILURE|ERROR)!( -+)? in ([^[:space:],]+)[[:space:]]*$/\4/p' -e t \
+    -e 's/^([^[:space:],>]+) > .* FAILED$/\1/p' <<<"$CLEAN")"
+  # mocha: one line per failure, `F <file>` or `X` (no test file under the worktree in its stack).
+  MOCHA="$(awk -v wt="$WT/" '
+    function flush() { if (want) print "X"; want = 0 }
+    /^  [0-9]+ failing$/ { flush(); failing = 1; next }
+    failing && /^  [0-9]+\) / { flush(); want = 1; next }
+    want {
+      line = $0
+      while (match(line, /(file:\/\/)?\/[^ ()]+/)) {
+        f = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
+        sub(/^file:\/\//, "", f); sub(/:[0-9]+:[0-9]+$/, "", f)
+        if (index(f, wt) != 1 || f ~ /\/node_modules\//) continue
+        f = substr(f, length(wt) + 1)
+        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f); want = 0; break }
+      }
+    }
+    END { flush() }' <<<"$CLEAN")"
+  FILES="$( { printf '%s\n' "$FILES"; sed -n 's/^F //p' <<<"$MOCHA"; } | grep . || true)"
   TESTS="$(printf '%s\n' "$FILES" | grep . | sort -u | paste -sd, - || true)"
-  # A failure line no file was read from (pytest ERROR, a path with a space) or an unhandled error
-  # outside any test = something besides the named tests failed: never known-flake.
-  RAW="$(grep -cE '^[[:space:]]*FAIL[[:space:]]|^(FAILED|ERROR) ' <<<"$CLEAN" || true)"
+  # A failure line no file was read from (pytest ERROR, a path with a space, a Go package that did
+  # not build, a mocha failure outside the tests) or an unhandled error outside any test = something
+  # besides the named tests failed: never known-flake.
+  RAW="$(grep -cE '^[[:space:]]*FAIL[[:space:]]|^(FAILED|ERROR) |^rspec [^[:space:]]+ # |^test .* \.\.\. FAILED$|Tests run: .*<<< (FAILURE|ERROR)!|^[^[:space:]]+ > .* FAILED$' <<<"$CLEAN" || true)"
+  RAW="$((RAW + $(grep -c . <<<"$MOCHA" || true)))"
   READ="$(printf '%s\n' "$FILES" | grep -c . || true)"
   OTHER=""
   [ "$RAW" = "$READ" ] || OTHER="$((RAW - READ)) failure line(s) without a readable file"
@@ -522,7 +587,7 @@ if [ -n "$RED" ]; then
   # nothing else made this gate red. A verdict never merges anything: only a green gate does.
   # ponytail: the last 1000 runs are the ledger's memory; a flake older than that is unknown again.
   PROVEN="$( { tail -n 1000 "$GATES_LOG" 2>/dev/null || true; } | awk -v pr="$PR" '
-    $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
+    $0 !~ / live=1$/ && $2 != pr && $7 ~ /^tree=/ && $7 != "tree=-" {
       k = $2 " " $7
       if ($4 == "green") green[k] = 1
       else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)
@@ -539,16 +604,16 @@ if [ -n "$RED" ]; then
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
-  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
+  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
   # …or a test word beside a non-test tool (lint test files, build:test, tsc -p tsconfig.test.json)
   STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
-  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)"
-  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)"
-  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")"
-  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}"; fi
+  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
+  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$LIVE_NOTE"
+  elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
+  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$LIVE_NOTE"; fi
   exit 2
 fi
 gate_record green -
@@ -563,7 +628,7 @@ FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 } >"$FULL_COMMENT"
 if [ "$P_TRACES" = none ]; then
   # traces: none — the review and the gate summary stay on this machine; nothing on the PR says sapu.
-  KEEP="$MAIN/.git/sapu-review-pr$PR.md"
+  KEEP="$GITDIR/sapu-review-pr$PR.md"
   mv "$FULL_COMMENT" "$KEEP" 2>/dev/null && say "review + gate summary kept locally: $KEEP" || rm -f "$FULL_COMMENT"
 else
   ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
@@ -581,7 +646,7 @@ if [ "$P_MERGE" = human ]; then
   for r in $P_REVIEWERS; do
     gh pr edit "$PR" --repo "$REPO" --add-reviewer "$r" >/dev/null 2>&1 || say "warning: could not request a review from $r"
   done
-  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-handoffs.log" 2>/dev/null || true
+  printf '%s %s %s gate=%ss handoff\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-handoffs.log" 2>/dev/null || true
   printf 'sapu-merge: PR #%s gate green at %s, handed off for review%s (merge: human)\n' "$PR" "$SHA" "${P_REVIEWERS:+ to $P_REVIEWERS}"
   exit 4
 fi
@@ -593,12 +658,14 @@ fi
 # PR head moved, GitHub refuses and the worktree stays for a re-run.
 ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
 [ "$ACTIVE" = "$GH_USER" ] || die "gh account flipped to '${ACTIVE:-none}' before merging"
-gh pr merge "$PR" --repo "$REPO" --squash --delete-branch --match-head-commit "$SHA" >/dev/null \
-  || die "gh pr merge failed (PR head may have moved since $SHA); worktree $WT kept"
+# GitHub's own words are kept: a repo that does not allow this method refuses with a message that
+# says so, which a guess ("the head moved") would hide.
+MERGE_ERR="$(gh pr merge "$PR" --repo "$REPO" "--$METHOD" --delete-branch --match-head-commit "$SHA" 2>&1 >/dev/null)" \
+  || die "gh pr merge --$METHOD failed: $(printf '%s' "$MERGE_ERR" | tail -n 5) — a repo that does not allow $METHOD merges needs the contract's mergeMethod (squash, merge or rebase); else the PR head may have moved since $SHA; worktree $WT kept"
 # One line per merge that really happened: sapu-metrics --merges-log counts merged PRs from this,
 # because a transcript only records the merge commands, not which of them merged.
-printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$MAIN/.git/sapu-merges.log" 2>/dev/null \
-  || say "warning: merged, but could not record it in $MAIN/.git/sapu-merges.log"
+printf '%s %s %s gate=%ss\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$GATE_SECS" >>"$GITDIR/sapu-merges.log" 2>/dev/null \
+  || say "warning: merged, but could not record it in $GITDIR/sapu-merges.log"
 
 RELABELED=""
 [ "$P_TRACES" = none ] && ISSUES="" # traces: none — no sapu labels on the issues either
@@ -652,7 +719,7 @@ fi
 git -C "$MAIN" branch -D "$HEAD" >/dev/null 2>&1 || true # best effort; may be checked out elsewhere
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
-printf 'PR #%s merged (squash)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
-  "$PR" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
+printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
+  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }

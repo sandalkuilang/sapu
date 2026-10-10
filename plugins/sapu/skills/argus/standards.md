@@ -81,6 +81,18 @@ Normative source for every row: WCAG 2.2, W3C Recommendation 12 December 2024 �
 | 2.5.8 Target Size (Minimum) | AA, new in 2.2 | 24×24 CSS px, with spacing/equivalent/inline exceptions (§3.2, §6) |
 | 3.2.4 Consistent Identification | AA | same function identified consistently — one enum, one badge colour (§4) |
 
+## Usability and workflow soundness — the journey lane's grounding set
+
+Cited as **advice** beside the measured number, never as the verdict: a journey finding's class and severity come from its oracle (`argus-live.mjs classify`, journeys.md), and a heuristic finding with no written rule goes to the owner.
+
+| Use it for | Source |
+|---|---|
+| Nielsen's ten usability heuristics, cited by number and name: 1 Visibility of System Status · 2 Match Between the System and the Real World · 3 User Control and Freedom · 4 Consistency and Standards · 5 Error Prevention · 6 Recognition Rather than Recall · 7 Flexibility and Efficiency of Use · 8 Aesthetic and Minimalist Design · 9 Help Users Recognize, Diagnose, and Recover from Errors · 10 Help and Documentation. *"They are called heuristics because they are broad rules of thumb and not specific usability guidelines."* | Nielsen, NN/g — https://www.nngroup.com/articles/ten-usability-heuristics/ |
+| A usability problem's severity as frequency, impact and persistence, and the 0–4 scale (*"4 = Usability catastrophe: imperative to fix this before product can be released"*): recorded as measurements, never as the issue's severity | Nielsen, NN/g — https://www.nngroup.com/articles/how-to-rate-the-severity-of-usability-problems/ |
+| The cognitive walkthrough behind the explorer's `cw` rows, one question per row: *"Will users be trying to produce whatever effect the action has?"* · *"Will users see the control (button, menu, switch, etc.) for the action?"* · *"Once users find the control, will they recognize that it produces the effect they want?"* · *"After the action is taken, will users understand the feedback they get, so they can go on to the next action with confidence?"* | Lewis and Rieman, *Task-Centered User Interface Design*, chapter 4 — https://hcibib.org/tcuid/chap-4.html |
+| Workflow-net soundness, the ground of the dead-end, orphaned-work and unreachable-step oracles: *"(1) option to complete: for each case it is always still possible to reach the state which just marks place end, (2) proper completion: if place end is marked all other places are empty for a given case, and (3) no dead transitions: it should be possible to execute an arbitrary activity by following the appropriate route through the WF-net."* | van der Aalst, van Hee, ter Hofstede, Sidorova, Verbeek, Voorhoeve, Wynn, *Soundness of Workflow Nets: Classification, Decidability, and Analysis*, Formal Aspects of Computing — https://www.vdaalst.com/publications/p628.pdf |
+| Naming a journey's shape (control-flow patterns: Sequence, Parallel Split, Cancel Task) and its allocation (resource patterns: Role-Based Distribution, Separation of Duties, Retain Familiar), by the catalogue's pattern names | Workflow Patterns Initiative (Russell, ter Hofstede, van der Aalst and others) — http://www.workflowpatterns.com/patterns/control/ · http://www.workflowpatterns.com/patterns/resource/ (plain http: the site answers no https) |
+
 ## Fraud, internal control, insider threat
 
 | Use it for | Source |
