@@ -13,7 +13,7 @@ import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { changeDigest, generated, liveAsWritten, PR_URL, readState, refreshOutcomes, writeState } from "./argus-live-suite.mjs";
-import { agentFiledLabel, loadContract } from "./sapu-contract.mjs";
+import { agentFiledLabel, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 /** Where the suite's baselines and adopted violations live (spec §19.2): a conflict there is never resolved by picking a side. */
@@ -157,7 +157,7 @@ function secretsOf(main, runs, env) {
  * lockfile by `npm install --package-lock-only --ignore-scripts`; every changed text file and the body through
  * scrub's matcher (a hit refuses: `<file>:<line>:<col> <class>`, nothing pushed); one commit with the
  * contract's gitEmail and a Signed-off-by; the branch pushed (with a lease); the pull request opened with
- * `labels.agentFiled`, or its body updated. Lines: `branch:`, `change …`, `baseline: dropped …`, `baseline:
+ * `labels.agentFiled` (and `labels.needsOwner` when a heal is flagged `needsOwner`), or its body updated. Lines: `branch:`, `change …`, `baseline: dropped …`, `baseline:
  * needed …`, `proposed: <url>`. `dryRun` lists the changes and writes nothing (no fetch either).
  */
 export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", npm = "npm", env = process.env } = {}) {
@@ -275,9 +275,11 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
       g(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${lease}`, "origin", `HEAD:refs/heads/${branch}`]);
       const repoFlag = typeof repo === "string" ? ["--repo", repo] : [];
       const open = String(runner([gh, "pr", "list", ...repoFlag, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url // \"\""], { cwd: main }).stdout ?? "").trim();
+      // A heal that moved its control's role or name (smoke heal's flags) is the owner's to read: the needs-owner label too.
+      const owner = todo.some((ch) => ch.needsOwner === true) ? [needsOwnerLabel(c.contract)] : [];
       const r = open && PR_URL.test(open)
-        ? runner([gh, "pr", "edit", open, ...repoFlag, "--body-file", msg], { cwd: main })
-        : runner([gh, "pr", "create", ...repoFlag, "--base", base, "--head", branch, "--title", title, "--body-file", msg, "--label", agentFiledLabel(c.contract)], { cwd: main });
+        ? runner([gh, "pr", "edit", open, ...repoFlag, "--body-file", msg, ...owner.flatMap((l) => ["--add-label", l])], { cwd: main })
+        : runner([gh, "pr", "create", ...repoFlag, "--base", base, "--head", branch, "--title", title, "--body-file", msg, "--label", agentFiledLabel(c.contract), ...owner.flatMap((l) => ["--label", l])], { cwd: main });
       const url = open && PR_URL.test(open) && r.status === 0 ? open : (PR_URL.exec(String(r.stdout ?? "")) ?? [null])[0];
       if (!url) return { code: 2, lines: [...lines, `branch: ${branch}`, `failed: gh pr ${open ? "edit" : "create"} exited ${r.status ?? "on a signal"} after ${branch} was pushed; the changes stay staged`] };
       for (const ch of todo) state.proposals[ch.digest ?? changeDigest(ch)] = { kind: ch.kind, id: ch.id, branch, url, outcome: "open" };

@@ -154,7 +154,7 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     expect(r.lines[1]).toMatch(/^staged: heal checkout \(digest [0-9a-f]{12}\)$/);
     expect(r.masked).toBe(true);
     // The page-derived targets and git's subjects are printed only inside the fence.
-    const fenced = r.lines.slice(2).join("\n");
+    const fenced = r.lines.slice(r.lines.findIndex((l: string) => l.startsWith("<<<PAGE-"))).join("\n");
     expect(fenced).toMatch(/^<<<PAGE-[0-9a-f]{32}\n/);
     expect(fenced).toContain('page.getByRole("button", {"name": "Place order"})');
     expect(fenced).toContain('page.getByRole("button", {"name": "Submit order"})');
@@ -171,6 +171,10 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     expect(body).toContain('from: page.getByRole("button", {"name": "Place order"})');
     expect(body).toContain('to:   page.getByRole("button", {"name": "Submit order"})');
     expect(body).toContain("rename the order button");
+    // The accessible name moved: the owner reads the heal before it is merged (the needs-owner label on its pull request).
+    expect(r.lines).toContain("heal checkout: needs owner (step 5: name changed)");
+    expect(st.needsOwner).toBe(true);
+    expect(body).toContain("**Needs owner:** step 5: name changed");
     // No suite file is touched: the heal reaches the repo only through a proposal.
     expect(JSON.parse(readFileSync(join(t.main, "e2e/argus-smoke/journeys/checkout.json"), "utf8")).path).toEqual(PATH());
     // The heal is an event of the cycle, and the cycle's report counts it.
@@ -278,6 +282,37 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     const gone = healRun({ ret: heal([{ step: 5, target: NEW }]) });
     await down(gone.main, { runId: gone.runId, graceMs: 1000 });
     await expect(smokeHeal(gone.main, "3.1", { once: s.once })).rejects.toThrow("refused: no journey cycle is running");
+  }, 30_000);
+});
+
+describe("smoke heal — an action that failed on its control, and a heal that changes the control's role (spec §19.9)", () => {
+  it("action-failed is no locator break: smoke heal refuses it, smoke run --slot writes it as a regression candidate ending in enabled", async () => {
+    const t = healRun({ ret: heal([{ step: 5, target: NEW }]), broke: { verdict: "broke", step: 5, kind: "action-failed" } });
+    const s = stub([]);
+    await expect(smokeHeal(t.main, "3.1", { once: s.once })).rejects.toThrow("refused: smoke heal: checkout broke at step 5 with action-failed: its control is there and unique, so it is a regression candidate (smoke run --slot), never a heal");
+    expect(s.calls).toEqual([]);
+    const u = healRun({ broke: null });
+    const r = await smokeRun(u.main, { ids: null, slot: 5, perf: false, seed: 1 }, { once: stub(["broke 5 action-failed", "broke 5 action-failed"]).once });
+    expect(r.lines).toContain("regression checkout: step 5 written as 5.1.1 (repro 5.1.1)");
+    const { candidate } = reproRef(u.main, "5.1.1");
+    expect(candidate.repro.at(-1)).toEqual({ as: "customer", expect: "enabled", target: { role: "button", name: "Place order" }, final: "regression" });
+    expect(candidate.repro.slice(1, -1)).toEqual(PATH().slice(1, 5));
+    expect(candidate.claim).toBe("smoke path checkout: step 5's control is there and unique, but its action failed twice, the second time after up --fresh");
+  }, 30_000);
+
+  it("a heal keeps the control's role: another role is refused; a role found another way or a new name is flagged for the owner", async () => {
+    const link = healRun({ ret: heal([{ step: 5, target: { role: "link", name: "Place order" } }]) });
+    await expect(smokeHeal(link.main, "3.1", { once: stub([]).once })).rejects.toThrow("refused: smoke heal: step 5: a heal keeps the control's role (button, not link)");
+    const t = healRun({ ret: heal([{ step: 4, target: { role: "spinbutton", name: "Quantity" } }]) });
+    const r = await smokeHeal(t.main, "3.1", { once: stub(["held", "held"]).once });
+    expect(r.code).toBe(0);
+    expect(r.lines).toContain("heal checkout: needs owner (step 4: role changed)");
+    expect(readState(t.main).staged[0].body.join("\n")).toContain("**Needs owner:** step 4: role changed");
+    const same = healRun({ ret: heal([{ step: 4, target: { placeholder: "Quantity" } }]) });
+    const r2 = await smokeHeal(same.main, "3.1", { once: stub(["held", "held"]).once });
+    expect(r2.code).toBe(0);
+    expect(r2.lines.some((l: string) => l.includes("needs owner"))).toBe(false);
+    expect(readState(same.main).staged[0].needsOwner).toBeUndefined();
   }, 30_000);
 });
 

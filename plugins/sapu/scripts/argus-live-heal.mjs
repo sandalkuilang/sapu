@@ -16,8 +16,12 @@ import { canonical, codeBlock, stage } from "./argus-live-suite.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
 
-/** The pass's break kinds a heal answers: an action step that broke (spec §19.9, "locator break"). */
-const ACTION_BREAKS = ["target-missing", "target-ambiguous", "action-failed"];
+/**
+ * The pass's break kinds a heal answers (spec §19.9, "locator break"): the old target, confirmed two of two, matches
+ * nothing or several. `action-failed` (a timeout or error on a target that is there and unique: a disabled or
+ * covered control) is no locator break but a regression candidate, which smoke run --slot writes.
+ */
+const ACTION_BREAKS = ["target-missing", "target-ambiguous"];
 const BROKE = /^PATH broke step=(\d+) kind=(target-missing|target-ambiguous|expect-failed|action-failed)$/;
 const REF = /^([1-9][0-9]?)\.([1-9])$/;
 const TARGET_TEXT = ["role", "name", "label", "placeholder", "testId", "text"];
@@ -72,7 +76,14 @@ export function healOnly(before, after, max) {
       throw refused(`step ${n}: a heal never changes ${k === "value" || k === "values" ? "a value" : `its ${/^[a-z]{1,20}$/.test(k) ? k : "fields"}`}`);
     }
     if (Object.hasOwn(x, "target") !== Object.hasOwn(y, "target")) throw refused(`step ${n}: a heal never adds or removes a target`);
-    if (Object.hasOwn(x, "target") && canonical(x.target) !== canonical(y.target)) out.push({ step: n, from: x.target, to: y.target });
+    if (Object.hasOwn(x, "target") && canonical(x.target) !== canonical(y.target)) {
+      // A control of another role does something else (a button that became a link): a behaviour change, never a heal.
+      if (isObj(x.target) && isObj(y.target) && typeof x.target.role === "string" && typeof y.target.role === "string" && x.target.role !== y.target.role) {
+        const word = (r) => (/^[a-z]{1,30}$/.test(r) ? r : "another");
+        throw refused(`step ${n}: a heal keeps the control's role (${word(x.target.role)}, not ${word(y.target.role)})`);
+      }
+      out.push({ step: n, from: x.target, to: y.target });
+    }
   }
   if (out.length > max) throw refused(`a heal changes at most ${max} target${max === 1 ? "" : "s"}`);
   return out;
@@ -95,6 +106,16 @@ export function healPath(list, heal, max) {
     s.target = structuredClone(target);
   }
   return { list: out, changes: healOnly(list, out, max) };
+}
+
+/**
+ * What the owner should read in a heal's change `{from, to}` → flags: `role changed` when one target names a role and
+ * the other finds its control another way (a label, a test id), `name changed` when the names it finds by differ.
+ */
+function flagsOf({ from, to }) {
+  const role = (t) => (isObj(t) && typeof t.role === "string" ? t.role : null);
+  const names = (t) => JSON.stringify(namesOf(t).sort());
+  return [...(role(from) !== role(to) ? ["role changed"] : []), ...(names(from) !== names(to) ? ["name changed"] : [])];
 }
 
 /** A run's verdict from runOnce's path mode → `{held}` | `{broke: {step, kind}}` | `{harness: reason}`. */
@@ -169,14 +190,15 @@ function lastPass(main, runId, id) {
  * `smoke heal <slot>.<generation>` → `{code, lines, masked}`: decision table §19.9 on a heal-mode explorer's return.
  *
  * Needs a cycle with an instance, the slot minted in it, a return holding `heal`, and this cycle's pass having
- * confirmed an action break of the journey (smoke run's `broke`, kind target-missing, target-ambiguous or
- * action-failed). Then:
+ * confirmed a locator break of the journey (smoke run's `broke`, kind target-missing or target-ambiguous; an
+ * action-failed break is refused: smoke run --slot writes it as a regression candidate). Then:
  * - `heal: []` with `no-control` → a bug: the path to step n − 1, then `visible` on the step's old target as the
  *   regression candidate's final, written as the lowest free slot's return (code 3); `blocked` or `harness` →
  *   the harness's (code 2). Nothing runs.
- * - a heal → the path with only those targets replaced (healPath; a refusal throws), run twice, after `up
+ * - a heal → the path with only those targets replaced (healPath; a refusal throws, another role included), run twice, after `up
  *   --fresh` then dirty: held both times → UI changed, a staged heal (its changes, the healed path, the old and
- *   new target of each step and the git evidence in its body; code 0; a digest the owner rejected before is `not
+ *   new target of each step and the git evidence in its body, `role changed` or `name changed` flagged there and
+ *   on a `needs owner` line, the entry then `needsOwner` (propose's needs-owner label); code 0; a digest the owner rejected before is `not
  *   staged` and records no `healed` event, still code 0, as admit); an expectation failed both times →
  *   behaviour changed, a regression candidate at it on the healed path (code 3); a harness run → code 2; else
  *   `did not hold`, nothing staged (code 3).
@@ -220,6 +242,9 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
   };
   const parsed = parse(suite.path);
   const pass = lastPass(main, lock.runId, id);
+  if (pass && pass.verdict === "broke" && pass.kind === "action-failed" && Number.isInteger(pass.step)) {
+    throw refused(`${id} broke at step ${pass.step} with action-failed: its control is there and unique, so it is a regression candidate (smoke run --slot), never a heal`);
+  }
   if (!pass || pass.verdict !== "broke" || !ACTION_BREAKS.includes(pass.kind) || !Number.isInteger(pass.step)) throw refused(`${id} has no confirmed action break in this cycle's pass (smoke run)`);
   const write = (n, repro, claim) => writeRegression(main, { runId: lock.runId, id, n, repro, live, accounts, claim });
 
@@ -261,14 +286,16 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
   const lines = [];
   const staged = changes.map((c) => ({ kind: "heal", id, step: c.step, from: c.from, to: c.to, evidence: evidence(main, { id, from: c.from, head, runner }), run: lock.runId }));
   for (const c of staged) lines.push(`step ${c.step}`, `  from: ${code(c.step)}`, `  to:   ${newCode(c.step)}`, ...c.evidence.map((e) => `  ${e}`));
+  const flags = changes.flatMap((c) => flagsOf(c).map((f) => `step ${c.step}: ${f}`));
   const body = [
     `### Heal: ${id}`,
     "",
+    ...(flags.length ? [`**Needs owner:** ${flags.join("; ")}. The control is found by another role or name: check it does what the old one did.`, ""] : []),
     `The path's unchanged expectations held twice (after up --fresh, then dirty) with these targets. Advisory evidence follows each step.`,
     "",
     ...codeBlock(lines),
   ];
-  const s = stage(main, { kind: "heal", id, run: lock.runId, changes: staged, path: healed, body });
+  const s = stage(main, { kind: "heal", id, run: lock.runId, changes: staged, path: healed, body, ...(flags.length ? { needsOwner: true } : {}) });
   if (s.staged) smokeEvent(main, lock.runId, { kind: "healed", id, steps: [...new Set(staged.map((c) => c.step))] });
   const d = s.digest.slice(0, 12);
   const f = fence(lines.join("\n"), { secrets });
@@ -278,6 +305,7 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
     lines: [
       `heal ${id}: UI changed: the healed path held twice (fresh, then dirty), every expectation unchanged`,
       s.staged ? `staged: heal ${id} (digest ${d})` : `heal ${id}: not staged (this change was rejected before; digest ${d})`,
+      ...(flags.length ? [`heal ${id}: needs owner (${flags.join("; ")})`] : []),
       ...f.body.split("\n"),
       ...(f.truncated ? [`truncated ${f.truncated} characters`] : []),
     ],

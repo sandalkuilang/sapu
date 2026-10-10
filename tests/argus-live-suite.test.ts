@@ -735,7 +735,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     git(p.main, "push", "-q", "origin", "main");
     const healed = SUITE_PATH("3");
     const heal = { kind: "heal", id: "checkout", step: 3, from: { label: "Quantity" }, to: { label: "Qty" }, evidence: ["git log: no commit removed it"], run: RUN };
-    stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [heal], body: ["### Heal: checkout", "", "held twice"], path: healed });
+    stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [heal], body: ["### Heal: checkout", "", "held twice"], path: healed, needsOwner: true });
     stage(p.main, { kind: "unquarantine", id: "checkout", run: "100", changes: [{ kind: "unquarantine", id: "checkout", evidence: ["3 clean cycles"], run: "100" }], body: ["### Leave quarantine: checkout"] });
     stage(p.main, { kind: "drop", id: "refund", run: "100", changes: [{ kind: "drop", id: "refund", evidence: ["quarantined for 5 cycles"], run: "100" }], body: ["### Drop: refund"] });
     stage(p.main, { kind: "quarantine", id: "wishlist", run: "100", changes: [{ kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }], body: ["### Quarantine: wishlist"], quarantine: { id: "wishlist", issue: null, since: "100" } });
@@ -753,6 +753,9 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     const log = show("changes.jsonl").stdout.trim().split("\n").map((l: string) => JSON.parse(l));
     expect(log).toEqual([heal, { kind: "unquarantine", id: "checkout", evidence: ["3 clean cycles"], run: "100" }, { kind: "drop", id: "refund", evidence: ["quarantined for 5 cycles"], run: "100" }, { kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }]);
     expect(body).toContain("## Details\n### Heal: checkout\n\nheld twice\n");
+    // A heal that moved its control's name or role asks for the owner: the pull request carries the needs-owner label too.
+    const create = p.calls.gh.find((a) => a[0] === "pr" && a[1] === "create")!;
+    expect(create.filter((x, i) => create[i - 1] === "--label")).toEqual(["sapu:agent-filed", "argus:needs-owner"]);
     const state = readState(p.main);
     expect(state.staged).toEqual([]);
     expect(Object.values(state.proposals).map((x: Obj) => [x.kind, x.id, x.outcome])).toEqual([["heal", "checkout", "open"], ["unquarantine", "checkout", "open"], ["drop", "refund", "open"], ["quarantine", "wishlist", "open"]]);

@@ -117,6 +117,17 @@ export function regressionList(list, n, context, last = null) {
   return out;
 }
 
+/** Path `list`'s step `n` as written, or null (a parallel group's member, or no such step). */
+function rawStep(list, n) {
+  let k = 0;
+  for (const item of isObj(list[0]) && Object.hasOwn(list[0], "context") ? list.slice(1) : list) {
+    const size = isObj(item) && Array.isArray(item.parallel) ? item.parallel.length : 1;
+    if (k + size >= n) return size === 1 ? item : null;
+    k += size;
+  }
+  return null;
+}
+
 /**
  * Writes `repro` (regressionList: journey `id`'s confirmed break at step `n`) as a slot's return (spec §19.9): slot
  * `slot`, or the run's lowest free one when null. run.json `slots[<slot>]` `{mode: "smoke", journey, generation: 1,
@@ -177,8 +188,8 @@ export function writeRegression(main, { runId, slot = null, id, repro, n, live, 
  * `seed` shuffles them (seededOrder; `seed: <n>` first): each once on the instance as the last left it
  * (`dirty`), and a break (exit 3) once more after `up --fresh`. Lines: `path <id>: held`, `path <id>:
  * broke step=<n> kind=<k>` (two of two), `path <id>: flaky step=<n> kind=<k>` (the fresh run held), `path
- * <id>: harness: <reason>`; with `slot`, the first `expect-failed` break also becomes that slot's return
- * (writeRegression; a locator break waits for a heal); then `smoke run: <h> held, <b> broke, <f> flaky, <x>
+ * <id>: harness: <reason>`; with `slot`, the first `expect-failed` or `action-failed` break also becomes that slot's
+ * return (writeRegression; an action-failed one ends in `enabled` on the step's target; a locator break waits for a heal); then `smoke run: <h> held, <b> broke, <f> flaky, <x>
  * harness`. A path in the suite's quarantine.json runs twice, one after the other (`quarantined <id>: run twice`):
  * smoke ci counts its quarantine's cycle clean only when the pass held it twice. Each verdict is appended to
  * `<run>/smoke/pass.jsonl` (0600) `{id, verdict, step, kind, seed}`.
@@ -254,11 +265,15 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
     count[verdict] += 1;
     lines.push(verdict === "held" ? `path ${id}: held` : verdict === "harness" ? `path ${id}: harness: ${reason}` : `path ${id}: ${verdict} step=${at.step} kind=${at.kind}`);
     records.push({ id, verdict, step: at ? at.step : null, kind: at ? at.kind : null, seed: used });
-    if (slot !== null && verdict === "broke" && at.kind === "expect-failed") {
+    if (slot !== null && verdict === "broke" && (at.kind === "expect-failed" || at.kind === "action-failed")) {
+      // action-failed: the control is there and unique, but acting on it failed (disabled, covered): proven with `enabled` on it.
+      const raw = at.kind === "action-failed" ? rawStep(p.path, at.step) : null;
+      const last = isObj(raw) && isObj(raw.target) ? { as: raw.as, expect: "enabled", target: raw.target } : null;
       if (written) lines.push(`regression ${id}: step ${at.step} not written (slot ${slot} holds ${written})`);
+      else if (at.kind === "action-failed" && !last) lines.push(`regression ${id}: step ${at.step} not written (step ${at.step} has no target of its own to prove)`);
       else {
-        const claim = `smoke path ${id}: an expectation the path held at admission (step ${at.step}) failed twice, the second time after up --fresh`;
-        lines.push(writeRegression(main, { runId: lock.runId, slot, id, repro: regressionList(p.path, at.step, p.parsed.context), n: at.step, live, accounts, claim, result }));
+        const claim = at.kind === "action-failed" ? `smoke path ${id}: step ${at.step}'s control is there and unique, but its action failed twice, the second time after up --fresh` : `smoke path ${id}: an expectation the path held at admission (step ${at.step}) failed twice, the second time after up --fresh`;
+        lines.push(writeRegression(main, { runId: lock.runId, slot, id, repro: regressionList(p.path, at.step, p.parsed.context, last), n: at.step, live, accounts, claim, result }));
         if (lines.at(-1).includes(" written as ")) written = id;
       }
     }

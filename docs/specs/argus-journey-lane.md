@@ -2252,7 +2252,9 @@ the best-scoring locator and carry on; Playwright's healer may patch waits and d
 | The same on a pull request's head, never flaky on the base | `flaky-new` | a comment on that pull request; never quarantined (it may be a race the change brought) [google-flaky] |
 | CI: an action step failed on every attempt; the lane's pass holds on Chrome | `ci-only` (`browser-only <project>` when Chromium passed in CI) | needs-owner issue with the run's link |
 | An action step's target matches nothing or several, twice on fresh and dirty instances | locator break | heal-mode explorer |
-| The explorer gives new targets; the healed path holds twice with every expectation unchanged | **UI changed** | heal proposal (§19.8) |
+| An action step's target matches one control, but the action times out or errors, twice (`action-failed`: a disabled or covered control) | **bug** | regression candidate: the path to step n − 1, then `enabled` on the step's target as its `final` (`smoke run --slot`); `smoke heal` refuses it |
+| The explorer gives new targets of the same role; the healed path holds twice with every expectation unchanged | **UI changed** | heal proposal (§19.8); a target found by another way than its role, or by another name, is flagged `role changed` or `name changed` in its body and the pull request gets the needs-owner label |
+| The explorer gives a target of another role (a button that became a link) | refused | a heal never changes the control's role |
 | The explorer finds no control for the step's goal (a heal cannot add a step) | **bug** | regression candidate: the path to step n − 1, then `visible` on the old target as its `final` |
 | The healed path fails an expectation | **behaviour changed** | regression candidate at that expectation |
 | An expectation fails twice | **behaviour changed** | regression candidate |
