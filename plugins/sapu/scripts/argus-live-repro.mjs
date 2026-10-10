@@ -17,6 +17,7 @@ import { upFresh } from "./argus-live-instance.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { checkUrl } from "./argus-live-origin.mjs";
+import { layoutSkips } from "./argus-live-pw.mjs";
 import { run, runAsync, sleep, tempBeside } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { REF } from "./argus-live-scrub.mjs";
@@ -26,7 +27,7 @@ import { CLICKS, parseRepro, provingExpect, stepCode, substitute, suiteAccounts 
 import { targetCode } from "./argus-live-targets.mjs";
 
 /** What a failed expectation may say it observed (decision 8): enums and integers only. */
-const OBSERVED = /^(absent|hidden|visible|disabled|differs|errors:\d+|count:\d+)$/;
+const OBSERVED = /^(absent|hidden|visible|disabled|differs|errors:\d+|count:\d+|violations:\d+)$/;
 /** The expectation kinds the browser judges (the others run through runHook, or read the error buffer). */
 const HOOK_EXPECTS = ["fact-equals", "mail"];
 
@@ -303,7 +304,9 @@ export async function runOnce(main, ref, { list = null, i = null, path: smoke = 
           u.d.state.drained = false;
           save(u);
           const t0 = Date.now();
-          const ans = await u.d.code(stepCode(sub, { settleMs, at, runOrigins }));
+          // A layout expectation leaves out the journey's allowed and adopted rows, as the suite and `pw layout` do.
+          const skip = sub.expect === "layout" ? layoutSkips(main, slotRec.journey) : [];
+          const ans = await u.d.code(stepCode(sub, { settleMs, at, runOrigins, skip }));
           keepDrain(main, runId, u.d.name, ans && ans.drain, CAP_BYTES);
           u.d.state.drained = true;
           save(u);
@@ -374,7 +377,7 @@ export async function runOnce(main, ref, { list = null, i = null, path: smoke = 
         };
         const finalFence = (s, ans) => {
           const sub = ans.sub ?? substitute(s, vars);
-          const expected = { kind: s.expect, ...(sub.target ? { target: targetCode(sub.target) } : {}), ...(sub.value !== undefined ? { value: sub.value } : {}), ...(sub.marker !== undefined ? { marker: sub.marker, field: sub.field } : {}), ...(sub.to !== undefined ? { to: sub.to, contains: sub.contains } : {}) };
+          const expected = { kind: s.expect, ...(sub.check !== undefined ? { check: sub.check } : {}), ...(sub.target ? { target: targetCode(sub.target) } : {}), ...(sub.value !== undefined ? { value: sub.value } : {}), ...(sub.marker !== undefined ? { marker: sub.marker, field: sub.field } : {}), ...(sub.to !== undefined ? { to: sub.to, contains: sub.contains } : {}) };
           const { body, truncated } = fence(`expected: ${JSON.stringify(expected)}\nobserved: ${JSON.stringify({ observed: ans.observed, shown: ans.shown ?? null })}`, { secrets });
           emit(body);
           if (truncated) emit(`truncated ${truncated} characters`);

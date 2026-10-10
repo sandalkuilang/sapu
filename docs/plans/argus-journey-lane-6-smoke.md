@@ -802,9 +802,9 @@ quoted. The research doc lists the URLs [wcag22] [u-2.1.1] [u-2.1.2] [u-2.4.3] [
 - the `layout` expectation in the runner;
 - `pw <token> <role>.<k> layout [<check>]`, with its answer fenced;
 - `layout` among `viewport-locale`'s final kinds.
-- [ ] Failing tests in the pw and repro test files.
-- [ ] Run → FAIL; implement; run → PASS.
-- [ ] **Commit** `feat(sapu): the explorer's layout oracle`.
+- [x] Failing tests in the pw and repro test files.
+- [x] Run → FAIL; implement; run → PASS.
+- [x] **Commit** `feat(sapu): the explorer's layout oracle`.
 
 ### Z2: engine text
 **Model: opus-high** (heal and seed briefs read untrusted text).
@@ -1985,3 +1985,48 @@ suite, each answering the refusal the docs quote (`smoke propose --dry-run` answ
    say so, and `live.md`/`smoke.md` should too.
 7. **Z1** must add the explorer's `layout` command and expectation before the docs can name them (spec §19.15); until then
    the upgrade note lists only `slot <n> --map --seed` and `pw <token> source` among the explorer's new commands.
+
+### Lane Z1 — the exploratory layout oracle
+
+Built in `-steps.mjs`, `-pw.mjs` and `-repro.mjs`; tests in `tests/argus-live-findings.test.ts` (the DSL, the template),
+`tests/argus-live-pw.test.ts` (the verb, with the CLI shim) and `tests/argus-live-repro.test.ts` (both on a real Chrome and the
+fixture app, whose header Account button is a real target-size violation).
+
+- **`layout` expectation.** `{as, expect: "layout", check, target?, final?}`: `check` is one of `LAYOUT_KINDS` (`page-scroll`,
+  `clipped`, `covered`, `target-size`). It holds when the check finds no violation, polled every 200 ms up to `settle_ms` as any
+  expectation is; `page-scroll` takes no target (it names no element); a path holds none (the suite runs the oracle after every
+  step, and the regression oracle's final kinds do not list it); a `system` step cannot be one. `FINAL_KINDS["viewport-locale"]`
+  is `visible`, `enabled` or `layout`.
+- **How it runs.** `stepCode` embeds `pageExpression("layout", {only: [check]})` as a JSON string (`P.expr`) and runs it with
+  `page.evaluate`: the same function the generated suite runs, through the same `run-code` route. The page's answer is only
+  compared with data (`P.check`, `P.skip`), never evaluated.
+- **Target.** With a target, a violation counts when the name segment of its key (`<role>|<name>|<tag>`) equals the target's name
+  (its ARIA snapshot's name, else its text; digit runs `#`, at most 60 characters) or the target's name contains it (a
+  violation inside the target). A target the page lacks is `error` (the run answers `HARNESS: … could not be judged`, never
+  REPRODUCED); several is `ambiguous`.
+- **Answer.** A failed layout expectation observes `violations:<k>` (the repro runner's OBSERVED enum gains it) and shows the
+  keys (at most 20); the fenced `expected` line names the check. The shown digest is over keys only, so two runs that find the
+  same violations agree for `minimize`.
+- **`pw <token> <role>.<k> layout [<check>]`.** Not a CLI command: the wrapper runs the oracle's expression through `d.code`
+  (a `run-code` template of its own; the explorer picks only one of the four checks, refused by name otherwise) and prints, in
+  the PAGE fence, `layout [<check>]: <n> violations` and one `<check> <key>: <detail>` line each (forty at most, the rest
+  counted), `no violations`, or `unavailable (…ask again)` when the page changed under the call. It is counted, loop-ruled
+  and observed like every other command; a gone browser reopens as for any command.
+- **Allow and known rows.** The journey is the slot's (`slotRec.journey`): `journeys.<id>.allow` of `.argus/smoke.json` and the
+  adopted `<smoke dir>/known/<id>.json` rows are left out, in `pw layout` and in the expectation alike (`layoutSkips`, exported
+  by `-pw`, which `-repro` imports; `-repro` already reached `-pw` through `-instance`). An invalid `smoke.json` or known file is
+  `failed: <file> is not valid …`, no text of it.
+- **Deviations.** (1) The DAG test's list of what `-steps` may import gains `argus-live-layout` (a leaf; the DSL names the
+  checks). (2) `-redtest.mjs` (not on Z1's list) refuses a layout expectation: `repro --test` would otherwise have written
+  `expect(errors_<account>)`, the no-error branch's code, for it; a layout finding has no generated test. (3) No change in
+  `-return.mjs`: a return's repro list is not parsed there.
+
+**Needs coordinator.**
+1. Z2: `agents/ui-explorer.md` documents `pw … layout [<check>]`, the `layout` expectation (`{check}`, optional `target`; the
+   `page-scroll` check takes none) and the `viewport-locale` row's kinds (`visible`, `enabled` or `layout`); a layout finding's
+   repro ends `{expect: "layout", check, final: "viewport-locale"}`, and `repro --test` has no RED test for it.
+   Until Z2 changes the `viewport-locale` row of that brief's "The final step" table to name `layout` beside `visible` and
+   `enabled`, `tests/engine.test.ts` ("the brief states each oracle's final as the runner checks it") is red by design: the
+   test reads `FINAL_KINDS` and wants each kind in backticks in the row.
+2. Z3: spec §19.15's sentence is as built; §19.1's table row "Responsive layout oracle" needs no change. Mention that a layout
+   expectation is refused in a path, and that `pw layout` and the expectation leave out the journey's `allow` and known rows.
