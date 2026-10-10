@@ -380,7 +380,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
       count.open += 1;
     } else if (i && (i.stateReason === "NOT_PLANNED" || i.stateReason === "DUPLICATE")) {
       put(g, "closed", i.url);
-      lines.push(`closed: ${g.key} ${i.url} (closed as not planned: the owner's ruling; stage taste accept ${g.rule.id} ${g.screen} only on their word)`);
+      lines.push(`closed: ${g.key} ${i.url} (closed as ${i.stateReason === "DUPLICATE" ? "a duplicate" : "not planned"}: the owner's ruling; stage taste accept ${g.rule.id} ${g.screen} only on their word)`);
       count.closed += 1;
     } else {
       g.earlier = i ? i.url : null;
