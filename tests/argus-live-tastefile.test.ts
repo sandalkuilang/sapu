@@ -401,3 +401,83 @@ describe("argus-live taste accept — the owner's ruling, staged on their word",
     expect(statSync(join(main, ".argus/taste.json")).isFile()).toBe(true);
   }, 30_000);
 });
+
+describe("argus-live report — the taste and usability scorecard first (decision 20)", () => {
+  // @ts-expect-error — plain ESM script without types
+  const load = () => import("../plugins/sapu/scripts/argus-live-report.mjs");
+  const lines = (t: Cycle) => readFileSync(join(t.main, ".argus/reports", `${t.runId}.md`), "utf8").split("\n");
+  const section = (l: string[], title: string) => {
+    const at = l.indexOf(`## ${title}`);
+    const end = l.findIndex((x, i) => i > at && x.startsWith("## "));
+    return l.slice(at + 2, end < 0 ? undefined : end).filter((x) => x !== "");
+  };
+  const PASS = { q1: "yes, the handoff signal held", q2: "yes, on the landing page in 1 click", q3: "yes, named Pay", q4: "yes, Paid shown" };
+
+  it("opens with ## Taste and usability: screens, rows by family and state, efficiency, the walkthrough, the Curator, the bar", async () => {
+    const { report } = await load();
+    const t = cycle();
+    const link = ["https:", "", "evil.example", "x"].join("/");
+    judged(
+      t,
+      [
+        row(1),
+        row(2, { rule: "copy.broken", class: "implicit", key: `td ${t.s.cookie} ${link}`, measured: 1, expected: 0, witnesses: [] }),
+        row(3, { rule: "scale.radii", confirmed: false }),
+        row(4, { journey: "refund", rule: "states.recovery", class: "implicit", measured: 1, expected: 0, witnesses: [] }),
+      ],
+      { "order-to-cash": { screens: 3, efficiency: EFFICIENCY }, refund: { screens: [ORDER, LIST], efficiency: null } },
+    );
+    t.put("taste/curator.json", { verdicts: [{ row: "t1", verdict: "confirm", reason: `see ${link}` }, { row: "t2", verdict: "reject", reason: t.s.cookie }, { row: "t9", verdict: "polish", reason: "x" }], leads: [] });
+    writeTasteState(t.main, {
+      version: 1,
+      journeys: {
+        "order-to-cash": {
+          judged: t.runId,
+          best: null,
+          rows: {
+            [tk("scale.spacing", LIST)]: { rule: "scale.spacing", screen: LIST, class: "derived", severity: "S4", state: "queued", issue: null, first: t.runId, last: t.runId },
+            [tk("copy.broken", LIST)]: { rule: "copy.broken", screen: LIST, class: "implicit", severity: "S3", state: "accepted", issue: null, first: t.runId, last: t.runId },
+          },
+        },
+      },
+    });
+    t.put("returns/2.1.json", { journey: "order-to-cash", status: "done", steps: [{}], coverage: {}, candidates: [], harness_events: [], cw: [{ step: "pay", ...PASS }, { step: "ship", ...PASS, q2: "fail: reached by a typed URL" }, { step: "close", ...PASS }] });
+    expect(report(t.main, { run: t.runId }, { env: ENV }).code).toBe(0);
+    const l = lines(t);
+    expect(l.filter((x) => x.startsWith("## "))[0]).toBe("## Taste and usability");
+    expect(section(l, "Taste and usability")).toEqual([
+      "- taste-bar 1; confirmed: measured two of two this run; queued and accepted: the journey's standing rows in .argus/taste-state.json; satisfaction is never measured, discoverability only through the walkthrough",
+      "- journey order-to-cash: screens 3; efficiency actions 14 (best 9), klm_s 31.5, typed 42, fitts_bits 18.25, modals 1, wait_ms 2300, recovery 0; walkthrough 2 of 3 step(s) pass all four questions; Curator confirm 1, reject 1, polish 0",
+      "  - copy: confirmed 1, queued 0, accepted 1",
+      "  - scale: confirmed 1, queued 1, accepted 0",
+      "- journey refund: screens 2; efficiency not measured; walkthrough none recorded; Curator confirm 0, reject 0, polish 0",
+      "  - states: confirmed 1, queued 0, accepted 0",
+    ]);
+    // No page text and no Curator reason reaches the report: the planted secret and link are nowhere in it.
+    const text = l.join("\n");
+    expect(text).not.toContain(t.s.cookie.slice(0, 12));
+    expect(text).not.toContain("evil.example");
+    // The functional sections follow, as before.
+    expect(l.filter((x) => x.startsWith("## ")).slice(1, 3)).toEqual(["## Journeys walked", "## Candidates"]);
+  });
+
+  it("a run the taste pass never touched keeps the report as it was; one not judged says so; a record out of shape is named", async () => {
+    const { report } = await load();
+    const t = cycle();
+    report(t.main, { run: t.runId }, { env: ENV });
+    expect(lines(t).filter((x) => x.startsWith("## "))[0]).toBe("## Journeys walked");
+    t.put("taste/1/screens.jsonl", "");
+    report(t.main, { run: t.runId }, { env: ENV });
+    expect(section(lines(t), "Taste and usability")).toEqual(["- taste-bar 1 (the plugin's); not judged: the run has no taste/judge.json"]);
+    t.put("taste/judge.json", { version: 2 });
+    t.put("taste/curator.json", "{");
+    report(t.main, { run: t.runId }, { env: ENV });
+    expect(section(lines(t), "Taste and usability")).toEqual(["- taste-bar 1 (the plugin's); not judged: taste/judge.json is out of shape (Records not read)"]);
+    expect(section(lines(t), "Records not read")).toEqual(expect.arrayContaining(["- taste/judge.json"]));
+    judged(t, [row(1)]);
+    writeFileSync(join(t.main, ".argus/taste-state.json"), "[]");
+    report(t.main, { run: t.runId }, { env: ENV });
+    expect(section(lines(t), "Records not read")).toEqual(expect.arrayContaining(["- taste/curator.json", "- .argus/taste-state.json"]));
+    expect(section(lines(t), "Taste and usability")[1]).toBe("- journey order-to-cash: screens 3; efficiency actions 14 (best 9), klm_s 31.5, typed 42, fitts_bits 18.25, modals 1, wait_ms 2300, recovery 0; walkthrough none recorded; Curator confirm 0, reject 0, polish 0");
+  });
+});
