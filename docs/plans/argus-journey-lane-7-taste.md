@@ -1032,3 +1032,96 @@ its hook off). `-ease.mjs` is 746 lines of its 750 cap.
    instance header are lane 0's).
 6. *Security review (architect).* PAGE_INIT now wraps fetch, XHR and attachShadow in every lane session, the
    explorer's included; request body field names and clicked controls' names (page text) reach the recorded screens.
+
+### Lane J — J1, J2, J3
+
+Commits, in order: J1 recording, J2 judge and confirm, J3 SELECT. Line counts at the end of the lane: `-session` 607,
+`-tastejudge` 576, `-map` 511. Every test is in `tests/argus-live-tastejudge.test.ts` (lane 0's two stub pins replaced);
+the probes are stood in for there by minimal self-contained sources, so the file pins the pass, not the probes' rules.
+
+**J1, recording.** The observation's own run-code records the screen (`observeCode`): the `observe` stage first, then
+`RECORDER`, bounded by time (`2 × settle_ms`, 5 to 30 s) and by answer size (400 KB), caught whole, so recording never
+fails an observation nor loses its drain (the drain is kept before a shot's verdict is written). Nothing records in
+slot `r`, `up` or a map slot, during a perf pass or a confirmation, or once the run's taste time (`<run>/taste/spent.jsonl`)
+reaches `TASTE_BUDGET_MS`; then the observation is the `observe` stage byte for byte. A screen is recorded when the
+state hash (URL and ARIA snapshot, as the loop rule hashes it) changed. One run-code a screen: the action's taste
+events drained (TASTE_DRAIN), the viewport shot of a screen key not yet shot this run (0600, its scrub verdict beside
+it, the verdict text read by the `shot` stage in the same call, a text past 150 000 characters unread), taken before
+anything else touches the page; the census (`String(censusOf)`, T1's: own scheme, the other one, reduced motion, the
+media restored as read); `EASE_SOURCE({})`; the rows of `main`'s largest table; on a `dual` page the other scheme's
+shot once its transitions settled (at most 1 s), the explicit media restored; the events those switches caused drained
+and dropped. A failure is a line of `<run>/taste/<slot>/harness.jsonl` `{t, account, why}`, never the explorer's
+output, which is byte for byte the same with and without recording (tested on `pw`'s own output).
+- *The recorded screen* (`<run>/taste/<slot>/screens.jsonl`, 0600), what the judge hands both probes' `rulesFor`: `{v: 1,
+  t, journey, slot, account, key, route, width, theme, rows, themed, taste, ease, events, dropped, shots: [{theme, name,
+  key}], faults}`; `taste` censusOf's `{media, light, dark, reduce, themes}` (T1's rulesFor reads `screen.taste`),
+  `themed` its `themes === "dual"`, `ease` EASE_SOURCE's answer, `events` the drained buffer (a record tasteEventFault
+  refuses dropped and counted). The judge adds `cycle` (the run's other recorded screens) for the cross-screen rules.
+- *The route template* (`routeTemplate`): the map's most literal route, else each id-like segment written `:id` (digits,
+  a UUID, 16 or more hex digits, a run of three digits, a digit beside `-`, `_`, `.`, `:` or `~` as in `ORD-1`, or 20 or
+  more characters mixing letters and digits). Probed live: the fixture's order ids are `ORD-1`.
+- Probed live in the CLI's `run-code`: `page.screenshot({path})` writes outside the slot's `out/` (mode 0644, made 0600
+  after), `crypto.subtle`, `TextEncoder` and `Buffer` exist, `require` does not.
+
+**J2, judge and confirm.**
+- *Witnesses.* A rule with a `peer` threshold is a row only when its archetype has three recorded screens or more this
+  cycle (the judged one included) and its value is beyond `max(best × ratio, best + plus)` of the best other one; where
+  the archetype's band is a witness (5 sites, 15 pages, an archetype not inferred) also beyond the band's percentile
+  (`expected` the larger). A `bar` row needs the band agreeing (above p90 for a `max` rule, under p10 for `min`, outside
+  p10 to p90 for `range`) and an internal witness: a peer screen of its archetype that holds the rule (`value: "holds"`)
+  or the owner's frame for `motion.duration` (outside the frame's durations). No tokens witness: T1's `scale.off-scale`
+  measures the tokens. `implicit` and `derived` rows stand on their measurement (`witnesses: []`). A thin or inferred
+  band is counted in `bands shown only`, a bar finding without both witnesses in `not rows`. Information rules and the
+  owner's `off` rules are never rows. A dark-parity row (`colour.dark-*` on a `dual` page) names the dark screen key.
+- *Efficiency.* The best known path is the suite's admitted path for the journey (`<dir>/journeys/<id>.json`, read here:
+  the DAG test forbids `-tastejudge` reaching `-smoke`), taken when there is no best or it is shorter (a held path only;
+  the explorer's path never replaces it). An explorer path at the rule's ratio of the best's actions, or its `plus_s`
+  more KLM seconds (each at equality), is an `efficiency.*` row: screen the journey's first recorded screen, key the
+  journey id, `cost` the extra seconds. `wait_ms` is each recorded input's time to the first change after it, summed.
+- *Confirmation.* `taste confirm` replays through `runOnce` in path mode (`id: taste-<row>`, so its records lie under
+  `<run>/smoke/taste-<row>/`): the journey's explorer path for a screen row, the best path (by its sha, in the suite) for
+  an efficiency row (confirmed only when it breaks: exit 3; while it holds, the explorer's detour). A screen row goes
+  through `confirmSink`, which the slot `r` driver runs every step through (`confirming`, as perf's sink): `states.error`
+  arms the routed fault right after the hook, before any navigation (the first same-origin JSON GET at the row's route
+  answered 500); at the first step after which the page is at the row's route template and width, once the network
+  settled, the row is measured again. Per the coordinator's seam decision (T1), `MEDIA_RULES` (`colour.dark-contrast`,
+  `colour.dark-border`, `colour.dark-surface`, `motion.reduced`, pinned to the bar by a test) are measured by T1's
+  `censusOf` and `rulesFor` sources in that run-code (they switch the media, transitions off, and restore it
+  explicitly); any other rule by its probe's `ruleExpression(rule, {frame})`. A peer-count row is confirmed only beyond
+  its `expected` again. A cross-screen (`consistent.*`) row is not replayed: the next cycle's judge reporting it again
+  confirms it. A confirmed row is kept in taste-state.json, `queued`, severity S3 for `implicit`, an efficiency row or a
+  cost of 10 s or more, else S4 (F's filing may raise it). Proved end to end on the fixture app: a fresh instance, the
+  fault re-measures a `states.error` row on the order page, and its unfaulted twin is not confirmed.
+
+**J3, SELECT.** `score(j, {…, taste = 1})`; `selectJourneys` passes `tasteFactor(state, id, accept)`. A broken taste.json
+refuses `select`, a broken taste-state.json fails it (never guessed).
+
+**Deviations.**
+- `tasteJudge(main, {run}, {now})` and `tasteConfirm(main, ref, {once, now})` take an optional last options argument (the
+  test seams, as `runOnce` has); the CLI's calls are unchanged.
+- The recorder no longer runs its own dark and reduced-motion census: T1's `censusOf` does both (its `themes` decides
+  the dark shot).
+- The judge's line `harness: a probe's rules failed <n> times` counts a probe module's `rulesFor` throwing (the stubs, until
+  T1 and T2 merge, say so on every screen).
+- Not built: the Curator's leads measured first (Z1's `validateCurator` and their file are not there yet).
+
+**Needs coordinator.**
+1. *`tests/argus-live-findings.test.ts`, the select describe* (lane 0's): every journey there is never judged, so its
+   score is ×1.5 (decision 18). Seven tests go red; the exact change, checked green on a copy: line 2533 `[["b", 150],
+   ["a", 90]]`; 2534 `[["a", 180], ["b", 150]]`; 2540 `score: 150`; 2541 `75`, `60`, `45`; 2546 `75`, `60`; 2547 `45`, `15`;
+   2556 `score 4.5` twice; 2563 `score: 4.5`; 2564 `score: 3`; 2567 `4.5`, `3`; 2573 `score 1.5` twice; 2580 `score 3`,
+   `score 6`, `displaced b score 4.5`; 2582 `score 9`, `score 6`, `score 3`; 2598 `score 1.5`. The `score()` unit lines
+   stay (its `taste` defaults to 1).
+2. *T2's `rulesFor(screen, bar, cfg)`* receives the recorded screen above: `screen.ease` is `EASE_SOURCE({})`'s answer,
+   `screen.events` the drained buffer, `screen.cycle` the run's other recorded screens (for `consistent.*`). T2's
+   `pathCost(steps, geometry)` gets the path as the return holds it and `geometry` `[]` (no replay geometry is recorded).
+3. *The owner's tokens* (`live.json` `tokens`) are not resolved to px for the lane: the judge passes loadTaste's value
+   (no `tokens`) to `rulesFor`, the confirmation `{frame}` to `ruleExpression`. A resolver (as `a11yTokens`) is needed for
+   the tokens to outrank the frame in the lane, as they do in the suite.
+4. *`-scrub.mjs` `attachVerdict`* admits only a PNG in a slot's `out/`: the taste shots (`<run>/taste/shots/<name>.png`,
+   each with its verdict beside it) cannot be attached by F's filing until it admits that directory.
+5. *CI*: `tests/argus-live-tastejudge.test.ts` drives Chrome (the recorder, a recording through the CLI, a replay on a
+   fresh fixture instance: about two minutes under load) and lands in the `rest` job; give it a `files:` line if `rest`
+   is near its bound.
+6. *Engine text (Z2)*: SELECT's printed scores can now be fractional (`score 4.5`); `taste confirm` refuses a
+   `consistent.*` row (the next cycle's judge confirms it) and prints the replay's own `HARNESS:` line when it failed.
