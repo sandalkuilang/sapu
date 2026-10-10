@@ -49,11 +49,15 @@ describe("the taste bar (plugins/sapu/data/taste-bar.json)", () => {
     expect(Object.isFrozen(loadBar())).toBe(true);
   });
 
-  it("is version 1 with no archetype band yet (calibration fills them) and no probe digest", () => {
+  it("is version 1, calibrated: a probe digest, and of its archetypes only docs reaches a witness's 5 sites and 15 pages", () => {
     const bar = loadBar();
     expect(bar.version).toBe(1);
-    expect(bar.archetypes).toEqual({});
-    expect(bar.probe).toBeNull();
+    expect(bar.probe).toMatch(/^[0-9a-f]{64}$/);
+    expect(Object.keys(bar.archetypes).sort()).toEqual(["app", "data", "docs", "form", "marketing"]);
+    const witness = Object.entries(bar.archetypes)
+      .filter(([, bands]) => Object.values(bands as Obj).every((b: Obj) => b.sites >= 5 && b.n >= 15))
+      .map(([a]) => a);
+    expect(witness).toEqual(["docs"]);
   });
 
   it("every rule and frame cites an id of the phase 7 research, and every source is cited", () => {
