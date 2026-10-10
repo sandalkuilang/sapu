@@ -2033,3 +2033,53 @@ fixture app, whose header Account button is a real target-size violation).
    test reads `FINAL_KINDS` and wants each kind in backticks in the row.
 2. Z3: spec §19.15's sentence is as built; §19.1's table row "Responsive layout oracle" needs no change. Mention that a layout
    expectation is refused in a path, and that `pw layout` and the expectation leave out the journey's `allow` and known rows.
+
+### Lane Z4 — the known issues, fixed before the phase-end review
+
+Z2's and Z3's "Needs coordinator" items 1 to 5 (Z2) and 1, 4 and 5 (Z3) are settled here.
+
+- **`smoke heal` and a rejected digest.** It reads `stage()`'s `staged` flag as `smoke admit` and `smoke ci` do: a heal whose
+  digest the owner rejected prints `heal <id>: not staged (this change was rejected before; digest <12 hex>)` in place of
+  `staged: heal …`, records no `healed` event, and exits 0, as admit does (the fence with the old and new targets still
+  follows, for the regression issue).
+- **The retire flow (spec §19.9). Decision: an owner command, `smoke retire <id>`, not a read of the issue's state.** The
+  regression issue is the orchestrator's, filed through `scrub --create`, and nothing records its number against the journey:
+  only its title would tie the two, and a title match is no proof of the owner's ruling. A command the guard already refuses
+  to every subagent is smaller and exact, and it is the pattern `smoke perf --rebaseline` set (run only on the owner's word).
+  - `refreshOutcomes` moved from -propose into -suite; `smoke plan` and `smoke ci` call it too (one `gh pr view` per open
+    proposal, none when there is none). A closed heal marks the journey `journeys.<id>.regression = {url, run}` (the run its
+    `argus/smoke-<run>` branch names); a closed retire clears `journeys.<id>.retire`.
+  - `settleRegressions(main, state, {dir, members})` (-suite; smoke plan and smoke ci): a marked suite member is pending —
+    smoke plan's journey line `pending-regression <id> <url>` (after `pending`, before `quarantined`, `heal` and `keep`), a line
+    of its own in smoke ci — and a quarantine is staged for it, `{id, issue: null, since: <the mark's run>}` (so its digest is
+    stable), unless quarantine.json holds it or it is staged or proposed already: `quarantine <id>: staged until the owner
+    decides (digest <12 hex>)`, or `… not staged (rejected before; …)`. A last pass that holds the journey clears the mark and
+    drops that staged quarantine (the quarantine lifecycle ends a merged one after three clean cycles, or proposes its drop
+    after five, as for a flake). A journey no longer in the suite loses `retire` and its mark, so a merged retire lists it
+    `capture` and a re-admitted path is `keep`, never `drop (retired)` again.
+  - `smoke retire <id>` (-suite, the CLI's `smoke retire <id>`, behind the trace gate): refused for a journey the suite lacks
+    (`refused: smoke retire: the suite has no path <id>`), a bad id, or no lane run (`… no lane run names the change (run a
+    journey cycle first)`). It stages a `retire` named after the newest run, in place of every other change staged for the
+    journey, and sets `retire: true` (the mark goes): `retire <id>: staged (digest …); smoke propose removes it from the
+    suite, then smoke plan lists it capture`. A digest the owner rejected: `retire <id>: not staged (this change was rejected
+    before; …)`, nothing written. Exit 0 both ways.
+  - `smoke propose` checks only add and heal entries' runs' ledgers (their paths carry page values); every other kind falls
+    back to the branch's run, as smoke ci's entries did. A retire named after a run a later `up` dropped would otherwise
+    refuse for ever.
+  - smoke.md (budget 12,800 → 13,600): step 1 names `pending-regression` and the `quarantine` line; Filing files it once, the
+    title holding `smoke-regression:<id>`, with `bug`, `regression`, the needs-owner label, S2 on a money journey else S3;
+    "Retire" runs `live smoke retire <id>` only on the owner's word; Breaks gains the closed heal's row.
+  - Tests: tests/argus-live-suite.test.ts (plan, the fix, retire and its refusals, a closed retire, propose of a retire with no
+    ledger), tests/argus-live-ci.test.ts (smoke ci's line), tests/argus-live-smoke.test.ts (dispatch, usage, trace gate,
+    malformed lines), tests/sapu-guard.test.ts (refused to a subagent), tests/engine.test.ts (smoke.md's words).
+- **Labels.** Spec §19.9 and §19.11, and lane D's note above, use argus's labels: `ux` (S3) for a check's issue, `performance`
+  for a perf issue. No code named `perf` or `a11y` as a label; `a11y` stays a Playwright project name.
+- **Spec §19** is headed "(built)", status "built (version 2.10.0)"; nothing in it was cut, so no item keeps a "not built"
+  marker. The overview and the phase file table no longer say "not built yet", and `-baseline.mjs` joins the module list.
+  Open risk 8 is answered (C3.2's probe).
+- **Docs.** usage.md's day-to-day table gains `/journey seed --issue <n>` and `/journey seed --doc <file>:<a>-<b>`, and
+  agents.md's /journey card names both; usage.md, agents.md, security.md and CONTRACT.md name the closed-heal flow and `smoke
+  retire`. `live.md` is unchanged (still at its 14,500 budget).
+- **Version 2.10.0** (decision 17): plugin.json and the two workflow metas, as the 2.9.0 commit did; the upgrade notes were
+  already under "before 2.10.0", and the roadmap names both releases. Phase 6 ships as a pull request of its own on top of the
+  held 2.9.0 one.
