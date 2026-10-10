@@ -10,7 +10,7 @@ import { dirname, extname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { ARIA_EXPECT, CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
+import { ARIA_EXPECT, CHECKS, screensOf } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
 // @ts-expect-error — plain ESM script without types
 import { generateSuite } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -315,6 +315,10 @@ describe("argus-live a11y — ARIA snapshots (partial matching, one baseline per
     expect(text).toContain('test.info().project.name === "a11y"');
     expect(text).toContain('toMatchAriaSnapshot({ name: "3.aria.yml", timeout: SETTLE })');
     expect(text).toContain("a11yAriaRoot(buyer1)");
+  });
+
+  it("screensOf is the one list of screens, for the lanes that photograph or snapshot a screen too", () => {
+    expect([...screensOf({ id: "shop", steps: parse(PATH), smoke: {} })]).toEqual([3, 5, 7]);
   });
 
   it("smoke.json's screens for the journey replace the derived ones", () => {

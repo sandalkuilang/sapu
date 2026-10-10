@@ -549,8 +549,8 @@ const report = (call, ctx) => `a11y.a11yReport(expect, test.info(), await ${call
 const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s, ctx)).map((s) => line(s, pageVar(s.as, ctx.steps, ctx), ctx)));
 const reported = (call) => (s, p, ctx) => report(call(s, p), ctx);
 
-/** The steps whose end is a screen: smoke.json's `screens` for the journey, else the last expectation of an account before its next action (or the end of the path). */
-function screens(ctx) {
+/** The steps whose end is a screen (the lanes that photograph or snapshot a screen use this one list): smoke.json's `screens` for the journey, else the last expectation of an account before its next action (or the end of the path). */
+export function screensOf(ctx) {
   const set = (((ctx.smoke || {}).journeys || {})[ctx.id] || {}).screens;
   if (Array.isArray(set) && set.length) return new Set(set);
   return new Set(ctx.steps.filter((s, i) => s.expect && s.as !== "system" && !((ctx.steps.slice(i + 1).find((x) => x.as === s.as) || {}).expect)).map((s) => s.n));
@@ -596,7 +596,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path",
     source: ARIA,
-    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [
+    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [
       `const root = await a11y.a11yAriaRoot(${p});`,
       "const found = [];",
       `try { await expect(root).toMatchAriaSnapshot({ name: "${s.n}.aria.yml", timeout: SETTLE }); } catch (e) { found.push(a11y.a11yAriaFailure(test.info(), e, ${s.n})); }`,
@@ -608,7 +608,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path",
     source: AXE,
-    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [
+    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [
       'const { AxeBuilder } = require("@axe-core/playwright");',
       `const base = new AxeBuilder({ page: ${p} }).withTags(${WCAG_TAGS}).disableRules(["target-size"]);`,
       `const builder = (await a11y.a11yHasMain(${p})) ? base.include("main") : base;`,
@@ -620,7 +620,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path, with live.json's tokens",
     source: TOKENS,
-    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [report(`a11y.a11yTokens(${p}, ${s.n}, test.info())`, ctx)]),
+    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [report(`a11y.a11yTokens(${p}, ${s.n}, test.info())`, ctx)]),
   },
   {
     name: "a11y-forms",

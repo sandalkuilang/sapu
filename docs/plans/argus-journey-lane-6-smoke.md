@@ -1147,3 +1147,83 @@ The config:
 - Codegen never writes `test.fixme`: a quarantined test gets `tag: "@quarantine"` (decision 13). This
   closes 0.2's open line for B2.
 - Line counts at 0.4: `-codegen` 603, `-redtest` 77, `-login` 712.
+
+### Lane C2 — accessibility
+
+C2.1–C2.4 are built in `-a11y.mjs` (642 lines, a leaf with no import), `tests/argus-live-a11y.test.ts`,
+`tests/fixtures/journey-app/pages/a11y/` and `tests/fixtures/axe-results/`, plus the rows of `skills/argus/standards.md`.
+
+**Locked for the other lanes.**
+- **Registry.** `CHECKS` holds `a11y-core` (shared helpers, no emitter), `a11y-keyboard`, `a11y-names`,
+  `a11y-aria`, `a11y-axe`, `a11y-tokens`, `a11y-forms` and `a11y-modals`, all with `project: "a11y"`. `screensOf(ctx)`
+  is exported: smoke.json's `journeys.<id>.screens`, else the last expectation of an account before that account's
+  next action or the path's end. C3.2's screenshots should use the same list.
+- **Sources** are plain JavaScript (the suite is never type-checked), every function named `a11y…`, so no lane's
+  names clash. A function the specs call is `export`ed. A test strips the keyword to evaluate a source, and so would a
+  `run-code` caller. A source reads `SETTLE`, `REPO`, `__dirname` and `require`, all in scope of `support.ts`. No source
+  holds a backtick, and none uses `.exec(` or the other words the support test scans for.
+- **Emitters.** The spec's import line is the generator's, so each emitted block opens with `if
+  (test.info().project.name === "a11y") { const a11y = require("./support"); … }`. Only that project runs a check.
+  The lines use no `test.step`, so the step titles stay `step <n> <do|expect>:<kind>`. Checks that must see the page
+  before an action (keyboard, names, forms, the modal arm) are emitted after the previous step, for the whole group
+  that follows it. Checks of a screen (ARIA, axe, tokens) and the modal check follow their own step.
+- **A violation** is `{check, step, key, detail, manual?, hard?}`. `a11yReport(expect, test.info(), found, id, allow)`
+  drops a violation listed in `known/<id>.json` (a JSON list of `{check, key}`, read at run time; an absent or
+  malformed file is no known violation) or in smoke.json's `allow` (baked into the spec as a literal). It
+  annotates `manual` ones as `a11y-manual`, soft-fails the rest in one `expect.soft`, and throws for a `hard` one
+  (a form that accepted a bad value), which ends the test. A `hard` one can still be adopted or allowed.
+- **Keys.** Role and accessible name with digit runs written `#`; axe's are `axe:<rule>` with the target joined
+  (shadow levels with ` >> `, iframe levels with ` | `).
+- **ARIA.** The specs write `toMatchAriaSnapshot({ name: "<n>.aria.yml", timeout: SETTLE })`, `n` the screen's step
+  number. `ARIA_EXPECT` is `{pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}"}`, which puts the file at
+  `__aria__/<id>/<n>.aria.yml` (the test's title is the journey id).
+- **Notes** are annotations of type `a11y-note` (the token line), `a11y-manual` and `a11y-backdrop` (a modal's
+  backdrop behaviour, read back by the next modal of the test).
+
+**Probed facts** (the pinned alpha runner and Chrome; they outrank the spec lines they touch).
+- `expect.toMatchAriaSnapshot.children: "contain"` set in the config makes a **missing or empty baseline match**:
+  the run passes with nothing adopted. Left unset, matching is already partial (a baseline with fewer lines than the
+  screen passes), a missing file fails, and a mismatch gives a line diff only.
+- Tab "from the page's start": a script cannot reset Chrome's sequential focus starting point except by focusing and
+  removing a node at the document's start, and that start skips the positive `tabindex` group. Following it with
+  Shift+Tab, which leaves the page, makes the next Tab the first stop of the true order. Once the walk starts, focus
+  that leaves the page (the active element is the body) is the end of a lap, but before the first stop it is only the
+  walk's own start.
+- `expect` from the runner works outside a test for hard matchers (`toHaveAccessibleName`), and `page.screenshot`
+  with a `clip` takes viewport coordinates.
+- A native modal dialog's Escape and focus return work as the pattern says. `fill` truncates at `maxlength`, so a
+  `maxlength` case holds when the field is capped.
+
+**Deviations from the plan.**
+- `children: "contain"` is not part of the ARIA config (the probe above). C2.2's line and spec §19.7's "children:
+  contain" must be corrected in Z4.
+- C2.4's test lives in `tests/argus-live-a11y.test.ts`, not `engine.test.ts` (a rule file this lane does not own).
+  The rows are in the existing accessibility table of `standards.md`, whose third header became "Used for
+  (aesthetics.md, or the smoke suite's checks)". Each new row quotes the criterion's sentence from its Understanding
+  page, read in full, and no row is marked ⚠. 2.4.3's row records why a backward jump is for a human.
+- Tokens are read at run time from the repo's `.argus/live.json` (`REPO` is the repo's root) because the emitter's
+  `ctx` carries no `live`. The generated files then do not depend on `tokens`. The source file must lie inside the
+  repo. The skip line `design tokens: not checked (no token source)` is an `a11y-note`, written once per test.
+- The page variable of an account is rebuilt in `-a11y` from the steps (`ctx.pages` is used when given), because the
+  spec's variable map is not in `ctx`.
+- A modal whose invoker is gone is checked for Tab only. Escape and the backdrop click would close a dialog the path
+  could not reopen, so a manual `modal-escape` says "not tested".
+- A keyboard check whose target is covered reports 2.4.11 alone: the focus-visible and contrast verdicts need a
+  visible indicator.
+- Form cases click the path's own submit (a `button` or `input` of type submit, inside a `form`); a click on any other
+  control gets no cases. A page that navigates on a case counts as a submit.
+
+**Needs coordinator** (none of these files is this lane's).
+- **C3 / codegen.** The `a11y` project is not in the config yet: Chromium, `testMatch` the specs, depending on
+  `setup`, and `expect: { toMatchAriaSnapshot: ARIA_EXPECT }` imported from `-a11y` (codegen already imports its
+  `CHECKS`). The suite's `package.json` needs `@axe-core/playwright` pinned exactly (`SMOKE_AXE`); the emitter takes
+  the named export, `const { AxeBuilder } = require("@axe-core/playwright")`. The end-to-end test in
+  `argus-live-a11y.test.ts` adds that project and a recording stub of the builder by hand.
+- **Codegen `ctx`.** Adding `pages` (the variable map `pageVars` builds) would let `-a11y` drop its copy of the
+  naming rule. `live` in `ctx` would let tokens be decided at generation.
+- **A3 / B3.** `known/<id>.json` is a JSON list of `{check, key}` as `a11yReport` reads it; the adoption of
+  `__aria__/<id>/<n>.aria.yml` prunes digit runs and the marker as decision 7 says. Neither lane's code was read.
+- **Z2–Z4.** Spec §19.7 needs: the Shift+Tab start of the keyboard pass; the screens rule; the modal procedure
+  (backdrop click, then Escape, then reopen by the invoker, and the exemption above); the form runner (cases click
+  the path's submit and put values back); `children` left unset; tokens read at run time. `live.md` should say the
+  token file is read from the repo's root in the suite.
