@@ -1926,6 +1926,26 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(t.g.calls().map((x) => x.argv.slice(0, 2).join(" "))).toEqual(["--version", "repo view", "issue create"]);
   }, 30_000);
 
+  it("a taste shot of the run (taste/shots/<32 hex>.png, its verdict beside it) is attached under the same conditions; another name there is not", async () => {
+    const t = filing();
+    const name = createHash("sha256").update("/orders/:id|1440|light").digest("hex").slice(0, 32);
+    const png = t.shot(`taste/shots/${name}.png`);
+    const { done } = t.file({ attach: [png] });
+    expect((await done).out).toContain(`attach: ${t.shown(`taste/shots/${name}.png`)}`);
+    expect(creates(t.g)[0].argv.slice(-2)).toEqual(["--attach", realpathSync(png)]);
+    // Its verdict decides as a slot's does; a name that is not a shot's, or a file deeper down, is no screenshot of the run.
+    for (const [rel, verdict, reason] of [
+      [`taste/shots/${name}.png`, { passed: false, reasons: ["secret"] }, "a secret on the page"],
+      ["taste/shots/page-1.png", { passed: true, reasons: [] }, "not a screenshot of this run"],
+      [`taste/shots/1/${name}.png`, { passed: true, reasons: [] }, "not a screenshot of this run"],
+      [`taste/${name}.png`, { passed: true, reasons: [] }, "not a screenshot of this run"],
+    ] as [string, Obj, string][]) {
+      const u = filing();
+      const r = await u.file({ attach: [u.shot(rel, verdict)] }).done;
+      expect(r.out, rel).toContain(`local: ${u.shown(rel)} (${reason})`);
+    }
+  }, 60_000);
+
   const reasons: [string, (t: ReturnType<typeof filing>) => { file: string; shown: string }][] = [
     ["gh older than 2.99", (t) => (t.g.set({ version: "gh version 2.98.1 (stable)" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
     ["public repository", (t) => (t.g.set({ visibility: "PUBLIC" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],

@@ -33,7 +33,7 @@ import { mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts
 // @ts-expect-error — plain ESM script without types
 import { makeHome, makeWorktree } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
-import { MEDIA_READ, readTasteState, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { MEDIA_READ, readTasteState, shotName, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { confirmSink, laneTokens, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 
@@ -233,6 +233,12 @@ describe("argus-live taste recording — the session hook (J1)", () => {
     expect(v.sha256).toBe(sha("png bytes"));
     expect(mode(join(shots, `${name}.verdict.json`))).toBe(0o600);
     expect(lines(join(tasteDir(main, runId), "1", "screens.jsonl"))[0].shots).toEqual([{ theme: "light", name, key: "/orders/:id|1440|light" }]);
+    // The name is locked per screen key (-tastecfg shotName, the recorder's own digest): a shot under another key's name is not kept.
+    expect(shotName("/orders/:id|1440|light")).toBe(name);
+    expect(RECORDER).toContain('(await hex(route + "|" + width + "|" + theme)).slice(0, 32)');
+    writeFileSync(join(shots, `${name}.png`), "png bytes");
+    keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "j" }, recorded({ route: "/orders", shots: [{ theme: "light", name, verdict }] }));
+    expect(lines(join(tasteDir(main, runId), "1", "screens.jsonl"))[1].shots).toEqual([]);
   });
 
   it("tasteSpent sums the pass's time, a torn line counting nothing; spendTaste ignores a time that is no time", () => {

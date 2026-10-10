@@ -3,7 +3,8 @@
 // (argus-live-report.mjs). No browser: judge.json, curator.json and taste-state.json are fixtures of lane 0's locked
 // shapes, gh is a function standing in for it, and every secret is built at run time.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ARGUS_LIVE, cleanTemps, committed, example, liveRun, longSecret } from "./helpers/argus-live";
@@ -14,7 +15,7 @@ import { down, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs"
 // @ts-expect-error — plain ESM script without types
 import { filedFile } from "../plugins/sapu/scripts/argus-live-scrub.mjs";
 // @ts-expect-error — plain ESM script without types
-import { readTasteState, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { readTasteState, shotName, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { readJudge, tasteAccept, tasteFile } from "../plugins/sapu/scripts/argus-live-tastefile.mjs";
 
@@ -71,8 +72,8 @@ const row = (k: number, over: Obj = {}) => ({
 const EFFICIENCY = { actions: 14, best: 9, klm_s: 31.5, typed: 42, fitts_bits: 18.25, modals: 1, wait_ms: 2300, recovery: 0 };
 const judged = (t: Cycle, rows: Obj[], journeys: Obj = { "order-to-cash": { screens: 3, efficiency: EFFICIENCY } }) => t.put("taste/judge.json", { version: 1, run: t.runId, bar: 1, rows, journeys });
 
-/** gh as a function: `issue list` answers `issues`, `issue create` files the next number (added to `issues`). */
-const fakeGh = (issues: Obj[] = [], beyond: Obj[] = []) => {
+/** gh as a function: `issue list` answers `issues`, `issue create` files the next number (added to `issues`); `attaches` answers gh 2.99 and a private repository (scrub attaches then). */
+const fakeGh = (issues: Obj[] = [], beyond: Obj[] = [], { attaches = false } = {}) => {
   const calls: Obj[] = [];
   let n = 100;
   const runner = (argv: string[]) => {
@@ -81,6 +82,8 @@ const fakeGh = (issues: Obj[] = [], beyond: Obj[] = []) => {
     const labels = a.flatMap((x, i) => (x === "--label" ? [a[i + 1]] : []));
     calls.push({ argv: a, title: a.includes("--title") ? at("--title") : null, labels, body: a.includes("--body-file") ? readFileSync(at("--body-file"), "utf8") : null });
     if (a[0] === "issue" && a[1] === "list") return { status: 0, stdout: JSON.stringify(issues) };
+    if (attaches && a[0] === "--version") return { status: 0, stdout: "gh version 2.99.0 (stable)\n" };
+    if (attaches && a[0] === "repo" && a[1] === "view") return { status: 0, stdout: "PRIVATE\n" };
     if (a[0] === "issue" && a[1] === "view") {
       const i = [...issues, ...beyond].find((x) => x.url === a[2]);
       return i ? { status: 0, stdout: JSON.stringify(i) } : { status: 1, stdout: "" };
@@ -135,6 +138,22 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     expect(rowsOf(t)[tk("copy.broken", ORDER)]).toEqual({ rule: "copy.broken", screen: ORDER, class: "implicit", severity: "S3", state: "open", issue: "https://github.com/o/r/issues/103", first: t.runId, last: t.runId });
     expect(r.lines.at(-1)).toBe("taste file: filed 3, polish 0 item(s), queued 0, open 0, closed 0, accepted 0, held 0");
   });
+
+  it("attaches the screen's shot (taste/shots/<shotName>.png) through scrub's verdict; a screen with no shot attaches nothing", async () => {
+    const t = cycle();
+    judged(t, [row(1, { rule: "copy.broken", class: "implicit", key: "p.status", measured: "undefined", expected: 0, witnesses: [] }), row(2, { rule: "copy.broken", class: "implicit", screen: LIST, key: "p.total", measured: "NaN", expected: 0, witnesses: [] })]);
+    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001", "hex");
+    const shot = `taste/shots/${shotName(ORDER)}.png`;
+    t.put(shot, png.toString("latin1"));
+    writeFileSync(join(t.runDir, shot), png);
+    t.put(shot.replace(/\.png$/, ".verdict.json"), { t: 1, sha256: createHash("sha256").update(png).digest("hex"), passed: true, reasons: [] });
+    const gh = fakeGh([], [], { attaches: true });
+    expect((await file(t, gh)).code).toBe(0);
+    const made = gh.created();
+    const order = made.find((c) => c.title.startsWith(tk("copy.broken", ORDER)))!;
+    expect(order.argv.slice(-2)).toEqual(["--attach", realpathSync(join(t.runDir, shot))]);
+    expect(made.find((c) => c.title.startsWith(tk("copy.broken", LIST)))!.argv).not.toContain("--attach");
+  }, 30_000);
 
   it("one issue per taste:<rule>:<screen key>: a screen's rows of one rule share it, an open issue is never filed twice", async () => {
     const t = cycle();

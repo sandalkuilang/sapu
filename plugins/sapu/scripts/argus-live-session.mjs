@@ -20,7 +20,7 @@ import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run
 import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 import { censusOf } from "./argus-live-taste.mjs";
-import { MEDIA_READ, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
+import { MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
@@ -359,7 +359,8 @@ export function keepScreen(main, runId, at, answer) {
     }
     const shots = [];
     for (const s of Array.isArray(answer.shots) ? answer.shots : []) {
-      if (!isObj(s) || typeof s.name !== "string" || !/^[0-9a-f]{32}$/.test(s.name) || !["light", "dark"].includes(s.theme)) continue;
+      // Only the shot named as its screen key locks it (shotName): any other name is no shot of this screen.
+      if (!isObj(s) || !["light", "dark"].includes(s.theme) || s.name !== shotName(`${answer.route}|${answer.width}|${s.theme}`)) continue;
       const png = path.join(base, "shots", `${s.name}.png`);
       if (!fs.lstatSync(png, { throwIfNoEntry: false })?.isFile()) continue;
       fs.chmodSync(png, 0o600);

@@ -3,6 +3,7 @@
 // and the lane's `.argus/taste-state.json`, each with its one validator, reader and writer. A leaf module: it
 // imports no other argus-live module, so the probes, the judge, SELECT, filing and the suite all read the same
 // shapes from here.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -408,6 +409,13 @@ export const ROW_STATES = Object.freeze(["queued", "open", "closed", "accepted"]
 export const SCREEN_KEY = /^\/[^\s|]{0,200}\|[1-9][0-9]{2,3}\|(light|dark)$/;
 /** An issue's title key and the state's row key (decision 19). */
 export const titleKey = (rule, screen) => `taste:${rule}:${screen}`;
+/**
+ * The one screenshot a run keeps of screen key `key`: `<run>/taste/shots/<shotName(key)>.png` (0600), its scrub
+ * verdict beside it as `<name>.verdict.json` — the first 32 hex digits of the key's sha256. The recorder names its
+ * shots so in the page (the same digest), the session keeps only a shot of that name, scrub attaches only a file of
+ * that form, and filing finds a row's shot by its screen key.
+ */
+export const shotName = (key) => createHash("sha256").update(String(key)).digest("hex").slice(0, 32);
 const RUN_ID = /^\d{14}-[0-9a-f]{8}$/;
 const SEVERITY = ["S1", "S2", "S3", "S4"];
 

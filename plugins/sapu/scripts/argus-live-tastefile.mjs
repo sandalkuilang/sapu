@@ -22,7 +22,7 @@ import { readSeen } from "./argus-live-ledger.mjs";
 import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
-import { FAMILIES, loadBar, loadTaste, readTasteState, RULE_CLASSES, SCREEN_KEY, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, loadBar, loadTaste, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -393,13 +393,18 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     lines.push(`queued: ${g.key} (${g.severity}, ${why})`);
     count.queued += 1;
   };
-  /** Files one issue through scrub → its URL, or null after pushing scrub's lines (the filing stops). */
-  const fileThrough = async (name, title, body, labels) => {
+  /** The run's shot of screen key `screen` (shotName), when the recorder took one: scrub's verdict decides whether it leaves. */
+  const shotOf = (screen) => {
+    const png = path.join(liveDir(main), runId, "taste", "shots", `${shotName(screen)}.png`);
+    return fs.lstatSync(png, { throwIfNoEntry: false })?.isFile() ? [png] : [];
+  };
+  /** Files one issue through scrub (`attach` its screen's shot) → its URL, or null after pushing scrub's lines (the filing stops). */
+  const fileThrough = async (name, title, body, labels, attach = []) => {
     const dir = path.join(liveDir(main), runId, "taste", "filing");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const bodyFile = path.join(dir, `${name}.md`);
     fs.renameSync(tempBeside(bodyFile, body, 0o600), bodyFile);
-    const r = await scrub(main, { run: runId, title, bodyFile, create: true, labels }, { env, gh, runner });
+    const r = await scrub(main, { run: runId, title, bodyFile, attach, create: true, labels }, { env, gh, runner });
     const url = r.code === 0 ? (r.out.find((l) => l.startsWith("filed: ")) ?? "").slice(7) : "";
     if (url) return url;
     lines.push(...r.out.filter((l) => !l.startsWith("title: ")));
@@ -414,7 +419,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     }
     const cls = classify({ oracle: "taste", tasteClass: g.rule.class, cost: num(g.cost) && g.cost >= costS });
     const labels = [...cls.labels, `severity:${g.severity.toLowerCase()}`, ...(g.owner.length ? [needsOwner] : [])];
-    const url = await fileThrough(g.rows[0].row, titleOf(g), bodyOf(g, { runId, judge, bar, earlier: g.earlier }), labels);
+    const url = await fileThrough(g.rows[0].row, titleOf(g), bodyOf(g, { runId, judge, bar, earlier: g.earlier }), labels, shotOf(g.rows[0].screen));
     if (!url) {
       stop = 1;
       queue(g, "not filed: scrub refused it");
