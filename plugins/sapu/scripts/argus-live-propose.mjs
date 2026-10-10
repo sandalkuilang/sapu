@@ -13,7 +13,7 @@ import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
-import { changeDigest, generated, liveAsWritten, PR_URL, readState, refreshOutcomes, writeState } from "./argus-live-suite.mjs";
+import { changeDigest, generated, liveAsWritten, PR_URL, readState, refreshOutcomes, SUPERSEDED, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -171,7 +171,13 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
   const lines = [];
   const todo = [];
   const skipped = new Set();
+  const removed = new Set(staged.filter((ch) => ch.kind === "drop" || ch.kind === "retire").map((ch) => ch.id));
   for (const ch of staged) {
+    if (removed.has(ch.id) && SUPERSEDED.includes(ch.kind)) {
+      lines.push(`skip ${ch.kind} ${ch.id}: superseded by the staged ${staged.find((x) => x.id === ch.id && (x.kind === "drop" || x.kind === "retire")).kind}`);
+      skipped.add(ch);
+      continue;
+    }
     const digest = ch.digest ?? changeDigest(ch);
     const p = state.proposals[digest];
     const rejected = state.rejected.includes(digest);

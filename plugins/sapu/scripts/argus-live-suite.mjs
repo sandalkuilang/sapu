@@ -215,6 +215,9 @@ export const canonical = (v) => JSON.stringify(v, (_k, x) => (isObj(x) ? Object.
  */
 export const CHANGE_KINDS = Object.freeze(["add", "heal", "drop", "retire", "quarantine", "unquarantine"]);
 
+/** The kinds a staged drop or retire of the same journey supersedes (smoke propose skips them, stageInto removes them). */
+export const SUPERSEDED = Object.freeze(["heal", "quarantine", "unquarantine"]);
+
 /** An empty smoke state. */
 const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [], proposals: {}, dispatches: [] });
 const isEntry = (e) => isObj(e) && CHANGE_KINDS.includes(e.kind) && typeof e.id === "string" && JOURNEY.test(e.id) && typeof e.run === "string" && (e.changes === undefined || Array.isArray(e.changes));
@@ -279,7 +282,9 @@ export function stageInto(state, entry) {
   if (!isEntry(entry)) throw new Error("refused: a staged change is {kind, id, run, …} with a known kind");
   const digest = changeDigest(entry);
   if (state.rejected.includes(digest)) return { staged: false, digest };
-  state.staged = [...state.staged.filter((s) => !(s.kind === entry.kind && s.id === entry.id)), { ...entry, digest }];
+  // A drop or retire removes the journey: it supersedes that journey's staged heal and quarantine changes.
+  const gone = (s) => (entry.kind === "drop" || entry.kind === "retire") && s.id === entry.id && SUPERSEDED.includes(s.kind);
+  state.staged = [...state.staged.filter((s) => !(s.kind === entry.kind && s.id === entry.id) && !gone(s)), { ...entry, digest }];
   return { staged: true, digest };
 }
 

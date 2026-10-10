@@ -232,6 +232,17 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     expect(git(t.main, "status", "--porcelain", "e2e")).toBe("");
   });
 
+  it("a quarantine the owner rejected is not staged again when the journey flakes on a later run", async () => {
+    const t = ciRepo();
+    await smokeCi(t.main, { run: "101" }, { runner: base(t).runner });
+    const state = readState(t.main);
+    writeState(t.main, { ...state, staged: [], rejected: [state.staged[0].digest] });
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/105": apiRun(105) }, artifacts: { "105": artifact() } });
+    const r = await smokeCi(t.main, { run: "105" }, { runner: gh.runner });
+    expect(split(r.lines).outside.find((l) => l.startsWith("flaky checkout"))).toMatch(/^flaky checkout chromium: quarantine not staged \(rejected before; digest [0-9a-f]{12}\)$/);
+    expect(readState(t.main).staged).toEqual([]);
+  });
+
   it("a flake on a pull request's head, never seen on the base, is flaky-new: one comment on the PR, never quarantined", async () => {
     const t = ciRepo();
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/102": apiRun(102, { event: "pull_request", branch: "feat/x", pr: 7 }) }, artifacts: { "102": artifact() } });

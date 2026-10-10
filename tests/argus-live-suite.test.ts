@@ -797,6 +797,21 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect(show("journeys/checkout.json").status).toBe(0);
   }, 60_000);
 
+  it("a staged drop supersedes a heal of the same journey, staged before or after it: the proposal drops it and skips the heal", async () => {
+    for (const order of [["drop", "heal"], ["heal", "drop"]]) {
+      const p = proposeRepo({ paths: { checkout: SUITE_PATH(), refund: SUITE_PATH() } });
+      const heal = { kind: "heal", id: "checkout", run: RUN, changes: [{ kind: "heal", id: "checkout", step: 3, from: { label: "Quantity" }, to: { label: "Qty" }, evidence: [], run: RUN }], body: [], path: SUITE_PATH("3") };
+      const drop = { kind: "drop", id: "checkout", run: "100", changes: [{ kind: "drop", id: "checkout", evidence: ["quarantined for 5 cycles"], run: "100" }], body: [] };
+      for (const k of order) stage(p.main, k === "drop" ? drop : heal);
+      const r = await p.propose();
+      expect(r.code, order.join(",")).toBe(0);
+      expect(r.lines, order.join(",")).toContain("change drop checkout");
+      expect(r.lines.some((l: string) => l.startsWith("change heal")), order.join(",")).toBe(false);
+      expect(p.bareShow(`argus/smoke-${RUN}`, "e2e/argus-smoke/journeys/checkout.json").status).not.toBe(0);
+      expect(readState(p.main).staged).toEqual([]);
+    }
+  }, 120_000);
+
   it("a heal of a journey the base does not hold refuses, nothing pushed", async () => {
     const p = proposeRepo();
     stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [{ kind: "heal", id: "checkout", step: 3, from: {}, to: {}, evidence: [], run: RUN }], body: [], path: SUITE_PATH() });
