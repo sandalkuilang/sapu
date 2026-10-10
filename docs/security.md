@@ -104,9 +104,9 @@ Known limits, in short: process groups bound every kill and listing, so a proces
 - `smoke propose` commits with `--no-verify`: a fresh worktree has none of your hook tooling installed. CI runs the suite either way.
 
 **What runs in CI.**
-- The workflow has `permissions: contents: read`, never `pull_request_target`, and checks out without persisted credentials. Every action is pinned to a full commit SHA, resolved when the file is printed. A pull request from a fork runs no job.
+- The workflow has `permissions: contents: read`, never `pull_request_target`, and checks out without persisted credentials. Every action is pinned to a full commit SHA, and the Playwright image to its digest, resolved when the file is printed (an image whose digest could not be resolved keeps its tag, and the file says so). A pull request from a fork runs no job.
 - Dispatch inputs reach the shell only through `env:` and are checked against fixed shapes first (`missing` or `changed`; journey ids joined by `|`).
-- The secrets a job gets are the `${NAME}` names that `.argus/live.json` uses, passed by name, and only to jobs for same-repository events. The generated code reads them from the environment by name, and the workflow file holds names, never a value.
+- The secrets a job gets are the `${NAME}` names that `.argus/live.json` uses, passed by name, only to jobs for same-repository events, and only in the env of the step that runs the suite: `npm ci --ignore-scripts` (no install script runs) and the actions never see them. The generated code reads them from the environment by name, and the workflow file holds names, never a value.
 - The suite drives loopback only: the generated config throws unless its base URL is on a loopback host. The lane's isolation (its own worktree, ports, HOME, proxy and datastore) is not reproduced in CI. There, a disposable runner is the isolation, and the datastore holds the users `live.json` names.
 
 **Sessions, traces and artifacts.**

@@ -2313,22 +2313,28 @@ large UI test is the flakiest kind; twenty reliable tests beat two hundred flaky
 `/sapu:init`, only with the owner's consent and in its own pull request, writes
 `.github/workflows/<smoke.ci.workflow>` from `argus-live.mjs smoke workflow`: `on: pull_request`, a
 push to the base branch and `workflow_dispatch` (inputs `baseline`, `grep`; they reach the shell only
-through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9|-]+$`); `permissions:
+through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9][a-z0-9-]*(\|[a-z0-9][a-z0-9-]*)*$`,
+the ids then anchored to a whole title word, `--grep "(^| )(<ids>)( |$)"`; codegen refuses a journey named as a
+project); `permissions:
 contents: read`, never `pull_request_target`; every action pinned to a full commit SHA, resolved by
-`gh api` when the file is printed, its tag in a comment [gh-secure]; a job skipped when a pull
+`gh api` when the file is printed, its tag in a comment [gh-secure], and the container image pinned to the
+digest the registry answers for its tag (else the tag, with a comment saying why); refused without
+`ci.web_server` or a suite path; every step after the checkout guarded by `hashFiles('<dir>/package.json')
+!= ''` (a job-level `if` cannot read the checkout), so the workflow is green until the first suite merges; a job skipped when a pull
 request comes from a fork (no secrets there); `actions/checkout` with `persist-credentials: false`;
 the app started by the config's `webServer` from `smoke.json` `ci.web_server`
 (`reuseExistingServer: false`, loopback URLs). The screenshot projects run in the
 `mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` container with `--ipc=host --init`
-[pw-ci] [pw-docker], `msedge` on the plain runner; in the suite directory `npm ci` and `npx playwright
+[pw-ci] [pw-docker], `msedge` on the plain runner; in the suite directory `npm ci --ignore-scripts` and `npx playwright
 test --shuffle --grep-invert @quarantine --project setup --project <p>` in a matrix over the
 projects (codegen's `suiteProjects`, the generated config's own list, every one but `msedge`; each job its
-own app instance), plus the non-gating `quarantine` job and the dispatch-only
+own app instance), plus the non-gating `quarantine` job (the same matrix) and the dispatch-only
 `baseline` job (§19.8, the same matrix). Each job uploads `test-results/` as
-`argus-smoke-results-<project>` (`results.json` at its root; `-msedge`, `-quarantine`), the baseline job also
+`argus-smoke-results-<project>` (`results.json` at its root; `-msedge`, `-quarantine-<project>`), the baseline job also
 its written files as `argus-smoke-baselines-<project>` (rooted at the suite directory: `__screenshots__/`,
 `__aria__/`), all with `retention-days: 7` [gh-artifacts], never `.auth/`. The secrets the job passes are the names
-`.argus/live.env` holds, from the repo's CI secrets; the generated support reads them by name.
+`.argus/live.env` holds, from the repo's CI secrets, set only in the env of the step that runs the suite
+(never `npm ci`'s or an action's); the generated support reads them by name.
 Without a `workflow` scope on the owner's gh token, init hands the file to the owner instead.
 `ci.web_server` is the owner's statement of how CI starts the app; `/sapu:init` proposes it from
 `live.json`'s `start` entries with `{port:<name>}` replaced by `ci.ports`. The lane's isolation

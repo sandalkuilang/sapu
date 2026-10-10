@@ -317,6 +317,24 @@ function pinned([action, tag], { runner, gh, cwd }) {
   return `${action}@${sha} # ${tag}`;
 }
 
+/** The registry's manifest types a multi-platform tag answers with. */
+const MANIFESTS = "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json";
+
+/**
+ * The pinned Playwright image `mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` → `{image, note}`: pinned by the
+ * digest the registry answers for the tag (`Docker-Content-Digest` of an HTTPS HEAD, no shell, the digest's shape
+ * checked), `<name>:<tag>@sha256:<64 hex>`; when it cannot be resolved, the tag alone and a comment line saying why.
+ */
+function imageOf({ runner, cwd }) {
+  const tag = `v${SMOKE_PLAYWRIGHT}-noble`;
+  const name = `mcr.microsoft.com/playwright:${tag}`;
+  const r = runner(["curl", "-sSfI", "--max-time", "30", "--proto", "=https", "-H", `Accept: ${MANIFESTS}`, `https://mcr.microsoft.com/v2/playwright/manifests/${tag}`], { cwd });
+  const m = r.status === 0 ? /^docker-content-digest:\s*(sha256:[0-9a-f]{64})\s*$/im.exec(String(r.stdout ?? "")) : null;
+  if (m) return { image: `${name}@${m[1]}`, note: [] };
+  const why = r.status === 0 ? "the registry named no digest" : r.error ? "curl could not run" : `curl exited ${r.status ?? "on a signal"}`;
+  return { image: name, note: [`# The Playwright image is pinned by its tag only: its digest could not be resolved when this file was printed (${why}). Pin it by digest when you can.`] };
+}
+
 /**
  * The suite's CI projects (spec §19.6), from codegen's suiteProjects, the generated config's own list: every one
  * but msedge runs in the pinned container (the screenshot projects, the engines and `chromium-<width>`, write the
@@ -336,13 +354,16 @@ const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\
  * only with the owner's consent (spec §19.10): on pull requests, pushes to the base branch and a dispatch
  * (`baseline`: missing|changed, `grep`); `contents: read` and never `pull_request_target`; a fork's pull
  * request skipped; every action pinned to the commit `gh api` resolves, its tag in a comment; checkout without
- * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`), a
- * matrix over the container projects, `npm ci` then `--shuffle --grep-invert @quarantine`; `msedge` on the
+ * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`; pinned by
+ * digest when the registry answers one, else by tag with a comment saying why), a matrix over the container
+ * projects, `npm ci --ignore-scripts` then `--shuffle --grep-invert @quarantine`, every step after the checkout
+ * waiting for the suite's package.json (green before the first suite merges); `msedge` on the
  * plain runner; the non-gating `quarantine` job, the same matrix (a flake is judged on its own project's results); the dispatch-only `baseline` job, whose inputs reach the
  * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9][a-z0-9-]*(\\|[a-z0-9][a-z0-9-]*)*$` first,
  * the ids then anchored to a whole title word in `--grep`; results
  * and written baselines uploaded for 7 days, never `.auth/`; the `${NAME}` names live.json uses as
- * `secrets.<NAME>`. The lines hold names, never a value (`masked`: printed as they are).
+ * `secrets.<NAME>`, only in the env of the step that runs the suite. Refused without `ci.web_server` or a suite
+ * path. The lines hold names, never a value (`masked`: printed as they are).
  */
 export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
   const c = loadContract(main);
@@ -357,6 +378,9 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     throw new Error(`refused: smoke workflow: no ${LIVE_FILE}`);
   }
   const live = liveAsWritten(liveText, "smoke workflow");
+  // The workflow runs the suite: without a way to start the app, or a path, every job would only fail.
+  if (!smoke.ci.web_server.length) throw new Error("refused: smoke workflow: smoke.json names no ci.web_server, so CI could not start the app");
+  if (!readSuitePaths(main, smoke.dir).length) throw new Error(`refused: smoke workflow: the suite has no paths (${smoke.dir}/journeys): write the workflow once the first suite proposal merged`);
   const use = {};
   for (const [k, a] of Object.entries(ACTIONS)) use[k] = pinned(a, { runner, gh, cwd: main });
   const { container, msedge, engine } = projectsOf(live, smoke);
@@ -364,16 +388,24 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
   const dir = smoke.dir;
   const artifact = smoke.ci.artifact;
   const fork = "(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)";
-  const env = (extra = []) => ["    env:", ...extra, ...secretNames(live).map((n) => `      ${n}: \${{ secrets.${n} }}`)];
+  // A job-level `if` cannot read the checkout, so every step after it waits for the suite: green until the first one merges.
+  const suite = `hashFiles('${dir}/package.json') != ''`;
+  const env = (extra = []) => (extra.length ? ["    env:", ...extra] : []);
+  // The secrets reach only the step that runs the suite (and the app it starts), never npm ci or an action.
+  const secrets = (extra = []) => ["        env:", ...extra, ...secretNames(live).map((n) => `          ${n}: \${{ secrets.${n} }}`)];
+  const test = (cmd) => [`      - run: ${cmd}`, `        if: ${suite}`, ...secrets()];
+  const install = ["      - run: npm ci --ignore-scripts", `        if: ${suite}`];
   const checkout = [`      - uses: ${use.checkout}`, "        with:", "          persist-credentials: false"];
-  const image = ["    container:", `      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`, "      options: --ipc=host --init"];
+  const { image: pinnedImage, note } = imageOf({ runner, cwd: main });
+  const image = ["    container:", `      image: ${pinnedImage}`, "      options: --ipc=host --init"];
   const matrix = ["    strategy:", "      fail-fast: false", "      matrix:", `        project: [${container.join(", ")}]`];
   const workdir = ["    defaults:", "      run:", `        working-directory: ${dir}`];
-  const upload = (name, paths) => [`      - uses: ${use.upload}`, "        if: ${{ !cancelled() }}", "        with:", `          name: ${name}`, ...(paths.length === 1 ? [`          path: ${paths[0]}`] : ["          path: |", ...paths.map((p) => `            ${p}`)]), "          retention-days: 7"];
+  const upload = (name, paths) => [`      - uses: ${use.upload}`, `        if: \${{ !cancelled() && ${suite} }}`, "        with:", `          name: ${name}`, ...(paths.length === 1 ? [`          path: ${paths[0]}`] : ["          path: |", ...paths.map((p) => `            ${p}`)]), "          retention-days: 7"];
   const results = (name) => upload(name, [`${dir}/test-results/`]);
   const lines = [
     `# ${smoke.ci.workflow}: the argus smoke suite (${dir}), generated by sapu's argus-live.mjs smoke workflow.`,
     "# /sapu:init writes it with the owner's consent; change .argus/smoke.json and regenerate rather than edit it.",
+    ...note,
     "name: argus-smoke",
     "on:",
     "  pull_request:",
@@ -407,8 +439,8 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     ...workdir,
     "    steps:",
     ...checkout,
-    "      - run: npm ci",
-    '      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"',
+    ...install,
+    ...test('npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"'),
     ...results(`${artifact}-\${{ matrix.project }}`),
     ...(msedge
       ? [
@@ -417,16 +449,17 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
           `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
           `    runs-on: ${RUNNER}`,
           "    timeout-minutes: 70",
-          ...env(),
           ...workdir,
           "    steps:",
           ...checkout,
           `      - uses: ${use.node}`,
+          `        if: ${suite}`,
           "        with:",
           "          node-version: 22",
-          "      - run: npm ci",
+          ...install,
           "      - run: npx playwright install chromium",
-          "      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project msedge",
+          `        if: ${suite}`,
+          ...test("npx playwright test --shuffle --grep-invert @quarantine --project setup --project msedge"),
           ...results(`${artifact}-msedge`),
         ]
       : []),
@@ -442,8 +475,8 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     ...workdir,
     "    steps:",
     ...checkout,
-    "      - run: npm ci",
-    '      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project "$PROJECT"',
+    ...install,
+    ...test('npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project "$PROJECT"'),
     ...results(`${artifact}-quarantine-\${{ matrix.project }}`),
     "  baseline:",
     "    # Dispatched by smoke baseline: writes the baselines the pull request then proposes for review.",
@@ -456,11 +489,10 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     ...workdir,
     "    steps:",
     ...checkout,
-    "      - run: npm ci",
+    ...install,
     "      - name: Check the dispatch inputs, then write the baselines",
-    "        env:",
-    "          MODE: ${{ inputs.baseline }}",
-    "          GREP: ${{ inputs.grep }}",
+    `        if: ${suite}`,
+    ...secrets(["          MODE: ${{ inputs.baseline }}", "          GREP: ${{ inputs.grep }}"]),
     "        run: |",
     '          case "$MODE" in missing|changed) ;; *) echo "baseline must be missing or changed" >&2; exit 1 ;; esac',
     // Journey ids joined by |: each [a-z0-9][a-z0-9-]*, no empty one (a||b would match every test).

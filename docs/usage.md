@@ -146,7 +146,7 @@ The journey lane can leave a regression net in your repo. The **smoke suite** is
 #### Before you start
 
 - Everything the journey lane needs ("Requirements and limits"), plus a committed contract (the `repo` home, not a local one) whose policy has `traces: "visible"`: the suite is a trace in your repo. Every `smoke` command except `smoke check` otherwise answers `refused: smoke: a committed suite would leave a trace`.
-- A GitHub Actions workflow that starts your app in CI, on a loopback address, and a way to seed the users `.argus/live.json` names (CI's datastore is yours). `.argus/smoke.json` holds how: `ci.web_server` and `ci.ports`.
+- A command that starts your app in CI, on a loopback address, with a datastore holding the users `.argus/live.json` names (CI's datastore is yours). `.argus/smoke.json` holds it: `ci.web_server` and `ci.ports`. The generated workflow runs that command from the repo's root inside Playwright's container image, after `npm ci --ignore-scripts` in the suite's directory only: it installs none of your app's dependencies and starts no service container, so the command does all of that (install, build, start the database, seed the users, start the app).
 - The values behind each `${NAME}` in `.argus/live.json` as CI secrets of the same names. The workflow passes them by name; no value is written anywhere.
 - Optional keys in `.argus/live.json` that sharpen the checks: `test_id_attribute` (the test-id attribute your app already uses), `pseudo_locales` (locale codes your app serves as pseudo-locales, such as `en-XA`), `tokens` (`{"css": <file>}` or `{"json": <file>}`, your design-token source) and `seed: true` on a trigger that creates data a path may start with. Their format is in [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md).
 
@@ -167,8 +167,9 @@ The journey lane can leave a regression net in your repo. The **smoke suite** is
    ```
 
    Every key not given takes its default: `dir` `e2e/argus-smoke`, `max` 20 (at most 50), all four browsers, `perf.runs` 5.
-3. Let `/sapu:init` write the CI workflow **only if you agree**. It prints the file from `smoke workflow` and writes `.github/workflows/argus-smoke.yml` in a pull request of its own. Pushing a workflow file needs the `workflow` scope on your `gh` token; without it, init hands you the file to add yourself.
-4. Add the CI secrets, merge the workflow, then run `/journey smoke`. The first cycles propose the suite itself: each journey that has no path yet is captured, admitted and proposed, and the proposal's first CI run is red until its baselines are accepted ("Baselines", below).
+3. Merge init's pull request first: `smoke workflow` passes the trace gate only on a committed contract. Run `/journey smoke` until its first proposal (the suite's first paths) merges: `smoke workflow` refuses while `ci.web_server` is unset or the suite has no path.
+4. Run `/sapu:init` again and let it write the CI workflow **only if you agree**. It prints the file from `smoke workflow` and writes `.github/workflows/argus-smoke.yml` in a pull request of its own. Pushing a workflow file needs the `workflow` scope on your `gh` token (`gh auth refresh -s workflow`); without it, init hands you the file to add yourself.
+5. Add the CI secrets and merge the workflow. Every later cycle reads its runs ("Baselines", below, for a new journey's first run).
 
 #### The CI workflow
 
@@ -176,17 +177,19 @@ The journey lane can leave a regression net in your repo. The **smoke suite** is
 
 | Job | Runs | Gates a merge? |
 |---|---|---|
-| `test` | One matrix job per project, in the pinned container (`mcr.microsoft.com/playwright:v<version>-noble`, with `--ipc=host --init`): `chromium`, `firefox`, `webkit`, `chromium-<width>` for each further viewport width, `a11y`, and `i18n` when `live.json` lists `locales` or `pseudo_locales`. Each runs `npm ci`, then `npx playwright test --shuffle --grep-invert @quarantine`, and prints the shuffle seed. | Yes |
+| `test` | One matrix job per project, in the pinned container (`mcr.microsoft.com/playwright:v<version>-noble`, pinned by its digest, with `--ipc=host --init`): `chromium`, `firefox`, `webkit`, `chromium-<width>` for each further viewport width, `a11y`, and `i18n` when `live.json` lists `locales` or `pseudo_locales`. Each runs `npm ci --ignore-scripts`, then `npx playwright test --shuffle --grep-invert @quarantine`, and prints the shuffle seed. | Yes |
 | `msedge` | The path and the checks on the runner's own Edge, no screenshots. Present only when `msedge` is among the suite's browsers. | Yes |
-| `quarantine` | The tests tagged `@quarantine`, on the first browser project. | No (`continue-on-error`) |
+| `quarantine` | The tests tagged `@quarantine`, as the same matrix: a flake is judged on the projects it flaked on. | No (`continue-on-error`) |
 | `baseline` | Only by `workflow_dispatch`, from `smoke baseline`: writes screenshot and ARIA baselines (see "Baselines"). | No |
 
 Its safety properties, each of which you can read in the file:
 - `permissions: contents: read`, no `pull_request_target`, and `actions/checkout` without persisted credentials.
-- Every action is pinned to a full commit SHA, resolved through `gh api` when the file is printed, with its tag in a comment.
+- Every action is pinned to a full commit SHA, resolved through `gh api` when the file is printed, with its tag in a comment. The container image is pinned by the digest the registry answers for its tag; when it cannot be resolved, the tag stays and a comment at the top of the file says why.
+- The secrets reach only the step that runs the suite (and the app its config starts), never `npm ci` or an action; `npm ci --ignore-scripts` runs no package's install script (the browsers are in the image).
+- Every step after the checkout waits for the suite (`hashFiles('<dir>/package.json') != ''`), so the workflow stays green on a branch without one.
 - A pull request from a fork runs no job, because a fork gets no secrets.
-- The dispatch inputs (`baseline`: `missing` or `changed`; `grep`: journey ids joined by `|`) reach the shell only through `env:` and are checked against fixed shapes first.
-- Each job uploads `test-results/` as `<ci.artifact>-<project>` (default `argus-smoke-results-<project>`; `-msedge`, `-quarantine`) for 7 days. The baseline job also uploads what it wrote as `argus-smoke-baselines-<project>`. `.auth/` is never uploaded.
+- The dispatch inputs (`baseline`: `missing` or `changed`; `grep`: journey ids joined by `|`, none empty) reach the shell only through `env:` and are checked against fixed shapes first. The ids are anchored to a whole test title (`(^| )(<ids>)( |$)`), so `cart` never matches `add-to-cart`; a journey may not be named as a project.
+- Each job uploads `test-results/` as `<ci.artifact>-<project>` (default `argus-smoke-results-<project>`; `-msedge`, `-quarantine-<project>`) for 7 days. The baseline job also uploads what it wrote as `argus-smoke-baselines-<project>`. `.auth/` is never uploaded.
 - `HOME` is `/root` in the container jobs, which Firefox needs. The jobs time out at 70 minutes, above the config's own global timeout of 60.
 
 The generated Playwright config retries a failing test once under CI (`retries: 1`) and runs one worker per job. It sets `forbidOnly`, `trace: "on-first-retry"` and `updateSnapshots: "none"`, so a CI run never writes a baseline. Outside CI it sets `ignoreSnapshots` (the baselines belong to the CI container) and `updateSnapshots: "missing"`. The base URL is `ARGUS_SMOKE_BASE_URL`, else the origin of `ci.web_server[0]`, and the config throws unless its host is loopback: the suite never drives a deployed environment.
@@ -560,6 +563,7 @@ Then check one repo: in a session there, `/sapu:init`'s preflight reports the ac
 | `refused: smoke propose: run <id>: …` | A staged change came from a run whose secret ledger a later `up` removed, so it cannot be checked. Admit or heal it again in a new cycle. |
 | `refused: smoke retire: the suite has no path <id>` or `… no lane run names the change (run a journey cycle first)` | Only a journey the suite holds can be retired, and the change is named after a lane run: run one journey cycle on this checkout first. A retire you closed before answers `retire <id>: not staged (this change was rejected before; …)`. |
 | `refused: smoke workflow: <action>@<tag> could not be resolved to a commit …` (or `refused: smoke workflow: no .argus/live.json`) | `gh` could not resolve an action's tag to a commit SHA (no network, or `gh` is not signed in). The file pins every action to a SHA, so it will not print without them. The second form means `.argus/live.json` is not in place yet: run `/sapu:init`. |
+| `refused: smoke workflow: smoke.json names no ci.web_server …` or `refused: smoke workflow: the suite has no paths …` | The workflow runs the suite, so it is written only once CI can start the app and the suite holds a path. Fill in `ci.web_server`, or wait until the first suite proposal merged, then print it again. |
 | `refused: smoke workflow: smoke.json's browsers name no browser of the pinned container …` | `browsers` lists only `msedge`. Add `chromium`, `firefox` or `webkit`: the screenshots and the setup project need one. |
 | `refused: smoke ci: the committed contract names no home repo and base branch` (also from `smoke baseline`) | Both commands read your repository's CI runs, so the committed contract must name `repo` and `baseBranch`. Run `/sapu:init`. |
 | `refused: smoke ci: run <id> comes from a fork: its artifacts are not read` (or `belongs to another repository`) | `smoke ci` and `smoke baseline` read artifacts only of runs of your own repository. |

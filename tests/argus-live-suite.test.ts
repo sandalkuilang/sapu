@@ -819,8 +819,14 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
 
 describe("smoke workflow — the CI job /sapu:init writes with consent (spec §19.10)", () => {
   const SHAS: Record<string, string> = { "actions/checkout": "1".repeat(40), "actions/setup-node": "2".repeat(40), "actions/upload-artifact": "3".repeat(40) };
-  /** A repo with the contract, live.json (two viewports, a locale) and `smoke`; gh resolves each action's tag to its SHA unless `unresolved`. */
-  const flow = ({ smoke = {} as Obj, live = {} as Obj, unresolved = "" } = {}) => {
+  const WEB = { web_server: [{ command: "npm run start:ci", url: "http://localhost:3100/" }] };
+  const DIGEST = `sha256:${"d".repeat(64)}`;
+  /**
+   * A repo with the contract, live.json (two viewports, a locale), `smoke` (with a ci.web_server unless `noWeb`) and a
+   * suite path unless `noPath`; gh resolves each action's tag to its SHA unless `unresolved`; the registry answers the
+   * image's digest unless `noDigest`.
+   */
+  const flow = ({ smoke = {} as Obj, live = {} as Obj, unresolved = "", noWeb = false, noPath = false, noDigest = false } = {}) => {
     const main = committed();
     mkdirSync(join(main, ".argus"), { recursive: true });
     mkdirSync(join(main, ".claude"), { recursive: true });
@@ -828,9 +834,17 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     git(main, "add", ".");
     commit(main, "contract");
     writeFileSync(join(main, ".argus/live.json"), JSON.stringify({ ...pathLive(), locales: ["de-DE"], ...live }));
-    writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify(smoke));
+    writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify(noWeb ? smoke : { ...smoke, ci: { ...WEB, ...smoke.ci } }));
+    if (!noPath) {
+      mkdirSync(join(main, "e2e/argus-smoke/journeys"), { recursive: true });
+      writeFileSync(join(main, "e2e/argus-smoke/journeys/checkout.json"), JSON.stringify({ journey: "checkout", path: SUITE_PATH(), admitted: null }));
+    }
     const calls: string[][] = [];
     const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] === "curl") {
+        calls.push(argv);
+        return noDigest ? { status: 6, stdout: "", stderr: "curl: (6) Could not resolve host" } : { status: 0, stdout: `HTTP/2 200\r\ncontent-type: application/vnd.oci.image.index.v1+json\r\ndocker-content-digest: ${DIGEST}\r\n\r\n`, stderr: "" };
+      }
       if (argv[0] !== "gh") return run(argv, opts);
       calls.push(argv.slice(1));
       const m = /^repos\/([^/]+\/[^/]+)\/commits\/(.+)$/.exec(argv[2] ?? "");
@@ -867,7 +881,7 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     expect(uses.length).toBeGreaterThan(0);
     for (const u of uses) expect(u).toMatch(/^ +- uses: (actions\/[a-z-]+)@([0-9a-f]{40}) # v\d+$/);
     for (const u of uses) expect(u).toContain(SHAS[/uses: ([^@]+)@/.exec(u)![1]]);
-    expect(f.calls.every((c) => c[0] === "api" && /^repos\/actions\/[a-z-]+\/commits\/v\d+$/.test(c[1]))).toBe(true);
+    expect(f.calls.filter((c) => c[0] !== "curl").every((c) => c[0] === "api" && /^repos\/actions\/[a-z-]+\/commits\/v\d+$/.test(c[1]))).toBe(true);
     expect(() => flow({ unresolved: "actions/setup-node" }).out()).toThrow(/^refused: smoke workflow: actions\/setup-node@v\d+ could not be resolved to a commit \(gh exited 1\)$/);
   });
 
@@ -875,11 +889,11 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     const { lines } = flow().out();
     const test = job(lines, "test");
     expect(test).toContain("    if: github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)");
-    expect(test).toContain(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`);
+    expect(test).toContain(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble@${DIGEST}`);
     expect(test).toContain("      options: --ipc=host --init");
     expect(test).toContain("        project: [chromium, firefox, webkit, chromium-390, a11y, i18n]");
     expect(test).toContain("        working-directory: e2e/argus-smoke");
-    expect(test).toContain("      - run: npm ci");
+    expect(test).toContain("      - run: npm ci --ignore-scripts");
     expect(test).toContain('      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"');
     expect(test).toContain("      PROJECT: ${{ matrix.project }}");
     for (const name of ["test", "msedge", "quarantine", "baseline"]) {
@@ -887,6 +901,50 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
       const k = j.findIndex((l) => l.includes("uses: actions/checkout@"));
       expect(j.slice(k + 1, k + 3), name).toEqual(["        with:", "          persist-credentials: false"]);
     }
+  });
+
+  it("refuses before the suite exists: no ci.web_server to start the app, or no path to run", () => {
+    expect(() => flow({ noWeb: true }).out()).toThrow("refused: smoke workflow: smoke.json names no ci.web_server, so CI could not start the app");
+    expect(() => flow({ noPath: true }).out()).toThrow("refused: smoke workflow: the suite has no paths (e2e/argus-smoke/journeys): write the workflow once the first suite proposal merged");
+  });
+
+  it("every step after the checkout runs only once the suite exists, so the workflow stays green before the first suite merges", () => {
+    const { lines } = flow().out();
+    for (const name of ["test", "msedge", "quarantine", "baseline"]) {
+      const j = job(lines, name);
+      const steps = j.slice(j.indexOf("    steps:") + 1).join("\n").split(/\n(?= {6}- )/);
+      expect(steps[0], name).toMatch(/^ {6}- uses: actions\/checkout@/);
+      for (const s of steps.slice(1)) expect(s, `${name}: ${s.split("\n")[0]}`).toMatch(/\n {8}if: (\$\{\{ !cancelled\(\) && hashFiles\('e2e\/argus-smoke\/package\.json'\) != '' \}\}|hashFiles\('e2e\/argus-smoke\/package\.json'\) != '')(\n|$)/);
+    }
+  });
+
+  it("the secrets reach only the step that runs the suite, never npm ci; npm ci runs no install scripts", () => {
+    const { lines } = flow().out();
+    const text = lines.join("\n");
+    expect(text).not.toMatch(/- run: npm ci$/m);
+    expect(text.match(/npm ci --ignore-scripts/g)).toHaveLength(4);
+    for (const name of ["test", "msedge", "quarantine", "baseline"]) {
+      const j = job(lines, name);
+      const steps = j.slice(j.indexOf("    steps:") + 1).join("\n").split(/\n(?= {6}- )/);
+      // No job-level env holds a secret.
+      expect(j.slice(0, j.indexOf("    steps:")).join("\n"), name).not.toContain("secrets.");
+      for (const s of steps) {
+        if (!s.includes("secrets.")) continue;
+        expect(s, name).toMatch(/npx playwright test /);
+        expect(s, name).not.toContain("npm ci");
+      }
+      expect(steps.filter((s) => s.includes("secrets.")), name).toHaveLength(1);
+    }
+  });
+
+  it("pins the Playwright image by the digest the registry answers for its tag; unresolved, the tag stays and the file says why", () => {
+    const f = flow();
+    const { lines } = f.out();
+    expect(f.calls.find((c) => c[0] === "curl")).toEqual(["curl", "-sSfI", "--max-time", "30", "--proto", "=https", "-H", "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json", `https://mcr.microsoft.com/v2/playwright/manifests/v${SMOKE_PLAYWRIGHT}-noble`]);
+    expect(lines.filter((l) => l.includes("image: "))).toEqual(Array(3).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble@${DIGEST}`));
+    const tag = flow({ noDigest: true }).out().lines;
+    expect(tag.filter((l) => l.includes("image: "))).toEqual(Array(3).fill(`      image: mcr.microsoft.com/playwright:v${SMOKE_PLAYWRIGHT}-noble`));
+    expect(tag).toContain(`# The Playwright image is pinned by its tag only: its digest could not be resolved when this file was printed (curl exited 6). Pin it by digest when you can.`);
   });
 
   it("runs msedge on the plain runner with no container, and only when smoke.json lists it", () => {
