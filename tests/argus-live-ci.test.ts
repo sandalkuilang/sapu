@@ -423,7 +423,20 @@ describe("quarantine's lifecycle (spec §19.9, decision 13)", () => {
     const ra = await smokeCi(a.main, { run: "101" }, { runner: gh() });
     expect(split(ra.lines).outside.find((l) => l.startsWith("quarantine wishlist"))).toMatch(/^quarantine wishlist: exit staged \(3 clean cycles; digest [0-9a-f]{12}\)$/);
     expect(readState(a.main).staged.map((s: Obj) => [s.kind, s.id])).toContainEqual(["unquarantine", "wishlist"]);
-    expect(readState(a.main).journeys.wishlist.exits).toBe(1);
+    // The exit counts once it merges: staged or open, the quarantine and its streak stand, and exits is unchanged.
+    expect(readState(a.main).journeys.wishlist.exits).toBeUndefined();
+    expect(readState(a.main).journeys.wishlist.quarantine).toMatchObject({ cycles: 3, clean: 3 });
+    const exitDigest = readState(a.main).staged.find((x: Obj) => x.kind === "unquarantine").digest;
+    for (const [word, exits] of [["CLOSED", undefined], ["MERGED", 1]] as [string, number | undefined][]) {
+      const u = ciRepo({ quarantine: ["wishlist"] });
+      writeFileSync(join(u.main, ".argus/smoke-state.json"), JSON.stringify({ version: 1, staged: [], rejected: [], journeys: { wishlist: { quarantine: { since: "100", cycles: 3, clean: 3, counted: [] } } }, proposals: { [exitDigest]: { kind: "unquarantine", id: "wishlist", branch: "argus/smoke-x", url: "https://github.com/owner/app/pull/5", outcome: "open" } } }));
+      const g = fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() }, views: { "https://github.com/owner/app/pull/5": word } });
+      await smokeCi(u.main, { run: "101" }, { runner: g.runner });
+      const w = readState(u.main).journeys.wishlist;
+      expect(w.exits, word).toBe(exits);
+      if (word === "MERGED") expect(w.quarantine, word).toBeNull();
+      else expect(w.quarantine, word).not.toBeNull();
+    }
     const b = ciRepo({ quarantine: ["wishlist"] });
     seed(b.main, { cycles: 4, clean: 0 });
     held(b, 1);

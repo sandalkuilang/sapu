@@ -462,6 +462,8 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
     }
     // A test that passed still reports what only a human can judge, and what its checks covered.
     for (const t of checked) noted(t);
+    // How each open proposal ended (a merged quarantine exit counts before a flake is judged).
+    refreshOutcomes(state, { runner, cwd: main });
     // Flakes (decision 13): quarantined only from a push to the base branch.
     const basePush = r.event === "push" && r.branch === base;
     const now = Date.now();
@@ -500,7 +502,6 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
     }
     lifecycle(main, { state, smoke, ids, reads, ciRun, basePush, base, add });
     // A heal the owner closed leaves the break with them (spec §19.9): pending-regression and quarantined until they rule.
-    refreshOutcomes(state, { runner, cwd: main });
     const settled = settleRegressions(main, state, { dir: smoke.dir, members: new Set(ids) });
     for (const { id, url } of settled.pending) add(`pending-regression ${id} ${url}`);
     for (const l of settled.lines) add(l);
@@ -591,8 +592,7 @@ function lifecycle(main, { state, smoke, ids, reads, ciRun, basePush, base, add 
       if (s.staged) smokeEvent(main, lock.runId, { kind: action === "exit" ? "unquarantined" : "dropped", id });
       if (!s.staged) add(`quarantine ${id}: ${kind} not staged (rejected before; digest ${d})`);
       else if (action === "exit") {
-        j.quarantine = null;
-        j.exits = (j.exits ?? 0) + 1;
+        // The record stands until the exit merges (refreshOutcomes): a closed or open proposal changes nothing.
         add(`quarantine ${id}: exit staged (${QUARANTINE_EXIT} clean cycles; digest ${d})`);
       } else add(`drop ${id}: staged (quarantined for ${QUARANTINE_MAX} cycles; digest ${d})`);
     }

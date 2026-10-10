@@ -313,7 +313,8 @@ export const PR_URL = /https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
 
 /**
  * The outcome of each open proposal asked of gh (`gh pr view <url> --json state`): MERGED → merged (accepted),
- * CLOSED → closed (rejected: its digest moves into `rejected`, so no verb stages that change again). A closed heal
+ * CLOSED → closed (rejected: its digest moves into `rejected`, so no verb stages that change again). A merged
+ * unquarantine ends the journey's quarantine record and counts one more exit (`exits`). A closed heal
  * marks its journey `regression: {url, run}` (the run its branch names); a closed retire clears the journey's
  * `retire`. `state` is updated in place; true when anything changed.
  */
@@ -329,6 +330,11 @@ export function refreshOutcomes(state, { runner = run, gh = "gh", cwd }) {
     const word = asked.get(p.url);
     const outcome = word === "MERGED" ? "merged" : word === "CLOSED" ? "closed" : null;
     if (outcome) [p.outcome, changed] = [outcome, true];
+    // A quarantine's exit counts once it merged: its streak ends and the journey has left quarantine once more.
+    if (outcome === "merged" && p.kind === "unquarantine" && typeof p.id === "string" && JOURNEY.test(p.id)) {
+      const j = isObj(state.journeys[p.id]) ? state.journeys[p.id] : {};
+      state.journeys[p.id] = { ...j, quarantine: null, exits: (j.exits ?? 0) + 1 };
+    }
     if (outcome !== "closed") continue;
     if (!state.rejected.includes(digest)) state.rejected.push(digest);
     if (typeof p.id !== "string" || !JOURNEY.test(p.id) || (p.kind !== "heal" && p.kind !== "retire")) continue;
