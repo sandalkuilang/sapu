@@ -18,6 +18,7 @@ import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince } from "./argus-live-proxy.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { writeVerdict } from "./argus-live-scrub.mjs";
+import { boundSeed, sourceLines } from "./argus-live-seed.mjs";
 import { configuredUser, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
 import { pathChecks } from "./argus-live-steps.mjs";
@@ -86,7 +87,16 @@ export const COMMANDS = {
   facts: { roleFree: true, args: ["text"] },
   mail: { roleFree: true, args: [] },
   submit: { roleFree: true, args: ["text"] },
+  source: { roleFree: true, args: [] },
 };
+
+/**
+ * The role-free words: config's ROLE_FREE (never a role name) and `source`, a seed map slot's command (spec
+ * §19.12). A role named `source` would be shadowed by it.
+ */
+const PW_ROLE_FREE = [...ROLE_FREE, "source"];
+/** `source` on any token but a seed map slot's. */
+const SOURCE_ONLY = "refused: source takes a seed map slot's token (slot <n> --map --seed)";
 
 /**
  * The explorer's argv → `{token, account | null, cmd, flags, positionals}` (`account` the word as given,
@@ -96,12 +106,12 @@ export const COMMANDS = {
  * a command off the allowlist, any other flag (`-s`, `--session`, `--config`, `--filename`, …), a flag
  * value that does not fit, a wrong number of arguments.
  */
-const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]";
+const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]";
 
 export function parsePw(argv) {
   if (!Array.isArray(argv) || argv.length < 2) throw new Error(`refused: ${PW_USAGE}`);
   const token = argv[0];
-  const roleFree = ROLE_FREE.includes(argv[1]);
+  const roleFree = PW_ROLE_FREE.includes(argv[1]);
   const account = roleFree ? null : argv[1];
   const cmd = roleFree ? argv[1] : argv[2];
   const rest = argv.slice(roleFree ? 2 : 3);
@@ -253,7 +263,8 @@ function pngsIn(dir) {
  * the config is read (it needs only the slot). The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
- * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall).
+ * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall); a
+ * seed map slot's also `source` (spec §19.12). `source` on any other token is refused, and counted.
  * `cli` (a test seam) stands in for the installed CLI (run.json `browser.js`).
  */
 export async function pw(main, argv, { cli = null, now = Date.now, runner = run, cliRunner = runAsync } = {}) {
@@ -315,7 +326,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
       return { code: 1, out: [e.message] };
     }
   }
-  if (slotRec.mode === "map") return mapCall({ main, argv, word, runId, dir, lockNow, now });
+  if (slotRec.mode === "map") return mapCall({ main, argv, word, runId, slot, dir, lockNow, now });
   refuseNotLive(readRun(main), runId);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
   const { config, errors, secrets: envSecrets } = loadLive(main);
@@ -339,6 +350,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   let account = null;
   try {
     p = parsePw(argv);
+    if (p.cmd === "source") throw new Error(SOURCE_ONLY);
     if (p.account !== null) account = accountOf(slotRec, p.account);
   } catch (e) {
     return refused(e);
@@ -513,10 +525,12 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 /**
  * A map slot's call (decision 20), under the slot's lock: the deadline and the budget as an explorer's,
  * then `code` only (anything else but `submit`, handled before, is `refused: a map slot takes only code and
- * submit`, counted); its output fenced and masked with the env file's values. Each write of the slot's state
- * re-checks that the run is not sealed (stillLive's map form).
+ * submit`, counted); its output fenced and masked with the env file's values. A seed map slot (spec §19.12)
+ * also takes `source`: the run's seed in a SOURCE fence (sourceLines), read from the run's files only: no
+ * process, no browser, no network (`refused: a seed map slot takes only code, source and submit`). Each
+ * write of the slot's state re-checks that the run is not sealed (stillLive's map form).
  */
-async function mapCall({ main, argv, word, runId, dir, lockNow, now }) {
+async function mapCall({ main, argv, word, runId, slot, dir, lockNow, now }) {
   const rec = readRun(main);
   if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
@@ -528,7 +542,14 @@ async function mapCall({ main, argv, word, runId, dir, lockNow, now }) {
   writeSlotState(dir, state, { main, runId, map: true });
   const counter = `calls ${state.calls}/${max}`;
   try {
-    if (word !== "code") throw new Error("refused: a map slot takes only code and submit");
+    const seeded = boundSeed(dir) !== null;
+    if (word === "source") {
+      if (!seeded) throw new Error(SOURCE_ONLY);
+      parsePw(argv);
+      const { lines, truncated } = sourceLines(main, runId, slot, dir, { secrets });
+      return { code: 0, out: [...lines, counter, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
+    }
+    if (word !== "code") throw new Error(seeded ? "refused: a seed map slot takes only code, source and submit" : "refused: a map slot takes only code and submit");
     const p = parsePw(argv);
     const c = codeCommand(p.positionals[0], p.positionals.slice(1), { worktree: rec.worktree });
     const { body, truncated } = fence(String(c.text).trimEnd(), { secrets });

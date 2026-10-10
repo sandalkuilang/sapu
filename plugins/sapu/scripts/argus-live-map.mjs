@@ -128,18 +128,26 @@ const HISTORY = ["lastCycle", "lastHead", "filed"];
  * `prev` (the map as it stands, or null) with the returned map `value` merged in (spec §6 "Refresh", decision
  * 20) → the new map: `head` the commit the map was built at, `roots` replaced, a journey of a known id given
  * the returned domain, title, flags, goal and steps (keeping lastCycle, lastHead and filed), a new id
- * appended (`lastCycle: null`), every other journey and `dropped` kept.
+ * appended (`lastCycle: null`), every other journey and `dropped` kept. `seeds` (`[{kind, ref}]`, seedsOf: the
+ * source a seed map slot read, spec §19.12) are added to each returned journey's `seeds`, once each; the
+ * merge alone writes them (validateMap refuses a returned `seeds`), and a journey keeps them on a later merge.
  */
-export function mergeMap(prev, value, { head }) {
+export function mergeMap(prev, value, { head, seeds = [] }) {
   const before = prev ?? { journeys: [], dropped: [] };
   const back = new Map(value.journeys.map((j) => [j.id, j]));
+  const seeded = (j) => {
+    if (!seeds.length) return j;
+    const all = [...(Array.isArray(j.seeds) ? j.seeds : [])];
+    for (const s of seeds) if (!all.some((x) => x && x.kind === s.kind && x.ref === s.ref)) all.push({ kind: s.kind, ref: s.ref });
+    return { ...j, seeds: all };
+  };
   const journeys = before.journeys.map((j) => {
     const r = back.get(j.id);
     if (!r) return j;
     back.delete(j.id);
-    return { ...j, ...r, ...Object.fromEntries(HISTORY.filter((k) => Object.hasOwn(j, k)).map((k) => [k, j[k]])) };
+    return seeded({ ...j, ...r, ...Object.fromEntries(HISTORY.filter((k) => Object.hasOwn(j, k)).map((k) => [k, j[k]])) });
   });
-  for (const j of back.values()) journeys.push({ ...j, lastCycle: null });
+  for (const j of back.values()) journeys.push(seeded({ ...j, lastCycle: null }));
   return { ...before, head, roots: value.roots, dropped: before.dropped ?? [], journeys };
 }
 
@@ -324,8 +332,8 @@ function newestMomus(main) {
 
 /**
  * The catalog (spec §6 "Catalog output"): per domain (sorted) `<domain>:` and per journey `  <id> — <title>
- * — <role> → <role> …[ money][ global] — last cycle <n|never>, filed <k>` (the role chain with repeats in a
- * row said once), then `dropped:` and `  <id>: <reason>` per dropped journey. No map → [].
+ * — <role> → <role> …[ money][ global][ seeded] — last cycle <n|never>, filed <k>` (`seeded`: a seed map slot
+ * returned it, spec §19.12; the role chain with repeats in a row said once), then `dropped:` and `  <id>: <reason>` per dropped journey. No map → [].
  */
 export function catalog(main) {
   const map = readJourneys(main);
@@ -336,7 +344,7 @@ export function catalog(main) {
     out.push(`${d}:`);
     for (const j of map.journeys.filter((x) => String(x.domain ?? "(no domain)") === d)) {
       const chain = j.steps.map((s) => s.role).filter((r, i, all) => i === 0 || r !== all[i - 1]);
-      const flags = `${j.money ? " money" : ""}${j.global ? " global" : ""}`;
+      const flags = `${j.money ? " money" : ""}${j.global ? " global" : ""}${Array.isArray(j.seeds) && j.seeds.length ? " seeded" : ""}`;
       const last = Number.isInteger(j.lastCycle) ? j.lastCycle : "never";
       out.push(`  ${j.id} — ${j.title ?? j.id} — ${chain.join(" → ")}${flags} — last cycle ${last}, filed ${Array.isArray(j.filed) ? j.filed.length : 0}`);
     }
