@@ -899,8 +899,10 @@ quoted. The research doc lists the URLs [wcag22] [u-2.1.1] [u-2.1.2] [u-2.4.3] [
 7. **The baseline run needs a dispatch right.** It needs write access and the workflow on the
    default branch [gh-dispatch]. Until init's workflow merges, `smoke baseline` prints the command
    and the suite runs with no visual check.
-8. **`--update-snapshots=changed` for ARIA is documented, not probed.** C3.2 probes it. Its fallback
-   is decided in advance (C3.2).
+8. **`--update-snapshots=changed` for ARIA.** Answered by C3.2's live probe on the pinned alpha: it
+   rewrites a mismatching `.aria.yml` to the received snapshot and passes, so a changed ARIA baseline is
+   adopted from a CI update run in `changed` mode and the `run-code` fallback is not needed (As built,
+   Lane C3).
 9. **`@axe-core/playwright` is MPL-2.0.** It is a dev dependency of the consumer's suite only, never
    of sapu, and the owner sees it in the proposal's `package.json` [npm].
 
@@ -1486,7 +1488,8 @@ C2.1–C2.4 are built in `-a11y.mjs` (642 lines, a leaf with no import), `tests/
   `target-ambiguous` or `action-failed`.
   - `healPath(list, heal, max)` applies the heal, and `healOnly(before, after, max)` checks it. Their refusals:
     `refused: smoke heal: [step <n>: ]<reason>`.
-  - Exit 0 is `heal <id>: UI changed: …`, then `staged: heal <id> (digest <12 hex>)` and a fence holding the old
+  - Exit 0 is `heal <id>: UI changed: …`, then `staged: heal <id> (digest <12 hex>)` (since Z4, `heal <id>: not staged
+    (this change was rejected before; digest <12 hex>)` and no `healed` event for a rejected digest) and a fence holding the old
     and new target code and the `git log -S"<name>" <head12>..HEAD: <commit>` evidence (or `no commit removed
     it`), with the anchor files' commits.
   - Exit 3 is `heal <id>: behaviour changed: …` or `heal <id>: bug: …`, then `regression <id>: step <n> written as
@@ -1640,7 +1643,7 @@ C2.1–C2.4 are built in `-a11y.mjs` (642 lines, a leaf with no import), `tests/
 
 **Needs coordinator.**
 - **F1:** the report's perf section reads `<run>/smoke/perf.jsonl` (and `.argus/perf.json` for the baseline), not the pass lines.
-- **Z2:** the orchestrator's text for a perf pass is `smoke run --perf` (exit 3) → `smoke perf --issue <id>` → `scrub --create` with labels `perf`, `argus`, `found-by:user` and the needs-owner label, deduplicated by the printed `dedupe:` keys. The guard needs no change, since `smoke perf` is the orchestrator's verb and already refused to a subagent.
+- **Z2:** the orchestrator's text for a perf pass is `smoke run --perf` (exit 3) → `smoke perf --issue <id>` → `scrub --create` with labels `performance` (argus's label; the plan's `perf` is not one, see Z2's deviations), `argus`, `found-by:user` and the needs-owner label, deduplicated by the printed `dedupe:` keys. The guard needs no change, since `smoke perf` is the orchestrator's verb and already refused to a subagent.
 - **Z4 / the spec:** §19.11 should name `latest` in `perf.json`, the `perf.jsonl` row, and the five verdicts and exit codes above. Its wording "installed with the signal script" is the as-built "installed in a perf pass" (first deviation).
 - **A (A2):** if `admitted.pathSha` is meant to be the digest of the path list as JSON, the two agree on a path written once. If it hashes something else, no change is needed, since `perf.json` keeps its own digest.
 - **Merge:** the three STUBS rows above conflict textually with the other lanes' edits of the same list. Keep every other lane's removals.

@@ -46,7 +46,7 @@ HTTP-level workflow conformance (§4.1 stays; this lane adds the user's side of 
 self-healing tests (a healer turns a real defect into a skipped test, so nothing here "heals" a repro
 or a RED test).
 
-Phase 6 (§19, **not built yet**) narrows three of these non-goals, on the owner's decision, for the
+Phase 6 (§19, built) narrows three of these non-goals, on the owner's decision, for the
 **smoke suite only** — a lean, generated Playwright suite committed in the consumer repo and run by its
 CI: per-journey performance baselines (relative, median of N, re-run before filing; still no load
 testing), screenshot baselines reviewed by the owner (pixel-diff through Playwright's own
@@ -1837,9 +1837,9 @@ Elsewhere:
 | `tests/…`, `tests/fixtures/journey-app/`, `tests/fixtures/argus-red/` | §14 |
 | `docs/usage.md`, `docs/agents.md`, `docs/security.md`, `README.md`, `docs/img/src` | `/sapu:journey`, the new agent, requirements, the isolation and browser safety rules, a light and dark diagram |
 
-Phase 6 (**not built yet**; §19): new modules `argus-live-smoke.mjs`, `-minimize.mjs`, `-codegen.mjs`,
-`-suite.mjs`, `-propose.mjs`, `-heal.mjs`, `-ci.mjs`, `-layout.mjs`, `-a11y.mjs`, `-perf.mjs`, `-seed.mjs`,
-`-report.mjs`; changes to `-config.mjs`, `-steps.mjs`, `-classes.mjs`, `-return.mjs`, `-repro.mjs`,
+Phase 6 (§19, built): new modules `argus-live-smoke.mjs`, `-minimize.mjs`, `-codegen.mjs`,
+`-suite.mjs`, `-propose.mjs`, `-heal.mjs`, `-ci.mjs`, `-baseline.mjs`, `-layout.mjs`, `-a11y.mjs`, `-perf.mjs`,
+`-seed.mjs`, `-report.mjs`; changes to `-config.mjs`, `-steps.mjs`, `-classes.mjs`, `-return.mjs`, `-repro.mjs`,
 `-session.mjs`, `-pw.mjs`, `-slots.mjs`, `-map.mjs`, `-scrub.mjs`, `argus-live.mjs`, `sapu-guard.mjs`;
 new engine text `skills/journey/smoke.md`; edits to the explorer's agent file, `journeys.md`,
 `/sapu:journey`, `/sapu:init`, `standards.md`, CONTRACT.md and the docs. The plan's file table is
@@ -1909,13 +1909,13 @@ and the nonce fences carry the safety).
    owner approved; native mobile apps, real-device clouds and tests generated from external design
    tools stay out.
 
-## 19. Phase 6 — the smoke suite and its checks (not built yet)
+## 19. Phase 6 — the smoke suite and its checks (built)
 
-**Status: designed, not built.** Plan: [argus-journey-lane-6-smoke.md](../plans/argus-journey-lane-6-smoke.md);
+**Status: built** (version 2.10.0). Plan: [argus-journey-lane-6-smoke.md](../plans/argus-journey-lane-6-smoke.md);
 evidence: [argus-journey-lane-6-research.md](../plans/argus-journey-lane-6-research.md) (the source ids
 in square brackets below).
-Everything in this section describes phase 6's target; no file it names exists until that plan's
-task lands, and §1–§18 describe the lane as built through phase 5.
+This section describes phase 6 as built (the plan's "As built" holds each lane's details and deviations);
+§1–§18 describe the lane as built through phase 5. What phase 6 leaves out is in §19.17.
 
 ### 19.1 Shape
 
@@ -1971,7 +1971,8 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
   (no `msedge`), `__aria__/<id>.spec/` (the runner's `{testFileBaseName}`, the spec file's name without `.ts`). `fixtures.ts` exists only when a role signs in by `login.command`: the owner's
   `signedIn` for it, created once as a stub that throws, never overwritten.
 - **Local state** (gitignored): `.argus/smoke-state.json` (per journey: last check, flaky streaks,
-  quarantine clean streak, open break issue, proposal digests and their outcome), `.argus/perf.json`
+  quarantine clean streak, a closed heal's `regression` mark, `retire`, proposal digests and their
+  outcome), `.argus/perf.json`
   (baselines), `.argus/reports/<runId>.md` (0600).
 - A smoke suite needs the contract's home `repo` and `policy.traces` `"visible"`; otherwise every
   `smoke` verb but `check` is refused (`refused: smoke: a committed suite would leave a trace`).
@@ -1984,7 +1985,8 @@ other journey reads, so CI order would decide outcomes) and dropped ones: pinned
 distinct roles, then id. Members already in the suite rank before non-members of the same tier (no
 flapping). The first `max` minus `exclude` are the target set. Output, one line each: `keep <id>`,
 `capture <id>` (no path yet), `drop <id> (<reason>)` (excluded, out of the map, global, past the
-cap, retired), `heal <id>`, `quarantined <id>`, `pending <id> <pr url>`, and `upgrade <from> → <to>
+cap, retired), `heal <id>`, `quarantined <id>`, `pending <id> <pr url>`, `pending-regression <id> <pr url>`
+(§19.9), and `upgrade <from> → <to>
 (baseline run needed)` when the suite's pin is behind the generator's (a new Playwright renders
 differently, so every screenshot is re-baselined in the upgrade's pull request) [pw-snap]. Pinning a global or dropped
 journey is refused. Membership changes only through a proposal (§19.8).
@@ -2256,7 +2258,8 @@ the best-scoring locator and carry on; Playwright's healer may patch waits and d
 | An expectation fails twice | **behaviour changed** | regression candidate |
 | A screenshot or ARIA snapshot differs | owner's call | `smoke ci` shows the diff; `smoke baseline --ids` only if the owner says so |
 | A baseline is missing | not yet reviewed | `smoke baseline` dispatches the baseline run (§19.8) |
-| A check reports a violation not known | defect | one issue per `{id, check, key}`, `ux` or `a11y`, S3 |
+| A check reports a violation not known | defect | one issue per `{id, check, key}`, `ux`, S3 |
+| The owner closes a heal proposal | regression | `pending-regression`, quarantined, a needs-owner issue (below) |
 | The setup project cannot sign an account in | harness | the report; nothing filed |
 
 A **regression candidate** is a repro whose `final` names the new oracle `regression` (its kinds:
@@ -2265,9 +2268,21 @@ every expectation kind); `smoke run --slot <n>` writes it as slot `n`'s return, 
 A, `bug`, the needs-owner label (an intended product change must not be "fixed" back), S2 on a money
 journey, else S3. The proposal and the issue carry advisory evidence: `git log -S'<old name>'
 <admission head>..HEAD` (the commit that removed the old accessible name, or `no commit removed it`)
-and the commits touching the journey's anchor files. A heal proposal the owner closes turns the break
-into a needs-owner regression issue. An issue the owner closes as not planned (intended) marks the
-journey `retire`: the next proposal removes its spec and `smoke plan` lists it `capture`.
+and the commits touching the journey's anchor files.
+
+**A closed heal.** A heal proposal the owner closes leaves the break with the owner. The next `smoke
+plan` or `smoke ci` asks gh how each open proposal ended (as `smoke propose` does), marks the journey
+`regression` in `smoke-state.json`, prints `pending-regression <id> <url>`, and stages a quarantine of
+it (`quarantine <id>: staged until the owner decides`) unless `quarantine.json` holds it already; the
+orchestrator files one needs-owner regression issue (`smoke-regression:<id>` in its title, `bug`,
+`regression`, S2 on a money journey, else S3). It stays pending until the lane's pass holds the
+journey again (a fix: the mark and that staged quarantine go) or the owner rules the change intended,
+by closing that issue as not planned or saying so, and runs `smoke retire <id>` (the orchestrator only
+on their word; the guard refuses it to every subagent). A staged `retire` then replaces the journey's
+other staged changes and marks it `retire`: `smoke plan` lists it `drop <id> (retired)`, the next
+proposal removes its path, spec, known violations and baselines, and once that merges `smoke plan`
+lists it `capture`. A retire proposal the owner closes clears the mark. No script reads the issue's
+state: only its title ties an issue to a journey, so the owner's ruling is a command.
 
 **Quarantine.** `smoke ci` stages a test that was `flaky` on a base-branch push run; the proposal adds
 `{id, issue, since}` to `quarantine.json`, and codegen tags the test `@quarantine`. The gating job
@@ -2335,7 +2350,7 @@ of five: `baselined` (a first batch, or a void baseline), `ok`, `regressed` (bot
 second batch was within the thresholds), `not-measured` (the path broke or the harness failed), one
 `<run>/smoke/perf.jsonl` row a path `{id, verdict, baseline, batches, regressed[, why]}`. `smoke run
 --perf` exits 3 for a confirmed regression or a path that broke, else 2 for the harness, else 0. Filed through `scrub
---create` with `perf`, `argus`, `found-by:user` and the needs-owner label, deduplicated by
+--create` with `performance`, `argus`, `found-by:user` and the needs-owner label, deduplicated by
 `perf:<id>:<metric>`, its body from `smoke perf --issue <id>`: baseline, both batches, thresholds,
 and `git log --format='%h %s' <baseline head>..HEAD -- <anchor files>`. web.dev's "good" values
 (LCP 2.5 s, INP 200 ms, CLS 0.1) are field targets at the 75th percentile; the report prints them
@@ -2385,8 +2400,8 @@ app's API).
 
 New verbs, all the orchestrator's: `smoke plan`, `smoke admit <ref>`, `smoke run [--ids …] [--slot <n>]
 [--perf] [--seed <n>]`, `smoke heal <slot>.<generation>`, `smoke propose`, `smoke ci [--run <id>]`,
-`smoke baseline --from-run <id> [--ids …]`, `smoke perf (--issue|--rebaseline) <id>`, `smoke workflow`, `seed`,
-`report`. `smoke check` writes nothing and joins the guard's subagent reads (`status`, `status
+`smoke baseline --from-run <id> [--ids …]`, `smoke perf (--issue|--rebaseline) <id>`, `smoke retire <id>`
+(the owner's ruling, §19.9), `smoke workflow`, `seed`, `report`. `smoke check` writes nothing and joins the guard's subagent reads (`status`, `status
 --json`, `check`). The explorer gains `pw <token> <role>.<k> layout [<check>]` (the layout oracle,
 its answer fenced) and, on a seed map token, `pw <token> source`; it still runs nothing but `pw`.
 The repro DSL gains the `layout` expectation (`{check}`, optional `target`), a `viewport-locale`
