@@ -12,7 +12,7 @@ import { browserTools } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { AGENT, PACE_MS, WITNESS, bandsOf, calibrate, diffLines, main, metricsOf, numbersOnly, openSession, percentile, probeDigest, robotsAllows, validateCorpus } from "../scripts/taste-calibrate.mjs";
 // @ts-expect-error — plain ESM script without types
-import { BAR_FILE, validateBar } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, validateBar } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -22,6 +22,8 @@ type Obj = Record<string, any>;
 
 const ROOT = join(__dirname, "..");
 const SCRIPT = join(ROOT, "scripts/taste-calibrate.mjs");
+const CORPUS = join(ROOT, "scripts/taste-corpus.json");
+const RESEARCH = join(ROOT, "docs/plans/argus-journey-lane-7-research.md");
 const BAR = () => JSON.parse(readFileSync(BAR_FILE, "utf8"));
 const temps: string[] = [];
 const temp = () => {
@@ -420,5 +422,78 @@ describe("the corpus validator", () => {
       ["skipped reason", { ...ok, skipped: [{ url: "https://a.test/2", site: "a", archetype: "docs" }] }],
       ["no pages", { ...ok, pages: [] }],
     ] as [string, Obj][]) expect(validateCorpus(bad).errors, what).not.toEqual([]);
+  });
+});
+
+describe("the reference corpus (scripts/taste-corpus.json)", () => {
+  const corpus = () => JSON.parse(readFileSync(CORPUS, "utf8"));
+  const ADMITTED = ["apple", "vercel", "github", "stripe", "linear", "carbon", "atlassian", "shadcn", "figma", "raycast"];
+
+  it("validates", () => {
+    expect(validateCorpus(corpus()).errors).toEqual([]);
+  });
+
+  it("holds only the research's admitted sites, public https pages, each archetype one of the five", () => {
+    const c = corpus();
+    expect(Object.keys(c.sites).every((s) => ADMITTED.includes(s))).toBe(true);
+    for (const p of [...c.pages, ...c.skipped]) {
+      expect(ARCHETYPES).toContain(p.archetype);
+      expect(new URL(p.url).protocol).toBe("https:");
+    }
+  });
+
+  it("has at least 15 pages each for marketing and docs, docs on at least 5 sites", () => {
+    const c = corpus();
+    const of = (a: string) => c.pages.filter((p: Obj) => p.archetype === a);
+    for (const a of ["marketing", "docs"]) expect(of(a).length, a).toBeGreaterThanOrEqual(15);
+    expect(new Set(of("docs").map((p: Obj) => p.site)).size).toBeGreaterThanOrEqual(5);
+  });
+
+  it("its plan, without --network, lists every archetype's pages and sites and what the review left out", () => {
+    const d = temp();
+    const out = join(d, "taste-bar.json");
+    writeFileSync(out, readFileSync(BAR_FILE, "utf8"));
+    const r = spawnSync(process.execPath, [SCRIPT, "--corpus", CORPUS, "--out", out], { encoding: "utf8", timeout: 30_000 });
+    expect(r.status, r.stderr).toBe(0);
+    for (const l of [
+      "58 pages on 7 sites; robots.txt honoured for * and sapu-taste-calibration; one page per site every 10 s (at least 2 min)",
+      "marketing: 15 pages, 3 sites (vercel, stripe, linear)",
+      "docs: 21 pages, 6 sites (vercel, github, stripe, carbon, atlassian, shadcn)",
+      "app: 8 pages, 3 sites (github, shadcn, carbon)",
+      "form: 6 pages, 3 sites (shadcn, carbon, stripe)",
+      "data: 8 pages, 3 sites (github, shadcn, carbon)",
+      "left out by the corpus's review: 16",
+    ])
+      expect(r.stdout.split("\n"), l).toContain(l);
+    expect(readFileSync(out, "utf8")).toBe(readFileSync(BAR_FILE, "utf8"));
+  }, 30_000);
+
+  it("a site whose terms bar robot access has no page to measure, and every one of its pages is recorded as skipped", () => {
+    const c = corpus();
+    const excluded = Object.keys(c.sites).filter((s) => c.sites[s].note.startsWith("Excluded."));
+    expect(excluded.sort()).toEqual(["apple", "figma", "raycast"]);
+    expect(c.pages.filter((p: Obj) => excluded.includes(p.site))).toEqual([]);
+    for (const s of excluded) expect(c.skipped.some((p: Obj) => p.site === s && p.reason.includes(`sites.${s}`)), s).toBe(true);
+    for (const s of Object.keys(c.sites).filter((x) => !excluded.includes(x))) {
+      expect(c.sites[s].note.startsWith("Admitted"), s).toBe(true);
+      expect(c.pages.some((p: Obj) => p.site === s), s).toBe(true);
+    }
+  });
+
+  it("no band can be driven by one site: no site gives more than half of an archetype's pages", () => {
+    const c = corpus();
+    for (const a of ARCHETYPES) {
+      const ps = c.pages.filter((p: Obj) => p.archetype === a);
+      const most = Math.max(...Object.values(Object.groupBy(ps, (p: Obj) => p.site)).map((l) => (l as Obj[]).length));
+      expect(most * 2, a).toBeLessThanOrEqual(ps.length);
+    }
+  });
+
+  it("every page's source is a research id or the https page the research read, and its header is the research's coverage statement", () => {
+    const research = readFileSync(RESEARCH, "utf8");
+    const ids = new Set([...research.matchAll(/^\| ([a-z0-9]+(?:-[a-z0-9]+)*) \|/gm)].map((m) => m[1]));
+    for (const p of corpus().pages) expect(ids.has(p.source) || research.includes(p.source), p.url).toBe(true);
+    const coverage = /\*\*Coverage by archetype, plainly\.\*\* ([\s\S]*?)\n\n/.exec(research)![1].replace(/\s+/g, " ");
+    expect(corpus().coverage).toBe(coverage);
   });
 });
