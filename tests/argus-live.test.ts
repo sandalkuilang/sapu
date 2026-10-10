@@ -3781,10 +3781,20 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const r = await up(main, opts());
     reapers.push(runJson(main).reaper);
     const old = runJson(main).groups.find((g: Obj) => g.name === "web");
-    // ps keeps showing the old leader, as for a process that would not die.
+    // A recorded member that would not die: a live process of ours, which ps shows in the old group.
+    // Its own row (start time and all) with the group's pgid: on Linux the start time comes from /proc.
+    const stuck = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore" });
+    reapers.push(stuck.pid!);
+    expect(await until(() => Boolean(startTime(stuck.pid!)), 3000)).toBe(true);
+    const rec = runJson(main);
+    rec.groups.find((g: Obj) => g.name === "web").members.push({ pid: stuck.pid, started: startTime(stuck.pid!), cmdline: "stuck" });
+    writeFileSync(join(main, ".argus/live/run.json"), JSON.stringify(rec));
+    const row = execFileSync("ps", ["-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "command=", "-p", String(stuck.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } })
+      .trim()
+      .replace(/^(\d+\s+\d+\s+)\d+/, `$1${old.pgid}`);
     const ghost = (argv: string[], o: Obj = {}) => {
       const res = noDocker(argv, o) as Obj;
-      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${old.pgid} 1 ${old.pgid} ${old.started} ${old.cmdline}\n` };
+      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${row}\n` };
       return res;
     };
     await up(main, { ...opts({ fresh: true }), runner: ghost });
