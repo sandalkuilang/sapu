@@ -450,6 +450,20 @@ export function supportFile({ live, smoke, roles }) {
   return withHeader(body, { what: "from .argus/live.json and .argus/smoke.json" });
 }
 
+/**
+ * The screens of journey `id` (spec §19.7: "the path's screens"): the steps of `steps` that get a screenshot (and
+ * the ARIA snapshot and axe run of the a11y project), ascending. smoke.json's `journeys.<id>.screens`, else the
+ * last step that acts on a page (the goal's own screen). A step that is no step of the path, or is the system's,
+ * has no page to shoot: refused, naming the key.
+ */
+export function screensOf(id, steps, smoke) {
+  const withPage = steps.filter((s) => s.as !== "system").map((s) => s.n);
+  const named = smoke.journeys && smoke.journeys[id] && smoke.journeys[id].screens;
+  if (!named) return withPage.slice(-1);
+  for (const n of named) if (!withPage.includes(n)) throw fail(`smoke.json journeys.${id}.screens names step ${n}, which is not a step of the path acting on a page`);
+  return [...named].sort((a, b) => a - b);
+}
+
 /** The names a smoke test declares itself: a page variable never takes one. */
 const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "mail", "readValue", "collectErrors", "newMarker", "inProject", "browser", "baseURL", "viewport", "test", "expect"];
 
@@ -477,7 +491,19 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false }) {
   const errors = [...pages.values()].filter((p) => p.errors).map(({ v }) => `const errors_${v} = collectErrors(${v});`);
   const projects = suiteProjects({ live, smoke });
   const checks = [...LAYOUT, ...A11Y].map((c) => gated(c, projects));
-  const lines = stepLines(steps, { pages, smoke: true, checks, ctx: { id, steps, smoke, projects: projects.map((p) => p.name) } });
+  const screens = screensOf(id, steps, smoke);
+  // A screenshot is asserted by the engines and the further viewports, never in msedge (a branded channel moves with the machine).
+  const shooting = JSON.stringify(projects.filter((p) => (p.kind === "browser" || p.kind === "viewport") && p.browser !== "msedge").map((p) => p.name));
+  const owners = [...(smoke.masks || []), ...((smoke.journeys && smoke.journeys[id] && smoke.journeys[id].masks) || [])];
+  // Masked: <time> elements, the marker, every value read so far and the owner's locators (smoke.json masks).
+  const shot = (g) => {
+    if (!screens.includes(g.n)) return [];
+    const v = pages.get(g.as).v;
+    const texts = ["marker", ...steps.filter((x) => x.save && x.n <= g.n).map((x) => variable(x.save))].join(", ");
+    const mask = [`${v}.getByRole("time")`, `...[${texts}].filter((t) => t !== "").map((t) => ${v}.getByText(t))`, ...owners.map((m) => targetCode(parseTarget(m), v, str))];
+    return [`if (inProject(${shooting})) {`, `  await ${v}.mouse.move(-1, -1);`, `  await expect(${v}).toHaveScreenshot(${JSON.stringify(`${g.n}.png`)}, {"animations": "disabled", "caret": "hide", "mask": [${mask.join(", ")}]});`, "}"];
+  };
+  const lines = stepLines(steps, { pages, smoke: true, checks, shot, ctx: { id, steps, smoke, screens, projects: projects.map((p) => p.name) } });
   const body = [
     'import { test, expect } from "@playwright/test";',
     'import type { BrowserContext } from "@playwright/test";',
@@ -602,6 +628,10 @@ export function smokeConfig({ live, smoke }) {
     `  workers: CI ? 1 : ${smoke.workers === null || smoke.workers === undefined ? "undefined" : JSON.stringify(smoke.workers)},`,
     "  globalTimeout: CI ? 3_600_000 : 0,",
     '  updateSnapshots: CI ? "none" : "missing",',
+    "  // Baselines are the CI container's: elsewhere a screenshot is not compared.",
+    "  ignoreSnapshots: !CI,",
+    '  snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}",',
+    '  expect: { toMatchAriaSnapshot: { pathTemplate: "{testDir}/__aria__/{testFileBaseName}/{arg}{ext}" } },',
     '  reporter: CI ? [["list"], ["json", { outputFile: "test-results/results.json" }]] : "list",',
     ...(servers.length ? [`  webServer: ${literal(servers).replace(/"cwd": "REPO"/g, '"cwd": REPO')},`] : []),
     `  use: { baseURL: BASE_URL, ...${literal(use)} },`,

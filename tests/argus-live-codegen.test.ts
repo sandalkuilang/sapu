@@ -3,7 +3,7 @@
 // fixture app runs green under the pinned runner (a machine without Chrome fails here, never skips).
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -365,67 +365,175 @@ describe("argus-live codegen — projects and browsers", () => {
   });
 });
 
+/** The shot gate every spec carries: the projects a screenshot is asserted in. */
+const SHOT_PROJECTS = ["chromium", "firefox", "webkit", "chromium-390"];
+
+describe("argus-live codegen — screenshots", () => {
+  it("the path's last page step is shot after the pointer is parked: animations off, caret hidden, the dynamic content masked", () => {
+    const text = spec();
+    const shot = text.slice(text.indexOf('    if (inProject(["chromium"'));
+    expect(shot.split("\n").slice(0, 4)).toEqual([
+      `    if (inProject(${JSON.stringify(SHOT_PROJECTS)})) {`,
+      "      await sales1.mouse.move(-1, -1);",
+      '      await expect(sales1).toHaveScreenshot("14.png", {"animations": "disabled", "caret": "hide", "mask": [sales1.getByRole("time"), ...[marker, saved_order].filter((t) => t !== "").map((t) => sales1.getByText(t))]});',
+      "    }",
+    ]);
+    expect((text.match(/toHaveScreenshot/g) ?? []).length).toBe(1);
+    // Playwright's own tolerance: no allowance of pixels, no threshold, no full page.
+    for (const banned of ["maxDiffPixels", "maxDiffPixelRatio", "threshold", "fullPage", "stylePath", "scale"]) expect(text, banned).not.toContain(banned);
+    expect(check(text)).toEqual({ code: 0, err: "" });
+  });
+
+  it("smoke.json's screens name the steps; masks add the owner's locators; a value is masked only once it is read", () => {
+    const smoke = validateSmoke({ masks: ["getByTestId('clock')"], journeys: { checkout: { screens: [11, 5, 7], masks: ["getByRole('status', { name: 'Promo' })"] } } }).value;
+    const text = spec({ smoke });
+    expect([...text.matchAll(/toHaveScreenshot\("(\d+)\.png"/g)].map((m) => m[1])).toEqual(["5", "7", "11"]);
+    const shots = text.split("\n").filter((l) => l.includes("toHaveScreenshot"));
+    // Step 5 comes before the read of step 6: only the marker; the clock and the promo status are the owner's.
+    expect(shots[0]).toContain('"mask": [customer1.getByRole("time"), ...[marker].filter((t) => t !== "").map((t) => customer1.getByText(t)), customer1.getByTestId("clock"), customer1.getByRole("status", {"name": "Promo"})]');
+    expect(shots[1]).toContain("...[marker, saved_order].filter");
+    expect(shots[2]).toContain("sales1.getByRole");
+    expect(check(text)).toEqual({ code: 0, err: "" });
+    // A screen is a step of the path with a page: a system step or an absent one is refused, naming the key.
+    for (const n of [1, 2, 99]) expect(() => spec({ smoke: validateSmoke({ journeys: { checkout: { screens: [n] } } }).value })).toThrow(`failed: codegen: smoke.json journeys.checkout.screens names step ${n}, which is not a step of the path acting on a page`);
+  });
+
+  it("every registered check is told the screens and the projects", async () => {
+    const layout = await import("../plugins/sapu/scripts/argus-live-layout.mjs");
+    const seen: Obj[] = [];
+    layout.CHECKS.push({ name: "probe", source: "", emit: (_s: Obj, ctx: Obj) => (seen.push(ctx), []) });
+    try {
+      spec({ smoke: validateSmoke({ journeys: { checkout: { screens: [3, 5] } } }).value });
+    } finally {
+      layout.CHECKS.length = 0;
+    }
+    expect(seen[0]).toMatchObject({ id: "checkout", screens: [3, 5], projects: [...SHOT_PROJECTS.slice(0, 3), "msedge", "chromium-390", "a11y"] });
+  });
+
+  it("the config names where baselines live and ignores them outside CI", () => {
+    const text = smokeConfig({ live: LIVE(), smoke: SMOKE() });
+    expect(text).toContain("  ignoreSnapshots: !CI,");
+    const ci = evalConfig(text, { env: { CI: "1" } }).config;
+    const local = evalConfig(text, { env: { CI: "" } }).config;
+    expect(ci.snapshotPathTemplate).toBe("{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}");
+    expect([ci.ignoreSnapshots, local.ignoreSnapshots]).toEqual([false, true]);
+    expect([ci.updateSnapshots, local.updateSnapshots]).toEqual(["none", "missing"]);
+    // ARIA baselines (the a11y checks) sit beside the screenshots', one directory per spec.
+    expect(ci.expect.toMatchAriaSnapshot.pathTemplate).toBe("{testDir}/__aria__/{testFileBaseName}/{arg}{ext}");
+    // No tolerance of the config's own either.
+    expect(JSON.stringify(ci.expect)).not.toMatch(/threshold|maxDiff/);
+  });
+});
+
+/** The suite for the fixture app, generated into a scratch repo beside a running app; `run` drives the pinned runner on it. */
+async function fixtureSuite({ paths, smokeExtra = {} }: { paths: { id: string; path: Obj[] }[]; smokeExtra?: Obj }) {
+  const { cli } = browserTools();
+  const web = await freePort();
+  const data = join(tempDir(), "app_explore");
+  const appEnv = { PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: TOTP, CONTROL_TOKEN: "control-7", CACHE_URL: "tcp://127.0.0.1:9" };
+  expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: { ...process.env, ...appEnv } }).status).toBe(0);
+  const live = {
+    ...example(),
+    base_url: "http://localhost:{port:web}",
+    login_url: "/login",
+    logged_in: "getByRole('button', { name: 'Account' })",
+    test_id_attribute: "data-testid",
+    facts: { argv: [process.execPath, SERVER, "--facts", "{1}"] },
+    triggers: {},
+    settle_ms: 5000,
+    viewports: [1280],
+    roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] }, clerk: { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] } },
+  };
+  delete live.mail;
+  const smoke = validateSmoke({ dir: "e2e/argus-smoke", ...smokeExtra, ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-codegen-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
+  expect(smoke).not.toBeNull();
+  const files = generateSuite({ paths, live, smoke }) as Record<string, string>;
+  const dir = join(tempDir(), "e2e/argus-smoke");
+  mkdirSync(dir, { recursive: true });
+  for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, f), text);
+  // @playwright/test through a scratch stub over the pinned install (never npm install).
+  const pinned = join(cli.dir, "node_modules");
+  mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
+  writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
+  for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
+  writeFileSync(join(dir, "wrapper.config.ts"), 'import base from "./playwright.config";\n\nexport default { ...base, projects: base.projects.map((p) => ({ ...p, use: { ...p.use, channel: "chrome" } })) };\n');
+  const run = (args: string[]) => {
+    const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), "test", "-c", "wrapper.config.ts", ...args, "--project", "setup", "--project", "chromium"], { cwd: dir, encoding: "utf8", timeout: 240_000, env: { ...process.env, ...appEnv, CI: "1" } });
+    const results = existsSync(join(dir, "test-results/results.json")) ? JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8")) : null;
+    return { status: r.status, out: `${r.stdout}\n${r.stderr}`, results };
+  };
+  return { dir, files, run };
+}
+const PLACE = (): Obj[] => [
+  { as: "buyer", do: "goto", path: "/orders/new" },
+  { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "1" },
+  { as: "buyer", do: "click", target: { role: "button", name: "Place order" } },
+  { as: "buyer", do: "read", target: { testId: "order-number" }, save: "order" },
+  { as: "buyer", expect: "visible", target: { testId: "order-number" } },
+];
+const titles = (s: Obj): string[] => [...(s.specs ?? []).map((x: Obj) => x.title), ...(s.suites ?? []).flatMap(titles)];
+const resultsOf = (s: Obj): Obj[] => [...(s.specs ?? []).flatMap((x: Obj) => x.tests.flatMap((t: Obj) => t.results.map((r: Obj) => ({ ...r, title: x.title, test: t.status })))), ...(s.suites ?? []).flatMap(resultsOf)];
+
 describe("argus-live codegen — the generated suite under the pinned runner", () => {
   it("runs green for the fixture app with CI=1, setup then chromium, each test holding its locks", async () => {
-    const { cli } = browserTools();
-    const web = await freePort();
-    const data = join(tempDir(), "app_explore");
-    const appEnv = { PORT: String(web), DATA_DIR: data, APP_PW: PW, APP_TOTP: TOTP, CONTROL_TOKEN: "control-7", CACHE_URL: "tcp://127.0.0.1:9" };
-    expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: { ...process.env, ...appEnv } }).status).toBe(0);
-    const live = {
-      ...example(),
-      base_url: "http://localhost:{port:web}",
-      login_url: "/login",
-      logged_in: "getByRole('button', { name: 'Account' })",
-      test_id_attribute: "data-testid",
-      facts: { argv: [process.execPath, SERVER, "--facts", "{1}"] },
-      triggers: {},
-      settle_ms: 5000,
-      viewports: [1280],
-      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] }, clerk: { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] } },
-    };
-    delete live.mail;
-    const smoke = validateSmoke({ dir: "e2e/argus-smoke", ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-codegen-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
-    expect(smoke).not.toBeNull();
-    const PLACE = [
-      { as: "buyer", do: "goto", path: "/orders/new" },
-      { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "1" },
-      { as: "buyer", do: "click", target: { role: "button", name: "Place order" } },
-      { as: "buyer", do: "read", target: { testId: "order-number" }, save: "order" },
-      { as: "buyer", expect: "visible", target: { testId: "order-number" } },
-    ];
     const paths = [
-      { id: "place-order", path: [...PLACE, { as: "system", expect: "fact-equals", marker: "{{order}}", field: "status", value: "placed" }] },
-      { id: "order-handoff", path: [...PLACE, { as: "clerk", do: "goto", path: "/inbox" }, { as: "clerk", expect: "visible", target: { text: "{{order}}" } }] },
+      { id: "place-order", path: [...PLACE(), { as: "system", expect: "fact-equals", marker: "{{order}}", field: "status", value: "placed" }] },
+      { id: "order-handoff", path: [...PLACE(), { as: "clerk", do: "goto", path: "/inbox" }, { as: "clerk", expect: "visible", target: { text: "{{order}}" } }] },
     ];
-    const files = generateSuite({ paths, live, smoke });
-    const repo = tempDir();
-    const dir = join(repo, "e2e/argus-smoke");
-    mkdirSync(dir, { recursive: true });
-    for (const [f, text] of Object.entries(files) as [string, string][]) writeFileSync(join(dir, f), text);
-    // @playwright/test through a scratch stub over the pinned install (never npm install).
-    const pinned = join(cli.dir, "node_modules");
-    mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
-    writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
-    for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
-    writeFileSync(join(dir, "wrapper.config.ts"), 'import base from "./playwright.config";\n\nexport default { ...base, projects: base.projects.map((p) => ({ ...p, use: { ...p.use, channel: "chrome" } })) };\n');
-    const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), "test", "-c", "wrapper.config.ts", "--project", "setup", "--project", "chromium"], {
-      cwd: dir,
-      encoding: "utf8",
-      timeout: 240_000,
-      env: { ...process.env, ...appEnv, CI: "1" },
-    });
-    const results = JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8"));
-    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+    const { dir, files, run } = await fixtureSuite({ paths });
+    // The suite's baselines are CI's baseline run's: here the first run writes them (spec 19.8).
+    const r = run(["--update-snapshots=missing"]);
+    const { results } = r;
+    expect(r.status, r.out).toBe(0);
     expect(results.stats).toMatchObject({ expected: 4, unexpected: 0, flaky: 0 });
-    const titles = (s: Obj): string[] => [...(s.specs ?? []).map((x: Obj) => x.title), ...(s.suites ?? []).flatMap(titles)];
     expect(results.suites.flatMap(titles).sort()).toEqual(["order-handoff", "place-order", "sign in buyer.1", "sign in clerk.1"]);
     for (const a of ["buyer.1", "clerk.1"]) expect(statSync(join(dir, ".auth", `${a}.json`)).mode & 0o777, a).toBe(0o600);
     // The steps CI names: each test's results carry its test.step titles.
     const steps = (s: Obj): string[] => [...(s.specs ?? []).flatMap((x: Obj) => x.tests.flatMap((t: Obj) => t.results.flatMap((res: Obj) => (res.steps ?? []).map((st: Obj) => st.title)))), ...(s.suites ?? []).flatMap(steps)];
     expect(results.suites.flatMap(steps)).toEqual(expect.arrayContaining(["step 3 do:click", "step 6 expect:fact-equals", "step 7 expect:visible"]));
     // No password reached the suite's files or the runner's output.
-    for (const [f, text] of Object.entries(files) as [string, string][]) expect(text.includes(PW), f).toBe(false);
-    expect(`${r.stdout}${r.stderr}`.includes(PW)).toBe(false);
-  }, 300_000);
+    for (const [f, text] of Object.entries(files)) expect(text.includes(PW), f).toBe(false);
+    expect(r.out.includes(PW)).toBe(false);
+  }, 480_000);
+
+  it("screenshots: 'none' fails a missing one with no actual, 'missing' writes it and passes, then 'none' holds; 'changed' rewrites an ARIA baseline", async () => {
+    const smokeExtra = { journeys: { "place-order": { screens: [1, 5] } } };
+    const { dir, run } = await fixtureSuite({ paths: [{ id: "place-order", path: PLACE() }], smokeExtra });
+    const platform = process.platform;
+    const shot = (n: number) => join(dir, "__screenshots__/chromium", platform, "place-order.spec", `${n}.png`);
+    // 1. A normal CI run (updateSnapshots "none"): a missing baseline fails, writes nothing and attaches no actual.
+    const none = run([]);
+    expect(none.status, none.out).toBe(1);
+    const failed = resultsOf(none.results.suites[0]).concat(none.results.suites.slice(1).flatMap(resultsOf)).filter((r) => r.title === "place-order");
+    expect(failed.length).toBeGreaterThan(0);
+    for (const r of failed) {
+      expect(r.test).toBe("unexpected");
+      expect(r.error.message).toContain("A snapshot doesn't exist at");
+      expect((r.attachments ?? []).filter((a: Obj) => /actual\.png$/.test(String(a.path ?? a.name)))).toEqual([]);
+    }
+    expect(existsSync(shot(1)) || existsSync(shot(5))).toBe(false);
+    // 2. The baseline run's flag writes both and passes, over the config's "none".
+    const missing = run(["--update-snapshots=missing"]);
+    expect(missing.status, missing.out).toBe(0);
+    for (const n of [1, 5]) expect(readFileSync(shot(n)).subarray(0, 8).toString("hex"), `${n}.png`).toBe("89504e470d0a1a0a");
+    // 3. A normal run now holds: the dynamic content (marker, order number) is masked.
+    const again = run([]);
+    expect(again.status, again.out).toBe(0);
+    expect(again.results.stats).toMatchObject({ unexpected: 0, flaky: 0 });
+    // 4. The ARIA probe (spec 19.7, plan C3.2): a hand-written spec in the suite's own config.
+    writeFileSync(join(dir, "aria-probe.spec.ts"), 'import { test, expect } from "@playwright/test";\n\ntest("aria-probe", async ({ page }) => {\n  await page.goto("/login");\n  await expect(page.getByRole("main")).toMatchAriaSnapshot({ name: "1.aria.yml" });\n});\n');
+    const aria = join(dir, "__aria__/aria-probe.spec/1.aria.yml");
+    const probe = (...args: string[]) => run(["aria-probe", ...args]);
+    const wrote = probe("--update-snapshots=missing");
+    expect(wrote.status, wrote.out).toBe(0);
+    const received = readFileSync(aria, "utf8");
+    expect(received).toContain('heading "Sign in"');
+    writeFileSync(aria, '- main:\n  - heading "Old title" [level=1]\n');
+    const stale = probe();
+    expect(stale.status).toBe(1);
+    expect(stale.out).toContain("toMatchAriaSnapshot");
+    const changed = probe("--update-snapshots=changed");
+    expect(changed.status, changed.out).toBe(0);
+    expect(readFileSync(aria, "utf8")).toBe(received);
+  }, 480_000);
 });
