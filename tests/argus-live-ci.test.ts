@@ -90,7 +90,8 @@ const artifact = () => {
 };
 
 /** A gh stand-in: answers `api` routes from `api`, downloads `artifacts[<run id>]`, records every call; git runs for real. */
-const fakeGh = ({ api = {} as Obj, artifacts = {} as Record<string, string>, comment = { status: 0, stdout: "https://github.com/owner/app/pull/7#issuecomment-1\n" }, dispatch = { status: 0, stdout: "", stderr: "" } } = {}) => {
+/** `views` answers `gh pr view <url>` (a proposal's state word) by URL. */
+const fakeGh = ({ api = {} as Obj, artifacts = {} as Record<string, string>, comment = { status: 0, stdout: "https://github.com/owner/app/pull/7#issuecomment-1\n" }, dispatch = { status: 0, stdout: "", stderr: "" }, views = {} as Record<string, string> } = {}) => {
   const calls: string[][] = [];
   const bodies: string[] = [];
   const runner = (argv: string[], opts: Obj = {}) => {
@@ -117,6 +118,7 @@ const fakeGh = ({ api = {} as Obj, artifacts = {} as Record<string, string>, com
       return { ...comment, stderr: "" };
     }
     if (a[0] === "workflow" && a[1] === "run") return dispatch;
+    if (a[0] === "pr" && a[1] === "view" && Object.hasOwn(views, a[2])) return { status: 0, stdout: `${views[a[2]]}\n`, stderr: "" };
     return { status: 4, stdout: "", stderr: "fake gh: unknown call\n" };
   };
   return { runner, calls, bodies };
@@ -194,6 +196,24 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
       ["api", "repos/owner/app/actions/runs/101"],
       ["run", "download", "101", "--repo", "owner/app", "--pattern", "argus-smoke-results*", "--dir", expect.any(String)],
     ]);
+  });
+
+  it("a heal proposal the owner closed: pending-regression <id> <url> and a quarantine staged until the owner decides", async () => {
+    const t = ciRepo();
+    const url = "https://github.com/owner/app/pull/9";
+    writeFileSync(join(t.main, ".argus/smoke-state.json"), JSON.stringify({ proposals: { ["e".repeat(64)]: { kind: "heal", id: "refund", branch: `argus/smoke-${t.runId}`, url, outcome: "open" } } }));
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() }, views: { [url]: "CLOSED" } });
+    const r = await smokeCi(t.main, { run: "101" }, { runner: gh.runner });
+    const { outside } = split(r.lines);
+    expect(gh.calls).toContainEqual(["pr", "view", url, "--json", "state", "--jq", ".state"]);
+    expect(outside).toContain(`pending-regression refund ${url}`);
+    const state = readState(t.main);
+    const q = state.staged.find((x: Obj) => x.kind === "quarantine" && x.id === "refund");
+    expect(q).toMatchObject({ run: t.runId, quarantine: { id: "refund", issue: null, since: t.runId } });
+    expect(outside).toContain(`quarantine refund: staged until the owner decides (digest ${q.digest.slice(0, 12)})`);
+    expect(state.rejected).toEqual(["e".repeat(64)]);
+    expect(state.journeys.refund.regression).toEqual({ url, run: t.runId });
+    expect(outside.at(-1)).toMatch(/^smoke ci: \d+ failing/);
   });
 
   it("a flake on a base-branch push is staged into quarantine with its fingerprint; nothing else is staged and no suite file changes", async () => {

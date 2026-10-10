@@ -9,7 +9,7 @@ import { fence } from "./argus-live-fence.mjs";
 import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
-import { codeBlock, readState, stageInto, writeState } from "./argus-live-suite.mjs";
+import { codeBlock, readState, refreshOutcomes, settleRegressions, stageInto, writeState } from "./argus-live-suite.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
 /** A GitHub Actions run id. */
@@ -282,7 +282,8 @@ const changeBody = (title, lines) => [`### ${title}`, "", ...codeBlock(lines)];
  * (PNGs under 5 MB copied to `.argus/smoke-ci/<run>/<id>/<project>/`, 0600); `baseline-missing <id> <project>`;
  * `aria <id> <n> [k]`; from the checks' annotations (a passing test's too) `check <id> <check> [k]`, `manual <id> <check>
  * [k]` and `info <id> <project> [k]`; `quarantined <id> <project>: …`;
- * quarantine's lifecycle for the running cycle. Every key, diff and message is printed only in one fence, `[k]`
+ * quarantine's lifecycle for the running cycle; `pending-regression <id> <url>` for a heal the owner closed
+ * (settleRegressions, with its `quarantine <id>: …` line). Every key, diff and message is printed only in one fence, `[k]`
  * naming its entry. The unfenced lines go to `.argus/smoke-ci/<run>/triage.json` for the report. Exit 3 with a
  * failure, else 2 with a harness line, else 0. `runner` is gh's and git's seam.
  */
@@ -461,6 +462,11 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
       state.journeys[id] = j;
     }
     lifecycle(main, { state, smoke, ids, reads, ciRun, add });
+    // A heal the owner closed leaves the break with them (spec §19.9): pending-regression and quarantined until they rule.
+    refreshOutcomes(state, { runner, cwd: main });
+    const settled = settleRegressions(main, state, { dir: smoke.dir, members: new Set(ids) });
+    for (const { id, url } of settled.pending) add(`pending-regression ${id} ${url}`);
+    for (const l of settled.lines) add(l);
     if (outside) add(`skipped: ${outside} test result(s) outside the suite's names and projects`);
     if (badViolations) add(`skipped: ${badViolations} violation(s) not in a check's shape`);
     if (badFiles) add(`skipped: ${badFiles} file(s): not a PNG, over 5 MB, outside the run's test results or not a regular file`);

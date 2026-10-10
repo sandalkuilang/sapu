@@ -8,7 +8,7 @@ import path from "node:path";
 import { generateSuite, headerDigest, SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
 import { expandConfig, LIVE_FILE, loadLive, loadSmoke, SMOKE_DEFAULTS, validateLive } from "./argus-live-config.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
-import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
+import { lastRun, liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { readJourneys, score } from "./argus-live-map.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
@@ -112,12 +112,13 @@ const rolesOf = (j) => new Set(j.steps.map((s) => s && s.role).filter((r) => typ
 
 /**
  * The plan (spec §19.3) → `{entries: [{id, line, target}], lines}`, `target` true for the target set's members.
+ * `state` is the smoke state to read (settled by smokePlan; else the file's).
  * The catalog's journeys but global ones are ranked: pinned (in pin's order), money, exposure (SELECT's,
  * score with no visit or commit: money doubles it), suite members before non-members of that tier, filed
  * findings, distinct roles, id. Excluded and retired journeys leave the ranking; the first `max` of the rest
  * are the target set. One line each, the target set's in rank order, then the drops.
  */
-export function planOf(main, { runner = run, gh = "gh" } = {}) {
+export function planOf(main, { runner = run, gh = "gh", state: given = null } = {}) {
   const map = readJourneys(main);
   if (!map) throw new Error("refused: smoke plan: no journey catalog (.argus/journeys.json): run map-check first");
   const smoke = smokeOf(main, "smoke plan");
@@ -133,7 +134,7 @@ export function planOf(main, { runner = run, gh = "gh" } = {}) {
     }
     if (!j) throw new Error(`refused: smoke plan: pin names ${id}, which the catalog does not hold`);
   }
-  const state = readState(main);
+  const state = given ?? readState(main);
   const retired = (id) => members.has(id) && isObj(state.journeys[id]) && state.journeys[id].retire === true;
   const pinAt = (id) => (smoke.pin.includes(id) ? smoke.pin.indexOf(id) : Infinity);
   const key = (j) => [pinAt(j.id), j.money ? 0 : 1, -score(j, { cycle: 0 }), members.has(j.id) ? 0 : 1, -(Array.isArray(j.filed) ? j.filed.length : 0), -rolesOf(j)];
@@ -157,9 +158,12 @@ export function planOf(main, { runner = run, gh = "gh" } = {}) {
     else {
       taken += 1;
       const last = pass.get(id);
+      const mark = members.has(id) && isObj(state.journeys[id]) && isObj(state.journeys[id].regression) ? state.journeys[id].regression : null;
       const line = pending.byId.has(id)
         ? `pending ${id} ${pending.byId.get(id)}`
-        : quarantined.has(id) && members.has(id)
+        : mark && typeof mark.url === "string" && PR_URL.test(mark.url)
+          ? `pending-regression ${id} ${PR_URL.exec(mark.url)[0]}`
+          : quarantined.has(id) && members.has(id)
           ? `quarantined ${id}`
           : members.has(id) && last && last.verdict === "broke" && /^target-/.test(String(last.kind))
             ? `heal ${id}`
@@ -179,9 +183,21 @@ export function planOf(main, { runner = run, gh = "gh" } = {}) {
   return { entries, lines, smoke };
 }
 
-/** `smoke plan` → `{code, lines}`: one `keep|capture|drop|heal|quarantined|pending` line per journey, then `upgrade` when the suite's pin is behind. */
-export function smokePlan(main, opts = {}) {
-  return { code: 0, lines: planOf(main, opts).lines };
+/**
+ * `smoke plan` → `{code, lines}`: one `keep|capture|drop|heal|quarantined|pending|pending-regression` line per journey,
+ * then `upgrade` when the suite's pin is behind, then the `quarantine <id>: …` lines of settleRegressions. It asks gh
+ * how each open proposal ended first (refreshOutcomes), and writes the smoke state when that or settling changed it.
+ */
+export function smokePlan(main, { runner = run, gh = "gh" } = {}) {
+  const smoke = smokeOf(main, "smoke plan");
+  const state = readState(main);
+  const before = JSON.stringify(state);
+  refreshOutcomes(state, { runner, gh, cwd: main });
+  const members = new Set(suitePaths(main, smoke.dir, "smoke plan").map((p) => p.id));
+  const settled = settleRegressions(main, state, { dir: smoke.dir, members });
+  const { lines } = planOf(main, { runner, gh, state });
+  if (JSON.stringify(state) !== before) writeState(main, state);
+  return { code: 0, lines: [...lines, ...settled.lines] };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -276,6 +292,112 @@ export function codeBlock(lines) {
   const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const f = "`".repeat(Math.max(3, longest + 1));
   return [`${f}text`, ...lines, f];
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The owner's rulings on a proposal (spec §19.8, §19.9): merged accepts it; closed rejects it, and a closed heal
+// leaves the break with the owner — pending-regression and quarantined — until a fix holds or smoke retire.
+
+/** A pull request's URL in gh's words. */
+export const PR_URL = /https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
+
+/**
+ * The outcome of each open proposal asked of gh (`gh pr view <url> --json state`): MERGED → merged (accepted),
+ * CLOSED → closed (rejected: its digest moves into `rejected`, so no verb stages that change again). A closed heal
+ * marks its journey `regression: {url, run}` (the run its branch names); a closed retire clears the journey's
+ * `retire`. `state` is updated in place; true when anything changed.
+ */
+export function refreshOutcomes(state, { runner = run, gh = "gh", cwd }) {
+  const asked = new Map();
+  let changed = false;
+  for (const [digest, p] of Object.entries(state.proposals)) {
+    if (!isObj(p) || p.outcome !== "open" || typeof p.url !== "string" || !PR_URL.test(p.url)) continue;
+    if (!asked.has(p.url)) {
+      const r = runner([gh, "pr", "view", p.url, "--json", "state", "--jq", ".state"], { cwd });
+      asked.set(p.url, r.status === 0 ? String(r.stdout ?? "").trim() : "");
+    }
+    const word = asked.get(p.url);
+    const outcome = word === "MERGED" ? "merged" : word === "CLOSED" ? "closed" : null;
+    if (outcome) [p.outcome, changed] = [outcome, true];
+    if (outcome !== "closed") continue;
+    if (!state.rejected.includes(digest)) state.rejected.push(digest);
+    if (typeof p.id !== "string" || !JOURNEY.test(p.id) || (p.kind !== "heal" && p.kind !== "retire")) continue;
+    const j = { ...(isObj(state.journeys[p.id]) ? state.journeys[p.id] : {}) };
+    const run = String(p.branch ?? "").replace(/^argus\/smoke-/, "");
+    if (p.kind === "heal") j.regression = { url: PR_URL.exec(p.url)[0], run: RUN_ID.test(run) ? run : null };
+    else delete j.retire;
+    state.journeys[p.id] = j;
+  }
+  return changed;
+}
+
+/** The quarantine that holds journey `id`, its heal closed (`mark`), until the owner decides; `run` names it. */
+function regressionQuarantine(id, mark, run) {
+  const evidence = [`its heal ${mark.url} was closed unmerged: quarantined until the owner decides (a fix the lane's pass holds, or smoke retire ${id})`];
+  return { kind: "quarantine", id, run, changes: [{ kind: "quarantine", id, evidence, run }], body: [`### Quarantine: ${id}`, "", ...evidence], quarantine: { id, issue: null, since: run } };
+}
+
+/**
+ * The closed heals the owner has not ruled on (spec §19.9), for smoke plan and smoke ci → `{pending: [{id, url}],
+ * lines}`, `state` changed in place. A suite member marked `regression` is pending until the lane's last pass holds
+ * it (a fix: the mark and the quarantine staged for it go) or the owner retires it; while pending, a quarantine is
+ * staged unless quarantine.json holds it or it was staged or proposed already (`quarantine <id>: …` lines). A journey
+ * that left the suite loses `retire` and its mark: a retire merged, and smoke plan lists it capture again.
+ */
+export function settleRegressions(main, state, { dir, members }) {
+  const pending = [];
+  const lines = [];
+  const pass = lastPass(main);
+  const held = new Set(quarantineIds(main, dir));
+  for (const [id, was] of Object.entries(state.journeys)) {
+    if (!JOURNEY.test(id) || !isObj(was) || (was.retire === undefined && was.regression === undefined)) continue;
+    const j = { ...was };
+    const mark = isObj(j.regression) && typeof j.regression.url === "string" && PR_URL.test(j.regression.url) ? j.regression : null;
+    const run = mark && (mark.run ?? lastRun(main));
+    const entry = run ? regressionQuarantine(id, mark, run) : null;
+    const digest = entry && changeDigest(entry);
+    if (!members.has(id)) [j.retire, j.regression] = [undefined, undefined];
+    else if (j.retire === true || !mark) j.regression = undefined;
+    else if (pass.get(id)?.verdict === "held") {
+      j.regression = undefined;
+      state.staged = state.staged.filter((s) => s.digest !== digest);
+    } else {
+      pending.push({ id, url: PR_URL.exec(mark.url)[0] });
+      const p = digest && state.proposals[digest];
+      if (entry && !held.has(id) && !(isObj(p) && p.outcome !== "closed") && !state.staged.some((s) => s.digest === digest)) {
+        const s = stageInto(state, entry);
+        lines.push(s.staged ? `quarantine ${id}: staged until the owner decides (digest ${digest.slice(0, 12)})` : `quarantine ${id}: not staged (rejected before; digest ${digest.slice(0, 12)})`);
+      }
+    }
+    state.journeys[id] = JSON.parse(JSON.stringify(j));
+  }
+  return { pending, lines };
+}
+
+/**
+ * `smoke retire <id>` → `{code, lines}` (spec §19.9): the owner's ruling that what broke a suite journey was an
+ * intended change (they closed its regression issue as not planned, or said so). A `retire` is staged in place of
+ * every other change staged for it (smoke propose removes its path, spec, known violations and baselines) and the
+ * journey is marked `retire`: smoke plan lists it `drop <id> (retired)` until that merges, then `capture`. The
+ * owner's alone: the guard refuses it to every subagent. A retire the owner closed before is not staged again.
+ */
+export function smokeRetire(main, id) {
+  if (typeof id !== "string" || !JOURNEY.test(id)) throw new Error("refused: smoke retire: that is not a journey id");
+  const smoke = smokeOf(main, "smoke retire");
+  if (!suitePaths(main, smoke.dir, "smoke retire").some((p) => p.id === id)) throw new Error(`refused: smoke retire: the suite has no path ${id}`);
+  const run = lastRun(main);
+  if (!run) throw new Error("refused: smoke retire: no lane run names the change (run a journey cycle first)");
+  const state = readState(main);
+  const evidence = ["the owner ruled the change that broke it intended"];
+  const entry = { kind: "retire", id, run, changes: [{ kind: "retire", id, evidence, run }], body: [`### Retire: ${id}`, "", "The owner ruled the change that broke this journey intended: its path, spec, known violations and baselines leave the suite, and smoke plan lists it capture for a new path."] };
+  const digest = changeDigest(entry);
+  if (state.rejected.includes(digest)) return { code: 0, lines: [`retire ${id}: not staged (this change was rejected before; digest ${digest.slice(0, 12)})`] };
+  state.staged = state.staged.filter((s) => s.id !== id);
+  stageInto(state, entry);
+  const { regression: _gone, ...rest } = isObj(state.journeys[id]) ? state.journeys[id] : {};
+  state.journeys[id] = { ...rest, retire: true };
+  writeState(main, state);
+  return { code: 0, lines: [`retire ${id}: staged (digest ${digest.slice(0, 12)}); smoke propose removes it from the suite, then smoke plan lists it capture`] };
 }
 
 // ---------------------------------------------------------------------------------------------------

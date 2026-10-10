@@ -24,7 +24,7 @@ import { down, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs"
 // @ts-expect-error — plain ESM script without types
 import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { changeDigest, readState, smokeAdmit, smokeCheck, smokePlan, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+import { changeDigest, readState, smokeAdmit, smokeCheck, smokePlan, smokeRetire, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -194,6 +194,120 @@ describe("smoke plan — the catalog ranked into the suite's members (spec §19.
     expect(r.stderr).toBe("");
     expect(r.stdout.split("\n").slice(0, 2)).toEqual(["capture e", "capture d"]);
   }, 60_000);
+});
+
+describe("a heal the owner closed: pending-regression, quarantined, until the owner retires it or a fix holds (spec §19.9)", () => {
+  const LANE = "20300101000000-0123abcd";
+  const HEAL_URL = "https://github.com/owner/app/pull/9";
+  const DIGEST = "d".repeat(64);
+  /** A repo whose suite holds a and d, the lane's last pass holding d `verdict`, and d's heal proposed in HEAL_URL (open). */
+  const closedHealRepo = (verdict = "broke") => {
+    const main = planRepo({ members: ["a", "d"] });
+    mkdirSync(join(main, ".argus/live", LANE, "smoke"), { recursive: true });
+    writeFileSync(join(main, ".argus/live", LANE, "smoke/pass.jsonl"), `${JSON.stringify({ id: "d", verdict, step: verdict === "held" ? null : 3, kind: verdict === "held" ? null : "target-missing", seed: 1 })}\n`);
+    writeFileSync(join(main, ".argus/smoke-state.json"), JSON.stringify({ proposals: { [DIGEST]: { kind: "heal", id: "d", branch: `argus/smoke-${LANE}`, url: HEAL_URL, outcome: "open" } } }));
+    return main;
+  };
+  /** gh: no open pull request; `state` for `gh pr view`. */
+  const viewed = (state: string) => (argv: string[]) => (argv[1] === "view" ? { status: 0, stdout: `${state}\n` } : { status: 0, stdout: "[]" });
+  const QUARANTINE = (since = LANE) => ({ id: "d", issue: null, since });
+
+  it("smoke plan asks gh how the heal ended; closed → pending-regression <id> <url>, a quarantine staged, the digest rejected", () => {
+    const main = closedHealRepo();
+    const s = ghStub(viewed("CLOSED"));
+    const r = smokePlan(main, { runner: s.runner });
+    expect(s.calls).toContainEqual(["pr", "view", HEAL_URL, "--json", "state", "--jq", ".state"]);
+    const state = readState(main);
+    const q = state.staged.find((x: Obj) => x.kind === "quarantine");
+    expect(r.lines).toEqual(["capture e", `pending-regression d ${HEAL_URL}`, "keep a", "capture b", "capture c", "capture f", "drop g (global)", `quarantine d: staged until the owner decides (digest ${q.digest.slice(0, 12)})`]);
+    expect(state.rejected).toEqual([DIGEST]);
+    expect(state.proposals[DIGEST].outcome).toBe("closed");
+    expect(state.journeys.d.regression).toEqual({ url: HEAL_URL, run: LANE });
+    expect(q).toMatchObject({ kind: "quarantine", id: "d", run: LANE, quarantine: QUARANTINE() });
+    expect(q.changes[0].evidence.join("\n")).toContain(`its heal ${HEAL_URL} was closed unmerged`);
+    // The next plan asks gh nothing more about it and stages nothing twice; the line stays until the owner decides.
+    const again = ghStub(viewed("CLOSED"));
+    const r2 = smokePlan(main, { runner: again.runner });
+    expect(again.calls.filter((a) => a[1] === "view")).toEqual([]);
+    expect(r2.lines).toContain(`pending-regression d ${HEAL_URL}`);
+    expect(r2.lines.filter((l: string) => l.startsWith("quarantine d"))).toEqual([]);
+    expect(readState(main).staged).toHaveLength(1);
+  });
+
+  it("a merged heal, or one still open, is no regression", () => {
+    for (const word of ["MERGED", "OPEN"]) {
+      const main = closedHealRepo();
+      const r = smokePlan(main, { runner: ghStub(viewed(word)).runner });
+      expect(r.lines.join("\n")).not.toContain("pending-regression");
+      expect(readState(main).staged).toEqual([]);
+      expect(readState(main).rejected).toEqual([]);
+    }
+  });
+
+  it("once quarantine.json holds it, nothing more is staged; a quarantine the owner closed is named, never staged again", () => {
+    const main = closedHealRepo();
+    writeFileSync(join(main, "e2e/argus-smoke/quarantine.json"), JSON.stringify([QUARANTINE()]));
+    const r = smokePlan(main, { runner: ghStub(viewed("CLOSED")).runner });
+    expect(r.lines).toContain(`pending-regression d ${HEAL_URL}`);
+    expect(r.lines.join("\n")).not.toMatch(/^quarantine d/m);
+    expect(readState(main).staged).toEqual([]);
+    rmSync(join(main, "e2e/argus-smoke/quarantine.json"));
+    const state = readState(main);
+    const digest = changeDigest({ kind: "quarantine", id: "d", run: LANE, changes: [{ kind: "quarantine", id: "d" }], quarantine: QUARANTINE() });
+    writeFileSync(join(main, ".argus/smoke-state.json"), JSON.stringify({ ...state, rejected: [...state.rejected, digest] }));
+    expect(smokePlan(main, { runner: ghStub().runner }).lines.at(-1)).toBe(`quarantine d: not staged (rejected before; digest ${digest.slice(0, 12)})`);
+  });
+
+  it("a fix the lane's pass holds ends it: the mark and the quarantine it staged are gone, the line is keep", () => {
+    const main = closedHealRepo();
+    smokePlan(main, { runner: ghStub(viewed("CLOSED")).runner });
+    writeFileSync(join(main, ".argus/live", LANE, "smoke/pass.jsonl"), `${JSON.stringify({ id: "d", verdict: "held", step: null, kind: null, seed: 2 })}\n`);
+    const r = smokePlan(main, { runner: ghStub().runner });
+    expect(r.lines[1]).toBe("keep d");
+    const state = readState(main);
+    expect(state.journeys.d.regression).toBeUndefined();
+    expect(state.staged).toEqual([]);
+  });
+
+  it("smoke retire <id>: the owner's ruling stages a retire in place of the journey's other changes; plan lists it retired, then capture once it left the suite", () => {
+    const main = closedHealRepo();
+    smokePlan(main, { runner: ghStub(viewed("CLOSED")).runner });
+    const r = smokeRetire(main, "d");
+    const state = readState(main);
+    expect(state.staged).toHaveLength(1);
+    const st = state.staged[0];
+    expect(st).toMatchObject({ kind: "retire", id: "d", run: LANE, changes: [{ kind: "retire", id: "d", run: LANE }] });
+    expect(r).toEqual({ code: 0, lines: [`retire d: staged (digest ${st.digest.slice(0, 12)}); smoke propose removes it from the suite, then smoke plan lists it capture`] });
+    expect(state.journeys.d).toEqual({ retire: true });
+    expect(smokePlan(main, { runner: ghStub().runner }).lines).toContain("drop d (retired)");
+    // The retire merged: d left the suite, its mark goes, and the catalog's d is captured again.
+    rmSync(join(main, "e2e/argus-smoke/journeys/d.json"));
+    expect(smokePlan(main, { runner: ghStub().runner }).lines[1]).toBe("capture d");
+    expect(readState(main).journeys.d).toEqual({});
+  });
+
+  it("a retire the owner closed clears the mark: the journey is kept, and that retire is never staged again", () => {
+    const main = closedHealRepo("held");
+    const first = smokeRetire(main, "d");
+    expect(first.code).toBe(0);
+    const state = readState(main);
+    const digest = state.staged[0].digest;
+    writeFileSync(join(main, ".argus/smoke-state.json"), JSON.stringify({ ...state, staged: [], proposals: { ...state.proposals, [digest]: { kind: "retire", id: "d", branch: `argus/smoke-${LANE}`, url: "https://github.com/owner/app/pull/10", outcome: "open" } } }));
+    const r = smokePlan(main, { runner: ghStub((argv) => (argv[1] === "view" ? { status: 0, stdout: argv[2].endsWith("/10") ? "CLOSED\n" : "MERGED\n" } : { status: 0, stdout: "[]" })).runner });
+    expect(r.lines[1]).toBe("keep d");
+    expect(readState(main).journeys.d.retire).toBeUndefined();
+    expect(smokeRetire(main, "d")).toEqual({ code: 0, lines: [`retire d: not staged (this change was rejected before; digest ${digest.slice(0, 12)})`] });
+    expect(readState(main).journeys.d.retire).toBeUndefined();
+  });
+
+  it("smoke retire refuses a journey the suite lacks, a bad id, and a repo with no lane run", () => {
+    const main = closedHealRepo();
+    expect(() => smokeRetire(main, "zz")).toThrow("refused: smoke retire: the suite has no path zz");
+    expect(() => smokeRetire(main, "Bad Id")).toThrow("refused: smoke retire: that is not a journey id");
+    rmSync(join(main, ".argus/live"), { recursive: true });
+    expect(() => smokeRetire(main, "d")).toThrow("refused: smoke retire: no lane run names the change (run a journey cycle first)");
+    expect(readState(main).staged).toEqual([]);
+  });
 });
 
 /** example()'s config with test ids and a seed trigger (the smoke tests' own). */
@@ -642,6 +756,19 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     const state = readState(p.main);
     expect(state.staged).toEqual([]);
     expect(Object.values(state.proposals).map((x: Obj) => [x.kind, x.id, x.outcome])).toEqual([["heal", "checkout", "open"], ["unquarantine", "checkout", "open"], ["drop", "refund", "open"], ["quarantine", "wishlist", "open"]]);
+  }, 60_000);
+
+  it("a retire (smoke retire's) removes the journey; its run needs no ledger, as it carries no page value", async () => {
+    const p = proposeRepo({ paths: { checkout: SUITE_PATH(), refund: SUITE_PATH() } });
+    // The owner retired refund between cycles, naming a run a later up dropped: no ledger is left for it.
+    const old = "20290101000000-0123abcd";
+    stage(p.main, { kind: "retire", id: "refund", run: old, changes: [{ kind: "retire", id: "refund", evidence: ["the owner ruled the change that broke it intended"], run: old }], body: ["### Retire: refund"] });
+    const r = await p.propose();
+    expect(r.code).toBe(0);
+    expect(r.lines.slice(0, 2)).toEqual([`branch: argus/smoke-${RUN}`, "change retire refund"]);
+    const show = (f: string) => p.bareShow(`argus/smoke-${RUN}`, `e2e/argus-smoke/${f}`);
+    for (const gone of ["journeys/refund.json", "refund.spec.ts"]) expect(show(gone).status, gone).not.toBe(0);
+    expect(show("journeys/checkout.json").status).toBe(0);
   }, 60_000);
 
   it("a heal of a journey the base does not hold refuses, nothing pushed", async () => {

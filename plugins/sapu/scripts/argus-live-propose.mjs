@@ -12,11 +12,10 @@ import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
-import { changeDigest, generated, liveAsWritten, readState, writeState } from "./argus-live-suite.mjs";
+import { changeDigest, generated, liveAsWritten, PR_URL, readState, refreshOutcomes, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel, loadContract } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const PR_URL = /https:\/\/[^\s/]+\/[^\s/]+\/[^\s/]+\/pull\/\d+/;
 /** Where the suite's baselines and adopted violations live (spec §19.2): a conflict there is never resolved by picking a side. */
 const BASELINE_DIRS = ["__screenshots__", "__aria__", "known"];
 const NEEDED = (id) => `baseline: needed ${id} (smoke baseline --from-run after this PR's first CI run)`;
@@ -33,28 +32,6 @@ const logLine = (c) => JSON.stringify({ kind: c.kind, id: c.id, ...(c.step !== u
 /** A staged entry's changes.jsonl lines: its own `changes`, else one line of its kind. */
 const changesOf = (e) => (Array.isArray(e.changes) && e.changes.length ? e.changes.filter(isObj).map((c) => ({ ...c, kind: c.kind ?? e.kind, id: e.id, run: c.run ?? e.run })) : [{ kind: e.kind, id: e.id, evidence: "", run: e.run }]);
 const changeLine = (c) => `change ${c.kind} ${c.id}${Number.isInteger(c.step) ? ` step ${c.step}` : ""}`;
-
-/**
- * The outcome of each open proposal asked of gh (`gh pr view <url> --json state`): MERGED → merged (accepted),
- * CLOSED → closed (rejected: its digest moves into `rejected`, so no verb stages that change again). `state` is
- * updated in place; true when anything changed.
- */
-function refreshOutcomes(state, { runner, gh, cwd }) {
-  const asked = new Map();
-  let changed = false;
-  for (const [digest, p] of Object.entries(state.proposals)) {
-    if (!isObj(p) || p.outcome !== "open" || typeof p.url !== "string" || !PR_URL.test(p.url)) continue;
-    if (!asked.has(p.url)) {
-      const r = runner([gh, "pr", "view", p.url, "--json", "state", "--jq", ".state"], { cwd });
-      asked.set(p.url, r.status === 0 ? String(r.stdout ?? "").trim() : "");
-    }
-    const word = asked.get(p.url);
-    const outcome = word === "MERGED" ? "merged" : word === "CLOSED" ? "closed" : null;
-    if (outcome) [p.outcome, changed] = [outcome, true];
-    if (outcome === "closed" && !state.rejected.includes(digest)) state.rejected.push(digest);
-  }
-  return changed;
-}
 
 /** A git runner bound to `cwd` that refuses on a failure, naming the subcommand. */
 const gitIn = (cwd, runner) => (args, opts = {}) => {
@@ -218,9 +195,10 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
     settle();
     return { code: 0, lines: [...lines, "smoke propose: nothing to propose"] };
   }
-  // The staged changes' own lane runs' ledgers. An entry smoke ci staged names a CI run (digits), which has no ledger
-  // and whose change carries no page value: with only those, the branch's run's ledger is the one checked against.
-  const lane = [...new Set(todo.map((ch) => ch.run).filter((r) => !/^[0-9]{1,20}$/.test(r)))];
+  // The ledgers of the lane runs whose page values the staged changes carry: only an add's or a heal's path does. The
+  // other kinds (smoke ci's, which name a CI run with no ledger; smoke plan's quarantine; smoke retire's) carry none,
+  // and their run may be one a later up dropped: with only those, the branch's run's ledger is the one checked against.
+  const lane = [...new Set(todo.filter((ch) => ch.kind === "add" || ch.kind === "heal").map((ch) => ch.run))];
   const secrets = secretsOf(main, lane.length ? lane : [runId], env);
   const g0 = gitIn(main, runner);
   const lease = String(g0(["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).stdout ?? "").trim().split(/\s/)[0] ?? "";
