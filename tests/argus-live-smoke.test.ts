@@ -231,7 +231,7 @@ describe("argus-live CLI — phase 6's verbs", () => {
       " | smoke propose [--dry-run] | ",
       " | smoke check | ",
       " | smoke ci [--run <id>] | ",
-      " | smoke baseline --from-run <id> [--ids …] | ",
+      " | smoke baseline --from-run <id> [--ids …] [--known] | ",
       " | smoke perf (--issue|--rebaseline) <id> | ",
       " | smoke retire <id> | ",
       " | smoke workflow | ",

@@ -161,6 +161,8 @@ describe("argus-live codegen — smokeSpec", () => {
     expect(() => spec({ path: [...PATH(), { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" }] })).toThrow("refused: repro: step 15: a path has no final");
     expect(() => spec({ path: [{ as: "customer", do: "click", target: { text: "Pay" } }, { as: "customer", expect: "visible", target: { text: "Paid" } }] })).toThrow("refused: repro: step 1: an action's target in a path is");
     expect(() => spec({ id: "x\nprocess.exit()" })).toThrow("failed: codegen: a journey id is kebab-case");
+    // A journey id equal to a project's name would match that project's every test in a baseline run's --grep.
+    for (const id of ["webkit", "chromium-390", "a11y", "setup", "msedge", "i18n"]) expect(() => spec({ id }), id).toThrow(`failed: codegen: journey id ${id} is a project's name`);
   });
 });
 

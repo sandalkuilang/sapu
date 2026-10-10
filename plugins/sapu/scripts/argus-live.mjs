@@ -124,7 +124,7 @@
 //   argus-live.mjs smoke check   every hand-edited or stale suite file named; writes nothing (-suite.mjs smokeCheck)
 //   argus-live.mjs smoke ci [--run <id>]
 //                                a CI run triaged, flakes quarantined (-ci.mjs smokeCi)
-//   argus-live.mjs smoke baseline --from-run <id> [--ids …]
+//   argus-live.mjs smoke baseline --from-run <id> [--ids …] [--known]
 //                                CI's screenshots, ARIA snapshots and violations adopted (-baseline.mjs smokeBaseline)
 //   argus-live.mjs smoke perf (--issue|--rebaseline) <id>
 //                                a perf issue's body, or a moved baseline (-perf.mjs perfIssue, perfRebaseline)
@@ -181,7 +181,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
 /** Journey ids, comma-separated. */
@@ -248,9 +248,9 @@ async function laneCommand(cmd, args) {
     const f = o({ "--run": "text" });
     call = () => smokeCi(main, { run: f["--run"] ?? null });
   } else if (verb === "baseline") {
-    const f = o({ "--from-run": "text", "--ids": "ids" });
+    const f = o({ "--from-run": "text", "--ids": "ids", "--known": "flag" });
     if (f["--from-run"] === undefined) refuseUsage();
-    call = () => smokeBaseline(main, { fromRun: f["--from-run"], ids: f["--ids"] ?? null });
+    call = () => smokeBaseline(main, { fromRun: f["--from-run"], ids: f["--ids"] ?? null, known: Boolean(f["--known"]) });
   } else if (verb === "perf" && rest.length === 2 && rest[0] === "--issue") call = () => perfIssue(main, rest[1]);
   else if (verb === "perf" && rest.length === 2 && rest[0] === "--rebaseline") call = () => perfRebaseline(main, rest[1]);
   else if (verb === "retire" && rest.length === 1) call = () => smokeRetire(main, rest[0]);

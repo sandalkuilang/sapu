@@ -215,7 +215,7 @@ export const canonical = (v) => JSON.stringify(v, (_k, x) => (isObj(x) ? Object.
 export const CHANGE_KINDS = Object.freeze(["add", "heal", "drop", "retire", "quarantine", "unquarantine"]);
 
 /** An empty smoke state. */
-const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [], proposals: {} });
+const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [], proposals: {}, dispatches: [] });
 const isEntry = (e) => isObj(e) && CHANGE_KINDS.includes(e.kind) && typeof e.id === "string" && JOURNEY.test(e.id) && typeof e.run === "string" && (e.changes === undefined || Array.isArray(e.changes));
 
 /**
@@ -223,7 +223,8 @@ const isEntry = (e) => isObj(e) && CHANGE_KINDS.includes(e.kind) && typeof e.id 
  * is missing): `staged` the changes the next proposal holds (`{kind, id, run, changes, body, path?, admitted?,
  * routes?, quarantine?, digest}`), `rejected` the digests of changes a closed proposal held, `journeys.<id>` the
  * per-journey streaks (`retire`, flakes, quarantine), `comments` the pull request comments made, `proposals` each
- * proposal by digest (`{kind, id, branch, url, outcome: open|merged|closed}`). A file that is not that shape is
+ * proposal by digest (`{kind, id, branch, url, outcome: open|merged|closed}`), `dispatches` each baseline job smoke
+ * baseline dispatched (`{ciRun, from, branch, mode, ids}`, `ciRun` null when gh printed no run URL). A file that is not that shape is
  * refused, never overwritten: it may hold an outcome the owner gave.
  */
 export function readState(main) {
@@ -240,7 +241,7 @@ export function readState(main) {
   } catch {
     s = null;
   }
-  const lists = ["staged", "rejected", "comments"];
+  const lists = ["staged", "rejected", "comments", "dispatches"];
   const bad = !isObj(s) || (s.version !== undefined && s.version !== 1) || (s.journeys !== undefined && !isObj(s.journeys)) || (s.proposals !== undefined && !isObj(s.proposals));
   if (bad || lists.some((k) => s[k] !== undefined && !Array.isArray(s[k])) || !(s.staged ?? []).every(isEntry)) {
     throw new Error(`refused: ${STATE_FILE} is not the smoke state (remove it to start over)`);

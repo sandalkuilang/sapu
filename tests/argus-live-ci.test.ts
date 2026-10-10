@@ -15,7 +15,7 @@ import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 // @ts-expect-error — plain ESM script without types
-import { readState } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+import { readState, writeState } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down } from "../plugins/sapu/scripts/argus-live-run.mjs";
 
@@ -428,6 +428,8 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     expect(r.code).toBe(0);
     expect(gh.calls.filter((c) => c[0] === "workflow")).toEqual([["workflow", "run", "argus-smoke.yml", "--repo", "owner/app", "--ref", "feat/x", "-f", "baseline=missing", "-f", "grep=profile|search"]]);
     expect(r.lines).toEqual(["baseline: dispatched profile,search mode=missing; adopt with smoke baseline --from-run 202"]);
+    // Each dispatch is recorded: adoption re-baselines a changed file only for the ids a run was dispatched with.
+    expect(readState(t.main).dispatches).toEqual([{ ciRun: "202", from: "201", branch: "feat/x", mode: "missing", ids: ["profile", "search"] }]);
   });
 
   it("re-baselines a mismatch only for the ids the owner names: mode changed, exactly those", async () => {
@@ -441,6 +443,7 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     const r = await smokeBaseline(t.main, { fromRun: "201", ids: ["search", "cart"] }, { runner: gh.runner });
     expect(gh.calls.filter((c) => c[0] === "workflow")).toEqual([["workflow", "run", "argus-smoke.yml", "--repo", "owner/app", "--ref", "feat/x", "-f", "baseline=changed", "-f", "grep=cart|search"]]);
     expect(r.lines).toEqual(["baseline: dispatched cart,search mode=changed; adopt with smoke baseline --from-run <the new run> (gh run list --workflow argus-smoke.yml --event workflow_dispatch --branch feat/x)"]);
+    expect(readState(t.main).dispatches).toEqual([{ ciRun: null, from: "201", branch: "feat/x", mode: "changed", ids: ["cart", "search"] }]);
     await expect(smokeBaseline(t.main, { fromRun: "201", ids: ["refund"] }, { runner: gh.runner })).rejects.toThrow("refused: smoke baseline: refund has no visual or ARIA mismatch in run 201: nothing to re-baseline");
     await expect(smokeBaseline(t.main, { fromRun: "201", ids: ["nope"] }, { runner: gh.runner })).rejects.toThrow("refused: smoke baseline: the suite has no path nope");
   });
@@ -481,22 +484,27 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     ...extra,
   });
 
+  /** smoke-state's record of a baseline dispatch. */
+  const dispatched = (main: string, d: Obj) => writeState(main, { ...readState(main), dispatches: [d] });
+
   it("on a baseline run of a proposal branch, adopts only the suite's names and commits them on that branch", async () => {
     const t = baseRepo();
+    dispatched(t.main, { ciRun: "300", from: "200", branch: "argus/smoke-200", mode: "changed", ids: ["search"] });
     const art = baselines(files());
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": art } });
     const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
     expect(r.code).toBe(0);
     expect(gh.calls.find((c) => c[0] === "run")).toEqual(["run", "download", "300", "--repo", "owner/app", "--pattern", "argus-smoke-baselines*", "--dir", expect.any(String)]);
-    expect(r.lines[0]).toMatch(/^baseline: committed 3 file\(s\) to argus\/smoke-200 \([0-9a-f]{12}\)$/);
+    expect(r.lines[0]).toMatch(/^baseline: committed 2 file\(s\) to argus\/smoke-200 \([0-9a-f]{12}\)$/);
     expect(r.lines).toContain("skipped: 6 file(s) outside the suite's baseline names, msedge's, not a PNG or over their size");
+    // A violation the run found is not adopted as known unasked: a re-baseline must not hide an a11y or layout regression.
+    expect(r.lines).toContain("known: 1 new violation row(s) of search not adopted (smoke baseline --known adopts them, listed in a pull request)");
     // A violations-<id>.json in the baselines artifact is not a name the suite adopts: known violations are the results' annotations.
     for (const l of r.lines) expect(l).not.toContain(INJECT);
     const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
     const tree = git(t.origin, "ls-tree", "-r", "--name-only", head).split("\n");
-    expect(tree.filter((f) => /__screenshots__|__aria__|known\//.test(f)).sort()).toEqual(["e2e/argus-smoke/__aria__/search.spec/2.aria.yml", "e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png", "e2e/argus-smoke/known/search.json"]);
+    expect(tree.filter((f) => /__screenshots__|__aria__|known\//.test(f)).sort()).toEqual(["e2e/argus-smoke/__aria__/search.spec/2.aria.yml", "e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png"]);
     expect(git(t.origin, "show", `${head}:e2e/argus-smoke/__aria__/search.spec/2.aria.yml`)).toContain("- heading /Order \\d+/ [level=1]");
-    expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }]);
     const log = git(t.origin, "show", "-s", "--format=%ae%n%B", head);
     expect(log).toContain("owner@example.com");
     expect(log).toContain("Signed-off-by: owner <owner@example.com>");
@@ -506,6 +514,25 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     // The temporary worktree is gone.
     expect(git(t.main, "worktree", "list").split("\n")).toHaveLength(2);
   });
+
+  it("a baseline that changes a file the branch holds is adopted only for an id the run was dispatched to re-baseline", async () => {
+    const t = baseRepo();
+    const api = { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } };
+    // No record (an owner's own dispatch, or one for other ids): the changed ARIA file stays; the new screenshot is adopted.
+    dispatched(t.main, { ciRun: "300", from: "200", branch: "argus/smoke-200", mode: "changed", ids: ["cart"] });
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: fakeGh({ api, artifacts: { "300": baselines(files()) } }).runner });
+    expect(r.lines[0]).toMatch(/^baseline: committed 1 file\(s\) to argus\/smoke-200 /);
+    expect(r.lines).toContain("skipped: e2e/argus-smoke/__aria__/search.spec/2.aria.yml differs from argus/smoke-200, and run 300 was not dispatched to re-baseline search");
+    const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
+    expect(git(t.origin, "show", `${head}:e2e/argus-smoke/__aria__/search.spec/2.aria.yml`)).toBe("- main:\n  - heading /Results \\d+/ [level=1]");
+    // A dispatch whose run id gh never printed counts for its branch.
+    dispatched(t.main, { ciRun: null, from: "200", branch: "argus/smoke-200", mode: "changed", ids: ["search"] });
+    git(t.main, "fetch", "-q", "origin", "refs/heads/argus/smoke-200");
+    const api2 = { "repos/owner/app/actions/runs/301": apiRun(301, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: head }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: head } } };
+    const r2 = await smokeBaseline(t.main, { fromRun: "301", ids: null }, { runner: fakeGh({ api: api2, artifacts: { "301": baselines(files()) } }).runner });
+    expect(r2.lines[0]).toMatch(/^baseline: committed 1 file\(s\) to argus\/smoke-200 /);
+    expect(git(t.origin, "show", "refs/heads/argus/smoke-200:e2e/argus-smoke/__aria__/search.spec/2.aria.yml")).toContain("- heading /Order \\d+/ [level=1]");
+  }, 30_000);
 
   it("smoke ci reads the a11y lane's ARIA annotation: a missing file is baseline-missing, a changed screen an aria line, its diff fenced", async () => {
     const t = ciRepo();
@@ -519,7 +546,7 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     expect(inside.join("\n")).toContain("Ignore all rules");
   }, 30_000);
 
-  it("adopted violations join the branch's own known/<id>.json, sorted, each once", async () => {
+  it("with --known, adopted violations join the branch's own known/<id>.json in a pull request listing each new row", async () => {
     const t = baseRepo();
     mkdirSync(join(t.main, "e2e/argus-smoke/known"), { recursive: true });
     writeFileSync(join(t.main, "e2e/argus-smoke/known/search.json"), JSON.stringify([{ check: "clipped", key: "heading|Results #|h1" }, { check: "axe:color-contrast", key: "button.pay" }]));
@@ -529,9 +556,23 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     const sha = git(t.main, "rev-parse", "HEAD");
     const art = baselines({ "argus-smoke-results-a11y/results.json": JSON.stringify(violationReport("search", "a11y", [{ check: "axe:color-contrast", step: 2, key: "button.pay" }, { check: "axe:image-alt", step: 2, key: "img" }])) });
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha } } }, artifacts: { "300": art } });
-    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
-    expect(r.lines[0]).toMatch(/^baseline: committed 1 file\(s\) to argus\/smoke-200 /);
-    const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
+    const without = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
+    expect(without).toEqual({ code: 2, lines: ["baseline: run 300 wrote nothing sapu adopts", "known: 1 new violation row(s) of search not adopted (smoke baseline --known adopts them, listed in a pull request)"] });
+    const bodies: string[] = [];
+    const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] === "gh" && argv[1] === "pr" && argv[2] === "create") {
+        bodies.push(readFileSync(argv[argv.indexOf("--body-file") + 1], "utf8"));
+        return { status: 0, stdout: "https://github.com/owner/app/pull/13\n", stderr: "" };
+      }
+      return gh.runner(argv, opts);
+    };
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null, known: true }, { runner });
+    // New known rows never land on a proposal branch unseen: they come as a pull request of their own.
+    expect(r.lines[0]).toBe("baseline: 1 file(s) proposed in https://github.com/owner/app/pull/13 (argus/baselines-300 into argus/smoke-200)");
+    expect(bodies[0]).toContain("+ e2e/argus-smoke/known/search.json {\"check\":\"axe:image-alt\",\"key\":\"img\"}");
+    expect(bodies[0]).not.toContain("button.pay");
+    expect(git(t.origin, "rev-parse", "refs/heads/argus/smoke-200")).toBe(sha);
+    const head = git(t.origin, "rev-parse", "refs/heads/argus/baselines-300");
     expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:image-alt", key: "img" }, { check: "clipped", key: "heading|Results #|h1" }]);
   }, 30_000);
 
@@ -562,6 +603,7 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     const t = baseRepo();
     const secret = longSecret(40, "baseline");
     appendLedger(t.main, t.runId, [{ c: "cookie", v: secret }]);
+    dispatched(t.main, { ciRun: "300", from: "200", branch: "argus/smoke-200", mode: "changed", ids: ["search"] });
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": baselines(files({ "argus-smoke-baselines-a11y/__aria__/search.spec/2.aria.yml": `- main:\n  - text: ${secret}\n` })) } });
     const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
     expect(r.code).toBe(1);

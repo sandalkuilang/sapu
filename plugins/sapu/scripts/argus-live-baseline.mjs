@@ -11,6 +11,7 @@ import { lastRun } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { smokeEvent } from "./argus-live-smoke.mjs";
+import { codeBlock, readState, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -135,6 +136,22 @@ function knownFile(file, rows) {
   return `${JSON.stringify(keep, null, 2)}\n`;
 }
 
+/** The `{check, key}` rows of a `known/<id>.json` (none when it is missing or not a list). */
+const knownRows = (file) => {
+  const was = parse(regular(file, TEXT_MAX)?.toString("utf8") ?? "[]");
+  return Array.isArray(was) ? was.filter((v) => isObj(v) && typeof v.check === "string" && typeof v.key === "string") : [];
+};
+
+/**
+ * The journeys baseline run `r` was dispatched to re-baseline (mode `changed`), from smoke-state's `dispatches`: the
+ * records naming the run, else those of its branch whose run gh never printed. Only their changed files are adopted.
+ */
+function rebaselined(state, r) {
+  const named = state.dispatches.filter((d) => isObj(d) && d.ciRun === r.id);
+  const recs = named.length ? named : state.dispatches.filter((d) => isObj(d) && d.ciRun === null && d.branch === r.branch);
+  return new Set(recs.filter((d) => d.mode === "changed" && Array.isArray(d.ids)).flatMap((d) => d.ids));
+}
+
 /** git in `cwd` through `runner` → stdout, or a refusal naming `verb` and the git command. */
 function gitOut(runner, cwd, args, verb) {
   const r = runner(["git", "-C", cwd, ...args]);
@@ -145,14 +162,17 @@ function gitOut(runner, cwd, args, verb) {
 /**
  * Baseline run `r`'s files committed (spec §19.8): on the run's own `argus/` branch, else on a new
  * `argus/baselines-<run>` branch from its head with a pull request into the run's branch (its body a table of each
- * file's journey, step and project, labelled agent-filed). Every text file and the body pass scrub's matcher first.
+ * file's journey, step and project, labelled agent-filed). A file the branch lacks is adopted; one it holds that the
+ * run changed only for a journey the run was dispatched to re-baseline (rebaselined). New known violation rows only with
+ * `known` (the owner's `--known`), each listed in a pull request's body, never committed onto a proposal branch unseen:
+ * a re-baseline must not hide an a11y or layout regression. Every text file and the body pass scrub's matcher first.
  */
-function adopt(main, { r, repo, contract, smoke, ids, runner, verb }) {
+function adopt(main, { r, repo, contract, smoke, ids, known, runner, verb }) {
   const tmp = download(main, { id: r.id, repo, prefix: BASELINES, runner, verb });
   let adopted;
   let res = null;
   try {
-    // The baseline job's results (results.json at each artifact's root): their violations are adopted as known.
+    // The baseline job's results (results.json at each artifact's root): their violations are the known candidates.
     try {
       res = download(main, { id: r.id, repo, prefix: smoke.ci.artifact, runner, verb });
     } catch {
@@ -163,27 +183,47 @@ function adopt(main, { r, repo, contract, smoke, ids, runner, verb }) {
     if (res) fs.rmSync(res, { recursive: true, force: true });
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-  const { files, skipped } = adopted;
-  const skip = skipped ? [`skipped: ${skipped} file(s) outside the suite's baseline names, msedge's, not a PNG or over their size`] : [];
-  if (!files.length) return { code: 2, lines: [`baseline: run ${r.id} wrote nothing sapu adopts`, ...skip] };
-  const direct = r.branch.startsWith("argus/");
-  const dest = direct ? r.branch : `argus/baselines-${r.id}`;
-  const row = (f) => `| \`${f.rel}\` | ${f.id} | ${f.step && /^[0-9]+$/.test(f.step) ? f.step : "—"} | ${f.project ?? "—"} |`;
-  const body = [`argus smoke: the baselines CI's baseline run ${r.id} wrote on \`${r.branch}\` (${r.sha.slice(0, 12)}), for review in this pull request's image view (2-up, swipe, onion skin). Merging accepts them; a test fails until its baseline is accepted.`, "", "| file | journey | step | project |", "|---|---|---|---|", ...files.map(row), ""].join("\n");
-  const changes = files.map((f) => JSON.stringify({ kind: "baseline", id: f.id, ...(f.step && /^[0-9]+$/.test(f.step) ? { step: Number(f.step) } : {}), to: f.rel, evidence: [`CI baseline run ${r.id} (${f.project ?? "baseline job"})`], run: r.id }));
-  const { secrets, refusal } = scrubSecrets(main, { runId: lastRun(main) });
-  if (refusal) throw new Error(`refused: ${verb}: ${refusal.replace(/^refused: (scrub: )?/, "")}`);
-  const hits = [];
-  for (const [name, text] of [...files.filter((f) => !f.rel.endsWith(".png")).flatMap((f) => [[f.rel, f.original ?? f.bytes.toString("utf8")], [f.rel, f.bytes.toString("utf8")]]), ["the pull request's body", body]]) {
-    for (const h of secretHits(text, secrets)) hits.push(`${name} ${h.line}:${h.col} ${h.cls}`);
-  }
-  if (hits.length) return { code: 1, lines: [...new Set(hits), `refused: ${verb}: ${new Set(hits).size} secret(s) in the adopted files; nothing is pushed`] };
+  const skip = adopted.skipped ? [`skipped: ${adopted.skipped} file(s) outside the suite's baseline names, msedge's, not a PNG or over their size`] : [];
+  if (!adopted.files.length) return { code: 2, lines: [`baseline: run ${r.id} wrote nothing sapu adopts`, ...skip] };
   const wtRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argus-baseline-"));
   const wt = path.join(wtRoot, "wt");
   try {
     gitOut(runner, main, ["fetch", "-q", "--no-tags", "origin", `refs/heads/${r.branch}`], verb);
     if (gitOut(runner, main, ["rev-parse", "FETCH_HEAD"], verb) !== r.sha) throw new Error(`refused: ${verb}: run ${r.id} is stale: ${r.branch} has moved past its head ${r.sha.slice(0, 12)}`);
     gitOut(runner, main, ["worktree", "add", "-q", "--detach", wt, r.sha], verb);
+    const changedOk = rebaselined(readState(main), r);
+    const notes = [];
+    const files = [];
+    for (const f of adopted.files) {
+      const at = path.join(wt, f.rel);
+      if (f.known) {
+        const was = new Set(knownRows(at).map((v) => JSON.stringify([v.check, v.key])));
+        const fresh = f.known.filter((v) => !was.has(JSON.stringify([v.check, v.key])));
+        if (!fresh.length) continue;
+        if (known) files.push({ ...f, fresh });
+        else notes.push(`known: ${fresh.length} new violation row(s) of ${f.id} not adopted (smoke baseline --known adopts them, listed in a pull request)`);
+        continue;
+      }
+      const before = fs.existsSync(at) ? regular(at, PNG_MAX) : null;
+      if (before && before.equals(f.bytes)) continue;
+      if (before && !changedOk.has(f.id)) notes.push(`skipped: ${f.rel} differs from ${r.branch}, and run ${r.id} was not dispatched to re-baseline ${f.id}`);
+      else files.push(f);
+    }
+    if (!files.length) return { code: 2, lines: [`baseline: run ${r.id} wrote nothing sapu adopts`, ...notes, ...skip] };
+    const fresh = files.filter((f) => f.fresh);
+    const direct = r.branch.startsWith("argus/") && !fresh.length;
+    const dest = direct ? r.branch : `argus/baselines-${r.id}`;
+    const row = (f) => `| \`${f.rel}\` | ${f.id} | ${f.step && /^[0-9]+$/.test(f.step) ? f.step : "—"} | ${f.project ?? "—"} |`;
+    const listed = fresh.length ? ["", "New known violations, adopted with `--known`: each row below stops failing its check from this merge on. The rows the branch already holds are unchanged.", "", ...codeBlock(fresh.flatMap((f) => f.fresh.map((v) => `+ ${f.rel} ${JSON.stringify({ check: v.check, key: v.key })}`)))] : [];
+    const body = [`argus smoke: the baselines CI's baseline run ${r.id} wrote on \`${r.branch}\` (${r.sha.slice(0, 12)}), for review in this pull request's image view (2-up, swipe, onion skin). Merging accepts them; a test fails until its baseline is accepted.`, "", "| file | journey | step | project |", "|---|---|---|---|", ...files.map(row), ...listed, ""].join("\n");
+    const changes = files.map((f) => JSON.stringify({ kind: "baseline", id: f.id, ...(f.step && /^[0-9]+$/.test(f.step) ? { step: Number(f.step) } : {}), to: f.rel, evidence: [`CI baseline run ${r.id} (${f.project ?? "baseline job"})`], run: r.id }));
+    const { secrets, refusal } = scrubSecrets(main, { runId: lastRun(main) });
+    if (refusal) throw new Error(`refused: ${verb}: ${refusal.replace(/^refused: (scrub: )?/, "")}`);
+    const hits = [];
+    for (const [name, text] of [...files.filter((f) => !f.rel.endsWith(".png")).flatMap((f) => [[f.rel, f.original ?? f.bytes.toString("utf8")], [f.rel, f.bytes.toString("utf8")]]), ["the pull request's body", body]]) {
+      for (const h of secretHits(text, secrets)) hits.push(`${name} ${h.line}:${h.col} ${h.cls}`);
+    }
+    if (hits.length) return { code: 1, lines: [...new Set(hits), `refused: ${verb}: ${new Set(hits).size} secret(s) in the adopted files; nothing is pushed`] };
     for (const f of files) {
       fs.mkdirSync(path.dirname(path.join(wt, f.rel)), { recursive: true });
       fs.writeFileSync(path.join(wt, f.rel), f.known ? knownFile(path.join(wt, f.rel), f.known) : f.bytes);
@@ -194,14 +234,14 @@ function adopt(main, { r, repo, contract, smoke, ids, runner, verb }) {
     gitOut(runner, wt, [...who, "commit", "-q", "-m", `argus: smoke baselines from CI run ${r.id}`, "-m", `${files.length} file(s) the baseline job wrote on ${r.branch}, adopted by name and shape.`, "-m", `Signed-off-by: ${contract.ghUser} <${contract.gitEmail}>`], verb);
     const sha = gitOut(runner, wt, ["rev-parse", "HEAD"], verb);
     gitOut(runner, wt, ["push", "-q", "origin", `HEAD:refs/heads/${dest}`], verb);
-    if (direct) return { code: 0, lines: [`baseline: committed ${files.length} file(s) to ${dest} (${sha.slice(0, 12)})`, ...skip] };
+    if (direct) return { code: 0, lines: [`baseline: committed ${files.length} file(s) to ${dest} (${sha.slice(0, 12)})`, ...notes, ...skip] };
     const bodyFile = path.join(wtRoot, "body.md");
     fs.writeFileSync(bodyFile, body, { mode: 0o600 });
     const pr = runner(["gh", "pr", "create", "--repo", repo, "--base", r.branch, "--head", dest, "--title", `argus: smoke baselines from CI run ${r.id}`, "--body-file", bodyFile, "--label", agentFiledLabel(contract)], { cwd: main });
     const url = /https:\/\/\S+\/pull\/[0-9]+/.exec(String(pr.stdout ?? ""));
-    if (!url) return { code: 2, lines: [`baseline: pushed ${dest} (${sha.slice(0, 12)}); gh pr create exited ${pr.status ?? "on a signal"} before printing a pull request URL`, ...skip] };
+    if (!url) return { code: 2, lines: [`baseline: pushed ${dest} (${sha.slice(0, 12)}); gh pr create exited ${pr.status ?? "on a signal"} before printing a pull request URL`, ...notes, ...skip] };
     smokeEvent(main, lastRun(main), { kind: "proposal", url: url[0], branch: dest, changes: files.length });
-    return { code: 0, lines: [`baseline: ${files.length} file(s) proposed in ${url[0]} (${dest} into ${r.branch})`, ...skip] };
+    return { code: 0, lines: [`baseline: ${files.length} file(s) proposed in ${url[0]} (${dest} into ${r.branch})`, ...notes, ...skip] };
   } finally {
     runner(["git", "-C", main, "worktree", "remove", "--force", wt]);
     fs.rmSync(wtRoot, { recursive: true, force: true });
@@ -212,13 +252,14 @@ function adopt(main, { r, repo, contract, smoke, ids, runner, verb }) {
  * `smoke baseline --from-run <id> [--ids <id>,…]` → `{code, lines}` (spec §19.8, decision 7). Run `fromRun` of the
  * contract's home repo, refused from a fork or another repository, or stale (its branch moved past its head).
  * - A baseline run (`workflow_dispatch`): its `argus-smoke-baselines…` artifacts adopted by name and shape (of `ids`
- *   only, when given) and committed as `adopt` says.
+ *   only, when given; new known rows only with `known`) and committed as `adopt` says.
  * - A normal run, triaged by `smoke ci` first: the workflow's baseline job dispatched on the run's branch, `missing`
  *   for its `baseline-missing` journeys and `changed` for exactly `ids` (each with a visual or ARIA mismatch; no
  *   mismatch is re-baselined unasked) → `baseline: dispatched <ids> mode=<m>; adopt with smoke baseline --from-run
- *   <new run>`. Without the right to dispatch, the `gh workflow run` line is printed for the owner (code 2).
+ *   <new run>`, each dispatch recorded in smoke-state's `dispatches`. Without the right to dispatch, the `gh workflow
+ *   run` line is printed for the owner (code 2).
  */
-export async function smokeBaseline(main, { fromRun, ids }, { runner = run } = {}) {
+export async function smokeBaseline(main, { fromRun, ids, known = false }, { runner = run } = {}) {
   const verb = "smoke baseline";
   if (fromRun === null || fromRun === undefined) throw new Error(`refused: ${verb}: --from-run <run id> names the CI run`);
   const { repo, contract } = home(main, verb);
@@ -229,7 +270,7 @@ export async function smokeBaseline(main, { fromRun, ids }, { runner = run } = {
   for (const id of ids ?? []) if (!suite.includes(id)) throw new Error(`refused: ${verb}: the suite has no path ${/^[a-z0-9-]{1,64}$/.test(id) ? id : "that"}`);
   const r = fetchRun(main, { asked: fromRun, repo, workflow: smoke.ci.workflow, runner, verb });
   notStale(main, { r, repo, runner, verb });
-  if (r.event === "workflow_dispatch") return adopt(main, { r, repo, contract, smoke, ids: ids ?? suite, runner, verb });
+  if (r.event === "workflow_dispatch") return adopt(main, { r, repo, contract, smoke, ids: ids ?? suite, known, runner, verb });
   let triage = null;
   try {
     triage = parse(fs.readFileSync(path.join(main, ".argus", "smoke-ci", r.id, "triage.json"), "utf8"));
@@ -244,6 +285,7 @@ export async function smokeBaseline(main, { fromRun, ids }, { runner = run } = {
   const jobs = [["missing", missing], ["changed", [...(ids ?? [])].sort()]].filter(([, x]) => x.length);
   if (!jobs.length) return { code: 0, lines: [`baseline: nothing to dispatch (run ${r.id} has no baseline-missing journey; a mismatch is re-baselined only with --ids)`] };
   const lines = [];
+  const dispatches = [];
   let code = 0;
   for (const [mode, list] of jobs) {
     const argv = ["workflow", "run", smoke.ci.workflow, "--repo", repo, "--ref", r.branch, "-f", `baseline=${mode}`, "-f", `grep=${list.join("|")}`];
@@ -251,12 +293,18 @@ export async function smokeBaseline(main, { fromRun, ids }, { runner = run } = {
     if (d.status === 0) {
       const id = /\/actions\/runs\/([0-9]{1,20})/.exec(String(d.stdout ?? ""));
       lines.push(`baseline: dispatched ${list.join(",")} mode=${mode}; adopt with smoke baseline --from-run ${id ? id[1] : `<the new run> (gh run list --workflow ${smoke.ci.workflow} --event workflow_dispatch --branch ${r.branch})`}`);
+      dispatches.push({ ciRun: id ? id[1] : null, from: r.id, branch: r.branch, mode, ids: list });
     } else {
       code = 2;
       const shown = `gh ${argv.slice(0, -1).join(" ")} grep='${list.join("|")}'`;
       if (/HTTP 403|HTTP 404|not accessible|scope|permission|admin rights/i.test(String(d.stderr ?? ""))) lines.push("baseline: no right to dispatch the workflow (it needs write access and the actions scope); the owner runs:", shown);
       else lines.push(`failed: gh workflow run exited ${d.status ?? "on a signal"}; the owner may run:`, shown);
     }
+  }
+  if (dispatches.length) {
+    const state = readState(main);
+    state.dispatches = [...state.dispatches, ...dispatches].slice(-100);
+    writeState(main, state);
   }
   return { code, lines };
 }

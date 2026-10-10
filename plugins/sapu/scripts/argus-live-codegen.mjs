@@ -479,6 +479,8 @@ const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "
  */
 export function smokeSpec({ id, path, live, smoke, quarantined = false, routes = [] }) {
   if (typeof id !== "string" || !JOURNEY.test(id)) throw fail("a journey id is kebab-case");
+  // A baseline run's --grep matches the project's name too: a journey of that name would re-baseline its every test.
+  if (id === "setup" || PROJECT_NAME.test(id)) throw fail(`journey id ${id} is a project's name`);
   const { context, steps } = parseRepro(path, { accounts: suiteAccounts(live), live, path: true });
   const taken = new Set([...OWN, ...steps.filter((s) => s.save).map((s) => variable(s.save))]);
   const pages = pageVars(steps, taken);

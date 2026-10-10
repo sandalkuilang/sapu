@@ -907,16 +907,23 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     // The inputs appear in ${{ }} only as env values, never inside a run script.
     for (const l of b.filter((x) => x.includes("inputs."))) expect(l).toMatch(/^ +(MODE|GREP): \$\{\{ inputs\.(baseline|grep) \}\}$/);
     const check = b.findIndex((l) => l.includes('case "$MODE" in missing|changed)'));
-    const use = b.findIndex((l) => l.includes('--update-snapshots="$MODE" --grep "$GREP"'));
+    const use = b.findIndex((l) => l.includes('--update-snapshots="$MODE" --grep'));
     expect(check).toBeGreaterThan(-1);
     expect(use).toBeGreaterThan(check);
-    expect(text).toContain(`if [ -z "$GREP" ] || [ "$(printf '%s.' "$GREP" | LC_ALL=C tr -d 'a-z0-9|-')" != . ]; then`);
+    // Playwright matches --grep against " <project> <file> <title> <tags>": the ids are anchored to a whole title word.
+    expect(b[use].trim()).toBe('npx playwright test --update-snapshots="$MODE" --grep "(^| )($GREP)( |\\$)" --project setup --project "$PROJECT"');
     // The shell check: run it on good and bad inputs.
     const script = b.slice(b.findIndex((l) => l.includes("run: |")) + 1, use).map((l) => l.trim()).join("\n");
     const sh = (MODE: string, GREP: string) => spawnSync("sh", ["-c", script], { env: { PATH: process.env.PATH, MODE, GREP } }).status;
     expect(sh("missing", "checkout|refund-v2")).toBe(0);
     expect(sh("changed", "checkout")).toBe(0);
-    for (const [m, g] of [["all", "checkout"], ["missing", ""], ["missing", "a;rm -rf /"], ["missing", "a\nb"], ["missing", "A"], ["missing", "$(id)"]]) expect(sh(m, g), `${m} ${JSON.stringify(g)}`).not.toBe(0);
+    expect(sh("missing", "a1|b-2|c")).toBe(0);
+    for (const [m, g] of [["all", "checkout"], ["missing", ""], ["missing", "a;rm -rf /"], ["missing", "a\nb"], ["missing", "A"], ["missing", "$(id)"], ["missing", "a||b"], ["missing", "|a"], ["missing", "a|"], ["missing", "|"], ["missing", "-a"], ["missing", "a|-b"], ["missing", "a b"]]) expect(sh(m, g), `${m} ${JSON.stringify(g)}`).not.toBe(0);
+    // The anchored pattern, as the shell hands it to Playwright, matches a title word and nothing around it.
+    const grep = spawnSync("sh", ["-c", 'printf %s "(^| )($GREP)( |\\$)"'], { env: { PATH: process.env.PATH, GREP: "cart|web" }, encoding: "utf8" }).stdout;
+    const re = new RegExp(grep);
+    expect(re.test(" chromium cart.spec.ts cart")).toBe(true);
+    for (const miss of [" chromium add-to-cart.spec.ts add-to-cart", " webkit checkout.spec.ts checkout", " chromium cart-v2.spec.ts cart-v2"]) expect(re.test(miss), miss).toBe(false);
   });
 
   it("uploads the results and the written baselines for seven days, never the signed-in states", () => {

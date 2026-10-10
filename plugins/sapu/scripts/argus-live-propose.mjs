@@ -336,7 +336,8 @@ const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\
  * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`), a
  * matrix over the container projects, `npm ci` then `--shuffle --grep-invert @quarantine`; `msedge` on the
  * plain runner; the non-gating `quarantine` job; the dispatch-only `baseline` job, whose inputs reach the
- * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9|-]+$` first; results
+ * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9][a-z0-9-]*(\\|[a-z0-9][a-z0-9-]*)*$` first,
+ * the ids then anchored to a whole title word in `--grep`; results
  * and written baselines uploaded for 7 days, never `.auth/`; the `${NAME}` names live.json uses as
  * `secrets.<NAME>`. The lines hold names, never a value (`masked`: printed as they are).
  */
@@ -458,11 +459,14 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     "          GREP: ${{ inputs.grep }}",
     "        run: |",
     '          case "$MODE" in missing|changed) ;; *) echo "baseline must be missing or changed" >&2; exit 1 ;; esac',
-    `          if [ -z "$GREP" ] || [ "$(printf '%s.' "$GREP" | LC_ALL=C tr -d 'a-z0-9|-')" != . ]; then`,
+    // Journey ids joined by |: each [a-z0-9][a-z0-9-]*, no empty one (a||b would match every test).
+    `          case "$GREP" in ""|"|"*|*"|"|*"||"*|-*|*"|-"*) echo "grep must be journey ids joined by |" >&2; exit 1 ;; esac`,
+    `          if [ "$(printf '%s.' "$GREP" | LC_ALL=C tr -d 'a-z0-9|-')" != . ]; then`,
     '            echo "grep must be journey ids joined by |" >&2',
     "            exit 1",
     "          fi",
-    '          npx playwright test --update-snapshots="$MODE" --grep "$GREP" --project setup --project "$PROJECT"',
+    "          # Playwright matches --grep against \" <project> <file> <title> <tags>\": anchored, an id matches its own title only.",
+    '          npx playwright test --update-snapshots="$MODE" --grep "(^| )($GREP)( |\\$)" --project setup --project "$PROJECT"',
     ...results(`${artifact}-\${{ matrix.project }}`),
     ...upload("argus-smoke-baselines-${{ matrix.project }}", [`${dir}/__screenshots__/`, `${dir}/__aria__/`]),
   ];
