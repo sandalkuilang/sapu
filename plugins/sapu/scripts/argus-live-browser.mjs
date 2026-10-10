@@ -434,6 +434,28 @@ function putSession(main, runId, name, record) {
   );
 }
 
+/** What Chrome prints when the user namespace its Linux sandbox needs cannot be created. */
+const NO_SANDBOX = /Failed to move to new namespace|No usable sandbox/i;
+
+/**
+ * Why the CLI's `open` failed ({code, stdout, stderr, timedOut}, runCli's), in one line of at most 300
+ * characters: a sandbox Chrome could not start, named as such (the user namespace it needs is not
+ * allowed: an unprivileged container, or Ubuntu's AppArmor restriction for a Chrome it has no profile
+ * for); else Chrome's FATAL line; else the last line that says error, the crash reporter's (`crashpad`,
+ * which follow every crash) aside; else `timed out` or `exit <code>`.
+ */
+export function openFailure({ code, stdout = "", stderr = "", timedOut = false }) {
+  const lines = `${stdout}\n${stderr}`.split("\n").map((l) => l.trim()).filter(Boolean);
+  const bare = (l) => l.replace(/^- \[pid=\d+\]\[err\] /, "");
+  const sandbox = lines.find((l) => NO_SANDBOX.test(l));
+  if (sandbox) {
+    const what = bare(sandbox).replace(/^\[[^\]]*\] /, "");
+    return `Chrome's sandbox could not start: this system does not let Chrome create a user namespace (${what})`.slice(0, 300);
+  }
+  const why = lines.find((l) => /:FATAL:/.test(l)) || lines.filter((l) => /error/i.test(l) && !/crashpad/i.test(l)).pop() || (timedOut ? "timed out" : `exit ${code}`);
+  return why.slice(0, 300);
+}
+
 /**
  * Opens account `account`'s CLI session in slot `slot` (`open`, in the slot's directory, under the
  * run's browser HOME) → the record `{name, slot, account, cwd, home, daemon, browser}`, kept in run.json
@@ -480,8 +502,7 @@ export async function openSession({ main, runId, slot, account, js, home, storag
     }
     const r = await runCli({ js, session: name, args, cwd: dir, home, timeoutMs, runner: cliRunner });
     if (r.code !== 0) {
-      const why = `${r.stdout}\n${r.stderr}`.split("\n").map((l) => l.trim()).filter((l) => /error/i.test(l)).pop() || (r.timedOut ? "timed out" : `exit ${r.code}`);
-      throw new Error(`failed: the browser session ${name} could not open: ${why.slice(0, 300)}`);
+      throw new Error(`failed: the browser session ${name} could not open: ${openFailure(r)}`);
     }
   } catch (e) {
     throw await undo(e);
