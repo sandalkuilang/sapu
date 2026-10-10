@@ -71,18 +71,30 @@ export function readSuitePaths(main, dir) {
   });
 }
 
+/** The suite's `quarantine.json` (spec §19.9): `[{id, issue, since}]` → the quarantined ids; none when absent or not that shape. */
+export function quarantineIds(main, dir) {
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(main, dir, "quarantine.json"), "utf8"));
+  } catch {
+    raw = null;
+  }
+  return Array.isArray(raw) ? raw.filter((q) => isObj(q) && typeof q.id === "string" && JOURNEY.test(q.id)).map((q) => q.id) : [];
+}
+
 /**
- * The regression candidate's repro of a path broken at expectation `n` (spec §19.9): the parsed `context`
- * first, then the path's elements up to step `n`, that step taking `final: "regression"`.
+ * The regression candidate's repro of path `list` broken at step `n` (spec §19.9): the parsed `context` first, then
+ * the path's elements up to step `n`, that step taking `final: "regression"` (`last` in its place when given: a
+ * heal's bug writes the step's old target as a `visible` expectation).
  */
-function regressionList(list, n, context) {
+export function regressionList(list, n, context, last = null) {
   const items = isObj(list[0]) && Object.hasOwn(list[0], "context") ? list.slice(1) : list;
   const out = [{ context }];
   let k = 0;
   for (const item of items) {
     const size = isObj(item) && Array.isArray(item.parallel) ? item.parallel.length : 1;
     if (k + size >= n) {
-      out.push({ ...item, final: "regression" });
+      out.push({ ...(last ?? item), final: "regression" });
       break;
     }
     out.push(item);
@@ -92,14 +104,14 @@ function regressionList(list, n, context) {
 }
 
 /**
- * Writes path `id`'s confirmed expectation break at step `n` as slot `slot`'s return (spec §19.9): run.json
- * `slots[<slot>]` `{mode: "smoke", journey, generation: 1, tokenHash: null, accounts, retired: [],
- * submitted: true}` (no token: no explorer ever holds it; `accounts` only those the candidate acts as) and
- * `returns/<slot>.1.json` (0600) holding one `regression` candidate, so `repro <slot>.1.1`, `--minimize`,
- * `--test`, `classify` and `scrub` take it by its ref. → the line to print.
+ * Writes `repro` (regressionList: journey `id`'s confirmed break at step `n`) as a slot's return (spec §19.9): slot
+ * `slot`, or the run's lowest free one when null. run.json `slots[<slot>]` `{mode: "smoke", journey, generation: 1,
+ * tokenHash: null, accounts, retired: [], submitted: true}` (no token: no explorer ever holds it; `accounts` only
+ * those the candidate acts as) and `returns/<slot>.1.json` (0600) holding one `regression` candidate claiming
+ * `claim`, so `repro <slot>.1.1`, `--minimize`, `--test`, `classify` and `scrub` take it by its ref. → the line to
+ * print. smoke run and smoke heal both write through it.
  */
-function writeRegression(main, { runId, slot, id, list, n, parsed, live, accounts, result }) {
-  const repro = regressionList(list, n, parsed.context);
+export function writeRegression(main, { runId, slot = null, id, repro, n, live, accounts, claim, result = {} }) {
   const used = {};
   let steps;
   try {
@@ -115,15 +127,18 @@ function writeRegression(main, { runId, slot, id, list, n, parsed, live, account
     runId,
     (prev) => {
       if (!prev) return undefined;
-      if (prev.slots && Object.hasOwn(prev.slots, String(slot))) throw new Error(`refused: smoke run: slot ${slot} is minted already`);
-      return { ...prev, slots: { ...(prev.slots ?? {}), [String(slot)]: entry } };
+      const taken = prev.slots ?? {};
+      if (slot !== null && Object.hasOwn(taken, String(slot))) throw new Error(`refused: smoke run: slot ${slot} is minted already`);
+      slot ??= Array.from({ length: 99 }, (_, i) => i + 1).find((x) => !Object.hasOwn(taken, String(x))) ?? null;
+      if (slot === null) throw new Error("refused: every slot 1 to 99 is minted already");
+      return { ...prev, slots: { ...taken, [String(slot)]: entry } };
     },
     { create: false },
   );
   const roles = Object.keys(used);
   const word = (v) => (typeof v === "string" && /^[a-z0-9:-]{1,40}$/.test(v) ? v : undefined);
   const candidate = {
-    claim: `smoke path ${id}: an expectation the path held at admission (step ${n}) failed twice, the second time after up --fresh`,
+    claim,
     oracle: "regression",
     roles,
     ...(word(result.observed) ? { observed: word(result.observed) } : {}),
@@ -150,7 +165,9 @@ function writeRegression(main, { runId, slot, id, list, n, parsed, live, account
  * broke step=<n> kind=<k>` (two of two), `path <id>: flaky step=<n> kind=<k>` (the fresh run held), `path
  * <id>: harness: <reason>`; with `slot`, the first `expect-failed` break also becomes that slot's return
  * (writeRegression; a locator break waits for a heal); then `smoke run: <h> held, <b> broke, <f> flaky, <x>
- * harness`. Each verdict is appended to `<run>/smoke/pass.jsonl` (0600) `{id, verdict, step, kind, seed}`.
+ * harness`. A path in the suite's quarantine.json runs twice, one after the other (`quarantined <id>: run twice`):
+ * smoke ci counts its quarantine's cycle clean only when the pass held it twice. Each verdict is appended to
+ * `<run>/smoke/pass.jsonl` (0600) `{id, verdict, step, kind, seed}`.
  * Exit 3 when a path broke, else 2 when one was the harness's, else 0. `once` is the one-run seam (runOnce).
  * `perf` (spec §19.11) measures instead of judging: the same paths in the same order, each run by `perfPass`
  * (`perf <id>: …` lines, `smoke run --perf: <b> baselined, <o> ok, <r> regressed, <f> flaky, <x> not measured`),
@@ -199,7 +216,11 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
     const last = r.lines.at(-1) ?? "";
     return last.startsWith("HARNESS: ") ? last.slice(9) : `exit ${r.code}`;
   };
-  for (const id of seededOrder([...picked.keys()], used)) {
+  // A quarantined path runs twice a cycle: its quarantine counts a cycle clean only when the pass held it twice.
+  const quarantined = new Set(quarantineIds(main, smoke.dir));
+  const order = seededOrder([...picked.keys()], used).flatMap((id) => (quarantined.has(id) ? [id, id] : [id]));
+  for (const id of [...picked.keys()].filter((x) => quarantined.has(x)).sort()) lines.push(`quarantined ${id}: run twice`);
+  for (const id of order) {
     const p = picked.get(id);
     const run = (dirty) => once(main, null, { path: { id, list: p.path }, dirty });
     const first = await run(true);
@@ -222,7 +243,8 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
     if (slot !== null && verdict === "broke" && at.kind === "expect-failed") {
       if (written) lines.push(`regression ${id}: step ${at.step} not written (slot ${slot} holds ${written})`);
       else {
-        lines.push(writeRegression(main, { runId: lock.runId, slot, id, list: p.path, n: at.step, parsed: p.parsed, live, accounts, result }));
+        const claim = `smoke path ${id}: an expectation the path held at admission (step ${at.step}) failed twice, the second time after up --fresh`;
+        lines.push(writeRegression(main, { runId: lock.runId, slot, id, repro: regressionList(p.path, at.step, p.parsed.context), n: at.step, live, accounts, claim, result }));
         if (lines.at(-1).includes(" written as ")) written = id;
       }
     }

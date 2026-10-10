@@ -571,6 +571,20 @@ describe("smoke run — the lane's pass over the suite's paths (spec §19.5, §1
     expect(r.lines).toEqual(["seed: 1", "path checkout: harness: step 2 system trigger exited 1", "smoke run: 0 held, 0 broke, 0 flaky, 1 harness"]);
   });
 
+  it("a quarantined path runs twice a cycle, each run judged and recorded, so its quarantine can count two holds", async () => {
+    const t = suiteRun(THREE());
+    writeFileSync(join(t.main, "e2e/argus-smoke/quarantine.json"), JSON.stringify([{ id: "refund", issue: null, since: "100" }]));
+    const s = stub({ refund: [0, 3, 0] });
+    const r = await smokeRun(t.main, { ids: null, slot: null, perf: false, seed: 3 }, { once: s.once });
+    expect(r.lines[1]).toBe("quarantined refund: run twice");
+    expect(r.lines.filter((l: string) => l.startsWith("path refund: "))).toEqual(["path refund: held", "path refund: flaky step=7 kind=expect-failed"]);
+    expect(s.calls.filter((c) => c.path.id === "refund").map((c) => c.dirty)).toEqual([true, true, false]);
+    expect(s.calls.filter((c) => c.path.id === "checkout").map((c) => c.dirty)).toEqual([true]);
+    expect(r.lines.at(-1)).toBe("smoke run: 3 held, 0 broke, 1 flaky, 0 harness");
+    const recs = readFileSync(join(t.main, ".argus/live", t.runId, "smoke", "pass.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(recs.filter((x: Obj) => x.id === "refund").map((x: Obj) => x.verdict)).toEqual(["held", "flaky"]);
+  });
+
   it("with --slot, a confirmed expectation break becomes that slot's return: one regression candidate, the path up to the broken expect", async () => {
     const t = suiteRun({ checkout: PATH() });
     const r = await smokeRun(t.main, { ids: null, slot: 4, perf: false, seed: 1 }, { once: stub({ checkout: [3, 3] }).once });

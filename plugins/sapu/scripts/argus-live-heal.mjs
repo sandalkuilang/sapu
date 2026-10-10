@@ -2,17 +2,16 @@
 // explorer's return, re-runs the path with only the named action targets replaced and every expectation
 // unchanged, and stages a heal proposal (into -suite's smoke state, which `smoke propose` turns into a pull
 // request) or writes a regression candidate by the decision table.
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";
-import { run, tempBeside } from "./argus-live-proc.mjs";
-import { runOnce, writePrivate } from "./argus-live-repro.mjs";
-import { readRun, updateRun } from "./argus-live-run.mjs";
-import { readSuitePaths } from "./argus-live-smoke.mjs";
+import { run } from "./argus-live-proc.mjs";
+import { runOnce } from "./argus-live-repro.mjs";
+import { readRun } from "./argus-live-run.mjs";
+import { readSuitePaths, regressionList, writeRegression } from "./argus-live-smoke.mjs";
 import { canonical, codeBlock, stage } from "./argus-live-suite.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
@@ -107,57 +106,6 @@ function verdictOf(r) {
   return { harness: last.startsWith("HARNESS: ") ? last.slice(9) : `exit ${r.code}` };
 }
 const said = (v) => (v.held ? "held" : v.broke ? `broke step=${v.broke.step} kind=${v.broke.kind}` : "harness");
-
-/** The repro of `list` up to step `n`, that step taking `final: "regression"`; `last` replaces step `n` when given. */
-function regressionList(list, n, context, last = null) {
-  const out = [{ context }];
-  let k = 0;
-  for (const item of hasContext(list) ? list.slice(1) : list) {
-    const size = isObj(item) && Array.isArray(item.parallel) ? item.parallel.length : 1;
-    if (k + size >= n) {
-      out.push(last ? { ...last, final: "regression" } : { ...item, final: "regression" });
-      break;
-    }
-    out.push(item);
-    k += size;
-  }
-  return out;
-}
-
-/**
- * Writes `repro` (a regression candidate of journey `id` at step `n`) as the return of the run's lowest free slot
- * (spec §19.9; the slot as smoke run's: mode `smoke`, no token, the accounts the candidate acts as) → the line.
- */
-function writeCandidate(main, { runId, id, n, repro, live, accounts, claim }) {
-  let steps;
-  try {
-    ({ steps } = parseRepro(repro, { accounts, live }));
-  } catch (e) {
-    if (!/^refused: /.test(e.message)) throw e;
-    return `regression ${id}: step ${n} not written (${e.message.replace(/^refused: repro: /, "")})`;
-  }
-  const used = {};
-  for (const s of steps) if (s.as !== "system") used[s.as] = accounts[s.as];
-  let slot = null;
-  updateRun(
-    main,
-    runId,
-    (prev) => {
-      if (!prev) return undefined;
-      const taken = prev.slots ?? {};
-      slot = Array.from({ length: 99 }, (_, i) => i + 1).find((x) => !Object.hasOwn(taken, String(x))) ?? null;
-      if (slot === null) throw refused("every slot 1 to 99 is minted already");
-      return { ...prev, slots: { ...taken, [String(slot)]: { mode: "smoke", journey: id, generation: 1, tokenHash: null, accounts: used, retired: [], submitted: true } } };
-    },
-    { create: false },
-  );
-  const roles = Object.keys(used);
-  const ret = { journey: id, status: "done", roles, steps: [], created: [], values: [], candidates: [{ claim, oracle: "regression", roles, repro, screenshots: [] }], cw: [], coverage: {}, harness_events: [] };
-  const dir = path.join(liveDir(main), runId, "returns");
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writePrivate(path.join(dir, `${slot}.1.json`), `${JSON.stringify(ret)}\n`);
-  return `regression ${id}: step ${n} written as ${slot}.1.1 (repro ${slot}.1.1)`;
-}
 
 /** The names a target finds its element by (its own and its `within`'s), for `git log -S`. */
 function namesOf(t) {
@@ -272,7 +220,7 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
   const parsed = parse(suite.path);
   const pass = lastPass(main, lock.runId, id);
   if (!pass || pass.verdict !== "broke" || !ACTION_BREAKS.includes(pass.kind) || !Number.isInteger(pass.step)) throw refused(`${id} has no confirmed action break in this cycle's pass (smoke run)`);
-  const write = (n, repro, claim) => writeCandidate(main, { runId: lock.runId, id, n, repro, live, accounts, claim });
+  const write = (n, repro, claim) => writeRegression(main, { runId: lock.runId, id, n, repro, live, accounts, claim });
 
   if (!ret.heal.length) {
     if (ret.heal_reason !== "no-control") {

@@ -14,7 +14,7 @@ import { run, tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { readSuitePaths } from "./argus-live-smoke.mjs";
+import { quarantineIds, readSuitePaths } from "./argus-live-smoke.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -38,17 +38,6 @@ export function suitePaths(main, dir, verb) {
   } catch (e) {
     throw new Error(String(e.message).replace(/^refused: smoke run: /, `refused: ${verb}: `));
   }
-}
-
-/** The suite's `quarantine.json` (spec §19.9): `[{id, issue, since}]` → the quarantined ids; none when absent or not that shape. */
-export function quarantineIds(main, dir) {
-  let raw = null;
-  try {
-    raw = JSON.parse(fs.readFileSync(path.join(main, dir, "quarantine.json"), "utf8"));
-  } catch {
-    raw = null;
-  }
-  return Array.isArray(raw) ? raw.filter((q) => isObj(q) && typeof q.id === "string" && JOURNEY.test(q.id)).map((q) => q.id) : [];
 }
 
 /** The newest verdict of each path in the lane's last pass (`<run>/smoke/pass.jsonl` of lastRun) → Map id → record. */
