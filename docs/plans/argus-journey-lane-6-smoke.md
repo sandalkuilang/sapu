@@ -185,7 +185,7 @@ actual on mismatch; partial ARIA matching of extra list items; `results.json` sh
 and status `flaky` with `retries: 1`; `storageState` from a setup project with `dependencies`;
 `toHaveAccessibleName`; `testIdAttribute`; `run-code` can call `page.ariaSnapshot()` and
 `page.keyboard.press("Tab")`. A "no" changes the matching spec line in Z4, never silently.
-- [ ] Probe; write the outcomes. **Commit** `docs(sapu): phase 6 plan — the pinned runner's facts`.
+- [x] Probe; write the outcomes (see "As built (phase 6)"). **Commit** `docs(sapu): phase 6 plan — the pinned runner's facts`.
 
 ### Task 0.2: shared surfaces
 **Model: opus-high** (guard change, schema). **Files:** `-config.mjs`, `-steps.mjs` (registry only),
@@ -497,4 +497,54 @@ the API-level RED test the hint suggests.
 
 ## As built (phase 6)
 
-Empty until the tasks land.
+### Task 0.1 — the pinned runner, probed live
+
+Probed with the pinned install's `node_modules/playwright/cli.js test` (`1.64.0-alpha-1790635538000`)
+and the pinned CLI's `run-code`, against `tests/fixtures/journey-app` on Chrome (`channel: "chrome"`,
+headless), `retries: 1`, the `json` reporter. The same suite was then run on the stable
+`@playwright/test` `1.64.0` installed from npm into a scratch directory: **every row below is identical
+on both**, except the import row.
+
+| Probe | Result | Observed |
+|---|---|---|
+| Missing screenshot baseline, `updateSnapshots: "none"` | **NO, differs from the task's expectation** | Fails (both attempts) with `A snapshot doesn't exist at <testFile>-snapshots/<name>-<project>-<platform>.png`. Nothing is written and **no `-actual.png` is attached**: the only attachment in `results.json` is `error-context` (markdown). |
+| Screenshot mismatch, `"none"` | yes | Fails; each result attaches `<name>-expected.png`, `<name>-actual.png`, `<name>-diff.png` (paths under the test's output dir and the snapshots dir), and the message reports the differing pixel count. |
+| Screenshot, `--update-snapshots=missing` | yes, with a twist | A missing baseline is written and **the test passes** (exit 0); `results.json` attaches `-expected.png` (the new baseline) and `-actual.png`. |
+| `toMatchAriaSnapshot({name})` with `expect.toMatchAriaSnapshot.pathTemplate` | yes | With `__aria__/{testFilePath}/{arg}{ext}` the file is `__aria__/<spec file>/<name>.aria.yml`; `--update-snapshots=missing` writes it and the test passes. |
+| ARIA actual on mismatch | partly | The failure message holds a line diff (`- Expected`, `+ Received`, only the changed lines marked); no file or attachment. A **missing** `.aria.yml` is compared as the empty string, fails, and the message carries the whole received snapshot. Both are ANSI-coloured in `results.json`. |
+| Partial ARIA matching of extra list items | yes | A baseline `list` holding items `a`, `c` passes against a page holding `a`, `b`, `c`, `d`. |
+| `results.json` shows `test.step` titles | yes | Each result has `steps[].title` (`step 1 expect:visible`); a failing step is named in the failed result. |
+| Status `flaky` with `retries: 1` | yes | A test failing at `retry` 0 and passing at 1 has test `status: "flaky"`, two results, `stats.flaky: 1`. A test that fails both is `unexpected` with two results. |
+| `storageState` from a setup project with `dependencies` | yes | `setup` signs in through the real `/login` UI and writes `context().storageState({path})`; a dependent project with `use.storageState` opens `/stock` signed in (the header "Account" button). |
+| `toHaveAccessibleName` | yes | `/\S/` and an exact string both pass on the "Account" button. |
+| `testIdAttribute` | yes | `test.use({testIdAttribute: "data-qa"})` finds `data-qa`; with it set, `getByTestId` no longer matches `data-testid`. |
+| CLI `run-code` calls `page.ariaSnapshot()` | yes | Returns the snapshot string with no `[ref=]` markers (`- main:` / `- heading "Sign in" [level=1]` …), the form the runner's baselines use. |
+| CLI `run-code` calls `page.keyboard.press("Tab")` | yes | Focus moved to the sign-in page's first field (`activeElement` an `INPUT`). |
+| Spec imports `@playwright/test` | **NO under the pinned install** | `Error: Cannot find module '@playwright/test'`: the pinned install holds `playwright`, `playwright-core` and `@playwright/cli` only (the runner is `playwright/test`). It resolves with a stable `@playwright/test` `1.64.0` install, or a stub `node_modules/@playwright/test` whose `index.js` is `module.exports = require("playwright/test")` (probed: the alpha runner then passes the spec). |
+
+Other facts met on the way:
+
+- Every failed result attaches an `error-context` markdown holding the page's ARIA snapshot at the
+  failure (with `[ref=]` markers; not the baseline form).
+- The snapshot path default is `<spec file>-snapshots/<name>-<project>-<platform>.png`; the ARIA path
+  is whatever `pathTemplate` says.
+- A project's retry results each get their own output directory (`...-retry1`), so a mismatch's
+  actual is attached once per attempt.
+
+**What this changes** (a "no" is never silent; Task 0.4, B3, C3.2, Z4 depend on it):
+
+1. *Task 0.4 browser test, "run by the pinned runner".* A generated suite imports `@playwright/test`, which
+   the pinned alpha install does not hold. The test must either install the stable `@playwright/test`
+   from the generated `package.json`, or put the stub above into a scratch `node_modules` beside the
+   generated suite. It cannot run the generated suite as it is against the pinned install alone.
+2. *Decision 7 and `smoke baseline --from-run` (B3), C3.2.* With `updateSnapshots: "none"` (CI, §19.5) a
+   **new** screenshot baseline cannot be adopted from the CI artifact: a missing baseline attaches no
+   actual and writes nothing. Only a *mismatch* attaches `-actual.png`. Adopting a first baseline needs
+   a run with `--update-snapshots=missing` (which writes the baseline and passes), so `smoke baseline`
+   must either drive such a CI run or the new-baseline path must be a separate one-time workflow input.
+3. *ARIA baselines (C2.2, B3).* A mismatch gives a diff in the message, not the full received snapshot,
+   so adopting a changed ARIA baseline from an artifact cannot parse an actual from `results.json`.
+   Adoption of a changed ARIA baseline needs a CI update run (the other `--update-snapshots` modes were
+   not probed) or the lane regenerating the snapshot with `run-code` (`page.ariaSnapshot()`, probed
+   above, which matches the baseline form).
+4. Everything else the task named holds, so the matching spec lines (§19.5, §19.7, §19.9) stand as written.
