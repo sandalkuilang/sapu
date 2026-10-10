@@ -459,10 +459,20 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
   writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\n`);
   const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tempDir() };
   const outs: string[] = [];
-  const cli = (...args: string[]) => {
-    const r = spawnSync(NODE, [ARGUS_LIVE, ...args], { cwd: main, env, encoding: "utf8", timeout: 240_000 });
+  /**
+   * `argus-live.mjs <args>` in the repo, killed after 240 s, or after `timeoutMs` when the last argument is
+   * `{ timeoutMs }`: spawnSync blocks the test's own timeout, so a verb that legitimately runs longer on a loaded
+   * machine (`smoke run --perf`: two batches, each an up --fresh and four path runs) says so, and its test's
+   * timeout covers the sum. A killed command answers code null, and its `err` says why.
+   */
+  const cli = (...argv: (string | { timeoutMs: number })[]) => {
+    const last = argv.at(-1);
+    const timeout = typeof last === "object" ? last.timeoutMs : 240_000;
+    const args = argv.filter((a): a is string => typeof a === "string");
+    const r = spawnSync(NODE, [ARGUS_LIVE, ...args], { cwd: main, env, encoding: "utf8", timeout });
     outs.push(r.stdout, r.stderr);
-    return { code: r.status, out: r.stdout, err: r.stderr };
+    const killed = r.status === null ? `\n[killed (${r.signal}): argus-live ${args[0]} ran past its ${timeout / 1000} s bound]` : "";
+    return { code: r.status, out: r.stdout, err: `${r.stderr}${killed}` };
   };
   const runJson = () => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
   /** `up`, exit 0, its summary (the last line); `down` runs after the test whatever it asserted. */

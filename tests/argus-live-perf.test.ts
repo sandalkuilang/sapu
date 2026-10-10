@@ -836,7 +836,9 @@ describe("smoke run --perf on the fixture app", () => {
     writeFileSync(join(journeys, "place-order.json"), `${JSON.stringify({ journey: "place-order", path: place })}\n`);
     // Three runs a batch (the least), and a load limit a machine running other suites at once stays under.
     writeFileSync(join(c.main, ".argus/smoke.json"), `${JSON.stringify({ perf: { runs: 3, max_load: 8 } })}\n`);
-    const first = c.cli("smoke", "run", "--perf", "--seed", "3");
+    // A pass is up to two batches, each an up --fresh and four path runs: past the helper's 240 s on a loaded machine.
+    const PASS = { timeoutMs: 600_000 };
+    const first = c.cli("smoke", "run", "--perf", "--seed", "3", PASS);
     expect(first.code, `${first.out}\n${first.err}`).toBe(0);
     const lines = first.out.trimEnd().split("\n");
     expect(lines[0]).toBe("seed: 3");
@@ -855,7 +857,7 @@ describe("smoke run --perf on the fixture app", () => {
     expect(JSON.parse(readFileSync(join(dir, "run-1.json"), "utf8"))).toMatchObject({ exit: 0, dirty: false });
     expect(JSON.parse(readFileSync(join(dir, "run-2.json"), "utf8"))).toMatchObject({ exit: 0, dirty: true });
     // A second pass compares: whatever a loaded machine makes of it, the baseline itself does not move.
-    const second = c.cli("smoke", "run", "--perf", "--seed", "3");
+    const second = c.cli("smoke", "run", "--perf", "--seed", "3", PASS);
     expect([0, 3], `${second.out}\n${second.err}`).toContain(second.code);
     expect(second.out).toMatch(/\nperf place-order: (ok|flaky|regressed)/);
     const after = rec();
@@ -867,5 +869,6 @@ describe("smoke run --perf on the fixture app", () => {
     const moved = c.cli("smoke", "perf", "--rebaseline", "place-order");
     expect(moved.code, moved.err).toBe(0);
     expect(rec().medians).toEqual(after.latest.batches.at(-1));
-  }, 1_200_000);
+    // up (240 s), two passes (600 s each) and the rebaseline (240 s): spawnSync holds the test's timeout back until each ends.
+  }, 1_700_000);
 });
