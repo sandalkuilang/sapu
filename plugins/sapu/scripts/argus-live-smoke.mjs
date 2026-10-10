@@ -86,15 +86,61 @@ export function smokeEvent(main, runId, event) {
   return true;
 }
 
-/** The suite's `quarantine.json` (spec §19.9): `[{id, issue, since}]` → the quarantined ids; none when absent or not that shape. */
-export function quarantineIds(main, dir) {
+/** A suite project's name (spec §19.6), as quarantine.json, smoke ci and the baselines name it. */
+export const PROJECT = /^(setup|chromium|firefox|webkit|msedge|a11y|i18n|chromium-[1-9][0-9]{1,3})$/;
+
+/**
+ * The suite's `quarantine.json` (spec §19.9; smoke propose writes it) at the suite directory `at` → its entries `[{id,
+ * issue, since, projects}]`, each field shape-checked (a bad field reads as null or none, an entry without a journey id
+ * is left out); none when the file is absent or not a list. The one reader every verb uses.
+ */
+export function quarantineAt(at) {
   let raw = null;
   try {
-    raw = JSON.parse(fs.readFileSync(path.join(main, dir, "quarantine.json"), "utf8"));
+    raw = JSON.parse(fs.readFileSync(path.join(at, "quarantine.json"), "utf8"));
   } catch {
     raw = null;
   }
-  return Array.isArray(raw) ? raw.filter((q) => isObj(q) && typeof q.id === "string" && JOURNEY.test(q.id)).map((q) => q.id) : [];
+  return (Array.isArray(raw) ? raw : []).filter((q) => isObj(q) && typeof q.id === "string" && JOURNEY.test(q.id)).map((q) => ({
+    id: q.id,
+    issue: Number.isSafeInteger(q.issue) && q.issue > 0 ? q.issue : null,
+    since: typeof q.since === "string" && /^[0-9A-Za-z-]{1,40}$/.test(q.since) ? q.since : null,
+    projects: Array.isArray(q.projects) ? q.projects.filter((p) => typeof p === "string" && PROJECT.test(p)) : [],
+  }));
+}
+/** quarantineAt of the suite directory `dir` of checkout `main`. */
+export const readQuarantine = (main, dir) => quarantineAt(path.join(main, dir));
+/** The quarantined journey ids. */
+export const quarantineIds = (main, dir) => readQuarantine(main, dir).map((q) => q.id);
+
+const PASS_VERDICTS = ["held", "broke", "flaky", "harness"];
+const BREAK_KINDS = ["target-missing", "target-ambiguous", "expect-failed", "action-failed"];
+/**
+ * Run `runId`'s `smoke/pass.jsonl` (smoke run writes it) → `{records, torn}`: each `{id, verdict, step, kind, seed}`
+ * record of that shape in order, and the line numbers of those that are not (the report names them). The one reader.
+ */
+export function readPass(main, runId) {
+  const out = { records: [], torn: [] };
+  if (typeof runId !== "string" || !RUN_ID.test(runId)) return out;
+  let text = "";
+  try {
+    text = fs.readFileSync(path.join(liveDir(main), runId, "smoke", "pass.jsonl"), "utf8");
+  } catch {
+    return out;
+  }
+  text.split("\n").forEach((l, i) => {
+    if (l.trim() === "") return;
+    let v = null;
+    try {
+      v = JSON.parse(l);
+    } catch {
+      v = null;
+    }
+    const ok = isObj(v) && typeof v.id === "string" && JOURNEY.test(v.id) && PASS_VERDICTS.includes(v.verdict) && (v.step === null || v.step === undefined || (Number.isSafeInteger(v.step) && v.step > 0)) && (v.kind === null || v.kind === undefined || BREAK_KINDS.includes(v.kind));
+    if (ok) out.records.push(v);
+    else out.torn.push(i + 1);
+  });
+  return out;
 }
 
 /**

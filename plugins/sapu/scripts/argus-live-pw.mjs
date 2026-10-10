@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { slotDir } from "./argus-live-browser.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
-import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
+import { loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
@@ -240,15 +240,7 @@ export function layoutSkips(main, journey) {
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
   const rows = (v) => (Array.isArray(v) ? v : []).filter((r) => r && typeof r.check === "string" && typeof r.key === "string").map(({ check, key }) => ({ check, key }));
   const mine = smoke.journeys && Object.hasOwn(smoke.journeys, journey) ? smoke.journeys[journey] : null;
-  const rel = path.posix.join(smoke.dir, "known", `${journey}.json`);
-  let known = [];
-  try {
-    known = rows(JSON.parse(fs.readFileSync(path.join(main, rel), "utf8")));
-  } catch (e) {
-    if (e && e.code === "ENOENT") known = [];
-    else throw new Error(`failed: ${rel} is ${e instanceof SyntaxError ? "not valid JSON" : "unreadable"}`);
-  }
-  return [...rows(mine && mine.allow), ...known];
+  return [...rows(mine && mine.allow), ...readKnown(main, smoke.dir, journey)];
 }
 
 /**

@@ -9,7 +9,7 @@ import { cleanTemps, example, git, liveContract, liveRun, longSecret, tempDir } 
 // @ts-expect-error — plain ESM script without types
 import { pruneAria, smokeBaseline } from "../plugins/sapu/scripts/argus-live-baseline.mjs";
 // @ts-expect-error — plain ESM script without types
-import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+import { quarantineCycle, readTriage, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -482,6 +482,23 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     return d;
   };
   const ARIA = '- main:\n  - heading "Order 1234" [level=1]\n  - text: Total 12.50 EUR\n  - link "argus-3f2a9c1bkz9x0a1b2c":\n    - /url: /orders/42\n  - paragraph: Plain words\n  - button "Pay"\n';
+
+  it("the triage is versioned and structured: smoke baseline reads its findings, never the lines' words", async () => {
+    const t = baseRepo();
+    await smokeCi(t.main, { run: "101" }, { runner: fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() } }).runner });
+    const tri = readTriage(t.main, "101");
+    expect(tri).toMatchObject({ version: 1, run: 101, event: "push", branch: "main" });
+    expect(tri.findings).toContainEqual({ kind: "flaky", id: "checkout", projects: ["chromium"] });
+    expect(tri.findings.filter((f: Obj) => f.kind === "visual").every((f: Obj) => typeof f.id === "string" && Number.isInteger(f.step) && typeof f.project === "string")).toBe(true);
+    // A triage whose lines say nothing sapu parses still dispatches from its findings.
+    mkdirSync(join(t.main, ".argus/smoke-ci/201"), { recursive: true });
+    writeFileSync(join(t.main, ".argus/smoke-ci/201/triage.json"), JSON.stringify({ version: 1, run: 201, event: "pull_request", branch: "feat/x", sha: SHA, lines: ["(reworded)"], findings: [{ kind: "baseline-missing", id: "profile", project: "chromium" }] }));
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/201": apiRun(201, { event: "pull_request", branch: "feat/x", sha: t.sha, pr: 7 }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } } });
+    expect((await smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: gh.runner })).lines[0]).toMatch(/^baseline: dispatched profile mode=missing; /);
+    // A file that is not the triage reads as none.
+    writeFileSync(join(t.main, ".argus/smoke-ci/201/triage.json"), JSON.stringify({ version: 9, run: 201, lines: [] }));
+    expect(readTriage(t.main, "201")).toBeNull();
+  }, 30_000);
 
   it("a pull request that adds a journey: its run's suite is the run's own commit, so the new test's missing baseline is triaged and dispatched", async () => {
     const t = baseRepo();

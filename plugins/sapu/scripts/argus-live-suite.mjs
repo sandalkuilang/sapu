@@ -15,7 +15,7 @@ import { run, tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { quarantineIds, readSuitePaths, seededOrder, smokeEvent } from "./argus-live-smoke.mjs";
+import { quarantineIds, readPass, readSuitePaths, seededOrder, smokeEvent } from "./argus-live-smoke.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -43,24 +43,7 @@ export function suitePaths(main, dir, verb) {
 
 /** The newest verdict of each path in the lane's last pass (`<run>/smoke/pass.jsonl` of lastRun) → Map id → record. */
 function lastPass(main) {
-  const runId = lastRun(main);
-  const out = new Map();
-  if (!runId) return out;
-  let text = "";
-  try {
-    text = fs.readFileSync(path.join(liveDir(main), runId, "smoke", "pass.jsonl"), "utf8");
-  } catch {
-    return out;
-  }
-  for (const line of text.split("\n")) {
-    try {
-      const r = JSON.parse(line);
-      if (isObj(r) && typeof r.id === "string") out.set(r.id, r);
-    } catch {
-      // a torn last line: the records before it stand
-    }
-  }
-  return out;
+  return new Map(readPass(main, lastRun(main)).records.map((r) => [r.id, r]));
 }
 
 /** `a.b.c` versions compared numerically: < 0 when `a` is older. */

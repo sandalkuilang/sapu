@@ -142,6 +142,43 @@ export function validateSmoke(raw) {
   return { value: { ...d, ...r, ci: { ...d.ci, ...r.ci }, perf: { ...d.perf, ...r.perf, thresholds: { ...d.perf.thresholds, ...r.perf?.thresholds } } }, errors: [] };
 }
 
+/** A known or allowed violation's check name (`covered`, `axe:image-alt`). */
+const KNOWN_CHECK = /^(axe:)?[a-z][a-z0-9-]{0,39}$/;
+const knownRow = (v) => isObj(v) && typeof v.check === "string" && KNOWN_CHECK.test(v.check) && isStr(v.key) && v.key.length <= 500;
+
+/**
+ * `<dir>/known/<id>.json` of checkout `main` (smoke baseline writes it with knownText) → its `{check, key}` rows (a row
+ * of another shape left out); none when the file is missing; refused, naming the file and never its text, when it
+ * is not JSON, not a list, unreadable or over 1 MB. The one lane-side reader (pw's layout, the baseline's merge); the
+ * generated suite reads the same file in the test.
+ */
+export function readKnown(main, dir, id) {
+  const rel = path.posix.join(dir, "known", `${id}.json`);
+  let text;
+  try {
+    const st = fs.lstatSync(path.join(main, rel));
+    if (!st.isFile() || st.size > 1024 * 1024) throw new Error(`failed: ${rel} is unreadable`);
+    text = fs.readFileSync(path.join(main, rel), "utf8");
+  } catch (e) {
+    if (e && e.code === "ENOENT") return [];
+    throw e && /^failed: /.test(e.message) ? e : new Error(`failed: ${rel} is unreadable`);
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error(`failed: ${rel} is not valid JSON`);
+  }
+  if (!Array.isArray(raw)) throw new Error(`failed: ${rel} is not a list of {check, key}`);
+  return raw.filter(knownRow).map(({ check, key }) => ({ check, key }));
+}
+
+/** `known/<id>.json`'s text: `rows` of the shape, each once, sorted by check then key. */
+export function knownText(rows) {
+  const keep = [...new Map(rows.filter(knownRow).map((v) => [JSON.stringify([v.check, v.key]), { check: v.check, key: v.key }])).values()];
+  return `${JSON.stringify(keep.sort((a, b) => (a.check + a.key < b.check + b.key ? -1 : 1)), null, 2)}\n`;
+}
+
 /** `{smoke, errors, missing}` from `<main>/.argus/smoke.json`: `missing` when there is none (no suite yet). Never throws. */
 export function loadSmoke(main) {
   let raw;

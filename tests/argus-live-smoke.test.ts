@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
-import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun } from "./helpers/argus-live";
+import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -18,13 +18,13 @@ import { down, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live
 // @ts-expect-error — plain ESM script without types
 import { handoffSlot, mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { seededOrder, smokeRun } from "../plugins/sapu/scripts/argus-live-smoke.mjs";
+import { readPass, readQuarantine, seededOrder, smokeRun } from "../plugins/sapu/scripts/argus-live-smoke.mjs";
 // @ts-expect-error — plain ESM script without types
 import { parseRepro, pathChecks, suiteAccounts } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loadSmoke, PERF_METRICS, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
+import { knownText, loadSmoke, PERF_METRICS, readKnown, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -192,6 +192,50 @@ describe("smoke.json — the suite's schema", () => {
     expect(loadSmoke(main)).toEqual({ smoke: null, errors: ["max must be an integer from 1 to 50"], missing: false });
     writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify({ max: 5 }));
     expect(loadSmoke(main)).toEqual({ smoke: { ...SMOKE_DEFAULTS, max: 5 }, errors: [], missing: false });
+  });
+});
+
+describe("the suite's shared files, each read by one reader", () => {
+  it("readQuarantine: quarantine.json's entries, each field shape-checked; a file that is not a list holds none", () => {
+    const main = tempDir();
+    const dir = join(main, "e2e/argus-smoke");
+    mkdirSync(dir, { recursive: true });
+    expect(readQuarantine(main, "e2e/argus-smoke")).toEqual([]);
+    writeFileSync(join(dir, "quarantine.json"), JSON.stringify([{ id: "checkout", issue: 12, since: "101", projects: ["webkit", "evil project"] }, { id: "refund" }, { id: "Bad id" }, "x", { id: "cart", issue: "12", since: 5, projects: "webkit" }]));
+    expect(readQuarantine(main, "e2e/argus-smoke")).toEqual([
+      { id: "checkout", issue: 12, since: "101", projects: ["webkit"] },
+      { id: "refund", issue: null, since: null, projects: [] },
+      { id: "cart", issue: null, since: null, projects: [] },
+    ]);
+    writeFileSync(join(dir, "quarantine.json"), "{");
+    expect(readQuarantine(main, "e2e/argus-smoke")).toEqual([]);
+  });
+
+  it("readKnown and knownText: known/<id>.json's {check, key} rows; missing holds none, a broken file is refused by name", () => {
+    const main = tempDir();
+    const dir = join(main, "e2e/argus-smoke/known");
+    mkdirSync(dir, { recursive: true });
+    expect(readKnown(main, "e2e/argus-smoke", "checkout")).toEqual([]);
+    writeFileSync(join(dir, "checkout.json"), JSON.stringify([{ check: "covered", key: "link|Help|a", detail: "x" }, { check: "Bad Name", key: "k" }, { check: "axe:image-alt", key: "" }, "x"]));
+    expect(readKnown(main, "e2e/argus-smoke", "checkout")).toEqual([{ check: "covered", key: "link|Help|a" }]);
+    writeFileSync(join(dir, "checkout.json"), "{ SECRET-TEXT");
+    expect(() => readKnown(main, "e2e/argus-smoke", "checkout")).toThrow(/^failed: e2e\/argus-smoke\/known\/checkout\.json is not valid JSON$/);
+    writeFileSync(join(dir, "checkout.json"), JSON.stringify({ check: "covered" }));
+    expect(() => readKnown(main, "e2e/argus-smoke", "checkout")).toThrow("failed: e2e/argus-smoke/known/checkout.json is not a list of {check, key}");
+    expect(knownText([{ check: "covered", key: "b" }, { check: "axe:image-alt", key: "img" }, { check: "covered", key: "b" }])).toBe(`${JSON.stringify([{ check: "axe:image-alt", key: "img" }, { check: "covered", key: "b" }], null, 2)}\n`);
+  });
+
+  it("readPass: a run's pass.jsonl records of smoke run's shape, in order, and the line numbers that are not", () => {
+    const main = tempDir();
+    const runId = "20300101000000-0123abcd";
+    const dir = join(main, ".argus/live", runId, "smoke");
+    mkdirSync(dir, { recursive: true });
+    expect(readPass(main, runId)).toEqual({ records: [], torn: [] });
+    const a = { id: "checkout", verdict: "broke", step: 3, kind: "target-missing", seed: 1 };
+    const b = { id: "refund", verdict: "held", step: null, kind: null, seed: 1 };
+    writeFileSync(join(dir, "pass.jsonl"), `${JSON.stringify(a)}\n{"id": "x", "verdict": "won"}\n${JSON.stringify(b)}\n{torn`);
+    expect(readPass(main, runId)).toEqual({ records: [a, b], torn: [2, 4] });
+    expect(readPass(main, null)).toEqual({ records: [], torn: [] });
   });
 });
 

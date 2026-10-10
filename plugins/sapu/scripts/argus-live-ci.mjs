@@ -9,14 +9,14 @@ import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
-import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
+import { PROJECT as SMOKE_PROJECT, readPass, readQuarantine, readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { codeBlock, readState, refreshOutcomes, settleRegressions, stageInto, writeState } from "./argus-live-suite.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
 /** A GitHub Actions run id. */
 const RUN_ID = /^[1-9][0-9]{0,19}$/;
 /** The suite's project names (spec §19.6): anything else in a report is not read. */
-export const PROJECT = /^(setup|chromium|firefox|webkit|msedge|a11y|i18n|chromium-[1-9][0-9]{1,3})$/;
+export const PROJECT = SMOKE_PROJECT;
 /** A path step's `test.step` title (codegen's), the only step names read. */
 const STEP = /^step ([1-9][0-9]{0,2}) (do|expect):([a-z-]{1,20})$/;
 /** A check's name (spec §19.7): a custom check's, or axe's rule as `axe:<rule>`. */
@@ -248,17 +248,8 @@ export function notesOf(t) {
   return { good, bad };
 }
 
-/** The lane's own last pass verdict of journey `id` (the newest cycle's pass.jsonl), or null. */
-function lanePass(main, runId, id) {
-  if (!runId) return null;
-  let text = "";
-  try {
-    text = fs.readFileSync(path.join(liveDir(main), runId, "smoke", "pass.jsonl"), "utf8");
-  } catch {
-    return [];
-  }
-  return text.split("\n").map(parse).filter((r) => isObj(r) && r.id === id);
-}
+/** The lane's own pass records of journey `id` in run `runId`'s pass.jsonl. */
+const lanePass = (main, runId, id) => readPass(main, runId).records.filter((r) => r.id === id);
 
 /** True when the suite holds ARIA baseline `rel` at commit `sha` (the working tree's when the clone lacks it). */
 function holdsFile(main, sha, rel, runner) {
@@ -280,19 +271,64 @@ export function quarantineCycle(entry, { held, other, first, otherCi }) {
   return { entry: next, action: clean >= QUARANTINE_EXIT ? "exit" : next.cycles >= QUARANTINE_MAX ? "drop" : null, counted: true };
 }
 
-/** The suite's quarantine.json → the journey ids it holds with their `since` and the projects they flaked on (`[{id, since, projects}]`); none when missing. */
-function quarantined(main, dir, ids) {
-  let raw = null;
-  try {
-    raw = parse(fs.readFileSync(path.join(main, dir, "quarantine.json"), "utf8"));
-  } catch {
-    raw = null;
+/** The suite's quarantine.json entries of journeys in `ids` (readQuarantine's `[{id, issue, since, projects}]`). */
+const quarantined = (main, dir, ids) => readQuarantine(main, dir).filter((q) => ids.includes(q.id));
+
+// ---------------------------------------------------------------------------------------------------
+// `.argus/smoke-ci/<CI run>/triage.json`: smoke ci writes it, smoke baseline and the report read it (readTriage).
+
+const TRIAGE_VERSION = 1;
+const ID = "([a-z0-9][a-z0-9-]{0,63})";
+const PROJ = "([a-z0-9-]{1,40})";
+/** The unfenced line shapes that are findings → their structured form (the words around them may change). */
+const FINDINGS = [
+  [new RegExp(`^baseline-missing ${ID} ${PROJ}$`), (m) => ({ kind: "baseline-missing", id: m[1], project: m[2] })],
+  [new RegExp(`^visual ${ID} ([0-9]{1,3}) ${PROJ}: `), (m) => ({ kind: "visual", id: m[1], step: Number(m[2]), project: m[3] })],
+  [new RegExp(`^aria ${ID} ([0-9]{1,3}|\\?) \\[`), (m) => ({ kind: "aria", id: m[1], step: m[2] === "?" ? null : Number(m[2]) })],
+  [new RegExp(`^(check|manual) ${ID} ((?:axe:)?[a-z][a-z0-9-]{0,39}) \\[`), (m) => ({ kind: m[1], id: m[2], check: m[3] })],
+  [new RegExp(`^info ${ID} ${PROJ} \\[`), (m) => ({ kind: "info", id: m[1], project: m[2] })],
+  [new RegExp(`^flaky ${ID} ([a-z0-9,-]{1,200}): `), (m) => ({ kind: "flaky", id: m[1], projects: m[2].split(",") })],
+  [new RegExp(`^flaky-new ${ID} ([0-9]{1,10})$`), (m) => ({ kind: "flaky-new", id: m[1], pr: Number(m[2]) })],
+  [new RegExp(`^(ui-change\\?|bug\\?|ci-only) ${ID} step ([0-9]{1,3})$`), (m) => ({ kind: m[1], id: m[2], step: Number(m[3]) })],
+  [new RegExp(`^(browser-only|failed|quarantined) ${ID} ${PROJ}(?:: |$)`), (m) => ({ kind: m[1], id: m[2], project: m[3] })],
+  [new RegExp(`^pending-regression ${ID} `), (m) => ({ kind: "pending-regression", id: m[1] })],
+  [/^harness setup ([a-z][a-z0-9_-]*\.[0-9]{1,3}): /, (m) => ({ kind: "harness", account: m[1] })],
+];
+/** `lines`' findings, in order. */
+const findingsOf = (lines) => lines.flatMap((l) => {
+  for (const [re, f] of FINDINGS) {
+    const m = typeof l === "string" ? re.exec(l) : null;
+    if (m) return [f(m)];
   }
-  return (Array.isArray(raw) ? raw : []).flatMap((q) => {
-    const id = typeof q === "string" ? q : isObj(q) ? q.id : null;
-    const projects = isObj(q) && Array.isArray(q.projects) ? q.projects.filter((p) => typeof p === "string" && PROJECT.test(p)) : [];
-    return ids.includes(id) ? [{ id, since: isObj(q) && typeof q.since === "string" ? q.since : null, projects }] : [];
-  });
+  return [];
+});
+
+/** Writes CI run `r`'s triage (0600): `{version, run, event, branch, sha, lines, findings}`. */
+function writeTriage(main, r, lines) {
+  const at = path.join(main, ".argus", "smoke-ci", r.id);
+  fs.mkdirSync(at, { recursive: true, mode: 0o700 });
+  const doc = { version: TRIAGE_VERSION, run: Number(r.id), event: r.event, branch: r.branch, sha: r.sha, lines, findings: findingsOf(lines) };
+  fs.writeFileSync(path.join(at, "triage.json"), `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * CI run `ciRun`'s triage → `{version, run, event, branch, sha, lines, findings}`, every field shape-checked, or null
+ * (none, unreadable, another version or shape). One written before the version (no `version`) has its findings
+ * read from its lines. The one reader: smoke baseline's input, the report's "newest smoke ci summary".
+ */
+export function readTriage(main, ciRun) {
+  if (!RUN_ID.test(String(ciRun))) return null;
+  const t = parse((() => {
+    try {
+      return fs.readFileSync(path.join(main, ".argus", "smoke-ci", String(ciRun), "triage.json"), "utf8");
+    } catch {
+      return "";
+    }
+  })());
+  const ok = isObj(t) && (t.version === undefined || t.version === TRIAGE_VERSION) && Number.isSafeInteger(t.run) && t.run > 0 && /^[a-z_]{1,40}$/.test(String(t.event)) && BRANCH.test(String(t.branch)) && Array.isArray(t.lines) && t.lines.every((l) => typeof l === "string");
+  if (!ok) return null;
+  const findings = Array.isArray(t.findings) ? t.findings.filter((f) => isObj(f) && typeof f.kind === "string") : findingsOf(t.lines);
+  return { version: TRIAGE_VERSION, run: t.run, event: t.event, branch: t.branch, sha: typeof t.sha === "string" ? t.sha : null, lines: t.lines, findings };
 }
 
 /** A body's markdown for a change smoke ci stages. */
@@ -511,9 +547,7 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
     for (const s of skipped) add(s);
     add(`smoke ci: ${count.failing} failing, ${count.flaky} flaky, ${count.harness} harness, ${count.quarantined} quarantined read`);
     writeState(main, state);
-    const at = path.join(main, ".argus", "smoke-ci", ciRun);
-    fs.mkdirSync(at, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(at, "triage.json"), `${JSON.stringify({ run: Number(ciRun), event: r.event, branch: r.branch, sha: r.sha, lines: out }, null, 2)}\n`, { mode: 0o600 });
+    writeTriage(main, r, out);
     const shown = [...out];
     if (details.length) {
       const f = fence(details.join("\n"), { secrets: loadLive(main).secrets ?? {} });

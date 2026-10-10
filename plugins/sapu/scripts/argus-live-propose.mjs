@@ -12,7 +12,7 @@ import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
+import { quarantineAt, readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { changeDigest, generated, liveAsWritten, PR_URL, readState, refreshOutcomes, SUPERSEDED, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
 
@@ -84,14 +84,8 @@ function carryBranch(g, { wt, dir, base, branch, generatedNames }) {
  */
 function applyChanges(at, changes, base) {
   const qFile = path.join(at, "quarantine.json");
-  let quarantine = null;
-  try {
-    quarantine = JSON.parse(fs.readFileSync(qFile, "utf8"));
-  } catch {
-    quarantine = null;
-  }
-  const had = Array.isArray(quarantine);
-  quarantine = had ? quarantine.filter(isObj) : [];
+  const had = fs.existsSync(qFile);
+  let quarantine = quarantineAt(at);
   const rm = (p) => fs.rmSync(path.join(at, p), { recursive: true, force: true });
   for (const c of changes) {
     if (c.kind === "add" || c.kind === "heal") {
@@ -118,10 +112,12 @@ function applyChanges(at, changes, base) {
     } else if (c.kind === "quarantine") {
       const q = c.quarantine;
       if (!isObj(q) || q.id !== c.id) throw new Error(`refused: smoke propose: the staged quarantine of ${c.id} holds no {id, issue, since}`);
-      quarantine = [...quarantine.filter((x) => x.id !== c.id), { id: q.id, issue: q.issue ?? null, since: q.since ?? c.run }];
+      quarantine = [...quarantine.filter((x) => x.id !== c.id), { id: q.id, issue: q.issue ?? null, since: q.since ?? c.run, projects: Array.isArray(q.projects) ? q.projects : [] }];
     } else if (c.kind === "unquarantine") quarantine = quarantine.filter((q) => q.id !== c.id);
   }
-  if (had || quarantine.length) fs.writeFileSync(qFile, `${JSON.stringify(quarantine, null, 2)}\n`);
+  // Written as quarantineAt reads it; `projects` only when it names some.
+  const entry = ({ projects, ...q }) => (projects.length ? { ...q, projects } : q);
+  if (had || quarantine.length) fs.writeFileSync(qFile, `${JSON.stringify(quarantine.map(entry), null, 2)}\n`);
 }
 
 /** The journeys of the suite at `at` whose screenshots no baseline holds yet (`__screenshots__/<project>/<platform>/<id>.spec/`). */

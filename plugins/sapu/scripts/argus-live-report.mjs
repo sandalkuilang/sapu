@@ -30,6 +30,8 @@ import { tempBeside } from "./argus-live-proc.mjs";
 import { ORACLES } from "./argus-live-return.mjs";
 import { worktreeHeadFile } from "./argus-live-run.mjs";
 import { defang, filedFile, redactIds, REF, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
+import { readPass } from "./argus-live-smoke.mjs";
+import { readTriage } from "./argus-live-ci.mjs";
 
 /** Where the reports go, from the repo's root. */
 export const REPORTS_DIR = path.join(".argus", "reports");
@@ -42,8 +44,6 @@ const JOURNEY = /^[a-z0-9-]{1,100}$/;
 const PATH_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const STATUSES = ["done", "handoff", "aborted"];
 const COVERAGE = ["held", "failed", "not-tested", "blocked"];
-const PASS = ["held", "broke", "flaky", "harness"];
-const BREAK_KIND = /^[a-z][a-z-]{0,30}$/;
 const FILED_KINDS = ["issue", "comment"];
 const URL_SHAPE = /^https?:\/\/[^\s<>"'`]{1,300}$/;
 const BRANCH = /^argus\/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/;
@@ -183,12 +183,9 @@ function sections(main, runId, quote) {
   // The smoke pass and the smoke verbs' events.
   const counts = { held: 0, broke: 0, flaky: 0, harness: 0, healed: 0, admitted: 0, quarantined: 0 };
   const paths = [];
-  for (const { n, v } of readLines(path.join(dir, "smoke", "pass.jsonl"))) {
-    const ok = isObj(v) && typeof v.id === "string" && PATH_ID.test(v.id) && PASS.includes(v.verdict) && (v.step === null || v.step === undefined || posInt(v.step)) && (v.kind === null || v.kind === undefined || (typeof v.kind === "string" && BREAK_KIND.test(v.kind)));
-    if (!ok) {
-      unread.push(`smoke/pass.jsonl line ${n}`);
-      continue;
-    }
+  const pass = readPass(main, runId);
+  for (const n of pass.torn) unread.push(`smoke/pass.jsonl line ${n}`);
+  for (const v of pass.records) {
     counts[v.verdict] += 1;
     const where = (v.verdict === "broke" || v.verdict === "flaky") && posInt(v.step) ? ` step=${v.step}${v.kind ? ` kind=${v.kind}` : ""}` : "";
     paths.push(`- path ${v.id}: ${v.verdict}${where}`);
@@ -239,8 +236,8 @@ function sections(main, runId, quote) {
   const checks = [];
   const triage = newestTriage(main);
   if (triage) {
-    const ci = readJson(triage.file);
-    if (!isObj(ci) || !posInt(ci.run) || typeof ci.event !== "string" || !/^[a-z_]{1,40}$/.test(ci.event) || typeof ci.branch !== "string" || !/^[A-Za-z0-9._/-]{1,100}$/.test(ci.branch) || !Array.isArray(ci.lines)) unread.push(triage.rel);
+    const ci = readTriage(main, triage.n);
+    if (!ci) unread.push(triage.rel);
     else {
       checks.push(`- CI run ${ci.run} (${ci.event}, ${ci.branch})`);
       let hidden = 0;

@@ -4,8 +4,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { anySuite, noWiring, ARTIFACT, BASELINES, CHECK, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
-import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
+import { anySuite, noWiring, ARTIFACT, BASELINES, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, readTriage, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
+import { knownText, loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
@@ -128,19 +128,7 @@ function adoptable(tmp, { ids, dir, reports }) {
   return { files: [...files.values()], skipped };
 }
 
-/** `known/<id>.json`'s text: the branch's own rows (codegen and the checks read a JSON list of `{check, key}`) and `rows`, sorted, each once. */
-function knownFile(file, rows) {
-  const was = parse(regular(file, TEXT_MAX)?.toString("utf8") ?? "[]");
-  const all = [...(Array.isArray(was) ? was : []), ...rows].filter((v) => isObj(v) && CHECK.test(String(v.check)) && typeof v.key === "string" && v.key && v.key.length <= 500);
-  const keep = [...new Map(all.map((v) => [JSON.stringify([v.check, v.key]), { check: v.check, key: v.key }])).values()].sort((a, b) => (a.check + a.key < b.check + b.key ? -1 : 1));
-  return `${JSON.stringify(keep, null, 2)}\n`;
-}
 
-/** The `{check, key}` rows of a `known/<id>.json` (none when it is missing or not a list). */
-const knownRows = (file) => {
-  const was = parse(regular(file, TEXT_MAX)?.toString("utf8") ?? "[]");
-  return Array.isArray(was) ? was.filter((v) => isObj(v) && typeof v.check === "string" && typeof v.key === "string") : [];
-};
 
 /**
  * The journeys baseline run `r` was dispatched to re-baseline (mode `changed`), from smoke-state's `dispatches`: the
@@ -197,7 +185,7 @@ function adopt(main, { r, repo, contract, smoke, ids, known, runner, verb }) {
     for (const f of adopted.files) {
       const at = path.join(wt, f.rel);
       if (f.known) {
-        const was = new Set(knownRows(at).map((v) => JSON.stringify([v.check, v.key])));
+        const was = new Set(readKnown(wt, smoke.dir, f.id).map((v) => JSON.stringify([v.check, v.key])));
         const fresh = f.known.filter((v) => !was.has(JSON.stringify([v.check, v.key])));
         if (!fresh.length) continue;
         if (known) files.push({ ...f, fresh });
@@ -229,7 +217,7 @@ function adopt(main, { r, repo, contract, smoke, ids, known, runner, verb }) {
     if (hits.length) return { code: 1, lines: [...new Set(hits), `refused: ${verb}: ${new Set(hits).size} secret(s) in the adopted files; nothing is pushed`] };
     for (const f of files) {
       fs.mkdirSync(path.dirname(path.join(wt, f.rel)), { recursive: true });
-      fs.writeFileSync(path.join(wt, f.rel), f.known ? knownFile(path.join(wt, f.rel), f.known) : f.bytes);
+      fs.writeFileSync(path.join(wt, f.rel), f.known ? knownText([...readKnown(wt, smoke.dir, f.id), ...f.known]) : f.bytes);
     }
     fs.appendFileSync(path.join(wt, smoke.dir, "changes.jsonl"), `${changes.join("\n")}\n`);
     gitOut(runner, wt, ["add", "-A", "--", smoke.dir], verb);
@@ -279,16 +267,11 @@ export async function smokeBaseline(main, { fromRun, ids, known = false }, { run
   const suite = suiteIdsAt(main, { r, dir: smoke.dir, runner }).ids;
   for (const id of ids ?? []) if (!suite.includes(id)) throw new Error(`refused: ${verb}: the suite has no path ${id}`);
   if (r.event === "workflow_dispatch") return adopt(main, { r, repo, contract, smoke, ids: ids ?? suite, known, runner, verb });
-  let triage = null;
-  try {
-    triage = parse(fs.readFileSync(path.join(main, ".argus", "smoke-ci", r.id, "triage.json"), "utf8"));
-  } catch {
-    triage = null;
-  }
-  if (!isObj(triage) || !Array.isArray(triage.lines)) throw new Error(`refused: ${verb}: run ${r.id} is not triaged yet (smoke ci --run ${r.id} first)`);
-  const of = (re) => [...new Set(triage.lines.flatMap((l) => (typeof l === "string" && re.exec(l) ? [re.exec(l)[1]] : [])).filter((id) => suite.includes(id)))].sort();
-  const missing = of(/^baseline-missing ([a-z0-9-]+) /);
-  const mismatched = of(/^(?:visual|aria) ([a-z0-9-]+) /);
+  const triage = readTriage(main, r.id);
+  if (!triage) throw new Error(`refused: ${verb}: run ${r.id} is not triaged yet (smoke ci --run ${r.id} first)`);
+  const of = (kinds) => [...new Set(triage.findings.filter((f) => kinds.includes(f.kind) && typeof f.id === "string" && suite.includes(f.id)).map((f) => f.id))].sort();
+  const missing = of(["baseline-missing"]);
+  const mismatched = of(["visual", "aria"]);
   for (const id of ids ?? []) if (!mismatched.includes(id)) throw new Error(`refused: ${verb}: ${id} has no visual or ARIA mismatch in run ${r.id}: nothing to re-baseline`);
   const jobs = [["missing", missing], ["changed", [...(ids ?? [])].sort()]].filter(([, x]) => x.length);
   if (!jobs.length) return { code: 0, lines: [`baseline: nothing to dispatch (run ${r.id} has no baseline-missing journey; a mismatch is re-baselined only with --ids)`] };

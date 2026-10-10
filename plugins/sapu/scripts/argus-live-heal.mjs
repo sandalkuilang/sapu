@@ -12,7 +12,7 @@ import { readJourneys } from "./argus-live-map.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
-import { readSuitePaths, regressionList, smokeEvent, writeRegression } from "./argus-live-smoke.mjs";
+import { readPass, readSuitePaths, regressionList, smokeEvent, writeRegression } from "./argus-live-smoke.mjs";
 import { canonical, codeBlock, stage } from "./argus-live-suite.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
@@ -169,23 +169,7 @@ function evidence(main, { id, from, head, runner }) {
 }
 
 /** The last verdict smoke run recorded for journey `id` in this cycle's pass, or null. */
-function lastPass(main, runId, id) {
-  let text = "";
-  try {
-    text = fs.readFileSync(path.join(liveDir(main), runId, "smoke", "pass.jsonl"), "utf8");
-  } catch {
-    return null;
-  }
-  const recs = text.split("\n").flatMap((l) => {
-    try {
-      const r = JSON.parse(l);
-      return isObj(r) && r.id === id ? [r] : [];
-    } catch {
-      return [];
-    }
-  });
-  return recs.at(-1) ?? null;
-}
+const lastPass = (main, runId, id) => readPass(main, runId).records.filter((r) => r.id === id).at(-1) ?? null;
 
 /**
  * `smoke heal <slot>.<generation>` → `{code, lines, masked}`: decision table §19.9 on a heal-mode explorer's return.

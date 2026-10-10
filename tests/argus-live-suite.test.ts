@@ -762,7 +762,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [heal], body: ["### Heal: checkout", "", "held twice"], path: healed, needsOwner: true });
     stage(p.main, { kind: "unquarantine", id: "checkout", run: "100", changes: [{ kind: "unquarantine", id: "checkout", evidence: ["3 clean cycles"], run: "100" }], body: ["### Leave quarantine: checkout"] });
     stage(p.main, { kind: "drop", id: "refund", run: "100", changes: [{ kind: "drop", id: "refund", evidence: ["quarantined for 5 cycles"], run: "100" }], body: ["### Drop: refund"] });
-    stage(p.main, { kind: "quarantine", id: "wishlist", run: "100", changes: [{ kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }], body: ["### Quarantine: wishlist"], quarantine: { id: "wishlist", issue: null, since: "100" } });
+    stage(p.main, { kind: "quarantine", id: "wishlist", run: "100", changes: [{ kind: "quarantine", id: "wishlist", evidence: ["CI run 100: flaky on main (chromium)"], run: "100" }], body: ["### Quarantine: wishlist"], quarantine: { id: "wishlist", issue: null, since: "100", projects: ["webkit"] } });
     const r = await p.propose();
     expect(r.code).toBe(0);
     expect(r.lines.slice(0, 5)).toEqual([`branch: argus/smoke-${RUN}`, "change heal checkout step 3", "change unquarantine checkout", "change drop refund", "change quarantine wishlist"]);
@@ -771,7 +771,8 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect(JSON.parse(show("journeys/checkout.json").stdout)).toEqual({ ...checkout, path: healed, routes });
     for (const gone of ["journeys/refund.json", "refund.spec.ts", "known/refund.json", "__aria__/refund.spec/1.aria.yml", "__screenshots__/chromium/linux/refund.spec/1.png"]) expect(show(gone).status, gone).not.toBe(0);
     expect(show("__screenshots__/chromium/linux/checkout.spec/1.png").status).toBe(0);
-    expect(JSON.parse(show("quarantine.json").stdout)).toEqual([{ id: "wishlist", issue: null, since: "100" }]);
+    // The projects it flaked on reach quarantine.json: the lifecycle judges it on their quarantine-job results.
+    expect(JSON.parse(show("quarantine.json").stdout)).toEqual([{ id: "wishlist", issue: null, since: "100", projects: ["webkit"] }]);
     expect(show("wishlist.spec.ts").stdout).toContain('"tag": "@quarantine"');
     expect(show("checkout.spec.ts").stdout).not.toContain("@quarantine");
     const log = show("changes.jsonl").stdout.trim().split("\n").map((l: string) => JSON.parse(l));
