@@ -13,15 +13,16 @@ import { processTable, run, runAsync, sameStart, sleep, startTime } from "./argu
  * The CLI's whole environment: PATH, USER, SHELL, LANG and the LC_* variables the owner set, HOME =
  * `home` (the run's `<HOME>/browser`, so neither the owner's global CLI config nor its caches are read),
  * TMPDIR = `<home>/tmp` (Chrome's profiles and the CLI's temp files die with the run's HOME; runCli
- * creates it), PWTEST_SOCKETS_DIR = socketsDir(home) (below), NO_UPDATE_NOTIFIER=1 (no registry call). No
+ * creates it; on Linux reached through tmpLink(home), since Chrome there puts its process-singleton
+ * socket in TMPDIR and refuses one whose path is too long), PWTEST_SOCKETS_DIR = socketsDir(home) (below), NO_UPDATE_NOTIFIER=1 (no registry call). No
  * PLAYWRIGHT_*, PWTEST_*, NODE_OPTIONS or XDG_* of the owner's.
  */
-export function cliEnv(home, ownerEnv = process.env) {
+export function cliEnv(home, ownerEnv = process.env, platform = process.platform) {
   const env = {};
   for (const [k, v] of Object.entries(ownerEnv)) {
     if (typeof v === "string" && (["PATH", "USER", "SHELL", "LANG"].includes(k) || /^LC_[A-Z_]+$/.test(k))) env[k] = v;
   }
-  return { ...env, TMPDIR: path.join(home, "tmp"), HOME: home, PWTEST_SOCKETS_DIR: socketsDir(home), NO_UPDATE_NOTIFIER: "1" };
+  return { ...env, TMPDIR: platform === "linux" ? tmpLink(home) : path.join(home, "tmp"), HOME: home, PWTEST_SOCKETS_DIR: socketsDir(home), NO_UPDATE_NOTIFIER: "1" };
 }
 
 /**
@@ -36,6 +37,37 @@ export const SOCKETS_ROOT = `/tmp/sapu-${typeof process.getuid === "function" ? 
 /** The sockets directory of the CLI sessions whose HOME is `home`: `<SOCKETS_ROOT>/<12 hex of sha256(home)>`. */
 export function socketsDir(home) {
   return path.join(SOCKETS_ROOT, createHash("sha256").update(String(home)).digest("hex").slice(0, 12));
+}
+
+/**
+ * On Linux, the TMPDIR the CLI gets: `<socketsDir(home)>/tmp`, a symlink to `<home>/tmp`. Chrome on
+ * Linux puts its process-singleton socket at `<TMPDIR>/.com.google.Chrome.XXXXXX/SingletonSocket` and
+ * exits ("Socket path too long") past 107 bytes, which `<home>/tmp` under `$TMPDIR/sapu-live` reaches
+ * (probed on GitHub's Ubuntu runner). The link keeps the path short and the files in the run's HOME;
+ * the teardown's removeSockets removes the link with the directory, never what it points to.
+ */
+export function tmpLink(home) {
+  return path.join(socketsDir(home), "tmp");
+}
+
+/** The directories a CLI call needs: `<home>/tmp` (0700), SOCKETS_ROOT and socketsDir(home) (ownDir), and on Linux tmpLink(home). */
+function cliDirs(home, platform = process.platform) {
+  const tmp = path.join(home, "tmp");
+  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
+  fs.chmodSync(tmp, 0o700);
+  ownDir(SOCKETS_ROOT);
+  ownDir(socketsDir(home));
+  if (platform !== "linux") return;
+  const link = tmpLink(home);
+  let target = null;
+  try {
+    target = fs.readlinkSync(link);
+  } catch {
+    // missing, or not a link: replaced below
+  }
+  if (target === tmp) return;
+  fs.rmSync(link, { recursive: true, force: true });
+  fs.symlinkSync(tmp, link);
 }
 
 /** `dir`, created 0700 when missing; refused when it is a symlink, not a directory, or another user's. */
@@ -59,11 +91,7 @@ function ownDir(dir) {
  * detached into a group of its own, so it stays) → {code, stdout, stderr, timedOut}.
  */
 export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000, runner = runAsync }) {
-  const tmp = path.join(home, "tmp");
-  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
-  fs.chmodSync(tmp, 0o700);
-  ownDir(SOCKETS_ROOT);
-  ownDir(socketsDir(home));
+  cliDirs(home);
   const r = await runner([process.execPath, js, `-s=${session}`, ...args], { cwd, env: cliEnv(home), timeoutMs, stdio: ["ignore", "pipe", "pipe"], capture: true, killAfter: true });
   if (r.error) throw new Error(`failed: the browser CLI could not run: ${r.error.message}`);
   return { code: r.status ?? null, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: Boolean(r.timedOut) };
@@ -82,10 +110,7 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
  * process. Resolves to the CLI's exit status.
  */
 export function showDashboard({ js, home, cwd }) {
-  const tmp = path.join(home, "tmp");
-  fs.mkdirSync(tmp, { recursive: true, mode: 0o700 });
-  ownDir(SOCKETS_ROOT);
-  ownDir(socketsDir(home));
+  cliDirs(home);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: ["ignore", "inherit", "inherit"], detached: true });
     const group = (sig) => {
