@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ARTIFACT, BASELINES, CHECK, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, regular, reportsIn, suiteIds, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
+import { anySuite, noWiring, ARTIFACT, BASELINES, CHECK, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
 import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";
@@ -266,10 +266,15 @@ export async function smokeBaseline(main, { fromRun, ids, known = false }, { run
   const loaded = loadSmoke(main);
   if (loaded.errors.length) throw new Error(`refused: ${verb}: ${loaded.errors.join("; ")}`);
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
-  const suite = suiteIds(main, smoke, verb);
-  for (const id of ids ?? []) if (!suite.includes(id)) throw new Error(`refused: ${verb}: the suite has no path ${/^[a-z0-9-]{1,64}$/.test(id) ? id : "that"}`);
+  const none = noWiring(main, smoke, verb);
+  if (none) return none;
+  anySuite(main, smoke, verb);
+  for (const id of ids ?? []) if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) throw new Error(`refused: ${verb}: the suite has no path that`);
   const r = fetchRun(main, { asked: fromRun, repo, base, workflow: smoke.ci.workflow, runner, verb });
   notStale(main, { r, repo, runner, verb });
+  // The run's own commit holds its suite: a proposal's run triages and adopts the journeys the proposal adds.
+  const suite = suiteIdsAt(main, { r, dir: smoke.dir, runner }).ids;
+  for (const id of ids ?? []) if (!suite.includes(id)) throw new Error(`refused: ${verb}: the suite has no path ${id}`);
   if (r.event === "workflow_dispatch") return adopt(main, { r, repo, contract, smoke, ids: ids ?? suite, known, runner, verb });
   let triage = null;
   try {

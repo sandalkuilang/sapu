@@ -197,6 +197,8 @@ describe("argus-live CLI — phase 6's verbs", () => {
     if (policy) {
       mkdirSync(join(main, ".claude"), { recursive: true });
       writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, ...(Object.keys(policy).length ? { policy } : {}) }));
+      mkdirSync(join(main, ".github/workflows"), { recursive: true });
+      writeFileSync(join(main, ".github/workflows/argus-smoke.yml"), "name: argus-smoke\n");
       git(main, "add", ".");
       git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract");
     }
@@ -256,6 +258,9 @@ describe("argus-live CLI — phase 6's verbs", () => {
     // Propose with nothing staged and check with no suite answer on stdout, exit 0.
     for (const dry of [[], ["--dry-run"]]) expect(cli(main, "smoke", "propose", ...dry)).toMatchObject({ status: 0, stdout: "smoke propose: nothing to propose\n", stderr: "" });
     expect(cli(main, "smoke", "check")).toMatchObject({ status: 0, stdout: CHECK, stderr: "" });
+    // Without the CI workflow there is no CI to read: smoke ci and smoke baseline skip, exit 0.
+    git(main, "rm", "-q", ".github/workflows/argus-smoke.yml");
+    for (const verb of [["ci"], ["baseline", "--from-run", "123456"]]) expect(cli(main, "smoke", ...verb)).toMatchObject({ status: 0, stdout: `smoke ${verb[0]}: no CI wiring (.github/workflows/argus-smoke.yml is absent): skipped\n`, stderr: "" });
     // The lane's own pass is built (Task 0.3): without a cycle it is refused as every runner is.
     expect(cli(main, "smoke", "run").stderr).toBe("refused: no journey cycle is running\n");
   }, 60_000);

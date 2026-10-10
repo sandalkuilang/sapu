@@ -53,6 +53,8 @@ const ciRepo = ({ quarantine = [] as string[], aria = true } = {}) => {
   }
   writeFileSync(join(dir, "quarantine.json"), `${JSON.stringify(quarantine.map((id) => ({ id, issue: null, since: "100" })))}\n`);
   writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\n");
+  mkdirSync(join(t.main, ".github/workflows"), { recursive: true });
+  writeFileSync(join(t.main, ".github/workflows/argus-smoke.yml"), "name: argus-smoke\n");
   commitAll(t.main, "suite");
   return t;
 };
@@ -303,6 +305,15 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     await expect(smokeCi(t.main, { run: "106" }, { runner: none.runner })).rejects.toThrow("refused: smoke ci: run 106 has no readable results.json in an argus-smoke-results artifact");
   });
 
+  it("with no workflow file there is no CI to read: smoke ci and smoke baseline say so and skip, asking gh nothing", async () => {
+    const t = ciRepo();
+    git(t.main, "rm", "-q", ".github/workflows/argus-smoke.yml");
+    const gh = fakeGh();
+    expect(await smokeCi(t.main, { run: null }, { runner: gh.runner })).toEqual({ code: 0, lines: ["smoke ci: no CI wiring (.github/workflows/argus-smoke.yml is absent): skipped"] });
+    expect(await smokeBaseline(t.main, { fromRun: "101", ids: null }, { runner: gh.runner })).toEqual({ code: 0, lines: ["smoke baseline: no CI wiring (.github/workflows/argus-smoke.yml is absent): skipped"] });
+    expect(gh.calls).toEqual([]);
+  });
+
   it("refuses before asking gh anything when the suite has no paths: there is nothing to triage or adopt", async () => {
     const t = ciRepo();
     git(t.main, "rm", "-rq", "e2e/argus-smoke/journeys");
@@ -447,6 +458,28 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     return d;
   };
   const ARIA = '- main:\n  - heading "Order 1234" [level=1]\n  - text: Total 12.50 EUR\n  - link "argus-3f2a9c1bkz9x0a1b2c":\n    - /url: /orders/42\n  - paragraph: Plain words\n  - button "Pay"\n';
+
+  it("a pull request that adds a journey: its run's suite is the run's own commit, so the new test's missing baseline is triaged and dispatched", async () => {
+    const t = baseRepo();
+    // main's suite (the working tree) lacks orders; the pull request's head adds it.
+    git(t.main, "checkout", "-q", "-b", "feat/orders");
+    writeFileSync(join(t.main, "e2e/argus-smoke/journeys/orders.json"), `${JSON.stringify({ journey: "orders", path: [] })}\n`);
+    commitAll(t.main, "the orders journey");
+    git(t.main, "push", "-q", "origin", "feat/orders");
+    const head = git(t.main, "rev-parse", "HEAD");
+    git(t.main, "checkout", "-q", "main");
+    expect(existsSync(join(t.main, "e2e/argus-smoke/journeys/orders.json"))).toBe(false);
+    const missing = { suites: [{ title: "orders.spec.ts", file: "orders.spec.ts", specs: [{ title: "orders", file: "orders.spec.ts", tags: [], tests: [{ projectName: "chromium", status: "unexpected", annotations: [], results: [{ status: "failed", errors: [{ message: "Error: A snapshot doesn't exist at /w/e2e/argus-smoke/__screenshots__/chromium/linux/orders.spec/3.png, writing actual." }], attachments: [], steps: [] }] }] }], suites: [] }] };
+    const api = { "repos/owner/app/actions/runs/401": apiRun(401, { event: "pull_request", branch: "feat/orders", sha: head, pr: 9 }), "repos/owner/app/branches/feat%2Forders": { commit: { sha: head } } };
+    const gh = fakeGh({ api, artifacts: { "401": baselines({ "argus-smoke-results-chromium/results.json": JSON.stringify(missing) }) }, dispatch: { status: 0, stdout: "https://github.com/owner/app/actions/runs/402\n", stderr: "" } });
+    const r = await smokeCi(t.main, { run: "401" }, { runner: gh.runner });
+    const { outside } = split(r.lines);
+    expect(outside).toContain("baseline-missing orders chromium");
+    expect(outside.some((l) => l.startsWith("skipped:") && l.includes("outside the suite's names"))).toBe(false);
+    const b = await smokeBaseline(t.main, { fromRun: "401", ids: null }, { runner: gh.runner });
+    expect(b.lines).toEqual(["baseline: dispatched orders mode=missing; adopt with smoke baseline --from-run 402"]);
+    expect(gh.calls.filter((c) => c[0] === "workflow")).toEqual([["workflow", "run", "argus-smoke.yml", "--repo", "owner/app", "--ref", "feat/orders", "-f", "baseline=missing", "-f", "grep=orders"]]);
+  }, 30_000);
 
   it("pruneAria turns names holding a digit into regexes, digit runs as \\d+ and the marker as its shape", () => {
     expect(pruneAria(ARIA)).toBe('- main:\n  - heading /Order \\d+/ [level=1]\n  - text: /Total \\d+\\.\\d+ EUR/\n  - link /argus-[0-9a-z]+/:\n    - /url: /\\/orders\\/\\d+/\n  - paragraph: Plain words\n  - button "Pay"\n');

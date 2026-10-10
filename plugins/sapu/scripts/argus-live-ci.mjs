@@ -59,11 +59,35 @@ export function home(main, verb) {
   return { repo: contract.repo, base: contract.baseBranch, contract };
 }
 
-/** The suite's journey ids; none refuses before gh is asked anything (nothing to triage or adopt). */
-export function suiteIds(main, smoke, verb) {
-  const ids = readSuitePaths(main, smoke.dir).map((p) => p.id);
-  if (!ids.length) throw new Error(`refused: ${verb}: the suite has no paths (${smoke.dir}/journeys)`);
-  return ids;
+/** The CI wiring's absence (no `.github/workflows/<ci.workflow>` in the checkout) → the line a verb answers with, else null: CI is optional. */
+export function noWiring(main, smoke, verb) {
+  const rel = `.github/workflows/${smoke.ci.workflow}`;
+  return fs.existsSync(path.join(main, rel)) ? null : { code: 0, lines: [`${verb}: no CI wiring (${rel} is absent): skipped`] };
+}
+
+/**
+ * Refuses before gh is asked anything when there is nothing to triage or adopt: the working tree's suite has no path
+ * and no proposal is open (an open one may add the first paths, which only its CI run holds).
+ */
+export function anySuite(main, smoke, verb) {
+  if (readSuitePaths(main, smoke.dir).length) return;
+  if (Object.values(readState(main).proposals ?? {}).some((p) => isObj(p) && p.outcome === "open")) return;
+  throw new Error(`refused: ${verb}: the suite has no paths (${smoke.dir}/journeys)`);
+}
+
+/**
+ * The suite's journey ids at run `r`'s own commit (`git ls-tree` of `<dir>/journeys` at its head: a pull request that
+ * adds a journey runs that journey's test), the commit fetched from origin when the clone lacks it → `{ids, notes}`.
+ * A head no fetch can bring falls back to the working tree's suite, with a note saying so.
+ */
+export function suiteIdsAt(main, { r, dir, runner }) {
+  const has = () => runner(["git", "-C", main, "cat-file", "-e", `${r.sha}^{commit}`]).status === 0;
+  if (!has()) runner(["git", "-C", main, "fetch", "-q", "--no-tags", "origin", `refs/heads/${r.branch}`]);
+  if (!has()) runner(["git", "-C", main, "fetch", "-q", "--no-tags", "origin", r.sha]);
+  if (!has()) return { ids: readSuitePaths(main, dir).map((p) => p.id), notes: [`note: run ${r.id}'s head ${r.sha.slice(0, 12)} is not in this clone: the suite's ids are the working tree's`] };
+  const ls = runner(["git", "-C", main, "ls-tree", "--name-only", `${r.sha}:${dir}/journeys`]);
+  const names = ls.status === 0 ? String(ls.stdout ?? "").split("\n") : [];
+  return { ids: names.filter((f) => /^[a-z0-9][a-z0-9-]{0,63}\.json$/.test(f)).map((f) => f.slice(0, -5)).sort(), notes: [] };
 }
 
 /** `gh <argv>` through `runner` → stdout, or a refusal naming `verb` (gh's own words never printed). */
@@ -300,13 +324,16 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
   const loaded = loadSmoke(main);
   if (loaded.errors.length) throw new Error(`refused: ${verb}: ${loaded.errors.join("; ")}`);
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
-  const ids = suiteIds(main, smoke, verb);
+  const none = noWiring(main, smoke, verb);
+  if (none) return none;
+  anySuite(main, smoke, verb);
   const r = fetchRun(main, { asked, repo, base, workflow: smoke.ci.workflow, runner, verb });
+  const { ids, notes } = suiteIdsAt(main, { r, dir: smoke.dir, runner });
   const tmp = download(main, { id: r.id, repo, prefix: smoke.ci.artifact, runner, verb });
   try {
     const { reports, skipped } = reportsIn(tmp, smoke.ci.artifact);
     if (!reports.length) throw new Error(`refused: ${verb}: run ${r.id} has no readable results.json in an ${smoke.ci.artifact} artifact`);
-    const out = [`smoke ci: run ${r.id} (${r.event} on ${r.branch}, ${r.sha.slice(0, 12)})`];
+    const out = [`smoke ci: run ${r.id} (${r.event} on ${r.branch}, ${r.sha.slice(0, 12)})`, ...notes];
     const details = [];
     const detail = (lines) => {
       details.push(...lines.map((l, i) => (i ? `    ${l}` : `[${details.filter((d) => d.startsWith("[")).length + 1}] ${l}`)));
