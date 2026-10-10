@@ -75,16 +75,23 @@ export function changeDigest(entry) {
 
 /**
  * Stages `entry` (`{kind, id, run, changes: [changes.jsonl lines], body: [markdown lines], path?, quarantine?}`)
- * for `smoke propose` → `{staged, digest}`. A staged entry of the same kind and journey is replaced; a digest
- * the owner rejected (a closed proposal) is never staged again (`staged: false`).
+ * into smoke state `state` (changed in place) for `smoke propose` → `{staged, digest}`. A staged entry of the
+ * same kind and journey is replaced; a digest the owner rejected (a closed proposal) is never staged again
+ * (`staged: false`).
  */
-export function stage(main, entry) {
+export function stageInto(state, entry) {
   const digest = changeDigest(entry);
-  const state = readState(main);
   if (state.rejected.includes(digest)) return { staged: false, digest };
   state.staged = [...state.staged.filter((s) => !(s.kind === entry.kind && s.id === entry.id)), { ...entry, digest }];
-  writeState(main, state);
   return { staged: true, digest };
+}
+
+/** stageInto on the state file: read, staged, written. */
+export function stage(main, entry) {
+  const state = readState(main);
+  const r = stageInto(state, entry);
+  if (r.staged) writeState(main, state);
+  return r;
 }
 
 /** A markdown code fence around `text` that no backtick run inside it can close. */
