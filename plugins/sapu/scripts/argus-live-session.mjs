@@ -19,7 +19,7 @@ import { run, runAsync } from "./argus-live-proc.mjs";
 import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
 import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
-import { TASTE_SOURCE } from "./argus-live-taste.mjs";
+import { censusOf } from "./argus-live-taste.mjs";
 import { MEDIA_READ, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
@@ -165,7 +165,8 @@ export function spendTaste(main, runId, what, ms) {
 /**
  * The route template of `pathname` (decision 17's screen key): the map's route it matches (a `:name`, `*`, `{name}`
  * or `[name]` segment matches any one segment; the most literal match wins), else the path with each id-like
- * segment (digits, a UUID, 16+ hex digits, a run of 3+ digits, or 20+ characters mixing letters and digits) written
+ * segment (digits, a UUID, 16+ hex digits, a run of 3+ digits, a digit beside a `-`, `_`, `.`, `:` or `~` as in
+ * `ORD-1`, or 20+ characters mixing letters and digits) written
  * `:id`; whitespace and `|` become `_`, at most 200 characters. Self-contained: the recorder runs its source in the daemon.
  */
 export function routeTemplate(pathname, routes) {
@@ -188,7 +189,7 @@ export function routeTemplate(pathname, routes) {
       most = literal;
     }
   }
-  const idLike = (s) => /^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) || /^[0-9a-f]{16,}$/i.test(s) || /\d{3,}/.test(s) || (s.length >= 20 && /[A-Za-z]/.test(s) && /\d/.test(s));
+  const idLike = (s) => /^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) || /^[0-9a-f]{16,}$/i.test(s) || /\d{3,}/.test(s) || /[-_.:~]\d|\d[-_.:~]/.test(s) || (s.length >= 20 && /[A-Za-z]/.test(s) && /\d/.test(s));
   return (best ?? `/${segs.map((s) => (idLike(s) ? ":id" : s)).join("/")}`).replace(/[\s|]/g, "_").slice(0, 200);
 }
 
@@ -204,27 +205,21 @@ export const MAIN_ROWS = `(() => {
   return most;
 })()`;
 
-/**
- * A page expression → each of the first 400 elements' computed colours, which a dark pass compares to tell a themed
- * page (decision 6); an element with a running animation reads `~`, so a colour that only animates never tells a theme.
- */
-export const PALETTE = `(() => [document.documentElement, document.body, ...document.querySelectorAll("body *")].filter(Boolean).slice(0, 400).map((el) => {
-  if (el.getAnimations().some((a) => a.playState === "running")) return "~";
-  const s = getComputedStyle(el);
-  return s.color + "/" + s.backgroundColor + "/" + s.borderTopColor;
-}))()`;
+/** A page expression → once the CSS transitions now running finished (a theme switch's), 0. */
+export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.then(() => 0, () => 0))).then(() => 0)`;
 
 /**
  * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the
  * action's taste events drained first (TASTE_DRAIN); the same state as the last observation (`T.prev`, the
  * sha256 of its URL and ARIA snapshot, as the loop rule hashes it) → `{changed: false}`. Else the screen: its route
- * template, width and theme (MEDIA_READ), the census (`T.taste`, `{pass: "base"}`), the ease measurements (`T.ease`),
- * the rows of `main`'s largest table (`T.rows`), one viewport screenshot per screen key not yet shot this run (its name the
+ * template, width and theme (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
  * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
- * stage body of `page`), a text past `T.maxText` unread); then, on a light page, a dark pass (`themed` when an element whose
- * colours held still in two light reads, not animating, changed under dark: its census and screenshot), and a reduced-motion pass, each
- * restoring the explicit media it read, never null (Task 0.1); the events those passes caused drained and dropped.
- * A probe that throws is a `faults` entry, never a failure.
+ * stage body of `page`), a text past `T.maxText` unread), taken before anything else touches the page; the census
+ * (`T.census`, the source of argus-live-taste.mjs censusOf: the page's own scheme, the other one and reduced motion,
+ * the media put back as it read them, never null); the ease measurements (`T.ease`); the rows of `main`'s largest
+ * table (`T.rows`); on a themed page (the census's `themes` `dual`) the other scheme's screenshot, once its
+ * transitions settled (at most `T.settleMax`), the explicit media restored after; then the events the census and that
+ * switch caused drained and dropped. A probe that throws is a `faults` entry, never a failure.
  */
 export const RECORDER = `async (page, o, T) => {
   const t0 = Date.now();
@@ -239,14 +234,6 @@ export const RECORDER = `async (page, o, T) => {
   const vp = page.viewportSize();
   const width = vp && vp.width ? vp.width : await ev("innerWidth");
   const faults = [];
-  const probe = async (name, src, arg) => {
-    try {
-      return await ev("(" + src + ")(" + JSON.stringify(arg) + ")");
-    } catch (e) {
-      faults.push(name);
-      return null;
-    }
-  };
   const read = new Function("page", "return (async () => {\\n" + T.read + "})();");
   const taken = new Set(T.taken);
   const shoot = async (theme) => {
@@ -268,50 +255,40 @@ export const RECORDER = `async (page, o, T) => {
     }
     return { theme, name, verdict };
   };
-  const pause = () => page.waitForTimeout(T.settle);
-  const census = await probe("census", T.taste, { pass: "base" });
-  const ease = await probe("ease", T.ease, {});
+  const shots = [await shoot(media.colorScheme)];
+  let taste = null;
+  try {
+    taste = await new Function("return " + T.census)()(page);
+  } catch (e) {
+    faults.push("census");
+  }
+  let ease = null;
+  try {
+    ease = await ev("(" + T.ease + ")({})");
+  } catch (e) {
+    faults.push("ease");
+  }
   let rows = 0;
   try {
     rows = await ev(T.rows);
   } catch (e) {
     faults.push("rows");
   }
-  const shots = [await shoot(media.colorScheme)];
-  let themed = false;
-  let dark = null;
-  let reduce = null;
-  if (media.colorScheme === "light") {
-    const a = await ev(T.palette);
-    await pause();
-    const b = await ev(T.palette);
+  const themed = Boolean(taste && taste.themes === "dual");
+  if (themed) {
     try {
-      await page.emulateMedia({ colorScheme: "dark", reducedMotion: media.reducedMotion });
-      await pause();
-      const d = await ev(T.palette);
-      themed = a.some((x, i) => x !== "~" && x === b[i] && d[i] !== undefined && d[i] !== x);
-      if (themed) {
-        dark = await probe("dark", T.taste, { pass: "dark" });
-        shots.push(await shoot("dark"));
-      }
+      await page.emulateMedia({ colorScheme: media.colorScheme === "dark" ? "light" : "dark", reducedMotion: media.reducedMotion });
+      await Promise.race([ev(T.settled), page.waitForTimeout(T.settleMax)]);
+      shots.push(await shoot(media.colorScheme === "dark" ? "light" : "dark"));
     } finally {
       await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
     }
   }
-  if (media.reducedMotion === "no-preference") {
-    try {
-      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: "reduce" });
-      await pause();
-      reduce = await probe("reduce", T.taste, { pass: "reduce" });
-    } finally {
-      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
-    }
-  }
-  await pause();
+  await page.waitForTimeout(T.settle);
   try {
     await ev(T.drain);
   } catch (e) {}
-  return { changed: true, route, width, theme: media.colorScheme, census, ease, rows, themed, dark, reduce, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
+  return { changed: true, route, width, theme: media.colorScheme, taste, ease, rows, themed, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
 }`;
 
 /**
@@ -352,8 +329,8 @@ const RECORD_FAULTS = ["timeout", "error", "too large", "no answer", "bad screen
 /**
  * Keeps recording `answer` of account `at.account` in slot `at.slot` (journey `at.journey`) of run `runId`, after the
  * observation's drain was kept: a new screen is one line of `<run>/taste/<slot>/screens.jsonl` (0600) `{v: 1, t,
- * journey, slot, account, key, route, width, theme, rows, themed, census, dark, reduce, ease, events, dropped, shots:
- * [{theme, name, key}], faults}` (events of a shape tasteEventFault refuses dropped and counted), each new shot made
+ * journey, slot, account, key, route, width, theme, rows, themed, taste, ease, events, dropped, shots: [{theme, name,
+ * key}], faults}` (`taste` censusOf's `{media, light, dark, reduce, themes}`, as the probe's rulesFor reads it) (events of a shape tasteEventFault refuses dropped and counted), each new shot made
  * 0600 with its scrub verdict beside it, and its time added to the budget. A failed or missing answer is a line of
  * `harness.jsonl` `{t, account, why}`. Never throws.
  */
@@ -403,14 +380,12 @@ export function keepScreen(main, runId, at, answer) {
       theme: answer.theme,
       rows: Number.isInteger(answer.rows) && answer.rows >= 0 ? answer.rows : 0,
       themed: answer.themed === true,
-      census: pick("census"),
-      dark: pick("dark"),
-      reduce: pick("reduce"),
+      taste: pick("taste"),
       ease: pick("ease"),
       events,
       dropped,
       shots,
-      faults: (Array.isArray(answer.faults) ? answer.faults : []).filter((f) => ["census", "ease", "rows", "dark", "reduce", "shot"].includes(f)),
+      faults: (Array.isArray(answer.faults) ? answer.faults : []).filter((f) => ["census", "ease", "rows", "shot"].includes(f)),
     });
     spendTaste(main, runId, "record", answer.ms);
   } catch {
@@ -418,8 +393,27 @@ export function keepScreen(main, runId, at, answer) {
   }
 }
 
+let confirmSinkNow = null;
+/** The taste confirmation's sink a slot `r` driver made now runs its steps through, or null. */
+export const activeConfirm = () => confirmSinkNow;
+/**
+ * Runs `fn` (a confirmation replay: runOnce) with `sink` the taste pass's active one → its result; the one before it
+ * is restored. While it is active, a driver of slot `r` (outside a perf pass) arms `sink.arm` (a code text, or null)
+ * right after its hook, and runs every step's code as `sink.wrap(code)`, its answer through `sink.take(answer)`
+ * (argus-live-tastejudge.mjs confirmSink).
+ */
+export async function confirming(sink, fn) {
+  const before = confirmSinkNow;
+  confirmSinkNow = sink;
+  try {
+    return await fn();
+  } finally {
+    confirmSinkNow = before;
+  }
+}
+
 /** How long the recorder may take after an observation, and how much it may answer (a shot's text past maxText is unread). */
-const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100 };
+const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100, settleMax: 1000 };
 
 /**
  * The driver's views of the taste pass: recording runs for an explorer's slot (a positive integer) of a journey,
@@ -440,7 +434,7 @@ function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
     }
     const taken = fs.readdirSync(shots).filter((f) => /^[0-9a-f]{32}\.png$/.test(f)).map((f) => f.slice(0, 32));
     const limitMs = Math.min(30_000, Math.max(5_000, 2 * settleMs));
-    return { prev: prev ?? null, routes, taste: TASTE_SOURCE, ease: EASE_SOURCE, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, palette: PALETTE, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;
   }
@@ -460,7 +454,9 @@ function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
  *   `stage(which, payload)` a login stage (loginCode) and `code(text, timeoutMs)` a template the caller
  *   built, each through runCode. A driver made while a perf pass measures (argus-live-perf's activeSink)
  *   hooks the perf script beside the signal script, and its `code` is measured (perf's `measure`): a snapshot
- *   after load, the step, a snapshot of what it left; a stage never is.
+ *   after load, the step, a snapshot of what it left; a stage never is. A slot `r` driver made while a taste
+ *   confirmation replays (confirming) arms the sink's fault after its hook and runs its `code` through the sink.
+ * - `observe()` in an explorer's slot also records the screen for the taste pass (recorderPayload, keepScreen).
  * - `ensure()` → `{record, opened, events}`: the recorded session with a daemon, else one opened now
  *   (stillLive; a login-command role's with the storage state commandLogin wrote, which signs it in;
  *   openSession) and hooked: the `hook` stage with the run's origins, the signal script and `capBytes`
@@ -491,6 +487,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   const name = sessionName(runId, slot, account);
   const home = () => browserHome(rec);
   const perf = activeSink();
+  const confirm = slot === "r" && !perf ? confirmSinkNow : null;
   let record = null;
   const d = {
     name,
@@ -509,7 +506,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     stage: (which, payload) => raw(loginCode(which, payload)),
   };
   const raw = (text, timeoutMs = 4 * plan.settleMs + 60_000) => runCode({ js, session: name, cwd: dir, home: home(), code: text, timeoutMs, runner: cliRunner });
-  d.code = perf ? measure(perf, { account, raw, waitMs: plan.settleMs }) : raw;
+  d.code = perf ? measure(perf, { account, raw, waitMs: plan.settleMs }) : confirm ? async (text, timeoutMs) => confirm.take(await raw(confirm.wrap(text), timeoutMs)) : raw;
   /** Opens the session (a login-command role's with a fresh storage state, which signs it in) and hooks it → the hook's events. */
   const open = async () => {
     stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
@@ -520,6 +517,8 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
     try {
       await d.stage("hook", { runOrigins, signals: perf ? `${PAGE_INIT};\n${PERF_SCRIPT}` : PAGE_INIT, capBytes });
+      // A confirmation replay's routed fault is armed before the session's first navigation (Task 0.1).
+      if (confirm && confirm.arm) await raw(confirm.arm);
       return [];
     } catch {
       if (markUnhooked) appendLedger(main, runId, [{ c: "incomplete", v: `${name} unhooked` }]);
