@@ -389,7 +389,7 @@ pseudo-element animations with their `effect.getTiming()`; a `MutationObserver` 
 `run-code` before a click sees the first mutation with a `performance.now()` timestamp comparable
 with the click's dispatch; `page.route` answering 500 to one `fetch` works through the lane's
 proxy; a viewport screenshot per screen costs under 300 ms on the fixture.
-- [ ] **Commit** `test(sapu): phase 7 runner probe — media emulation, animations, first mutation, routed fault`.
+- [x] Probe; write the outcomes (see "As built (phase 7)"). **Commit** `test(sapu): phase 7 runner probe — media emulation, animations, first mutation, routed fault`.
 
 ### Task 0.2: shared surfaces
 **Model: opus-high.**
@@ -599,3 +599,87 @@ phase 6's axe rules; target size is phase 6's layout oracle; Web Vitals are phas
    screen key.
 5. **Bar drift between releases.** Mitigation: the version in every suite and report, `smoke plan`
    listing the upgrade, and D21's procedure.
+
+---
+
+## As built (phase 7)
+
+### Task 0.1 — the pinned runner and CLI, probed live
+
+Probed with the pinned install's `node_modules/playwright/cli.js test` (`1.64.0-alpha-1790635538000`, the
+phase 6 stub `@playwright/test` in front of it), stable `@playwright/test` `1.64.0` installed into a scratch
+directory, and the pinned CLI's (`@playwright/cli` 0.1.22) `run-code` through the lane's own slot config and
+proxy (`browserRun`), all on Chrome 154 (`channel: "chrome"`, headless), signed in as a fixture buyer, against
+`tests/fixtures/journey-app`. The fixture has no transition, animation or view transition of its own, so the
+probes inject styles and elements into `/inject` (and use the order page's own `fetch` for the routed fault).
+The same self-contained probe functions ran in all three; **every row is identical on the pinned alpha, stable
+1.64.0 and the CLI**, except where a row says otherwise. The machine's load average was about 43 throughout,
+so every time below is a loaded-machine figure.
+
+| Probe | Result | Observed |
+|---|---|---|
+| `page.emulateMedia({colorScheme: "dark", reducedMotion: "reduce"})` changes `matchMedia` in place | yes | Same document (a marker survives): `(prefers-color-scheme: dark)` false → true, `light` true → false, `(prefers-reduced-motion: reduce)` false → true, and an injected `@media` rule restyles at once (`background` white → `rgb(1, 2, 3)`). |
+| The `change` events of those queries | yes, late | They fire one task after `emulateMedia` resolves (a read right after sees none on stable and in the CLI; the alpha had them already); read `matches`, never wait for the event. |
+| Emulation survives a navigation | yes | The next document answers dark and reduce at once. |
+| A partial `emulateMedia` keeps the other axis | yes | `{colorScheme: "light"}` after dark+reduce leaves `reduce` true. |
+| `colorScheme: null` restores the browser default | **trap** | A fresh context answers light (Playwright's default), but `null` (and the CLI's `clear-color-scheme`) hands the choice to the OS: on this dark-mode machine it answers dark. Restore with `"light"` and `"no-preference"`, never `null`. `reducedMotion: null` returns to `no-preference` here. |
+| The CLI's emulation commands | partly | `set-color-scheme`, `set-reduced-motion`, `clear-*` work and persist across calls (they print `page.emulateMedia(...)`), as does `emulateMedia` inside `run-code` (a later `run-code` sees it); none is on the explorer's `pw` allowlist, so the lane's own `run-code` templates do the emulation. |
+| `document.getAnimations()` lists CSS transitions | yes | `CSSTransition`, one per property (`transitionProperty` `transform` / `opacity`), `effect.target` the element, `getTiming()` `{duration: 300, delay: 0, easing: "ease-in", iterations: 1}` (`delay` 50 and `endTime` 170 for a 120 ms transition with a 50 ms delay). |
+| ... CSS animations | yes | `CSSAnimation`, `animationName` `grow`, `{duration: 400, iterations: 2, direction: "alternate"}`, `endTime` 800; `Element.animate()` gives a plain `Animation`. |
+| ... a view transition's pseudo-element animations | yes | After `startViewTransition(...).ready`: five `CSSAnimation`s with `effect.pseudoElement` `::view-transition-group(root)`, `::view-transition-new(root)` (two) and `::view-transition-old(root)` (two), `effect.target` the `html` element, names `-ua-view-transition-*` and `-ua-mix-blend-mode-plus-lighter`; UA default `duration` 250, 400 when the page sets `animation-duration` on the group. |
+| Finished animations stay listed | **no** | Transitions, finite animations and the view transition are gone 900 ms later (`getAnimations().length` 0); an infinite animation stays. A `getAnimations()` in a later CLI call sees only what is still running. |
+| Animation events across CLI calls | yes | Listeners armed by one `run-code` (`transitionrun`, `transitionstart`, `transitionend`, `animationstart`, with `performance.now()`) were still recording in a later call; a 200 ms transition read `transitionrun` at t, `transitionend` at t + 215. |
+| `getAnimations()` in the action's own call | yes | A `run-code` that clicks, then evaluates, lists the new `CSSTransition` right after the click resolves. |
+| Reduced motion does not stop motion by itself | yes | Under `reducedMotion: "reduce"` an authored transform transition (no media query) is still listed `running`; one with `@media (prefers-reduced-motion: reduce) { ... transition: none }` is not listed; the view transition's five UA animations still run. |
+| `MutationObserver` armed by `run-code` sees the first mutation with a comparable timestamp | yes | The observer's `performance.now()` is 0.3–0.8 ms after the click listener's (capture phase) for a synchronous change, and 251.4–252.2 ms for a change 250 ms later. `event.timeStamp` (input time) was 1.4–12.5 ms before the listener's `performance.now()` on this load. Page clock (`timeOrigin + performance.now()`) at the click fell inside the Node-side `Date.now()` window of the click call in all three runs (19–130 ms before the call resolved; the windows are 273–476 ms wide because of Playwright's actionability wait), so the two clocks agree to within the cross-process skew, not within the wait. |
+| ... which mutation counts as visible | partly | `checkVisibility({checkOpacity: true, checkVisibilityCSS: true})` on an **added node** works (`hidden` element false, `opacity: 0` false, a shown one true); on a `childList` record's `target` (the parent) it says true for a hidden child. A `data-*` attribute set on `body` is a "mutation in a shown element" at 0.3 ms with nothing visible changing; removing `hidden` later is an `attributes` record on the node, visible true at that time. |
+| An observer armed before a navigating click survives | **no** | After a link click the new document has no observer (its state object is gone); `page.addInitScript(...)` from `run-code` does run in the next document (and cannot be removed from the session). The click resolved 934–1806 ms after dispatch (the navigation's load), `framenavigated` 538–1472 ms. |
+| `page.route` answering 500 to one `fetch` | yes | `page.route("**/*", ...)` filtered to a same-origin `GET` with `resourceType()` `fetch` or `xhr` (the order page's `/api/orders/<id>`, `accept: */*`) and `route.fulfill({status: 500, contentType: "application/json", body})` makes the page's own `fetch` answer 500; the fixture's order page then shows `Status undefined, quantity undefined` (the broken-copy rule's `undefined`, no error state). |
+| ... through the lane's proxy | yes | In the CLI session (every request through the run's proxy) the routed 500 works the same, `route.continue()` for the others passes, and the faulted request is fulfilled inside the browser: **the fixture counted no request for it** (the browser made no network request, so the proxy has none to see). |
+| ... a route survives | yes | A route set in one `run-code` still answers 500 in a later `run-code`, across a navigation and until `page.unroute`. |
+| ... only for a JSON response | yes | `route.fetch()` returns the real response (`content-type: application/json`), the handler fulfils 500 for JSON and `route.fulfill({response})` for anything else; the real request reaches the server once. |
+| ... `route.fetch()` and the lane's egress | yes, contained | In the CLI session `route.fetch({url: <another loopback port>})` answered `403` (the listener answers 200 to anything, so the proxy refused it) and got no hit; in the plain runner (no proxy) the same call reached it (200). The page's own `fetch` to it fails in the CLI. |
+| A viewport screenshot per screen costs under 300 ms | **partly** | Warm (three throwaway shots first), `page.screenshot` PNG p50 90–105 ms, p90 214–284 ms, max 256–327 ms (JPEG q60 p50 62–64 ms, p90 88–138 ms; dark + reduce PNG p50 84–132 ms), 12–20 KB on the fixture. The **first** shot after a navigation, which is the one the lane records, took 215–777 ms (median 422, nine pages). |
+| The cost of one CLI call | **no, large** | A trivial `run-code` took 2.5–6.0 s wall (median 3.6 s) and the CLI's `screenshot` command 3.3–4.8 s, almost all of it the CLI's process and daemon round trip, not the page. |
+| Pinned alpha vs stable 1.64.0 | identical | Every row above, apart from the late `change` events and timings. |
+
+**What this changes** (a "no" is never silent; T2.1, T2.2, J1, J2 and 0.3 depend on it):
+
+1. *Colour scheme restore (J1, J2's replay, T1.2, S1).* After a dark or reduced-motion pass the page and the
+   session must be put back with `emulateMedia({colorScheme: "light", reducedMotion: "no-preference"})`,
+   never `null`: on a dark-mode OS `null` leaves the session dark. The suite (a fresh context per test) is
+   unaffected.
+2. *D9, motion (T1.3, J1).* A `getAnimations()` read in a later CLI call finds only infinite animations.
+   The motion measurement must either run in the action's own `run-code` (click, then read) or come from the
+   `transition*` and `animation*` events with their `performance.now()` that the session hook arms once per
+   document. View-transition animations are readable only between `ready` and `finished`, so they come from
+   the same in-call read; the event route does not see them.
+3. *D10, first visible change (T2.1).* "A mutation in a shown element" is too weak on its own: a `data-*` or
+   other non-rendering attribute change on a shown element would stop the clock at 0.3 ms. Count a record
+   only when its added node (or, for an attribute record, the node) passes `checkVisibility`, and for an
+   attribute only the rendering ones (`class`, `style`, `hidden`, `open`, `aria-busy`, `disabled`, `src`).
+   The observer dies with the document: a navigation is its own signal, and the arming has to come from the
+   session hook's init script on every document, not from an ad hoc `run-code`.
+4. *D12, the routed fault (T2.2, J2's replay).* Arm the route **before** the navigation to the screen, and
+   `unroute` after. Armed afterwards it faulted the old document's in-flight fetch, and the reloaded screen
+   got none (seen in the CLI run). Decide "JSON" with `route.fetch()` plus the response's `content-type`, not
+   by `resourceType()` alone. A faulted request reaches neither the proxy nor the server, so a replay must
+   not expect it in the fixture's or the app's request counts.
+5. *Risk 4 and J1's recording cost.* The screenshot is cheap warm and not under 300 ms for the first shot of
+   a screen on a loaded machine; the CLI call that carries it costs seconds. J1 should record a screen's
+   census, ease measurements and screenshot in **one** `run-code` per screen, and a walk must not assume
+   a per-screen cost under a second until it is measured on an idle machine.
+
+**Contradictions with the plan's decisions, flagged for the owner of each task.**
+- *D10 / T2.1:* "a mutation in a shown element" counts a `data-*` change as the first visible change (row
+  above; change 3).
+- *D9 / T1.3:* `document.getAnimations()` alone cannot measure an action-triggered animation from a later
+  call (change 2).
+- *Task 0.1's last probe, "under 300 ms":* true warm, false for the first shot of a screen under this
+  load; the CLI round trip dominates (change 5).
+- *D17 (dark replay) and Z-lane docs:* a reset by `null` is not a reset to light on a dark-mode OS
+  (change 1).
+- Nothing contradicts D12's use of `page.route` through the proxy or D22's loopback boundary: both hold.
+
+No pinned browser test was added: Task 0.1 asks for none, the facts above hold on both runners, and a Chrome
+test here would only add to the CI minutes of files already near the job's bound.
