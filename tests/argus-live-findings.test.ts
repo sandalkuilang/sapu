@@ -13,7 +13,7 @@ import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, lon
 // @ts-expect-error — plain ESM script without types
 import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { sessionName, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { sessionName, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { CLASSES, classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -2896,7 +2896,9 @@ describe("argus-live show", () => {
     expect(call.argv).toEqual(["show", "--port", "0"]);
     const home = join(t.home, "browser");
     expect(call.env.HOME).toBe(home);
-    expect(call.env.TMPDIR).toBe(join(home, "tmp"));
+    // On Linux a short link to <home>/tmp: Chrome there puts its singleton socket in TMPDIR.
+    expect(call.env.TMPDIR).toBe(process.platform === "linux" ? tmpLink(home) : join(home, "tmp"));
+    expect(realpathSync(call.env.TMPDIR)).toBe(realpathSync(join(home, "tmp")));
     expect(call.env.PWTEST_SOCKETS_DIR).toBe(socketsDir(home));
     expect(realpathSync(call.cwd)).toBe(realpathSync(join(t.main, ".argus/live", t.runId)));
     expect(readFileSync(runFile, "utf8")).toBe(before);

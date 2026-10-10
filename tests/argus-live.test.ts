@@ -18,7 +18,7 @@ import { checkEgress, egressAllowed, portHolder } from "../plugins/sapu/scripts/
 // @ts-expect-error — plain ESM script without types
 import { renewRun, status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
-import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, runSetup, startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
+import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, runSetup, shellArgv, startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1260,6 +1260,67 @@ describe("argus-live instance — processes, health, store", () => {
     expect(() => process.kill(child, 0)).toThrow();
     await expect(startEntry({ name: "x", cmd: "true", env: { HOME: "/" } }, { ...w.ctx, groups })).rejects.toThrow("refused: start entry x may not set HOME");
   }, 30_000);
+
+  it.each([
+    ["sleep 601", "exec sleep 601"],
+    [`"/opt/n/node" "/w/server.mjs" --port 3`, `exec "/opt/n/node" "/w/server.mjs" --port 3`],
+    [`node -e "a(); b() && c() | d"`, `exec node -e "a(); b() && c() | d"`],
+    [`node -e 'x > 1 ; y'`, `exec node -e 'x > 1 ; y'`],
+    [`node "$APP" --dir=\\;x`, `exec node "$APP" --dir=\\;x`],
+    ["  npm start\t", "exec   npm start\t"],
+  ])("shellArgv execs one simple command, so dash leaves no shell above it: %s", (cmd, want) => {
+    expect(shellArgv(cmd)).toEqual(["/bin/sh", "-c", want]);
+  });
+
+  it.each([
+    "a && b",
+    "a || b",
+    "a; b",
+    "a | b",
+    "sleep 602 & exit 0",
+    "a\nb",
+    "node x > log",
+    "node x 2>&1",
+    "node < in",
+    "(node x)",
+    "{ node x; }",
+    "! node x",
+    "if true; then node x; fi",
+    "while :; do x; done",
+    "FOO=1 node x",
+    "cd app",
+    "exec node x",
+    "exec",
+    ". ./env",
+    "trap '' INT",
+    "node $(cat args)",
+    "node `cat args`",
+    `node "$(printf '"')"; rm x`,
+    'node "`cat args`"',
+    "# a comment",
+    "",
+    "   ",
+    `node "unclosed`,
+  ])("shellArgv leaves anything else to the shell as written: %j", (cmd) => {
+    expect(shellArgv(cmd)).toEqual(["/bin/sh", "-c", cmd]);
+  });
+
+  it("a start entry of one command is that command's own process: its group has no shell above it, on any /bin/sh", async () => {
+    const w = await world();
+    const entry = { name: "one", cmd: "sleep 611" };
+    const s = await startEntry(entry, { ...w.ctx, groups });
+    let members: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      members = execFileSync("ps", ["-A", "-ww", "-o", "pgid=", "-o", "command="], { encoding: "utf8" })
+        .split("\n")
+        .map((l) => l.trim().match(/^(\d+)\s+(.*)$/))
+        .filter((m): m is RegExpMatchArray => Boolean(m) && Number(m![1]) === s.pgid)
+        .map((m) => m[2]);
+      if (members.length === 1 && members[0] === "sleep 611") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(members).toEqual(["sleep 611"]);
+  }, 30_000);
 });
 
 describe("argus-live instance — review: env of every entry, secrets in shell fields, health and store_check hygiene", () => {
@@ -1901,8 +1962,9 @@ describe("argus-live instance — Compose and egress checks", () => {
 
     it("docker missing or failing is a refusal (fail closed), every secret masked", () => {
       const w = world(good());
+      // No docker on PATH at all: on Linux it lives in /usr/bin, so a PATH holding that would find it.
       const empty = tempDir();
-      expect(compose({ ...w, env: { ...w.env, PATH: `${empty}:/usr/bin:/bin` } })).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: /);
+      expect(compose({ ...w, env: { ...w.env, PATH: empty } })).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: /);
       const f = world(good(), { status: 1, stderr: "bad interpolation near s3cret" });
       const m = compose(f, { secrets: { PW: "s3cret" } });
       expect(m).toMatch(/^refused: compose\.yaml is in the worktree, but docker compose config could not read it: .*bad interpolation near \*\*\*/);
@@ -2503,10 +2565,15 @@ describe("argus-live instance — Compose and egress checks", () => {
         };
         expect(await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner }))).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
         // A netstat that fails is reported on macOS, where it is the only way to see another user's server.
-        const blind = (argv: string[], o: Obj = {}) => (argv[0] === "netstat" ? { status: 1, stdout: "", stderr: "netstat: sysctl: Operation not permitted" } : runner(argv, o));
+        // On Linux `ss -xp` names the server's path itself (lsof is its fallback): netstat is never asked.
+        const asked: string[] = [];
+        const blind = (argv: string[], o: Obj = {}) => (asked.push(argv[0]), argv[0] === "netstat" ? { status: 1, stdout: "", stderr: "netstat: sysctl: Operation not permitted" } : runner(argv, o));
         const said = await message(checkEgress({ pids: c.pids, allowed: [], samples: 1, runner: blind }));
         if (process.platform === "darwin") expect(said).toBe("failed: netstat -an -f unix exited 1: netstat: sysctl: Operation not permitted");
-        else expect(said).toBe("ok");
+        else {
+          expect(said).toMatch(new RegExp(`connects to the socket ${pg.replace(/[.]/g, "\\.")}$`));
+          expect(asked).not.toContain("netstat");
+        }
       }, 30_000);
 
       it("reads ss -xp on Linux: a client's peer inode leads to the server's path", async () => {
@@ -2619,9 +2686,10 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
   const liveFiles = (main: string) => readdirSync(join(main, ".argus/live")).sort();
   const logOf = (main: string) => readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
   const runJson = (main: string) => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
-  /** A detached process group, as startEntry or runSetup leave one: `/bin/sh -c <cmd>`. */
+  /** A detached process group, as startEntry leaves one: `/bin/sh -c <cmd>`, one simple command exec'd (shellArgv). */
   const group = (cmd: string) => {
-    const p = spawn("/bin/sh", ["-c", cmd], { detached: true, stdio: "ignore" });
+    const [sh, ...args] = shellArgv(cmd);
+    const p = spawn(sh, args, { detached: true, stdio: "ignore" });
     started.push(p.pid!);
     return p.pid!;
   };
@@ -3713,10 +3781,20 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const r = await up(main, opts());
     reapers.push(runJson(main).reaper);
     const old = runJson(main).groups.find((g: Obj) => g.name === "web");
-    // ps keeps showing the old leader, as for a process that would not die.
+    // A recorded member that would not die: a live process of ours, which ps shows in the old group.
+    // Its own row (start time and all) with the group's pgid: on Linux the start time comes from /proc.
+    const stuck = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore" });
+    reapers.push(stuck.pid!);
+    expect(await until(() => Boolean(startTime(stuck.pid!)), 3000)).toBe(true);
+    const rec = runJson(main);
+    rec.groups.find((g: Obj) => g.name === "web").members.push({ pid: stuck.pid, started: startTime(stuck.pid!), cmdline: "stuck" });
+    writeFileSync(join(main, ".argus/live/run.json"), JSON.stringify(rec));
+    const row = execFileSync("ps", ["-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart=", "-o", "command=", "-p", String(stuck.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } })
+      .trim()
+      .replace(/^(\d+\s+\d+\s+)\d+/, `$1${old.pgid}`);
     const ghost = (argv: string[], o: Obj = {}) => {
       const res = noDocker(argv, o) as Obj;
-      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${old.pgid} 1 ${old.pgid} ${old.started} ${old.cmdline}\n` };
+      if (argv[0] === "ps" && argv.includes("-A") && argv.includes("lstart=") && res.status === 0) return { ...res, stdout: `${res.stdout}${row}\n` };
       return res;
     };
     await up(main, { ...opts({ fresh: true }), runner: ghost });

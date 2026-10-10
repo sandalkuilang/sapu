@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive, cleanTemps, committed, example, freePort, git, liveContract, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, openFailure, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_ROOT, socketsDir } from "../plugins/sapu/scripts/argus-live-cli.mjs";
+import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_ROOT, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ROLE_FREE, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -251,6 +251,26 @@ describe("argus-live browser — the pinned CLI", () => {
     expect(findChrome({ platform: "win32", exists: () => true })).toBeNull();
   });
 
+  it("openFailure names why open failed: a sandbox Chrome could not start as such, else Chrome's FATAL line, never the crash reporter's noise", () => {
+    // The CLI's output when Chrome cannot create the user namespace its sandbox needs (an unprivileged container, Ubuntu's AppArmor restriction).
+    const log = (pid: number) => [
+      `  - [pid=${pid}][err] [1010/001433.207442:WARNING:chrome/app/chrome_main_linux.cc:84] Read channel stable from /opt/google/chrome/CHROME_VERSION_EXTRA`,
+      `  - [pid=${pid}][err] Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted`,
+      `  - [pid=${pid}][err] [${pid}:${pid}:1010/001433.424722:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:228] Zygote process exited prematurely with exit code 1`,
+      `  - [pid=${pid}][err] [1010/001433.447966:ERROR:third_party/crashpad/crashpad/util/file/file_io_posix.cc:145] open /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq: No such file or directory (2)`,
+    ];
+    const sandbox = openFailure({ code: 1, stdout: "", stderr: ["Error: Daemon pid=1: Daemon process exited with code 1", ...log(5833), "Call log:", ...log(5833)].join("\n") });
+    expect(sandbox).toBe("Chrome's sandbox could not start: this system does not let Chrome create a user namespace (Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted)");
+    const noSandbox = openFailure({ code: 1, stderr: "[0101/000000.000000:FATAL:zygote_host_impl_linux.cc(127)] No usable sandbox! Update your kernel or see https://chromium.googlesource.com/x" });
+    expect(noSandbox).toMatch(/^Chrome's sandbox could not start: .*No usable sandbox!/);
+    const fatal = log(7).filter((l) => !l.includes("namespace"));
+    expect(openFailure({ code: 1, stderr: fatal.join("\n") })).toBe(fatal[1].trim());
+    expect(openFailure({ code: 1, stderr: `Error: browserType.launch: Executable doesn't exist at /x\n${fatal[2]}` })).toBe("Error: browserType.launch: Executable doesn't exist at /x");
+    expect(openFailure({ code: 1, stderr: fatal[2] })).toBe("exit 1");
+    expect(openFailure({ code: null, timedOut: true })).toBe("timed out");
+    expect(openFailure({ code: 1, stderr: `Error: ${"x".repeat(400)}` })).toHaveLength(300);
+  });
+
   it("cliEnv carries no PLAYWRIGHT_*, PWTEST_*, NODE_OPTIONS or XDG_*, sets NO_UPDATE_NOTIFIER and a TMPDIR inside the run's HOME", () => {
     const ownerEnv = {
       PATH: "/usr/bin:/bin",
@@ -274,8 +294,12 @@ describe("argus-live browser — the pinned CLI", () => {
     // One sockets directory per run HOME: short (a socket path holds 103 bytes), and the teardown removes it.
     const sockets = (home: string) => `${SOCKETS_ROOT}/${createHash("sha256").update(home).digest("hex").slice(0, 12)}`;
     expect(socketsDir("/run/h/browser")).toBe(sockets("/run/h/browser"));
-    expect(cliEnv("/run/h/browser", ownerEnv)).toEqual({ PATH: "/usr/bin:/bin", USER: "u", SHELL: "/bin/sh", TMPDIR: "/run/h/browser/tmp", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", HOME: "/run/h/browser", PWTEST_SOCKETS_DIR: sockets("/run/h/browser"), NO_UPDATE_NOTIFIER: "1" });
-    expect(cliEnv("/h", { PATH: "/bin" })).toEqual({ PATH: "/bin", TMPDIR: "/h/tmp", HOME: "/h", PWTEST_SOCKETS_DIR: sockets("/h"), NO_UPDATE_NOTIFIER: "1" });
+    expect(cliEnv("/run/h/browser", ownerEnv, "darwin")).toEqual({ PATH: "/usr/bin:/bin", USER: "u", SHELL: "/bin/sh", TMPDIR: "/run/h/browser/tmp", LANG: "en_US.UTF-8", LC_ALL: "C", LC_CTYPE: "UTF-8", HOME: "/run/h/browser", PWTEST_SOCKETS_DIR: sockets("/run/h/browser"), NO_UPDATE_NOTIFIER: "1" });
+    expect(cliEnv("/h", { PATH: "/bin" }, "darwin")).toEqual({ PATH: "/bin", TMPDIR: "/h/tmp", HOME: "/h", PWTEST_SOCKETS_DIR: sockets("/h"), NO_UPDATE_NOTIFIER: "1" });
+    // On Linux Chrome puts its singleton socket in TMPDIR and refuses a long path: a short link to <home>/tmp.
+    expect(cliEnv("/h", { PATH: "/bin" }, "linux")).toEqual({ PATH: "/bin", TMPDIR: `${sockets("/h")}/tmp`, HOME: "/h", PWTEST_SOCKETS_DIR: sockets("/h"), NO_UPDATE_NOTIFIER: "1" });
+    expect(tmpLink("/h")).toBe(`${sockets("/h")}/tmp`);
+    expect(`${tmpLink(`/tmp/${"x".repeat(200)}`)}/.com.google.Chrome.XXXXXX/SingletonSocket`.length).toBeLessThan(108);
   });
 
   it("runCli passes -s=<session> first and runs in cwd with cliEnv", async () => {
@@ -287,10 +311,12 @@ describe("argus-live browser — the pinned CLI", () => {
     const [c] = calls();
     expect(c.argv).toEqual(["-s=r1-1-buyer.1", "goto", "--", "http://localhost:1/x"]);
     expect(c.cwd).toBe(realpathSync(cwd));
-    const { __CF_USER_TEXT_ENCODING: _cf, ...env } = c.env; // macOS adds this one to every process
+    // macOS adds __CF_USER_TEXT_ENCODING to every process; on Linux Node sets UV_USE_IO_URING in its own env.
+    const { __CF_USER_TEXT_ENCODING: _cf, UV_USE_IO_URING: _uv, ...env } = c.env;
     expect(env).toEqual(cliEnv(home));
     // Chrome's profiles and the CLI's temp files die with the run's HOME.
     expect(statSync(join(home, "tmp")).mode & 0o777).toBe(0o700);
+    if (process.platform === "linux") expect(realpathSync(tmpLink(home))).toBe(realpathSync(join(home, "tmp")));
     // The daemons' sockets: a short directory of this user's own (a socket path holds at most 103 bytes).
     for (const d of [SOCKETS_ROOT, socketsDir(home)]) {
       expect(lstatSync(d).isDirectory()).toBe(true);
