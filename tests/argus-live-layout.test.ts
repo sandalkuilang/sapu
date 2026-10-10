@@ -15,7 +15,7 @@ import { CHECKS, LAYOUT_KINDS, PAGE_FN, pageExpression } from "../plugins/sapu/s
 // @ts-expect-error — plain ESM script without types
 import { generateSuite, smokeSpec, supportFile } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
-import { validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 
 type Obj = Record<string, any>;
 

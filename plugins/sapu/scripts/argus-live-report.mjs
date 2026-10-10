@@ -21,7 +21,7 @@
 // `*** (<class>)`.
 import fs from "node:fs";
 import path from "node:path";
-import { PERF_METRICS } from "./argus-live-config.mjs";
+import { PERF_METRICS } from "./argus-live-smokecfg.mjs";
 import { clean, PatternError } from "./argus-live-fence.mjs";
 import { readSeen, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";

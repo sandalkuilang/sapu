@@ -5,7 +5,7 @@
 // the worktree, HOME and environment, setup, start and health, the store phase) live in
 // argus-live-start.mjs. The lane's modules, each importing only modules named before it (the leaves below
 // import none, and any module may import them): argus-live-proc.mjs (processes) → -config.mjs (the
-// configuration) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose,
+// configuration) → -smokecfg.mjs (`.argus/smoke.json`) and -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose,
 // the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
 // -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs,
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),

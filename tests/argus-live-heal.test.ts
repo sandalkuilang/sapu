@@ -23,7 +23,7 @@ import { parseRepro } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { generateSuite } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
-import { SMOKE_DEFAULTS } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { SMOKE_DEFAULTS } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 
 type Obj = Record<string, any>;
 

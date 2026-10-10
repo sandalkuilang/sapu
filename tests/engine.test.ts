@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SPECIALISTS, PROFILE_SECTIONS, SKILLS, SPECIALIST_ROLES } from "../plugins/sapu/scripts/sapu-contract.mjs";
 // @ts-expect-error — plain ESM script without types
-import { LIMIT_KEYS, REQUIRED, ROLE_FREE, ROLE_KEYS, SMOKE_DEFAULTS, SMOKE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { LIMIT_KEYS, REQUIRED, ROLE_FREE, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+// @ts-expect-error — plain ESM script without types
+import { SMOKE_DEFAULTS, SMOKE_KEYS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types

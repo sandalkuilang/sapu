@@ -20,7 +20,7 @@ smoke suite's directory (`smoke.json` `dir`; its `.auth/` is ignored). Local sta
 pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
 (`smoke ci`'s triage), `.argus/perf.json` (perf baselines) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
-smoke suite's are `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-ci`, `argus-live-baseline.mjs`,
+smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-ci`, `argus-live-baseline.mjs`,
 `-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`) run only under its verbs.
 
 **Where it lives: in the repo, or local.** By default the contract and profiles are committed in

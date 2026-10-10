@@ -14,7 +14,7 @@ import { ARIA_EXPECT, CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs
 // @ts-expect-error — plain ESM script without types
 import { generateSuite, pageVars, screensOf } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
-import { validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { parseRepro, suiteAccounts } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 

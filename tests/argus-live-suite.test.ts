@@ -12,7 +12,7 @@ import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun, tempDir } fro
 // @ts-expect-error — plain ESM script without types
 import { generateSuite, SMOKE_PLAYWRIGHT, smokeConfig, suiteProjects } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
-import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types

@@ -13,7 +13,7 @@ import { authSetup, CODEGEN_VERSION, generateSuite, headerDigest, packageJson, S
 // @ts-expect-error — plain ESM script without types
 import { ARIA_EXPECT } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
 // @ts-expect-error — plain ESM script without types
-import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loginStageSource, totp } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types

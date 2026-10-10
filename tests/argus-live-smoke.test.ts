@@ -22,7 +22,9 @@ import { seededOrder, smokeRun } from "../plugins/sapu/scripts/argus-live-smoke.
 // @ts-expect-error — plain ESM script without types
 import { parseRepro, pathChecks, suiteAccounts } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loadSmoke, PERF_METRICS, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateLive, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
+// @ts-expect-error — plain ESM script without types
+import { loadSmoke, PERF_METRICS, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateSmoke } from "../plugins/sapu/scripts/argus-live-smokecfg.mjs";
 
 type Obj = Record<string, any>;
 

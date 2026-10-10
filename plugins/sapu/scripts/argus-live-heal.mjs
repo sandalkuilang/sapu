@@ -4,7 +4,8 @@
 // request) or writes a regression candidate by the decision table.
 import fs from "node:fs";
 import path from "node:path";
-import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { expandConfig, loadLive } from "./argus-live-config.mjs";
+import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";

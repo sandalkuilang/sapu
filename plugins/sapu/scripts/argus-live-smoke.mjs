@@ -5,7 +5,8 @@
 import { randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { expandConfig, loadLive } from "./argus-live-config.mjs";
+import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { runOnce, writePrivate } from "./argus-live-repro.mjs";
 import { perfPath } from "./argus-live-perf.mjs";

@@ -4,7 +4,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { loadLive } from "./argus-live-config.mjs";
+import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";

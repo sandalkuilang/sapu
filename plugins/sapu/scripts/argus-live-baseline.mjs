@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ARTIFACT, BASELINES, CHECK, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, regular, reportsIn, suiteIds, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
-import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
