@@ -1147,3 +1147,92 @@ The config:
 - Codegen never writes `test.fixme`: a quarantined test gets `tag: "@quarantine"` (decision 13). This
   closes 0.2's open line for B2.
 - Line counts at 0.4: `-codegen` 603, `-redtest` 77, `-login` 712.
+
+### Lane A — suite lifecycle (A1–A4)
+
+**Locked for the other lanes.**
+- **Staged changes** (`-suite.mjs`): `.argus/smoke-staged.json` (0600) `{changes: [...]}`, one change per kind and
+  journey (a later one replaces it). `stageChange(main, change)`, `readStaged(main)`, `writeStaged(main, changes)`,
+  `changeDigest(change)`, `CHANGE_KINDS`. A change is `{kind, id, step?, from?, to?, evidence, run, journey?,
+  quarantine?}`, `run` a run id (propose checks the files against that run's scrub secrets):
+  - `add`, `heal`: `journey` is the whole `journeys/<id>.json`, `{journey, path, admitted}`;
+  - `drop`, `retire`: the journey's path, spec, `known/<id>.json`, `__aria__/<id>/` and every
+    `__screenshots__/*/*/<id>/` leave the suite, and its quarantine entry too;
+  - `quarantine`: `quarantine: {id, issue, since}`; `unquarantine` removes the entry.
+
+  The digest covers kind, id, step, from, to and the path, never the run or the evidence, so the same change
+  found again by a later run is known as rejected.
+- **`smoke-state.json`** (`readState(main) → {journeys, proposals}`, `STATE_FILE`): A owns `proposals`
+  (`{<digest>: {kind, id, branch, url, outcome: open|merged|closed}}`); `smoke plan` reads `journeys.<id>.retire
+  === true`. Any other writer rewrites the whole file and keeps the other part.
+- **`quarantine.json`** in the suite directory is `[{id, issue, since}]` (`quarantineIds(main, dir)`).
+- **Helpers** for later lanes: `planOf(main, {runner, gh}) → {entries: [{id, line, target}], lines, smoke}`,
+  `smokeOf`, `suitePaths`, `liveAsWritten(text, verb)`, `generated(root, {live, smoke, verb})` (the suite a
+  checkout's inputs generate).
+- **The workflow's artifact names**: each test job uploads `test-results/` as `<ci.artifact>-<project>`
+  (`<ci.artifact>-msedge`, `<ci.artifact>-quarantine`), the baseline job as `<ci.artifact>-<project>` too, plus
+  `argus-smoke-baselines-<project>` (`__screenshots__/`, `__aria__/`). upload-artifact v4 refuses two
+  uploads of one name in a run, and the matrix runs one job per project.
+
+**As built.**
+- A1 `smoke plan`: one line per catalog journey, plus each suite member the catalog lacks. The target set's
+  lines come in rank order, as `pending` (an open `argus/` pull request changes its path or spec; asked of
+  `gh pr list --json url,headRefName,files`), `quarantined`, `heal` (its newest pass in the last run's
+  `pass.jsonl` broke at `target-*`), `keep` or `capture`. Then the drops: `excluded`, `retired`, `past the
+  cap` in rank order, then `global`, then `out of the map`. Then `upgrade <from> → <to> (baseline run
+  needed)` when the committed `package.json` pins an older `@playwright/test`. A gh failure adds `note: open
+  argus/ pull requests not checked (gh …)` and never refuses.
+- A2 `smoke admit <slot>.<generation>`: refused unless `smoke plan` lists the journey `capture`. The path is
+  renumbered to `suiteAccounts` by user (a bare role word is the slot's `.1`), parsed in path mode, then
+  checked string by string against `scrubSecrets` of the cycle's run: `refused: admit <id>: a secret in its
+  values: step <n> <field> <class>`, and a gone or incomplete ledger refuses as uncheckable. Then
+  `once(…, {dirty: false})`, then `once(…, {dirty: true})`. A harness exit answers code 2 with `admit <id>:
+  harness (<fresh|dirty>): <reason>`. The admission head is run.json's `worktreeHead`, and `pathSha` is the
+  sha256 of the renumbered path's JSON.
+- A3 `smoke propose`: the proposal branch's earlier work is carried over file by file from its merge base, a
+  rebase in effect. A baseline file (`__screenshots__`, `__aria__`, `known`) the base changed too is
+  dropped (`baseline: dropped <file> (it conflicts with origin/<base>)`). Any other file changed on both
+  sides refuses. The branch's earlier `changes.jsonl` lines are kept. The push uses
+  `--force-with-lease=refs/heads/<branch>:<the sha ls-remote saw>`. An open pull request for the branch gets its
+  body edited, and none gets `gh pr create --repo --base --head --title --body-file --label <agentFiled>`.
+  The commit is `chore(argus-smoke): …` with `--no-verify`, since the consumer's hooks need its own
+  install, which a fresh worktree lacks. CI runs the suite either way.
+- A3 `smoke check`: exit 1 with `missing|hand-edited|drift|stale|orphan` lines and a summary, else exit 0 with
+  `smoke check: <n> generated files current`. With no path it answers `smoke check: no suite (<dir>/journeys
+  holds no path)`, exit 0. `drift` means the live.json of the file's last commit regenerates the file exactly.
+  `fixtures.ts` is the owner's and is never compared.
+- A4 `smoke workflow`: `masked: true`, since its lines hold names, never a value, and the env-file mask
+  would cut the action SHAs. Actions `actions/checkout`, `actions/setup-node` and `actions/upload-artifact`
+  at `v4` are each resolved by `gh api repos/<action>/commits/<tag> --jq .sha`. The jobs run on
+  `ubuntu-24.04` with `timeout-minutes: 70`, above `globalTimeout`. The container jobs set `HOME: /root`,
+  which Firefox needs. The matrix value reaches the shell as `PROJECT` through `env:`. The `msedge` job
+  runs `npx playwright install chromium` for the setup project's browser, never Edge. The quarantine job runs
+  `--pass-with-no-tests` on `chromium`. The grep check is `[ -z "$GREP" ] || [ "$(printf '%s.' "$GREP" |
+  LC_ALL=C tr -d 'a-z0-9|-')" != . ]`, run against good and bad inputs (a newline, `$(…)`, upper case) by
+  the test.
+
+**Deviations.**
+- §19.3's exposure tier is SELECT's `score` with no visit and no commit, as no momus flags reach `smoke plan`.
+  It equals the money factor, so it never splits a money tie. The test covers pin, money, member, filed,
+  roles and id.
+- The trace gate stays in lane 0's dispatch. A1's test pins it through the CLI: no contract, `traces:
+  "none"` and a local contract.
+- The workflow's project list (`projectsOf` in `-propose.mjs`) follows §19.6's names: the container projects
+  `chromium`, `firefox`, `webkit` (smoke.json's `browsers`), `chromium-<w>`, `a11y`, and `i18n` with a locale
+  or pseudo-locale. C3 owns the generated config's projects.
+- Line counts: `-suite` 472, `-propose` 474.
+
+**Needs coordinator.**
+1. `tests/argus-live-smoke.test.ts` (lane 0) fails two tests once lane A lands. "each new verb reaches its
+   lane's function, which is not built yet" lists A's verbs in `STUBS`: `smoke plan`, `admit`, `propose`
+   (twice), `check` and `workflow`. "a committed suite needs …" expects `smoke check` to answer `not built
+   yet`; it now answers `smoke check: no suite (e2e/argus-smoke/journeys holds no path)` with exit 0. Each
+   lane's built verbs leave `STUBS`, and the check expectation changes as stated.
+2. Lane B stages heals, quarantines, unquarantines and drops through `stageChange` (kinds above). A heal
+   carries the healed `journey` file and `step`, `from`, `to`. B's `smoke-state.json` writes keep
+   `proposals`, and a retire is `journeys.<id>.retire: true`. B2 and B3 read the artifact names above by
+   prefix. B3's `argus/baselines-<runId>` pull request is B's own; propose does not build it.
+3. Once C3 lands, the workflow's matrix and the generated config's projects should come from one function
+   (a `-codegen` export such as `suiteProjects(live, smoke)`), so the two never disagree.
+4. Z2's engine text: the smoke cycle's `admit` needs a cycle with an instance. `propose` needs the staged
+   changes' runs' ledgers, so a staged change from a run a later `up` dropped refuses until re-admitted.
