@@ -813,6 +813,16 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     }
   }, 120_000);
 
+  it("with only CI's changes staged and a newest run that keeps no ledger (a map run), the newest run with a ledger is checked", async () => {
+    const p = proposeRepo({ paths: { checkout: SUITE_PATH() } });
+    const map = "20300102000000-0123abcd";
+    mkdirSync(join(p.main, ".argus/live", map), { recursive: true });
+    stage(p.main, { kind: "quarantine", id: "checkout", run: "100", changes: [{ kind: "quarantine", id: "checkout", evidence: ["CI run 100"], run: "100" }], body: [], quarantine: { id: "checkout", issue: null, since: "100" } });
+    const r = await p.propose();
+    expect(r.code).toBe(0);
+    expect(r.lines).toContain(`branch: argus/smoke-${map}`);
+  }, 60_000);
+
   it("a heal of a journey the base does not hold refuses, nothing pushed", async () => {
     const p = proposeRepo();
     stage(p.main, { kind: "heal", id: "checkout", run: RUN, changes: [{ kind: "heal", id: "checkout", step: 3, from: {}, to: {}, evidence: [], run: RUN }], body: [], path: SUITE_PATH() });

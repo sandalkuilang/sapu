@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { anySuite, noWiring, ARTIFACT, BASELINES, CHECK, download, fetchRun, ghOut, home, isPng, notesOf, PNG_MAX, PROJECT, regular, reportsIn, suiteIdsAt, testsOf, TEXT_MAX } from "./argus-live-ci.mjs";
 import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
-import { secretHits } from "./argus-live-ledger.mjs";
+import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
@@ -217,7 +217,10 @@ function adopt(main, { r, repo, contract, smoke, ids, known, runner, verb }) {
     const listed = fresh.length ? ["", "New known violations, adopted with `--known`: each row below stops failing its check from this merge on. The rows the branch already holds are unchanged.", "", ...codeBlock(fresh.flatMap((f) => f.fresh.map((v) => `+ ${f.rel} ${JSON.stringify({ check: v.check, key: v.key })}`)))] : [];
     const body = [`argus smoke: the baselines CI's baseline run ${r.id} wrote on \`${r.branch}\` (${r.sha.slice(0, 12)}), for review in this pull request's image view (2-up, swipe, onion skin). Merging accepts them; a test fails until its baseline is accepted.`, "", "| file | journey | step | project |", "|---|---|---|---|", ...files.map(row), ...listed, ""].join("\n");
     const changes = files.map((f) => JSON.stringify({ kind: "baseline", id: f.id, ...(f.step && /^[0-9]+$/.test(f.step) ? { step: Number(f.step) } : {}), to: f.rel, evidence: [`CI baseline run ${r.id} (${f.project ?? "baseline job"})`], run: r.id }));
-    const { secrets, refusal } = scrubSecrets(main, { runId: lastRun(main) });
+    // The adopted files carry no lane run's values: the newest run that keeps a ledger is the one checked (a map run keeps none).
+    const ledgerRun = newestLedgerRun(main);
+    if (!ledgerRun) throw new Error(`refused: ${verb}: no lane run here keeps a secret ledger to check the adopted files against (run a journey cycle first)`);
+    const { secrets, refusal } = scrubSecrets(main, { runId: ledgerRun });
     if (refusal) throw new Error(`refused: ${verb}: ${refusal.replace(/^refused: (scrub: )?/, "")}`);
     const hits = [];
     for (const [name, text] of [...files.filter((f) => !f.rel.endsWith(".png")).flatMap((f) => [[f.rel, f.original ?? f.bytes.toString("utf8")], [f.rel, f.bytes.toString("utf8")]]), ["the pull request's body", body]]) {

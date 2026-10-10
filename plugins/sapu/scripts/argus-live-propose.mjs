@@ -8,7 +8,7 @@ import path from "node:path";
 import { SMOKE_PLAYWRIGHT, suiteProjects } from "./argus-live-codegen.mjs";
 import { LIVE_FILE } from "./argus-live-config.mjs";
 import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
-import { secretHits } from "./argus-live-ledger.mjs";
+import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
@@ -206,7 +206,10 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
   // other kinds (smoke ci's, which name a CI run with no ledger; smoke plan's quarantine; smoke retire's) carry none,
   // and their run may be one a later up dropped: with only those, the branch's run's ledger is the one checked against.
   const lane = [...new Set(todo.filter((ch) => ch.kind === "add" || ch.kind === "heal").map((ch) => ch.run))];
-  const secrets = secretsOf(main, lane.length ? lane : [runId], env);
+  // Without one, the newest run that keeps a ledger (the branch's run may be a map run, which keeps none).
+  const fallback = lane.length ? null : newestLedgerRun(main);
+  if (!lane.length && !fallback) throw new Error("refused: smoke propose: no lane run here keeps a secret ledger to check the proposal against (run a journey cycle first)");
+  const secrets = secretsOf(main, lane.length ? lane : [fallback], env);
   const g0 = gitIn(main, runner);
   const lease = String(g0(["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).stdout ?? "").trim().split(/\s/)[0] ?? "";
   g0(["fetch", "--quiet", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`, ...(lease ? [`+refs/heads/${branch}:refs/remotes/origin/${branch}`] : [])]);

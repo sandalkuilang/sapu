@@ -2,7 +2,7 @@
 // read back by name and shape, triaged by spec §19.9's table, flakes quarantined only from the base branch,
 // and CI's baseline run adopted as a reviewed commit. gh is a stand-in (no network); git is real.
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, example, git, liveContract, liveRun, longSecret, tempDir } from "./helpers/argus-live";
@@ -11,7 +11,7 @@ import { pruneAria, smokeBaseline } from "../plugins/sapu/scripts/argus-live-bas
 // @ts-expect-error — plain ESM script without types
 import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
 // @ts-expect-error — plain ESM script without types
-import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
+import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -689,6 +689,21 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     expect(git(t.origin, "ls-tree", "-r", "--name-only", "refs/heads/argus/baselines-301").split("\n")).toContain("e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png");
     expect(git(t.origin, "rev-parse", "refs/heads/feat/x")).toBe(t.sha);
   });
+
+  it("a cycle whose run keeps no ledger (a map run) checks the adopted files against the newest run that has one; with none it says so", async () => {
+    const t = baseRepo();
+    const older = "20300101000000-0123abcd";
+    const secret = longSecret(40, "older");
+    appendLedger(t.main, older, [{ c: "cookie", v: secret }]);
+    rmSync(ledgerFile(t.main, t.runId));
+    dispatched(t.main, { ciRun: "300", from: "200", branch: "argus/smoke-200", mode: "changed", ids: ["search"] });
+    const api = { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } };
+    const art = () => baselines(files({ "argus-smoke-baselines-a11y/__aria__/search.spec/2.aria.yml": `- main:\n  - text: ${secret}\n` }));
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: fakeGh({ api, artifacts: { "300": art() } }).runner });
+    expect(r.lines.at(-1)).toBe("refused: smoke baseline: 1 secret(s) in the adopted files; nothing is pushed");
+    rmSync(ledgerFile(t.main, older));
+    await expect(smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: fakeGh({ api, artifacts: { "300": art() } }).runner })).rejects.toThrow("refused: smoke baseline: no lane run here keeps a secret ledger to check the adopted files against (run a journey cycle first)");
+  }, 30_000);
 
   it("refuses to push an adopted file that holds a ledger secret, naming file, line, column and class, never the value", async () => {
     const t = baseRepo();
