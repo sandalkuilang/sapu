@@ -494,6 +494,9 @@ async function handle(req, res) {
   if (p.startsWith("/__test/")) {
     const token = process.env.CONTROL_TOKEN;
     if (!token || req.headers["x-test-control"] !== token) return send(res, 404, "");
+    // Each control request on a connection of its own: a test polling these on a loaded machine never reuses a
+    // keep-alive connection the server is closing at that moment.
+    res.shouldKeepAlive = false;
     if (req.method === "POST" && p === "/__test/expire") {
       writeJson("sessions.json", {});
       return send(res, 200, "expired");
