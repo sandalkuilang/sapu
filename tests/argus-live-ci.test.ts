@@ -32,7 +32,7 @@ const runs: { main: string; runId: string }[] = [];
 afterEach(async () => {
   for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
   cleanTemps();
-});
+}, 30_000);
 
 const commitAll = (main: string, msg: string) => {
   git(main, "add", "-A");

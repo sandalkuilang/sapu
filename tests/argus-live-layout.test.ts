@@ -89,7 +89,7 @@ afterAll(async () => {
   other?.closeAllConnections();
   server?.close();
   other?.close();
-});
+}, 30_000);
 
 const contexts: any[] = [];
 /** A page of the fixture directory in a fresh context of the given size and locale. */
@@ -102,7 +102,7 @@ async function open(file: string, { width = 1000, height = 700, locale = "en-US"
 }
 afterEach(async () => {
   for (const c of contexts.splice(0)) await c.close();
-});
+}, 30_000);
 
 /** The in-page function's answer: the same source the support file embeds. */
 const ask = (page: any, kind: string, opts: Obj = {}) => page.evaluate(pageExpression(kind, opts));

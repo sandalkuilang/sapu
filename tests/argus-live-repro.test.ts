@@ -585,7 +585,8 @@ describe("argus-live repro — one run", () => {
       // The RED test, from the confirmed min.json.
       const red = c.cli("repro", ref, "--test");
       expect(red.code, red.err).toBe(0);
-      const redFile = red.out.trim().replace(/^red test: /, "");
+      // The red test's line comes first; the API-level hint (lane F) may follow it.
+      const redFile = red.out.trim().split("\n")[0].replace(/^red test: /, "");
       expect(realpathSync(redFile)).toBe(realpathSync(join(dir, "red.spec.ts")));
       expect(() => stripTypeScriptTypes(readFileSync(redFile, "utf8"))).not.toThrow();
 

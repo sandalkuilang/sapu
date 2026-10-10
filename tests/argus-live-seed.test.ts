@@ -78,7 +78,7 @@ const runs: { main: string; runId: string }[] = [];
 afterEach(async () => {
   for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
   cleanTemps();
-});
+}, 30_000);
 
 /**
  * A committed repo with the orders routes, the settle job, docs/flows.md (FLOWS), a big doc, a symlink out of

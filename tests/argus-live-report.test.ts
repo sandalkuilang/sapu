@@ -28,7 +28,7 @@ const runs: { main: string; runId: string }[] = [];
 afterEach(async () => {
   for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
   cleanTemps();
-});
+}, 30_000);
 
 /** The secrets of one run, made at run time: a ledger cookie, the env file's value and a role password. */
 const SECRETS = () => ({ cookie: longSecret(24, "report-cookie"), envFile: longSecret(18, "report-env"), role: longSecret(14, "report-role") });

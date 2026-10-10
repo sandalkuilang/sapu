@@ -40,7 +40,7 @@
 //                                (--seed: a seed map slot, whose token also takes pw <token> source; spec §19.12)
 //   argus-live.mjs slot <n> --handoff
 //                                retire slot <n>'s token and mint the next generation (fresh budget)
-//   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]
+//   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]
 //                                the explorer's only way into a browser (spec §9): the page's answer in a
 //                                nonce fence, then the wrapper's own lines; exit 0 ran, 1 refused or
 //                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed

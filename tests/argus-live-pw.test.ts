@@ -1863,7 +1863,7 @@ describe("argus-live pw — refusals and limits", () => {
     expect(parsePw(["t", "buyer.1", "click", "--modifiers=Shift", "e5", "--x"])).toEqual({ token: "t", account: "buyer.1", cmd: "click", flags: ["--modifiers=Shift"], positionals: ["e5", "--x"] });
     expect(parsePw(["t", "code", "grep", "createOrder", "src"])).toEqual({ token: "t", account: null, cmd: "code", flags: [], positionals: ["grep", "createOrder", "src"] });
     expect(parsePw(["t", "anon", "snapshot", "--depth=4", "--boxes"])).toMatchObject({ account: "anon", flags: ["--depth=4", "--boxes"], positionals: [] });
-    const USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]";
+    const USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]";
     expect(() => parsePw(["t", "buyer.1"])).toThrow(`refused: no command follows buyer.1: ${USAGE}`);
     // A word that is no command and has nothing after it reads as an account with no command: say both.
     expect(() => parsePw(["t", "show"])).toThrow(`refused: show is not an explorer command, and no command follows it as an account: ${USAGE}`);

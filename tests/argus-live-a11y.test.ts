@@ -159,8 +159,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close();
+  // close() waits for every open connection: drop the browser's keep-alive ones first.
+  server?.closeAllConnections();
   await new Promise<void>((done) => (server ? server.close(() => done()) : done()));
-});
+}, 30_000);
 
 /** A fresh page on `file`, at the suite's default viewport. */
 const open = async (file: string) => {
