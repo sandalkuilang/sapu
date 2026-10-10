@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, laneOnly, loadBar, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, laneOnly, loadBar, tokensPx, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -435,6 +435,16 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
       ["the taste final on another expectation", { as: "customer.1", expect: "visible", target: { text: "x" }, final: "taste" }, "taste's final is taste"],
     ] as [string, Obj, string][]) expect(last(repro(step)), what).toBe(`refused: repro: step 2: ${why}`);
     expect(last(repro({ ...TASTE, final: undefined }))).toMatch(/^refused: repro: step 2: the last step must be an expect naming its oracle/);
+  });
+
+  it("tokensPx: the owner's tokens as the taste probe's scale in px, by the kind each name names; null when none", () => {
+    const css = ":root {\n  --space-1: 4px; --space-2: 0.5rem; /* --space-9: 99px */\n  --radius-sm: 4px; --rounded-lg: 12px;\n  --font-size-sm: 14px; --text-lg: 1.125rem;\n  --color-text: navy; --gap-x: calc(1rem + 2px); --spacing-y: var(--space-1); --margin: 50%;\n}";
+    expect(tokensPx("css", css)).toEqual({ spacing: [4, 8], radius: [4, 12], type: [14, 18] });
+    const json = { spacing: { "1": { $value: "4px", $type: "dimension" }, "2": "8px", "3": 12 }, radius: { md: { value: "0.375rem" } }, font: { size: { sm: "0.875rem" } }, color: { text: "black" } };
+    expect(tokensPx("json", JSON.stringify(json))).toEqual({ spacing: [4, 8, 12], radius: [6], type: [14] });
+    for (const [kind, text] of [["css", "--color-ink: navy;"], ["json", "{not json"], ["json", "{}"], ["yaml", "space: 4px"]]) expect(tokensPx(kind, text), text).toBe(null);
+    // Self-contained: the suite embeds its source.
+    expect(new Function(`return ${String(tokensPx)}`)()("css", "--radius-md: 6px")).toEqual({ radius: [6] });
   });
 
   it("refuses a lane-only rule when it parses the repro, before any step's code is built", () => {

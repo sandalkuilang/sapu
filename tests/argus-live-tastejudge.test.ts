@@ -35,7 +35,7 @@ import { makeHome, makeWorktree } from "../plugins/sapu/scripts/argus-live-start
 // @ts-expect-error — plain ESM script without types
 import { MEDIA_READ, readTasteState, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
-import { confirmSink, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
+import { confirmSink, laneTokens, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 
 type Obj = Record<string, any>;
 
@@ -76,6 +76,8 @@ const STAND_IN = vi.hoisted(() => ({
   if (s === "throw") throw new Error("a probe's own fault");
   const rows = s && Array.isArray(s.findings) ? [...s.findings] : [];
   for (const p of ["dark", "reduce"]) for (const f of (s && s[p] && s[p].flags) || []) rows.push({ rule: f.rule, key: f.key, measured: 1, expected: 0 });
+  // A screen asking for it echoes the owner's scale it was judged with (the frame and the tokens in px).
+  if (s && s.echoScale) rows.push({ rule: "scale.off-scale", key: "tokens " + JSON.stringify(cfg && cfg.tokens) + " frame " + JSON.stringify(cfg && cfg.frame), measured: 1, expected: 0 });
   const ids = bar && Array.isArray(bar.rules) ? bar.rules.map((r) => r.id) : null;
   return rows.filter((r) => !ids || ids.includes(r.rule));
 }`)() as (screen: unknown, bar?: unknown, cfg?: unknown) => Record<string, any>[],
@@ -717,6 +719,25 @@ describe("argus-live taste judge (J2)", () => {
     t.ret(1, "j", pathOf(3));
     await t.judge();
     expect(t.file().journeys.j.efficiency).toMatchObject({ wait_ms: 290, recovery: 2 });
+  }, 30_000);
+
+  it("judges with the owner's scale: live.json's tokens in px beside taste.json's frame; none without a token source", async () => {
+    const t = judgeRepo();
+    expect(laneTokens(t.main)).toBe(null);
+    mkdirSync(join(t.main, "design"), { recursive: true });
+    writeFileSync(join(t.main, "design/tokens.css"), ":root { --space-1: 4px; --space-2: 0.5rem; --radius-md: 6px; --font-size-body: 1rem; --color-ink: navy; }\n");
+    writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify({ ...example(), tokens: { css: "design/tokens.css" } }, null, 2)}\n`);
+    expect(laneTokens(t.main)).toEqual({ spacing: [4, 8], radius: [6], type: [16] });
+    t.taste({ frame: "material" });
+    t.put(1, [t.screen("/a", [], { taste: { echoScale: true } })]);
+    await t.judge();
+    expect(t.file().rows.map((r: Obj) => r.key)).toEqual(['tokens {"spacing":[4,8],"radius":[6],"type":[16]} frame "material"']);
+    // The confirmation measures with the same scale.
+    const sink = confirmSink({ row: "t1", journey: "j", rule: "colour.dark-border", class: "implicit", screen: "/a|1440|dark", key: "card", measured: 1, expected: 0 }, { routes: [], settleMs: 1000, cfg: { frame: "material", tokens: laneTokens(t.main) } });
+    expect(JSON.parse(/const S = (.*);\n/.exec(sink.wrap("async page => 1"))![1]).cfg).toEqual({ frame: "material", tokens: { spacing: [4, 8], radius: [6], type: [16] } });
+    // A token file outside the repo is no source.
+    writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify({ ...example(), tokens: { css: "../tokens.css" } }, null, 2)}\n`);
+    expect(laneTokens(t.main)).toBe(null);
   }, 30_000);
 
   it("a cross-screen row the previous cycle's judge also reported is confirmed (two cycles, two visits) and kept in the state", async () => {

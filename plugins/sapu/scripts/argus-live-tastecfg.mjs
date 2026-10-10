@@ -61,6 +61,46 @@ export function laneOnly(rule) {
   if (rule.family === "ai") return "it reads the owner's declared AI surfaces";
   return Object.hasOwn(LANE_ONLY, rule.id) ? LANE_ONLY[rule.id] : null;
 }
+/**
+ * The owner's design tokens (live.json `tokens`: a CSS file's custom properties or a JSON file's leaves, read as
+ * a11yTokens reads them) as the taste probe's scale (`rulesFor`'s `cfg.tokens`): `{spacing?, radius?, type?}`, each
+ * the sorted px values whose name (a custom property's, a JSON path's) names that kind; px as written, `rem`/`em`
+ * at 16 px (the root's default), a bare number px; anything else (`calc()`, `var()`, `%`) is no value. Null when no
+ * kind holds a value, so a frame is not outranked by an empty scale. Self-contained: support.ts embeds its source.
+ */
+export function tokensPx(kind, text) {
+  const KINDS = [["radius", /radius|radii|rounded|corner/i], ["type", /font[-_.]?size|text[-_.]?size|type[-_.]?(scale|size)|(^|[-_.])text([-_.]|$)/i], ["spacing", /spac|gap|gutter|inset|margin|padding|(^|[-_.])space([-_.]|$)/i]];
+  const out = { spacing: [], radius: [], type: [] };
+  const px = (v) => {
+    if (typeof v === "number") return Number.isFinite(v) ? v : null;
+    const m = String(v).match(/^\s*(\d*\.?\d+)\s*(px|rem|em)?\s*$/i);
+    return m ? Number(m[1]) * (m[2] && /em$/i.test(m[2]) ? 16 : 1) : null;
+  };
+  const add = (name, v) => {
+    const k = KINDS.find((x) => x[1].test(name));
+    const n = px(v);
+    if (k && n !== null && n <= 1000) out[k[0]].push(Math.round(n * 100) / 100);
+  };
+  if (kind === "css") {
+    for (const m of String(text).replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/--([\w-]+)\s*:\s*([^;}]+)/g)) add(m[1], m[2].trim());
+  } else if (kind === "json") {
+    const walk = (n, at) => {
+      if (typeof n === "string" || typeof n === "number") add(at, n);
+      else if (n && typeof n === "object" && !Array.isArray(n)) {
+        if ("$value" in n || "value" in n) return walk("$value" in n ? n.$value : n.value, at);
+        for (const [k, v] of Object.entries(n)) if (!k.startsWith("$")) walk(v, at ? at + "." + k : k);
+      }
+    };
+    try {
+      walk(JSON.parse(text), "");
+    } catch (e) {
+      return null;
+    }
+  }
+  const res = {};
+  for (const k of Object.keys(out)) if (out[k].length) res[k] = [...new Set(out[k])].sort((a, b) => a - b);
+  return Object.keys(res).length ? res : null;
+}
 /** Decision 16's archetypes: a screen is compared only with its own. */
 export const ARCHETYPES = Object.freeze(["marketing", "docs", "app", "form", "data"]);
 const BAR_KEYS = ["version", "probe", "sources", "rules", "frames", "archetypes"];

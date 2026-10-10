@@ -15,7 +15,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { FAMILIES, loadBar, loadTaste, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, titleKey, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, loadBar, loadTaste, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -142,6 +142,23 @@ function readJudge(main, runId) {
   }
 }
 
+/**
+ * The owner's design tokens (live.json `tokens`: a CSS or JSON file in the repo, as the a11y token check reads it) in
+ * px as the taste probe's scale (tokensPx), or null: they outrank the frame in the lane as in the suite.
+ */
+export function laneTokens(main) {
+  try {
+    const src = (loadLive(main).config ?? {}).tokens;
+    const kind = isObj(src) && typeof src.css === "string" ? "css" : isObj(src) && typeof src.json === "string" ? "json" : null;
+    if (!kind) return null;
+    const file = path.resolve(main, src[kind]);
+    if (path.relative(main, file).startsWith("..")) return null;
+    return tokensPx(kind, fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The judge.
 
@@ -227,6 +244,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (!cfg) throw new Error(`refused: taste judge: ${TASTE_FILE}: ${errors[0]}`);
   const rules = new Map(bar.rules.map((r) => [r.id, r]));
   const off = new Set(cfg.off);
+  const scale = { ...cfg, tokens: laneTokens(main) };
   const { screens, bad } = readScreens(main, runId);
   const arch = new Map(screens.map((s) => [s.key, archetypeOf(s, cfg)]));
   let failed = 0;
@@ -237,7 +255,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     for (const fn of [tasteRules, easeRules]) {
       let list = [];
       try {
-        list = fn(view, bar, cfg);
+        list = fn(view, bar, scale);
       } catch {
         failed += 1;
         continue;
@@ -455,7 +473,7 @@ export const MEDIA_RULES = Object.freeze(["colour.dark-contrast", "colour.dark-b
 export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null }) {
   const [route, width] = row.screen.split("|");
   const family = row.rule.split(".")[0];
-  const frame = cfg && cfg.frame ? { frame: cfg.frame } : {};
+  const frame = cfg ? { frame: cfg.frame ?? null, tokens: cfg.tokens ?? null } : {};
   const media = MEDIA_RULES.includes(row.rule);
   const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
   const sink = {
@@ -551,7 +569,7 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
       } catch {
         routes = [];
       }
-      const sink = confirmSink(row, { routes, settleMs: (loadLive(main).config ?? {}).settle_ms ?? 10_000, bar, cfg: loadTaste(main).taste });
+      const sink = confirmSink(row, { routes, settleMs: (loadLive(main).config ?? {}).settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) } });
       const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list } })));
       if (!sink.measured) said = r.code === 2 && !sink.measured ? "harness: the replay failed before the screen" : "harness: the replay never reached the screen";
       else if (sink.measured.rows === null) said = "harness: the rule's expression failed on the screen";
