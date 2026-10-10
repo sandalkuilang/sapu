@@ -5,9 +5,11 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, git, liveContract, liveRun, tempDir } from "./helpers/argus-live";
+import { cleanTemps, example, git, liveContract, liveRun, longSecret, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+import { pruneAria, quarantineCycle, smokeBaseline, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.mjs";
+// @ts-expect-error — plain ESM script without types
+import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { readState } from "../plugins/sapu/scripts/argus-live-heal.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -255,6 +257,15 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     await expect(smokeCi(t.main, { run: "106" }, { runner: none.runner })).rejects.toThrow("refused: smoke ci: run 106 has no readable results.json in an argus-smoke-results artifact");
   });
 
+  it("refuses before asking gh anything when the suite has no paths: there is nothing to triage or adopt", async () => {
+    const t = ciRepo();
+    git(t.main, "rm", "-rq", "e2e/argus-smoke/journeys");
+    const gh = fakeGh();
+    await expect(smokeCi(t.main, { run: "101" }, { runner: gh.runner })).rejects.toThrow("refused: smoke ci: the suite has no paths (e2e/argus-smoke/journeys)");
+    await expect(smokeBaseline(t.main, { fromRun: "101", ids: null }, { runner: gh.runner })).rejects.toThrow("refused: smoke baseline: the suite has no paths (e2e/argus-smoke/journeys)");
+    expect(gh.calls).toEqual([]);
+  });
+
   it("skips an oversized results.json or PNG, and a symlink, instead of reading it", async () => {
     const t = ciRepo();
     const d = artifact();
@@ -329,5 +340,159 @@ describe("quarantine's lifecycle (spec §19.9, decision 13)", () => {
     const rc = await smokeCi(c.main, { run: "101" }, { runner: gh() });
     expect(split(rc.lines).outside.find((l) => l.startsWith("flaky checkout"))).toMatch(/^flaky checkout chromium: drop staged \(flaky on main after an earlier quarantine; digest [0-9a-f]{12}\)$/);
     expect(readState(c.main).staged.map((s: Obj) => [s.kind, s.id])).toEqual([["drop", "checkout"]]);
+  });
+});
+
+describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §19.8, decision 7)", () => {
+  /** ciRepo with an origin holding main, a pull request branch feat/x and a proposal branch argus/smoke-200; live.json and a ledger for scrub's matcher. */
+  const baseRepo = (opts: Obj = {}) => {
+    const t = ciRepo(opts);
+    writeFileSync(join(t.main, ".argus/live.json"), JSON.stringify(example()));
+    writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
+    appendLedger(t.main, t.runId, []);
+    const origin = tempDir();
+    git(origin, "init", "-q", "--bare");
+    git(t.main, "remote", "add", "origin", origin);
+    git(t.main, "push", "-q", "origin", "HEAD:refs/heads/main", "HEAD:refs/heads/feat/x", "HEAD:refs/heads/argus/smoke-200");
+    return { ...t, origin, sha: git(t.main, "rev-parse", "HEAD") };
+  };
+  /** The triage smoke ci saved for run `id`. */
+  const triaged = (main: string, id: number, lines: string[]) => {
+    mkdirSync(join(main, ".argus/smoke-ci", String(id)), { recursive: true });
+    writeFileSync(join(main, ".argus/smoke-ci", String(id), "triage.json"), JSON.stringify({ run: id, event: "pull_request", branch: "feat/x", sha: SHA, lines }));
+  };
+  /** A baseline artifact: `files` (relative path → bytes or text) in `argus-smoke-baselines-<project>` directories. */
+  const baselines = (files: Record<string, Buffer | string>) => {
+    const d = tempDir();
+    for (const [rel, body] of Object.entries(files)) {
+      const f = join(d, rel);
+      mkdirSync(join(f, ".."), { recursive: true });
+      writeFileSync(f, body);
+    }
+    return d;
+  };
+  const ARIA = '- main:\n  - heading "Order 1234" [level=1]\n  - text: Total 12.50 EUR\n  - link "argus-3f2a9c1bkz9x0a1b2c":\n    - /url: /orders/42\n  - paragraph: Plain words\n  - button "Pay"\n';
+
+  it("pruneAria turns names holding a digit into regexes, digit runs as \\d+ and the marker as its shape", () => {
+    expect(pruneAria(ARIA)).toBe('- main:\n  - heading /Order \\d+/ [level=1]\n  - text: /Total \\d+\\.\\d+ EUR/\n  - link /argus-[0-9a-z]+/:\n    - /url: /\\/orders\\/\\d+/\n  - paragraph: Plain words\n  - button "Pay"\n');
+    // A regex already there stays; a name without a digit stays quoted.
+    expect(pruneAria('- heading /Results \\d+/ [level=1]\n- button "Pay now"\n')).toBe('- heading /Results \\d+/ [level=1]\n- button "Pay now"\n');
+  });
+
+  it("on a normal run, dispatches the baseline job on its branch for the baseline-missing ids (mode missing)", async () => {
+    const t = baseRepo();
+    triaged(t.main, 201, ["baseline-missing profile chromium", "baseline-missing search a11y", "baseline-missing profile firefox", "visual cart 2 chromium: actual x"]);
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/201": apiRun(201, { event: "pull_request", branch: "feat/x", sha: t.sha, pr: 7 }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } }, dispatch: { status: 0, stdout: "https://github.com/owner/app/actions/runs/202\n", stderr: "" } });
+    const r = await smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: gh.runner });
+    expect(r.code).toBe(0);
+    expect(gh.calls.filter((c) => c[0] === "workflow")).toEqual([["workflow", "run", "argus-smoke.yml", "--repo", "owner/app", "--ref", "feat/x", "-f", "baseline=missing", "-f", "grep=profile|search"]]);
+    expect(r.lines).toEqual(["baseline: dispatched profile,search mode=missing; adopt with smoke baseline --from-run 202"]);
+  });
+
+  it("re-baselines a mismatch only for the ids the owner names: mode changed, exactly those", async () => {
+    const t = baseRepo();
+    triaged(t.main, 201, ["visual cart 2 chromium: actual x", "aria search 2 [1]", "visual profile 1 chromium: actual y"]);
+    const api = { "repos/owner/app/actions/runs/201": apiRun(201, { event: "pull_request", branch: "feat/x", sha: t.sha, pr: 7 }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } };
+    const none = fakeGh({ api });
+    expect((await smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: none.runner })).lines).toEqual(["baseline: nothing to dispatch (run 201 has no baseline-missing journey; a mismatch is re-baselined only with --ids)"]);
+    expect(none.calls.some((c) => c[0] === "workflow")).toBe(false);
+    const gh = fakeGh({ api });
+    const r = await smokeBaseline(t.main, { fromRun: "201", ids: ["search", "cart"] }, { runner: gh.runner });
+    expect(gh.calls.filter((c) => c[0] === "workflow")).toEqual([["workflow", "run", "argus-smoke.yml", "--repo", "owner/app", "--ref", "feat/x", "-f", "baseline=changed", "-f", "grep=cart|search"]]);
+    expect(r.lines).toEqual(["baseline: dispatched cart,search mode=changed; adopt with smoke baseline --from-run <the new run> (gh run list --workflow argus-smoke.yml --event workflow_dispatch --branch feat/x)"]);
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: ["refund"] }, { runner: gh.runner })).rejects.toThrow("refused: smoke baseline: refund has no visual or ARIA mismatch in run 201: nothing to re-baseline");
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: ["nope"] }, { runner: gh.runner })).rejects.toThrow("refused: smoke baseline: the suite has no path nope");
+  });
+
+  it("without the right to dispatch, prints the gh workflow run line for the owner", async () => {
+    const t = baseRepo();
+    triaged(t.main, 201, ["baseline-missing profile chromium"]);
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/201": apiRun(201, { event: "pull_request", branch: "feat/x", sha: t.sha, pr: 7 }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } }, dispatch: { status: 1, stdout: "", stderr: "HTTP 403: Resource not accessible by integration\n" } });
+    const r = await smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: gh.runner });
+    expect(r.code).toBe(2);
+    expect(r.lines).toEqual(["baseline: no right to dispatch the workflow (it needs write access and the actions scope); the owner runs:", "gh workflow run argus-smoke.yml --repo owner/app --ref feat/x -f baseline=missing -f grep='profile'"]);
+  });
+
+  it("refuses a run that is not triaged, a stale run, a run of another repository or a fork", async () => {
+    const t = baseRepo();
+    const api = { "repos/owner/app/actions/runs/201": apiRun(201, { event: "pull_request", branch: "feat/x", sha: t.sha, pr: 7 }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } };
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: fakeGh({ api }).runner })).rejects.toThrow("refused: smoke baseline: run 201 is not triaged yet (smoke ci --run 201 first)");
+    const moved = { ...api, "repos/owner/app/branches/feat%2Fx": { commit: { sha: "b".repeat(40) } } };
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: fakeGh({ api: moved }).runner })).rejects.toThrow(`refused: smoke baseline: run 201 is stale: feat/x has moved past its head ${t.sha.slice(0, 12)}`);
+    const other = { "repos/owner/app/actions/runs/201": apiRun(201, { repo: "else/app" }) };
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: fakeGh({ api: other }).runner })).rejects.toThrow("refused: smoke baseline: run 201 belongs to another repository, not owner/app");
+    const fork = { "repos/owner/app/actions/runs/201": apiRun(201, { head: "mallory/app", event: "pull_request", pr: 9 }) };
+    await expect(smokeBaseline(t.main, { fromRun: "201", ids: null }, { runner: fakeGh({ api: fork }).runner })).rejects.toThrow("refused: smoke baseline: run 201 comes from a fork: its artifacts are not read");
+    await expect(smokeBaseline(t.main, { fromRun: null, ids: null }, { runner: fakeGh({ api }).runner })).rejects.toThrow("refused: smoke baseline: --from-run <run id> names the CI run");
+  });
+
+  const files = (extra: Record<string, Buffer | string> = {}) => ({
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/msedge/linux/profile/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/stranger/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/3.png": "not a png",
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/4.png": Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]),
+    "argus-smoke-baselines-chromium/notes.txt": INJECT,
+    "argus-smoke-baselines-a11y/__aria__/search/2.aria.yml": ARIA,
+    "argus-smoke-baselines-a11y/violations-search.json": JSON.stringify([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:color-contrast", key: "button.pay" }, { check: "bad name!", key: "x" }]),
+    ...extra,
+  });
+
+  it("on a baseline run of a proposal branch, adopts only the suite's names and commits them on that branch", async () => {
+    const t = baseRepo();
+    const art = baselines(files());
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": art } });
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
+    expect(r.code).toBe(0);
+    expect(gh.calls.find((c) => c[0] === "run")).toEqual(["run", "download", "300", "--repo", "owner/app", "--pattern", "argus-smoke-baselines*", "--dir", expect.any(String)]);
+    expect(r.lines[0]).toMatch(/^baseline: committed 3 file\(s\) to argus\/smoke-200 \([0-9a-f]{12}\)$/);
+    expect(r.lines).toContain("skipped: 5 file(s) outside the suite's baseline names, msedge's, not a PNG or over their size");
+    for (const l of r.lines) expect(l).not.toContain(INJECT);
+    const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
+    const tree = git(t.origin, "ls-tree", "-r", "--name-only", head).split("\n");
+    expect(tree.filter((f) => /__screenshots__|__aria__|known\//.test(f)).sort()).toEqual(["e2e/argus-smoke/__aria__/search/2.aria.yml", "e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png", "e2e/argus-smoke/known/search.json"]);
+    expect(git(t.origin, "show", `${head}:e2e/argus-smoke/__aria__/search/2.aria.yml`)).toContain("- heading /Order \\d+/ [level=1]");
+    expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }]);
+    const log = git(t.origin, "show", "-s", "--format=%ae%n%B", head);
+    expect(log).toContain("owner@example.com");
+    expect(log).toContain("Signed-off-by: owner <owner@example.com>");
+    const changes = git(t.origin, "show", `${head}:e2e/argus-smoke/changes.jsonl`).split("\n").map((l) => JSON.parse(l));
+    expect(changes).toContainEqual({ kind: "baseline", id: "profile", step: 2, to: "e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png", evidence: ["CI baseline run 300 (chromium)"], run: "300" });
+    expect(gh.calls.some((c) => c[0] === "pr")).toBe(false);
+    // The temporary worktree is gone.
+    expect(git(t.main, "worktree", "list").split("\n")).toHaveLength(2);
+  });
+
+  it("on a baseline run of another branch, opens an argus/baselines-<run> pull request into it, each file listed with journey, step and project", async () => {
+    const t = baseRepo();
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/301": apiRun(301, { event: "workflow_dispatch", branch: "feat/x", sha: t.sha }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } }, artifacts: { "301": baselines(files()) } });
+    const prs: string[][] = [];
+    const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] === "gh" && argv[1] === "pr" && argv[2] === "create") {
+        prs.push(argv.slice(1));
+        gh.bodies.push(readFileSync(argv[argv.indexOf("--body-file") + 1], "utf8"));
+        return { status: 0, stdout: "https://github.com/owner/app/pull/12\n", stderr: "" };
+      }
+      return gh.runner(argv, opts);
+    };
+    const r = await smokeBaseline(t.main, { fromRun: "301", ids: ["profile"] }, { runner });
+    expect(r.lines[0]).toBe("baseline: 1 file(s) proposed in https://github.com/owner/app/pull/12 (argus/baselines-301 into feat/x)");
+    expect(prs).toEqual([["pr", "create", "--repo", "owner/app", "--base", "feat/x", "--head", "argus/baselines-301", "--title", "argus: smoke baselines from CI run 301", "--body-file", expect.any(String), "--label", "sapu:agent-filed"]]);
+    expect(gh.bodies[0]).toContain("| `e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png` | profile | 2 | chromium |");
+    expect(gh.bodies[0]).toContain("2-up, swipe, onion skin");
+    expect(git(t.origin, "ls-tree", "-r", "--name-only", "refs/heads/argus/baselines-301").split("\n")).toContain("e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png");
+    expect(git(t.origin, "rev-parse", "refs/heads/feat/x")).toBe(t.sha);
+  });
+
+  it("refuses to push an adopted file that holds a ledger secret, naming file, line, column and class, never the value", async () => {
+    const t = baseRepo();
+    const secret = longSecret(40, "baseline");
+    appendLedger(t.main, t.runId, [{ c: "cookie", v: secret }]);
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": baselines(files({ "argus-smoke-baselines-a11y/__aria__/search/2.aria.yml": `- main:\n  - text: ${secret}\n` })) } });
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual(["e2e/argus-smoke/__aria__/search/2.aria.yml 2:11 cookie", "refused: smoke baseline: 1 secret(s) in the adopted files; nothing is pushed"]);
+    expect(r.lines.join("\n")).not.toContain(secret.slice(0, 12));
+    expect(git(t.origin, "rev-parse", "refs/heads/argus/smoke-200")).toBe(t.sha);
   });
 });

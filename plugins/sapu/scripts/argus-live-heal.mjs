@@ -33,10 +33,10 @@ const hasContext = (list) => isObj(list[0]) && Object.hasOwn(list[0], "context")
 export const canonical = (v) => JSON.stringify(v, (_k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x));
 
 /** An empty smoke state. */
-const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [], cycles: [] });
+const EMPTY = () => ({ version: 1, staged: [], rejected: [], journeys: {}, comments: [] });
 
 /**
- * The lane's smoke state → `{version, staged, rejected, journeys, comments, cycles}` (an empty one when the file is
+ * The lane's smoke state → `{version, staged, rejected, journeys, comments}` (an empty one when the file is
  * missing). A file that is not that shape is refused, never overwritten: it may hold an outcome the owner gave.
  */
 export function readState(main) {
@@ -53,7 +53,7 @@ export function readState(main) {
   } catch {
     s = null;
   }
-  const lists = ["staged", "rejected", "comments", "cycles"];
+  const lists = ["staged", "rejected", "comments"];
   if (!isObj(s) || s.version !== 1 || !isObj(s.journeys) || lists.some((k) => s[k] !== undefined && !Array.isArray(s[k]))) {
     throw new Error(`refused: ${STATE_FILE} is not the smoke state (remove it to start over)`);
   }
