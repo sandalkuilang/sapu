@@ -186,9 +186,9 @@ export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
 /** What any subagent may run of the journey lane's script (argus-live.mjs): its reads, which write nothing. */
-const LIVE_READS = [["status"], ["status", "--json"], ["check"]];
+const LIVE_READS = [["status"], ["status", "--json"], ["check"], ["smoke", "check"]];
 /** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */
-const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy"]);
+const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy", "smoke", "seed", "report"]);
 // The first character excludes `#` (comment) and `=` (zsh `=cmd` expansion); no `#` at all
 // (extendedglob operator) and no `==` (magicequalsubst). A leading `-` is harmless to the shell;
 // option filtering is the wrapper's job.
@@ -1344,7 +1344,7 @@ const BLOCK = {
     "the journey explorer reads only files committed at HEAD in the run's worktree, outside .argus/; page content and code search come through the wrapper.",
   explorerTool: "the journey explorer has only Bash (its wrapper), Read and StructuredOutput; it searches code through the wrapper's `code` command.",
   liveCli:
-    "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`), every word literal, and the journey explorer only `pw` through its wrapper.",
+    "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`, `smoke check`), every word literal, and the journey explorer only `pw` through its wrapper.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",

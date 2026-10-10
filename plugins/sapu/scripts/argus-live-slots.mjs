@@ -4,7 +4,7 @@
 // token and mints the next generation with a fresh budget (at most two handoffs). An account serves one
 // slot per run. Each slot's counters live in `<slot>/state.json` under a per-slot lock that also
 // serializes the slot's `pw` calls. A map slot (`slot <n> --map`, decision 20) holds no account: its token
-// takes `code` and `submit` only, in any run whose worktree exists.
+// takes `code` and `submit` only, in any run whose worktree exists; a seed map slot's (`--seed`) also `source`.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -13,6 +13,7 @@ import { expandConfig, loadLive } from "./argus-live-config.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { run, tempBeside, withFileLock } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
+import { bindSeed, readSeed } from "./argus-live-seed.mjs";
 
 /** A journey id: kebab-case. */
 const JOURNEY = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -234,6 +235,7 @@ export async function mintSlot(main, { slot, journey, accounts }, { runner = run
       const slots = prev.slots ?? {};
       if (Object.hasOwn(slots, String(slot))) throw new Error(`refused: slot ${slot} is minted already; hand it off (slot ${slot} --handoff)`);
       for (const [n, s] of Object.entries(slots)) {
+        if (s && s.mode === "smoke") continue; // the smoke pass's regression record: its accounts browse only in slot r
         const taken = new Set(Object.values(allocationKeysQuiet(s.accounts, live)));
         for (const [a, key] of Object.entries(keys)) if (taken.has(key)) throw new Error(`refused: ${accounts[a] ?? a} already serves slot ${n}`);
       }
@@ -260,13 +262,17 @@ export async function mintSlot(main, { slot, journey, accounts }, { runner = run
  * has a worktree (a map run, or a full `up` still starting): run.json `slots[<n>]` keeps `{mode: "map",
  * journey: null, generation, tokenHash, accounts: {}, retired: [], submitted: false}`, and the slot's
  * directory a fresh state.json only. Refused: no lock, past its deadline, a sealed run, no worktree yet, a
- * slot minted already.
+ * slot minted already. `seed`: a seed map slot (spec §19.12), whose token also takes `pw <token> source`: it
+ * is bound to the run's seed as it stands (`<slot>/seeded.json`, 0600, `{kind, ref, digest}`, which `down`
+ * keeps for `map-check --merge`), and the reply gains `seed: {kind, ref}`; refused when the run holds no seed.
  */
-export async function mintMapSlot(main, { slot }) {
+export async function mintMapSlot(main, { slot, seed = false }) {
   if (!Number.isInteger(slot) || slot < 1 || slot > 99) throw new Error("refused: a slot is a number from 1 to 99");
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
   if (lock.deadline * 1000 <= Date.now()) throw new Error(`refused: the deadline of cycle ${lock.runId} passed; run down`);
+  const source = seed ? readSeed(main, lock.runId) : null;
+  if (seed && !source) throw new Error(`refused: slot --seed: cycle ${lock.runId} holds no seed (seed --issue <n> or seed --doc <file>:<a>-<b> first)`);
   const token = randomBytes(16).toString("hex");
   const entry = { mode: "map", journey: null, generation: 1, tokenHash: sha256(token), accounts: {}, retired: [], submitted: false };
   updateRun(
@@ -282,7 +288,17 @@ export async function mintMapSlot(main, { slot }) {
   );
   const settle = (loadLive(main).config ?? {}).settle_ms;
   try {
-    await withSlotLock(main, lock.runId, slot, () => writeSlotState(slotDir(main, lock.runId, slot), freshState(), { main, runId: lock.runId, map: true }), { waitMs: slotLockWaitMs(settle) });
+    await withSlotLock(
+      main,
+      lock.runId,
+      slot,
+      () => {
+        const dir = slotDir(main, lock.runId, slot);
+        writeSlotState(dir, freshState(), { main, runId: lock.runId, map: true });
+        if (source) bindSeed(dir, source);
+      },
+      { waitMs: slotLockWaitMs(settle) },
+    );
   } catch (e) {
     // A slot whose state cannot be written is not minted.
     try {
@@ -292,7 +308,7 @@ export async function mintMapSlot(main, { slot }) {
     }
     throw e;
   }
-  return { slot, token, generation: 1, mode: "map" };
+  return { slot, token, generation: 1, mode: "map", ...(source ? { seed: { kind: source.kind, ref: source.ref } } : {}) };
 }
 
 /** allocationKeys of an earlier slot's accounts, as keys only (an account the config no longer allows still blocks its key). */
@@ -318,6 +334,7 @@ export async function handoffSlot(main, slot) {
   const { lock, rec } = cycle(main);
   const n = String(slot);
   if (!rec.slots || !Object.hasOwn(rec.slots, n)) throw new Error(`refused: slot ${slot} was never minted`);
+  if (rec.slots[n] && rec.slots[n].mode === "smoke") throw new Error(`refused: slot ${slot} holds the smoke pass's regression candidate: no explorer takes it`);
   const token = randomBytes(16).toString("hex");
   let entry = null;
   const settle = (loadLive(main).config ?? {}).settle_ms;

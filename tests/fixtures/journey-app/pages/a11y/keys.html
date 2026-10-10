@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keyboard</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; background: #fff; color: rgb(17, 17, 17); }
+  button { margin: 8px; padding: 8px 12px; }
+  button.ring:focus-visible { outline: 3px solid #1a4fd6; outline-offset: 2px; }
+  button.none { outline: none; }
+  button.pale:focus-visible { outline: 3px solid #cfcfcf; outline-offset: 2px; }
+  button.glow { outline: none; }
+  button.glow:focus-visible { box-shadow: 0 0 0 4px #e03; }
+  [data-testid="div-click"] { display: inline-block; margin: 8px; padding: 8px 12px; border: 1px solid gray; cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <button class="ring">Save</button>
+  <div data-testid="div-click" onclick="document.title = 'clicked'">Div click</div>
+  <button class="none">No ring</button>
+  <button class="pale">Pale ring</button>
+  <button class="glow">Glow ring</button>
+  <button class="ring" aria-label="Menu 12"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6"/></svg></button>
+  <button class="ring" id="hover-only" data-testid="hover-target">Hover target</button>
+</main>
+</body>
+</html>

@@ -1,6 +1,11 @@
 # Runs the test suite on Linux for every push and pull request. The journey lane's live instance has
 # Linux-only paths (process start times from /proc, unix-socket peers from `ss -xp`) that a run on
 # macOS never takes, so its tests go first, on their own; then the rest of the suite.
+#
+# The suite is split into parallel jobs: a file that starts Chrome takes minutes, and one job running
+# them all outgrew its 30 minutes. Each matrix entry's `files:` line names its test files; the `rest`
+# job runs every file no `files:` line names, so a new test file runs there by default. A file named
+# on two lines, or one that is gone, fails the `rest` job.
 name: test
 on:
   push:
@@ -9,8 +14,24 @@ permissions:
   contents: read
 jobs:
   test:
+    name: test (${{ matrix.job }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job: repro
+            files: tests/argus-live-repro.test.ts
+          - job: oracles
+            files: tests/argus-live-oracles.test.ts
+          - job: browser
+            files: tests/argus-live-browser.test.ts tests/argus-live-pw.test.ts
+          - job: paths-perf
+            files: tests/argus-live-paths.test.ts tests/argus-live-perf.test.ts
+          - job: generated-suite
+            files: tests/argus-live-codegen.test.ts tests/argus-live-a11y.test.ts tests/argus-live-layout.test.ts
+          - job: rest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,7 +40,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: The job's test files
+        if: matrix.job != 'rest'
+        env:
+          FILES: ${{ matrix.files }}
+        run: npx vitest run $FILES
       - name: The live instance's tests
+        if: matrix.job == 'rest'
         run: npx vitest run tests/argus-live.test.ts
       - name: The rest of the suite
-        run: npx vitest run --exclude tests/argus-live.test.ts
+        if: matrix.job == 'rest'
+        run: |
+          listed=$(sed -nE 's/^ *files: *//p' .github/workflows/test.yml | tr ' ' '\n' | grep .)
+          twice=$(printf '%s\n' "$listed" | sort | uniq -d)
+          if [ -n "$twice" ]; then echo "named on more than one files: line: $twice"; exit 1; fi
+          for f in $listed; do [ -f "$f" ] || { echo "named on a files: line but not there: $f"; exit 1; }; done
+          npx vitest run --exclude tests/argus-live.test.ts $(printf -- '--exclude %s ' $listed)

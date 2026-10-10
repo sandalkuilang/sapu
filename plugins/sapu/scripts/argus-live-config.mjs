@@ -14,9 +14,9 @@ export const LIVE_FILE = ".argus/live.json";
 /** Role names: no `.` (`<role>.<n>` names an account). */
 export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ROLES = ["anon", "system"];
-/** The wrapper's commands that take no role (`pw <token> submit <json>`): never a role name. */
-export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail"];
-const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
+/** The wrapper's commands that take no role (`pw <token> submit <json>`; `source`, a seed map slot's, spec §19.12): never a role name. */
+export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail", "source"];
+export const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
 const START_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;
 /** A cycle longer than a day is a mistake, and keeps every epoch the lock computes in range. */
@@ -27,6 +27,7 @@ export const TOP_KEYS = Object.freeze([
   "setup", "services", "start", "base_url", "login_url", "logged_in", "login_open", "env_file", "env", "pass_env", "store", "store_check", "reset",
   "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
   "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
+  "test_id_attribute", "pseudo_locales", "tokens",
 ]);
 export const REQUIRED = Object.freeze(["start", "base_url", "login_url", "logged_in", "store", "store_check", "reset", "confirmed", "roles", "limits"]);
 export const LIMIT_KEYS = Object.freeze(["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"]);
@@ -78,6 +79,11 @@ const isLocale = (l) => {
     return false;
   }
 };
+
+/** Playwright's testIdAttribute: an attribute name the app already uses. */
+const TEST_ID_ATTRIBUTE = /^[a-z][a-z0-9-]{0,63}$/;
+/** A repo-relative file or directory: no absolute path, no `..`, no backslash; no leading `-` or `:` (an option, a git pathspec magic). */
+export const repoFile = (p) => isStr(p) && !path.isAbsolute(p) && !/^[-:]/.test(p) && !p.includes("\\") && !p.split("/").includes("..");
 
 const isRegex = (s) => {
   try {
@@ -138,9 +144,10 @@ export function validateLive(c) {
   if (isStr(c.base_url)) localUrl(c.base_url, "base_url", errs);
   if (has("env_file")) need(isStr(c.env_file), "env_file must be a path inside the repo");
   if (has("env")) need(isObj(c.env) && Object.values(c.env).every((v) => typeof v === "string"), "env must map names to strings");
-  for (const k of ["pass_env", "locales", "prohibited"]) if (has(k)) need(strArray(c[k]), `${k} must be an array of strings`);
+  for (const k of ["pass_env", "locales", "prohibited", "pseudo_locales"]) if (has(k)) need(strArray(c[k]), `${k} must be an array of strings`);
   for (const k of ["facts", "mail"]) if (has(k)) command(c[k], k, errs);
-  if (has("triggers") && object(c.triggers, "triggers")) for (const [name, t] of Object.entries(c.triggers)) command(t, `triggers.${name}`, errs);
+  // A trigger marked seed creates data a smoke path may start with (spec §19.4); facts and mail never seed.
+  if (has("triggers") && object(c.triggers, "triggers")) for (const [name, t] of Object.entries(c.triggers)) command(t, `triggers.${name}`, errs, { seed: true });
   if (has("confirmed") && object(c.confirmed, "confirmed")) {
     unknown(c.confirmed, "confirmed", ["mocks", "data"]);
     need(c.confirmed.mocks === true, "confirmed.mocks must be true: every outbound integration runs in test or mock mode under env");
@@ -153,10 +160,18 @@ export function validateLive(c) {
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
   // The files `upload` may use: copied from the worktree's HEAD tree, so a path inside the repo.
   // A leading `-` or `:` would read as an option or a git pathspec magic where it is copied from HEAD.
-  if (isStr(c.fixtures)) need(!path.isAbsolute(c.fixtures) && !/^[-:]/.test(c.fixtures) && !c.fixtures.includes("\\") && !c.fixtures.split("/").includes(".."), "fixtures must be a repo-relative directory (no absolute path, no .., no leading - or :)");
+  if (isStr(c.fixtures)) need(repoFile(c.fixtures), "fixtures must be a repo-relative directory (no absolute path, no .., no leading - or :)");
   if (isStr(c.timezone) && !isTimeZone(c.timezone)) errs.push(`timezone must be an IANA time zone such as UTC or Europe/Berlin: ${c.timezone}`);
   if (isStr(c.locale) && !isLocale(c.locale)) errs.push(`locale must be a BCP 47 language tag such as en-US: ${c.locale}`);
   if (strArray(c.locales)) for (const l of c.locales.filter((x) => !isLocale(x))) errs.push(`locales must be BCP 47 language tags such as en-US: ${l}`);
+  if (strArray(c.pseudo_locales)) for (const l of c.pseudo_locales.filter((x) => !isLocale(x))) errs.push(`pseudo_locales must be BCP 47 language tags such as en-XA: ${l}`);
+  // The smoke suite's (spec §19.2): Playwright's testIdAttribute, and the repo's own design-token source.
+  if (has("test_id_attribute")) need(typeof c.test_id_attribute === "string" && TEST_ID_ATTRIBUTE.test(c.test_id_attribute), `test_id_attribute must match ${TEST_ID_ATTRIBUTE} (an attribute name such as data-testid)`);
+  if (has("tokens")) {
+    const t = c.tokens;
+    const keys = isObj(t) ? Object.keys(t) : [];
+    need(keys.length === 1 && ["css", "json"].includes(keys[0]) && repoFile(t[keys[0]]), 'tokens must be {"css": <file>} or {"json": <file>}, one repo-relative file (no absolute path, no .., no leading - or :)');
+  }
   if (has("compose_files")) {
     const v = c.compose_files;
     // No ":": the run joins the files into COMPOSE_FILE with it as the separator.
@@ -185,9 +200,10 @@ export function validateLive(c) {
   return errs;
 }
 
-function command(v, where, errs) {
+function command(v, where, errs, { seed = false } = {}) {
   if (!isObj(v)) return errs.push(`${where} must be {"argv": [<words>], "args": [<regex>]}`);
-  for (const k of Object.keys(v)) if (!["argv", "args"].includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  for (const k of Object.keys(v)) if (!["argv", "args", ...(seed ? ["seed"] : [])].includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  if ("seed" in v && seed && typeof v.seed !== "boolean") errs.push(`${where}.seed must be true or false`);
   if (!(strArray(v.argv) && v.argv.length > 0 && isStr(v.argv[0]))) errs.push(`${where}.argv must be a non-empty array of words`);
   if ("args" in v && !(Array.isArray(v.args) && v.args.every(isRegex))) errs.push(`${where}.args must be an array of valid regexes`);
 }

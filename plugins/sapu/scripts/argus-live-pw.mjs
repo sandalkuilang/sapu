@@ -9,17 +9,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { slotDir } from "./argus-live-browser.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
+import { loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
+import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { submit } from "./argus-live-return.mjs";
 import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep } from "./argus-live-proc.mjs";
 import { blockedSince } from "./argus-live-proxy.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { writeVerdict } from "./argus-live-scrub.mjs";
+import { boundSeed, sourceLines } from "./argus-live-seed.mjs";
 import { configuredUser, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
+import { pathChecks } from "./argus-live-steps.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
@@ -71,6 +75,7 @@ export const COMMANDS = {
   snapshot: { args: ["target?"], flags: { "--depth": valued(/^[1-9][0-9]?$/, "1-99"), "--boxes": bool } },
   find: { args: ["text?"], flags: { "--regex": valued(regexValue, "a regular expression") } },
   screenshot: { args: ["target?"], flags: { "--full-page": bool } },
+  layout: { args: ["check?"] },
   console: { args: ["level?"] },
   requests: { args: [], flags: { "--static": bool, "--filter": valued(regexValue, "a regular expression") } },
   request: { args: ["index"] },
@@ -85,7 +90,11 @@ export const COMMANDS = {
   facts: { roleFree: true, args: ["text"] },
   mail: { roleFree: true, args: [] },
   submit: { roleFree: true, args: ["text"] },
+  source: { roleFree: true, args: [] },
 };
+
+/** `source` on any token but a seed map slot's. */
+const SOURCE_ONLY = "refused: source takes a seed map slot's token (slot <n> --map --seed)";
 
 /**
  * The explorer's argv → `{token, account | null, cmd, flags, positionals}` (`account` the word as given,
@@ -95,7 +104,7 @@ export const COMMANDS = {
  * a command off the allowlist, any other flag (`-s`, `--session`, `--config`, `--filename`, …), a flag
  * value that does not fit, a wrong number of arguments.
  */
-const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]";
+const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]";
 
 export function parsePw(argv) {
   if (!Array.isArray(argv) || argv.length < 2) throw new Error(`refused: ${PW_USAGE}`);
@@ -195,6 +204,9 @@ function checkArg(kind, value, { origins, base, files }) {
       if (!st || !st.isFile()) throw new Error(`refused: ${value} is not a fixture file of this slot`);
       return p;
     }
+    case "check":
+      if (!LAYOUT_KINDS.includes(value)) throw bad(`a layout check (${LAYOUT_KINDS.join(", ")})`);
+      return value;
     case "level":
       if (!/^(error|warning|info|debug)$/.test(value)) throw bad("a console level (error, warning, info or debug)");
       return value;
@@ -211,6 +223,38 @@ function checkArg(kind, value, { origins, base, files }) {
       if (value.length > 10_000) throw bad("at most 10000 characters");
       return value;
   }
+}
+
+/** At most this many violations of a `layout` answer are listed. */
+const LAYOUT_LISTED = 40;
+
+/**
+ * The `{check, key}` rows the layout oracle skips for `journey` (spec §19.7, as the generated suite does): the
+ * journey's `allow` in .argus/smoke.json and its adopted known violations, `<smoke dir>/known/<journey>.json`.
+ * A missing file holds none; one that is not valid is refused (`failed: <file> is not valid …`, no text of it).
+ */
+export function layoutSkips(main, journey) {
+  if (typeof journey !== "string" || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(journey)) return [];
+  const loaded = loadSmoke(main);
+  if (loaded.errors.length) throw new Error("failed: .argus/smoke.json is not valid");
+  const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
+  const rows = (v) => (Array.isArray(v) ? v : []).filter((r) => r && typeof r.check === "string" && typeof r.key === "string").map(({ check, key }) => ({ check, key }));
+  const mine = smoke.journeys && Object.hasOwn(smoke.journeys, journey) ? smoke.journeys[journey] : null;
+  return [...rows(mine && mine.allow), ...readKnown(main, smoke.dir, journey)];
+}
+
+/**
+ * A `layout` answer (`{ok, found}`, the page's) as the explorer reads it: `layout [<check>]: <n> violations`, then one
+ * `<check> <key>: <detail>` line each (at most 40, the rest counted), less the rows in `skip`; only rows of the
+ * shape and the check asked are kept. Page-derived, so the caller fences it.
+ */
+function layoutText(ans, check, skip) {
+  const what = check ? `layout ${check}` : "layout";
+  if (!ans || ans.ok !== true || !Array.isArray(ans.found)) return `${what}: unavailable (the page changed or has not loaded; ask again)`;
+  const one = (v) => String(v).replace(/\s+/g, " ").trim();
+  const rows = ans.found.filter((f) => f && typeof f.check === "string" && typeof f.key === "string" && LAYOUT_KINDS.includes(f.check) && (!check || f.check === check) && !skip.some((x) => x.check === f.check && x.key === f.key));
+  if (rows.length === 0) return `${what}: no violations`;
+  return [`${what}: ${rows.length} violation${rows.length === 1 ? "" : "s"}`, ...rows.slice(0, LAYOUT_LISTED).map((f) => `${f.check} ${one(f.key)}: ${typeof f.detail === "string" ? one(f.detail) : ""}`), ...(rows.length > LAYOUT_LISTED ? [`(${rows.length - LAYOUT_LISTED} more not listed)`] : [])].join("\n");
 }
 
 const sha256 = (s) => createHash("sha256").update(s).digest("hex");
@@ -252,7 +296,11 @@ function pngsIn(dir) {
  * the config is read (it needs only the slot). The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
- * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall).
+ * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall); a
+ * seed map slot's also `source` (spec §19.12). `source` on any other token is refused, and counted.
+ * `layout [<check>]` (spec §19.15) is not a CLI command: the wrapper runs the layout oracle's own expression in the
+ * page (a `run-code` template of its making; the explorer names only one of its four checks) and prints the violations
+ * it found, less the journey's `allow` and adopted known rows (layoutSkips), in the fence.
  * `cli` (a test seam) stands in for the installed CLI (run.json `browser.js`).
  */
 export async function pw(main, argv, { cli = null, now = Date.now, runner = run, cliRunner = runAsync } = {}) {
@@ -285,6 +333,20 @@ export async function pw(main, argv, { cli = null, now = Date.now, runner = run,
   }
 }
 
+/**
+ * What a return's `path` and `heal` are checked with (spec §19.4, §19.9): the slot's accounts, live.json as
+ * the run expands it, smoke.json's `heal_max_steps` → pathChecks, or null when either file cannot be read
+ * (a return holding neither never asks).
+ */
+function returnChecks(main, slotRec) {
+  const { config, errors, secrets } = loadLive(main);
+  const s = loadSmoke(main);
+  if (!config || errors.length || s.errors.length) return null;
+  const rec = readRun(main);
+  const live = expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+  return pathChecks({ accounts: slotRec.accounts, live, healMax: (s.smoke ?? SMOKE_DEFAULTS).heal_max_steps });
+}
+
 /** The body of pw, under the slot's lock. */
 async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliRunner, setSecrets }) {
   // The token again, under the lock: a handoff may have retired it meanwhile.
@@ -294,13 +356,13 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
   if (word === "submit") {
     try {
-      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, parsePw(argv).positionals[0])] };
+      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, parsePw(argv).positionals[0], { checks: () => returnChecks(main, slotRec) })] };
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       return { code: 1, out: [e.message] };
     }
   }
-  if (slotRec.mode === "map") return mapCall({ main, argv, word, runId, dir, lockNow, now });
+  if (slotRec.mode === "map") return mapCall({ main, argv, word, runId, slot, dir, lockNow, now });
   refuseNotLive(readRun(main), runId);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
   const { config, errors, secrets: envSecrets } = loadLive(main);
@@ -324,6 +386,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   let account = null;
   try {
     p = parsePw(argv);
+    if (p.cmd === "source") throw new Error(SOURCE_ONLY);
     if (p.account !== null) account = accountOf(slotRec, p.account);
   } catch (e) {
     return refused(e);
@@ -412,7 +475,19 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
   const shotsBefore = p.cmd === "screenshot" ? pngsIn(dir) : null;
-  let res = await d.cli(args);
+  /** `layout`: the oracle's own expression run in the page (never an argument of the explorer's), its answer put in words. */
+  const layout = async () => {
+    const check = positionals[0];
+    const skip = layoutSkips(main, slotRec.journey);
+    const code = `async page => {\n  try {\n    return { ok: true, found: await page.evaluate(${JSON.stringify(pageExpression("layout", check ? { only: [check] } : {}))}) };\n  } catch (e) {\n    return { ok: false };\n  }\n}\n`;
+    try {
+      return { code: 0, stdout: layoutText(await d.code(code), check, skip), stderr: "" };
+    } catch (e) {
+      if (!/^failed: run-code/.test(e.message)) throw e;
+      return { code: 1, stdout: "", stderr: e.message };
+    }
+  };
+  let res = p.cmd === "layout" ? await layout() : await d.cli(args);
   const events = [...opening];
   // The browser is gone (it crashed, or was closed): the session opens again and signs in; the command is not run.
   if (d.gone(res, session)) {
@@ -498,10 +573,12 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
 /**
  * A map slot's call (decision 20), under the slot's lock: the deadline and the budget as an explorer's,
  * then `code` only (anything else but `submit`, handled before, is `refused: a map slot takes only code and
- * submit`, counted); its output fenced and masked with the env file's values. Each write of the slot's state
- * re-checks that the run is not sealed (stillLive's map form).
+ * submit`, counted); its output fenced and masked with the env file's values. A seed map slot (spec §19.12)
+ * also takes `source`: the run's seed in a SOURCE fence (sourceLines), read from the run's files only: no
+ * process, no browser, no network (`refused: a seed map slot takes only code, source and submit`). Each
+ * write of the slot's state re-checks that the run is not sealed (stillLive's map form).
  */
-async function mapCall({ main, argv, word, runId, dir, lockNow, now }) {
+async function mapCall({ main, argv, word, runId, slot, dir, lockNow, now }) {
   const rec = readRun(main);
   if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
   if (lockNow.deadline * 1000 <= now()) return { code: 1, out: ["DEADLINE: submit status aborted"] };
@@ -513,7 +590,14 @@ async function mapCall({ main, argv, word, runId, dir, lockNow, now }) {
   writeSlotState(dir, state, { main, runId, map: true });
   const counter = `calls ${state.calls}/${max}`;
   try {
-    if (word !== "code") throw new Error("refused: a map slot takes only code and submit");
+    const seeded = boundSeed(dir) !== null;
+    if (word === "source") {
+      if (!seeded) throw new Error(SOURCE_ONLY);
+      parsePw(argv);
+      const { lines, truncated } = sourceLines(main, runId, slot, dir, { secrets });
+      return { code: 0, out: [...lines, counter, ...(truncated ? [`truncated ${truncated} characters`] : [])] };
+    }
+    if (word !== "code") throw new Error(seeded ? "refused: a seed map slot takes only code, source and submit" : "refused: a map slot takes only code and submit");
     const p = parsePw(argv);
     const c = codeCommand(p.positionals[0], p.positionals.slice(1), { worktree: rec.worktree });
     const { body, truncated } = fence(String(c.text).trimEnd(), { secrets });
