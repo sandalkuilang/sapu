@@ -1464,3 +1464,130 @@ C2.1–C2.4 are built in `-a11y.mjs` (642 lines, a leaf with no import), `tests/
   (backdrop click, then Escape, then reopen by the invoker, and the exemption above); the form runner (cases click
   the path's submit and put values back); `children` left unset; tokens read at run time. `live.md` should say the
   token file is read from the repo's root in the suite.
+
+### Lane B — breaks, triage, baselines
+
+**Locked for the lanes** (`-heal.mjs`, `-ci.mjs`).
+- **The smoke state** (`-heal`'s `STATE_FILE`, `.argus/smoke-state.json`, 0600): `{version: 1, staged, rejected,
+  journeys, comments}`. `readState(main)` refuses a file not of that shape rather than overwriting it.
+  `writeState`, `stageInto(state, entry)`, `stage(main, entry)`, `changeDigest`, `canonical` and `codeBlock` are
+  exported.
+  - A staged entry is `{kind, id, run, changes, body, path?, quarantine?, digest}`. `kind` is `heal`,
+    `quarantine`, `unquarantine` or `drop`. `changes` are the `changes.jsonl` lines (`{kind, id, step?, from?,
+    to?, evidence, run}`), and `body` is the proposal body's markdown lines. A heal carries the healed `path` for
+    `journeys/<id>.json`, and a quarantine carries `{id, issue: null, since}` for `quarantine.json`.
+  - `digest` is the sha256 of `{kind, id, changes, path, quarantine}`, without the run, the evidence or the body.
+    So the same change from a later cycle has the same digest. A new entry replaces the staged entry of the same
+    kind and journey. A digest in `rejected` is never staged again.
+  - `journeys.<id>` holds `baseFlakes` (CI run ids), `tracking` (`smoke-flaky:<id>`), `exits` and `quarantine:
+    {since, cycles, clean, counted}`. `comments` holds the `<pr>:<id>` pairs already commented.
+- **`smoke heal <slot>.<generation>`.** The verb needs a cycle with an instance, the slot minted in it, a return
+  holding `heal`, and this cycle's `pass.jsonl` ending, for that journey, in `broke` with kind `target-missing`,
+  `target-ambiguous` or `action-failed`.
+  - `healPath(list, heal, max)` applies the heal, and `healOnly(before, after, max)` checks it. Their refusals:
+    `refused: smoke heal: [step <n>: ]<reason>`.
+  - Exit 0 is `heal <id>: UI changed: …`, then `staged: heal <id> (digest <12 hex>)` and a fence holding the old
+    and new target code and the `git log -S"<name>" <head12>..HEAD: <commit>` evidence (or `no commit removed
+    it`), with the anchor files' commits.
+  - Exit 3 is `heal <id>: behaviour changed: …` or `heal <id>: bug: …`, then `regression <id>: step <n> written as
+    <slot>.1.1 (repro <slot>.1.1)`. It is also `heal <id>: did not hold (fresh: …, dirty: …); nothing staged`.
+  - Exit 2 is `heal <id>: harness: …; nothing staged`.
+- **`smoke ci [--run <id>]`.** It writes one unfenced line per finding, then one fence (`<<<PAGE-<nonce>`) that
+  holds every key, diff and message. `[k]` in a line names its entry in the fence.
+  - The finding lines: `harness setup <account>: …`; `flaky <id> <projects>: …`; `flaky-new <id> <pr>`;
+    `ui-change? <id> step <n>`; `ci-only <id> step <n>`; `bug? <id> step <n>`; `browser-only <id> <project>`;
+    `visual <id> <n> <project>: expected <file>, actual <file>, diff <file>`; `baseline-missing <id> <project>`;
+    `aria <id> <n> [k]`; `check <id> <check> [k]`; `manual <id> <check> [k]`; `quarantined <id> <project>: …`;
+    `quarantine <id>: …`; `drop <id>: …`; `skipped: …`.
+  - The run ends with `smoke ci: <a> failing, <b> flaky, <c> harness, <d> quarantined read`. Exit 3 with a
+    failure, else 2 with a harness line, else 0.
+  - The unfenced lines go to `.argus/smoke-ci/<run>/triage.json` (`{run, event, branch, sha, lines}`, 0600): F1's
+    "newest smoke ci summary" and B3's input. Screenshots are copied to
+    `.argus/smoke-ci/<run>/<id>/<project>/<n>-<expected|actual|diff>.png` (0600), under names sapu makes.
+  - A check's violations are read from a test result's attachment named `argus-violations` (`VIOLATIONS`). It is
+    JSON `[{check, step?, key, detail?, status?: "manual"}]`, as a base64 `body` or a file under the run's
+    `test-results/`.
+- **`smoke baseline --from-run <id> [--ids …]`.** Its lines are `baseline: dispatched <ids> mode=<m>; adopt with
+  smoke baseline --from-run <new run>`, `baseline: committed <k> file(s) to <argus/ branch> (<sha12>)`,
+  `baseline: <k> file(s) proposed in <url> (argus/baselines-<run> into <branch>)`, `baseline: nothing to dispatch
+  …`, and the owner's `gh workflow run …` line (exit 2). `pruneAria(text)` is exported.
+- `smokeCi(main, {run}, {runner})`, `smokeBaseline(main, {fromRun, ids}, {runner})` and `smokeHeal(main, ref,
+  {once, runner})` keep lane 0's names and arguments. The third argument is a test seam: `runner` stands in for gh
+  and git, `once` for runOnce. `smokeBaseline` is `async`, like `smokeCi`.
+
+**Deviations.**
+- **Heal.**
+  - `smoke heal` takes no `--slot`. A regression candidate is written as the run's lowest free slot, with smoke
+    run's slot record (`mode: "smoke"`, no token, the accounts the candidate acts as). `-heal` keeps its own
+    copies of `-smoke`'s `regressionList` and `writeRegression`, which `-smoke` does not export (see below).
+  - `action-failed` counts as an action break a heal answers, beside the table's "matches nothing or several".
+  - Rows the table does not have: `heal_reason` `blocked` or `harness` is the harness's (exit 2). A healed path
+    that does not hold twice, or fails an expectation only once, is `did not hold` (exit 3). Neither stages
+    anything.
+- **Triage.**
+  - `browser-only` names the journey too. Keys and diffs never appear unfenced, so `check`, `manual` and `aria`
+    lines point into the fence with `[k]` rather than printing the key. `manual` names the check (`axe:<rule>` for
+    axe), not a bare rule.
+  - **ARIA.** A `toMatchAriaSnapshot` failure's screen number comes from its error snippet's `"<n>.aria.yml"`.
+    It is `baseline-missing` when `<dir>/__aria__/<id>/<n>.aria.yml` is absent at the run's head (the working
+    tree when the clone lacks that commit), else `aria`.
+  - **Artifacts.** smoke ci downloads `gh run download --pattern "<ci.artifact>*"`, each artifact in its own
+    directory, so a matrix's per-project artifacts all count. smoke baseline does the same for
+    `argus-smoke-baselines*`.
+- **Quarantine.**
+  - A quarantined journey's cycle is counted once a lane cycle (the lock's run id), at that cycle's first
+    `smoke ci`.
+  - A cycle is clean when the cycle's pass holds the path at least twice and holds no other verdict, and at
+    least one quarantine-job result was read, every one passed first time.
+  - Exit stages `unquarantine`, which bumps `exits`. A later base-branch flake with `exits ≥ 1` stages `drop`.
+- **Tracking issue.** smoke ci names the tracking issue (`tracking issue smoke-flaky:<id>`) and records it.
+  Filing it is the orchestrator's, through `scrub --create` (Z2's text). The quarantine entry's `issue` is staged
+  as `null`.
+- **Baseline.**
+  - On a normal run, smoke baseline reads that run's `triage.json`, so `smoke ci --run <id>` comes first
+    (`refused: smoke baseline: run <id> is not triaged yet (smoke ci --run <id> first)`). It dispatches one job per
+    mode. The new run id is taken from gh's output when gh prints a run URL. Otherwise the line names the `gh run
+    list` query that finds it.
+  - A missing dispatch right is read from gh's failure (HTTP 403 or 404, "not accessible", scope, permission).
+  - Adopted violations replace `known/<id>.json`, sorted and deduplicated. The baseline commit appends one
+    `changes.jsonl` line per file (`{kind: "baseline", id, step?, to, evidence, run}`).
+  - Scrub's matcher (the newest run's `scrubSecrets`, which needs that run's ledger) reads every adopted text
+    file, before and after pruning, and the pull request's body. PNGs are not text-scanned.
+- Line counts at B3: `-heal` 404, `-ci` 741.
+
+**Needs coordinator.**
+1. **Staging (A2, A3).** `-propose` and `-suite` sit below `-heal` in the DAG, so they cannot import
+   `readState`. At merge, either move the state helpers (`STATE_FILE`, `readState`, `writeState`, `stageInto`,
+   `stage`, `changeDigest`, `canonical`, `codeBlock`) down into `-suite.mjs`, where A2's admit stages too, or have
+   A read the file by the format above. Propose must also:
+   - apply each kind: a heal's `path` to `journeys/<id>.json`; `quarantine` and `unquarantine` to
+     `quarantine.json`, and so to codegen's `@quarantine` tag; `drop` as the journey's removal;
+   - append `changes`;
+   - move a closed proposal's `digest` into `rejected`.
+2. **`-smoke.mjs` (lane D).** Export `writeRegression` and `regressionList` (taking a repro list), so that
+   `-heal`'s `writeCandidate` and `regressionList` can go. Also, `smoke run` should run a quarantined path twice
+   in a cycle. Without that, a cycle can count two holds only if `smoke run --ids <id>` runs twice.
+3. **C1 and C2.**
+   - Attach violations as `argus-violations` in the shape above, with axe's `incomplete` as `status: "manual"`.
+   - Emit `toMatchAriaSnapshot({ name: "<n>.aria.yml" })` with the literal name, because B2 reads the screen
+     from the error snippet.
+   - Store ARIA files at `__aria__/<id>/<n>.aria.yml`, not under the spec file's name.
+   - Have the baseline job write `violations-<id>.json` at the uploaded root.
+4. **C3.** The snapshot path must be `__screenshots__/<project>/<platform>/<id>/<n>.png`, with the directory
+   `<id>` itself. If `{testFileBaseName}` yields `<id>.spec`, B3's name shape must follow.
+5. **A4.**
+   - Name the results artifacts `argus-smoke-results` or `argus-smoke-results-<project>`, uploading
+     `test-results/`'s contents, with `results.json` at the root.
+   - Name the baseline artifacts `argus-smoke-baselines[-<project>]`, with the suite directory as their root
+     (`__screenshots__/…`, `__aria__/…`, `violations-<id>.json`). A `-<project>` suffix names the project that a
+     baseline commit's `changes.jsonl` line and the pull request's table give an ARIA or violations file.
+6. **F1.** Read `.argus/smoke-ci/<run>/triage.json` as smoke ci's summary.
+7. **Lane 0's dispatch test.** `tests/argus-live-smoke.test.ts`'s `STUBS` still lists `smoke heal`, `smoke ci`
+   and `smoke baseline` as "not built yet", so "each new verb reaches its lane's function" fails from this lane
+   on (`smoke heal 2.1` answers `refused: no journey cycle is running`). Drop those rows at merge. With no suite
+   paths, `smoke ci` and `smoke baseline` now refuse (`refused: smoke <verb>: the suite has no paths (…)`)
+   before gh is asked anything, so that test never reaches the network.
+8. **Z2's `smoke.md`.**
+   - Run `smoke ci` before `smoke baseline`.
+   - The orchestrator files `smoke-flaky:<id>` and the `ci-only` and check issues.
+   - `smoke heal` follows a `broke` with a target or action kind.
