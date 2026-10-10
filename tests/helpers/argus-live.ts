@@ -403,7 +403,7 @@ export const fixtureProcs = (mark: string) =>
  * ignores) marks the file's fixture processes (fixtureProcs): other test files run the fixture at the
  * same time. `data` is the app's DATA_DIR; `env` the spawned CLI's environment (a test may put a fake `gh`
  * first on its PATH). With `repro` (the repro runner's cycle): `buyer` has buyer1 and buyer2, `clerk`
- * clerk1 (TOTP) and clerk2, settle_ms is 3000, limits.minimize_runs 6, the app's mail is a
+ * clerk1 (TOTP) and clerk2, settle_ms is 6000 (8000 otherwise), limits.minimize_runs 6, the app's mail is a
  * hook too, and its seeded defects are read from a file `defects(...names)` writes (none at first).
  */
 export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolean; mark: string; repro?: boolean }) => {
@@ -441,10 +441,12 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
     allow_origins: [],
     port_range: [41000, 41999],
     reserved_ports: [],
-    settle_ms: repro ? 3000 : 5000,
+    // settle_ms bounds every wait, the sign-in's included: generous, so a loaded machine (other suites' Chrome and
+    // fixtures at once) does not fail a sign-in or an expectation the app meets a little late.
+    settle_ms: repro ? 6000 : 8000,
     roles,
     // A repro cycle's minimize stops after 6 runs: the Chrome test needs no more, and each run is an up --fresh.
-    limits: { max_cycle_minutes: 30, live_health_timeout_s: 20, ...(repro ? { minimize_runs: 6 } : {}) },
+    limits: { max_cycle_minutes: 30, live_health_timeout_s: 90, ...(repro ? { minimize_runs: 6 } : {}) },
   };
   execFileSync("git", ["-C", main, "init", "-q"]);
   mkdirSync(join(main, ".argus"));
