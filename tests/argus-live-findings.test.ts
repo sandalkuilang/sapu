@@ -114,7 +114,9 @@ describe("argus-live modules — the DAG", () => {
     expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-fence", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
     // The journey map reads the configuration and git, nothing of a run.
-    expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
+    // SELECT's taste factor (phase 7) reads .argus/taste-state.json through -tastecfg, a leaf.
+    for (const d of g.get("argus-live-map") ?? []) expect(["argus-live-config", "argus-live-proc", "argus-live-tastecfg"], d).toContain(d);
+    expect(g.get("argus-live-map")).toEqual(expect.arrayContaining(["argus-live-config", "argus-live-proc"]));
     expect(g.get("argus-live-return")).toContain("argus-live-map");
     // Doc drift reads git's blame and nothing else.
     expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
