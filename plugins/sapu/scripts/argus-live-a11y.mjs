@@ -49,6 +49,8 @@ export function a11yReport(expect, info, found, id, allow) {
 
 /** Installs the page-side helpers (window[Symbol.for("argus.a11y")]): names, roles, colours and the Tab walk's probes. Run in every document. */
 export function a11yPageHelpers() {
+  const old = window[Symbol.for("argus.a11y")];
+  if (old && old.doc === document) return;
   const cs = (e) => getComputedStyle(e);
   const ROLE = { button: "button", select: "combobox", textarea: "textbox", img: "img", h1: "heading", h2: "heading", h3: "heading", h4: "heading", h5: "heading", h6: "heading", nav: "navigation", main: "main", dialog: "dialog", table: "table", ul: "list", ol: "list" };
   const roleOf = (e) => {
@@ -86,7 +88,7 @@ export function a11yPageHelpers() {
     }
     return layers.reduceRight((under, top) => over(top, under), [255, 255, 255, 1]);
   };
-  const H = { first: null, prev: null, roleOf, nameOf, desc, parse, over, ratio, background };
+  const H = { doc: document, first: null, prev: null, armed: null, roleOf, nameOf, desc, parse, over, ratio, background };
   H.reset = () => {
     const s = document.createElement("span");
     s.tabIndex = -1;
@@ -124,6 +126,37 @@ export function a11yPageHelpers() {
     const mine = top && (top === a || a.contains(top) || [...(a.labels || [])].some((l) => l.contains(top)));
     const ink = parse(c.outlineColor), under = background(parseFloat(c.outlineOffset) < 0 ? a : a.parentElement || a);
     return { hidden, clip: clip.width > 0 && clip.height > 0 ? clip : null, style: c.outlineStyle, width: parseFloat(c.outlineWidth) || 0, ratio: ink ? ratio(over(ink, under), under) : null, obscured: Boolean(top) && !mine, by: top ? desc(top) : "" };
+  };
+  const shown = (e) => { const r = e.getBoundingClientRect(), c = cs(e); return r.width > 0 && r.height > 0 && c.visibility !== "hidden" && c.display !== "none"; };
+  H.modal = () => {
+    for (const d of document.querySelectorAll("dialog, [role=dialog], [role=alertdialog]")) {
+      let modal = d.getAttribute("aria-modal") === "true";
+      try { modal = modal || d.matches(":modal"); } catch (e) { /* no :modal here */ }
+      if (modal && shown(d)) return d;
+    }
+    return null;
+  };
+  H.dname = (d) => {
+    const by = (d.getAttribute("aria-labelledby") || "").split(/\s+/).map((i) => document.getElementById(i)).filter(Boolean).map((n) => n.textContent).join(" ");
+    const h = d.querySelector("h1, h2, h3, h4, h5, h6");
+    return roleOf(d) + ' "' + String(d.getAttribute("aria-label") || by || (h && h.textContent) || "").replace(/\s+/g, " ").trim().slice(0, 60).replace(/\d+/g, "#") + '"';
+  };
+  H.stops = (d) => [...d.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")].filter((e) => !e.disabled && e.getAttribute("tabindex") !== "-1" && shown(e)).length;
+  H.leaked = (d) => {
+    const a = document.activeElement;
+    if (a && d.contains(a)) return null;
+    const out = !a || a === document.body || a === document.documentElement;
+    let native = false;
+    try { native = d.matches(":modal"); } catch (e) { /* no :modal here */ }
+    return out ? (native ? null : "the page") : desc(a);
+  };
+  H.outside = (d) => {
+    const r = d.getBoundingClientRect(), w = innerWidth, h = innerHeight;
+    return [[2, 2], [w - 3, 2], [2, h - 3], [w - 3, h - 3], [w / 2, 2], [w / 2, h - 3]].map(([x, y]) => ({ x, y })).find((p) => p.x < r.left - 1 || p.x > r.right + 1 || p.y < r.top - 1 || p.y > r.bottom + 1) || null;
+  };
+  H.where = (inv) => {
+    const a = document.activeElement;
+    return !a || a === document.body || a === document.documentElement ? "body" : a === inv || inv.contains(a) ? "invoker" : desc(a);
   };
   window[Symbol.for("argus.a11y")] = H;
 }
@@ -179,6 +212,83 @@ export async function a11yKeyboard(page, target, step, max) {
   return out;
 }
 
+`;
+
+const ARIA = String.raw`
+/** The element an ARIA snapshot is taken of: main, else the body. */
+export async function a11yAriaRoot(page) {
+  const main = page.getByRole("main");
+  return (await main.count()) > 0 ? main.first() : page.locator("body");
+}
+
+/** Why toMatchAriaSnapshot failed at a screen: no adopted baseline file (the runner compares it as empty), or the changed lines. */
+export function a11yAriaFailure(info, e, step) {
+  const name = step + ".aria.yml";
+  let there = false;
+  try { there = require("node:fs").existsSync(require("node:path").join(__dirname, "__aria__", info.title, name)); } catch (x) { there = false; }
+  if (!there) return { check: "aria-snapshot", step, key: "baseline-missing", detail: "no adopted " + name + ": a baseline run writes it and a reviewed pull request adopts it" };
+  const diff = String(e && e.message).replace(/\u001b\[[0-9;]*m/g, "").split("\n").filter((l) => /^[-+] /.test(l) && !/^[-+] (Expected|Received)\b/.test(l));
+  return { check: "aria-snapshot", step, key: "changed", detail: "the screen differs from " + name + ": " + diff.join(" | ").slice(0, 400) };
+}
+`;
+
+const MODAL = String.raw`
+/** Records the modal dialog open before a click, so the check after it sees only one that click opened. */
+export async function a11yModalArm(page) {
+  await page.evaluate(a11yPageHelpers);
+  await page.evaluate(() => { const h = window[Symbol.for("argus.a11y")]; h.armed = h.modal(); });
+}
+
+/**
+ * The checks of a modal dialog the click of the invoker opened (APG dialog and alertdialog, 2.1.2; none for a non-modal one):
+ * Tab stays inside it; a click outside it behaves as in the journey's other modals; Escape closes it; focus then
+ * returns to the invoker (exempt when it is gone, a fail when lost to the page, manual when elsewhere). It leaves
+ * the dialog open as it found it, reopening it with the invoker; without that control it only checks Tab.
+ */
+export async function a11yModal(page, invoker, step, info) {
+  const out = [];
+  await page.evaluate(a11yPageHelpers);
+  const current = async () => (await page.evaluateHandle(() => window[Symbol.for("argus.a11y")].modal())).asElement();
+  let dlg = (await page.evaluateHandle(() => { const h = window[Symbol.for("argus.a11y")], m = h.modal(); return m && m !== h.armed ? m : null; })).asElement();
+  if (!dlg) return out;
+  const key = await page.evaluate((d) => window[Symbol.for("argus.a11y")].dname(d), dlg);
+  const bad = (check, detail, manual) => out.push({ check, step, key, detail, ...(manual ? { manual: true } : {}) });
+  const inv = a11yLocate(page, invoker);
+  const gone = async (d, ms) => { try { await d.waitForElementState("hidden", { timeout: ms }); return true; } catch (e) { return false; } };
+  const reopen = async () => {
+    if ((await inv.count()) !== 1) return null;
+    await inv.click();
+    try { await page.waitForFunction(() => Boolean(window[Symbol.for("argus.a11y")].modal()), null, { timeout: SETTLE }); } catch (e) { return null; }
+    return current();
+  };
+  const rounds = 2 + Math.min(60, await page.evaluate((d) => window[Symbol.for("argus.a11y")].stops(d), dlg));
+  let left = null;
+  for (let i = 0; i < rounds && !left; i++) {
+    await page.keyboard.press("Tab");
+    left = await page.evaluate((d) => window[Symbol.for("argus.a11y")].leaked(d), dlg);
+  }
+  if (left) bad("modal-focus-escape", "Tab moved focus out of the modal dialog to " + left + " (APG modal dialog)");
+  if ((await inv.count()) !== 1) return [...out, { check: "modal-escape", step, key, detail: "not tested: the control that opened the dialog is gone, so the path could not reopen it", manual: true }];
+  const lost = (what) => { bad("modal-reopen", "the control that opened the dialog does not reopen it after " + what + ": the path's later steps may fail", true); return out; };
+  const spot = await page.evaluate((d) => window[Symbol.for("argus.a11y")].outside(d), dlg);
+  if (spot) {
+    await page.mouse.click(spot.x, spot.y);
+    const closes = await gone(dlg, Math.min(SETTLE, 1000));
+    const mine = closes ? "closes" : "stays";
+    const other = info.annotations.filter((a) => a.type === "a11y-backdrop").map((a) => a.description.split("|")).find((p) => p[1] !== mine);
+    if (other) bad("modal-backdrop", "a click outside it " + mine + " it, but outside " + other[0] + " it " + other[1] + ": modal dialogs of one journey behave alike");
+    info.annotations.push({ type: "a11y-backdrop", description: key + "|" + mine });
+    if (closes && !(dlg = await reopen())) return lost("a click outside");
+  }
+  await page.keyboard.press("Escape");
+  if (!(await gone(dlg, SETTLE))) return [...out, { check: "modal-escape", step, key, detail: "Escape does not close the modal dialog (APG dialog pattern; 2.1.2 allows a trap only where Escape leaves)" }];
+  if ((await inv.count()) === 1) {
+    const where = await page.evaluate((i) => window[Symbol.for("argus.a11y")].where(i), await inv.elementHandle());
+    if (where === "body") bad("modal-focus-return", "focus was lost to the page when the dialog closed: it returns to the control that opened it (APG)");
+    else if (where !== "invoker") bad("modal-focus-return", "focus went to " + where + " instead of the control that opened the dialog; only a workflow that makes it a more logical choice allows that (APG)", true);
+  }
+  return (await reopen()) ? out : lost("Escape");
+}
 `;
 
 const NAMES = String.raw`
@@ -245,9 +355,25 @@ const gated = (body) => (body.length ? [GATE, 'const a11y = require("./support")
 const allowOf = (ctx) => JSON.stringify((((ctx.smoke || {}).journeys || {})[ctx.id] || {}).allow || []);
 const report = (call, ctx) => `a11y.a11yReport(expect, test.info(), await ${call}, ${JSON.stringify(ctx.id)}, ${allowOf(ctx)});`;
 
-/** Pre-action emitter: for each step that follows `step`'s group and `pick`s, one report of `call(step, pageVar)`. */
-const before = (pick, call) => (step, ctx) =>
-  gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s)).map((s) => report(call(s, pageVar(s.as, ctx.steps, ctx)), ctx)));
+/** Pre-action emitter: for each step that follows the step's group and `pick`s, the line `line(step, pageVariable, ctx)`. */
+const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s)).map((s) => line(s, pageVar(s.as, ctx.steps, ctx), ctx)));
+const reported = (call) => (s, p, ctx) => report(call(s, p), ctx);
+
+/** The steps whose end is a screen: smoke.json's `screens` for the journey, else the last expectation of an account before its next action (or the end of the path). */
+function screens(ctx) {
+  const set = (((ctx.smoke || {}).journeys || {})[ctx.id] || {}).screens;
+  if (Array.isArray(set) && set.length) return new Set(set);
+  return new Set(ctx.steps.filter((s, i) => s.expect && s.as !== "system" && !((ctx.steps.slice(i + 1).find((x) => x.as === s.as) || {}).expect)).map((s) => s.n));
+}
+/** Post-step emitter: for a step that ends a screen (or is a click), the lines `line(step, pageVariable, ctx)` makes. */
+const after = (pick, line) => (step, ctx) => (step.as !== "system" && pick(step, ctx) ? gated(line(step, pageVar(step.as, ctx.steps, ctx), ctx)) : []);
+
+/**
+ * The `expect.toMatchAriaSnapshot` config the specs need (the generator's `playwright.config.ts`): a baseline per test
+ * and screen under __aria__/. Matching is already partial by default [pw-aria]; `children: "contain"` is not set on
+ * purpose: probed, it makes a missing or empty baseline match, so the run passes with nothing adopted.
+ */
+export const ARIA_EXPECT = { pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}" };
 
 export const CHECKS = [
   { name: "a11y-core", project: "a11y", when: "never: the shared helpers", source: CORE, emit: () => [] },
@@ -256,13 +382,35 @@ export const CHECKS = [
     project: "a11y",
     when: "before each click, check, uncheck, select and fill of the path",
     source: KEYBOARD,
-    emit: before((s) => BEFORE.has(s.do), (s, p) => `a11y.a11yKeyboard(${p}, ${targetLit(s.target)}, ${s.n})`),
+    emit: before((s) => BEFORE.has(s.do), reported((s, p) => `a11y.a11yKeyboard(${p}, ${targetLit(s.target)}, ${s.n})`)),
   },
   {
     name: "a11y-names",
     project: "a11y",
     when: "before each action on a target",
     source: NAMES,
-    emit: before((s) => ACTIONS.has(s.do), (s, p) => `a11y.a11yNames(expect, ${p}, ${targetLit(s.target)}, ${s.n})`),
+    emit: before((s) => ACTIONS.has(s.do), reported((s, p) => `a11y.a11yNames(expect, ${p}, ${targetLit(s.target)}, ${s.n})`)),
+  },
+  {
+    name: "a11y-aria",
+    project: "a11y",
+    when: "at each screen of the path",
+    source: ARIA,
+    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [
+      `const root = await a11y.a11yAriaRoot(${p});`,
+      "const found = [];",
+      `try { await expect(root).toMatchAriaSnapshot({ name: "${s.n}.aria.yml", timeout: SETTLE }); } catch (e) { found.push(a11y.a11yAriaFailure(test.info(), e, ${s.n})); }`,
+      `a11y.a11yReport(expect, test.info(), found, ${JSON.stringify(ctx.id)}, ${allowOf(ctx)});`,
+    ]),
+  },
+  {
+    name: "a11y-modals",
+    project: "a11y",
+    when: "after each click that opens a modal dialog",
+    source: MODAL,
+    emit: (step, ctx) => [
+      ...before((s) => s.do === "click", (s, p) => `await a11y.a11yModalArm(${p});`)(step, ctx),
+      ...after((s) => s.do === "click" && s.target, (s, p) => [report(`a11y.a11yModal(${p}, ${targetLit(s.target)}, ${s.n}, test.info())`, ctx)])(step, ctx),
+    ],
   },
 ];

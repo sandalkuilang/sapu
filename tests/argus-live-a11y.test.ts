@@ -2,7 +2,7 @@
 // source is run against fixture pages in the pinned runner's Chrome (a machine without one fails, never skips),
 // each emitter's lines are scanned as text, and axe's results are read from recorded files (no axe runs here).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
@@ -10,7 +10,7 @@ import { dirname, extname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { browserTools } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
+import { ARIA_EXPECT, CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
 // @ts-expect-error — plain ESM script without types
 import { generateSuite } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -288,6 +288,210 @@ describe("argus-live a11y — the report: known violations, allowed ones, manual
     api.a11yReport(fakeExpect(soft), { annotations: [] }, [V("name", "k")], "j", []);
     expect(soft[0].actual).toHaveLength(1);
   });
+});
+
+describe("argus-live a11y — ARIA snapshots (partial matching, one baseline per screen)", () => {
+  const PATH = [
+    { as: "buyer", do: "goto", path: "/a" },
+    { as: "buyer", expect: "visible", target: { role: "heading", name: "Shop" } },
+    { as: "buyer", expect: "visible", target: { text: "Welcome" } },
+    { as: "buyer", do: "click", target: { role: "button", name: "Go" } },
+    { as: "buyer", expect: "url", value: "/b" },
+    { as: "buyer", do: "goto", path: "/c" },
+    { as: "buyer", expect: "visible", target: { text: "Done" } },
+  ];
+  const aria = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "shop", ["a11y-aria"])["a11y-aria"].join("\n");
+
+  it("emit writes toMatchAriaSnapshot with a name per screen: the last expectation before the account's next action, or the path's end", () => {
+    const text = aria(parse(PATH));
+    expect([...text.matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["3", "5", "7"]);
+    expect(text).toContain('test.info().project.name === "a11y"');
+    expect(text).toContain('toMatchAriaSnapshot({ name: "3.aria.yml", timeout: SETTLE })');
+    expect(text).toContain("a11yAriaRoot(buyer1)");
+  });
+
+  it("smoke.json's screens for the journey replace the derived ones", () => {
+    const text = aria(parse(PATH), { journeys: { shop: { screens: [2, 7] } } });
+    expect([...text.matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["2", "7"]);
+  });
+
+  it("the config the snapshots need: the __aria__ template named by the test, and no children option (probed: \"contain\" lets a missing baseline match)", () => {
+    expect(ARIA_EXPECT).toEqual({ pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}" });
+  });
+
+  it("a snapshot that cannot be compared is baseline-missing when its file is absent, else a changed line diff", () => {
+    const err = new Error("expect(locator).toMatchAriaSnapshot(expected) failed\n\n- Expected\n+ Received\n\n- - heading \"Shop\"\n+ - heading \"Store\"");
+    const apis = (exists: boolean) => sourceApi({ require: (m: string) => (m === "node:fs" ? { existsSync: () => exists } : nodeRequire(m)), __dirname: "/suite" });
+    const info = { title: "shop" };
+    expect(apis(false).a11yAriaFailure(info, err, 3)).toEqual({ check: "aria-snapshot", step: 3, key: "baseline-missing", detail: expect.stringContaining("3.aria.yml") });
+    const changed = apis(true).a11yAriaFailure(info, err, 3);
+    expect(changed).toMatchObject({ check: "aria-snapshot", step: 3, key: "changed" });
+    expect(changed.detail).toContain('heading "Store"');
+    expect(changed.detail).not.toContain("\n");
+  });
+
+  it("under the pinned runner: the baseline run writes __aria__/<test>/<n>.aria.yml, a normal run compares it, and a missing or changed file reads as such", async () => {
+    const { cli } = browserTools();
+    const dir = mkdtempSync(join(tmpdir(), "argus-a11y-"));
+    try {
+      const support = ["export const SETTLE = 3000;", ...CHECKS.map((c: Obj) => c.source)].join("\n");
+      writeFileSync(join(dir, "support.ts"), support);
+      const config = (aria: Obj) => writeFileSync(join(dir, "playwright.config.ts"), 'import { defineConfig } from "@playwright/test";\n\nexport default defineConfig({ testDir: ".", updateSnapshots: "none", reporter: [["json", { outputFile: "results.json" }]], expect: { toMatchAriaSnapshot: ' + JSON.stringify(aria) + ' }, use: { channel: "chrome" } });\n');
+      config(ARIA_EXPECT);
+      writeFileSync(join(dir, "aria-demo.spec.ts"), [
+        'import { test, expect } from "@playwright/test";',
+        'import { a11yAriaFailure, a11yAriaRoot, SETTLE } from "./support";',
+        'test("aria-demo", async ({ page }) => {',
+        '  await page.setContent(require("node:fs").readFileSync(process.env.DEMO_FILE as string, "utf8"));', // the runner blocks this process while it runs, so no page of the test's own server
+        "  const found = [];",
+        '  try { await expect(await a11yAriaRoot(page)).toMatchAriaSnapshot({ name: "1.aria.yml", timeout: SETTLE }); } catch (e) { found.push(a11yAriaFailure(test.info(), e, 1)); }',
+        '  test.info().annotations.push({ type: "found", description: JSON.stringify(found) });',
+        "});",
+        "",
+      ].join("\n"));
+      const pinned = join(cli.dir, "node_modules");
+      mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
+      writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
+      for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
+      const run = (...flags: string[]) => {
+        rmSync(join(dir, "results.json"), { force: true });
+        const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), "test", ...flags], { cwd: dir, encoding: "utf8", timeout: 120_000, env: { ...process.env, DEMO_FILE: join(PAGES, "composite.html") } });
+        if (!existsSync(join(dir, "results.json"))) throw new Error(r.stdout + r.stderr);
+        const all = JSON.parse(readFileSync(join(dir, "results.json"), "utf8"));
+        const test = all.suites[0].specs[0].tests[0].results[0];
+        const note = test.annotations?.find?.((a: Obj) => a.type === "found") ?? all.suites[0].specs[0].tests[0].annotations.find((a: Obj) => a.type === "found");
+        if (!note) throw new Error(JSON.stringify(test.errors ?? test) + r.stdout.slice(0, 1500));
+        return { status: r.status, out: r.stdout + r.stderr, found: JSON.parse(note.description) };
+      };
+      const file = join(dir, "__aria__/aria-demo/1.aria.yml");
+      expect(run().found).toEqual([expect.objectContaining({ key: "baseline-missing" })]);
+      expect(run("--update-snapshots=missing").found).toEqual([]);
+      expect(readFileSync(file, "utf8")).toContain("radiogroup");
+      expect(run().found).toEqual([]);
+      writeFileSync(file, '- radiogroup "Size"\n'); // fewer lines than the screen holds still match
+      expect(run().found).toEqual([]);
+      writeFileSync(file, '- heading "Not here" [level=1]\n');
+      expect(run().found).toEqual([expect.objectContaining({ key: "changed" })]);
+      // Why ARIA_EXPECT sets no children option: with "contain" a baseline that is not there matches anything.
+      rmSync(file);
+      config({ ...ARIA_EXPECT, children: "contain" });
+      expect(run().found).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
+});
+
+describe("argus-live a11y — modal dialogs (APG, 2.1.2): Escape, Tab, focus return, backdrop", () => {
+  const info = () => ({ annotations: [] as Obj[], title: "t" });
+  /** Opens the modal behind button "open" on a fresh modals page the way a path's click would, and runs the check; the page stays for a follow-up. */
+  const opened = async (page: Obj, api: Obj, open: string, i: Obj, step = 3) => {
+    await api.a11yModalArm(page);
+    await page.getByRole("button", { name: open }).click();
+    return api.a11yModal(page, byRole("button", open), step, i);
+  };
+
+  it("a modal dialog and a modal alertdialog both Escape-close, keep Tab inside and return focus to the invoker", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      const api = sourceApi();
+      expect(await opened(page, api, "Open native", info())).toEqual([]);
+      expect(await page.getByRole("dialog").isVisible()).toBe(true); // the path's control reopened it: the path goes on inside it
+      const { page: p2, close: c2 } = await open("modals.html");
+      try {
+        expect(await opened(p2, api, "Open alert", info())).toEqual([]);
+        expect(await p2.getByRole("alertdialog").isVisible()).toBe(true);
+      } finally {
+        await c2();
+      }
+    } finally {
+      await close();
+    }
+  }, 90_000);
+
+  it("a modal that ignores Escape fails (the APG pattern and 2.1.2)", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      const found = await opened(page, sourceApi(), "Open sticky", info());
+      expect(found).toEqual([expect.objectContaining({ check: "modal-escape", key: 'dialog "Stuck"', detail: expect.stringContaining("2.1.2") })]);
+      expect(found[0].manual).toBeUndefined();
+    } finally {
+      await close();
+    }
+  }, 90_000);
+
+  it("focus that escapes the modal on Tab fails", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      expect(checks(await opened(page, sourceApi(), "Open leak", info()))).toEqual(["modal-focus-escape"]);
+    } finally {
+      await close();
+    }
+  }, 90_000);
+
+  it("after Escape, focus lost to the page fails, focus elsewhere is manual, and a removed invoker is exempt", async () => {
+    const api = sourceApi();
+    const lost = await open("modals.html");
+    try {
+      expect(checks(await opened(lost.page, api, "Open lost", info()))).toEqual(["modal-focus-return"]);
+    } finally {
+      await lost.close();
+    }
+    const other = await open("modals.html");
+    try {
+      const found = await opened(other.page, api, "Open elsewhere", info());
+      expect(found).toEqual([expect.objectContaining({ check: "modal-focus-return", manual: true })]);
+    } finally {
+      await other.close();
+    }
+    const gone = await open("modals.html");
+    try {
+      const found = await opened(gone.page, api, "Open gone", info());
+      expect(found.filter((v: Obj) => !v.manual)).toEqual([]);
+      expect(found).toEqual([expect.objectContaining({ check: "modal-escape", manual: true, detail: expect.stringContaining("not tested") })]);
+      expect(await gone.page.getByRole("dialog").isVisible()).toBe(true); // nothing was closed that the path could not reopen
+    } finally {
+      await gone.close();
+    }
+  }, 120_000);
+
+  it("a non-modal dialog is exempt from the Escape and Tab rules", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      expect(await opened(page, sourceApi(), "Open plain", info())).toEqual([]);
+    } finally {
+      await close();
+    }
+  }, 90_000);
+
+  it("a click that opens no modal, or a modal already open before it, is not checked", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      const api = sourceApi();
+      expect(await opened(page, api, "Somewhere else", info())).toEqual([]);
+      await page.getByRole("button", { name: "Open native" }).click();
+      await api.a11yModalArm(page); // the dialog is open now
+      await page.getByRole("button", { name: "Close" }).first().evaluate((b: HTMLElement) => b.focus());
+      expect(await api.a11yModal(page, byRole("button", "Close"), 4, info())).toEqual([]);
+    } finally {
+      await close();
+    }
+  }, 90_000);
+
+  it("two modal dialogs with different backdrop behaviour fail consistency, on the second", async () => {
+    const { page, close } = await open("modals.html");
+    try {
+      const api = sourceApi();
+      const i = info();
+      expect(await opened(page, api, "Open alert", i, 3)).toEqual([]); // a click outside closes it
+      await page.getByRole("button", { name: "OK" }).click();
+      const second = await opened(page, api, "Open native", i, 5); // a click outside leaves it
+      expect(second).toEqual([expect.objectContaining({ check: "modal-backdrop", step: 5, detail: expect.stringContaining("Delete it?") })]);
+      expect(i.annotations.filter((a) => a.type === "a11y-backdrop")).toHaveLength(2);
+    } finally {
+      await close();
+    }
+  }, 90_000);
 });
 
 describe("argus-live a11y — inside the generated suite", () => {
