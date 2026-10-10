@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Many stops</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; }
+  :focus-visible { outline: 3px solid #1a4fd6; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main id="m"></main>
+<script>
+  for (let i = 0; i < 60; i++) {
+    const b = document.createElement("button");
+    b.textContent = "Item " + i;
+    document.getElementById("m").append(b);
+  }
+</script>
+</body>
+</html>

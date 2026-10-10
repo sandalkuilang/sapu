@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Composite widgets</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; }
+  [role=radio], [role=tab], [role=menuitem] { display: inline-block; margin: 4px; padding: 6px 10px; border: 1px solid dimgray; }
+  :focus-visible { outline: 3px solid #1a4fd6; outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <button>First stop</button>
+  <div role="radiogroup" aria-label="Size">
+    <div role="radio" aria-checked="true" tabindex="0">Small</div>
+    <div role="radio" aria-checked="false" tabindex="-1">Medium</div>
+    <div role="radio" aria-checked="false" tabindex="-1">Large</div>
+  </div>
+  <div role="tablist" aria-label="Sections">
+    <div role="tab" aria-selected="true" tabindex="0">Overview</div>
+    <div role="tab" aria-selected="false" tabindex="-1">Details</div>
+  </div>
+  <div role="menu" aria-label="Actions">
+    <div role="menuitem" tabindex="0">Rename</div>
+    <div role="menuitem" tabindex="-1">Archive</div>
+  </div>
+  <fieldset>
+    <legend>Colour</legend>
+    <label><input type="radio" name="colour" value="r" checked> Red</label>
+    <label><input type="radio" name="colour" value="g"> Green</label>
+  </fieldset>
+</main>
+</body>
+</html>
