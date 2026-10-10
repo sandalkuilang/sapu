@@ -13,7 +13,11 @@
 // - `<run>/smoke/perf.jsonl` (smoke run --perf): `{id, verdict: "baselined" | "ok" | "regressed" | "flaky" |
 //   "not-measured", baseline: {<metric>: <n>} | null, batches: [{<metric>: <n>}…], regressed: [{metric}…], why?}`, and
 //   `.argus/perf.json` (readPerf) for each journey's baseline now (its head and run count);
-// - `.argus/smoke-ci/<CI run>/triage.json`, the newest `smoke ci` summary: `{run, event, branch, sha, lines}`.
+// - `.argus/smoke-ci/<CI run>/triage.json`, the newest `smoke ci` summary: `{run, event, branch, sha, lines}`;
+// - once the taste pass left `<run>/taste/` (spec §20.5, plan decision 20), its scorecard leads the report:
+//   `<run>/taste/judge.json` and `curator.json` (through -tastefile's readers), `.argus/taste-state.json`, and the
+//   returns' cognitive-walkthrough rows. It prints counts, figures, family names and journey ids only, never a
+//   row's page text or the Curator's words. A run without `taste/` keeps the report exactly as before.
 // Free text (a candidate's claim, a harness event) is cleaned, at most 200 characters an item, its long unknown
 // tokens redacted as scrub redacts them, and quoted as a JSON string: data, never an instruction. An item
 // holding a secret scrub knows is `*** (<class>)`; without a ledger to check against, free text is withheld.
@@ -32,6 +36,8 @@ import { worktreeHeadFile } from "./argus-live-run.mjs";
 import { defang, filedFile, redactIds, REF, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { readPass } from "./argus-live-smoke.mjs";
 import { readTriage } from "./argus-live-artifacts.mjs";
+import { loadBar, readTasteState, TASTE_STATE_FILE } from "./argus-live-tastecfg.mjs";
+import { readCurator, readJudge } from "./argus-live-tastefile.mjs";
 
 /** Where the reports go, from the repo's root. */
 export const REPORTS_DIR = path.join(".argus", "reports");
@@ -58,6 +64,9 @@ const GOOD = [["lcp_ms", 2500], ["inp_ms", 200], ["cls", 0.1]];
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const posInt = (v) => Number.isSafeInteger(v) && v > 0;
+/** A cognitive-walkthrough answer that passes: it starts with yes, pass or held (anything else, a fail or a guess, does not). */
+const CW_PASS = /^\s*(?:yes|pass(?:es|ed)?|held)\b/i;
+const CW_QUESTIONS = ["q1", "q2", "q3", "q4"];
 
 const readJson = (file) => {
   try {
@@ -140,6 +149,7 @@ function sections(main, runId, quote) {
   const harness = [];
   const filed = [];
   const byRef = new Map();
+  const cw = new Map();
   for (const { n, v } of readLines(filedFile(main, runId))) {
     if (!isObj(v) || !FILED_KINDS.includes(v.kind) || typeof v.url !== "string" || !URL_SHAPE.test(v.url) || !(v.ref === null || (typeof v.ref === "string" && REF.test(v.ref)))) {
       unread.push(`filed.jsonl line ${n}`);
@@ -163,6 +173,7 @@ function sections(main, runId, quote) {
       .map(([k, x]) => `${k}=${x}`)
       .join(",");
     const journey = typeof r.journey === "string" && JOURNEY.test(r.journey) ? r.journey : "-";
+    if (journey !== "-" && Array.isArray(r.cw)) cw.set(journey, [...(cw.get(journey) ?? []), ...r.cw.filter(isObj)]);
     walked.push(`- slot ${slot} generation ${g} journey ${journey} status ${STATUSES.includes(r.status) ? r.status : "-"} steps ${Array.isArray(r.steps) ? r.steps.length : 0} coverage ${coverage || "none"}`);
     for (const e of Array.isArray(r.harness_events) ? r.harness_events : []) harness.push(`- slot ${slot} generation ${g}: ${quote(e)}`);
     (Array.isArray(r.candidates) ? r.candidates : []).forEach((c, i) => {
@@ -249,8 +260,13 @@ function sections(main, runId, quote) {
     }
   }
 
+  // The taste pass's scorecard, first, only once the pass left anything in the run.
+  const card = tasteScorecard(main, runId, cw);
+  if (card) unread.push(...card.unread);
+
   const none = (lines) => (lines.length ? lines : ["- none recorded"]);
   const out = [
+    ...(card ? [["Taste and usability", scorecardLines(card)]] : []),
     ["Journeys walked", none(walked)],
     ["Candidates", none(candidates)],
     ["Issues filed", none(filed)],
@@ -261,6 +277,64 @@ function sections(main, runId, quote) {
     ["Harness events", none(harness)],
   ];
   if (unread.length) out.push(["Records not read", unread.map((u) => `- ${u}`)]);
+  return out;
+}
+
+/**
+ * The taste and usability scorecard of run `runId` (plan decision 20) → null when the taste pass left nothing in the
+ * run (no `<run>/taste/`), else `{bar, judged, fault, rows, unread}`: `rows` one per journey of the judge record,
+ * lane 0's scorecard row `{journey, screens, rows: {<family>: {confirmed, queued, accepted}}, efficiency, walkthrough:
+ * {pass, total}, curator: {confirm, reject, polish}, bar}`. `confirmed` counts this run's rows measured two of two;
+ * `queued` and `accepted` the journey's standing rows in `.argus/taste-state.json`; the walkthrough the returns' `cw`
+ * rows of the journey (`cw`, by journey id) whose four answers all pass (CW_PASS); the Curator's verdicts by the
+ * journey of the row each names. `unread` names each record out of shape.
+ */
+export function tasteScorecard(main, runId, cw = new Map()) {
+  if (!fs.existsSync(path.join(liveDir(main), runId, "taste"))) return null;
+  const unread = [];
+  const { judge, fault } = readJudge(main, runId);
+  if (fault) unread.push("taste/judge.json");
+  if (!judge) return { bar: loadBar().version, judged: false, fault: Boolean(fault), rows: [], unread };
+  const cur = readCurator(main, runId, new Set(judge.rows.map((r) => r.row)));
+  if (cur.fault) unread.push("taste/curator.json");
+  let state = { journeys: {} };
+  try {
+    state = readTasteState(main);
+  } catch {
+    unread.push(TASTE_STATE_FILE);
+  }
+  const journeyOf = new Map(judge.rows.map((r) => [r.row, r.journey]));
+  const ids = [...new Set([...Object.keys(judge.journeys), ...judge.rows.map((r) => r.journey)])].sort();
+  const rows = ids.map((id) => {
+    const j = judge.journeys[id] ?? {};
+    const families = {};
+    const bump = (rule, k) => {
+      (families[rule.split(".")[0]] ??= { confirmed: 0, queued: 0, accepted: 0 })[k] += 1;
+    };
+    for (const r of judge.rows) if (r.journey === id && r.confirmed === true) bump(r.rule, "confirmed");
+    for (const s of Object.values(state.journeys[id]?.rows ?? {})) if (s.state === "queued" || s.state === "accepted") bump(s.rule, s.state);
+    const curator = { confirm: 0, reject: 0, polish: 0 };
+    for (const [row, v] of cur.verdicts) if (journeyOf.get(row) === id) curator[v.verdict] += 1;
+    const steps = cw.get(id) ?? [];
+    const pass = steps.filter((s) => CW_QUESTIONS.every((q) => typeof s[q] === "string" && CW_PASS.test(s[q]))).length;
+    const screens = Array.isArray(j.screens) ? j.screens.length : (j.screens ?? 0);
+    return { journey: id, screens, rows: families, efficiency: j.efficiency ?? null, walkthrough: { pass, total: steps.length }, curator, bar: judge.bar };
+  });
+  return { bar: judge.bar, judged: true, fault: false, rows, unread };
+}
+
+/** The scorecard's lines: the bar and what each count means, then per journey its figures and its rows by family. */
+function scorecardLines(card) {
+  if (!card.judged) return [`- taste-bar ${card.bar} (the plugin's); not judged: ${card.fault ? "taste/judge.json is out of shape (Records not read)" : "the run has no taste/judge.json"}`];
+  const out = [`- taste-bar ${card.bar}; confirmed: measured two of two this run; queued and accepted: the journey's standing rows in ${TASTE_STATE_FILE}; satisfaction is never measured, discoverability only through the walkthrough`];
+  for (const r of card.rows) {
+    const e = r.efficiency;
+    const v = (k) => (e && typeof e[k] === "number" ? String(e[k]) : "-");
+    const efficiency = e ? `efficiency actions ${v("actions")} (best ${v("best")}), ${["klm_s", "typed", "fitts_bits", "modals", "wait_ms", "recovery"].map((k) => `${k} ${v(k)}`).join(", ")}` : "efficiency not measured";
+    const walk = r.walkthrough.total ? `walkthrough ${r.walkthrough.pass} of ${r.walkthrough.total} step(s) pass all four questions` : "walkthrough none recorded";
+    out.push(`- journey ${r.journey}: screens ${r.screens}; ${efficiency}; ${walk}; Curator confirm ${r.curator.confirm}, reject ${r.curator.reject}, polish ${r.curator.polish}`);
+    for (const f of Object.keys(r.rows).sort()) out.push(`  - ${f}: confirmed ${r.rows[f].confirmed}, queued ${r.rows[f].queued}, accepted ${r.rows[f].accepted}`);
+  }
   return out;
 }
 
