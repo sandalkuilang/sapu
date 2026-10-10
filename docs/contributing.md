@@ -17,7 +17,8 @@ plugins/sapu/
   workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs;
-                                  argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub)
+                                  argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
+                                  the smoke suite's -codegen generator, -layout and -a11y checks, -suite, -propose, -heal, -ci, -baseline, -perf, -seed and -report)
   scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
@@ -28,7 +29,7 @@ tests/                            vitest: guard, workflows, contract, merge, met
 
 The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`. The journey lane's browser CLI is the one exception, and it is not installed with the plugin: `scripts/pw/` pins it, and the lane installs it into the user's cache with `npm ci --ignore-scripts` the first time it needs it.
 
-The journey lane's browser tests (`tests/argus-live-browser.test.ts` and `tests/argus-live-repro.test.ts`) drive a real Chrome or Edge through that CLI: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI.
+The journey lane's browser tests (`tests/argus-live-browser.test.ts`, `-repro`, `-codegen`, `-layout`, `-a11y` and `-perf`) drive a real Chrome or Edge, through that CLI or through the pinned runner: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI. The generated smoke suite imports `@playwright/test`, which the pinned CLI install does not hold, so the codegen, layout and a11y tests run it against the install's own runner through a scratch `node_modules/@playwright/test` stub; no test runs `npm install` for it.
 
 ## Changing the plugin
 
@@ -71,6 +72,12 @@ Every PR that changes the content of `plugins/sapu/` must raise `version` in `pl
 The GitHub Release notes are generated from the merged PRs' titles. What users must do or know when they upgrade (a new contract key, a newly refused command, a changed trust rule) goes into [Install and use](usage.md#updating-the-plugin), under a heading `Upgrading from a version before <version>`, in the same PR that raises the version.
 
 Engine defects that a sweep hits in a consuming repo arrive here as issues titled `<component>: <one line>`, with the fields Component, Plugin version, What happens, Expected and Proposed fix ([`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Engine defects go upstream). By design they carry nothing of the consuming repo: reproduce the defect from its description and fix it in the plugin.
+
+The smoke suite is not in this repo: the journey lane generates it into a consuming repo (`e2e/argus-smoke/` by default), and `scripts/argus-live-codegen.mjs` is its only writer. Three constants there matter when you change it:
+- `SMOKE_PLAYWRIGHT` and `SMOKE_AXE` are the exact versions the suite pins, and `SMOKE_PLAYWRIGHT` names the CI container image. A test keeps `SMOKE_PLAYWRIGHT`'s major and minor equal to the `playwright-core` that `scripts/pw/package-lock.json` pins, so raising the browser CLI fails that test until the constant moves; `smoke plan` then lists `upgrade …` for every consumer, and each needs a baseline run.
+- `CODEGEN_VERSION` is written into every generated file's header. Raise it when the generator's output changes for the same inputs: `smoke check` reports every older file as `stale`.
+
+Generated code uses only Playwright APIs that exist in both the pinned CLI's runner and the suite's `@playwright/test`. A test scans the generated output and bans hard waits, template literals that hold path data, serial tests, shared state and `fixme`.
 
 Diagrams are generated, not hand-edited: change `docs/img/src/diagrams/<name>.mjs` (or the shared `lib.mjs`), then run `node docs/img/src/build.mjs <name>`; it writes `docs/img/<name>.svg` and `<name>-dark.svg` (set `OUT=<dir>` to write elsewhere, e.g. to compare). A diagram's title, description and label sit in its module or in `docs/img/src/a11y/<name>.json`; when they change, change the `alt` of its `<picture>` in the README and `docs/` with them. The logo, badges and icons are hand-made SVGs, edited directly. The README shows each through `<picture>`, so GitHub picks the file matching the reader's theme.
 

@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1054" width="920" height="1054" role="img" aria-label="The journey lane's trust boundary: the orchestrator in the main session dispatches a guarded explorer whose Bash runs only the pw wrapper and whose Read reaches only files committed in the run's worktree; the wrapper drives one browser session per account through a filtering proxy to an isolated instance with its own worktree, ports, data and HOME, never the owner's servers; page text returns only inside nonce fences; and a candidate leaves the machine only after a script reproduced it two of two and scrub found no secret the run saw (its 0600 ledger) or the configuration holds in it.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1330" width="920" height="1330" role="img" aria-label="The journey lane's trust boundary: the orchestrator in the main session dispatches a guarded explorer whose Bash runs only the pw wrapper and whose Read reaches only files committed in the run's worktree; the wrapper drives one browser session per account through a filtering proxy to an isolated instance with its own worktree, ports, data and HOME, never the owner's servers; page text returns only inside nonce fences; and a candidate leaves the machine only after a script reproduced it two of two and scrub found no secret the run saw (its 0600 ledger) or the configuration holds in it; the smoke suite reaches the owner's repo only as a pull request that scrub's matcher has checked and the owner merges, its CI workflow runs read-only with pinned actions, and text from issues, docs and CI artifacts is read only as fenced data.">
   <title>/journey — the trust boundary</title>
-  <desc>The repo and .argus/live.json are the owner's and trusted; the app's pages are not. The orchestrator runs in the main session, unguarded, and reads the instance only through argus-live.mjs status --json and intake. It dispatches one sapu:ui-explorer per journey; the guard limits that agent to Bash, Read and StructuredOutput, its Bash to node &lt;wrapper&gt; pw with single-quoted or plain-word arguments, and its Read to files committed at HEAD in the run's worktree outside .argus/, with no Grep, Glob, Agent, Task or Workflow. The pw wrapper checks each explorer's token, budget, loop and deadline, allowlists every command and flag, keeps every URL inside the run's origins and offers no run-code or eval; what a page printed comes back inside a &lt;&lt;&lt;PAGE- fence with a fresh nonce, and the explorer's return reaches the orchestrator inside a &lt;&lt;&lt;RETURN- fence. The browsers reach the app only through the run's filtering proxy, which admits the run's origins and allow_origins. up builds an instance of its own (a worktree at HEAD, ports from port_range, its own HOME, Docker client and store, an environment holding only what live.json names) and refuses one that would reach the owner's servers, services or data; an egress check and a Docker runtime gate run at up and at every renew. Secrets live in the env file the guard keeps from every agent and reach a command only as ARGUS_SECRET_&lt;NAME&gt;; what the run meets goes to a 0600 secret ledger. A candidate is filed only after repro reproduced it two of two on a fresh instance and scrub found none of those secrets, nor a value of the env file, in the issue; a hit names where, never what, and an incomplete ledger files nothing. These checks are defence in depth, not a sandbox.</desc>
+  <desc>The repo and .argus/live.json are the owner's and trusted; the app's pages are not. The orchestrator runs in the main session, unguarded, and reads the instance only through argus-live.mjs status --json and intake. It dispatches one sapu:ui-explorer per journey; the guard limits that agent to Bash, Read and StructuredOutput, its Bash to node &lt;wrapper&gt; pw with single-quoted or plain-word arguments, and its Read to files committed at HEAD in the run's worktree outside .argus/, with no Grep, Glob, Agent, Task or Workflow. The pw wrapper checks each explorer's token, budget, loop and deadline, allowlists every command and flag, keeps every URL inside the run's origins and offers no run-code or eval; what a page printed comes back inside a &lt;&lt;&lt;PAGE- fence with a fresh nonce, and the explorer's return reaches the orchestrator inside a &lt;&lt;&lt;RETURN- fence. The browsers reach the app only through the run's filtering proxy, which admits the run's origins and allow_origins. up builds an instance of its own (a worktree at HEAD, ports from port_range, its own HOME, Docker client and store, an environment holding only what live.json names) and refuses one that would reach the owner's servers, services or data; an egress check and a Docker runtime gate run at up and at every renew. Secrets live in the env file the guard keeps from every agent and reach a command only as ARGUS_SECRET_&lt;NAME&gt;; what the run meets goes to a 0600 secret ledger. A candidate is filed only after repro reproduced it two of two on a fresh instance and scrub found none of those secrets, nor a value of the env file, in the issue; a hit names where, never what, and an incomplete ledger files nothing. The smoke suite adds two flows across the same boundary. Into the repo: a staged change (a path, a heal, a baseline) is checked by scrub's matcher, with the pull request body, then pushed as a pull request on an argus branch that sapu never merges; the owner's merge or close is the only way in. In from outside: an issue that passes the trust check, or lines of a tracked doc read from git's object, reach a seeded map explorer only inside a SOURCE fence, and that explorer's token takes only code, source and submit; CI artifacts are read by name and shape, never from a fork's run. The generated workflow runs with a read-only token, actions pinned to commit SHAs, no pull_request_target and no job for a fork; secrets are passed by name; signed-in states are 0600, gitignored and never uploaded, and the setup project records no trace, video or screenshot. Fences are hygiene, not a boundary; the guard binds subagents only. These checks are defence in depth, not a sandbox.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -43,8 +43,8 @@
     <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#0f172a" flood-opacity="0.07"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.05"/></filter>
     <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
   </defs>
-  <rect x="0.5" y="0.5" width="919" height="1053" rx="20" class="canvas"/>
-  <clipPath id="cv"><rect x="0" y="0" width="920" height="1054" rx="20"/></clipPath>
+  <rect x="0.5" y="0.5" width="919" height="1329" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1330" rx="20"/></clipPath>
   <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
   <text x="32" y="46" class="eyebrow">JOURNEY LANE · TRUST BOUNDARY</text>
   <text x="32" y="78" class="h1">Yours is trusted; the pages are not</text>
@@ -169,12 +169,43 @@
   <path d="M400,826 L400.0,821.5 Q400,817 404.5,817.0 L464.5,817.0 Q470,817 470.0,811.5 L470,806" class="ar-b" marker-end="url(#mb)"/>
   <text x="704" y="847" class="cap"><tspan class="tb c-red">ledger incomplete,</tspan></text>
 <text x="704" y="864" class="cap">gone or damaged: nothing filed</text>
-  <rect x="32" y="910" width="856" height="122" rx="14" class="k-red" />
-  <rect x="44" y="926" width="34" height="34" rx="9.5625" class="tile-red"/>
-  <g transform="translate(50.375,932.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-red"/></g>
-  <text x="90" y="940" class="t"><tspan class="tb c-red">Defence in depth, not a sandbox</tspan></text>
-  <text x="90" y="964" class="cap">· Process groups bound every kill and listing: a process that leaves its group is neither killed nor listed.</text>
-<text x="90" y="982" class="cap">· The egress check samples, and lists no process inside a container.</text>
-<text x="90" y="1000" class="cap">· An explorer's wrapper token is in the process list while a pw call runs: the lane assumes a single-user machine.</text>
-<text x="90" y="1018" class="cap">· The full list: <tspan class="mono">plugins/sapu/skills/journey/live.md</tspan>, section Known limits.</text>
+  <rect x="32" y="910" width="856" height="232" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="926" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,932.75) scale(0.9375)"><path d="M6 4.5a2 2 0 1 0 0.01 0 M6 15.5a2 2 0 1 0 0.01 0 M18 15.5a2 2 0 1 0 0.01 0 M6 8.5v7 M18 15.5V10a3 3 0 0 0-3-3h-4 M13 4.5L10.5 7 13 9.5" class="ico ico-w"/></g>
+  <text x="96" y="942" class="ttl">The smoke suite: into your repo and your CI</text>
+  <text x="96" y="960" class="cap">same stance: yours is trusted, text from outside is data · <tspan class="mono">/journey smoke</tspan></text>
+  <rect x="48" y="976" width="190" height="50" rx="10" class="sunken" />
+  <text x="143" y="997" class="tb" text-anchor="middle">staged change</text>
+  <text x="143" y="1015" class="cap" text-anchor="middle">path · heal · baseline</text>
+  <path d="M241,1001 L256.3333333333333,1001" class="ar" marker-end="url(#mn)"/>
+  <rect x="259.33333333333337" y="976" width="190" height="50" rx="10" class="k-red" />
+  <text x="354.33333333333337" y="997" class="tb c-red" text-anchor="middle">scrub's matcher</text>
+  <text x="354.33333333333337" y="1015" class="cap" text-anchor="middle">every file and the PR body</text>
+  <path d="M452.33333333333337,1001 L467.6666666666667,1001" class="ar" marker-end="url(#mn)"/>
+  <rect x="470.6666666666667" y="976" width="190" height="50" rx="10" class="k-violet" />
+  <text x="565.6666666666667" y="997" class="tb c-violet" text-anchor="middle">argus/ pull request</text>
+  <text x="565.6666666666667" y="1015" class="cap" text-anchor="middle">sapu never merges it</text>
+  <path d="M663.6666666666667,1001 L679.0000000000001,1001" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="682" y="976" width="190" height="50" rx="10" class="k-green" />
+  <text x="777" y="997" class="tb c-green" text-anchor="middle">you merge or close</text>
+  <text x="777" y="1015" class="cap" text-anchor="middle">the only way in</text>
+  <rect x="48" y="1042" width="404" height="84" rx="10" class="sunken" />
+  <text x="62" y="1064" class="cap"><tspan class="tb">Text from outside is data</tspan></text>
+<text x="62" y="1081" class="cap">an issue (after <tspan class="mono">issue-trust</tspan>) or doc lines, in a <tspan class="mono">SOURCE</tspan> fence;</text>
+<text x="62" y="1098" class="cap">a seed token takes only <tspan class="mono">code</tspan>, <tspan class="mono">source</tspan>, <tspan class="mono">submit</tspan>; CI</text>
+<text x="62" y="1115" class="cap">artifacts are read by name and shape, never a fork's run</text>
+  <rect x="468" y="1042" width="404" height="84" rx="10" class="sunken" />
+  <text x="482" y="1064" class="cap"><tspan class="tb">CI runs read-only</tspan></text>
+<text x="482" y="1081" class="cap">token, SHA-pinned actions, no pull_request_target, no fork;</text>
+<text x="482" y="1098" class="cap">secrets by name; <tspan class="mono">.auth/</tspan> 0600, gitignored, never uploaded;</text>
+<text x="482" y="1115" class="cap">the setup project records no trace, video or screenshot</text>
+  <rect x="32" y="1162" width="856" height="140" rx="14" class="k-red" />
+  <rect x="44" y="1178" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,1184.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-red"/></g>
+  <text x="90" y="1192" class="t"><tspan class="tb c-red">Defence in depth, not a sandbox</tspan></text>
+  <text x="90" y="1216" class="cap">· Process groups bound every kill and listing: a process that leaves its group is neither killed nor listed.</text>
+<text x="90" y="1234" class="cap">· The egress check samples, and lists no process inside a container.</text>
+<text x="90" y="1252" class="cap">· An explorer's wrapper token is in the process list while a pw call runs: the lane assumes a single-user machine.</text>
+<text x="90" y="1270" class="cap">· Fences are hygiene, not a boundary: the gates and your merge are. The guard binds subagents only.</text>
+<text x="90" y="1288" class="cap">· The full list: <tspan class="mono">plugins/sapu/skills/journey/live.md</tspan>, section Known limits.</text>
 </svg>
