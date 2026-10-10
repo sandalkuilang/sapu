@@ -1865,10 +1865,19 @@ Methods and oracles:
 - FEW HICCUPPS oracle heuristics — https://developsense.com/blog/2012/07/few-hiccupps
 - Exploratory charters (Hendrickson) — https://media.pragprog.com/titles/ehxta/charters.pdf
 
-Phase 6 (§19):
+Phase 6 (§19) — every source read, the claim used and the decision it informs are in
+[argus-journey-lane-6-research.md](../plans/argus-journey-lane-6-research.md); the main ones:
 - Playwright best practices — https://playwright.dev/docs/best-practices · retries and flaky tests —
   https://playwright.dev/docs/test-retries · ARIA snapshots — https://playwright.dev/docs/aria-snapshots ·
-  visual comparisons — https://playwright.dev/docs/test-snapshots
+  visual comparisons — https://playwright.dev/docs/test-snapshots · authentication —
+  https://playwright.dev/docs/auth · parallelism and test locks — https://playwright.dev/docs/test-parallel ·
+  CI — https://playwright.dev/docs/ci · accessibility testing — https://playwright.dev/docs/accessibility-testing
+- Chromatic branches and baselines — https://www.chromatic.com/docs/branching-and-baselines/
+- Lighthouse variability — https://github.com/GoogleChrome/lighthouse/blob/main/docs/variability.md ·
+  web.dev Web Vitals — https://web.dev/articles/vitals
+- Flaky Tests at Google — https://testing.googleblog.com/2016/05/flaky-tests-at-google-and-how-we.html
+- WAI-ARIA APG Dialog (Modal) — https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/
+- axe-core — https://github.com/dequelabs/axe-core
 - WCAG 2.2 Understanding: Focus Order — https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html ·
   Status Messages — https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html (the rest are cited
   in `standards.md`, phase 6 adds the fetched ones it lacks)
@@ -1898,7 +1907,9 @@ and the nonce fences carry the safety).
 
 ## 19. Phase 6 — the smoke suite and its checks (not built yet)
 
-**Status: designed, not built.** Plan: [argus-journey-lane-6-smoke.md](../plans/argus-journey-lane-6-smoke.md).
+**Status: designed, not built.** Plan: [argus-journey-lane-6-smoke.md](../plans/argus-journey-lane-6-smoke.md);
+evidence: [argus-journey-lane-6-research.md](../plans/argus-journey-lane-6-research.md) (the source ids
+in square brackets below).
 Everything in this section describes phase 6's target; no file it names exists until that plan's
 task lands, and §1–§18 describe the lane as built through phase 5.
 
@@ -1914,16 +1925,16 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
 | Owner item | Smoke suite (CI) | Exploratory lane | Lane-local (orchestrator) |
 |---|---|---|---|
 | Smoke suite, membership, codegen | ✔ | captures paths | `smoke plan`, `admit`, `propose`, `check` |
-| Visual baselines | `toHaveScreenshot` | — | `smoke baseline` adopts CI actuals |
+| Visual baselines | `toHaveScreenshot`; a dispatched baseline run writes new ones | — | `smoke baseline` dispatches CI's baseline run and proposes what it wrote |
 | Reviewable healing | — | heal-mode explorer | `smoke heal`, decision table §19.9 |
-| Cross-browser | Chromium, Firefox, WebKit, Edge if installed | Chrome only | — |
+| Cross-browser | Chromium, Firefox, WebKit (pinned container); Edge on the plain runner | Chrome only | — |
 | Journeys from issues and docs | — | map explorer (`pw source`) | `seed` |
 | Per-cycle report | — | — | `report` |
 | Performance | — | — | `smoke run --perf` (Chrome, median of N) |
 | Responsive layout oracle | every step × every viewport project | `layout` expectation, `pw layout` | — |
 | Locales, pseudo-locale | `i18n` project | `viewport-locale` oracle | — |
 | Keyboard, names, ARIA snapshot | `a11y` project | — | — |
-| Contrast, design tokens | `a11y` project | — | — |
+| axe WCAG rules (contrast, names, ARIA), design tokens | `a11y` project | — | — |
 | Forms (negative cases) | `a11y` project | — | — |
 | Links and CTA routes | every browser project | — | — |
 | Loading, empty, toasts | every browser project | empty state measured | — |
@@ -1938,8 +1949,8 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
   workers, ci: {web_server: [{command, url, timeout_s?}], ports: {<name>: <port>}, workflow,
   artifact}, perf: {runs, thresholds: {<metric>: [<relative>, <absolute>]}}, heal_max_steps,
   form_cases_max, link_cap}`. Unknown keys are refused. Defaults: `dir` `e2e/argus-smoke`, `max` 20
-  (at most 50), `browsers` `["chromium", "firefox", "webkit", "msedge"]`, `workers` unset (Playwright's
-  default), `perf.runs` 5, `heal_max_steps` 3, `form_cases_max` 6, `link_cap` 50. A `ci.web_server`
+  (at most 50), `browsers` `["chromium", "firefox", "webkit", "msedge"]`, `workers` unset (the
+  generated config then uses 1 under CI, Playwright's default elsewhere), `perf.runs` 5, `heal_max_steps` 3, `form_cases_max` 6, `link_cap` 50. A `ci.web_server`
   or `ci.ports` URL must name a loopback host.
 - **`.argus/live.json`** gains four optional keys: `test_id_attribute` (the attribute the app already
   uses; Playwright's `testIdAttribute`; without it a `testId` target is refused in a smoke path),
@@ -1949,10 +1960,11 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
 - **The suite directory** (`dir`, committed): `journeys/<id>.json` (the path and its admission
   record, data), `<id>.spec.ts` (generated), `auth.setup.ts` (generated), `support.ts` (generated:
   triggers, facts, mail, TOTP, the login template, the check sources), `playwright.config.ts`
-  (generated), `package.json` and `package-lock.json` (`@playwright/test`, exact), `.gitignore`
+  (generated), `package.json` and `package-lock.json` (`@playwright/test` and `@axe-core/playwright`,
+  exact), `.gitignore`
   (`.auth/`, `test-results/`, `playwright-report/`), `quarantine.json`, `known/<id>.json` (adopted
-  check violations), `changes.jsonl` (the visible log), `__screenshots__/<project>/<platform>/<id>/`,
-  `__aria__/<id>/`. `fixtures.ts` exists only when a role signs in by `login.command`: the owner's
+  check violations), `changes.jsonl` (the visible log), `__screenshots__/<project>/<platform>/<id>/`
+  (no `msedge`), `__aria__/<id>/`. `fixtures.ts` exists only when a role signs in by `login.command`: the owner's
   `signedIn` for it, created once as a stub that throws, never overwritten.
 - **Local state** (gitignored): `.argus/smoke-state.json` (per journey: last check, flaky streaks,
   quarantine clean streak, open break issue, proposal digests and their outcome), `.argus/perf.json`
@@ -1968,7 +1980,9 @@ other journey reads, so CI order would decide outcomes) and dropped ones: pinned
 distinct roles, then id. Members already in the suite rank before non-members of the same tier (no
 flapping). The first `max` minus `exclude` are the target set. Output, one line each: `keep <id>`,
 `capture <id>` (no path yet), `drop <id> (<reason>)` (excluded, out of the map, global, past the
-cap, retired), `heal <id>`, `quarantined <id>`, `pending <id> <pr url>`. Pinning a global or dropped
+cap, retired), `heal <id>`, `quarantined <id>`, `pending <id> <pr url>`, and `upgrade <from> → <to>
+(baseline run needed)` when the suite's pin is behind the generator's (a new Playwright renders
+differently, so every screenshot is re-baselined in the upgrade's pull request) [pw-snap]. Pinning a global or dropped
 journey is refused. Membership changes only through a proposal (§19.8).
 
 ### 19.4 Paths and admission
@@ -1979,7 +1993,7 @@ proving the journey's goal; every state-changing step proven as §10 requires; l
 order**, enforced at admission and again by codegen: an action's target is `{role, name}`, else
 `{label}` or `{placeholder}`, else `{testId}` only with `test_id_attribute` set; `{text}` only in
 expectations; `within` at most one level; `css`, `title`, `altText`, refs and XPath are refused
-(§10 already refuses the first four).
+(§10 already refuses the first four) [pw-locators].
 
 The explorer submits a path in its return (`path`, optional) when its charter says `path: wanted`
 (the journey is `capture` in `smoke plan`) and it reached the goal. `smoke admit <slot>.<generation>`
@@ -2002,31 +2016,47 @@ in memory and names any file that differs. Every rule below has a test that scan
 - **Independence:** one test per journey file (plus its form and a11y tests); the marker is made
   inside the test (`argus-` + the test id's hash + time + random), never at module scope; no
   `test.describe.serial`, `beforeAll`, `afterAll` or module-level mutable state; `fullyParallel:
-  true`. The runner has no shuffle option, so order independence is proven by admission's dirty run
-  and by the lane's own pass, which runs paths in a seeded random order.
+  true`. Every test declares a `lock` per account it opens (`account:<role>.<k>`): a shared
+  signed-in state is safe only for tests that change no server state, and journeys change it, so two
+  tests of one account never run at once, in any project [pw-auth] [pw-parallel]. Order independence
+  is proven by admission's dirty run, by the lane's own pass (paths in a seeded random order) and by
+  CI, which runs `--shuffle` and prints the seed [pw-release] [pw-cli].
 - **Hybrid setup:** an `auth.setup.ts` setup project signs each account in through the real sign-in
   UI once (the wrapper's own login template, embedded; TOTP from Node's crypto) and saves its
   storageState under `<dir>/.auth/<role>.<k>.json`, mode 0600, gitignored, never uploaded; tests
-  open each account's context from it. That setup is the one login test per role. Seeds go through
+  open each account's context from it. That setup is the one login test per role, and it records no
+  trace, video or screenshot (typed passwords would reach the artifact) [pw-use]. Seeds go through
   `trigger` (argv from `live.json`, no shell, values checked against `args`), never UI clicks.
 - **Selectors:** the target kinds of §19.4 only, through `targetCode`.
 - **Steps:** each DSL step is one `test.step("step <n> <do|expect>:<kind>")`, so CI results name the
   failing step without parsing an error message.
 - **Base URL:** `ARGUS_SMOKE_BASE_URL`, else the first `ci.web_server` URL; the config throws unless
   its host is loopback. No test ever drives a deployed environment.
-- **Retries** 1 under CI, 0 locally; `trace: "on-first-retry"`; `updateSnapshots: "none"` under CI;
-  `ignoreSnapshots` outside CI (baselines are CI's platform's).
+- **CI settings:** `retries` 1 (0 locally), `workers` 1 (else `smoke.json` `workers` or Playwright's
+  default), `forbidOnly`, `globalTimeout`, `trace: "on-first-retry"`, `updateSnapshots: "none"` (only
+  the dispatched baseline run passes `--update-snapshots`, §19.8); `ignoreSnapshots` outside CI
+  (baselines are the CI container's) [pw-ci] [pw-config]. `failOnFlakyTests` stays off: a retry-pass
+  is reported `flaky`, and `smoke ci` handles it (§19.9).
+- **Generated code uses only APIs present in both** the lane's pinned alpha and the suite's
+  `@playwright/test` (locks: 1.63); `--shuffle` lives in CI's command line only. The lane's own
+  browser tests run a generated suite on the alpha through a scratch `@playwright/test` stub that
+  re-exports `playwright/test` [probe].
 
 ### 19.6 Projects and browsers
 
 `setup`; `chromium`, `firefox`, `webkit` (WebKit is the closest stand-in for Safari, not Safari), and
 `msedge` (`channel: "msedge"`) only when Edge's executable exists at Playwright's documented path for
 the host, else the config logs `msedge: skipped (not installed)` and leaves the project out — at the
-first `viewports` width, each running the path, the screenshots, the layout oracle, the links and
-CTA routes, loading and toast checks; `chromium-<width>` for every further `viewports` width (path,
+first `viewports` width, each running the path, the screenshots (not `msedge`: a branded channel
+moves with the machine, not with the pin, so its baseline would drift), the layout oracle, the links
+and CTA routes, loading and toast checks. In CI the screenshot projects run in the
+`mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` container (one platform for every baseline)
+and `msedge` on the plain runner, whose image ships Edge; sapu never installs Edge (`install msedge`
+overrides the machine's own) [pw-browsers] [pw-ci] [gh-runner]; `chromium-<width>` for every further `viewports` width (path,
 screenshots, layout oracle); `a11y` (Chromium: keyboard pass, names, ARIA snapshots, contrast,
 tokens, modals, form cases; WebKit does not Tab to links by default and is not used for the keyboard
-pass); `i18n` (Chromium, only with `locales` or `pseudo_locales`). Every project depends on `setup`.
+pass; axe's WCAG rules); `i18n` (Chromium, only with `locales` or `pseudo_locales`). Every project
+depends on `setup`.
 
 ### 19.7 Checks
 
@@ -2042,7 +2072,8 @@ Excluded everywhere: invisible elements (`display: none`, `visibility: hidden`, 
 size), `aria-hidden` and `inert` subtrees, the visually-hidden pattern (clip to 1 px), and, while a
 modal dialog is open, everything outside it.
 
-- **Layout** (after every step, every viewport project; 1.4.10 Reflow cited at widths ≤ 320):
+- **Layout** (after every step, every viewport project; 1.4.10 Reflow cited at widths ≤ 320)
+  [u-1.4.10] [u-2.5.8]:
   *page-scroll* — `scrollingElement.scrollWidth > innerWidth + 1`, unless every element past the
   right edge sits in a `table`, `pre`, `code`, `canvas`, `svg`, `video`, `iframe` or a `grid` or
   `application` role (1.4.10's two-dimensional exception); *clipped* — an element with a direct
@@ -2064,26 +2095,41 @@ modal dialog is open, everything outside it.
   dates, inputs, `code`, `pre`, URLs and `translate="no"` are excluded; a page whose `<html lang>` does
   not start with the locale's language is reported `not localized` and its format check skipped (the
   app ignored the browser's locale: no false fails). State that only URL-addressable states are
-  checked. Pseudo-localization is done only for codes in `pseudo_locales`; without one the report says
-  `pseudo-localization: not done (no pseudo-locale listed)`. No hook is ever invented.
+  checked. Pseudo-localization is done only for codes in `pseudo_locales` (Android's `en-XA`, `ar-XB`
+  shapes; expansion of 30–40 % is what reveals clipping) [android-pseudo] [ms-pseudo]; under one,
+  visible text identical to the default locale's render (path values, digits and `translate="no"`
+  excluded) is reported `pseudo-localization: <n> text unchanged under <code> (hard-coded?)`, never a
+  fail [mozilla-pseudo]. Without one the report says `pseudo-localization: not done (no pseudo-locale
+  listed)`. No hook is ever invented.
 - **Keyboard** (`a11y`, before each `click`, `check`, `uncheck`, `select` or `fill` of the path):
   Tab from the page's start until focus reaches the target (pass), cycles back to the first stop
-  (fail: not in the tab order, 2.1.1) or 500 presses pass (undetermined, never a fail); while walking,
-  each stop follows the previous one in DOM order (`compareDocumentPosition`; 2.4.3 does not require
-  visual order, and DOM order is what assistive technology reads; a backward jump fails, as positive
-  `tabindex` makes it, F44); at the target, focus visible (2.4.7: a screenshot of the target focused
-  differs from one blurred, animations off, caret hidden) and not entirely hidden by author content
-  (2.4.11: its center's `elementFromPoint` is it or inside it). `hover` and `dblclick` targets are
-  excluded (the function may have a keyboard path elsewhere). Then focus is blurred and the step runs.
+  (fail: not in the tab order, 2.1.1) or 500 presses pass (undetermined, never a fail). A target
+  inside a composite widget (`radiogroup`, `tablist`, `menu`, `menubar`, `listbox`, `grid`, `tree`,
+  `toolbar`) passes when focus enters its widget: a composite has one tab stop and arrows move inside
+  it [apg-keyboard] [u-2.1.1]. While walking, each stop is compared with the previous one in DOM order
+  (`compareDocumentPosition`); a backward jump is reported `manual` with its key, never a fail:
+  2.4.3 asks for an order that preserves meaning, and F44 fails a positive `tabindex` only where it
+  breaks meaning, which a script cannot judge [u-2.4.3]. At the target: focus visible (2.4.7 [u-2.4.7]: a
+  screenshot of the target focused differs from one blurred, animations off, caret hidden); its
+  indicator's contrast (1.4.11: a solid `outline` colour against the effective background at 3:1;
+  any other indicator `manual`) [u-1.4.11]; not entirely hidden by author content (2.4.11: its
+  center's `elementFromPoint` is it or inside it) [u-2.4.11]. `hover` and `dblclick` targets are excluded (the
+  function may have a keyboard path elsewhere). Then focus is blurred and the step runs.
 - **Names** (`a11y`): every action target `toHaveAccessibleName(/\S/)` (4.1.2).
-- **ARIA snapshot** (`a11y`, at the path's screens): `toMatchAriaSnapshot` of `main` (else `body`),
-  stored as `__aria__/<id>/<n>.aria.yml`; on adoption, names holding a digit become regexes with each
-  digit run as `\d+`, the marker shape `argus-[0-9a-z]+`. Partial matching is Playwright's default.
-- **Contrast** (`a11y`, the journey's controls and their labels): text against its effective
-  background, alpha blended up the ancestors: 4.5:1, 3:1 for large text (24 px, or 18.66 px bold)
-  (1.4.3); a focus outline against the adjacent background at 3:1 (1.4.11) during the keyboard pass.
-  A background image or gradient on the way, a filter, `mix-blend-mode` or a box-shadow indicator →
-  `manual` in the report, never a fail. Disabled controls are excluded (1.4.3's inactive exception).
+- **ARIA snapshot** (`a11y`, at the path's screens): `toMatchAriaSnapshot({name: "<n>.aria.yml"})`
+  of `main` (else `body`), stored as `__aria__/<id>/<n>.aria.yml`, `children: "contain"` (partial
+  matching, Playwright's default) [pw-aria]. A missing file compares as the empty string and fails
+  (`baseline-missing`); a mismatch reports a line diff only, no file [probe]. Baselines therefore come
+  only from the baseline run (§19.8); on adoption, names holding a digit become regexes with each
+  digit run as `\d+`, the marker shape `argus-[0-9a-z]+`.
+- **axe** (`a11y`, at the path's screens): `@axe-core/playwright` with `withTags(["wcag2a",
+  "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])`, `include("main")` when the page has one, and
+  `target-size` disabled (the layout oracle owns 2.5.8 in every viewport). It covers contrast
+  (1.4.3) [u-1.4.3], names and roles (4.1.2) [u-4.1.2], labels and ARIA validity with axe's tested
+  exceptions. Each
+  violation node is `{check: "axe:<rule>", key: <its target>}`, filtered by `known/<id>.json` like
+  every check; `incomplete` nodes are `manual`, never a fail (axe returns as incomplete what it
+  cannot decide, and holds itself to zero false positives) [pw-a11y] [axe-readme] [axe-api].
 - **Tokens** (`a11y`, only with `live.tokens`): the token values (CSS custom properties of the named
   file, or the JSON's string leaves and `$value`s), normalized in the page by setting each on a probe
   element; each journey control's computed `color`, non-transparent `background-color`, first
@@ -2096,12 +2142,15 @@ modal dialog is open, everything outside it.
   submit runs. Holds when no non-GET request got a 2xx; the field is invalid (`validity.valid`
   false for native validation, `aria-invalid="true"` under `novalidate`); an error is associated
   (`validationMessage` for native, else `aria-describedby` or `aria-errormessage` naming a visible
-  element with text; 3.3.1); focus is on the field or on an element linking to it. The first case
+  element with text; 3.3.1 [u-3.3.1]); focus is on the field or on an element linking to it. The first case
   that submits ends the test (hard fail). No business rule is invented.
 - **Links and CTA routes** (every browser project): the `href`s of `a` elements on each step's page
   with the base URL's origin (never another origin; `mailto:`, `javascript:` and fragment-only links
-  skipped), at most `link_cap` a journey, requested with GET from the test's context after the final
-  step (a sign-out link then costs nothing): a 404, 410 or 5xx final status fails. Each map step of
+  skipped), at most `link_cap` a journey, requested one at a time with GET from the test's context
+  after the final step (a sign-out link then costs nothing), `maxRedirects: 0` and redirects followed
+  by hand only within the origin (at most 5): a 404, 410 or 5xx final status fails; a 401 or 403 is
+  `manual` (a link offered to a role that cannot open it); a 429 is `manual` (no retry wait: the
+  suite has no fixed delays) [lychee] [linkinator]. Each map step of
   the journey with a `route`, for a role the path acts as, must have been visited (pathname matched,
   parameters as wildcards).
 - **Loading** (every step): no `[aria-busy="true"]` and no indeterminate `progressbar` visible
@@ -2113,13 +2162,19 @@ modal dialog is open, everything outside it.
   and goes by itself within `SETTLE`, must be inside a live region (`role=status`, `alert`,
   `aria-live`; 4.1.3); a live region's toast must not cover the path's next target (the covered
   check) and must be dismissible or go by itself.
-- **Modals** (`a11y`, when an action opens `role=dialog` or a modal `dialog`): Escape closes it unless
-  it is an `alertdialog`, focus returns to the control that opened it, the path's control reopens
-  it, Tab stays inside it (2.1.2's trap is allowed only where Escape leaves), and for modal dialogs
-  the backdrop click (a point outside its box) behaves the same in every dialog of the journey.
+- **Modals** (`a11y`, when an action opens a modal dialog: `role=dialog` or `alertdialog` with
+  `aria-modal="true"`, or a `dialog` opened modal): Escape closes it, an `alertdialog` included
+  [apg-alertdialog]; Tab stays inside it (2.1.2's trap is allowed only where Escape leaves) [u-2.1.2]; the
+  path's control reopens it; focus returns to the control that opened it — exempt when that control
+  is gone, a fail when focus is lost to `body`, `manual` when it lands elsewhere (the workflow
+  exception) [apg-dialog]; and the backdrop click (a point outside its box) behaves the same in every
+  modal dialog of the journey. A non-modal dialog is exempt from the Escape and Tab rules
+  [mdn-dialog].
 
-axe-core is not used: whole-page rule sets fail CI on debt the journeys never touch and would need a
-second suppression baseline; the checks above are journey-scoped and need no dependency.
+axe covers what a rule engine decides from one rendered state; the custom checks above cover what
+it cannot see — keyboard reach, focus, dialogs, forms, layout, locale, links, loading, empty states
+and toasts. Known violations of both share one adoption path (§19.8), so whole-page debt never turns
+CI red on day one.
 
 ### 19.8 Baselines and proposals
 
@@ -2134,31 +2189,56 @@ pull request with `labels.agentFiled` and the change log as its body. sapu never
 issues, and its branches are not `argus/`. Merged = accepted; closed unmerged = rejected, remembered in
 `smoke-state.json` by the change's digest, and never proposed again.
 
-**Visual and ARIA baselines and known violations come from CI's platform.** The suite uploads
-`test-results/` as an artifact; `smoke baseline --from-run <run id>` downloads it with `gh run
+**Visual and ARIA baselines and known violations are made by CI's baseline run, on the pinned
+container, and accepted by the owner's merge.** A normal CI run never writes a baseline
+(`updateSnapshots: "none"`): a missing one fails and attaches nothing, and an ARIA mismatch carries
+only a line diff [probe]. So the workflow has a `baseline` job, run only by `workflow_dispatch`
+(write access, the workflow on the default branch) [gh-dispatch], which runs `--update-snapshots=
+missing|changed --grep <ids>` — `missing` writes new baselines and still verifies the existing ones
+in the same run [pw-release] — and uploads the files it wrote as `argus-smoke-baselines`.
+
+`smoke baseline --from-run <run id>` does one of two things. On a normal run it dispatches the
+baseline job on that run's branch: `missing` for its `baseline-missing` ids, `changed` only for the
+ids the owner names with `--ids` after reading `smoke ci`'s diff (no mismatch is ever re-baselined
+unasked); it prints the dispatched run. On a baseline run it downloads the artifact with `gh run
 download` into a 0700 temporary directory and adopts only files whose names the suite defines
-(`*-actual.png` with a PNG signature under 5 MB, `*.aria.yml`, `violations-<id>.json` under 1 MB);
+(`__screenshots__/<project>/<platform>/<id>/*.png` with a PNG signature under 5 MB, never `msedge`;
+`__aria__/<id>/*.aria.yml` under 1 MB, pruned as §19.7 says; `violations-<id>.json` under 1 MB);
 nothing else is read, no artifact text is printed outside a fence, and a run on another repository
-(a fork) is refused. The proposal targets the run's own branch, so a branch that changes its UI gets
-its baselines in its own pull request: baselines are kept per branch by being committed.
+(a fork) or a run whose head is no longer its branch's head (`stale`) is refused. Without the right
+to dispatch, the `gh workflow run` line is printed for the owner.
+
+The adopted files land as a commit on the run's `argus/` branch (a journey-adding proposal gets its
+first baselines in its own pull request) or as an `argus/baselines-<runId>` pull request into the
+run's branch, its body listing each file with journey, step and project. The owner reviews them in
+the pull request's image view (2-up, swipe, onion skin) [gh-images] and accepts by merging; a test
+fails until its baseline is accepted, as hosted review services do [chromatic-branch]
+[percy-baseline]. Baselines are kept per branch by being committed. A baseline file that conflicts
+on a rebase is never resolved by picking a side: it is dropped and regenerated by a baseline run on
+the merged branch (a stale baseline yields false positives) [chromatic-branch].
 
 ### 19.9 Breaks: UI change or bug
 
 The decisive rule: **healing may change how an action finds its control, never what the journey
 proves.** Expectations, values, actions, step order and step count are never changed by a heal; a
 heal changes at most `heal_max_steps` action targets; the decision is the unchanged expectations
-re-run, never the explorer's word.
+re-run, never the explorer's word. A heal never skips a test, adds a wait or changes data, and is
+never applied at run time: CI fails, and the heal arrives later as a proposal (runtime healers pick
+the best-scoring locator and carry on; Playwright's healer may patch waits and data or skip a test it
+"believes" broken) [healenium] [pw-agents].
 
 | Evidence | Verdict | What follows |
 |---|---|---|
-| CI: failed, then passed on retry, same commit | flake | quarantine (below) |
+| CI: failed, then passed on retry, same commit, on a base-branch push | flake | quarantine (below) |
+| The same on a pull request's head, never flaky on the base | `flaky-new` | a comment on that pull request; never quarantined (it may be a race the change brought) [google-flaky] |
 | CI: an action step failed on every attempt; the lane's pass holds on Chrome | `ci-only` (`browser-only <project>` when Chromium passed in CI) | needs-owner issue with the run's link |
 | An action step's target matches nothing or several, twice on fresh and dirty instances | locator break | heal-mode explorer |
 | The explorer gives new targets; the healed path holds twice with every expectation unchanged | **UI changed** | heal proposal (§19.8) |
 | The explorer finds no control for the step's goal (a heal cannot add a step) | **bug** | regression candidate: the path to step n − 1, then `visible` on the old target as its `final` |
 | The healed path fails an expectation | **behaviour changed** | regression candidate at that expectation |
 | An expectation fails twice | **behaviour changed** | regression candidate |
-| A screenshot or ARIA snapshot differs | owner's call | baseline proposal showing both |
+| A screenshot or ARIA snapshot differs | owner's call | `smoke ci` shows the diff; `smoke baseline --ids` only if the owner says so |
+| A baseline is missing | not yet reviewed | `smoke baseline` dispatches the baseline run (§19.8) |
 | A check reports a violation not known | defect | one issue per `{id, check, key}`, `ux` or `a11y`, S3 |
 | The setup project cannot sign an account in | harness | the report; nothing filed |
 
@@ -2172,23 +2252,35 @@ and the commits touching the journey's anchor files. A heal proposal the owner c
 into a needs-owner regression issue. An issue the owner closes as not planned (intended) marks the
 journey `retire`: the next proposal removes its spec and `smoke plan` lists it `capture`.
 
-**Quarantine.** `smoke ci` classifies a flaky test and stages it; the proposal adds `{id, issue,
-since}` to `quarantine.json`, and codegen writes `test.fixme(true, "quarantined: <issue>")` for it.
-One tracking issue per journey (`smoke-flaky:<id>`, deduplicated through `smoke-state.json`). The
-lane's own pass keeps running a quarantined path; three consecutive cycles in which it holds twice
-make the next proposal remove the entry and comment on the issue; a journey quarantined twice, or
-for five cycles, is proposed for `drop` (twenty reliable tests beat two hundred flaky ones).
+**Quarantine.** `smoke ci` stages a test that was `flaky` on a base-branch push run; the proposal adds
+`{id, issue, since}` to `quarantine.json`, and codegen tags the test `@quarantine`. The gating job
+runs `--grep-invert @quarantine`; a non-gating `quarantine` job (`continue-on-error`) keeps running
+the quarantined tests, so they leave the critical path without leaving sight — quarantine "could
+easily mask a real race condition" [google-flaky]. One tracking issue per journey
+(`smoke-flaky:<id>`, deduplicated through `smoke-state.json`). The lane's own pass keeps running a
+quarantined path; three consecutive cycles in which it holds twice and every quarantine-job result
+read passed first time make the next proposal remove the entry and comment on the issue; a journey
+quarantined twice, or for five cycles, is proposed for `drop` (a large UI test is the flakiest kind;
+twenty reliable tests beat two hundred flaky ones) [google-flaky-size].
 
 ### 19.10 CI wiring
 
 `/sapu:init`, only with the owner's consent and in its own pull request, writes
-`.github/workflows/<smoke.ci.workflow>` from `argus-live.mjs smoke workflow`: `on: pull_request` and a
-push to the base branch; `permissions: contents: read`; a job skipped when a pull request comes from a
-fork (no secrets there); `actions/checkout` with `persist-credentials: false`; the app started by the
-config's `webServer` from `smoke.json` `ci.web_server` (`reuseExistingServer: false`, loopback URLs);
-in the suite directory `npm ci`, `npx playwright install --with-deps <browser>`, `npx playwright test
---project setup --project <p>` in a matrix over the projects (each job its own app instance), and the
-`test-results/` artifact uploaded with a short retention. The secrets the job passes are the names
+`.github/workflows/<smoke.ci.workflow>` from `argus-live.mjs smoke workflow`: `on: pull_request`, a
+push to the base branch and `workflow_dispatch` (inputs `baseline`, `grep`; they reach the shell only
+through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9|-]+$`); `permissions:
+contents: read`, never `pull_request_target`; every action pinned to a full commit SHA, resolved by
+`gh api` when the file is printed, its tag in a comment [gh-secure]; a job skipped when a pull
+request comes from a fork (no secrets there); `actions/checkout` with `persist-credentials: false`;
+the app started by the config's `webServer` from `smoke.json` `ci.web_server`
+(`reuseExistingServer: false`, loopback URLs). The screenshot projects run in the
+`mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` container with `--ipc=host --init`
+[pw-ci] [pw-docker], `msedge` on the plain runner; in the suite directory `npm ci` and `npx playwright
+test --shuffle --grep-invert @quarantine --project setup --project <p>` in a matrix over the
+projects (each job its own app instance), plus the non-gating `quarantine` job and the dispatch-only
+`baseline` job (§19.8). `test-results/` is uploaded as `argus-smoke-results`, the baseline job's
+written files as `argus-smoke-baselines`, both with `retention-days: 7` [gh-artifacts], never
+`.auth/`. The secrets the job passes are the names
 `.argus/live.env` holds, from the repo's CI secrets; the generated support reads them by name.
 Without a `workflow` scope on the owner's gh token, init hands the file to the owner instead.
 `ci.web_server` is the owner's statement of how CI starts the app; `/sapu:init` proposes it from
@@ -2200,12 +2292,18 @@ the suite off any deployed system. CI's datastore holds `live.json`'s users (the
 ### 19.11 Performance
 
 Measured by the lane, on Chrome, in `smoke run --perf`, on suite paths (a fixed script; an explorer's
-walk is not repeatable): per run `lcp_ms` (the largest LCP of the run's documents), `cls` (the largest
-session-window sum), `inp_ms` (the longest interaction), `duration_ms` (the steps' time to effect,
-seed triggers excluded), `requests` and `bytes` (resource and navigation entries, `transferSize`),
+walk is not repeatable): per run `lcp_ms` (the largest LCP of the run's documents; LCP stops at the
+first input, so a perf run waits for the document's `load` event before its first action on it)
+[webdev-lcp], `cls` (the largest session-window sum, shifts flagged `hadRecentInput` skipped)
+[webdev-cls], `inp_ms` (the worst interaction: `event` entries observed with `durationThreshold: 16`,
+grouped by `interactionId`) [webdev-inp], `duration_ms` (the steps' time to effect, seed triggers
+excluded), `requests` and `bytes` (resource and navigation entries, `transferSize`) [webdev-budgets],
 from an init script of `PerformanceObserver`s installed with the signal script (§7) and drained after
 every step. A batch is one warm-up run, then `perf.runs` runs on one instance; its value is each
-metric's median. Baseline per journey in `.argus/perf.json` `{pathSha, head, machine, n, medians}`:
+metric's median (five runs' median is about twice as stable as one) [lh-variability]
+[lhci-config]. A batch is refused while another slot of the run is live (`refused: smoke run
+--perf: <n> other slot(s) live`): concurrent load on one machine skews every timing
+[lh-variability]. Baseline per journey in `.argus/perf.json` `{pathSha, head, machine, n, medians}`:
 the first batch; void when the path's digest or the machine (CPU model and count, memory, platform,
 Chrome version) differs; moved only by `smoke perf --rebaseline <id>` (the owner's command, or the
 owner closing a perf issue as not planned). Default thresholds `[relative, absolute]`: `lcp_ms` [0.2,
@@ -2214,7 +2312,9 @@ owner closing a perf issue as not planned). Default thresholds `[relative, absol
 regression counts only when a second batch after `up --fresh` regresses too. Filed through `scrub
 --create` with `perf`, `argus`, `found-by:user` and the needs-owner label, deduplicated by
 `perf:<id>:<metric>`, its body from `smoke perf --issue <id>`: baseline, both batches, thresholds,
-and `git log --format='%h %s' <baseline head>..HEAD -- <anchor files>`. The generated suite measures
+and `git log --format='%h %s' <baseline head>..HEAD -- <anchor files>`. web.dev's "good" values
+(LCP 2.5 s, INP 200 ms, CLS 0.1) are field targets at the 75th percentile; the report prints them
+beside the medians as `lab context`, never as a verdict [webdev-vitals] [webdev-labfield]. The generated suite measures
 nothing: shared CI runners are too noisy for a gate, and perf APIs are complete only in Chromium.
 
 ### 19.12 Journeys from issues and docs
@@ -2230,7 +2330,10 @@ does not anchor is dropped, so a ticket can only name journeys the code has. `ma
 adds `seeds: [{kind, ref}]` to each journey the seed slot returned (written by the merge, never by
 the explorer), and the catalog marks them `seeded`. The explorer still has no network and no channel
 out (§3), so an injected instruction can at most waste its budget or yield a candidate the repro gate
-refuses.
+refuses. The fence is hygiene, not the boundary: text labels and prompt wording are no enforcement
+boundary [owasp-pi-cheat]; the boundary is least privilege (the explorer's confinement), the
+deterministic gates (`validateMap`, anchors, repro two of two) and the owner's merge of every
+proposal [owasp-llm01].
 
 ### 19.13 The per-cycle report
 
@@ -2253,7 +2356,7 @@ app's API).
 
 New verbs, all the orchestrator's: `smoke plan`, `smoke admit <ref>`, `smoke run [--ids …] [--slot <n>]
 [--perf] [--seed <n>]`, `smoke heal <slot>.<generation>`, `smoke propose`, `smoke ci [--run <id>]`,
-`smoke baseline --from-run <id>`, `smoke perf (--issue|--rebaseline) <id>`, `smoke workflow`, `seed`,
+`smoke baseline --from-run <id> [--ids …]`, `smoke perf (--issue|--rebaseline) <id>`, `smoke workflow`, `seed`,
 `report`. `smoke check` writes nothing and joins the guard's subagent reads (`status`, `status
 --json`, `check`). The explorer gains `pw <token> <role>.<k> layout [<check>]` (the layout oracle,
 its answer fenced) and, on a seed map token, `pw <token> source`; it still runs nothing but `pw`.
@@ -2265,9 +2368,13 @@ final kind.
 Unchanged: the exploratory lane's loopback instance, proxy, explorer confinement, ledger and scrub.
 New boundaries: generated code is built from data by the generator alone (JSON literals, sapu's own
 check and login sources); CI artifacts and issue text are untrusted inputs, read by name and shape
-and fenced; nothing secret-shaped is committed (scrub's matcher over every proposed file; CI secrets
-by name only; storageState gitignored, 0600, never uploaded; traces never attached); the suite drives
-loopback only.
+and fenced (fences are hygiene; the gates and the owner's merge are the boundary, §19.12); nothing
+secret-shaped is committed (scrub's matcher over every proposed file; CI secrets by name only;
+storageState gitignored, 0600, never uploaded; the setup project records no trace, video or
+screenshot; test traces stay in the short-lived CI artifact, never attached to an issue, never read
+by `smoke ci` or `smoke baseline`); the CI workflow runs with `contents: read`, SHA-pinned actions and
+dispatch inputs through `env:` only; the suite drives loopback only. A heal is never applied at run
+time (§19.9).
 
 ### 19.17 Out of scope, and covered elsewhere
 
