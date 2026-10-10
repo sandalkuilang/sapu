@@ -582,7 +582,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/SKILL.md": 42_688,
   "skills/journey/SKILL.md": 4_700,
   "skills/journey/live.md": 14_500,
-  "skills/journey/smoke.md": 14_850,
+  "skills/journey/smoke.md": 15_100,
 };
 
 describe("context budgets", () => {
@@ -1022,6 +1022,12 @@ describe("the journey lane's engine text", () => {
 
   it("journeys.md asks explorers for paths, admits them, seeds the map, and ends with the report", () => {
     const flat = read(JOURNEYS).replace(/\s+/g, " ");
+    // smoke.md says what the first cycle does: no catalog ends it; no paths or no CI run is journalled, never an end.
+    const smokeMd = read("skills/journey/smoke.md").replace(/\s+/g, " ");
+    expect(smokeMd).toContain("with no catalog, `smoke plan` refuses (`no journey catalog`) and the cycle ends, telling the owner to run `/sapu:journey list`");
+    expect(smokeMd).toContain("`refused: smoke run|ci: … has no paths` and `… has no completed run` are journalled and the cycle goes on");
+    // Without .argus/smoke.json the owner never opted into the suite: no explorer is asked for a path.
+    expect(flat).toContain("`path: wanted` only when `.argus/smoke.json` exists and `live smoke plan` lists it `capture`");
     for (const s of ["`path: wanted`", "`live smoke admit <s>.<g>`", "`live seed (--issue <n>|--doc <file>:<a>-<b>)`", "`live slot 1 --map --seed`", "`report: <path>`"]) {
       expect(flat, s).toContain(s);
     }
