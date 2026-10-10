@@ -2,17 +2,18 @@
 // in-page oracle against fixture pages that each hold a violation and its excluded twin (the false-positive
 // set is the test), the support-file wrappers run for real against a local server, and the emitted lines.
 import { spawnSync } from "node:child_process";
+import { symlinkSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { browserTools, cleanTemps, example, tempDir } from "./helpers/argus-live";
+import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHECKS, LAYOUT_KINDS, PAGE_FN, pageExpression } from "../plugins/sapu/scripts/argus-live-layout.mjs";
 // @ts-expect-error — plain ESM script without types
-import { smokeSpec, supportFile } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+import { generateSuite, smokeSpec, supportFile } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
 import { validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 
@@ -319,6 +320,143 @@ describe("argus-live layout — localeStep (the i18n project)", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------
+// C1.3 — links, CTA routes, loading, empty states, toasts.
+
+describe("argus-live layout — links and CTA routes", () => {
+  const links = async (cap = 50, routes: Obj[] = []) => {
+    hits = [];
+    otherHits = [];
+    maxInflight = 0;
+    const e = env("chromium");
+    const lib = load(["links"], e.scope);
+    const { context, page } = await open("links.html");
+    const opened = [context];
+    await lib.linksStep(opened, 0, origin);
+    return { lib, opened, page, e, final: () => lib.linksFinal(opened, 9, "j", cap, [], routes, ["buyer.1"]) };
+  };
+
+  it("a 404, 410 and 500 link fail; a 302 to sign-in holds; 401, 403 and 429 are manual with no retry", async () => {
+    const { final, e } = await links();
+    const found = await final();
+    expect(found.map((f: Obj) => [f.check, f.key, f.detail]).sort()).toEqual([
+      ["link", "link|/boom", "500 /boom"],
+      ["link", "link|/gone", "410 /gone"],
+      ["link", "link|/loop", "more than 5 redirects from /loop"],
+      ["link", "link|/missing", "404 /missing"],
+    ]);
+    const manual = e.annotations.filter((a) => a.type === "argus-manual").map((a) => JSON.parse(a.description));
+    expect(manual.map((m: Obj) => [m.key, m.detail]).sort()).toEqual([
+      ["link|/forbidden", "403 /forbidden"],
+      ["link|/private", "401 /private"],
+      ["link|/slow-down", "429 /slow-down"],
+    ]);
+    expect(hits.filter((h) => h === "/slow-down")).toEqual(["/slow-down"]);
+    expect(hits.filter((h) => h === "/to-login")).toEqual(["/to-login"]);
+    expect(hits).toContain("/login");
+  }, 90_000);
+
+  it("requests go one at a time, redirects are followed by hand within the origin only, and another origin is never requested", async () => {
+    const { final } = await links();
+    await final();
+    expect(maxInflight).toBe(1);
+    expect(hits.filter((h) => h === "/loop").length).toBe(6);
+    expect(hits).toContain("/offsite");
+    expect(otherHits).toEqual([]);
+    // Each link once: the duplicate fragment form is one request; mailto, javascript, fragment-only and hidden links are not requested.
+    expect(hits.filter((h) => h === "/ok")).toEqual(["/ok"]);
+    for (const never of ["/hidden-link", "/frag"]) expect(hits).not.toContain(never);
+  }, 90_000);
+
+  it("link_cap holds: only the first links in page order are requested", async () => {
+    const { final } = await links(3);
+    await final();
+    expect(hits).toEqual(["/ok", "/missing", "/gone"]);
+    const zero = await links(0);
+    expect(await zero.final()).toEqual([]);
+    expect(hits).toEqual([]);
+  }, 90_000);
+
+  it("a map route the path never visited fails; parameters are wildcards", async () => {
+    const routes = [{ role: "buyer", route: "/orders/:id" }, { role: "buyer", route: "/returns" }, { role: "buyer", route: "/links.html" }];
+    const { final, lib, opened, page } = await links(0, routes);
+    expect((await final()).map((f: Obj) => f.key)).toEqual(["buyer|/orders/:id", "buyer|/returns"]);
+    await page.goto(`${origin}/orders/1001`);
+    await lib.linksStep(opened, 0, origin);
+    expect((await final()).map((f: Obj) => [f.check, f.key])).toEqual([["cta-route", "buyer|/returns"]]);
+    for (const [route, p, want] of [["/a/:id", "/a/9", true], ["/a/[id]", "/a/9", true], ["/a/{id}", "/a/9/", true], ["/a/*", "/a/x", true], ["/a/:id", "/a", false], ["/a/b", "/a/c", false], ["/a?x=1", "/a", true]] as const) {
+      expect(lib.linksRouteMatches(route, p), `${route} ${p}`).toBe(want);
+    }
+  }, 90_000);
+
+  it("a final status is classified: 2xx and 3xx hold, 404/410/5xx fail, every other 4xx is the owner's", () => {
+    const lib = load(["links"], env("chromium").scope);
+    const kind = (s: number) => lib.linksClassify(s);
+    expect([200, 204, 301, 302].map(kind)).toEqual(["ok", "ok", "ok", "ok"]);
+    expect([404, 410, 500, 503].map(kind)).toEqual(["fail", "fail", "fail", "fail"]);
+    expect([400, 401, 403, 405, 429].map(kind)).toEqual(["manual", "manual", "manual", "manual", "manual"]);
+  });
+});
+
+describe("argus-live layout — loading, empty states, toasts", () => {
+  it("a stuck aria-busy fails and a resolved one holds", async () => {
+    const lib = load(["loading"], env("chromium").scope);
+    const stuck = await open("loading-stuck.html");
+    expect(await lib.loadingStep([stuck.context], 0, 1, "j", [], 500)).toEqual([{ check: "loading", step: 1, key: "|Loading orders|div", detail: "div \"Loading orders\" is still loading" }]);
+    const resolved = await open("loading-resolved.html");
+    expect(await lib.loadingStep([resolved.context], 0, 1, "j", [], 5000)).toEqual([]);
+    // An indeterminate progressbar is a loader; a determinate one is not.
+    await resolved.page.setContent('<main><div role="progressbar" aria-label="Upload"></div><div role="progressbar" aria-valuenow="40" aria-label="Quota"></div></main>');
+    expect((await ask(resolved.page, "loading")).map((f: Obj) => f.key)).toEqual(["progressbar|Upload|div"]);
+  }, 60_000);
+
+  it("an empty table or list needs words near it; a message, rows or a heading alone differ", async () => {
+    const lib = load(["empty"], env("chromium").scope);
+    const { context } = await open("empty.html");
+    const found = await lib.emptyStep([context], 0, 1, "j", []);
+    expect(found.map((f: Obj) => f.key)).toEqual(["table|Orders|table", "ul|Messages|ul"]);
+  }, 60_000);
+
+  describe("toasts", () => {
+    const toasts = async () => {
+      const e = env("chromium");
+      const lib = load(["toast"], e.scope);
+      const { context, page } = await open("toasts.html");
+      const opened = [context];
+      // Step 1 arms the recorder; nothing before it can be seen.
+      expect(await lib.toastStep(opened, 0, 1, "j", [], ["Next"], 800)).toEqual([]);
+      const after = async (id: string) => {
+        await page.click(`#${id}`);
+        return lib.toastStep(opened, 0, 2, "j", [], ["Next"], 800);
+      };
+      return { after };
+    };
+
+    it("a fixed toast that goes by itself and sits in no live region fails 4.1.3; a live one holds", async () => {
+      const { after } = await toasts();
+      expect((await after("plain")).map((f: Obj) => [f.check, f.key])).toEqual([["toast", "toast|Saved plain|div"]]);
+      expect(await after("live")).toEqual([]);
+      expect(await after("inplace")).toEqual([]);
+    }, 60_000);
+
+    it("text added to a live region that already existed is not a toast that must be dismissed", async () => {
+      const { after } = await toasts();
+      expect(await after("keep")).toEqual([]);
+    }, 60_000);
+
+    it("a live toast over the next target fails", async () => {
+      const { after } = await toasts();
+      expect((await after("cover")).map((f: Obj) => f.key)).toEqual(["status|Saved over next|div|covers"]);
+    }, 60_000);
+
+    it("a dismissible live toast holds; one that stays with no way to dismiss it fails", async () => {
+      const { after } = await toasts();
+      expect(await after("dismiss")).toEqual([]);
+      expect((await after("sticky")).map((f: Obj) => f.key)).toEqual(["status|Working on it|div|persistent"]);
+    }, 60_000);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
 // What the generator embeds and emits.
 
 const LIVE = (): Obj => ({ ...example(), test_id_attribute: "data-testid" });
@@ -335,10 +473,14 @@ const PATH = (): Obj[] => [
 ];
 
 describe("argus-live layout — the registry and its emitted lines", () => {
-  it("registers the layout and locale checks, each with the shape the generator reads, and the sources parse", () => {
+  it("registers the six checks, each with the shape the generator reads, and the sources parse", () => {
     expect(CHECKS.map((c: Obj) => [c.name, c.project, typeof c.source, typeof c.emit])).toEqual([
       ["layout", "viewport", "string", "function"],
       ["locale", "i18n", "string", "function"],
+      ["links", "viewport", "string", "function"],
+      ["loading", "viewport", "string", "function"],
+      ["empty", "viewport", "string", "function"],
+      ["toast", "viewport", "string", "function"],
     ]);
     const file = join(tempDir(), "support.mjs");
     writeFileSync(file, stripTypeScriptTypes(CHECKS.map((c: Obj) => c.source).join("\n")));
@@ -353,16 +495,18 @@ describe("argus-live layout — the registry and its emitted lines", () => {
     const layout = lines.filter((l) => l.includes(".layoutStep("));
     expect(layout.length).toBe(6);
     expect(layout[0]).toBe('    expect.soft(await (await import("./support")).layoutStep(opened, 0, 1, "checkout", []), "layout: step 1").toEqual([]);');
-    // Every check follows each of the six account steps; the last (system) step gets none.
-    for (const fn of ["layoutStep", "localeStep"]) expect(lines.filter((l) => l.includes(`.${fn}(`)).length, fn).toBe(6);
-    expect(text.indexOf("fact-equals")).toBeGreaterThan(text.lastIndexOf(".layoutStep("));
+    // Every check follows each of the six account steps; the last (system) step gets only the final link pass.
+    for (const fn of ["layoutStep", "localeStep", "linksStep", "loadingStep", "emptyStep", "toastStep"]) expect(lines.filter((l) => l.includes(`.${fn}(`)).length, fn).toBe(6);
+    expect(lines.filter((l) => l.includes(".linksFinal(")).length).toBe(1);
+    expect(text.indexOf(".linksFinal(")).toBeGreaterThan(text.indexOf("fact-equals"));
     expect(text).not.toContain("`");
   });
 
-  it("the journey's allow list reaches the lines as JSON literals", () => {
-    const smoke = validateSmoke({ journeys: { checkout: { allow: [{ check: "target-size", key: 'button|Edit "x"|button' }] } }, ci: { web_server: [{ command: "npm start", url: "http://localhost:4100/health" }], ports: { web: 4100 } } }).value;
+  it("the journey's allow list and link_cap reach the lines as JSON literals", () => {
+    const smoke = validateSmoke({ link_cap: 7, journeys: { checkout: { allow: [{ check: "target-size", key: 'button|Edit "x"|button' }] } }, ci: { web_server: [{ command: "npm start", url: "http://localhost:4100/health" }], ports: { web: 4100 } } }).value;
     const text = smokeSpec({ id: "checkout", path: PATH(), live: LIVE(), smoke });
     expect(text).toContain('.layoutStep(opened, 0, 1, "checkout", [{"check":"target-size","key":"button|Edit \\"x\\"|button"}])');
+    expect(text).toMatch(/\.linksFinal\(opened, 7, "checkout", 7, \[\{"check":"target-size"/);
   });
 
   it("locale lines pass the typed values as variables (only those read before the step), a mutating step, and the last account step", () => {
@@ -379,6 +523,20 @@ describe("argus-live layout — the registry and its emitted lines", () => {
     ]);
   });
 
+  it("the toast line names what the next action of the account targets", () => {
+    const text = smokeSpec({ id: "checkout", path: PATH(), live: LIVE(), smoke: SMOKE() });
+    const toast = text.split("\n").filter((l) => l.includes(".toastStep(")).map((l) => l.slice(l.indexOf("[]"), l.indexOf('), "toast')));
+    expect(toast).toEqual(['[], ["Quantity"]', '[], ["Place order"]', '[], ["order-number"]', '[], ["Continue"]', '[], []', '[], []']);
+  });
+
+  it("the map routes of the path's roles ride the final line; other roles' are left out", () => {
+    const steps = [{ n: 1, as: "customer.1", do: "goto" }, { n: 8, as: "system", expect: "fact-equals" }];
+    const routes = [{ role: "customer", route: "/orders/:id" }, { role: "clerk", route: "/inbox" }];
+    const lines = CHECKS[2].emit(steps[1], { id: "checkout", steps, smoke: SMOKE(), routes });
+    expect(lines).toEqual(['expect.soft(await (await import("./support")).linksFinal(opened, 8, "checkout", 50, [], [{"role":"customer","route":"/orders/:id"}], ["customer.1"]), "links and routes").toEqual([]);']);
+    expect(CHECKS[2].emit(steps[0], { id: "checkout", steps, smoke: SMOKE() })).toEqual(['await (await import("./support")).linksStep(opened, 0, baseURL);']);
+  });
+
   it("support.ts embeds every source once, and holds no hard wait, shell or exec", () => {
     const text = supportFile({ live: LIVE(), smoke: SMOKE(), roles: ["customer"] });
     for (const c of CHECKS) expect(text.split(c.source).length - 1, c.name).toBe(1);
@@ -388,3 +546,88 @@ describe("argus-live layout — the registry and its emitted lines", () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------------
+// The generated suite under the pinned runner: the lines and the support functions run for real.
+
+describe("argus-live layout — in a generated suite", () => {
+  /** Generates a suite for the fixture app into a scratch repo and runs the named projects → the runner's answer and its JSON. */
+  async function runSuite({ viewports, projects, journeyLive = {} as Obj, lines = {} as Obj }: { viewports: number[]; projects: string[]; journeyLive?: Obj; lines?: Obj }) {
+    const { cli } = browserTools();
+    const web = await freePort();
+    const data = join(tempDir(), "app_explore");
+    const appEnv = { PORT: String(web), DATA_DIR: data, APP_PW: PW, CONTROL_TOKEN: "control-7", CACHE_URL: "tcp://127.0.0.1:9" };
+    expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: { ...process.env, ...appEnv } }).status).toBe(0);
+    const live = {
+      ...example(),
+      base_url: "http://localhost:{port:web}",
+      login_url: "/login",
+      logged_in: "getByRole('button', { name: 'Account' })",
+      test_id_attribute: "data-testid",
+      facts: { argv: [process.execPath, SERVER, "--facts", "{1}"] },
+      triggers: {},
+      settle_ms: 5000,
+      viewports,
+      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } },
+      ...journeyLive,
+    };
+    delete (live as Obj).mail;
+    const smoke = validateSmoke({ dir: "e2e/argus-smoke", ...lines, ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-layout-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
+    expect(smoke).not.toBeNull();
+    const path = [
+      { as: "buyer", do: "goto", path: "/orders/new" },
+      { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "1" },
+      { as: "buyer", do: "click", target: { role: "button", name: "Place order" } },
+      { as: "buyer", do: "read", target: { testId: "order-number" }, save: "order" },
+      { as: "buyer", expect: "visible", target: { testId: "order-number" } },
+      { as: "system", expect: "fact-equals", marker: "{{order}}", field: "status", value: "placed" },
+    ];
+    const files = generateSuite({ paths: [{ id: "place-order", path }], live, smoke });
+    const repo = tempDir();
+    const dir = join(repo, "e2e/argus-smoke");
+    mkdirSync(dir, { recursive: true });
+    for (const [f, text] of Object.entries(files) as [string, string][]) writeFileSync(join(dir, f), text);
+    mkdirSync(join(repo, ".argus"), { recursive: true });
+    writeFileSync(join(repo, ".argus/live.json"), JSON.stringify({ ...live, locales: ["de-DE"], pseudo_locales: ["en-XA"] }));
+    const pinned = join(cli.dir, "node_modules");
+    mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
+    writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
+    for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
+    // The projects C3 owns, stood in for: one per kind the checks gate on.
+    writeFileSync(
+      join(dir, "wrapper.config.ts"),
+      'import base from "./playwright.config";\n\nconst chromium = base.projects!.find((p) => p.name === "chromium")!;\nexport default { ...base, projects: [base.projects![0], ...["chromium", "i18n", "a11y"].map((name) => ({ ...chromium, name, use: { ...chromium.use, channel: "chrome" } }))].map((p) => (p.name === "setup" ? { ...p, use: { ...p.use, channel: "chrome" } } : p)) };\n',
+    );
+    const args = ["test", "-c", "wrapper.config.ts", ...projects.flatMap((p) => ["--project", p])];
+    const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), ...args], { cwd: dir, encoding: "utf8", timeout: 240_000, env: { ...process.env, ...appEnv, CI: "1" } });
+    return { r, dir, files, results: JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8")) };
+  }
+  const tests = (s: Obj): Obj[] => [...(s.specs ?? []).flatMap((x: Obj) => x.tests.map((t: Obj) => ({ project: t.projectName, title: x.title, results: t.results }))), ...(s.suites ?? []).flatMap(tests)];
+
+  it("the fixture app's journey passes every check in the viewport project and the i18n project, and the a11y project runs none of them", async () => {
+    // The fixture app's header really has two small controls close together; the journey's allow list rules it out.
+    const allow = { journeys: { "place-order": { allow: [{ check: "target-size", key: "button|Account|button" }] } } };
+    const { r, results, files } = await runSuite({ viewports: [1280], projects: ["setup", "chromium", "i18n", "a11y"], lines: allow });
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
+    const ran = results.suites.flatMap(tests).filter((t: Obj) => t.title === "place-order");
+    expect(ran.map((t: Obj) => t.project).sort()).toEqual(["a11y", "chromium", "i18n"]);
+    const notes = (project: string) => ran.find((t: Obj) => t.project === project).results.flatMap((x: Obj) => x.annotations ?? []);
+    expect(notes("chromium").filter((a: Obj) => a.type === "argus-violation")).toEqual([]);
+    // The i18n project says what it covered; the others say nothing.
+    const info = notes("i18n").filter((a: Obj) => a.type === "argus-info").map((a: Obj) => a.description);
+    expect(info).toContain("locale: only URL-addressable states are checked");
+    expect(info.filter((l: string) => l.startsWith("pseudo-localization: "))).toEqual(expect.arrayContaining([expect.stringMatching(/^pseudo-localization: \d+ text unchanged under en-XA \(hard-coded\?\)$/)]));
+    expect(notes("a11y")).toEqual([]);
+    expect(files["support.ts"]).toContain("export async function layoutStep(");
+  }, 300_000);
+
+  it("a violation fails the test softly, naming the check and step, with the violation annotated for the report", async () => {
+    // A narrow first viewport makes the fixture app's pages scroll sideways.
+    const { r, results } = await runSuite({ viewports: [200], projects: ["setup", "chromium"] });
+    const run = results.suites.flatMap(tests).find((t: Obj) => t.title === "place-order");
+    const notes = run.results.flatMap((x: Obj) => x.annotations ?? []).filter((a: Obj) => a.type === "argus-violation").map((a: Obj) => JSON.parse(a.description));
+    expect(notes.length).toBeGreaterThan(0);
+    expect(notes[0]).toMatchObject({ check: expect.any(String), step: expect.any(Number), key: expect.any(String) });
+    expect(r.status).not.toBe(0);
+    expect(JSON.stringify(run.results)).toContain("layout: step");
+  }, 300_000);
+});

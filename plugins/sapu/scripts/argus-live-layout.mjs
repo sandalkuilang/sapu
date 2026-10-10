@@ -13,7 +13,9 @@ export const LAYOUT_KINDS = ["page-scroll", "clipped", "covered", "target-size"]
 /**
  * The in-page function: `(arg: {kind, opts}) → answer`, plain script with no outer reference, so it runs as
  * the support file's `page.evaluate` source and as the exploratory lane's `run-code` source alike. Kinds:
- * `layout` ({only?}) → [{check, key, detail}]; `format` ({locale}); `lang`; `text` ({exclude}) → visible text units.
+ * `layout` ({only?}) → [{check, key, detail}]; `format` ({locale}); `lang`; `text` ({exclude}) → visible text
+ * units; `links` ({origin}) → same-origin hrefs; `loading`; `empty`; `toast-arm`, `toast-take` ({next}) and
+ * `toast-state` ({ids}) → fixed elements that appeared after an action.
  */
 export const PAGE_FN = String.raw`(arg) => {
   const kind = arg.kind;
@@ -224,6 +226,84 @@ export const PAGE_FN = String.raw`(arg) => {
     return dedupe(out);
   };
 
+  // ------------------------------------------------------------------------------------ dynamic states
+  const loading = () => dedupe([...doc.querySelectorAll('[aria-busy="true"], [role=progressbar], progress')]
+    .filter((el) => el.getAttribute("aria-busy") === "true" || !el.hasAttribute(tagOf(el) === "progress" ? "value" : "aria-valuenow"))
+    .filter(ok).map((el) => ({ check: "loading", key: keyOf(el), detail: describe(el) + " is still loading" })));
+  const empty = () => {
+    const out = [];
+    const HEAD = "h1, h2, h3, h4, h5, h6, [role=heading], caption, legend, script, style, noscript";
+    for (const el of doc.querySelectorAll("table, [role=table], [role=grid], ul, ol, [role=list], [role=listbox], [role=feed]")) {
+      if (el.getAttribute("aria-busy") === "true" || !ok(el)) continue;
+      const headed = (r) => Boolean(r.closest("thead")) || (Boolean(r.querySelector("th, [role=columnheader]")) && !r.querySelector("td, [role=cell], [role=gridcell]"));
+      const rows = [...el.querySelectorAll("tr, [role=row]")];
+      const grid = tagOf(el) === "table" || /^(table|grid)$/.test(el.getAttribute("role") || "");
+      if (grid ? !rows.some(headed) || rows.some((r) => !headed(r)) : el.querySelectorAll("li, [role=listitem], [role=option], [role=article], article").length > 0) continue;
+      const box = el.closest("section, article, main, aside, form, [role=region], [role=main], [role=complementary], [role=form], [role=search]") || el.parentElement;
+      const walker = doc.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      let text = false;
+      for (let n = walker.nextNode(); n && !text; n = walker.nextNode()) text = Boolean(n.parentElement) && !el.contains(n.parentElement) && !n.parentElement.closest(HEAD) && /\p{L}/u.test(n.nodeValue) && ok(n.parentElement);
+      const label = explicitName(el) || norm((el.querySelector("caption, th, [role=columnheader]") || {}).textContent) || tagOf(el);
+      if (!text) out.push({ check: "empty", key: [roleOf(el) || tagOf(el), digits(label).slice(0, 60), tagOf(el)].join("|"), detail: "empty " + tagOf(el) + " with no text near it" });
+    }
+    return dedupe(out);
+  };
+  const links = () => {
+    const urls = [];
+    for (const a of doc.querySelectorAll("a[href]")) {
+      if ((a.getAttribute("href") || "").charAt(0) === "#" || !ok(a)) continue;
+      let u;
+      try {
+        u = new URL(a.href);
+      } catch (e) {
+        continue;
+      }
+      u.hash = "";
+      if ((u.protocol === "http:" || u.protocol === "https:") && u.origin === o.origin && urls.indexOf(u.href) < 0) urls.push(u.href);
+    }
+    return urls;
+  };
+
+  // A fixed element that appears after an action: recorded by a mutation observer, read by the next step.
+  const toastArm = () => {
+    if (doc.__argusToast) return true;
+    const st = (doc.__argusToast = { recs: [], seq: 0 });
+    const SKIP = "[role=dialog], [role=alertdialog], [role=menu], [role=listbox], [role=tooltip], [role=navigation], [role=banner], dialog, nav, header, footer, [aria-modal=true], [popover]";
+    const LIVE = "[role=status], [role=alert], [role=log], [aria-live]:not([aria-live=off])";
+    const record = (e, own) => {
+      const text = norm(e.innerText);
+      const b = rectOf(e);
+      if (!e.isConnected || e.closest(SKIP) || !text || b.width < 1 || b.height < 1) return;
+      st.recs.push({ id: st.seq++, el: e, own: own, text: text.slice(0, 120), live: Boolean(e.closest(LIVE) || e.querySelector(LIVE)), dismissible: Boolean(e.querySelector("button, a[href], [role=button], input[type=button]")), rect: { left: b.left, top: b.top, right: b.right, bottom: b.bottom }, taken: false });
+    };
+    const added = (root, element) => {
+      const fixed = [root].concat(element ? [...root.querySelectorAll("*")].slice(0, 200) : []).filter((e) => cs(e).position === "fixed");
+      for (const e of fixed) if (!fixed.some((f) => f !== e && f.contains(e))) record(e, element);
+      // Text or a child added inside a fixed region that was already there: a status update, not a new toast.
+      let region = root.parentElement;
+      while (region && cs(region).position !== "fixed") region = region.parentElement;
+      if (!fixed.length && region) record(root, false);
+    };
+    new MutationObserver((muts) => {
+      const nodes = muts.flatMap((m) => [...m.addedNodes]).filter((n) => n.nodeType === 1 || (n.nodeType === 3 && n.parentElement));
+      for (const n of nodes.slice(0, 50)) added(n.nodeType === 1 ? n : n.parentElement, n.nodeType === 1);
+    }).observe(doc, { childList: true, subtree: true });
+    return true;
+  };
+  const toastTake = () => {
+    const st = doc.__argusToast;
+    const hints = (o.next || []).map((h) => String(h).toLowerCase());
+    const ctl = hints.length ? controls() : [];
+    return (st ? st.recs : []).filter((r) => !r.taken).map((r) => {
+      r.taken = true;
+      const present = r.el.isConnected && !hiddenEl(r.el);
+      const box = present ? rectOf(r.el) : r.rect;
+      const covers = ctl.filter((c) => !r.el.contains(c) && (hints.indexOf(nameOf(c).toLowerCase()) >= 0 || [...c.attributes].some((a) => a.name.indexOf("data-") === 0 && hints.indexOf(a.value.toLowerCase()) >= 0)))
+        .filter((c) => { const b = rectOf(c); const x = b.left + b.width / 2; const y = b.top + b.height / 2; return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom; }).map(describe);
+      return { id: r.id, key: [r.el.getAttribute("role") || "toast", digits(r.text).slice(0, 60), tagOf(r.el)].join("|"), text: r.text, live: r.live, dismissible: r.dismissible, own: r.own, present: present, covers: covers };
+    });
+  };
+
   switch (kind) {
     case "layout": {
       const want = (k) => !Array.isArray(o.only) || o.only.indexOf(k) >= 0;
@@ -238,6 +318,18 @@ export const PAGE_FN = String.raw`(arg) => {
       const ex = (o.exclude || []).map(String).filter((e) => e.length > 0);
       return [...new Set(units().map(norm).filter((t) => /\p{L}/u.test(t) && !ex.some((e) => t.indexOf(e) >= 0)))];
     }
+    case "links":
+      return links();
+    case "loading":
+      return loading();
+    case "empty":
+      return empty();
+    case "toast-arm":
+      return toastArm();
+    case "toast-take":
+      return toastTake();
+    case "toast-state":
+      return doc.__argusToast ? doc.__argusToast.recs.filter((r) => (o.ids || []).indexOf(r.id) >= 0 && r.el.isConnected && !hiddenEl(r.el)).map((r) => r.id) : [];
     default:
       throw new Error("argus layout: no check " + kind);
   }
@@ -370,6 +462,130 @@ export async function localeStep(browser: Browser, opened: BrowserContext[], i: 
 }
 `;
 
+const LINKS_SOURCE = String.raw`type LinksState = { hrefs: Map<string, number>; visited: Set<string>[] };
+const linksStates = new WeakMap<object, LinksState>();
+const linksOf = (opened: BrowserContext[]): LinksState => linksStates.get(opened) ?? (linksStates.set(opened, { hrefs: new Map(), visited: [] }), linksStates.get(opened)!);
+
+/** A final status: ok, fail (404, 410, 5xx) or manual (any other 4xx: 401 and 403 are a link offered to a role that cannot open it, 429 a rate limit, never waited out). */
+function linksClassify(status: number): "ok" | "fail" | "manual" {
+  if (status === 404 || status === 410 || status >= 500) return "fail";
+  return status >= 400 ? "manual" : "ok";
+}
+
+/** A route (parameters as :id, [id], {id} or *) matches a pathname segment by segment. */
+function linksRouteMatches(route: string, pathname: string): boolean {
+  const segs = (s: string): string[] => s.replace(/[?#].*$/, "").split("/").filter(Boolean);
+  const [r, p] = [segs(route), segs(pathname)];
+  return r.length === p.length && r.every((x, k) => /^(:[^/]+|\[[^\]]+\]|\{[^}]+\}|\*)$/.test(x) || x === p[k]);
+}
+
+/** One GET, no redirect followed by the client; redirects are followed by hand within the link's own origin only (at most 5): another origin is never requested. */
+async function linksProbe(request: BrowserContext["request"], start: string): Promise<{ status: number | null; detail: string }> {
+  let url = start;
+  for (let hop = 0; hop <= 5; hop++) {
+    const res = await request.get(url, { maxRedirects: 0, failOnStatusCode: false });
+    const status = res.status();
+    const at = status + " " + new URL(url).pathname;
+    if (status < 300 || status >= 400) return { status, detail: at };
+    const to = res.headers()["location"];
+    if (!to) return { status, detail: at + " with no location" };
+    const next = new URL(to, url);
+    if (next.origin !== new URL(start).origin) return { status, detail: at + " leaves the origin (not requested)" };
+    url = next.href;
+  }
+  return { status: null, detail: "more than 5 redirects from " + new URL(start).pathname };
+}
+
+/** After a step: the same-origin links of the account's page (kept for the final step) and the pathname it is on. */
+export async function linksStep(opened: BrowserContext[], i: number, baseURL: string | undefined): Promise<void> {
+  const page = layoutPageOf(opened, i);
+  if (!page || layoutKind() !== "viewport" || !baseURL) return;
+  const st = linksOf(opened);
+  while (st.visited.length <= i) st.visited.push(new Set());
+  st.visited[i].add(new URL(page.url(), baseURL).pathname);
+  for (const href of await layoutRun(page, "links", { origin: new URL(baseURL).origin })) if (!st.hrefs.has(href)) st.hrefs.set(href, i);
+}
+
+/** After the final step: each link seen (at most cap, one at a time, by the account that saw it) and each map route a role of the path acts as, which the path must have visited. */
+export async function linksFinal(opened: BrowserContext[], step: number, id: string, cap: number, allow: LayoutRule[], routes: { role: string; route: string }[], accounts: string[]): Promise<LayoutViolation[]> {
+  if (layoutKind() !== "viewport") return [];
+  const st = linksOf(opened);
+  const found: LayoutFound[] = [];
+  for (const [url, i] of [...st.hrefs.entries()].slice(0, Math.max(0, cap))) {
+    if (!opened[i]) continue;
+    const key = "link|" + new URL(url).pathname.replace(/[0-9]+/g, "#");
+    try {
+      const res = await linksProbe(opened[i].request, url);
+      const kind = res.status === null ? "fail" : linksClassify(res.status);
+      if (kind === "fail") found.push({ check: "link", key, detail: res.detail });
+      else if (kind === "manual") layoutManual(step, "link", key, res.detail);
+    } catch (e) {
+      layoutManual(step, "link", key, "the request failed: " + String((e as Error).message).slice(0, 120));
+    }
+  }
+  for (const r of routes) {
+    const seen = accounts.some((a, i) => a.split(".")[0] === r.role && [...(st.visited[i] ?? [])].some((p) => linksRouteMatches(r.route, p)));
+    if (!seen) found.push({ check: "cta-route", key: r.role + "|" + r.route, detail: "the path never reached " + r.route + " as " + r.role });
+  }
+  return layoutJudge(id, step, found, allow);
+}
+`;
+
+const LOADING_SOURCE = String.raw`/** After a step: no aria-busy or indeterminate progressbar stays visible past SETTLE (ARIA-marked loaders only). */
+export async function loadingStep(opened: BrowserContext[], i: number, step: number, id: string, allow: LayoutRule[], settle: number = SETTLE): Promise<LayoutViolation[]> {
+  const page = layoutPageOf(opened, i);
+  if (!page || layoutKind() !== "viewport") return [];
+  try {
+    await page.waitForFunction("(" + String(layoutPage) + ")(" + JSON.stringify({ kind: "loading", opts: {} }) + ").length === 0", undefined, { timeout: settle });
+    return [];
+  } catch (e) {
+    return layoutJudge(id, step, await layoutRun(page, "loading", {}), allow);
+  }
+}
+`;
+
+const EMPTY_SOURCE = String.raw`/** After a step: an empty table, grid or list needs an empty-state message near it. */
+export async function emptyStep(opened: BrowserContext[], i: number, step: number, id: string, allow: LayoutRule[]): Promise<LayoutViolation[]> {
+  const page = layoutPageOf(opened, i);
+  return page && layoutKind() === "viewport" ? layoutJudge(id, step, await layoutRun(page, "empty", {}), allow) : [];
+}
+`;
+
+const TOAST_SOURCE = String.raw`const toastArmed = new WeakSet<object>();
+
+/**
+ * After a step: the toasts that appeared since the previous step (the first step only arms the recorder). One
+ * that goes by itself within SETTLE must be in a live region (4.1.3); a live one must not cover the next target
+ * and, if it stays, must be dismissible.
+ */
+export async function toastStep(opened: BrowserContext[], i: number, step: number, id: string, allow: LayoutRule[], next: string[], settle: number = SETTLE): Promise<LayoutViolation[]> {
+  const page = layoutPageOf(opened, i);
+  if (!page || layoutKind() !== "viewport") return [];
+  if (!toastArmed.has(opened[i])) {
+    toastArmed.add(opened[i]);
+    await opened[i].addInitScript("(" + String(layoutPage) + ")(" + JSON.stringify({ kind: "toast-arm", opts: {} }) + ")");
+  }
+  const recs: { id: number; key: string; live: boolean; dismissible: boolean; own: boolean; present: boolean; covers: string[] }[] = await layoutRun(page, "toast-take", { next });
+  await layoutRun(page, "toast-arm", {});
+  const found: LayoutFound[] = [];
+  for (const r of recs) {
+    let stays = r.present;
+    if (stays) {
+      try {
+        await page.waitForFunction("(" + String(layoutPage) + ")(" + JSON.stringify({ kind: "toast-state", opts: { ids: [r.id] } }) + ").length === 0", undefined, { timeout: settle });
+        stays = false;
+      } catch (e) {
+        stays = true;
+      }
+    }
+    if (!stays && !r.live) found.push({ check: "toast", key: r.key, detail: "a message that goes by itself is in no live region (WCAG 4.1.3)" });
+    if (r.live && r.covers.length) found.push({ check: "toast", key: r.key + "|covers", detail: "covers the next target: " + r.covers.join(", ") });
+    if (stays && r.live && r.own && !r.dismissible) found.push({ check: "toast", key: r.key + "|persistent", detail: "stays past SETTLE and has no control to dismiss it" });
+  }
+  return layoutJudge(id, step, found, allow);
+}
+`;
+
 // ---------------------------------------------------------------------------------------------------
 // The registry's emitters.
 
@@ -405,11 +621,17 @@ function valueExpr(s, steps, n) {
 const typedValues = (steps, n) =>
   steps.filter((s) => s.n <= n && typeof s.value === "string" && (s.do === "fill" || s.do === "select" || ["value-equals", "text-equals", "text-contains"].includes(s.expect))).map((s) => valueExpr(s.value, steps, n)).filter(Boolean);
 
+/** What the next action of the same account names (its target's name or value, when it holds no placeholder), for the toast-over-target rule. */
+function nextHints(step, steps) {
+  const next = steps.slice(steps.findIndex((s) => s.n === step.n) + 1).find((s) => s.do && s.as === step.as && s.target);
+  return next ? ["name", "value"].map((k) => next.target[k]).filter((v) => typeof v === "string" && !v.includes("{{")) : [];
+}
+
 /**
  * The check registry the generator loops over: `[{name, project, when, source, emit(step, ctx) → string[]}]`
  * — `project` the suite project that runs it, `when` the steps it follows, `source` the TypeScript embedded in
  * support.ts, `emit` the suite lines one path step adds (each a soft assertion on what the support's function
- * returns).
+ * returns). `ctx.routes` (optional: the journey's map routes, `[{role, route}]`) feeds the CTA-route check.
  */
 export const CHECKS = [
   { name: "layout", project: "viewport", when: "every step", source: CORE_SOURCE, emit: perStep("layoutStep", "layout") },
@@ -423,4 +645,21 @@ export const CHECKS = [
         ? []
         : [soft("localeStep", ["browser", "opened", accountsOf(ctx.steps).indexOf(step.as), J(step.as), step.n, J(ctx.id), "baseURL", "viewport", J(allowOf(ctx)), `[${typedValues(ctx.steps, step.n).join(", ")}]`, J(MUTATING.includes(step.do)), J(step.n === lastAccountStep(ctx).n)], `locale: step ${step.n}`)],
   },
+  {
+    name: "links",
+    project: "viewport",
+    when: "every step, judged after the final step",
+    source: LINKS_SOURCE,
+    emit(step, ctx) {
+      const accounts = accountsOf(ctx.steps);
+      const lines = step.as === "system" ? [] : [`await (await import("./support")).linksStep(opened, ${accounts.indexOf(step.as)}, baseURL);`];
+      if (step.n !== ctx.steps[ctx.steps.length - 1].n) return lines;
+      const routes = (Array.isArray(ctx.routes) ? ctx.routes : []).filter((r) => r && accounts.some((a) => a.split(".")[0] === r.role)).map((r) => ({ role: r.role, route: r.route }));
+      const cap = Number.isInteger(ctx.smoke && ctx.smoke.link_cap) ? ctx.smoke.link_cap : 50;
+      return [...lines, soft("linksFinal", ["opened", step.n, J(ctx.id), cap, J(allowOf(ctx)), J(routes), J(accounts)], "links and routes")];
+    },
+  },
+  { name: "loading", project: "viewport", when: "every step", source: LOADING_SOURCE, emit: perStep("loadingStep", "loading") },
+  { name: "empty", project: "viewport", when: "every step", source: EMPTY_SOURCE, emit: perStep("emptyStep", "empty state") },
+  { name: "toast", project: "viewport", when: "every step", source: TOAST_SOURCE, emit: perStep("toastStep", "toast", (step, ctx) => [J(nextHints(step, ctx.steps))]) },
 ];
