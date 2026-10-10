@@ -848,3 +848,89 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
   `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+
+### Lane F — F1 file, cap, accept; F2 the scorecard first
+
+Commits: F1 `feat(sapu): argus-live files taste and usability findings — capped, deduplicated, precise`, F2
+`feat(sapu): argus-live report leads with the taste and usability scorecard`, then this note. Line counts: `-tastefile`
+491, `-report` 417. Tests: `tests/argus-live-tastefile.test.ts` (18, no browser; judge.json, curator.json and
+taste-state.json are fixtures of lane 0's shapes, gh a function); the phase 6 report test is unchanged and green.
+
+**F1, `taste file [--run]` (`tasteFile(main, {run, cap}, {env, gh, runner})`; the third argument is optional, as
+scrub's).**
+- *Reads* `<run>/taste/judge.json` through `readJudge` (exported; lane 0's shape, refused whole when out of shape,
+  keys beyond the shape ignored), `<run>/taste/curator.json` through `readCurator` (a verdict naming no judge row
+  dropped), taste.json through `loadTaste`, the state through `readTasteState`.
+- *Files only* rows with `confirmed: true`, of a rule the bar holds with the judged class, neither `info` nor in
+  `off`. A `bar` row needs an internal witness (`tokens`, `frame` or `peer`), else it is `held` and never written to
+  the state. F does not also require the band witness: D5's band check is J2's (its test: a bar row with only the
+  band is not a row).
+- *One issue per title key*: a screen's rows of one rule (several element keys) share one issue, its body listing
+  each row; the journeys that reached the screen all point at it in the state.
+- *Severity* (`OUTCOME`, aesthetics.md §7 by outcome as a fixed table): S3 for `colour.role` (SC 3.2.4, as §4
+  says), `colour.dark-contrast`, `feedback.busy`, `feedback.progress`, `states.error`, `states.success`,
+  `states.recovery`, `copy.broken`, `ai.error`, `efficiency.actions`, `efficiency.klm`; every other rule S4; any row
+  costing the bar's `efficiency.klm` `plus_s` (10 s) or more of klm_s is S3. Never above S3: §7's S1/S2 owe the
+  money arithmetic (SKILL.md §5), which only the orchestrator can write.
+- *Labels*: `classify --oracle taste`'s (`bug` for implicit and derived only), `severity:s<n>` (argus's label list),
+  the contract's needs-owner label when due; scrub adds the agent-filed label.
+- *Where each goes*: S3 or needs-owner → its own issue, under the cap (ranked severity, cost, witnesses, row order);
+  S4 without needs-owner → the run's one `[polish] cycle <runId> — N coherence items` roll-up (`ux`, `argus`,
+  `found-by:user`, `severity:s4`, `priority:p3`, never `bug`; at most 30 rows; it does not count against the cap).
+  Over the cap, or after a scrub refusal, a row is `queued`. The cap counts this run's issues already filed (the
+  run's filed.jsonl against the listing), so calling the verb twice never exceeds it.
+- *needs-owner*: a `consistent.*` row whose `expected` is `"no majority"` (or `"needs-owner"`); a row the Curator
+  `reject`s (an S4 one is `held` instead: a coherence nit the Curator disputes is not worth the owner's ruling); an
+  S3 row the Curator rates `polish`. Nothing else.
+- *Dedupe*: the state's issue URL (viewed with `gh issue view` when the listing of 2000 does not hold it), else the
+  title key at the start of any issue's title, as given or as scrub rewrites it. Open → `open`, never filed twice.
+  Closed NOT_PLANNED or DUPLICATE → `closed`, the owner's ruling, never refiled (the line names the `taste accept`
+  to stage on their word). Closed COMPLETED → filed anew, its body naming the earlier issue. The listing is every
+  issue in every state, never `--search`; titles are compared, never printed.
+- *Bodies*: `Journey:`, `Viewport:` (width × theme), `Measured:` (value → expected, the witnesses, `taste-bar <n>`;
+  numbers only in prose), `Class:`, `Severity:` with its reason, `Cost:`, `Needs the owner:`, `Source:` (the cited
+  ids and their URLs), then every row as one JSON line in a `json` block: page text and the Curator's reason (at most
+  500 characters) appear only there. Each body is written to `<run>/taste/filing/<row>.md` (0600) and goes through
+  `scrub --create`, which records the URL in filed.jsonl.
+- *Before gh*: nothing to file → no gh call; a run scrub refuses, a contract that cannot be read or files no issue,
+  a secret ledger scrub refuses → refused. gh's listing failing → exit 2, nothing filed; a scrub refusal or a create
+  without a URL stops the filing (exit 1 or 2), the rest queued. The state is written after each issue.
+- *Only this run's rows file.* A row queued by an earlier run files when a later judge confirms it again (SELECT's
+  taste factor brings its journey back), never from a stale measurement.
+- *The state*: F writes each confirmed row it handles (`severity` is F's), keeps `first`, sets `last` to the run.
+  A journey the state lacks is created with `judged` = the run; F never touches an existing `judged` or `best`.
+
+**F1, `taste accept <rule> <key>`.** Adds `{rule, key, why}` to `.argus/taste.json` in the working tree (validated
+whole, written beside and renamed; the owner commits it), `why` = `the owner's ruling (taste accept)` plus the
+row's issue URL when the state has one; marks every state row under that title key `accepted`. Refused: a rule the
+bar lacks, an information rule (it never files), a key that is no screen key, a taste.json that does not parse or
+validate. Twice is once.
+
+**F2, the scorecard.** `tasteScorecard(main, runId, cw)` (exported) returns lane 0's scorecard rows; the report
+opens with `## Taste and usability` only when `<run>/taste/` exists, so every earlier caller's report stays byte for
+byte the same. Per journey: screens (a count, or the length of a list of screen keys), the efficiency figures
+(`-` for a null one; `efficiency not measured` when null), the walkthrough, the Curator's verdict counts, and per
+family `confirmed` (this run, two of two), `queued` and `accepted` (the journey's standing rows in the state). The
+section prints counts, figures, family names and journey ids only, never page text or the Curator's words; the file
+still goes through defang and scrub's matcher. A judge, Curator or state record out of shape is named under
+`Records not read`.
+
+**Needs coordinator.**
+1. *Screenshots (D19, F1's test row "its screenshot verdicts").* Taste issues attach none yet. A judge row names no
+   screenshot, and scrub's `attachVerdict` admits only `<slot>/out/<name>.png` with a verdict pw wrote, so a shot
+   under `<run>/taste/shots/` would always stay local. To attach one: lock the shot's file name per screen key (or a
+   `shot` field on the judge row), have J1 write each shot's verdict (`writeVerdict`) when it records it, and let
+   `attachVerdict` (`-scrub`, no lane's) admit `taste/shots/<name>.png`. F then passes it to scrub's `attach`.
+2. *The no-majority mark.* Lane 0's finding has no field for "a split with no majority". F reads `expected: "no
+   majority"` on a `consistent.*` judge row; T2.3 and J2 must write exactly that (or lane 0 locks another mark).
+3. *The Curator's file.* F and the report read the Curator's return at `<run>/taste/curator.json` as `{verdicts,
+   leads}`; the path is not locked. Z1 (and J, which dispatches it) must write it there.
+4. *Substitution verdicts (D20).* The locked Curator return has no per-screen substitution verdict, so the scorecard
+   shows only `confirm`, `reject`, `polish` counts. Adding e.g. `screens: [{screen, substitution:
+   substitutable|partly|no}]` to the return (Z1) lets F2 count them.
+5. *The walkthrough's pass rate.* `cw` answers are free text: F2 counts a step as passing when all four answers start
+   with `yes`, `pass` or `held`. D20's "clicks and term now numbers" is a return-schema change (`-return`, lane 0 or
+   Z): once the explorer returns a fixed verdict word or numbers, the scorecard should read those.
+6. *Engine text (Z2).* journeys.md and the journey skill: run `taste file` after the judge and the confirmations and
+   before `report`; it labels, dedupes and files through scrub itself (the orchestrator files no taste row by hand);
+   `taste accept` only on the owner's word, after they close a taste issue as not planned.
