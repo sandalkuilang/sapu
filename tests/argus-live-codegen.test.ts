@@ -373,7 +373,8 @@ const SHOT_PROJECTS = ["chromium", "firefox", "webkit", "chromium-390"];
 describe("argus-live codegen — screenshots", () => {
   it("the path's last page step is shot after the pointer is parked: animations off, caret hidden, the dynamic content masked", () => {
     const text = spec();
-    const shot = text.slice(text.indexOf('    if (inProject(["chromium"'));
+    // The shot's own gate (the checks' gates name msedge, a11y or i18n too, or no engine at all).
+    const shot = text.slice(text.indexOf(`    if (inProject(${JSON.stringify(SHOT_PROJECTS)})) {`));
     expect(shot.split("\n").slice(0, 4)).toEqual([
       `    if (inProject(${JSON.stringify(SHOT_PROJECTS)})) {`,
       "      await sales1.mouse.move(-1, -1);",
@@ -381,6 +382,8 @@ describe("argus-live codegen — screenshots", () => {
       "    }",
     ]);
     expect((text.match(/toHaveScreenshot/g) ?? []).length).toBe(1);
+    // A gate holds lines: a check with none at a step (a system step) leaves no empty block.
+    expect(text).not.toMatch(/if \(inProject\([^\n]*\)\) \{\n\s*\}/);
     // Playwright's own tolerance: no allowance of pixels, no threshold, no full page.
     for (const banned of ["maxDiffPixels", "maxDiffPixelRatio", "threshold", "fullPage", "stylePath", "scale"]) expect(text, banned).not.toContain(banned);
     expect(check(text)).toEqual({ code: 0, err: "" });

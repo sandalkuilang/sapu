@@ -230,7 +230,8 @@ function gated(check, projects) {
     for (const x of projects) if (t === x.name || (t === "browser" && x.kind === "browser") || (t === "viewport" && (x.kind === "browser" || x.kind === "viewport"))) names.add(x.name);
   }
   const list = JSON.stringify([...names]);
-  return { ...check, emit: (s, ctx) => (names.size ? [`if (inProject(${list})) {`, ...check.emit(s, ctx).map((l) => `  ${l}`), "}"] : []) };
+  const wrap = (body) => (body.length ? [`if (inProject(${list})) {`, ...body.map((l) => `  ${l}`), "}"] : []);
+  return { ...check, emit: (s, ctx) => (names.size ? wrap(check.emit(s, ctx)) : []) };
 }
 
 /** What the suite takes from `live` about roles and accounts: each account the paths sign in → its user and secrets by name. */
