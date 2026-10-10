@@ -145,6 +145,18 @@ describe("argus-live codegen — smokeSpec", () => {
     expect(JSON.parse(literalOf)).toBe(evil);
   });
 
+  it("a path that types a password into a login records no trace; one without keeps the config's", () => {
+    const signIn = [{ as: "customer.1", do: "login", user: "u-{{marker}}", password: "p-{{marker}}" }, { as: "customer", expect: "visible", target: { role: "heading", name: "Shop" } }];
+    const text = spec({ path: signIn });
+    expect(text).toContain('login(customer1, baseURL, "customer.1", "u-" + marker, "p-" + marker)');
+    // A trace keeps each fill's value as typed, and the CI artifact keeps the trace.
+    expect(text).toContain('\ntest.use({ trace: "off" });\n\ntest("checkout", ');
+    expect(check(text)).toEqual({ code: 0, err: "" });
+    expect(spec()).not.toContain("test.use(");
+    // Video and screenshots are off for every project, so a failure attaches neither; toHaveScreenshot's images show a password field masked.
+    expect(smokeConfig({ live: LIVE(), smoke: SMOKE() })).toContain('"trace": "on-first-retry", "video": "off", "screenshot": "off"');
+  });
+
   it("refuses what path mode refuses, and a journey id of another shape", () => {
     expect(() => spec({ path: [...PATH(), { as: "sales", expect: "visible", target: { text: "x" }, final: "handoff" }] })).toThrow("refused: repro: step 15: a path has no final");
     expect(() => spec({ path: [{ as: "customer", do: "click", target: { text: "Pay" } }, { as: "customer", expect: "visible", target: { text: "Paid" } }] })).toThrow("refused: repro: step 1: an action's target in a path is");

@@ -511,6 +511,8 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false, routes =
     'import { collectErrors, fact, inProject, login, mail, newMarker, open, readValue, SETTLE, trigger } from "./support";',
     ...([...pages.keys()].some(command) ? ['import { signedIn } from "./fixtures";'] : []),
     "",
+    // A trace keeps every fill's value as typed, and CI uploads it: a path that types a password records none.
+    ...(steps.some((s) => s.do === "login") ? ['test.use({ trace: "off" });', ""] : []),
     `test(${JSON.stringify(id)}, ${literal(details)}, async ({ browser, baseURL, viewport }) => {`,
     "  const marker = newMarker();",
     "  const opened: BrowserContext[] = [];",
@@ -574,14 +576,17 @@ export function authSetup({ live, accounts }) {
  * `ci.web_server` URL, refused unless its host is loopback; `fullyParallel`; under CI `forbidOnly`,
  * `retries: 1`, `workers: 1`, `globalTimeout`, `updateSnapshots: "none"` and a JSON report in
  * `test-results/`; elsewhere no retry and smoke.json's `workers` (unset: Playwright's default); `trace:
- * "on-first-retry"`, live.json's first viewport, locale and time zone, `testIdAttribute` only with
+ * "on-first-retry"` (a spec whose path types a login's password turns it off), no video or screenshot, live.json's first viewport, locale and time zone, `testIdAttribute` only with
  * `test_id_attribute`; the app started by `ci.web_server` (never reused); the `setup` project with no trace,
  * video or screenshot, and `chromium`, which depends on it.
  */
 export function smokeConfig({ live, smoke }) {
   const web = (smoke.ci && smoke.ci.web_server) || [];
   const use = {
+    // No video and no screenshot on failure: a recording would show what a path types (a password field is masked).
     trace: "on-first-retry",
+    video: "off",
+    screenshot: "off",
     viewport: { width: (Array.isArray(live.viewports) && live.viewports[0]) || 1440, height: HEIGHT },
     locale: live.locale || "en-US",
     timezoneId: live.timezone || "UTC",
