@@ -10,11 +10,17 @@ import { join } from "node:path";
 import vm from "node:vm";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
-import { browserTools, cleanTemps, committed, example, git } from "./helpers/argus-live";
+import { browserTools, cleanTemps, committed, example, git, liveRun, makeShim, tempDir } from "./helpers/argus-live";
+// @ts-expect-error — plain ESM script without types
+import { SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { activeSink, batchMedians, collecting, confirmedRegressions, median, newSink, PERF_SCRIPT, perfCode, perfIssue, perfRebaseline, readPerf, recordDocs, regressions, runMetrics } from "../plugins/sapu/scripts/argus-live-perf.mjs";
 // @ts-expect-error — plain ESM script without types
-import { down } from "../plugins/sapu/scripts/argus-live-run.mjs";
+import { down, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+// @ts-expect-error — plain ESM script without types
+import { sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 
 type Obj = Record<string, any>;
 
@@ -276,6 +282,92 @@ describe("a run's metrics from the documents it measured", () => {
     await expect(collecting(a, async () => Promise.reject(new Error("x")))).rejects.toThrow("x");
     expect(activeSink()).toBeNull();
   });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// The session hook and the measured step.
+
+describe("the session driver in a perf pass", () => {
+  const runs: { main: string; runId: string }[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+  });
+  const PORTS = { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 };
+  const driverRun = () => {
+    const t = liveRun();
+    const c = example();
+    c.roles = { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${PW}" }] } };
+    writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(c, null, 2)}\n`);
+    writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
+    const { shim, calls, queue } = makeShim();
+    const js = join(tempDir(), "cli.mjs");
+    writeFileSync(
+      js,
+      `import { spawn } from "node:child_process";
+const argv = process.argv.slice(2);
+const cmd = argv.find((a) => !a.startsWith("-"));
+const session = (argv.find((a) => a.startsWith("-s=")) ?? "").slice(3);
+if (cmd === "open") spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "/stand-in/cliDaemon.js", session], { detached: true, stdio: "ignore" }).unref();
+await import(${JSON.stringify(shim)});
+`,
+    );
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: ["http://localhost:41001", "http://localhost:41002"], allowOrigins: [], groups: [], env: { ...t.env }, ports: PORTS, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+    runs.push({ main: t.main, runId: t.runId });
+    const dir = slotDir(t.main, t.runId, 1);
+    mkdirSync(join(dir, ".playwright"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(t.home, "browser"), { recursive: true, mode: 0o700 });
+    const { config, secrets } = loadLive(t.main);
+    const live = expandConfig(config, { ports: { ...PORTS }, secrets });
+    const driver = () => sessionDriver({ main: t.main, runId: t.runId, slot: 1, account: "buyer.1", rec: readRun(t.main), live, envSecrets: secrets, slotRec: { journey: "x", accounts: { "buyer.1": "buyer1@example.test" } }, dir, js });
+    const runCodes = () => calls().filter((x) => x.argv.includes("run-code"));
+    return { ...t, calls, queue, driver, runCodes };
+  };
+  const hookPayload = (code: string) => JSON.parse(/const P = (.*);\n/.exec(code)![1]);
+
+  it("the hook installs the perf script beside the signal script, and only in a perf pass", async () => {
+    const plain = driverRun();
+    await plain.driver().ensure();
+    expect(hookPayload(plain.runCodes()[0].code).signals).toBe(SIGNAL_SCRIPT);
+    const t = driverRun();
+    await collecting(newSink(), () => t.driver().ensure());
+    const { signals } = hookPayload(t.runCodes()[0].code);
+    expect(signals).toBe(`${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`);
+    expect(() => new vm.Script(signals)).not.toThrow();
+  }, 60_000);
+
+  it("a step is wrapped by a snapshot after load and one after the step; its time is the step's alone", async () => {
+    const t = driverRun();
+    const sink = newSink();
+    const d = await collecting(sink, async () => t.driver());
+    const before = { docs: [{ doc: "aa11", lcp: 700, cls: 0, inp: 0, requests: 3, bytes: 300 }], ua: "Chrome/147.0.7727.55" };
+    const after = { docs: [{ doc: "bb22", lcp: 1200, cls: 0.01, inp: 90, requests: 6, bytes: 900 }], ua: "Chrome/147.0.7727.55" };
+    t.queue(before, { ok: true, answer: 1 }, after);
+    const code = "async page => ({ ok: true })";
+    expect(await d.code(code, 30_000)).toEqual({ ok: true, answer: 1 });
+    const sent = t.runCodes().map((x) => x.code);
+    expect(sent).toHaveLength(3);
+    expect(sent[0]).toContain("waitForLoadState");
+    expect(sent[1]).toBe(code);
+    expect(sent[2]).not.toContain("waitForLoadState");
+    expect(runMetrics(sink)).toMatchObject({ lcp_ms: 1200, inp_ms: 90, requests: 9, bytes: 1200 });
+    expect(sink.steps).toBe(1);
+    expect(sink.ms).toBeGreaterThanOrEqual(0);
+    expect(sink.chrome).toBe("147.0.7727.55");
+  }, 60_000);
+
+  it("outside a perf pass d.code is one call, and the login stages are never measured", async () => {
+    const t = driverRun();
+    const d = t.driver();
+    t.queue({ ok: true });
+    expect(await d.code("async page => ({ ok: true })")).toEqual({ ok: true });
+    expect(t.runCodes()).toHaveLength(1);
+    const sink = newSink();
+    const m = await collecting(sink, async () => t.driver());
+    t.queue({ signals: [], loggedIn: null, url: "x", aria: "", tabs: 1, secrets: {} });
+    await m.observe();
+    expect(t.runCodes()).toHaveLength(2);
+    expect(sink.steps).toBe(0);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------
