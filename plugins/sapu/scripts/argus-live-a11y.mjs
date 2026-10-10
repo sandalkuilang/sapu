@@ -369,9 +369,10 @@ export async function a11yTokens(page, step, info) {
   const kind = src && typeof src.css === "string" ? "css" : src && typeof src.json === "string" ? "json" : null;
   if (!kind) return note("no token source");
   const file = path.resolve(REPO, src[kind]);
+  if (path.relative(REPO, file).startsWith("..")) return note("the token source is outside the repo");
   let values = [];
   try { values = a11yTokenValues(kind, require("node:fs").readFileSync(file, "utf8")); } catch (e) { values = []; }
-  if (!values.length || path.relative(REPO, file).startsWith("..")) return note("the token source holds no values");
+  if (!values.length) return note("the token source holds no values");
   await page.evaluate(a11yPageHelpers);
   const off = await page.evaluate((tokens) => {
     const H = window[Symbol.for("argus.a11y")];

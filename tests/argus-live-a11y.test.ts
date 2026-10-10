@@ -7,8 +7,8 @@ import { createServer, type Server } from "node:http";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { browserTools } from "./helpers/argus-live";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { ARIA_EXPECT, CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -19,6 +19,8 @@ import { validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 import { parseRepro, suiteAccounts } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 
 type Obj = Record<string, any>;
+
+afterEach(cleanTemps);
 const nodeRequire = createRequire(import.meta.url);
 const PAGES = join(__dirname, "fixtures/journey-app/pages/a11y");
 
@@ -568,7 +570,7 @@ describe("argus-live a11y — axe's WCAG rules at each screen [pw-a11y, axe-api]
 
 describe("argus-live a11y — design tokens", () => {
   const fs = (live: Obj | null, files: Record<string, string> = {}) => {
-    const repo = mkdtempSync(join(tmpdir(), "argus-a11y-"));
+    const repo = join(mkdtempSync(join(tmpdir(), "argus-a11y-")), "repo");
     mkdirSync(join(repo, ".argus"), { recursive: true });
     if (live) writeFileSync(join(repo, ".argus/live.json"), JSON.stringify(live));
     for (const [n, t] of Object.entries(files)) writeFileSync(join(repo, n), t);
@@ -595,7 +597,7 @@ describe("argus-live a11y — design tokens", () => {
         expect(info.annotations).toEqual([]);
       } finally {
         await close();
-        rmSync(repo, { recursive: true, force: true });
+        rmSync(dirname(repo), { recursive: true, force: true });
       }
     }
   }, 90_000);
@@ -604,6 +606,7 @@ describe("argus-live a11y — design tokens", () => {
     const { page, close } = await open("tokens.html");
     const info = { annotations: [] as Obj[] };
     const repos = [fs(null), fs({ tokens: { css: "../escape.css" } }), fs({ tokens: { css: "missing.css" } })];
+    writeFileSync(join(repos[1], "../escape.css"), ":root { --x: rgb(1, 2, 3); }"); // a real file, one level above the repo: never read
     try {
       for (const repo of repos) expect(await sourceApi({ REPO: repo }).a11yTokens(page, 1, info)).toEqual([]);
       const api = sourceApi({ REPO: repos[0] });
@@ -613,7 +616,7 @@ describe("argus-live a11y — design tokens", () => {
       expect(notes[0].description).toBe("design tokens: not checked (no token source)");
     } finally {
       await close();
-      for (const r of repos) rmSync(r, { recursive: true, force: true });
+      for (const r of repos) rmSync(dirname(r), { recursive: true, force: true });
     }
   }, 60_000);
 });
@@ -778,6 +781,83 @@ describe("argus-live a11y — inside the generated suite", () => {
     for (const n of ["a11yKeyboard", "a11yNames", "a11yReport", "a11yLocate"]) expect(support.match(new RegExp(`function ${n}\\b`, "g")), n).toHaveLength(1);
     expect(support).not.toMatch(/shell|\bexec\(|spawn\(|\/bin\/sh/);
   });
+
+  it("the a11y project runs the whole check set against the fixture app under the pinned runner: the chromium project runs none of it, and a baseline run adopts the screens", async () => {
+    const { cli } = browserTools();
+    const web = await freePort();
+    const appEnv = { PORT: String(web), DATA_DIR: join(tempDir(), "app_explore"), APP_PW: PW, APP_TOTP: TOTP, CONTROL_TOKEN: "control-7", CACHE_URL: "tcp://127.0.0.1:9" };
+    expect(spawnSync(process.execPath, [SERVER, "--reset"], { env: { ...process.env, ...appEnv } }).status).toBe(0);
+    const appLive: Obj = {
+      ...example(),
+      base_url: "http://localhost:{port:web}",
+      login_url: "/login",
+      logged_in: "getByRole('button', { name: 'Account' })",
+      test_id_attribute: "data-testid",
+      triggers: {},
+      settle_ms: 5000,
+      viewports: [1280],
+      roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } },
+    };
+    delete appLive.mail;
+    delete appLive.facts;
+    const appSmoke = validateSmoke({ dir: "e2e/argus-smoke", ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-a11y-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
+    const order = [
+      { as: "buyer", do: "goto", path: "/orders/new" },
+      { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "1" },
+      { as: "buyer", do: "click", target: { role: "button", name: "Place order" } },
+      { as: "buyer", expect: "visible", target: { testId: "order-number" } },
+    ];
+    const files = generateSuite({ paths: [{ id: "place-order", path: order }], live: appLive, smoke: appSmoke });
+    const repo = tempDir();
+    const dir = join(repo, "e2e/argus-smoke");
+    mkdirSync(dir, { recursive: true });
+    for (const [name, text] of Object.entries(files) as [string, string][]) writeFileSync(join(dir, name), text);
+    const pinned = join(cli.dir, "node_modules");
+    mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
+    writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
+    // axe-core does not run in sapu's tests: a builder that records its calls and finds nothing.
+    mkdirSync(join(dir, "node_modules/@axe-core/playwright"), { recursive: true });
+    writeFileSync(join(dir, "node_modules/@axe-core/playwright/index.js"), [
+      "const calls = [];",
+      "class AxeBuilder { constructor(o) { calls.push(['new', Boolean(o.page)]); } withTags(t) { calls.push(['tags', t.join()]); return this; } disableRules(r) { calls.push(['off', r.join()]); return this; } include(s) { calls.push(['include', s]); return this; } async analyze() { require('node:fs').writeFileSync(require('node:path').join(__dirname, '../../../axe-calls.json'), JSON.stringify(calls)); return { violations: [], incomplete: [] }; } }",
+      "module.exports = { AxeBuilder };",
+      "",
+    ].join("\n"));
+    for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
+    // The a11y project is the generator's to add; the wrapper adds it the way the spec describes (Chromium, after setup, the ARIA config).
+    writeFileSync(join(dir, "wrapper.config.ts"), [
+      'import base from "./playwright.config";',
+      "",
+      `export default { ...base, expect: { toMatchAriaSnapshot: ${JSON.stringify(ARIA_EXPECT)} }, projects: [...base.projects, { name: "a11y", testMatch: /\\.spec\\.ts$/, use: { browserName: "chromium" }, dependencies: ["setup"] }].map((p) => ({ ...p, use: { ...p.use, channel: "chrome" } })) };`,
+      "",
+    ].join("\n"));
+    const run = (flags: string[], debug = false) => {
+      const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), "test", "-c", "wrapper.config.ts", ...flags], { cwd: dir, encoding: "utf8", timeout: 240_000, env: { ...process.env, ...appEnv, CI: "1", ...(debug ? { DEBUG: "pw:api" } : {}) } });
+      const results = JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8"));
+      return { r, results, out: `${r.stdout}\n${r.stderr}` };
+    };
+    // 1. The chromium project alone: the checks are the a11y project's, so nothing of them runs and no baseline is needed.
+    const plain = run(["--project", "setup", "--project", "chromium"]);
+    expect(plain.r.status, plain.out).toBe(0);
+    expect(existsSync(join(dir, "axe-calls.json"))).toBe(false);
+    // 2. The baseline run adopts the screen's ARIA file; the checks run and report only what is the fixture app's own.
+    const first = run(["--project", "setup", "--project", "a11y", "--update-snapshots=missing"], true);
+    expect(first.r.status, first.out).toBe(0);
+    // The checks really ran in the page (the API log of the run): Tab presses, focus screenshots, the ARIA snapshot.
+    expect(first.out).toMatch(/keyboard\.press started/);
+    expect(first.out).toMatch(/page\.screenshot started/);
+    expect(first.out).toMatch(/locator\.ariaSnapshot|toMatchAriaSnapshot|ariaSnapshot/);
+    const annotations = (x: Obj): Obj[] => [...(x.specs ?? []).flatMap((sp: Obj) => sp.tests.filter((t: Obj) => t.projectName === "a11y").flatMap((t: Obj) => t.annotations)), ...(x.suites ?? []).flatMap(annotations)];
+    expect(first.results.suites.flatMap(annotations)).toEqual([{ type: "a11y-note", description: "design tokens: not checked (no token source)" }]);
+    expect(existsSync(join(dir, "__aria__/place-order/4.aria.yml")), first.out).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, "axe-calls.json"), "utf8"))).toEqual([["new", true], ["tags", "wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa"], ["off", "target-size"], ["include", "main"]]);
+    // 3. A normal run compares it; a deleted baseline reads as baseline-missing, a soft failure of the a11y test.
+    rmSync(join(dir, "__aria__/place-order/4.aria.yml"));
+    const missing = run(["--project", "setup", "--project", "a11y"]);
+    expect(missing.r.status).not.toBe(0);
+    expect(missing.out).toContain("aria-snapshot (step 4) baseline-missing");
+    expect(missing.out.includes(PW)).toBe(false);
+  }, 400_000);
 });
 
 describe("argus standards — the WCAG criteria the smoke suite's checks measure", () => {
