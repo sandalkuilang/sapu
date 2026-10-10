@@ -14,6 +14,10 @@ import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-code
 // @ts-expect-error — plain ESM script without types
 import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
+import { easeOf } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+// @ts-expect-error — plain ESM script without types
+import { metricsOf } from "../scripts/taste-calibrate.mjs";
+// @ts-expect-error — plain ESM script without types
 import { loadBar, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
@@ -395,6 +399,27 @@ describe("the suite's taste core on the probe's pages (phase 7 integration)", ()
     const off = suiteEnv({ off: ["colour.dark-border"] });
     await off.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j", true, []);
     expect(off.annotations.map((a) => a.description).join("\n")).not.toContain("dark-border");
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Lane K's seam: calibration reads each per-page number by its bar rule's metric name, or that metric gets no band.
+
+describe("the calibration seam (phase 7 integration, lane K)", () => {
+  it("censusOf and easeOf carry every band rule's metric as a finite number under its metric name, the count its row reports", async () => {
+    const band = BAR.rules.filter((r: Obj) => "band" in r.threshold);
+    expect(band.map((r: Obj) => r.metric).sort()).toEqual(["distinct_colours", "distinct_radii", "distinct_shadows", "distinct_spacing", "distinct_type", "distinct_weights"]);
+    for (const file of ["census.html", "scale-eleven.html", "shadows-five.html"]) {
+      const page = await open(file);
+      // As the calibration script measures a page: the census and the ease screen, no action.
+      const screen = { census: await censusOf(page), ease: await easeOf(page) };
+      const metrics = metricsOf(screen, BAR);
+      const rows = rulesFor(screen.census, BAR, cfgOf()) as Obj[];
+      for (const r of band) {
+        expect(Number.isFinite(metrics[r.metric]), `${file} ${r.metric}`).toBe(true);
+        expect(rows.find((x) => x.rule === r.id)?.measured, `${file} ${r.id}`).toBe(metrics[r.metric]);
+      }
+    }
   }, 120_000);
 });
 

@@ -327,6 +327,8 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     vw: win.innerWidth,
     truncated: all.length >= MAX,
     counts: { spacing: spacing.size, type: types.size, weights: weights.size, colours: colours.size, radii: radii.size, shadows: shadows.size },
+    // The same counts under the bar's metric names: calibration's bands read a metric by its rule's metric name.
+    metrics: { distinct_spacing: spacing.size, distinct_type: types.size, distinct_weights: weights.size, distinct_colours: colours.size, distinct_radii: radii.size, distinct_shadows: shadows.size },
     values: { spacing: [...spacing], type: [...types.values()], radius: [...radiusValues], gaps: [...gaps.keys()] },
     palette: [...palette].sort(),
     headings,
