@@ -437,6 +437,15 @@ export function loginCode(stage, payload) {
   return `async page => {\n  const P = ${JSON.stringify(payload)};\n  const loggedIn = ${targetFn(payload.loggedIn)};\n  const opener = ${targetFn(payload.open)};\n${HELPERS}${STAGES[stage]}}\n`;
 }
 
+/**
+ * Login stage `stage`'s body, verbatim as loginCode wraps it (HELPERS, then the stage), for the smoke suite's
+ * support file (spec §19.5), which runs it as a function of `page`, `P`, `loggedIn` and `opener`.
+ */
+export function loginStageSource(stage) {
+  if (!Object.hasOwn(STAGES, stage)) throw new Error(`failed: no login stage ${stage}`);
+  return `${HELPERS}${STAGES[stage]}`;
+}
+
 /** The JSON of a `run-code` call's `### Result` section; anything else throws `failed: run-code: <its error>`. */
 function resultOf(r) {
   const out = String(r.stdout ?? "");

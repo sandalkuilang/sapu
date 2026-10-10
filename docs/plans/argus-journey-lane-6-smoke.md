@@ -370,7 +370,7 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
 ### Task 0.4: the generator core
 **Model: opus-high** (codegen of page-derived strings, storageState). **Files:** `-codegen.mjs` (new),
 `-redtest.mjs`, `tests/argus-live-codegen.test.ts`, `tests/fixtures/argus-red/` (golden unchanged).
-- [ ] **Failing tests.** Each test scans the generated text.
+- [x] **Failing tests.** Each test scans the generated text.
   - **The RED test.** The golden RED test is byte-identical through the moved builder.
   - **`smokeSpec` bans.** The fixture path's spec holds none of: `waitForTimeout`, `setTimeout`,
     `sleep`, a template literal of path data, a CSS selector, an XPath, `describe.serial`,
@@ -407,9 +407,9 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
     - `@playwright/test` resolves through a scratch `node_modules/@playwright/test/index.js` holding
       `module.exports = require("playwright/test")`, never through `npm install` [probe].
     - The suite passes, and the runner accepts the `lock` option.
-- [ ] **Run** → FAIL. **Implement** (the `CHECKS` registry loop is in place, empty until C1, C2).
+- [x] **Run** → FAIL. **Implement** (the `CHECKS` registry loop is in place, empty until C1, C2).
   **Run**, then `npx vitest run` → PASS.
-- [ ] **Commit** `feat(sapu): argus-live codegen — the smoke suite generated from paths, setup project
+- [x] **Commit** `feat(sapu): argus-live codegen — the smoke suite generated from paths, setup project
   and support, the RED test through the same builder`.
 
 ---
@@ -1084,3 +1084,66 @@ script), `-codegen` beside the instance before `-redtest`, then `-repro` → `-s
   `-minimize`, and the DAG test pins `-minimize` (not `-repro`) as the RED test's writer. Spec §18's file
   table still lists them under `-repro` (Z4).
 - Line counts at 0.3: `-repro` 594, `-steps` 630, `-minimize` 219, `-smoke` 222.
+
+### Task 0.4: the generator core
+
+**Locked for the lanes** (`-codegen.mjs`). Every function is pure, and every file it writes carries a
+header line naming `argus-live codegen <CODEGEN_VERSION>, digest <sha256 of the body without that line>`.
+- `generateSuite({paths: [{id, path}], live, smoke, quarantine}) → {<file>: text}`. It writes:
+  - `<id>.spec.ts` for each path;
+  - `auth.setup.ts`, `support.ts`, `playwright.config.ts`, `package.json` and `.gitignore`;
+  - `fixtures.ts` (`FIXTURES`, a stub that throws) only when a path acts as a login-command role.
+
+  `live` is live.json as written, its `${NAME}` references unexpanded; `smoke` is validateSmoke's value.
+  It writes neither `journeys/*.json` (A2's) nor `package-lock.json` (A3's, through npm).
+- `smokeSpec({id, path, live, smoke, quarantined})`, `smokeConfig({live, smoke})`, `authSetup({live,
+  accounts})`, `supportFile({live, smoke, roles})`, `packageJson()`, `suiteGitignore()`.
+- `headerDigest(text) → {digest, ok}`, for `smoke check` (A3).
+- Constants: `SMOKE_PLAYWRIGHT` (`1.64.0`), `CODEGEN_VERSION` (`1`), `TOTP_SOURCE` and `FIXTURES`.
+- The check lanes (C1, C2):
+  - `stepLines` calls every registered check's `emit(step, ctx)` (`ctx = {id, steps, smoke}`) after each
+    path step's `test.step`, and `supportFile` embeds every check's `source`.
+  - Emitted lines run inside the test's `try`. In scope: the page variables, `marker`, `opened`,
+    `browser`, `baseURL`, `viewport`, `SETTLE`, `test` and `expect`.
+- `-redtest` and the suite share one step builder: `str`, `literal`, `variable`, `pageVars`, `stepLines`,
+  `COLLECT`, `READ_VALUE` and `WAIT`.
+
+A spec is `test("<id>", {"tag": "@quarantine"?, "lock": ["account:<role>.<k>", …]}, async ({ browser,
+baseURL, viewport }) => {…})`:
+- the marker is made first (`newMarker()`), and each account's page opens from its storageState;
+- the page's context options are `{baseURL, viewport}` from the project, and `locale` and `timezoneId`
+  from the path's context;
+- every context is kept in `opened` and closed in `finally`;
+- each step is `await test.step("step <n> <do|expect>:<kind>", …)`, and a parallel group is a
+  `Promise.all` of `test.step`s;
+- expectations wait `{ timeout: SETTLE }`, and a fact compares as strings, as the runner compares it.
+
+The config:
+- the base URL is `ARGUS_SMOKE_BASE_URL`, else the origin of `ci.web_server[0]`, behind the loopback guard
+  (`localhost`, `127.x.x.x`, `[::1]`);
+- under CI the reporter is `list` plus JSON at `test-results/results.json`, for B2;
+- `globalTimeout` is `CI ? 3_600_000 : 0`, and `updateSnapshots` is `CI ? "none" : "missing"`;
+- `webServer` comes from `ci.web_server`, never reused, run from the repo's root;
+- the projects are `setup` (`auth.setup.ts`, with trace, video and screenshot off) and `chromium` (`*.spec.ts`,
+  depending on `setup`). C3 adds the rest.
+
+**Deviations.**
+- The wrapper's login template and `signInPage` live in `support.ts`, as spec §19.2 lists them, because a
+  path's `login` step needs them too. The template comes through `-login`'s new `loginStageSource(stage)`.
+  `auth.setup.ts` names each account's user, password and TOTP secret by environment name, writes
+  `.auth/<role>.<k>.json` and chmods it 0600. A password or TOTP secret that is not a `${NAME}` reference is
+  refused.
+- TOTP is written out as `TOTP_SOURCE`, not `totp.toString()`, because vitest's module transform rewrites
+  a function's own text. A test pins it to `-login`'s codes. With under 3 s of the current step left, it
+  takes the next step, which the app's one-step drift allows, rather than waiting.
+- `lock` leaves anon out, since anon holds no signed-in server state. It locks every other account the
+  test opens.
+- A hook's `{port:<name>}` takes smoke.json's `ci.ports` at generation. A name missing there is refused.
+- The login template polls with `page.waitForTimeout` and finds a form by `xpath=ancestor::form`. The bans
+  scan the spec files, which hold neither.
+- The browser test runs the pinned runner in a scratch suite directory. Its `node_modules` holds the
+  `@playwright/test` stub and links to the pinned `playwright` and `playwright-core`. A wrapper config sets
+  `channel: "chrome"`.
+- Codegen never writes `test.fixme`: a quarantined test gets `tag: "@quarantine"` (decision 13). This
+  closes 0.2's open line for B2.
+- Line counts at 0.4: `-codegen` 603, `-redtest` 77, `-login` 712.

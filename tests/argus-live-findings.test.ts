@@ -104,8 +104,8 @@ describe("argus-live modules — the DAG", () => {
     expect(g.has("argus-live-steps")).toBe(true);
     for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
-    // The generated RED test reads targets and oracles only; minimize, above the runner, writes it.
-    expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
+    // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
+    expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
     expect(g.get("argus-live-minimize")).toContain("argus-live-redtest");
     expect(g.get("argus-live-minimize")).toContain("argus-live-repro");
     // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
