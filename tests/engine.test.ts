@@ -13,7 +13,7 @@ import { LIMIT_KEYS, REQUIRED, ROLE_KEYS, START_KEYS, TOP_KEYS, USER_KEYS, valid
 // @ts-expect-error — plain ESM script without types
 import { validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
+import { LANE_ORACLES, ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { FINAL_KINDS, parseRepro } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 import { example } from "./helpers/argus-live";
@@ -866,9 +866,12 @@ describe("the journey lane's engine text", () => {
     expect(map.journeys.length).toBeGreaterThan(0);
   });
 
+  // The explorer's oracles: a lane-only one (regression, spec §19.9) is never the explorer's to name.
+  const explorerOracles = () => ORACLES.filter((o: string) => !LANE_ORACLES.includes(o));
+
   it("the brief states each oracle's final as the runner checks it", () => {
     const rows = section(read(AGENT), "## The final step").filter((l) => l.startsWith("|"));
-    for (const [oracle, kinds] of Object.entries(FINAL_KINDS) as [string, string[]][]) {
+    for (const [oracle, kinds] of (Object.entries(FINAL_KINDS) as [string, string[]][]).filter(([o]) => explorerOracles().includes(o))) {
       const own = rows.filter((r) => r.startsWith(`| \`${oracle}\` |`));
       expect(own, oracle).toHaveLength(1);
       for (const k of kinds) expect(own[0], `${oracle} ${k}`).toContain(`\`${k}\``);
@@ -878,7 +881,7 @@ describe("the journey lane's engine text", () => {
 
   it("the brief names every oracle the return takes", () => {
     const text = section(read(AGENT), "## Oracles").join("\n");
-    for (const o of ORACLES) expect(text, o).toContain(`\`${o}\``);
+    for (const o of explorerOracles()) expect(text, o).toContain(`\`${o}\``);
   });
 
   const JOURNEYS = "skills/argus/journeys.md";

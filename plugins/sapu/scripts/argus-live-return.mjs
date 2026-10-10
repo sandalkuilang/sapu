@@ -12,8 +12,14 @@ import { tempBeside } from "./argus-live-proc.mjs";
 import { readRun, updateRun, worktreeHeadFile } from "./argus-live-run.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 
-/** The oracles a candidate may name and coverage may judge (spec §7, §10). */
-export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale"];
+/** The oracles a candidate may name and coverage may judge (spec §7, §10, §19.9). */
+export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale", "regression"];
+/**
+ * The oracles only the lane's own pass names (spec §19.9): a regression is decided by re-running the suite's
+ * unchanged expectations, never by an explorer's word, so an explorer's return never names one.
+ */
+export const LANE_ORACLES = ["regression"];
+const EXPLORER_ORACLES = ORACLES.filter((o) => !LANE_ORACLES.includes(o));
 const STATUSES = ["done", "handoff", "aborted"];
 const VERDICTS = ["held", "failed", "not-tested", "blocked"];
 /** A marker's shape (argus-live-hooks' VALUE): what a trigger or `facts` may take. */
@@ -134,7 +140,7 @@ export function validateReturn(obj, { journey, accounts, outFiles }) {
     from: text(x.from, `${at}.from`),
   }));
   v.candidates = objects(obj.candidates, "candidates", 20, ["claim", "oracle", "measured", "roles", "observed", "expected", "repro", "screenshots", "h2h3"], (x, at) => {
-    if (!ORACLES.includes(x.oracle)) err(`${at}.oracle must be one of ${ORACLES.join(", ")}`);
+    if (!EXPLORER_ORACLES.includes(x.oracle)) err(`${at}.oracle must be one of ${EXPLORER_ORACLES.join(", ")}`);
     const shots = list(x.screenshots, `${at}.screenshots`, 20).map((s, i) => {
       if (typeof s !== "string" || !/^[A-Za-z0-9._-]{1,200}$/.test(s) || !outFiles.includes(s)) err(`${at}.screenshots[${i}] is not a file in this slot's out/`);
       return s;
@@ -161,7 +167,7 @@ export function validateReturn(obj, { journey, accounts, outFiles }) {
     if (!isObj(obj.coverage)) err("coverage must be an object");
     else
       for (const [k, x] of Object.entries(obj.coverage)) {
-        if (!ORACLES.includes(k)) err(`coverage: ${word(k)} is not an oracle`);
+        if (!EXPLORER_ORACLES.includes(k)) err(`coverage: ${word(k)} is not an oracle`);
         else if (!VERDICTS.includes(x)) err(`coverage.${k} must be one of ${VERDICTS.join(", ")}`);
         else v.coverage[k] = x;
       }

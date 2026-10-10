@@ -47,7 +47,7 @@ import { defang, redactIds, scrub, scrubSecrets, writeVerdict } from "../plugins
 // @ts-expect-error — plain ESM script without types
 import { configuredUser, drainSessions, maskSecrets, sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
-import { intake, ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
+import { intake, LANE_ORACLES, ORACLES, validateReturn } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { mintMapSlot, mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -555,6 +555,26 @@ describe("argus-live repro DSL", () => {
     expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled"] });
   });
 
+  it("the regression oracle (spec §19.9): the lane's own, its final any expectation kind", () => {
+    expect(ORACLES.at(-1)).toBe("regression");
+    expect(LANE_ORACLES).toEqual(["regression"]);
+    expect(FINAL_KINDS.regression).toEqual(["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals", "count", "url", "fact-equals", "mail", "no-error"]);
+    const last = EXAMPLE().at(-1);
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { ...last, final: "regression" }], at).steps.at(-1)).toMatchObject({ final: "regression" });
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { as: "sales.1", expect: "url", value: "/orders", final: "regression" }], at).steps.at(-1)).toMatchObject({ expect: "url", final: "regression" });
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { as: "sales.1", expect: "no-error", final: "regression" }], at).steps.at(-1)).toMatchObject({ expect: "no-error", final: "regression" });
+  });
+
+  it("an explorer's return never names the regression oracle: that decision is the unchanged expectations re-run", () => {
+    const ret = (oracle: string) => ({ journey: "j1", status: "done", candidates: [{ claim: "c", oracle, repro: [] }] });
+    const opts = { journey: "j1", accounts: { "customer.1": "buyer1@example.test" }, outFiles: [] };
+    expect(validateReturn(ret("dead-end"), opts).errors).toEqual([]);
+    const { errors } = validateReturn(ret("regression"), opts);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^candidates\[0\]\.oracle must be one of handoff, .*, viewport-locale$/);
+    expect(validateReturn({ journey: "j1", status: "done", coverage: { regression: "held" } }, opts).errors).toEqual(['coverage: "regression" is not an oracle']);
+  });
+
   it("parseRepro reads §10's example", () => {
     const { context, steps } = parseRepro(EXAMPLE(), at);
     expect(context).toEqual({ viewport: 1440, locale: "en-US", timezone: "UTC" });
@@ -909,6 +929,11 @@ describe("argus-live classes", () => {
     }
     expect(classify({ oracle: "handoff", needsOwner: "owner:rule" }).labels).toEqual(["ux", "workflow", "owner:rule", "argus", "found-by:user"]);
   });
+  it("regression: A, a bug only the owner can rule on (an intended change must not be fixed back), S2 on a money journey, else S3", () => {
+    expect(classify({ oracle: "regression", money: true })).toEqual({ cls: "A", labels: ["bug", "argus:needs-owner", "argus", "found-by:user"], severity: "S2", because: "regression on a money journey" });
+    expect(classify({ oracle: "regression", stock: true, movedTwice: true, actedOn: true })).toMatchObject({ cls: "A", severity: "S3", because: "regression, not on a money journey" });
+    expect(classify({ oracle: "regression", needsOwner: "owner:rule" }).labels).toEqual(["bug", "owner:rule", "argus", "found-by:user"]);
+  });
 
   it("each seeded defect's class line", () => {
     const main = committed();
@@ -924,6 +949,8 @@ describe("argus-live classes", () => {
     expect(line("--oracle", "stale-view", "--stock")).toBe("class A labels bug,argus,found-by:user severity S1 because stale view on money or stock\n");
     expect(line("--oracle", "orphaned-work")).toBe("class A labels bug,argus,found-by:user severity S3 because orphaned work\n");
     expect(line("--oracle", "viewport-locale")).toBe("class A labels bug,argus,found-by:user severity by outcome because viewport or locale: rated by its outcome, as argus rates\n");
+    expect(line("--oracle", "regression")).toBe("class A labels bug,argus:needs-owner,argus,found-by:user severity S3 because regression, not on a money journey\n");
+    expect(line("--oracle", "regression", "--money")).toBe("class A labels bug,argus:needs-owner,argus,found-by:user severity S2 because regression on a money journey\n");
     const bad = spawnSync(process.execPath, [ARGUS_LIVE, "classify", "--oracle", "handoff", "--money", "--money"], { cwd: main, encoding: "utf8" });
     expect(bad.status).toBe(1);
   }, 30_000);

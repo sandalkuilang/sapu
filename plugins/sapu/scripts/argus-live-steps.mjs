@@ -12,21 +12,6 @@ import { configuredUser } from "./argus-live-session.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
 
-/** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
-export const FINAL_KINDS = {
-  handoff: ["visible"],
-  "status-coherence": ["fact-equals", "text-equals"],
-  "dead-end": ["enabled"],
-  reversal: ["fact-equals"],
-  "orphaned-work": ["hidden"],
-  "claim-race": ["count"],
-  "stale-view": ["fact-equals"],
-  "unreachable-step": ["visible"],
-  "re-entry": ["value-equals"],
-  discoverability: ["visible"],
-  "interrupted-flow": ["count"],
-  "viewport-locale": ["visible", "enabled"],
-};
 
 /** Each action's fields (`?` optional). */
 const ACTIONS = {
@@ -58,6 +43,23 @@ const EXPECTS = {
   "fact-equals": ["marker", "field", "value"],
   mail: ["to", "contains"],
   "no-error": [],
+};
+/** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
+export const FINAL_KINDS = {
+  handoff: ["visible"],
+  "status-coherence": ["fact-equals", "text-equals"],
+  "dead-end": ["enabled"],
+  reversal: ["fact-equals"],
+  "orphaned-work": ["hidden"],
+  "claim-race": ["count"],
+  "stale-view": ["fact-equals"],
+  "unreachable-step": ["visible"],
+  "re-entry": ["value-equals"],
+  discoverability: ["visible"],
+  "interrupted-flow": ["count"],
+  "viewport-locale": ["visible", "enabled"],
+  // Spec §19.9: whatever expectation of a suite path broke is the regression candidate's final.
+  regression: Object.keys(EXPECTS),
 };
 /** Decision 6: the steps that always change state, and those that do when the page sent a request other than GET or HEAD meanwhile. */
 const ALWAYS_CHANGES = ["select", "check", "uncheck", "trigger", "login"];
