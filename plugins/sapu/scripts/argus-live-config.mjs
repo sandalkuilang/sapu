@@ -27,6 +27,7 @@ export const TOP_KEYS = Object.freeze([
   "setup", "services", "start", "base_url", "login_url", "logged_in", "login_open", "env_file", "env", "pass_env", "store", "store_check", "reset",
   "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
   "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
+  "test_id_attribute", "pseudo_locales", "tokens",
 ]);
 export const REQUIRED = Object.freeze(["start", "base_url", "login_url", "logged_in", "store", "store_check", "reset", "confirmed", "roles", "limits"]);
 export const LIMIT_KEYS = Object.freeze(["max_cycle_minutes", "max_parallel_journeys", "live_health_timeout_s", "explorer_pw_calls", "minimize_runs"]);
@@ -78,6 +79,11 @@ const isLocale = (l) => {
     return false;
   }
 };
+
+/** Playwright's testIdAttribute: an attribute name the app already uses. */
+const TEST_ID_ATTRIBUTE = /^[a-z][a-z0-9-]{0,63}$/;
+/** A repo-relative file or directory: no absolute path, no `..`, no backslash; no leading `-` or `:` (an option, a git pathspec magic). */
+const repoFile = (p) => isStr(p) && !path.isAbsolute(p) && !/^[-:]/.test(p) && !p.includes("\\") && !p.split("/").includes("..");
 
 const isRegex = (s) => {
   try {
@@ -138,9 +144,10 @@ export function validateLive(c) {
   if (isStr(c.base_url)) localUrl(c.base_url, "base_url", errs);
   if (has("env_file")) need(isStr(c.env_file), "env_file must be a path inside the repo");
   if (has("env")) need(isObj(c.env) && Object.values(c.env).every((v) => typeof v === "string"), "env must map names to strings");
-  for (const k of ["pass_env", "locales", "prohibited"]) if (has(k)) need(strArray(c[k]), `${k} must be an array of strings`);
+  for (const k of ["pass_env", "locales", "prohibited", "pseudo_locales"]) if (has(k)) need(strArray(c[k]), `${k} must be an array of strings`);
   for (const k of ["facts", "mail"]) if (has(k)) command(c[k], k, errs);
-  if (has("triggers") && object(c.triggers, "triggers")) for (const [name, t] of Object.entries(c.triggers)) command(t, `triggers.${name}`, errs);
+  // A trigger marked seed creates data a smoke path may start with (spec §19.4); facts and mail never seed.
+  if (has("triggers") && object(c.triggers, "triggers")) for (const [name, t] of Object.entries(c.triggers)) command(t, `triggers.${name}`, errs, { seed: true });
   if (has("confirmed") && object(c.confirmed, "confirmed")) {
     unknown(c.confirmed, "confirmed", ["mocks", "data"]);
     need(c.confirmed.mocks === true, "confirmed.mocks must be true: every outbound integration runs in test or mock mode under env");
@@ -153,10 +160,18 @@ export function validateLive(c) {
   for (const k of ["timezone", "locale", "fixtures"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
   // The files `upload` may use: copied from the worktree's HEAD tree, so a path inside the repo.
   // A leading `-` or `:` would read as an option or a git pathspec magic where it is copied from HEAD.
-  if (isStr(c.fixtures)) need(!path.isAbsolute(c.fixtures) && !/^[-:]/.test(c.fixtures) && !c.fixtures.includes("\\") && !c.fixtures.split("/").includes(".."), "fixtures must be a repo-relative directory (no absolute path, no .., no leading - or :)");
+  if (isStr(c.fixtures)) need(repoFile(c.fixtures), "fixtures must be a repo-relative directory (no absolute path, no .., no leading - or :)");
   if (isStr(c.timezone) && !isTimeZone(c.timezone)) errs.push(`timezone must be an IANA time zone such as UTC or Europe/Berlin: ${c.timezone}`);
   if (isStr(c.locale) && !isLocale(c.locale)) errs.push(`locale must be a BCP 47 language tag such as en-US: ${c.locale}`);
   if (strArray(c.locales)) for (const l of c.locales.filter((x) => !isLocale(x))) errs.push(`locales must be BCP 47 language tags such as en-US: ${l}`);
+  if (strArray(c.pseudo_locales)) for (const l of c.pseudo_locales.filter((x) => !isLocale(x))) errs.push(`pseudo_locales must be BCP 47 language tags such as en-XA: ${l}`);
+  // The smoke suite's (spec §19.2): Playwright's testIdAttribute, and the repo's own design-token source.
+  if (has("test_id_attribute")) need(typeof c.test_id_attribute === "string" && TEST_ID_ATTRIBUTE.test(c.test_id_attribute), `test_id_attribute must match ${TEST_ID_ATTRIBUTE} (an attribute name such as data-testid)`);
+  if (has("tokens")) {
+    const t = c.tokens;
+    const keys = isObj(t) ? Object.keys(t) : [];
+    need(keys.length === 1 && ["css", "json"].includes(keys[0]) && repoFile(t[keys[0]]), 'tokens must be {"css": <file>} or {"json": <file>}, one repo-relative file (no absolute path, no .., no leading - or :)');
+  }
   if (has("compose_files")) {
     const v = c.compose_files;
     // No ":": the run joins the files into COMPOSE_FILE with it as the separator.
@@ -185,9 +200,10 @@ export function validateLive(c) {
   return errs;
 }
 
-function command(v, where, errs) {
+function command(v, where, errs, { seed = false } = {}) {
   if (!isObj(v)) return errs.push(`${where} must be {"argv": [<words>], "args": [<regex>]}`);
-  for (const k of Object.keys(v)) if (!["argv", "args"].includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  for (const k of Object.keys(v)) if (!["argv", "args", ...(seed ? ["seed"] : [])].includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  if ("seed" in v && seed && typeof v.seed !== "boolean") errs.push(`${where}.seed must be true or false`);
   if (!(strArray(v.argv) && v.argv.length > 0 && isStr(v.argv[0]))) errs.push(`${where}.argv must be a non-empty array of words`);
   if ("args" in v && !(Array.isArray(v.args) && v.args.every(isRegex))) errs.push(`${where}.args must be an array of valid regexes`);
 }
@@ -590,4 +606,142 @@ export function loadLive(main) {
     }
   }
   return { config, errors, secrets, digest };
+}
+
+// `.argus/smoke.json` (spec §19.2): the smoke suite's membership, browsers, CI wiring and budgets.
+// Tracked like live.json; unknown keys are refused at every level, and every absent key takes its default.
+export const SMOKE_FILE = ".argus/smoke.json";
+export const SMOKE_KEYS = Object.freeze(["dir", "max", "pin", "exclude", "browsers", "journeys", "masks", "workers", "ci", "perf", "heal_max_steps", "form_cases_max", "link_cap"]);
+/** The suite's browser projects (spec §19.6): WebKit stands in for Safari; msedge only where Edge is installed. */
+export const SMOKE_BROWSERS = Object.freeze(["chromium", "firefox", "webkit", "msedge"]);
+/** What `smoke run --perf` measures (spec §19.11). */
+export const PERF_METRICS = Object.freeze(["lcp_ms", "inp_ms", "cls", "duration_ms", "requests", "bytes"]);
+const deepFreeze = (o) => {
+  for (const v of Object.values(o)) if (v && typeof v === "object") deepFreeze(v);
+  return Object.freeze(o);
+};
+/** Every key's default (`workers` null: Playwright's own), frozen: validateSmoke hands out copies. */
+export const SMOKE_DEFAULTS = deepFreeze({
+  dir: "e2e/argus-smoke", max: 20, pin: [], exclude: [], browsers: [...SMOKE_BROWSERS], journeys: {}, masks: [], workers: null,
+  ci: { web_server: [], ports: {}, workflow: "argus-smoke.yml", artifact: "argus-smoke-results" },
+  perf: { runs: 5, thresholds: { lcp_ms: [0.2, 250], inp_ms: [0.25, 50], cls: [0.25, 0.05], duration_ms: [0.2, 500], requests: [0.2, 5], bytes: [0.2, 102400] } },
+  heal_max_steps: 3, form_cases_max: 6, link_cap: 50,
+});
+const SMOKE_RANGES = { max: [1, 50], heal_max_steps: [1, 10], form_cases_max: [0, 50], link_cap: [0, 500], "perf.runs": [1, 20] };
+/** A journey id as the catalog spells it (argus-live-map's KEBAB). */
+const isJourneyId = (v) => typeof v === "string" && v.length <= 100 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(v);
+/** A check's name (`covered`, `target-size`, …) as an `allow` entry names it. */
+const CHECK_NAME = /^[a-z][a-z0-9-]{0,39}$/;
+/** The suite's directory: repo-relative, every segment a name, never under .git or .argus (gitignored). */
+const isSuiteDir = (p) => repoFile(p) && p.split("/").every((x) => x !== "" && x !== ".") && ![".git", ".argus"].includes(p.split("/")[0].toLowerCase());
+/** A mask: a Playwright locator parseTarget reads, never a snapshot ref or a bare CSS string. */
+const isLocator = (v) => {
+  try {
+    const t = isStr(v) ? parseTarget(v) : null;
+    return Boolean(t) && t.ref === undefined;
+  } catch {
+    return false;
+  }
+};
+/** An http(s) URL whose host is loopback by its spelling: CI resolves no name for the suite (spec §19.5). */
+const loopbackUrl = (raw) => {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  return (u.protocol === "http:" || u.protocol === "https:") && (u.hostname === "localhost" || u.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(u.hostname));
+};
+
+/** `.argus/smoke.json`'s content checked → `{value, errors}`: `value` with every default filled in (null on any error). */
+export function validateSmoke(raw) {
+  if (!isObj(raw)) return { value: null, errors: [`${SMOKE_FILE} must be a JSON object`] };
+  const errs = [];
+  const need = (cond, msg) => cond || errs.push(msg);
+  const unknown = (obj, where, allowed) => {
+    for (const k of Object.keys(obj)) if (!allowed.includes(k)) errs.push(`${where}: unknown key "${k}"`);
+  };
+  const int = (v, k) => need(isInt(v, ...SMOKE_RANGES[k]), `${k} must be an integer from ${SMOKE_RANGES[k][0]} to ${SMOKE_RANGES[k][1]}`);
+  const browsers = (v, where) => need(Array.isArray(v) && v.length > 0 && v.every((b) => SMOKE_BROWSERS.includes(b)) && new Set(v).size === v.length, `${where} must be a non-empty array of distinct names from ${SMOKE_BROWSERS.join(", ")}`);
+  const masks = (v, where) => {
+    if (need(Array.isArray(v), `${where} must be an array of Playwright locators`) === true) v.forEach((m, i) => need(isLocator(m), `${where}[${i}] must be a Playwright locator such as getByTestId('clock')`));
+  };
+  const shown = (v) => (typeof v === "string" && /^[\x21-\x7e]{1,200}$/.test(v) ? v : "(not shown)");
+  const has = (k) => k in raw;
+
+  unknown(raw, SMOKE_FILE, SMOKE_KEYS);
+  if (has("dir")) need(isSuiteDir(raw.dir), "dir must be a repo-relative directory (no absolute path, no . or .., no leading - or :, not under .git or .argus)");
+  for (const k of ["max", "heal_max_steps", "form_cases_max", "link_cap"]) if (has(k)) int(raw[k], k);
+  for (const k of ["pin", "exclude"]) if (has(k)) need(Array.isArray(raw[k]) && raw[k].every(isJourneyId) && new Set(raw[k]).size === raw[k].length, `${k} must be an array of distinct journey ids (kebab-case)`);
+  // A pin of an id the catalog lacks is kept: smoke plan refuses it against the catalog it reads.
+  if (Array.isArray(raw.pin) && Array.isArray(raw.exclude)) for (const id of raw.pin.filter((x) => isJourneyId(x) && raw.exclude.includes(x))) errs.push(`pin and exclude both name ${id}`);
+  if (has("browsers")) browsers(raw.browsers, "browsers");
+  if (has("masks")) masks(raw.masks, "masks");
+  if (has("workers")) need(isInt(raw.workers, 1, 64) || (typeof raw.workers === "string" && /^([1-9][0-9]?|100)%$/.test(raw.workers)), 'workers must be an integer from 1 to 64 or a percentage such as "50%"');
+  if (has("journeys") && need(isObj(raw.journeys), "journeys must be an object") === true) {
+    for (const [id, j] of Object.entries(raw.journeys)) {
+      const where = `journeys.${id}`;
+      if (!isJourneyId(id)) {
+        errs.push(`journeys: ${shown(id)} is not a journey id (kebab-case)`);
+        continue;
+      }
+      if (need(isObj(j), `${where} must be an object`) !== true) continue;
+      unknown(j, where, ["browsers", "masks", "screens", "allow"]);
+      if ("browsers" in j) browsers(j.browsers, `${where}.browsers`);
+      if ("masks" in j) masks(j.masks, `${where}.masks`);
+      if ("screens" in j) need(Array.isArray(j.screens) && j.screens.every((n) => isInt(n, 1, 500)) && new Set(j.screens).size === j.screens.length, `${where}.screens must be an array of distinct step numbers from 1 to 500`);
+      if ("allow" in j && need(Array.isArray(j.allow), `${where}.allow must be an array of {check, key}`) === true) {
+        j.allow.forEach((a, i) => {
+          const at = `${where}.allow[${i}]`;
+          if (isObj(a)) unknown(a, at, ["check", "key"]);
+          need(isObj(a) && typeof a.check === "string" && CHECK_NAME.test(a.check) && isStr(a.key) && a.key.length <= 200, `${at} must be {check, key}: check a check's name, key a non-empty string of at most 200 characters`);
+        });
+      }
+    }
+  }
+  if (has("ci") && need(isObj(raw.ci), "ci must be an object") === true) {
+    const ci = raw.ci;
+    unknown(ci, "ci", ["web_server", "ports", "workflow", "artifact"]);
+    if ("web_server" in ci && need(Array.isArray(ci.web_server) && ci.web_server.length > 0, "ci.web_server must be a non-empty array of {command, url, timeout_s?}") === true) {
+      ci.web_server.forEach((w, i) => {
+        const at = `ci.web_server[${i}]`;
+        if (need(isObj(w), `${at} must be {command, url, timeout_s?}`) !== true) return;
+        unknown(w, at, ["command", "url", "timeout_s"]);
+        need(isStr(w.command), `${at}.command must be a non-empty string`);
+        need(loopbackUrl(w.url), `${at}.url must be an http(s) URL on a loopback host (localhost, 127.0.0.1, [::1]): ${shown(w.url)}`);
+        if ("timeout_s" in w) need(isInt(w.timeout_s, 1, 3600), `${at}.timeout_s must be an integer from 1 to 3600`);
+      });
+    }
+    if ("ports" in ci) need(isObj(ci.ports) && Object.entries(ci.ports).every(([n, p]) => PORT_NAME.test(n) && isPort(p)), `ci.ports must map port names (${PORT_NAME.source.slice(1, -1)}) to ports 1-65535`);
+    if ("workflow" in ci) need(typeof ci.workflow === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.ya?ml$/.test(ci.workflow), "ci.workflow must be a file name ending .yml or .yaml");
+    if ("artifact" in ci) need(typeof ci.artifact === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ci.artifact), "ci.artifact must be a name of letters, digits, ., _ and - (at most 100)");
+  }
+  if (has("perf") && need(isObj(raw.perf), "perf must be an object") === true) {
+    unknown(raw.perf, "perf", ["runs", "thresholds"]);
+    if ("runs" in raw.perf) int(raw.perf.runs, "perf.runs");
+    if ("thresholds" in raw.perf && need(isObj(raw.perf.thresholds), "perf.thresholds must be an object") === true) {
+      unknown(raw.perf.thresholds, "perf.thresholds", PERF_METRICS);
+      for (const [m, t] of Object.entries(raw.perf.thresholds)) {
+        if (PERF_METRICS.includes(m)) need(Array.isArray(t) && t.length === 2 && t.every((x) => typeof x === "number" && Number.isFinite(x) && x >= 0) && t[0] <= 10, `perf.thresholds.${m} must be [<relative 0-10>, <absolute >= 0>]`);
+      }
+    }
+  }
+  if (errs.length) return { value: null, errors: errs };
+  const d = structuredClone(SMOKE_DEFAULTS);
+  const r = structuredClone(raw);
+  return { value: { ...d, ...r, ci: { ...d.ci, ...r.ci }, perf: { ...d.perf, ...r.perf, thresholds: { ...d.perf.thresholds, ...r.perf?.thresholds } } }, errors: [] };
+}
+
+/** `{smoke, errors, missing}` from `<main>/.argus/smoke.json`: `missing` when there is none (no suite yet). Never throws. */
+export function loadSmoke(main) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(main, SMOKE_FILE), "utf8"));
+  } catch (e) {
+    if (e && e.code === "ENOENT") return { smoke: null, errors: [], missing: true };
+    return { smoke: null, errors: [`${SMOKE_FILE} ${e instanceof SyntaxError ? `is not valid JSON: ${e.message}` : `cannot be read: ${e.message}`}`], missing: false };
+  }
+  const { value, errors } = validateSmoke(raw);
+  return { smoke: value, errors, missing: false };
 }
