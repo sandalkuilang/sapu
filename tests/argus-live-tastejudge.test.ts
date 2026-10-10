@@ -4,7 +4,7 @@
 // these tests pin the pass, not the probes' own rules.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -83,14 +83,18 @@ const STAND_IN = vi.hoisted(() => ({
 }`)() as (screen: unknown, bar?: unknown, cfg?: unknown) => Record<string, any>[],
   expression: (rule: string) =>
     `(() => { const f = window.__standIn; if (typeof f === "function") return f(${JSON.stringify(rule)}); return document.body && document.body.innerText.includes("undefined") ? [{ rule: ${JSON.stringify(rule)}, key: "facts", measured: "undefined", expected: null }] : []; })()`,
-  pathCost: (steps: Record<string, any>[]) => {
+  pathCost: (steps: Record<string, any>[], geometry: unknown) => {
+    STAND_IN.geometry.push(geometry);
     const actions = steps.filter((x) => x && typeof x.do === "string").length;
     return { actions, typed: 0, modals: 0, fitts_bits: 0, klm_s: actions * 2 };
   },
+  geometry: [] as unknown[],
+  /** crossRules' stand-in: the findings a test put in a recorded screen's `ease.cross`, each naming that screen. */
+  cross: (screens: Record<string, any>[]) => screens.flatMap((s) => ((s.ease && s.ease.cross) || []).map((f: Record<string, any>) => ({ screen: s.key, ...f }))),
   bar: { current: null as Record<string, any> | null },
 }));
 vi.mock("../plugins/sapu/scripts/argus-live-taste.mjs", async (orig) => ({ ...((await orig()) as Obj), censusOf: STAND_IN.census, rulesFor: STAND_IN.rules("taste"), ruleExpression: STAND_IN.expression }));
-vi.mock("../plugins/sapu/scripts/argus-live-ease.mjs", async (orig) => ({ ...((await orig()) as Obj), EASE_SOURCE: STAND_IN.ease, rulesFor: STAND_IN.rules("ease"), ruleExpression: STAND_IN.expression, pathCost: STAND_IN.pathCost }));
+vi.mock("../plugins/sapu/scripts/argus-live-ease.mjs", async (orig) => ({ ...((await orig()) as Obj), EASE_SOURCE: STAND_IN.ease, rulesFor: STAND_IN.rules("ease"), ruleExpression: STAND_IN.expression, pathCost: STAND_IN.pathCost, crossRules: STAND_IN.cross }));
 // The plugin's bar has no calibrated band yet (lane K): a test that needs bands puts a bar of its own in STAND_IN.bar.
 vi.mock("../plugins/sapu/scripts/argus-live-tastecfg.mjs", async (orig) => {
   const real = (await orig()) as Obj;
@@ -360,7 +364,10 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
       // A key already shot this run is not shot again; the same state (prev) records nothing at all.
       const again = await record(p.page, { url: p.page.url(), aria: "y" }, { ...T, taken: [name] });
       expect(again.shots).toEqual([]);
+      // The same state leaves the buffer as it is: an action and its change in two observations stay one screen's events.
+      await p.page.evaluate('document.__argusTastePush({ kind: "input", t: performance.now(), type: "click" })');
       expect(await record(p.page, { url: p.page.url(), aria: "x" }, { ...T, prev: sha(`${p.page.url()}\nx`) })).toEqual({ changed: false });
+      expect((await p.page.evaluate(TASTE_DRAIN)).events.map((e: Obj) => e.kind)).toEqual(["input"]);
       // The media are back as they were: light, no preference.
       expect(await p.page.evaluate(MEDIA_READ)).toEqual({ colorScheme: "light", reducedMotion: "no-preference" });
     } finally {
@@ -468,7 +475,7 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
     try {
       const T = { ...p.T, census: "async (page) => { throw new Error('probe') }", ease: "(arg) => { throw new Error('probe') }" };
       const a = await record(p.page, { url: p.page.url(), aria: "x" }, T);
-      expect(a).toMatchObject({ changed: true, taste: null, ease: null, themed: false, faults: ["census", "ease"] });
+      expect(a).toMatchObject({ changed: true, taste: null, ease: null, themed: false, faults: ["ease", "census"] });
       // The probes as lane 0 left them (not self-contained, they throw in the daemon): faults too.
       expect((await record(p.page, { url: p.page.url(), aria: "y" }, { ...T, census: "async function censusOf(page) { return notBuilt(); }" })).faults).toContain("census");
       await p.page.goto("about:blank");
@@ -727,6 +734,34 @@ describe("argus-live taste judge (J2)", () => {
     expect(t.file().journeys.j.efficiency).toMatchObject({ wait_ms: 290, recovery: 2 });
   }, 30_000);
 
+  it("hands T2's crossRules every recorded screen as J records it; a cross finding is a row of each journey that recorded its screen, never one from rulesFor", async () => {
+    const t = judgeRepo();
+    const split = { rule: "consistent.action", key: "POST /notes|button|Save", measured: 'button "Save"', expected: "no majority" };
+    const twice = (journey: string) => t.screen("/a", [], { journey, ease: { findings: [{ ...split, key: "from rulesFor" }], cross: [split] } });
+    t.put(1, [twice("j"), twice("k"), t.screen("/b")]);
+    await t.judge();
+    expect(t.file().rows.map((r: Obj) => [r.journey, r.rule, r.screen, r.key, r.expected])).toEqual([
+      ["j", "consistent.action", "/a|1440|light", split.key, "no majority"],
+      ["k", "consistent.action", "/a|1440|light", split.key, "no majority"],
+    ]);
+  }, 30_000);
+
+  it("prices each path with pathCost's geometry: one M a goal step of the journey's map, no replay boxes", async () => {
+    const t = judgeRepo();
+    const step = (route: string) => ({ role: "buyer", route, goal: `reach ${route}`, sources: [] });
+    writeFileSync(join(t.main, ".argus/journeys.json"), JSON.stringify({ journeys: [{ id: "j", steps: [step("/a"), step("/b"), step("/c")] }] }));
+    t.put(1, [t.screen("/a")]);
+    t.ret(1, "j", pathOf(3));
+    STAND_IN.geometry.length = 0;
+    await t.judge();
+    expect(STAND_IN.geometry).toEqual([{ goals: 3, targets: [] }]);
+    // A journey the map does not hold: no goals, so pathCost counts one M a path expectation.
+    rmSync(join(t.main, ".argus/journeys.json"));
+    STAND_IN.geometry.length = 0;
+    await t.judge();
+    expect(STAND_IN.geometry).toEqual([{ targets: [] }]);
+  }, 30_000);
+
   it("the Curator's leads, when its return validates, give the rows they name the first numbers; out of shape, none are used", async () => {
     const t = judgeRepo();
     const lead = { rule: "copy.broken", screen: "/b|1440|light" };
@@ -766,13 +801,13 @@ describe("argus-live taste judge (J2)", () => {
   it("a cross-screen row the previous cycle's judge also reported is confirmed (two cycles, two visits) and kept in the state", async () => {
     const t = judgeRepo();
     const split = { rule: "consistent.footer-order", key: "dialog|primary", measured: 2, expected: 1 };
-    t.put(1, [t.screen("/a", [], { ease: { findings: [split] } })]);
+    t.put(1, [t.screen("/a", [], { ease: { findings: [], cross: [split] } })]);
     await t.judge();
     expect(t.file().rows[0].confirmed).toBeNull();
     // The next cycle reports it again.
     const next = "29990101000000-0123abcd";
     mkdirSync(join(tasteDir(t.main, next), "1"), { recursive: true });
-    writeFileSync(join(tasteDir(t.main, next), "1", "screens.jsonl"), `${JSON.stringify(t.screen("/a", [], { ease: { findings: [split] } }))}\n`);
+    writeFileSync(join(tasteDir(t.main, next), "1", "screens.jsonl"), `${JSON.stringify(t.screen("/a", [], { ease: { findings: [], cross: [split] } }))}\n`);
     await tasteJudge(t.main, { run: next });
     expect(JSON.parse(readFileSync(join(tasteDir(t.main, next), "judge.json"), "utf8")).rows[0].confirmed).toBe(true);
     expect(readTasteState(t.main).journeys.j.rows).toEqual({ "taste:consistent.footer-order:/a|1440|light": { rule: "consistent.footer-order", screen: "/a|1440|light", class: "derived", severity: "S4", state: "queued", issue: null, first: next, last: next } });
@@ -895,7 +930,7 @@ describe("argus-live taste confirm (J2)", () => {
 
   it("refusals: no cycle, a row of another shape or not judged, a cross-screen row, the pass's time spent, no path", async () => {
     await expect(tasteConfirm(committed(), "t1")).rejects.toThrow("refused: no journey cycle is running");
-    const t = await confirmRepo([broken, { rule: "consistent.action", key: "POST /orders", measured: 2, expected: 1 }], { ease: { findings: [] } });
+    const t = await confirmRepo([broken], { ease: { findings: [], cross: [{ rule: "consistent.action", key: "POST /orders", measured: 2, expected: 1 }] } });
     await expect(tasteConfirm(t.main, "x1")).rejects.toThrow("refused: taste confirm: x1 is not a judge row (t<k>)");
     await expect(tasteConfirm(t.main, "t9")).rejects.toThrow(`refused: taste confirm: no row t9 in cycle ${t.runId}'s judge`);
     await expect(tasteConfirm(t.main, "t1")).rejects.toThrow("refused: taste confirm: consistent.action compares the cycle's screens: the next cycle's judge confirms it, not a replay");

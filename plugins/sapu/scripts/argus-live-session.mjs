@@ -20,7 +20,7 @@ import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run
 import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 import { censusOf } from "./argus-live-taste.mjs";
-import { MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
+import { loadBar, loadTaste, MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
@@ -209,14 +209,17 @@ export const MAIN_ROWS = `(() => {
 export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.then(() => 0, () => 0))).then(() => 0)`;
 
 /**
- * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the
- * action's taste events drained first (TASTE_DRAIN); the same state as the last observation (`T.prev`, the
- * sha256 of its URL and ARIA snapshot, as the loop rule hashes it) → `{changed: false}`. Else the screen: its route
+ * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the same
+ * state as the last observation (`T.prev`, the sha256 of its URL and ARIA snapshot, as the loop rule hashes it) →
+ * `{changed: false}`, the buffer left as it is, so the next screen of the document gets its events (an action and
+ * its change can fall in two observations). Else the ease probe's `screen` kind first (`T.ease` with `T.easeArg`:
+ * the bar's vague terms and the owner's labels; no palette probe, which would type on the explorer's page), then
+ * the taste events drained (TASTE_DRAIN). Then the screen: its route
  * template, width and theme (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
  * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
  * stage body of `page`), a text past `T.maxText` unread), taken before anything else touches the page; the census
  * (`T.census`, the source of argus-live-taste.mjs censusOf: the page's own scheme, the other one and reduced motion,
- * the media put back as it read them, never null); the ease measurements (`T.ease`); the rows of `main`'s largest
+ * the media put back as it read them, never null); the rows of `main`'s largest
  * table (`T.rows`); on a themed page (the census's `themes` `dual`) the other scheme's screenshot, once its
  * transitions settled (at most `T.settleMax`), the explicit media restored after; then the events the census and that
  * switch caused drained and dropped. A probe that throws is a `faults` entry, never a failure.
@@ -225,15 +228,21 @@ export const RECORDER = `async (page, o, T) => {
   const t0 = Date.now();
   const ev = (expr) => page.evaluate(expr);
   const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const drained = await ev(T.drain);
   if ((await hex((o.url ?? "") + "\\n" + (o.aria ?? ""))) === T.prev) return { changed: false };
   const u = new URL(page.url());
   if (u.protocol !== "http:" && u.protocol !== "https:") return { changed: true, skipped: true };
+  const faults = [];
+  let ease = null;
+  try {
+    ease = await ev("(" + T.ease + ")(" + JSON.stringify(T.easeArg) + ")");
+  } catch (e) {
+    faults.push("ease");
+  }
+  const drained = await ev(T.drain);
   const route = (${routeTemplate.toString()})(u.pathname, T.routes);
   const media = await ev(T.media);
   const vp = page.viewportSize();
   const width = vp && vp.width ? vp.width : await ev("innerWidth");
-  const faults = [];
   const read = new Function("page", "return (async () => {\\n" + T.read + "})();");
   const taken = new Set(T.taken);
   const shoot = async (theme) => {
@@ -261,12 +270,6 @@ export const RECORDER = `async (page, o, T) => {
     taste = await new Function("return " + T.census)()(page);
   } catch (e) {
     faults.push("census");
-  }
-  let ease = null;
-  try {
-    ease = await ev("(" + T.ease + ")({})");
-  } catch (e) {
-    faults.push("ease");
   }
   let rows = 0;
   try {
@@ -421,7 +424,7 @@ const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100, settle
  * outside a perf pass and a confirmation replay, while the run's taste time is under TASTE_BUDGET_MS → the
  * recorder's payload with `prev` (the last observation's state hash), or null (the plain observation).
  */
-function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
+export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
   if (!Number.isInteger(slot) || slot < 1 || !isObj(slotRec) || typeof slotRec.journey !== "string" || slotRec.mode === "map") return null;
   try {
     if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) return null;
@@ -435,7 +438,10 @@ function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
     }
     const taken = fs.readdirSync(shots).filter((f) => /^[0-9a-f]{32}\.png$/.test(f)).map((f) => f.slice(0, 32));
     const limitMs = Math.min(30_000, Math.max(5_000, 2 * settleMs));
-    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+    // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
+    const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
+    const vague = (loadTaste(main).taste ?? { copy: { vague: [] } }).copy.vague;
+    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;
   }

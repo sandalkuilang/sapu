@@ -6,9 +6,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadLive } from "./argus-live-config.mjs";
-import { pathCost, rulesFor as easeRules, ruleExpression as easeExpression } from "./argus-live-ease.mjs";
+import { crossRules, pathCost, rulesFor as easeRules, ruleExpression as easeExpression } from "./argus-live-ease.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
+import { readJourneys } from "./argus-live-map.mjs";
 import { pathSha } from "./argus-live-perf.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
@@ -194,6 +195,12 @@ function archetypeOf(s, cfg) {
   return s.rows >= 10 ? { name: "data", inferred: false } : { name: "app", inferred: true };
 }
 
+/**
+ * A rule the ease probe compares across the cycle's screens (crossRules: the consistency family, and a load behind a
+ * spinner where a peer screen uses a skeleton): no replay re-measures it, the next cycle's judge reporting it again does.
+ */
+const crossScreen = (rule) => rule.family === "consistent" || rule.id === "feedback.skeleton-peers";
+
 /** The band of `metric` for archetype `a`, when it is a witness: enough sites and pages, an archetype not inferred. */
 function bandOf(bar, a, metric) {
   const b = (bar.archetypes[a.name] ?? {})[metric];
@@ -267,6 +274,16 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   let failed = 0;
   let info = 0;
   const found = []; // [{s, rule, f}]
+  const keep = (s, raw, cross) => {
+    const f = finding(raw);
+    const rule = f && rules.get(f.rule);
+    // Cross-screen rules come from crossRules alone, efficiency from the paths below.
+    if (!rule || off.has(rule.id) || rule.family === "efficiency" || crossScreen(rule) !== cross) return;
+    if (rule.info) info += 1;
+    else found.push({ s, rule, f });
+  };
+  // Each recorded screen through both probes' rulesFor: T1's reads `taste` (censusOf's), T2's `route`, `events` and
+  // `ease` (its screen kind); `cycle` holds the run's other recorded screens.
   screens.forEach((s, i) => {
     const view = { ...s, cycle: screens.filter((_, j) => j !== i) };
     for (const fn of [tasteRules, easeRules]) {
@@ -277,15 +294,23 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
         failed += 1;
         continue;
       }
-      for (const raw of Array.isArray(list) ? list : []) {
-        const f = finding(raw);
-        const rule = f && rules.get(f.rule);
-        if (!rule || off.has(rule.id) || FAMILIES[rule.family].scope === "cycle" && rule.family === "efficiency") continue;
-        if (rule.info) info += 1;
-        else found.push({ s, rule, f });
-      }
+      for (const raw of Array.isArray(list) ? list : []) keep(s, raw, false);
     }
   });
+  // The cross-screen rules over the run's screens (T2's crossRules, each with its archetype): a finding names a
+  // screen key, and each journey that recorded that screen gets the row.
+  try {
+    const cross = crossRules(screens.map((s) => ({ key: s.key, route: s.route, journey: s.journey, archetype: arch.get(s.key).name, events: s.events, ease: s.ease ?? {} })), bar, scale);
+    for (const raw of Array.isArray(cross) ? cross : []) {
+      const seenJourneys = new Set();
+      for (const s of screens.filter((x) => x.key === raw.screen && !seenJourneys.has(x.journey))) {
+        seenJourneys.add(s.journey);
+        keep(s, raw, true);
+      }
+    }
+  } catch {
+    failed += 1;
+  }
   // Peer values: per rule, each screen key's largest measured number.
   const values = new Map();
   for (const { s, rule, f } of found) {
@@ -351,9 +376,21 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   const held = heldPaths(main);
   const journeys = {};
   const ids = [...new Set([...screens.map((s) => s.journey), ...paths.keys()])].sort();
-  const costOf = (list) => {
+  // pathCost's geometry: one M a goal step of the journey's map (every step names its goal), no replay boxes (Kieras'
+  // mean P), so an explorer's path and the best path of one journey are priced alike.
+  let mapped = [];
+  try {
+    mapped = readJourneys(main)?.journeys ?? [];
+  } catch {
+    mapped = [];
+  }
+  const geometryOf = (id) => {
+    const j = mapped.find((x) => x.id === id);
+    return j ? { goals: j.steps.length, targets: [] } : { targets: [] };
+  };
+  const costOf = (list, id) => {
     try {
-      const c = pathCost(list, []);
+      const c = pathCost(list, geometryOf(id));
       return isObj(c) && [c.actions, c.typed, c.modals, c.fitts_bits, c.klm_s].every(isNum) ? c : null;
     } catch {
       return null;
@@ -363,10 +400,10 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     const mine = screens.filter((s) => s.journey === id);
     const entry = state.journeys[id] ?? { judged: null, best: null, rows: {} };
     const heldList = held.get(id);
-    const heldCost = heldList ? costOf(heldList) : null;
+    const heldCost = heldList ? costOf(heldList, id) : null;
     if (heldCost && (!entry.best || heldCost.actions < entry.best.actions || pathSha(heldList) === entry.best.pathSha)) entry.best = { run: runId, actions: heldCost.actions, klm_s: round(heldCost.klm_s), pathSha: pathSha(heldList) };
     const list = paths.get(id);
-    const cost = list ? costOf(list) : null;
+    const cost = list ? costOf(list, id) : null;
     const recovery = rows.filter((r) => r.journey === id && r.rule === "states.recovery" && isNum(r.measured)).reduce((n, r) => n + r.measured, 0);
     journeys[id] = { screens: new Set(mine.map((s) => s.key)).size, efficiency: cost ? { actions: cost.actions, best: entry.best ? entry.best.actions : null, klm_s: round(cost.klm_s), typed: cost.typed, fitts_bits: round(cost.fitts_bits), modals: cost.modals, wait_ms: waitOf(mine), recovery } : null };
     const first = [...mine].sort((x, y) => x.t - y.t)[0];
@@ -392,7 +429,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   rows.sort((x, y) => Number(led(y)) - Number(led(x)) || (x.journey < y.journey ? -1 : x.journey > y.journey ? 1 : x.screen < y.screen ? -1 : x.screen > y.screen ? 1 : x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
   const out = rows.map((r, i) => {
     const id = `${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`;
-    const again = FAMILIES[rules.get(r.rule).family].scope === "cycle" && !r.rule.startsWith("efficiency.") && earlier.has(id) ? true : null;
+    const again = crossScreen(rules.get(r.rule)) && earlier.has(id) ? true : null;
     return { row: `t${i + 1}`, journey: r.journey, rule: r.rule, class: r.class, screen: r.screen, key: r.key, measured: r.measured, expected: r.expected, witnesses: r.witnesses, cost: r.cost, confirmed: before.get(id) ?? again };
   });
   for (const r of out) if (r.confirmed === true) keepConfirmed(state, r, runId);
@@ -566,7 +603,7 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   const bar = loadBar();
   const rule = bar.rules.find((r) => r.id === row.rule);
   if (!rule) throw new Error(`refused: taste confirm: ${ref}'s rule is not in taste-bar ${bar.version}`);
-  if (FAMILIES[rule.family].scope === "cycle" && rule.family !== "efficiency") throw new Error(`refused: taste confirm: ${row.rule} compares the cycle's screens: the next cycle's judge confirms it, not a replay`);
+  if (crossScreen(rule)) throw new Error(`refused: taste confirm: ${row.rule} compares the cycle's screens: the next cycle's judge confirms it, not a replay`);
   if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) throw new Error("refused: taste confirm: the taste pass's time this cycle is spent");
   const state = readTasteState(main);
   let confirmed = null;
