@@ -4,7 +4,7 @@
 // A machine without Chrome or Edge fails here, never skips: the lane cannot run there either.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -61,6 +61,23 @@ describe("argus-live hook — every document watched", () => {
     expect(clicked.code).toBe(0);
     await sleep(1000); // the toast came and went with the popup's first document
     expect(`${fenced(clicked)}\n${fenced(await t.call("buyer.1", "tab-list"))}`).toContain("signal status: Quick ready");
+  }, 180_000);
+
+  it("pw layout reports what the oracle finds on the live page, in the fence, and leaves out what the journey allows (lane Z1)", async () => {
+    const t = await pwBrowserRun();
+    expect((await t.call("buyer.1", "goto", "/orders/new")).code).toBe(0);
+    const lines = (r: { out: string[] }) => r.out[0].split("\n").slice(1, -1);
+    // The fixture's header Account button (64 x 21) really is under WCAG 2.5.8's size, next to a link.
+    const found = await t.call("buyer.1", "layout", "target-size");
+    expect(found.code, found.out.join(" | ")).toBe(0);
+    expect(lines(found).join("\n")).toMatch(/^layout target-size: \d+ violations?\n(?:.*\n)*?target-size button\|Account\|button: 64x21 px/);
+    expect(outside(found)).toEqual([expect.stringMatching(/^calls \d+\/\d+$/)]);
+    // A clean check says so; the page does not scroll sideways.
+    expect(lines(await t.call("buyer.1", "layout", "page-scroll"))).toEqual(["layout page-scroll: no violations"]);
+    // The same check with the row allowed.
+    writeFileSync(join(t.main, ".argus/smoke.json"), JSON.stringify({ journeys: { "order-to-cash": { allow: [{ check: "target-size", key: "button|Account|button" }] } } }));
+    const allowed = lines(await t.call("buyer.1", "layout", "target-size"));
+    expect(allowed.join("\n")).not.toContain("button|Account|button");
   }, 180_000);
 
   it("the hook installs once per context", async () => {
@@ -382,6 +399,40 @@ describe("argus-live repro — one run", () => {
     expect(late.lines).toContain("step 7 clerk.1 visible: held");
     t.c.defects("missing-handoff");
     expect(t.repro(t.refs[2]).code).toBe(3);
+  }, 900_000);
+
+  it("a layout expectation reproduces a real violation, holds on a clean page, and leaves out what the journey allows (lane Z1)", async () => {
+    const onNew = (check: string, extra: Obj = {}) => [{ as: "buyer.1", do: "goto", path: "/orders/new" }, { as: "buyer.1", expect: "layout", check, final: "viewport-locale", ...extra }];
+    const ACCOUNT = { role: "button", name: "Account" };
+    const t = await reproCycle([onNew("target-size"), onNew("target-size", { target: ACCOUNT }), onNew("page-scroll"), onNew("target-size", { target: { role: "button", name: "Place order" } }), onNew("target-size", { target: { role: "button", name: "No such button" } })]);
+    const [any, named, scroll, big, absent] = t.refs;
+    const a = t.repro(any);
+    expect(a.code, `${a.lines.join(" | ")} ${a.last} ${a.err}`).toBe(3);
+    expect(a.last).toMatch(/^REPRODUCED step=2 expected=layout observed=violations:\d+$/);
+    expect(a.last).toMatch(REPRODUCED);
+    expect(a.fence).toContain("button|Account|button");
+    for (const l of a.lines) expect(l).toMatch(VOCABULARY);
+    expect(t.record(any, 1)).toMatchObject({ exit: 3, step: 2, expected: "layout" });
+    const n = t.repro(named);
+    expect(n.last, `${n.lines.join(" | ")} ${n.err}`).toBe("REPRODUCED step=2 expected=layout observed=violations:1");
+    expect(n.fence).toContain(`"check":"target-size"`);
+    expect(n.fence).toContain(`"shown":["button|Account|button"]`);
+    // A page that does not scroll sideways, and a control big enough, hold; a target the page lacks cannot be judged.
+    expect(t.repro(scroll).last).toBe("NOT REPRODUCED");
+    expect(t.repro(big).last).toBe("NOT REPRODUCED");
+    const gone = t.repro(absent);
+    expect(gone.code).toBe(2);
+    expect(gone.last).toBe("HARNESS: step 2 expectation could not be judged");
+    // The owner's allow, then the adopted known rows: the same run holds.
+    writeFileSync(join(t.c.main, ".argus/smoke.json"), JSON.stringify({ journeys: { "order-to-cash": { allow: [{ check: "target-size", key: "button|Account|button" }] } } }));
+    const allowed = t.repro(named);
+    expect(allowed.code, `${allowed.lines.join(" | ")} ${allowed.err}`).toBe(0);
+    expect(allowed.last).toBe("NOT REPRODUCED");
+    rmSync(join(t.c.main, ".argus/smoke.json"));
+    expect(t.repro(named).code).toBe(3);
+    mkdirSync(join(t.c.main, "e2e/argus-smoke/known"), { recursive: true });
+    writeFileSync(join(t.c.main, "e2e/argus-smoke/known/order-to-cash.json"), JSON.stringify([{ check: "target-size", key: "button|Account|button" }]));
+    expect(t.repro(named).last).toBe("NOT REPRODUCED");
   }, 900_000);
 
   it("exit 2 on a broken target, a dropped prerequisite, a missing proving expect and an uncaught error", async () => {

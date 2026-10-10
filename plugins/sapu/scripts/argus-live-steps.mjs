@@ -6,6 +6,7 @@
 // reductions names the units minimize may drop. Path mode (spec §19.4) reads the smoke suite's paths:
 // no final, the selector order, seed triggers only; suiteAccounts and pathChecks serve it.
 import { fillArgv } from "./argus-live-hooks.mjs";
+import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { HELPERS } from "./argus-live-login.mjs";
 import { BLOCKED_ERROR } from "./argus-live-origin.mjs";
 import { ORACLES } from "./argus-live-return.mjs";
@@ -44,6 +45,8 @@ const EXPECTS = {
   "fact-equals": ["marker", "field", "value"],
   mail: ["to", "contains"],
   "no-error": [],
+  // The layout oracle's check (argus-live-layout.mjs) on the page: held when it finds no violation, on the target's when one is named.
+  layout: ["check", "target?"],
 };
 /** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
 export const FINAL_KINDS = {
@@ -58,9 +61,9 @@ export const FINAL_KINDS = {
   "re-entry": ["value-equals"],
   discoverability: ["visible"],
   "interrupted-flow": ["count"],
-  "viewport-locale": ["visible", "enabled"],
-  // Spec §19.9: whatever expectation of a suite path broke is the regression candidate's final.
-  regression: Object.keys(EXPECTS),
+  "viewport-locale": ["visible", "enabled", "layout"],
+  // Spec §19.9: whatever expectation of a suite path broke is the regression candidate's final (a path holds no layout expectation: the suite runs the oracle after every step).
+  regression: Object.keys(EXPECTS).filter((k) => k !== "layout"),
 };
 /** Decision 6: the steps that always change state, and those that do when the page sent a request other than GET or HEAD meanwhile. */
 const ALWAYS_CHANGES = ["select", "check", "uncheck", "trigger", "login"];
@@ -181,6 +184,7 @@ function stepOf(raw, n, { accounts, live, path = false }) {
   const kind = isAction ? raw.do : raw.expect;
   const table = isAction ? ACTIONS : EXPECTS;
   if (typeof kind !== "string" || !Object.hasOwn(table, kind)) refuse("unknown action");
+  if (path && kind === "layout") refuse("a path has no layout expectation: the suite runs the layout oracle after every step");
   const fields = table[kind];
   const allowed = ["as", isAction ? "do" : "expect", "final", ...fields.map((f) => f.replace(/\?$/, ""))];
   for (const k of Object.keys(raw)) if (!allowed.includes(k)) refuse(`unknown key ${keyWord(k)}`);
@@ -215,6 +219,9 @@ function stepOf(raw, n, { accounts, live, path = false }) {
     } else if (name === "key") {
       if (typeof raw.key !== "string" || !/^[A-Za-z0-9+]{1,32}$/.test(raw.key)) refuse("press takes a key (letters, digits and +, at most 32)");
       step.key = raw.key;
+    } else if (name === "check" && kind === "layout") {
+      if (typeof raw.check !== "string" || !LAYOUT_KINDS.includes(raw.check)) refuse(`layout takes a check (${LAYOUT_KINDS.join(", ")})`);
+      step.check = raw.check;
     } else if (name === "save") {
       if (typeof raw.save !== "string" || !SAVE.test(raw.save) || raw.save === "marker") refuse(`save takes a name (${SAVE.source}, not marker)`);
       step.save = raw.save;
@@ -235,6 +242,7 @@ function stepOf(raw, n, { accounts, live, path = false }) {
       step[name] = raw[name];
     } else text(name);
   }
+  if (kind === "layout" && step.check === "page-scroll" && step.target) refuse("page-scroll is page-wide: it takes no target");
   if (kind === "login") {
     // Decision 26: an account of the allocation written with its number, never anon, never a configured user.
     if (typeof raw.as !== "string" || !raw.as.includes(".")) refuse("login's as names an account (<role>.<k>)");
@@ -546,8 +554,32 @@ const ACTION = `  const step = async () => {
  * → `{held, observed, shown?, detail?}`, `observed` (decision 8) `absent`, `hidden`, `visible`, `disabled`,
  * `differs`, `count:<k>`, or `error` when the last poll threw (a strict-mode violation, a page gone): the
  * runner never counts that as reproduced. `shown` is what the page showed (the URL, the count, the text). `no-error` only drains: the runner judges the account's errors.
+ * `layout` runs the layout oracle's own expression for `P.check` (argus-live-layout.mjs) and holds when it finds no violation
+ * less the rows in `P.skip`; with a target, only the violations whose key names the target (the name its ARIA snapshot
+ * gives, digit runs written `#`, or one inside it) count, and a target the page lacks is `error`: `violations:<k>` otherwise,
+ * `shown` the keys.
  */
-const EXPECT = `  const judge = async () => {
+const EXPECT = `  const layout = async () => {
+    const found = await page.evaluate(P.expr);
+    const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.check === P.check && typeof f.key === "string" && !P.skip.some((s) => s.check === f.check && s.key === f.key));
+    let list = rows;
+    if (T) {
+      const L = T(page);
+      const n = await L.count();
+      if (n === 0) return { held: false, observed: "error", detail: "no target" };
+      if (n > 1) return { held: false, observed: "ambiguous", shown: n };
+      const first = (await L.ariaSnapshot({ timeout: 1000 })).split("\\n")[0];
+      const m = /^- [A-Za-z-]+ "(.*)"/.exec(first) || /^- [A-Za-z-]+: (.*)$/.exec(first);
+      const name = String(m ? m[1] : await L.innerText({ timeout: 1000 })).replace(/\\s+/g, " ").trim().replace(/[0-9]+/g, "#").slice(0, 60);
+      list = rows.filter((f) => {
+        const k = f.key.slice(f.key.indexOf("|") + 1, f.key.lastIndexOf("|"));
+        return k === name || (k !== "" && name.includes(k));
+      });
+    }
+    return list.length === 0 ? { held: true } : { held: false, observed: "violations:" + list.length, shown: list.slice(0, 20).map((f) => f.key) };
+  };
+  const judge = async () => {
+    if (P.kind === "layout") return await layout();
     if (P.kind === "url") {
       const u = new URL(page.url());
       return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
@@ -588,11 +620,13 @@ const EXPECT = `  const judge = async () => {
  * answer through `finish` — a throw too. A `login` (signed in through the driver) and the hooks (`trigger`,
  * `fact-equals`, `mail`, run through runHook) have no template.
  */
-export function stepCode(step, { settleMs, at = null, runOrigins }) {
+export function stepCode(step, { settleMs, at = null, runOrigins, skip = [] }) {
   const kind = step.do ?? step.expect;
   if (step.do === "login" || HOOKED.includes(kind)) throw new Error(`failed: ${kind} has no template`);
   const P = { kind, settleMs, at, runOrigins };
   for (const k of ["url", "value", "key"]) if (step[k] !== undefined) P[k] = step[k];
+  // The layout check runs as the oracle's own expression; `skip` ({check, key} rows: the journey's allowed and adopted ones) is data it is compared with.
+  if (kind === "layout") Object.assign(P, { check: step.check, skip: skip.map(({ check, key }) => ({ check, key })), expr: pageExpression("layout", { only: [step.check] }) });
   const T = step.target ? `(pg) => ${targetCode(step.target, "pg")}` : "null";
   const fail = step.do ? '{ ok: false, why: "error", detail: failure(e) }' : '{ held: false, observed: "error", detail: failure(e) }';
   return `async page => {\n  const P = ${JSON.stringify(P)};\n  const T = ${T};\n${HELPERS}${COMMON}${step.do ? ACTION : EXPECT}  try {\n    return await finish(await step());\n  } catch (e) {\n    return await finish(${fail});\n  }\n}\n`;

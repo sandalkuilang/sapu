@@ -56,6 +56,8 @@ import { mintMapSlot, mintSlot, readSlotState, writeSlotState } from "../plugins
 import { FINAL_KINDS, parseRepro, reductions, stepCode, substitute } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { parseTarget } from "../plugins/sapu/scripts/argus-live-targets.mjs";
+// @ts-expect-error — plain ESM script without types
+import { LAYOUT_KINDS, pageExpression } from "../plugins/sapu/scripts/argus-live-layout.mjs";
 
 type Obj = Record<string, any>;
 
@@ -102,7 +104,7 @@ describe("argus-live modules — the DAG", () => {
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
     // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
     expect(g.has("argus-live-steps")).toBe(true);
-    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
     // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
@@ -580,7 +582,52 @@ describe("argus-live repro DSL", () => {
 
   it("FINAL_KINDS holds decision 7's templates, one per oracle", () => {
     expect(Object.keys(FINAL_KINDS)).toEqual(ORACLES);
-    expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled"] });
+    expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled", "layout"] });
+  });
+
+  it("the layout expectation (lane Z1): one layout check, optionally on a target, a final of viewport-locale only", () => {
+    const list = (extra: Obj = {}, final: string | undefined = "viewport-locale"): Obj[] => [{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered", ...(final ? { final } : {}), ...extra }];
+    expect(parseRepro(list(), at).steps.at(-1)).toMatchObject({ n: 2, as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" });
+    expect(parseRepro(list({ target: { role: "button", name: "Pay" } }), at).steps.at(-1).target).toMatchObject({ by: "role", role: "button", name: "Pay" });
+    for (const check of LAYOUT_KINDS) expect(refusal(list({ check, ...(check === "page-scroll" ? {} : { target: { text: "x" } }) })), check).toBe("parsed");
+    // The check is required and is one the oracle has.
+    expect(refusal(list({ check: undefined }))).toMatch(/^refused: repro: step 2: layout takes a check \(page-scroll, clipped, covered, target-size\)$/);
+    for (const check of ["nope", 3, "", "locale", "links"]) expect(refusal(list({ check })), String(check)).toMatch(/^refused: repro: step 2: layout takes a check/);
+    // The page-wide check has no element to name.
+    expect(refusal(list({ check: "page-scroll", target: { role: "button", name: "Pay" } }))).toBe("refused: repro: step 2: page-scroll is page-wide: it takes no target");
+    expect(refusal(list({ value: "x" }))).toMatch(/^refused: repro: step 2: unknown key "value"$/);
+    // Only viewport-locale ends in it; a final of another oracle is refused with that oracle's kinds.
+    expect(refusal(list({ final: "handoff" }))).toBe("refused: repro: step 2: handoff's final is visible");
+    expect(refusal(list({ final: "regression" }))).toMatch(/^refused: repro: step 2: regression's final is /);
+    // A layout expectation before the final is allowed (it is an ordinary expectation), as a system step is not.
+    expect(refusal([{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "clipped" }, { ...FINAL_EXPECT, as: "customer.1", final: "viewport-locale", expect: "visible" }])).toBe("parsed");
+    expect(refusal([{ as: "system", expect: "layout", check: "clipped" }, { as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" }])).toBe("refused: repro: step 1: system only triggers, reads facts and reads mail");
+    // The suite runs the oracle after every step: a path never holds one, and a regression final is never one.
+    const path = (steps: Obj[]) => {
+      try {
+        parseRepro(steps, { ...at, path: true });
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "parsed";
+    };
+    expect(path([{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered" }, { as: "customer.1", expect: "visible", target: { text: "x" } }])).toBe("refused: repro: step 2: a path has no layout expectation: the suite runs the layout oracle after every step");
+    expect(FINAL_KINDS.regression).not.toContain("layout");
+  });
+
+  it("stepCode's layout template carries the check's expression, the check and the skipped rows as data", () => {
+    const step = { n: 2, as: "customer.1", expect: "layout", check: "covered", target: { by: "role", role: "button", name: "Pay" }, final: "viewport-locale" };
+    const skip = [{ check: "covered", key: "button|Pay|button" }];
+    const code = stepCode(step, { ...OPTS, skip });
+    const P = JSON.parse(/\n  const P = (.*);\n/.exec(code)![1]);
+    expect(P).toMatchObject({ kind: "layout", check: "covered", skip, expr: pageExpression("layout", { only: ["covered"] }) });
+    expect(code).toContain("const T = (pg) => pg.getByRole(\"button\"");
+    // Without a target there is none; without skipped rows none are skipped.
+    const bare = stepCode({ ...step, target: undefined }, OPTS);
+    expect(bare).toContain("\n  const T = null;\n");
+    expect(JSON.parse(/\n  const P = (.*);\n/.exec(bare)![1]).skip).toEqual([]);
+    // The page's answer is only ever compared with that data: no evaluation of anything the page returns.
+    expect(own(code)).not.toMatch(/\beval\(|new Function|\bimport\(/);
   });
 
   it("the regression oracle (spec §19.9): the lane's own, its final any expectation kind", () => {
@@ -1237,6 +1284,11 @@ describe("argus-live generated RED test", () => {
     // The header and the title take only an id, a ref and an oracle.
     const { context, steps } = parseRepro(EXAMPLE(), at);
     expect(() => redTest({ journey: "x\nprocess.exit()", oracle: "handoff", ref: "1.1.1", context, steps, settleMs: 3000 })).toThrow("failed: redTest: a journey id is kebab-case");
+  });
+
+  it("a layout expectation has no generated test: it is refused, never written as another kind (lane Z1)", () => {
+    const list = [{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" }];
+    expect(() => red(list)).toThrow("failed: redTest: a layout expectation has no generated test (the layout oracle is the suite's and pw layout's)");
   });
 
   it("repro --test writes red.spec.ts from the confirmed min.json, else repro.json", () => {

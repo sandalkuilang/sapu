@@ -47,6 +47,7 @@ export function redTest({ journey, oracle, ref, context, steps, settleMs }) {
   if (!ORACLES.includes(oracle)) throw new Error("failed: redTest: not an oracle");
   if (typeof ref !== "string" || !REF.test(ref)) throw new Error("failed: redTest: a ref is <slot>.<generation>.<k>");
   if (!Number.isInteger(settleMs) || settleMs < 0) throw new Error("failed: redTest: settle_ms is a whole number");
+  if (steps.some((s) => s.expect === "layout")) throw new Error("failed: redTest: a layout expectation has no generated test (the layout oracle is the suite's and pw layout's)");
   const pages = pageVars(steps, new Set([...OWN, ...steps.filter((s) => s.save).map((s) => variable(s.save))]));
   const hasLogin = steps.some((s) => s.do === "login");
   const anyErrors = [...pages.values()].some((p) => p.errors);
