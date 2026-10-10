@@ -15,13 +15,15 @@ import { slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { upMap } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
+import { catalog, mergeMap, readJourneys, score, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
+// @ts-expect-error — plain ESM script without types
 import { PAGE_CAP } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
 import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, readRun, updateRun } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
-import { seed } from "../plugins/sapu/scripts/argus-live-seed.mjs";
+import { seed, seedsOf } from "../plugins/sapu/scripts/argus-live-seed.mjs";
 // @ts-expect-error — plain ESM script without types
 import { mintMapSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 
@@ -278,5 +280,65 @@ describe("argus-live seed — the seed map slot and pw source", () => {
     // A plain map slot holds the same gates: the same answers, but for its refusal's wording (it has no source).
     const p = await battery(plain.token);
     expect(p.map((o) => o.join("\n").replace("a map slot takes only code and submit", "a seed map slot takes only code, source and submit"))).toEqual(after.map((o) => o.join("\n")));
+  }, 60_000);
+});
+
+describe("argus-live seed — merging", () => {
+  it("validateMap refuses a returned seeds key, at the map or a journey", () => {
+    expect(validateMap({ ...MAP, seeds: [] }).errors).toEqual(['the map: unknown key "seeds"']);
+    expect(validateMap({ ...MAP, journeys: [{ ...MAP.journeys[0], seeds: [{ kind: "doc", ref: "x:1-2" }] }] }).errors).toEqual(['journeys[0]: unknown key "seeds"']);
+  });
+
+  it("mergeMap adds the seeds to the journeys returned only, once each, and keeps them on a later merge", () => {
+    const a = { ...J("a", [BUY]), lastCycle: 2, seeds: [{ kind: "issue", ref: 3 }] };
+    const b = { ...J("b", [APPROVE]), lastCycle: 1 };
+    const prev = { head: "old", roots: ["src"], dropped: [], journeys: [a, b] };
+    const back = { roots: ["src/routes"], journeys: [J("a", [BUY]), J("c", [BUY])] };
+    const seeds = [{ kind: "doc", ref: "docs/flows.md:1-4" }, { kind: "issue", ref: 3 }];
+    const m = mergeMap(prev, back, { head: "new", seeds });
+    expect(m.journeys.map((j: Obj) => [j.id, j.seeds])).toEqual([
+      ["a", [{ kind: "issue", ref: 3 }, { kind: "doc", ref: "docs/flows.md:1-4" }]],
+      ["b", undefined],
+      ["c", seeds],
+    ]);
+    // A plain map's merge leaves every journey's seeds as they were.
+    expect(mergeMap(m, back, { head: "newer" }).journeys.map((j: Obj) => j.seeds)).toEqual(m.journeys.map((j: Obj) => j.seeds));
+    expect(mergeMap(prev, back, { head: "new" }).journeys.find((j: Obj) => j.id === "c")).not.toHaveProperty("seeds");
+  });
+
+  it("a seed never raises a journey's score: it is only a candidate the gates and SELECT judge as any other", () => {
+    const j = { ...J("a", [BUY]), lastCycle: 1 };
+    expect(score({ ...j, seeds: [{ kind: "issue", ref: 3 }] }, { cycle: 4 })).toBe(score(j, { cycle: 4 }));
+  });
+
+  it("map-check --merge links a seed slot's journeys to the source, the code still drops what it does not anchor, and the catalog marks them seeded", async () => {
+    const t = await seedRepo();
+    await seed(t.main, { issue: null, doc: "docs/flows.md:1-4" });
+    const s = await mintMapSlot(t.main, { slot: 1, seed: true });
+    const plain = await mintMapSlot(t.main, { slot: 2 });
+    // The seed slot returns the anchored journey and one the text names but the code does not have.
+    const ghost = J("refund-flow", [{ ...BUY, route: "/refunds/new", sources: [{ file: "src/routes/orders.js", line: 5, text: 'router.post("/refunds/new"' }] }]);
+    expect((await pw(t.main, [s.token, "submit", JSON.stringify({ ...MAP, journeys: [...MAP.journeys, ghost] })])).code).toBe(0);
+    expect((await pw(t.main, [plain.token, "submit", JSON.stringify({ ...MAP, journeys: [J("approve-order", [APPROVE])] })])).code).toBe(0);
+    expect(seedsOf(t.main, t.runId, 1)).toEqual([{ kind: "doc", ref: "docs/flows.md:1-4" }]);
+    expect(seedsOf(t.main, t.runId, 2)).toEqual([]);
+    await down(t.main, { runId: t.runId, graceMs: 1000 });
+    runs.splice(0);
+    // After down too: the binding stays beside the slot's returns.
+    expect(seedsOf(t.main, t.runId, 1)).toEqual([{ kind: "doc", ref: "docs/flows.md:1-4" }]);
+    const m1 = cli(t.main, ["map-check", "--merge", "1"]);
+    expect(m1.code, m1.err).toBe(0);
+    expect(m1.out).toContain("dropped refund-flow: step 1: anchor 1 is not in src/routes/orders.js at HEAD\n");
+    const m2 = cli(t.main, ["map-check", "--merge", "2"]);
+    expect(m2.code, m2.err).toBe(0);
+    const map = readJourneys(t.main);
+    expect(map.journeys.map((j: Obj) => [j.id, j.seeds])).toEqual([
+      ["order-to-cash", [{ kind: "doc", ref: "docs/flows.md:1-4" }]],
+      ["approve-order", undefined],
+    ]);
+    expect(map.dropped.map((d: Obj) => d.id)).toEqual(["refund-flow"]);
+    const lines = catalog(t.main);
+    expect(lines.find((l: string) => l.startsWith("  order-to-cash "))).toMatch(/ seeded — last cycle never/);
+    expect(lines.find((l: string) => l.startsWith("  approve-order "))).not.toMatch(/seeded/);
   }, 60_000);
 });
