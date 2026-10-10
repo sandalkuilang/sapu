@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Density held</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+main { padding: 24px; }
+button { padding: 0 12px; margin: 4px; background: rgb(229, 229, 229); }
+input, select { margin: 4px; padding: 0 8px; border: 1px solid rgb(212, 212, 212); }
+table { border-collapse: collapse; margin: 12px 0; }
+td { padding: 0 8px; }
+</style></head>
+<body>
+<main>
+<!-- the excluded twins: two button heights (36.6 px is 36 px a pixel off), one row height across tables (a header row is not a body row) -->
+<button style="height: 36px">Save</button><button style="height: 44px">Publish</button><button style="height: 36.6px">Back</button>
+<table aria-label="Orders"><thead><tr style="height: 56px"><th>Order</th></tr></thead><tbody><tr style="height: 40px"><td>A</td></tr><tr style="height: 40px"><td>B</td></tr><tr style="height: 40px"><td>C</td></tr></tbody></table>
+<table aria-label="Invoices"><tbody><tr style="height: 40px"><td>D</td></tr><tr style="height: 40px"><td>E</td></tr><tr style="height: 40px"><td>F</td></tr></tbody></table>
+</main>
+</body></html>

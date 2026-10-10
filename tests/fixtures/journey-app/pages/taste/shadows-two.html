@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Two shadows on two layers</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+.card { width: 200px; height: 80px; margin: 24px; border-radius: 12px; background: rgb(255, 255, 255); padding: 16px; }
+.pop { position: fixed; top: 0; right: 0; width: 160px; padding: 8px; border-radius: 8px; background: rgb(255, 255, 255); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2); }
+.ring { box-shadow: 0 0 0 3px rgb(147, 197, 253); padding: 8px; }
+input { box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1); padding: 8px; }
+</style></head>
+<body>
+<!-- the excluded twins: one shadow a layer; a focus ring and an inset shadow are not elevation -->
+<main>
+<div class="card" style="box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1)">One</div>
+<div class="card" style="box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1)">Two</div>
+<button class="ring">Focused</button>
+<input aria-label="Search">
+</main>
+<div class="pop">Menu</div>
+</body></html>

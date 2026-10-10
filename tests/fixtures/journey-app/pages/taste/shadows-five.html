@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Five shadows on two layers</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+.card { width: 200px; height: 80px; margin: 24px; border-radius: 12px; background: rgb(255, 255, 255); padding: 16px; }
+.pop { position: fixed; top: 0; right: 0; width: 160px; padding: 8px; border-radius: 8px; background: rgb(255, 255, 255); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2); }
+</style></head>
+<body>
+<!-- the violation: five distinct shadows on two layers (raised cards, one overlay) -->
+<main>
+<div class="card" style="box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1)">One</div>
+<div class="card" style="box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1)">Two</div>
+<div class="card" style="box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2)">Three</div>
+<div class="card" style="box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08)">Four</div>
+</main>
+<div class="pop">Menu</div>
+</body></html>
