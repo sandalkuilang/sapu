@@ -176,7 +176,8 @@ function lastPass(main, runId, id) {
  *   the harness's (code 2). Nothing runs.
  * - a heal → the path with only those targets replaced (healPath; a refusal throws), run twice, after `up
  *   --fresh` then dirty: held both times → UI changed, a staged heal (its changes, the healed path, the old and
- *   new target of each step and the git evidence in its body; code 0); an expectation failed both times →
+ *   new target of each step and the git evidence in its body; code 0; a digest the owner rejected before is `not
+ *   staged` and records no `healed` event, still code 0, as admit); an expectation failed both times →
  *   behaviour changed, a regression candidate at it on the healed path (code 3); a harness run → code 2; else
  *   `did not hold`, nothing staged (code 3).
  * Page-derived targets and git's words are printed only inside a fence (`masked`: the env file's values are masked
@@ -267,12 +268,18 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
     "",
     ...codeBlock(lines),
   ];
-  const { digest } = stage(main, { kind: "heal", id, run: lock.runId, changes: staged, path: healed, body });
-  smokeEvent(main, lock.runId, { kind: "healed", id, steps: [...new Set(staged.map((c) => c.step))] });
+  const s = stage(main, { kind: "heal", id, run: lock.runId, changes: staged, path: healed, body });
+  if (s.staged) smokeEvent(main, lock.runId, { kind: "healed", id, steps: [...new Set(staged.map((c) => c.step))] });
+  const d = s.digest.slice(0, 12);
   const f = fence(lines.join("\n"), { secrets });
   return {
     code: 0,
     masked: true,
-    lines: [`heal ${id}: UI changed: the healed path held twice (fresh, then dirty), every expectation unchanged`, `staged: heal ${id} (digest ${digest.slice(0, 12)})`, ...f.body.split("\n"), ...(f.truncated ? [`truncated ${f.truncated} characters`] : [])],
+    lines: [
+      `heal ${id}: UI changed: the healed path held twice (fresh, then dirty), every expectation unchanged`,
+      s.staged ? `staged: heal ${id} (digest ${d})` : `heal ${id}: not staged (this change was rejected before; digest ${d})`,
+      ...f.body.split("\n"),
+      ...(f.truncated ? [`truncated ${f.truncated} characters`] : []),
+    ],
   };
 }

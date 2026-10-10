@@ -2,7 +2,7 @@
 // explorer's return changes only action targets, the healed path is re-run with every expectation unchanged,
 // and only that re-run decides: UI changed (a staged heal), behaviour changed or a bug (a regression
 // candidate), or nothing.
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanTemps, example, git, liveRun } from "./helpers/argus-live";
@@ -185,6 +185,24 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     expect(r.code).toBe(0);
     expect(readState(t.main).staged[0].changes[0].evidence[0]).toMatch(/^git log -S"Place order" [0-9a-f]{12}\.\.HEAD: no commit removed it$/);
   });
+
+  it("a heal the owner rejected before (its digest in rejected) is not staged and records no healed event; exit 0 as admit", async () => {
+    const t = healRun({ ret: heal([{ step: 5, target: NEW }]) });
+    const first = await smokeHeal(t.main, "3.1", { once: stub(["held", "held"]).once });
+    const digest = readState(t.main).staged[0].digest;
+    expect(first.lines[1]).toBe(`staged: heal checkout (digest ${digest.slice(0, 12)})`);
+    // The owner closed that proposal: smoke propose moved its digest into rejected.
+    const events = join(t.main, ".argus/live", t.runId, "smoke/events.jsonl");
+    rmSync(events);
+    writeFileSync(join(t.main, ".argus/smoke-state.json"), JSON.stringify({ ...readState(t.main), staged: [], rejected: [digest] }));
+    const r = await smokeHeal(t.main, "3.1", { once: stub(["held", "held"]).once });
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toBe("heal checkout: UI changed: the healed path held twice (fresh, then dirty), every expectation unchanged");
+    expect(r.lines[1]).toBe(`heal checkout: not staged (this change was rejected before; digest ${digest.slice(0, 12)})`);
+    expect(r.lines.some((l: string) => l.startsWith("staged:"))).toBe(false);
+    expect(readState(t.main).staged).toEqual([]);
+    expect(existsSync(events)).toBe(false);
+  }, 30_000);
 
   it("behaviour changed: the healed path fails an expectation twice → a regression candidate at it, on the healed path; nothing staged", async () => {
     const t = healRun({ ret: heal([{ step: 5, target: NEW }]) });
