@@ -121,9 +121,10 @@ function applyChanges(at, changes) {
       fs.mkdirSync(path.join(at, "journeys"), { recursive: true });
       fs.writeFileSync(path.join(at, "journeys", `${c.id}.json`), `${JSON.stringify(c.journey, null, 2)}\n`);
     } else if (c.kind === "drop" || c.kind === "retire") {
-      for (const p of [`journeys/${c.id}.json`, `${c.id}.spec.ts`, `known/${c.id}.json`, `__aria__/${c.id}`]) rm(p);
+      // Baseline directories are the runner's {testFileBaseName}: the spec file's name without .ts, <id>.spec.
+      for (const p of [`journeys/${c.id}.json`, `${c.id}.spec.ts`, `known/${c.id}.json`, `__aria__/${c.id}.spec`]) rm(p);
       for (const project of fs.existsSync(path.join(at, "__screenshots__")) ? fs.readdirSync(path.join(at, "__screenshots__")) : []) {
-        for (const platform of fs.readdirSync(path.join(at, "__screenshots__", project))) rm(`__screenshots__/${project}/${platform}/${c.id}`);
+        for (const platform of fs.readdirSync(path.join(at, "__screenshots__", project))) rm(`__screenshots__/${project}/${platform}/${c.id}.spec`);
       }
       quarantine = quarantine.filter((q) => q.id !== c.id);
     } else if (c.kind === "quarantine") {
@@ -135,12 +136,12 @@ function applyChanges(at, changes) {
   if (had || quarantine.length) fs.writeFileSync(qFile, `${JSON.stringify(quarantine, null, 2)}\n`);
 }
 
-/** The journeys of the suite at `at` whose screenshots no baseline holds yet (`__screenshots__/<project>/<platform>/<id>/`). */
+/** The journeys of the suite at `at` whose screenshots no baseline holds yet (`__screenshots__/<project>/<platform>/<id>.spec/`). */
 function baselinesNeeded(at, ids) {
   const have = new Set();
   const shots = path.join(at, "__screenshots__");
   for (const project of fs.existsSync(shots) ? fs.readdirSync(shots) : []) {
-    for (const platform of fs.readdirSync(path.join(shots, project))) for (const id of fs.readdirSync(path.join(shots, project, platform))) have.add(id);
+    for (const platform of fs.readdirSync(path.join(shots, project))) for (const d of fs.readdirSync(path.join(shots, project, platform))) if (d.endsWith(".spec")) have.add(d.slice(0, -5));
   }
   return ids.filter((id) => !have.has(id));
 }
@@ -240,7 +241,7 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
     if (npmRun.status !== 0) throw new Error(`refused: smoke propose: npm install --package-lock-only failed (exit ${npmRun.status ?? "on a signal"})`);
     g(["add", "-A", "--", dir]);
     const changed = String(g(["diff", "--cached", "--name-only"]).stdout).trim().split("\n").filter(Boolean);
-    const needed = [...new Set([...baselinesNeeded(at, ids), ...carried.dropped.map((f) => f.slice(dir.length + 1).split("/").at(-2)).filter((id) => ids.includes(id))])].sort();
+    const needed = [...new Set([...baselinesNeeded(at, ids), ...carried.dropped.map((f) => f.slice(dir.length + 1).split("/").at(-2).replace(/\.spec$/, "")).filter((id) => ids.includes(id))])].sort();
     const title = `argus smoke: ${log.length} change(s) from run ${runId}`;
     const body = [
       title,

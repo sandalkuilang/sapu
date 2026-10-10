@@ -44,8 +44,8 @@ const ciRepo = ({ quarantine = [] as string[], aria = true } = {}) => {
   mkdirSync(join(dir, "journeys"), { recursive: true });
   for (const id of IDS) writeFileSync(join(dir, "journeys", `${id}.json`), `${JSON.stringify({ journey: id, path: [] })}\n`);
   if (aria) {
-    mkdirSync(join(dir, "__aria__/search"), { recursive: true });
-    writeFileSync(join(dir, "__aria__/search/2.aria.yml"), "- main:\n  - heading /Results \\d+/ [level=1]\n");
+    mkdirSync(join(dir, "__aria__/search.spec"), { recursive: true });
+    writeFileSync(join(dir, "__aria__/search.spec/2.aria.yml"), "- main:\n  - heading /Results \\d+/ [level=1]\n");
   }
   writeFileSync(join(dir, "quarantine.json"), `${JSON.stringify(quarantine.map((id) => ({ id, issue: null, since: "100" })))}\n`);
   writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\n");
@@ -427,13 +427,13 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
   });
 
   const files = (extra: Record<string, Buffer | string> = {}) => ({
-    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/2.png": PNG,
-    "argus-smoke-baselines-chromium/__screenshots__/msedge/linux/profile/2.png": PNG,
-    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/stranger/2.png": PNG,
-    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/3.png": "not a png",
-    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile/4.png": Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]),
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile.spec/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/msedge/linux/profile.spec/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/stranger.spec/2.png": PNG,
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile.spec/3.png": "not a png",
+    "argus-smoke-baselines-chromium/__screenshots__/chromium/linux/profile.spec/4.png": Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]),
     "argus-smoke-baselines-chromium/notes.txt": INJECT,
-    "argus-smoke-baselines-a11y/__aria__/search/2.aria.yml": ARIA,
+    "argus-smoke-baselines-a11y/__aria__/search.spec/2.aria.yml": ARIA,
     "argus-smoke-baselines-a11y/violations-search.json": JSON.stringify([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:color-contrast", key: "button.pay" }, { check: "bad name!", key: "x" }]),
     ...extra,
   });
@@ -450,14 +450,14 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     for (const l of r.lines) expect(l).not.toContain(INJECT);
     const head = git(t.origin, "rev-parse", "refs/heads/argus/smoke-200");
     const tree = git(t.origin, "ls-tree", "-r", "--name-only", head).split("\n");
-    expect(tree.filter((f) => /__screenshots__|__aria__|known\//.test(f)).sort()).toEqual(["e2e/argus-smoke/__aria__/search/2.aria.yml", "e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png", "e2e/argus-smoke/known/search.json"]);
-    expect(git(t.origin, "show", `${head}:e2e/argus-smoke/__aria__/search/2.aria.yml`)).toContain("- heading /Order \\d+/ [level=1]");
+    expect(tree.filter((f) => /__screenshots__|__aria__|known\//.test(f)).sort()).toEqual(["e2e/argus-smoke/__aria__/search.spec/2.aria.yml", "e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png", "e2e/argus-smoke/known/search.json"]);
+    expect(git(t.origin, "show", `${head}:e2e/argus-smoke/__aria__/search.spec/2.aria.yml`)).toContain("- heading /Order \\d+/ [level=1]");
     expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }]);
     const log = git(t.origin, "show", "-s", "--format=%ae%n%B", head);
     expect(log).toContain("owner@example.com");
     expect(log).toContain("Signed-off-by: owner <owner@example.com>");
     const changes = git(t.origin, "show", `${head}:e2e/argus-smoke/changes.jsonl`).split("\n").map((l) => JSON.parse(l));
-    expect(changes).toContainEqual({ kind: "baseline", id: "profile", step: 2, to: "e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png", evidence: ["CI baseline run 300 (chromium)"], run: "300" });
+    expect(changes).toContainEqual({ kind: "baseline", id: "profile", step: 2, to: "e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png", evidence: ["CI baseline run 300 (chromium)"], run: "300" });
     expect(gh.calls.some((c) => c[0] === "pr")).toBe(false);
     // The temporary worktree is gone.
     expect(git(t.main, "worktree", "list").split("\n")).toHaveLength(2);
@@ -478,9 +478,9 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     const r = await smokeBaseline(t.main, { fromRun: "301", ids: ["profile"] }, { runner });
     expect(r.lines[0]).toBe("baseline: 1 file(s) proposed in https://github.com/owner/app/pull/12 (argus/baselines-301 into feat/x)");
     expect(prs).toEqual([["pr", "create", "--repo", "owner/app", "--base", "feat/x", "--head", "argus/baselines-301", "--title", "argus: smoke baselines from CI run 301", "--body-file", expect.any(String), "--label", "sapu:agent-filed"]]);
-    expect(gh.bodies[0]).toContain("| `e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png` | profile | 2 | chromium |");
+    expect(gh.bodies[0]).toContain("| `e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png` | profile | 2 | chromium |");
     expect(gh.bodies[0]).toContain("2-up, swipe, onion skin");
-    expect(git(t.origin, "ls-tree", "-r", "--name-only", "refs/heads/argus/baselines-301").split("\n")).toContain("e2e/argus-smoke/__screenshots__/chromium/linux/profile/2.png");
+    expect(git(t.origin, "ls-tree", "-r", "--name-only", "refs/heads/argus/baselines-301").split("\n")).toContain("e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png");
     expect(git(t.origin, "rev-parse", "refs/heads/feat/x")).toBe(t.sha);
   });
 
@@ -488,10 +488,10 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     const t = baseRepo();
     const secret = longSecret(40, "baseline");
     appendLedger(t.main, t.runId, [{ c: "cookie", v: secret }]);
-    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": baselines(files({ "argus-smoke-baselines-a11y/__aria__/search/2.aria.yml": `- main:\n  - text: ${secret}\n` })) } });
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha: t.sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha: t.sha } } }, artifacts: { "300": baselines(files({ "argus-smoke-baselines-a11y/__aria__/search.spec/2.aria.yml": `- main:\n  - text: ${secret}\n` })) } });
     const r = await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner });
     expect(r.code).toBe(1);
-    expect(r.lines).toEqual(["e2e/argus-smoke/__aria__/search/2.aria.yml 2:11 cookie", "refused: smoke baseline: 1 secret(s) in the adopted files; nothing is pushed"]);
+    expect(r.lines).toEqual(["e2e/argus-smoke/__aria__/search.spec/2.aria.yml 2:11 cookie", "refused: smoke baseline: 1 secret(s) in the adopted files; nothing is pushed"]);
     expect(r.lines.join("\n")).not.toContain(secret.slice(0, 12));
     expect(git(t.origin, "rev-parse", "refs/heads/argus/smoke-200")).toBe(t.sha);
   });

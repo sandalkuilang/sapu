@@ -566,7 +566,7 @@
                       "message": "Error: expect(page).toHaveScreenshot(expected) failed\n\n  120 pixels (ratio 0.01 of all image pixels) are different."
                     },
                     {
-                      "message": "Error: A snapshot doesn't exist at /__w/app/app/e2e/argus-smoke/__screenshots__/chromium/linux/profile/3.png."
+                      "message": "Error: A snapshot doesn't exist at /__w/app/app/e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/3.png."
                     }
                   ],
                   "stdout": [],

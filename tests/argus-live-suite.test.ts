@@ -506,8 +506,8 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
 
   it("a baseline file that conflicts on the rebase is dropped and listed as needed, never resolved by picking a side", async () => {
     const p = proposeRepo();
-    const shot = "e2e/argus-smoke/__screenshots__/chromium/linux/checkout/1.png";
-    const aria = "e2e/argus-smoke/__aria__/checkout/1.aria.yml";
+    const shot = "e2e/argus-smoke/__screenshots__/chromium/linux/checkout.spec/1.png";
+    const aria = "e2e/argus-smoke/__aria__/checkout.spec/1.aria.yml";
     const put = (f: string, text: string) => {
       mkdirSync(join(p.main, f, ".."), { recursive: true });
       writeFileSync(join(p.main, f), text);
@@ -533,7 +533,7 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     stageChange(p.main, ADD());
     const r = await p.propose();
     expect(r.code).toBe(0);
-    expect(r.lines).toContain("baseline: dropped e2e/argus-smoke/__screenshots__/chromium/linux/checkout/1.png (it conflicts with origin/main)");
+    expect(r.lines).toContain("baseline: dropped e2e/argus-smoke/__screenshots__/chromium/linux/checkout.spec/1.png (it conflicts with origin/main)");
     expect(r.lines).toContain("baseline: needed checkout (smoke baseline --from-run after this PR's first CI run)");
     expect(p.bareShow(branch, shot).status).not.toBe(0);
     expect(p.bareShow(branch, aria).stdout).toBe("- main:\n");

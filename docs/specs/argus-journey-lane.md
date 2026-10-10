@@ -1963,8 +1963,8 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
   (generated), `package.json` and `package-lock.json` (`@playwright/test` and `@axe-core/playwright`,
   exact), `.gitignore`
   (`.auth/`, `test-results/`, `playwright-report/`), `quarantine.json`, `known/<id>.json` (adopted
-  check violations), `changes.jsonl` (the visible log), `__screenshots__/<project>/<platform>/<id>/`
-  (no `msedge`), `__aria__/<id>/`. `fixtures.ts` exists only when a role signs in by `login.command`: the owner's
+  check violations), `changes.jsonl` (the visible log), `__screenshots__/<project>/<platform>/<id>.spec/`
+  (no `msedge`), `__aria__/<id>.spec/` (the runner's `{testFileBaseName}`, the spec file's name without `.ts`). `fixtures.ts` exists only when a role signs in by `login.command`: the owner's
   `signedIn` for it, created once as a stub that throws, never overwritten.
 - **Local state** (gitignored): `.argus/smoke-state.json` (per journey: last check, flaky streaks,
   quarantine clean streak, open break issue, proposal digests and their outcome), `.argus/perf.json`
@@ -2117,7 +2117,7 @@ modal dialog is open, everything outside it.
   function may have a keyboard path elsewhere). Then focus is blurred and the step runs.
 - **Names** (`a11y`): every action target `toHaveAccessibleName(/\S/)` (4.1.2).
 - **ARIA snapshot** (`a11y`, at the path's screens): `toMatchAriaSnapshot({name: "<n>.aria.yml"})`
-  of `main` (else `body`), stored as `__aria__/<id>/<n>.aria.yml`, `children: "contain"` (partial
+  of `main` (else `body`), stored as `__aria__/<id>.spec/<n>.aria.yml`, `children: "contain"` (partial
   matching, Playwright's default) [pw-aria]. A missing file compares as the empty string and fails
   (`baseline-missing`); a mismatch reports a line diff only, no file [probe]. Baselines therefore come
   only from the baseline run (§19.8); on adoption, names holding a digit become regexes with each
@@ -2202,8 +2202,8 @@ baseline job on that run's branch: `missing` for its `baseline-missing` ids, `ch
 ids the owner names with `--ids` after reading `smoke ci`'s diff (no mismatch is ever re-baselined
 unasked); it prints the dispatched run. On a baseline run it downloads the artifact with `gh run
 download` into a 0700 temporary directory and adopts only files whose names the suite defines
-(`__screenshots__/<project>/<platform>/<id>/*.png` with a PNG signature under 5 MB, never `msedge`;
-`__aria__/<id>/*.aria.yml` under 1 MB, pruned as §19.7 says; `violations-<id>.json` under 1 MB);
+(`__screenshots__/<project>/<platform>/<id>.spec/*.png` with a PNG signature under 5 MB, never `msedge`;
+`__aria__/<id>.spec/*.aria.yml` under 1 MB, pruned as §19.7 says; `violations-<id>.json` under 1 MB);
 nothing else is read, no artifact text is printed outside a fence, and a run on another repository
 (a fork) or a run whose head is no longer its branch's head (`stale`) is refused. Without the right
 to dispatch, the `gh workflow run` line is printed for the owner.

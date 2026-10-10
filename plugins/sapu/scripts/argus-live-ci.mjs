@@ -372,7 +372,7 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
             signal = true;
             const at = (e.snippet.split("\n").find((l) => /^\s*>/.test(l)) ?? "").match(/"([0-9]{1,3})\.aria\.yml"/);
             const n = at ? at[1] : null;
-            if (n && !holdsFile(main, r.sha, path.posix.join(smoke.dir, "__aria__", id, `${n}.aria.yml`), runner)) add(`baseline-missing ${id} ${project}`);
+            if (n && !holdsFile(main, r.sha, path.posix.join(smoke.dir, "__aria__", `${id}.spec`, `${n}.aria.yml`), runner)) add(`baseline-missing ${id} ${project}`);
             else if (![...lines].some((l) => l.startsWith(`aria ${id} ${n ?? "?"} `))) add(`aria ${id} ${n ?? "?"} [${detail([`aria ${id} ${n ?? "?"} (${project}): the snapshot's line diff`, ...cap(msg).split("\n")])}]`);
           }
         }
@@ -584,8 +584,8 @@ function filesIn(dir, rel = "", depth = 0) {
 
 /**
  * The baseline artifacts in `tmp` → `{files: [{rel, bytes, id, step, project}], skipped}`: only the suite's baseline
- * names (spec §19.8) — `__screenshots__/<project>/<platform>/<id>/<n>.png` (a PNG under 5 MB, never msedge's),
- * `__aria__/<id>/<n>.aria.yml` (UTF-8 under 1 MB, pruned) and `violations-<id>.json` (under 1 MB, `known/<id>.json`
+ * names (spec §19.8; `<id>.spec` is the runner's {testFileBaseName}) — `__screenshots__/<project>/<platform>/<id>.spec/<n>.png`
+ * (a PNG under 5 MB, never msedge's), `__aria__/<id>.spec/<n>.aria.yml` (UTF-8 under 1 MB, pruned) and `violations-<id>.json` (under 1 MB, `known/<id>.json`
  * as sorted `{check, key}`) — of journeys in `ids`; everything else is skipped unread.
  */
 function adoptable(tmp, { ids, dir }) {
@@ -596,8 +596,8 @@ function adoptable(tmp, { ids, dir }) {
     const suffix = art.slice(BASELINES.length + 1);
     for (const rel of filesIn(path.join(tmp, art))) {
       const file = path.join(tmp, art, ...rel.split("/"));
-      const shot = /^__screenshots__\/([a-z0-9-]{1,40})\/(linux|darwin|win32)\/([a-z0-9][a-z0-9-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})\.png$/.exec(rel);
-      const aria = /^__aria__\/([a-z0-9][a-z0-9-]{0,63})\/([a-z0-9][a-z0-9-]{0,63})\.aria\.yml$/.exec(rel);
+      const shot = /^__screenshots__\/([a-z0-9-]{1,40})\/(linux|darwin|win32)\/([a-z0-9][a-z0-9-]{0,63})\.spec\/([a-z0-9][a-z0-9-]{0,63})\.png$/.exec(rel);
+      const aria = /^__aria__\/([a-z0-9][a-z0-9-]{0,63})\.spec\/([a-z0-9][a-z0-9-]{0,63})\.aria\.yml$/.exec(rel);
       const known = /^violations-([a-z0-9][a-z0-9-]{0,63})\.json$/.exec(rel);
       const id = shot ? shot[3] : aria ? aria[1] : known ? known[1] : null;
       let entry = null;
