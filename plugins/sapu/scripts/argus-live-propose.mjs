@@ -218,8 +218,10 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
     settle();
     return { code: 0, lines: [...lines, "smoke propose: nothing to propose"] };
   }
-  // The lane runs' ledgers: an entry smoke ci staged names a CI run (digits), whose change carries no page value.
-  const secrets = secretsOf(main, [...new Set([runId, ...todo.map((ch) => ch.run).filter((r) => !/^[0-9]{1,20}$/.test(r))])], env);
+  // The staged changes' own lane runs' ledgers. An entry smoke ci staged names a CI run (digits), which has no ledger
+  // and whose change carries no page value: with only those, the branch's run's ledger is the one checked against.
+  const lane = [...new Set(todo.map((ch) => ch.run).filter((r) => !/^[0-9]{1,20}$/.test(r)))];
+  const secrets = secretsOf(main, lane.length ? lane : [runId], env);
   const g0 = gitIn(main, runner);
   const lease = String(g0(["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).stdout ?? "").trim().split(/\s/)[0] ?? "";
   g0(["fetch", "--quiet", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`, ...(lease ? [`+refs/heads/${branch}:refs/remotes/origin/${branch}`] : [])]);
