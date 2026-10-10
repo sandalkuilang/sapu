@@ -36,6 +36,8 @@ const NOTES = new Map([["argus-violation", "check"], ["argus-manual", "manual"],
 export const BASELINES = "argus-smoke-baselines";
 const QUARANTINE_EXIT = 3;
 const QUARANTINE_MAX = 5;
+/** A base-branch flake tells a pull request's flake from a new one for this long (then it is history). */
+const BASE_FLAKE_MS = 30 * 86_400_000;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 /** `s` parsed as JSON, or null. */
@@ -91,14 +93,15 @@ function runOf(raw, verb, asked = null) {
 }
 
 /**
- * Run `asked` (null: the newest completed run of the suite's workflow) of `repo`, read through gh → runOf's.
+ * Run `asked` (null: the newest completed push run of the suite's workflow on `base`) of `repo`, read through gh → runOf's.
  * Refused: a run id that is not one, a run of another repository, a run from a fork (its artifacts are never read).
  */
-export function fetchRun(main, { asked, repo, workflow, runner, verb }) {
+export function fetchRun(main, { asked, repo, base, workflow, runner, verb }) {
   if (asked !== null && !(typeof asked === "string" && RUN_ID.test(asked))) throw new Error(`refused: ${verb}: ${typeof asked === "string" && /^[\x20-\x7e]{1,40}$/.test(asked) ? asked : "that"} is not a run id`);
   let id = asked;
   if (id === null) {
-    const list = parse(ghOut(runner, main, ["api", `repos/${repo}/actions/workflows/${workflow}/runs?status=completed&per_page=1`], verb));
+    // The base branch's newest push: the run a flake is quarantined from and a quarantine's cycle is counted on.
+    const list = parse(ghOut(runner, main, ["api", `repos/${repo}/actions/workflows/${workflow}/runs?status=completed&event=push&branch=${encodeURIComponent(base)}&per_page=1`], verb));
     const first = isObj(list) && Array.isArray(list.workflow_runs) ? list.workflow_runs[0] : null;
     if (!isObj(first) || !Number.isSafeInteger(first.id)) throw new Error(`refused: ${verb}: ${workflow} has no completed run`);
     id = String(first.id);
@@ -239,18 +242,20 @@ function holdsFile(main, sha, rel, runner) {
 }
 
 /**
- * One cycle of a quarantined journey (decision 13) → `{entry, action}`: `entry` `{…, cycles, clean}` counted on, the
- * cycle clean when the lane's pass held the path at least twice and nothing else, and at least one quarantine-job
- * result was read and every one passed first time; `action` `exit` at three clean cycles in a row, `drop` at five
+ * One cycle of a quarantined journey (decision 13) → `{entry, action, counted}`. With no evidence (no lane pass of the
+ * path, or no quarantine-job result read) nothing is counted: `entry` as it was, the streak kept. Else `entry` `{…,
+ * cycles, clean}` counted on, the cycle clean when the lane's pass held the path at least twice and nothing else and
+ * every quarantine-job result read passed first time; `action` `exit` at three clean cycles in a row, `drop` at five
  * cycles, else null.
  */
 export function quarantineCycle(entry, { held, other, first, otherCi }) {
-  const clean = held >= 2 && other === 0 && first >= 1 && otherCi === 0 ? (entry.clean ?? 0) + 1 : 0;
+  if (held + other === 0 || first + otherCi === 0) return { entry, action: null, counted: false };
+  const clean = held >= 2 && other === 0 && otherCi === 0 ? (entry.clean ?? 0) + 1 : 0;
   const next = { ...entry, cycles: (entry.cycles ?? 0) + 1, clean };
-  return { entry: next, action: clean >= QUARANTINE_EXIT ? "exit" : next.cycles >= QUARANTINE_MAX ? "drop" : null };
+  return { entry: next, action: clean >= QUARANTINE_EXIT ? "exit" : next.cycles >= QUARANTINE_MAX ? "drop" : null, counted: true };
 }
 
-/** The suite's quarantine.json → the journey ids it holds with their `since` (`[{id, since}]`); none when missing. */
+/** The suite's quarantine.json → the journey ids it holds with their `since` and the projects they flaked on (`[{id, since, projects}]`); none when missing. */
 function quarantined(main, dir, ids) {
   let raw = null;
   try {
@@ -260,7 +265,8 @@ function quarantined(main, dir, ids) {
   }
   return (Array.isArray(raw) ? raw : []).flatMap((q) => {
     const id = typeof q === "string" ? q : isObj(q) ? q.id : null;
-    return ids.includes(id) ? [{ id, since: isObj(q) && typeof q.since === "string" ? q.since : null }] : [];
+    const projects = isObj(q) && Array.isArray(q.projects) ? q.projects.filter((p) => typeof p === "string" && PROJECT.test(p)) : [];
+    return ids.includes(id) ? [{ id, since: isObj(q) && typeof q.since === "string" ? q.since : null, projects }] : [];
   });
 }
 
@@ -294,7 +300,7 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
   if (loaded.errors.length) throw new Error(`refused: ${verb}: ${loaded.errors.join("; ")}`);
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
   const ids = suiteIds(main, smoke, verb);
-  const r = fetchRun(main, { asked, repo, workflow: smoke.ci.workflow, runner, verb });
+  const r = fetchRun(main, { asked, repo, base, workflow: smoke.ci.workflow, runner, verb });
   const tmp = download(main, { id: r.id, repo, prefix: smoke.ci.artifact, runner, verb });
   try {
     const { reports, skipped } = reportsIn(tmp, smoke.ci.artifact);
@@ -357,8 +363,8 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
       if (t.tags.includes("quarantine") || t.tags.includes("@quarantine")) {
         count.quarantined += 1;
         const first = t.status === "expected" && t.results.length === 1 && t.results[0].status === "passed";
-        const q = reads.get(t.title) ?? { first: 0, otherCi: 0 };
-        q[first ? "first" : "otherCi"] += 1;
+        const q = reads.get(t.title) ?? [];
+        q.push({ project: t.project, first });
         reads.set(t.title, q);
         add(`quarantined ${t.title} ${t.project}: ${first ? "passed first time" : t.status === "flaky" ? "flaky" : t.status === "expected" ? "passed" : "failed"}`);
         continue;
@@ -430,18 +436,21 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
     for (const t of checked) noted(t);
     // Flakes (decision 13): quarantined only from a push to the base branch.
     const basePush = r.event === "push" && r.branch === base;
+    const now = Date.now();
     for (const [id, projects] of flakes) {
       const j = { ...(state.journeys[id] ?? {}) };
       const head = `flaky ${id} ${projects.join(",")}`;
+      // Base flakes within the window (a bare run id, as written before it, is dated from now).
+      j.baseFlakes = (j.baseFlakes ?? []).map((x) => (typeof x === "string" ? { run: x, at: new Date(now).toISOString() } : x)).filter((x) => isObj(x) && typeof x.run === "string" && now - Date.parse(x.at) < BASE_FLAKE_MS);
       if (basePush) {
-        j.baseFlakes = [...new Set([...(j.baseFlakes ?? []), ciRun])].slice(-10);
+        j.baseFlakes = [...j.baseFlakes.filter((x) => x.run !== ciRun), { run: ciRun, at: new Date(now).toISOString() }].slice(-10);
         if (quarantined(main, smoke.dir, ids).some((q) => q.id === id)) add(`${head}: quarantined already`);
         else {
           const drop = (j.exits ?? 0) >= 1;
           const kind = drop ? "drop" : "quarantine";
           const evidence = [`CI run ${ciRun}: flaky on ${base} (${projects.join(", ")})`];
           const entry = { kind, id, run: ciRun, changes: [{ kind, id, evidence, run: ciRun }], body: changeBody(`${drop ? "Drop" : "Quarantine"}: ${id}`, [...evidence, ...(drop ? ["It left quarantine once already: a second quarantine drops it."] : ["Tagged @quarantine: the gating job skips it, the quarantine job keeps running it."])]) };
-          if (!drop) entry.quarantine = { id, issue: null, since: ciRun };
+          if (!drop) entry.quarantine = { id, issue: null, since: ciRun, projects: [...projects].sort() };
           const s = stageInto(state, entry);
           if (s.staged) smokeEvent(main, readLock(main)?.runId ?? lastRun(main), { kind: drop ? "dropped" : "quarantined", id });
           if (!drop) j.tracking = `smoke-flaky:${id}`;
@@ -461,7 +470,7 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
       } else add(`${head}: nothing staged (a ${r.event === "push" ? "push" : r.event} to ${r.branch}, not to ${base} or a pull request)`);
       state.journeys[id] = j;
     }
-    lifecycle(main, { state, smoke, ids, reads, ciRun, add });
+    lifecycle(main, { state, smoke, ids, reads, ciRun, basePush, base, add });
     // A heal the owner closed leaves the break with them (spec §19.9): pending-regression and quarantined until they rule.
     refreshOutcomes(state, { runner, cwd: main });
     const settled = settleRegressions(main, state, { dir: smoke.dir, members: new Set(ids) });
@@ -502,18 +511,24 @@ function comment(main, { repo, pr, id, projects, ciRun, base, runner }) {
 
 /**
  * Quarantine's lifecycle for the running cycle (decision 13): each journey in the suite's quarantine.json is
- * counted once a cycle (quarantineCycle, from the cycle's pass and this run's quarantine-job `reads`); an exit or
- * a drop is staged. No cycle → one line, nothing counted.
+ * counted once a lane cycle and once a CI run (`ciRuns`), only from a push to the base branch (quarantineCycle, from
+ * the cycle's pass and this run's quarantine-job `reads` of the projects it flaked on, every project for an entry
+ * naming none); an exit or a drop is staged. No cycle, another event, a CI run counted already or no evidence → a
+ * line, nothing counted (never dirty).
  */
-function lifecycle(main, { state, smoke, ids, reads, ciRun, add }) {
+function lifecycle(main, { state, smoke, ids, reads, ciRun, basePush, base, add }) {
   const list = quarantined(main, smoke.dir, ids);
   if (!list.length) return;
+  if (!basePush) {
+    add(`quarantine: run ${ciRun} is not a push to ${base}; streaks unchanged`);
+    return;
+  }
   const lock = readLock(main);
   if (!lock) {
     add("quarantine: no journey cycle is running; streaks unchanged");
     return;
   }
-  for (const { id, since } of list) {
+  for (const { id, since, projects } of list) {
     const j = { ...(state.journeys[id] ?? {}) };
     const q = j.quarantine ?? { since, cycles: 0, clean: 0, counted: [] };
     const where = (x) => `cycle ${x.cycles} of ${QUARANTINE_MAX}, clean streak ${x.clean} of ${QUARANTINE_EXIT}`;
@@ -521,11 +536,23 @@ function lifecycle(main, { state, smoke, ids, reads, ciRun, add }) {
       add(`quarantine ${id}: ${where(q)} (this cycle is counted)`);
       continue;
     }
+    if ((q.ciRuns ?? []).includes(ciRun)) {
+      add(`quarantine ${id}: not counted (CI run ${ciRun} is counted already; the next push to ${base} is read)`);
+      continue;
+    }
     const recs = lanePass(main, lock.runId, id) ?? [];
     const held = recs.filter((x) => x.verdict === "held").length;
-    const ci = reads.get(id) ?? { first: 0, otherCi: 0 };
-    const { entry, action } = quarantineCycle(q, { held, other: recs.length - held, ...ci });
+    // A flake is judged on the projects it flaked on (msedge has no quarantine job: its entry reads every project).
+    const want = projects.filter((p) => p !== "msedge");
+    const got = (reads.get(id) ?? []).filter((x) => !want.length || want.includes(x.project));
+    const ci = { first: got.filter((x) => x.first).length, otherCi: got.filter((x) => !x.first).length };
+    const { entry, action, counted } = quarantineCycle(q, { held, other: recs.length - held, ...ci });
+    if (!counted) {
+      add(`quarantine ${id}: not counted (${!got.length ? `no quarantine-job result${want.length ? ` of ${want.join(",")}` : ""} in CI run ${ciRun}` : "this cycle's pass did not run it"})`);
+      continue;
+    }
     entry.counted = [...(q.counted ?? []), lock.runId].slice(-10);
+    entry.ciRuns = [...(q.ciRuns ?? []), ciRun].slice(-20);
     j.quarantine = entry;
     if (!action) add(`quarantine ${id}: ${where(entry)}`);
     else {

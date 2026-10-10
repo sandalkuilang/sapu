@@ -333,6 +333,13 @@ describe("staging — every suite change waits for a proposal (spec §19.8)", ()
     expect(readState(t.main).staged).toEqual([]);
   });
 
+  it("a quarantine's digest is its journey's: a later flake's run does not make a rejected quarantine new again", () => {
+    const t = healRun();
+    const q = (since: string) => ({ kind: "quarantine", id: "checkout", run: since, changes: [{ kind: "quarantine", id: "checkout", evidence: [`CI run ${since}`], run: since }], body: [], quarantine: { id: "checkout", issue: null, since, projects: ["chromium"] } });
+    const a = stage(t.main, q("101"));
+    expect(stage(t.main, { ...q("205"), quarantine: { ...q("205").quarantine, projects: ["webkit"] } }).digest).toBe(a.digest);
+  });
+
   it("a state file that is not the state's shape refuses rather than being overwritten", () => {
     const t = healRun();
     writeFileSync(join(t.main, ".argus/smoke-state.json"), "[1]");

@@ -890,15 +890,16 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
       // The config names the same projects (after setup), so --project "$PROJECT" always finds one.
       const config = smokeConfig({ live: writtenLive, smoke: full });
       for (const n of names) expect(config, n).toContain(`{ name: ${JSON.stringify(n)}, `);
-      // The quarantine job runs on the first engine of the container.
-      expect(job(lines, "quarantine").join("\n")).toContain(`--project setup --project ${names.find((n: string) => ["chromium", "firefox", "webkit"].includes(n))}`);
+      // The quarantine job runs every container project: a flake is judged on its own project's results.
+      expect(matrix("quarantine")).toEqual(matrix("test"));
     }
   });
 
   it("keeps quarantined tests running in a non-gating job", () => {
     const q = job(flow().out().lines, "quarantine");
     expect(q).toContain("    continue-on-error: true");
-    expect(q).toContain("      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project chromium");
+    expect(q).toContain('      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project "$PROJECT"');
+    expect(q.join("\n")).toContain("          name: argus-smoke-results-quarantine-${{ matrix.project }}");
   });
 
   it("the baseline job runs only on dispatch, its inputs reaching the shell through env and checked before use", () => {

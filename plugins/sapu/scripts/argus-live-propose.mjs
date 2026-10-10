@@ -337,7 +337,7 @@ const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\
  * request skipped; every action pinned to the commit `gh api` resolves, its tag in a comment; checkout without
  * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`), a
  * matrix over the container projects, `npm ci` then `--shuffle --grep-invert @quarantine`; `msedge` on the
- * plain runner; the non-gating `quarantine` job; the dispatch-only `baseline` job, whose inputs reach the
+ * plain runner; the non-gating `quarantine` job, the same matrix (a flake is judged on its own project's results); the dispatch-only `baseline` job, whose inputs reach the
  * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9][a-z0-9-]*(\\|[a-z0-9][a-z0-9-]*)*$` first,
  * the ids then anchored to a whole title word in `--grep`; results
  * and written baselines uploaded for 7 days, never `.auth/`; the `${NAME}` names live.json uses as
@@ -430,19 +430,20 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
         ]
       : []),
     "  quarantine:",
-    "    # Quarantined tests leave the critical path, never sight: this job runs them and never gates.",
+    "    # Quarantined tests leave the critical path, never sight: this job runs them on every project and never gates.",
     `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
     `    runs-on: ${RUNNER}`,
     "    timeout-minutes: 70",
     "    continue-on-error: true",
     ...image,
-    ...env(["      HOME: /root"]),
+    ...matrix,
+    ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
     ...workdir,
     "    steps:",
     ...checkout,
     "      - run: npm ci",
-    `      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project ${engine}`,
-    ...results(`${artifact}-quarantine`),
+    '      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project "$PROJECT"',
+    ...results(`${artifact}-quarantine-\${{ matrix.project }}`),
     "  baseline:",
     "    # Dispatched by smoke baseline: writes the baselines the pull request then proposes for review.",
     "    if: github.event_name == 'workflow_dispatch'",

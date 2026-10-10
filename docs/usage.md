@@ -278,11 +278,11 @@ A test is **passed**, **flaky** (failed, then passed on the retry) or **failed**
 
 | Seen | Called | What happens |
 |---|---|---|
-| Flaky on a push to the base branch | flake | Staged for quarantine: the next proposal adds `{id, issue, since}` to `quarantine.json`, and the test is tagged `@quarantine`. The gating job skips it; the non-gating `quarantine` job keeps running it. The orchestrator files one tracking issue per journey, `smoke-flaky:<id>`. |
-| Flaky on a pull request's head, never on the base | `flaky-new` | A comment on that pull request; never quarantined, because the change may have brought a real race. |
+| Flaky on a push to the base branch | flake | Staged for quarantine: the next proposal adds `{id, issue, since, projects}` to `quarantine.json` (`projects`: where it flaked), and the test is tagged `@quarantine`. The gating job skips it; the non-gating `quarantine` job keeps running it on every project. The orchestrator files one tracking issue per journey, `smoke-flaky:<id>`. |
+| Flaky on a pull request's head, not on the base in the last 30 days | `flaky-new` | A comment on that pull request; never quarantined, because the change may have brought a real race. |
 | Failed on every attempt in CI, and the lane's own pass holds on Chrome | `ci-only` (`browser-only <project>` when Chromium passed in CI) | A needs-owner issue with the run's link. |
 
-A quarantined test leaves quarantine after three cycles in a row in which the lane's pass held it twice and every quarantine-job result passed on the first try. It is proposed for **drop** after a second quarantine, or after five cycles in quarantine: twenty reliable tests beat two hundred flaky ones. `failOnFlakyTests` stays off, because a retry-pass is reported as flaky, not red. Nothing is skipped silently: a quarantined test still runs.
+A quarantined test leaves quarantine after three counted cycles in a row in which the lane's pass held it twice and every quarantine-job result of the projects it flaked on passed on the first try. A cycle is counted only from a push run of the base branch (`smoke ci` with no `--run` reads the newest one), once per lane cycle and once per CI run; a cycle with no quarantine-job result of those projects, or no lane pass of the path, is "not counted" and keeps the streak. It is proposed for **drop** after a second quarantine, or after five cycles in quarantine: twenty reliable tests beat two hundred flaky ones. `failOnFlakyTests` stays off, because a retry-pass is reported as flaky, not red. Nothing is skipped silently: a quarantined test still runs.
 
 #### What the suite checks
 

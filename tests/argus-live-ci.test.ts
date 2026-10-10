@@ -222,10 +222,10 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     const state = readState(t.main);
     expect(state.staged.map((s: Obj) => [s.kind, s.id])).toEqual([["quarantine", "checkout"]]);
     const q = state.staged[0];
-    expect(q.quarantine).toEqual({ id: "checkout", issue: null, since: "101" });
+    expect(q.quarantine).toEqual({ id: "checkout", issue: null, since: "101", projects: ["chromium"] });
     expect(q.changes).toEqual([{ kind: "quarantine", id: "checkout", evidence: ["CI run 101: flaky on main (chromium)"], run: "101" }]);
     expect(q.digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(state.journeys.checkout).toMatchObject({ baseFlakes: ["101"], tracking: "smoke-flaky:checkout" });
+    expect(state.journeys.checkout).toMatchObject({ baseFlakes: [{ run: "101", at: expect.stringMatching(/^\d{4}-/) }], tracking: "smoke-flaky:checkout" });
     // CI never applies a heal: a ui-change? is reported, never patched (spec §19.9).
     expect(git(t.main, "status", "--porcelain", "e2e")).toBe("");
   });
@@ -250,6 +250,13 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     const r2 = await smokeCi(u.main, { run: "102" }, { runner: gh2.runner });
     expect(split(r2.lines).outside).toContain("flaky checkout chromium: flaky on main too");
     expect(gh2.bodies).toEqual([]);
+    // A base flake older than the window no longer counts: the pull request's flake is new again.
+    const w = ciRepo();
+    const old = new Date(Date.now() - 31 * 86_400_000).toISOString();
+    writeFileSync(join(w.main, ".argus/smoke-state.json"), JSON.stringify({ version: 1, staged: [], rejected: [], journeys: { checkout: { baseFlakes: [{ run: "90", at: old }] } } }));
+    const r3 = await smokeCi(w.main, { run: "102" }, { runner: fakeGh({ api: { "repos/owner/app/actions/runs/102": apiRun(102, { event: "pull_request", branch: "feat/x", pr: 7 }) }, artifacts: { "102": artifact() } }).runner });
+    expect(split(r3.lines).outside).toContain("flaky-new checkout 7");
+    expect(readState(w.main).journeys.checkout.baseFlakes).toEqual([]);
   });
 
   it("a flake on another branch's push stages nothing", async () => {
@@ -276,12 +283,12 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     expect(split(r.lines).outside).not.toContain("ui-change? refund step 3");
   });
 
-  it("reads the newest completed run of the suite's workflow when no run is named", async () => {
+  it("reads the newest completed push run of the base branch when no run is named", async () => {
     const t = ciRepo();
     const gh = base(t, { "repos/owner/app/actions/workflows/argus-smoke.yml/runs": { workflow_runs: [apiRun(101)] } });
     const r = await smokeCi(t.main, { run: null }, { runner: gh.runner });
     expect(r.lines[0]).toMatch(/^smoke ci: run 101 /);
-    expect(gh.calls[0]).toEqual(["api", "repos/owner/app/actions/workflows/argus-smoke.yml/runs?status=completed&per_page=1"]);
+    expect(gh.calls[0]).toEqual(["api", "repos/owner/app/actions/workflows/argus-smoke.yml/runs?status=completed&event=push&branch=main&per_page=1"]);
   });
 
   it("refuses a run from a fork, a run of another repository, a run id that is not one, a run with no results", async () => {
@@ -335,8 +342,10 @@ describe("quarantine's lifecycle (spec §19.9, decision 13)", () => {
     }
     expect(actions).toEqual([null, null, "exit"]);
     // A cycle is clean only when the lane held the path twice and every quarantine-job result read passed first time.
-    for (const dirty of [{ ...clean, held: 1 }, { ...clean, other: 1 }, { ...clean, first: 0 }, { ...clean, otherCi: 1 }]) expect(quarantineCycle({ since: "1", cycles: 0, clean: 2 }, dirty)).toEqual({ entry: { since: "1", cycles: 1, clean: 0 }, action: null });
-    expect(quarantineCycle({ since: "1", cycles: 4, clean: 2 }, { ...clean, held: 0 }).action).toBe("drop");
+    for (const dirty of [{ ...clean, held: 1 }, { ...clean, other: 1 }, { ...clean, otherCi: 1 }, { ...clean, first: 0, otherCi: 1 }]) expect(quarantineCycle({ since: "1", cycles: 0, clean: 2 }, dirty), JSON.stringify(dirty)).toEqual({ entry: { since: "1", cycles: 1, clean: 0 }, action: null, counted: true });
+    // No evidence is no verdict: a cycle with no quarantine-job result, or no lane pass of the path, is not counted and keeps the streak.
+    for (const none of [{ ...clean, first: 0 }, { held: 0, other: 0, first: 1, otherCi: 0 }]) expect(quarantineCycle({ since: "1", cycles: 4, clean: 2 }, none)).toEqual({ entry: { since: "1", cycles: 4, clean: 2 }, action: null, counted: false });
+    expect(quarantineCycle({ since: "1", cycles: 4, clean: 2 }, { ...clean, held: 1 }).action).toBe("drop");
     expect(quarantineCycle({ since: "1", cycles: 4, clean: 2 }, clean).action).toBe("exit");
   });
 
@@ -348,10 +357,35 @@ describe("quarantine's lifecycle (spec §19.9, decision 13)", () => {
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() } });
     const r = await smokeCi(t.main, { run: "101" }, { runner: gh.runner });
     expect(split(r.lines).outside).toContain("quarantine wishlist: cycle 1 of 5, clean streak 1 of 3");
-    expect(readState(t.main).journeys.wishlist.quarantine).toEqual({ since: "100", cycles: 1, clean: 1, counted: [t.runId] });
+    expect(readState(t.main).journeys.wishlist.quarantine).toEqual({ since: "100", cycles: 1, clean: 1, counted: [t.runId], ciRuns: ["101"] });
     const again = await smokeCi(t.main, { run: "101" }, { runner: gh.runner });
     expect(split(again.lines).outside).toContain("quarantine wishlist: cycle 1 of 5, clean streak 1 of 3 (this cycle is counted)");
     expect(readState(t.main).journeys.wishlist.quarantine.cycles).toBe(1);
+  });
+
+  it("a CI run counted once is never counted again, and a run that is not a push to the base branch counts nothing", async () => {
+    const t = ciRepo({ quarantine: ["wishlist"] });
+    writeFileSync(join(t.main, ".argus/smoke-state.json"), JSON.stringify({ version: 1, staged: [], rejected: [], journeys: { wishlist: { quarantine: { since: "100", cycles: 1, clean: 1, counted: ["older-cycle"], ciRuns: ["101"] } } } }));
+    const pass = join(t.main, ".argus/live", t.runId, "smoke");
+    mkdirSync(pass, { recursive: true });
+    writeFileSync(join(pass, "pass.jsonl"), [1, 2].map(() => `${JSON.stringify({ id: "wishlist", verdict: "held", step: null, kind: null, seed: 1 })}\n`).join(""));
+    const r = await smokeCi(t.main, { run: "101" }, { runner: fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() } }).runner });
+    expect(split(r.lines).outside).toContain("quarantine wishlist: not counted (CI run 101 is counted already; the next push to main is read)");
+    expect(readState(t.main).journeys.wishlist.quarantine).toEqual({ since: "100", cycles: 1, clean: 1, counted: ["older-cycle"], ciRuns: ["101"] });
+    const pr = await smokeCi(t.main, { run: "102" }, { runner: fakeGh({ api: { "repos/owner/app/actions/runs/102": apiRun(102, { event: "pull_request", branch: "feat/x", pr: 7 }) }, artifacts: { "102": artifact() } }).runner });
+    expect(split(pr.lines).outside).toContain("quarantine: run 102 is not a push to main; streaks unchanged");
+  });
+
+  it("only the quarantine job's results from the projects the journey flaked on count", async () => {
+    const t = ciRepo({ quarantine: ["wishlist"] });
+    writeFileSync(join(t.main, "e2e/argus-smoke/quarantine.json"), `${JSON.stringify([{ id: "wishlist", issue: null, since: "100", projects: ["webkit"] }])}\n`);
+    commitAll(t.main, "webkit's quarantine");
+    const pass = join(t.main, ".argus/live", t.runId, "smoke");
+    mkdirSync(pass, { recursive: true });
+    writeFileSync(join(pass, "pass.jsonl"), [1, 2].map(() => `${JSON.stringify({ id: "wishlist", verdict: "held", step: null, kind: null, seed: 1 })}\n`).join(""));
+    // The fixture's one quarantine-job result is chromium's: a webkit flake is not judged on it.
+    const r = await smokeCi(t.main, { run: "101" }, { runner: fakeGh({ api: { "repos/owner/app/actions/runs/101": apiRun(101) }, artifacts: { "101": artifact() } }).runner });
+    expect(split(r.lines).outside).toContain("quarantine wishlist: not counted (no quarantine-job result of webkit in CI run 101)");
   });
 
   it("the third clean cycle stages the exit; the fifth stages the drop; a second quarantine stages the drop", async () => {

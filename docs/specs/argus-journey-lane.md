@@ -2286,16 +2286,22 @@ proposal removes its path, spec, known violations and baselines, and once that m
 lists it `capture`. A retire proposal the owner closes clears the mark. No script reads the issue's
 state: only its title ties an issue to a journey, so the owner's ruling is a command.
 
-**Quarantine.** `smoke ci` stages a test that was `flaky` on a base-branch push run; the proposal adds
-`{id, issue, since}` to `quarantine.json`, and codegen tags the test `@quarantine`. The gating job
-runs `--grep-invert @quarantine`; a non-gating `quarantine` job (`continue-on-error`) keeps running
-the quarantined tests, so they leave the critical path without leaving sight — quarantine "could
-easily mask a real race condition" [google-flaky]. One tracking issue per journey
-(`smoke-flaky:<id>`, deduplicated through `smoke-state.json`). The lane's own pass keeps running a
-quarantined path; three consecutive cycles in which it holds twice and every quarantine-job result
-read passed first time make the next proposal remove the entry and comment on the issue; a journey
-quarantined twice, or for five cycles, is proposed for `drop` (a large UI test is the flakiest kind;
-twenty reliable tests beat two hundred flaky ones) [google-flaky-size].
+**Quarantine.** `smoke ci` stages a test that was `flaky` on a base-branch push run (with no `--run`, it
+reads the newest completed push run of the base branch); the proposal adds `{id, issue, since,
+projects}` to `quarantine.json` (`projects` those it flaked on), and codegen tags the test `@quarantine`.
+The change's digest is the journey's alone, so a quarantine the owner rejected stays rejected whatever
+run flakes next. The gating job runs `--grep-invert @quarantine`; a non-gating `quarantine` job
+(`continue-on-error`, the same matrix over the container projects) keeps running the quarantined tests, so
+they leave the critical path without leaving sight — quarantine "could easily mask a real race condition"
+[google-flaky]. One tracking issue per journey (`smoke-flaky:<id>`, deduplicated through
+`smoke-state.json`). A base-branch flake tells a pull request's flake from a new one for 30 days. The
+lane's own pass keeps running a quarantined path. A cycle is counted only on a push run of the base
+branch, once per lane cycle and once per CI run (`ciRuns`), and only with evidence: no lane pass of the
+path or no quarantine-job result of its `projects` (every project when it names none, or only `msedge`)
+is "not counted", never dirty, and keeps the streak. Three consecutive counted cycles in which it holds
+twice and every quarantine-job result read passed first time make the next proposal remove the entry and
+comment on the issue; a journey quarantined twice, or for five counted cycles, is proposed for `drop` (a
+large UI test is the flakiest kind; twenty reliable tests beat two hundred flaky ones) [google-flaky-size].
 
 ### 19.10 CI wiring
 

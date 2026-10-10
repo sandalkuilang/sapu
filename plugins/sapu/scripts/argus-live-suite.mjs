@@ -258,12 +258,15 @@ export function writeState(main, state) {
 
 /**
  * A staged change's digest (spec §19.8: a rejected change is remembered by it and never proposed again): sha256 of
- * its kind, journey, changes, path and quarantine entry, never the run, the evidence or the body, so the same change
+ * its kind, journey, changes, path and quarantined journey, never the run, the evidence, the body or a quarantine's
+ * `since` and projects, so the same change
  * found again by a later run has the same digest.
  */
 export function changeDigest(entry) {
   const changes = (entry.changes ?? []).map(({ run: _r, evidence: _e, ...c }) => c);
-  return createHash("sha256").update(canonical({ kind: entry.kind, id: entry.id, changes, path: entry.path ?? null, quarantine: entry.quarantine ?? null })).digest("hex");
+  // A quarantine is its journey's: the run that flaked (`since`) or its projects would make a rejected one new again.
+  const quarantine = isObj(entry.quarantine) ? { id: entry.quarantine.id } : null;
+  return createHash("sha256").update(canonical({ kind: entry.kind, id: entry.id, changes, path: entry.path ?? null, quarantine })).digest("hex");
 }
 
 /**

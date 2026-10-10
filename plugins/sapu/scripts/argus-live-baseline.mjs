@@ -262,13 +262,13 @@ function adopt(main, { r, repo, contract, smoke, ids, known, runner, verb }) {
 export async function smokeBaseline(main, { fromRun, ids, known = false }, { runner = run } = {}) {
   const verb = "smoke baseline";
   if (fromRun === null || fromRun === undefined) throw new Error(`refused: ${verb}: --from-run <run id> names the CI run`);
-  const { repo, contract } = home(main, verb);
+  const { repo, base, contract } = home(main, verb);
   const loaded = loadSmoke(main);
   if (loaded.errors.length) throw new Error(`refused: ${verb}: ${loaded.errors.join("; ")}`);
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
   const suite = suiteIds(main, smoke, verb);
   for (const id of ids ?? []) if (!suite.includes(id)) throw new Error(`refused: ${verb}: the suite has no path ${/^[a-z0-9-]{1,64}$/.test(id) ? id : "that"}`);
-  const r = fetchRun(main, { asked: fromRun, repo, workflow: smoke.ci.workflow, runner, verb });
+  const r = fetchRun(main, { asked: fromRun, repo, base, workflow: smoke.ci.workflow, runner, verb });
   notStale(main, { r, repo, runner, verb });
   if (r.event === "workflow_dispatch") return adopt(main, { r, repo, contract, smoke, ids: ids ?? suite, known, runner, verb });
   let triage = null;
