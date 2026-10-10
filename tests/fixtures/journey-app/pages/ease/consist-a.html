@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Notes</title>
+<style>
+  .primary { background: rgb(30, 90, 200); color: white; border: 0; padding: 6px 12px; }
+  .plain { background: transparent; border: 1px solid gray; padding: 6px 12px; }
+  dialog { background: white; }
+</style></head>
+<body>
+<main>
+<h1>Notes</h1>
+<!-- One way of each: the note saved by a Save button, the dialog's primary last, Preferences saved only by its
+     submit (its handle field is checked by a POST that is no save), and a palette on Mod+K. -->
+<form id="note" aria-label="Note">
+  <label>Title <input name="title"></label>
+  <label>Body <textarea name="body"></textarea></label>
+  <button>Save</button>
+</form>
+<form id="prefs" aria-label="Preferences">
+  <label>Theme <input name="theme"></label>
+  <label>Handle <input name="handle"></label>
+  <button>Apply</button>
+</form>
+<p id="status" role="status"></p>
+<dialog open aria-label="Archive note" id="archive">
+  <p>Archive this note?</p>
+  <button class="plain" id="cancel">Cancel</button>
+  <button class="primary">Archive</button>
+</dialog>
+<div role="dialog" aria-label="Command palette" id="palette" hidden><input role="searchbox" aria-label="Command"></div>
+</main>
+<script>
+  const json = (method, url, body) => fetch(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const note = document.getElementById("note");
+  note.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await json("POST", "/api/notes", { title: note.elements.title.value, body: note.elements.body.value });
+    document.getElementById("status").textContent = "Note saved.";
+  });
+  const prefs = document.getElementById("prefs");
+  prefs.elements.handle.addEventListener("input", () => { json("POST", "/api/check", { handle: prefs.elements.handle.value }); });
+  prefs.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    await json("PATCH", "/api/prefs", { theme: prefs.elements.theme.value, handle: prefs.elements.handle.value });
+    document.getElementById("status").textContent = "Preferences applied.";
+  });
+  document.getElementById("cancel").addEventListener("click", () => document.getElementById("archive").close());
+  const palette = document.getElementById("palette");
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      palette.hidden = false;
+      palette.querySelector("input").focus();
+    } else if (e.key === "Escape" && !palette.hidden) palette.hidden = true;
+  });
+</script>
+</body></html>

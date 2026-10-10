@@ -3,7 +3,7 @@
 // the session hook's init payload, records each document's actions, first visible changes and busy signals into the
 // taste buffer, and its requests, clicked controls and edits beside it (`document.__argusEase`); EASE_SOURCE measures
 // a screen and judges a recorded one (`kind: "judge"`, no DOM, so Node runs it too); the Node exports price a path
-// (pathCost). A finding is `{rule, key, measured, expected}`, its key page
+// (pathCost) and compare a cycle's screens (crossRules). A finding is `{rule, key, measured, expected}`, its key page
 // text (fenced wherever printed) with digit runs `#`. Precision first: a feedback rule measures only an action that
 // started a same-origin request and showed a change before the user's next input; a change counts only when it renders
 // (an added node, or a RENDER_ATTRIBUTES change on a node that passes checkVisibility, never `data-*`); a rule that
@@ -144,10 +144,12 @@ export const EASE_INIT = String.raw`(() => {
  *   the drained buffer of one document, ease a `screen` answer, optionally with `error` and `recovery`), `rules` the
  *   bar's, `cfg` `{off, optimistic}` (taste.json's);
  * - `feedback` ({events, requests, now}; pure) → `{acts, loaders}`, the actions and loaders the clock saw;
- * - `screen` ({terms, vague}) → `{v, now, route, lang, requests, actions, edits, shifts, copy, vague, empty, exits}`:
- *   `terms` the bar's copy.vague terms per language, `vague` the owner's labels (any language);
+ * - `screen` ({terms, vague, palette?}) → `{v, now, route, lang, requests, actions, edits, shifts, copy, vague, empty,
+ *   exits, footers, forms, palette?}`: `terms` the bar's copy.vague terms per language, `vague` the owner's labels
+ *   (any language); `palette: true` adds the palette probe (it sends a synthetic Mod+K, then Escape);
  * - `error` → `{blank, loader, exit}` of the page as it stands (the caller routed the fault and waited);
  * - `fields` ({form}) → the form's fields as `{i, key, filled, need, text, digest}` (a value's digest, never the value);
+ * - `palette` → `{opens, closed?}` or null while a dialog is open;
  * - `rule` ({rule, rules, terms, optimistic}) → `judge`'s findings of that one rule on this page (the buffer read, not drained).
  */
 export const EASE_SOURCE = String.raw`(arg) => {
@@ -323,6 +325,42 @@ export const EASE_SOURCE = String.raw`(arg) => {
     const media = [...main.querySelectorAll("*")].some((m) => (/^(IMG|SVG|CANVAS|VIDEO|IFRAME|OBJECT|EMBED)$/i.test(m.tagName) || m.tagName.includes("-")) && shown(m) && m.getBoundingClientRect().width > 48 && m.getBoundingClientRect().height > 0);
     return { blank: !text && !media && !controls(main).length, loader: loaderNow(), exit: controls(doc.body).length > 0 };
   };
+  const SUBMIT = "button:not([type]), button[type=submit], input[type=submit]";
+  const forms = () => [...doc.querySelectorAll("form")].filter(shown).slice(0, 20).map((f) => ({ key: formKey(f), submit: [...f.querySelectorAll(SUBMIT)].some(shown), fields: [...new Set([...f.elements].map((x) => norm(x.name)).filter(Boolean))].slice(0, 30) }));
+  // The first opaque background from el up (a button that paints its own is filled).
+  const paint = (el) => { for (let p = el; p; p = p.parentElement) { const c = getComputedStyle(p).backgroundColor, m = c.match(/rgba?\(([^)]+)\)/); if (m && Number((m[1].split(",")[3] || "1").trim()) >= 0.5) return c; } return "rgb(255, 255, 255)"; };
+  const footers = () => {
+    const out = [];
+    const BTN = "button, [role=button], input[type=submit], input[type=button], input[type=reset]";
+    const boxes = [...doc.querySelectorAll(DIALOG)].filter(shown).map((d) => ["dialog", d]).concat([...doc.querySelectorAll("form")].filter((f) => shown(f) && !f.closest(DIALOG)).map((f) => ["form", f]));
+    for (const [kind, box] of boxes) {
+      const btns = [...box.querySelectorAll(BTN)].filter(shown), at = (b) => b.getBoundingClientRect();
+      const row = btns.filter((b) => Math.abs(at(b).top - Math.max(...btns.map((x) => at(x).top))) <= 8).sort((x, y) => at(x).left - at(y).left);
+      if (row.length < 2) continue;
+      const ground = paint(box);
+      const submits = row.filter((b) => b.form && b.type === "submit");
+      const filled = row.filter((b) => getComputedStyle(b).backgroundColor === paint(b) && paint(b) !== ground);
+      const primary = submits.length === 1 ? submits[0] : filled.length === 1 ? filled[0] : null;
+      const i = row.indexOf(primary);
+      if (i === 0 || (i > 0 && i === row.length - 1)) out.push({ kind, position: i === 0 ? "first" : "last", name: nameOf(primary).replace(/[0-9]+/g, "#").slice(0, 60) });
+    }
+    return out;
+  };
+  const pause = (ms) => new Promise((done) => setTimeout(done, ms));
+  const palette = async () => {
+    if ([...doc.querySelectorAll(DIALOG)].some(shown)) return null;
+    const OPEN = "dialog, [role=dialog], [role=combobox], [role=listbox], [role=searchbox], input[type=search]";
+    const before = new Set([...doc.querySelectorAll(OPEN)].filter(shown));
+    const focus = doc.activeElement;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || "");
+    doc.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", code: "KeyK", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));
+    await pause(300);
+    const opened = [...doc.querySelectorAll(OPEN)].filter((x) => shown(x) && !before.has(x));
+    if (!opened.length && (doc.activeElement === focus || !doc.activeElement || !doc.activeElement.matches(OPEN + ", input"))) return { opens: false };
+    (doc.activeElement || doc.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+    await pause(300);
+    return { opens: true, closed: !opened.some(shown) };
+  };
   const digest = (v) => { let h = 2166136261; for (let i = 0; i < v.length; i++) h = Math.imul(h ^ v.charCodeAt(i), 16777619) >>> 0; return h.toString(16); };
   const fields = (at) => {
     const f = doc.forms[at];
@@ -333,10 +371,11 @@ export const EASE_SOURCE = String.raw`(arg) => {
       return { i, key: norm((x.labels && x.labels[0] && x.labels[0].textContent) || x.getAttribute("aria-label") || x.name || x.placeholder).replace(/[0-9]+/g, "#").slice(0, 60), filled: box ? x.checked : v !== "", need: (x.required || x.getAttribute("aria-required") === "true") && (f.noValidate || !x.required), text: !box && x.tagName !== "SELECT", box, digest: digest(v) };
     });
   };
-  const screen = () => ({ v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: st ? st.requests.map((r) => Object.assign({}, r)) : [], actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits() });
-  if (A.kind === "screen") return screen();
+  const screen = () => ({ v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: st ? st.requests.map((r) => Object.assign({}, r)) : [], actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits(), footers: footers(), forms: forms() });
+  if (A.kind === "screen") return A.palette ? palette().then((p) => Object.assign(screen(), { palette: p })) : screen();
   if (A.kind === "error") return errorState();
   if (A.kind === "fields") return fields(A.form);
+  if (A.kind === "palette") return palette();
   if (A.kind === "rule") {
     const s = screen();
     if (A.rule === "states.error") s.error = Object.assign({ faulted: true }, errorState());
@@ -627,4 +666,81 @@ export function ruleExpression(rule) {
   if (!r || ["consistent", "efficiency"].includes(r.family)) throw new Error(`refused: ruleExpression: ${String(rule).slice(0, 60)} is not a screen rule of the ease probe`);
   if (NOT_ON_A_PAGE[rule]) throw new Error(`refused: ruleExpression: ${rule} has no page expression: ${NOT_ON_A_PAGE[rule]}`);
   return `(${EASE_SOURCE})(${JSON.stringify({ kind: "rule", rule, rules: MINE, terms: TERMS })})`;
+}
+
+/** The `expected` of a consistency row whose screens split evenly: no way is the app's own, so the owner decides (decision 19's needs-owner). */
+export const NO_MAJORITY = "no majority: the owner's call";
+
+/**
+ * The cycle-scope rules over recorded screens (`[{key, route, journey, archetype?, events, ease}]`) → `[{screen, rule,
+ * key, measured, expected}]`. consistent.action: one non-GET (method, route template, body field names) sent within
+ * 100 ms of clicks on different controls (role, name, region); footer-order: the primary first or last in dialog (and
+ * in form) footers; save-pattern: a form with a submit whose edits also saved (PUT or PATCH naming the field, or a POST
+ * naming two of its fields) with no click between; palette: Mod+K opening on some of a journey's routes and not on
+ * others (opening on a minority is a local shortcut: no row). A split counts routes: the minority is flagged against the
+ * majority, an even split every side with NO_MAJORITY. feedback.skeleton-peers: a load behind a spinner alone for a wait
+ * in the rule's range where another route (same archetype, when given) loads behind a skeleton.
+ */
+export function crossRules(screens, bar, cfg) {
+  const R = new Map(((bar && bar.rules) || []).map((r) => [r.id, r]));
+  const off = new Set((cfg && cfg.off) || []);
+  const out = [];
+  const add = (screen, rule, key, measured, expected) => {
+    if (R.has(rule) && !off.has(rule) && !out.some((f) => f.screen === screen && f.rule === rule && f.key === key)) out.push({ screen, rule, key: String(key).slice(0, 300), measured, expected });
+  };
+  const list = (Array.isArray(screens) ? screens : []).map((s, i) => ({ id: s.key ?? i, route: s.route ?? (s.ease && s.ease.route), journey: s.journey ?? null, archetype: s.archetype ?? null, e: s.ease || {}, events: s.events || [] }));
+  const way = (m, value, x) => {
+    const l = m.get(value) || m.set(value, []).get(value);
+    if (!l.some((y) => y.id === x.id && y.key === x.key)) l.push(x);
+  };
+  const split = (rule, ways, describe) => {
+    const routes = (v) => new Set(ways.get(v).map((x) => x.route)).size;
+    const order = [...ways.keys()].sort((a, b) => routes(b) - routes(a));
+    if (order.length < 2) return;
+    const tie = routes(order[0]) === routes(order[1]);
+    for (const v of order) if (tie || v !== order[0]) for (const x of ways.get(v)) add(x.id, rule, x.key, describe(v), tie ? NO_MAJORITY : describe(order[0]));
+  };
+  const sub = (m, k) => m.get(k) || m.set(k, new Map()).get(k);
+  const groups = new Map();
+  for (const s of list) {
+    for (const r of s.e.requests || []) {
+      const a = r && r.same !== false && !/^(GET|HEAD|OPTIONS)$/.test(r.method) ? (s.e.actions || []).filter((x) => x.t <= r.t).pop() : null;
+      if (!a || r.t - a.t > 100) continue;
+      const g = `${r.method} ${r.route}${r.keys && r.keys.length ? ` {${r.keys.join(",")}}` : ""}`;
+      way(sub(groups, g), `${a.role}|${a.name}|${a.region}`, { id: s.id, route: s.route, key: `${g}|${a.role}|${a.name}|${a.region}` });
+    }
+  }
+  for (const m of groups.values()) split("consistent.action", m, (v) => v.replace(/^([^|]*)\|(.*)\|([^|]*)$/, '$1 "$2" ($3)'));
+  const kinds = new Map();
+  for (const s of list) for (const f of s.e.footers || []) way(sub(kinds, f.kind), f.position, { id: s.id, route: s.route, key: `${f.kind}|${f.name}` });
+  for (const m of kinds.values()) split("consistent.footer-order", m, (v) => `primary ${v}`);
+  for (const s of list) {
+    const clicks = (s.e.actions || []).map((x) => x.t);
+    for (const f of s.e.forms || []) {
+      if (!f.submit) continue;
+      const saves = (ed, r) => r.same !== false && r.t > ed.t && r.t - ed.t <= 3000 && !clicks.some((t) => t > ed.t && t <= r.t) && Array.isArray(r.keys) && r.keys.includes(ed.field) && (/^(PUT|PATCH)$/.test(r.method) || (r.method === "POST" && r.keys.filter((k) => f.fields.includes(k)).length >= 2));
+      if ((s.e.edits || []).some((ed) => ed.form === f.key && ed.field && (s.e.requests || []).some((r) => saves(ed, r)))) add(s.id, "consistent.save-pattern", f.key, "autosave and a submit button", "one save pattern per form");
+    }
+  }
+  const journeys = new Map();
+  for (const s of list.filter((x) => x.e.palette && typeof x.e.palette.opens === "boolean")) {
+    const m = sub(journeys, s.journey);
+    const r = m.get(s.route) || { opens: false, ids: [] };
+    m.set(s.route, { opens: r.opens || s.e.palette.opens, ids: [...r.ids, s.id] });
+  }
+  for (const m of journeys.values()) {
+    const opens = [...m.values()].filter((r) => r.opens).length;
+    const gaps = [...m.values()].filter((r) => !r.opens);
+    if (opens === 0 || opens < gaps.length) continue;
+    for (const r of gaps) for (const id of r.ids) add(id, "consistent.palette", "Mod+K", "does not open", opens > gaps.length ? `opens, as on ${opens} other screens of the journey` : NO_MAJORITY);
+  }
+  const within = ((R.get("feedback.skeleton-peers") || {}).threshold || {}).within;
+  const loads = list.map((s) => ({ s, l: easeFn({ kind: "feedback", events: s.events, requests: s.e.requests, now: s.e.now }).loaders.filter((x) => x.phase === "load") }));
+  for (const x of within ? loads : []) {
+    if (x.l.some((l) => l.signal === "skeleton")) continue;
+    const w = Math.max(-Infinity, ...x.l.filter((l) => l.signal === "spinner").map((l) => l.wait));
+    const peer = loads.find((y) => y.s.route !== x.s.route && y.s.archetype === x.s.archetype && y.l.some((l) => l.signal === "skeleton"));
+    if (w >= within[0] && w <= within[1] && peer) add(x.s.id, "feedback.skeleton-peers", "load|spinner", Math.round(w), `a skeleton, as ${peer.s.route} uses`);
+  }
+  return out;
 }

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHECKS, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+import { CHECKS, crossRules, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, NO_MAJORITY, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadBar, RENDER_ATTRIBUTES, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
@@ -607,6 +607,76 @@ describe("argus-live ease — the suite's checks (project taste)", () => {
     expect(annotations.slice(1).map((a) => JSON.parse(a.description).key)).toEqual(["Notes"]);
     expect(await fp.getByLabel("Notes").inputValue()).toBe("call");
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// T2.3 — consistency across a cycle's screens.
+
+/** Walks one consistency page: saves a note, types a theme and a handle, measures footers, then closes the dialog and probes the palette. */
+async function walk(file: string) {
+  const page = await open(file);
+  await page.getByLabel("Title").fill("Groceries");
+  await page.getByLabel("Body").fill("milk");
+  await page.getByRole(file === "consist-b.html" ? "link" : "button", { name: file === "consist-b.html" ? "Submit" : "Save" }).click();
+  await page.getByText("Note saved.").waitFor({ timeout: 30_000 });
+  await page.getByLabel("Theme").pressSequentially("dark", { delay: 30 });
+  await page.getByLabel("Handle").pressSequentially("ana", { delay: 30 });
+  await sleep(500);
+  const first = await record(page);
+  await page.click("#cancel");
+  const probe = await page.evaluate(`(${EASE_SOURCE})({"kind":"palette"})`);
+  return { key: `/${file}|1280|light`, route: `/${file}`, journey: "notes", events: first.events, ease: { ...first.ease, palette: probe } };
+}
+
+describe("argus-live ease — consistency across screens (decision 13)", () => {
+  it("each way of the two pages is measured as the cross rules need it", async () => {
+    const [a, b] = await Promise.all([walk("consist-a.html"), walk("consist-b.html")]);
+    expect(a.ease.footers).toEqual([{ kind: "dialog", position: "last", name: "Archive" }]);
+    expect(b.ease.footers).toEqual([{ kind: "dialog", position: "first", name: "Archive" }]);
+    expect(a.ease.palette).toEqual({ opens: true, closed: true });
+    expect(b.ease.palette).toEqual({ opens: false });
+    expect(a.ease.forms.map((f: Obj) => [f.key, f.submit, f.fields])).toEqual([["Note", true, ["title", "body"]], ["Preferences", true, ["theme", "handle"]]]);
+    const save = (s: Obj) => s.ease.actions.filter((x: Obj) => x.name === "Save" || x.name === "Submit").map((x: Obj) => [x.role, x.name, x.region]);
+    expect(save(a)).toEqual([["button", "Save", "form"]]);
+    expect(save(b)).toEqual([["link", "Submit", "form"]]);
+    expect(b.ease.requests.filter((r: Obj) => r.method === "PATCH").map((r: Obj) => [r.route, r.keys])[0]).toEqual(["/api/prefs", ["theme"]]);
+  }, 60_000);
+
+  it("a two-way split with no majority marks every side needs-owner; the palette's gap is the side flagged", async () => {
+    const [a, b] = await Promise.all([walk("consist-a.html"), walk("consist-b.html")]);
+    const found = crossRules([a, b], BAR, CFG);
+    const rows = found.map((f: Obj) => [f.screen.split("|")[0], f.rule, f.key, f.measured, f.expected]);
+    expect(rows).toEqual([
+      ["/consist-a.html", "consistent.action", 'POST /api/notes {body,title}|button|Save|form', 'button "Save" (form)', NO_MAJORITY],
+      ["/consist-b.html", "consistent.action", 'POST /api/notes {body,title}|link|Submit|form', 'link "Submit" (form)', NO_MAJORITY],
+      ["/consist-a.html", "consistent.footer-order", "dialog|Archive", "primary last", NO_MAJORITY],
+      ["/consist-b.html", "consistent.footer-order", "dialog|Archive", "primary first", NO_MAJORITY],
+      ["/consist-b.html", "consistent.save-pattern", "Preferences", "autosave and a submit button", "one save pattern per form"],
+      ["/consist-b.html", "consistent.palette", "Mod+K", "does not open", NO_MAJORITY],
+    ]);
+  }, 60_000);
+
+  it("with a majority, only the deviant screen is flagged, against the majority's way; one page alone is consistent", async () => {
+    const [a, b, c] = await Promise.all([walk("consist-a.html"), walk("consist-b.html"), walk("consist-c.html")]);
+    const found = crossRules([a, b, c], BAR, CFG).map((f: Obj) => [f.screen.split("|")[0], f.rule, f.measured, f.expected]);
+    expect(found).toEqual([
+      ["/consist-b.html", "consistent.action", 'link "Submit" (form)', 'button "Save" (form)'],
+      ["/consist-b.html", "consistent.footer-order", "primary first", "primary last"],
+      ["/consist-b.html", "consistent.save-pattern", "autosave and a submit button", "one save pattern per form"],
+      ["/consist-b.html", "consistent.palette", "does not open", "opens, as on 2 other screens of the journey"],
+    ]);
+    expect(crossRules([a, c], BAR, CFG)).toEqual([]);
+    expect(crossRules([a, b], BAR, { ...CFG, off: ["consistent.action", "consistent.footer-order", "consistent.save-pattern", "consistent.palette"] })).toEqual([]);
+  }, 60_000);
+
+  it("feedback.skeleton-peers: a 1-10 s load behind a spinner where a peer screen uses a skeleton fires; alone it holds", () => {
+    const load = (signal: string, off: number) => [busy(100, true, signal), busy(off, false, signal)];
+    const spin = { key: "/a|1280|light", route: "/a", journey: "j", events: load("spinner", 2500), ease: { now: 9000, requests: [] } };
+    const skel = { key: "/b|1280|light", route: "/b", journey: "j", events: load("skeleton", 2000), ease: { now: 9000, requests: [] } };
+    expect(crossRules([spin, skel], BAR, CFG)).toEqual([{ screen: "/a|1280|light", rule: "feedback.skeleton-peers", key: "load|spinner", measured: 2500, expected: "a skeleton, as /b uses" }]);
+    expect(crossRules([spin], BAR, CFG)).toEqual([]);
+    expect(crossRules([{ ...spin, events: load("spinner", 900) }, skel], BAR, CFG)).toEqual([]);
+  });
 });
 
 describe("argus-live ease — easeOf", () => {
