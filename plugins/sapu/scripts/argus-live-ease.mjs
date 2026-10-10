@@ -535,8 +535,11 @@ export function ruleExpression(rule) {
   return `(${EASE_SOURCE})(${JSON.stringify({ kind: "rule", rule, rules: MINE, terms: TERMS })})`;
 }
 
-/** The `expected` of a consistency row whose screens split evenly: no way is the app's own, so the owner decides (decision 19's needs-owner). */
-export const NO_MAJORITY = "no majority: the owner's call";
+/**
+ * The `expected` of a consistency row whose screens split evenly: no way is the app's own, so the owner decides
+ * (decision 19's needs-owner). The one mark: filing (argus-live-tastefile.mjs) reads this constant, never a literal.
+ */
+export const NO_MAJORITY = "no majority";
 
 /**
  * The cycle-scope rules over recorded screens (`[{key, route, journey, archetype?, events, ease}]`) → `[{screen, rule,

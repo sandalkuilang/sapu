@@ -21,6 +21,7 @@ import { classify } from "./argus-live-classes.mjs";
 import { readSeen } from "./argus-live-ledger.mjs";
 import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
+import { NO_MAJORITY } from "./argus-live-ease.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
 import { FAMILIES, loadBar, loadTaste, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
@@ -38,7 +39,6 @@ const WITNESS_KINDS = ["tokens", "frame", "peer", "band"];
 const INTERNAL = ["tokens", "frame", "peer"];
 const VERDICTS = ["confirm", "reject", "polish"];
 /** A judge row's `expected` for a consistency split where no way holds a majority (two screens, two ways). */
-const NO_MAJORITY = /^(?:no majority|needs-owner)$/i;
 const EFFICIENCY = ["actions", "best", "klm_s", "typed", "fitts_bits", "modals", "wait_ms", "recovery"];
 /** The most issues gh's listing returns for the dedupe (every state: a closed issue may be the owner's ruling). Titles are compared, never printed. */
 const ISSUE_LIMIT = 2000;
@@ -284,7 +284,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     const { severity, why } = severityOf(r, costS);
     const v = cur.verdicts.get(r.row);
     const owner = [];
-    if (rule.family === "consistent" && typeof r.expected === "string" && NO_MAJORITY.test(r.expected)) owner.push("a consistency split with no majority: two ways, neither the app's own rule");
+    if (rule.family === "consistent" && r.expected === NO_MAJORITY) owner.push("a consistency split with no majority: two ways, neither the app's own rule");
     if (v && v.verdict === "reject") {
       if (severity === "S4") return held.set(key, "the Curator rejected an S4 coherence item");
       owner.push("the Curator rejected the measured row");

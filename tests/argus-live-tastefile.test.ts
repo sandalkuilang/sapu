@@ -17,6 +17,8 @@ import { filedFile } from "../plugins/sapu/scripts/argus-live-scrub.mjs";
 // @ts-expect-error — plain ESM script without types
 import { readTasteState, shotName, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
+import { NO_MAJORITY } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+// @ts-expect-error — plain ESM script without types
 import { readJudge, tasteAccept, tasteFile } from "../plugins/sapu/scripts/argus-live-tastefile.mjs";
 
 type Obj = Record<string, any>;
@@ -218,9 +220,12 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
   });
 
   it("needs-owner only for a consistency split with no majority or a row the Curator's verdict decided", async () => {
+    // One mark, the ease probe's: filing reads the constant, never a literal of its own.
+    expect(NO_MAJORITY).toBe("no majority");
+    expect(readFileSync(join(__dirname, "../plugins/sapu/scripts/argus-live-tastefile.mjs"), "utf8")).not.toMatch(/["'`]no majority|needs-owner["'`]\)/i);
     const t = cycle();
     judged(t, [
-      row(1, { rule: "consistent.footer-order", class: "derived", key: "dialog footer", measured: 2, expected: "no majority", witnesses: [] }),
+      row(1, { rule: "consistent.footer-order", class: "derived", key: "dialog footer", measured: 2, expected: NO_MAJORITY, witnesses: [] }),
       row(2, { rule: "consistent.action", class: "derived", screen: LIST, key: "POST /api/orders", measured: 2, expected: 1, witnesses: [] }),
       row(3, { rule: "copy.broken", class: "implicit", measured: 1, expected: 0, witnesses: [] }),
       row(4, { rule: "states.recovery", class: "implicit", measured: 1, expected: 0, witnesses: [] }),
