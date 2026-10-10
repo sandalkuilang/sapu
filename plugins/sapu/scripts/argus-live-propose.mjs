@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SMOKE_PLAYWRIGHT, suiteProjects } from "./argus-live-codegen.mjs";
+import { upTo } from "./argus-live-codeproj.mjs";
 import { LIVE_FILE } from "./argus-live-config.mjs";
 import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { newestLedgerRun, secretHits } from "./argus-live-ledger.mjs";
@@ -341,15 +342,155 @@ function imageOf({ runner, cwd }) {
 }
 
 /**
- * The suite's CI projects (spec §19.6), from codegen's suiteProjects, the generated config's own list: every one
- * but msedge runs in the pinned container (the screenshot projects, the engines and `chromium-<width>`, write the
- * baselines; `a11y` its ARIA files; `a11y` and `i18n` take no screenshot), and msedge, when smoke.json's browsers
- * name it, on the plain runner, whose image ships Edge, with no screenshot.
+ * The suite's CI projects (spec §19.6, §20.4), from codegen's suiteProjects, the generated config's own list: every
+ * one but msedge runs in the pinned container (the screenshot projects, the engines and `chromium-<width>`, write the
+ * baselines; `a11y` its ARIA files; `a11y`, `taste` and `i18n` take no screenshot), and msedge, when smoke.json's
+ * browsers name it, on the plain runner, whose image ships Edge, with no screenshot. `taste` has its own job, so the
+ * gating and quarantine matrices leave it out; the baseline run holds it (its gated rules' known rows are adopted
+ * from there, as a11y's are).
  */
 function projectsOf(live, smoke) {
   const projects = suiteProjects({ live, smoke });
-  return { container: projects.filter((p) => p.browser !== "msedge").map((p) => p.name), msedge: projects.some((p) => p.browser === "msedge"), engine: projects.find((p) => p.kind === "browser" && p.browser !== "msedge")?.name ?? null };
+  const inContainer = projects.filter((p) => p.browser !== "msedge");
+  return {
+    container: inContainer.filter((p) => p.kind !== "taste").map((p) => p.name),
+    baseline: inContainer.map((p) => p.name),
+    taste: projects.some((p) => p.kind === "taste"),
+    msedge: projects.some((p) => p.browser === "msedge"),
+    engine: projects.find((p) => p.kind === "browser" && p.browser !== "msedge")?.name ?? null,
+  };
 }
+
+/**
+ * The taste job's scorecard (spec §20.4, decision 17), run by `node -` from the suite's directory with the
+ * results, `.argus/taste.json` and support.ts: Markdown into `$GITHUB_STEP_SUMMARY` (stdout without one), every
+ * finding's page words inert (one line, at most 200 characters, in a code span). Exit 1 only when taste.json gates
+ * a rule and a taste test did not pass (a gated violation, or a run that measured nothing), or when taste.json is
+ * not JSON with a list of gated rule ids; otherwise 0, whatever the advisory findings.
+ */
+export const TASTE_SUMMARY = String.raw`const fs = require("node:fs");
+const [resultsFile, tasteFile, supportFile] = process.argv.slice(2);
+const RULE = /^[a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CHECK = /^taste-([a-z]+)-([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const JOURNEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const read = (f) => {
+  try {
+    return fs.readFileSync(f, "utf8");
+  } catch (e) {
+    return null;
+  }
+};
+const parse = (s) => {
+  try {
+    return JSON.parse(s);
+  } catch (e) {
+    return undefined;
+  }
+};
+const words = (v) => {
+  const s = Array.from(String(v).replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ").trim());
+  return s.length > 200 ? s.slice(0, 199).join("") + "…" : s.join("");
+};
+const span = (v, cell) => {
+  let s = words(v);
+  if (s === "") return "\u2014";
+  if (cell) s = s.replace(/\|/g, "\\|");
+  const tick = "` + "`" + String.raw`";
+  const fence = tick.repeat(Math.max(0, ...(s.match(/` + "`" + String.raw`+/g) || []).map((m) => m.length)) + 1);
+  const pad = s.startsWith(tick) || s.endsWith(tick) ? " " : "";
+  return fence + pad + s + pad + fence;
+};
+const out = [];
+let failed = false;
+let gate = [];
+const tasteText = tasteFile ? read(tasteFile) : null;
+if (tasteText !== null) {
+  const cfg = parse(tasteText);
+  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg) || (cfg.gate !== undefined && !(Array.isArray(cfg.gate) && cfg.gate.every((g) => typeof g === "string" && RULE.test(g))))) {
+    out.push("**.argus/taste.json is not JSON with a list of rule ids under gate: the taste job cannot tell what gates, so it fails.**", "");
+    failed = true;
+  } else gate = cfg.gate || [];
+}
+const header = (read(supportFile || "support.ts") || "").match(/taste-bar ([0-9]+), digest/);
+const tests = [];
+const walk = (suite) => {
+  if (suite === null || typeof suite !== "object") return;
+  for (const spec of Array.isArray(suite.specs) ? suite.specs : []) {
+    for (const t of spec !== null && typeof spec === "object" && Array.isArray(spec.tests) ? spec.tests : []) {
+      if (t === null || typeof t !== "object" || t.projectName !== "taste") continue;
+      // The last attempt's notes: a retried test's first ones are not counted twice.
+      const tried = (Array.isArray(t.results) ? t.results : []).filter((r) => r !== null && typeof r === "object" && Array.isArray(r.annotations));
+      const last = Array.isArray(t.results) && t.results.length ? t.results[t.results.length - 1] : null;
+      // The suite's own refusal of taste.json only: any other error may quote the page.
+      const why = last !== null && typeof last === "object" && last.error !== null && typeof last.error === "object" && typeof last.error.message === "string" ? last.error.message.split("\n")[0] : "";
+      tests.push({ journey: JOURNEY.test(String(spec.title)) ? String(spec.title) : null, status: String(t.status), notes: tried.length ? tried[tried.length - 1].annotations : Array.isArray(t.annotations) ? t.annotations : [], config: why.startsWith("argus-smoke: .argus/taste.json ") ? why : null });
+    }
+  }
+  for (const s of Array.isArray(suite.suites) ? suite.suites : []) walk(s);
+};
+const results = resultsFile ? read(resultsFile) : null;
+const report = results === null ? undefined : parse(results);
+if (report !== undefined && report !== null && typeof report === "object") walk(report);
+const rows = [];
+const info = [];
+let unread = 0;
+for (const t of tests) {
+  for (const a of Array.isArray(t.notes) ? t.notes : []) {
+    if (a === null || typeof a !== "object" || typeof a.description !== "string") continue;
+    if (a.type === "argus-info") {
+      if (a.description.startsWith("taste")) info.push({ journey: t.journey, line: a.description });
+      continue;
+    }
+    if (a.type !== "argus-taste" && a.type !== "argus-violation") continue;
+    const v = parse(a.description);
+    const ok = v !== null && typeof v === "object" && Number.isInteger(v.step) && typeof v.key === "string";
+    if (ok && a.type === "argus-taste" && RULE.test(String(v.rule))) rows.push({ journey: t.journey, step: v.step, rule: v.rule, key: v.key, measured: v.measured, expected: v.expected, gated: false });
+    else if (ok && a.type === "argus-violation" && CHECK.test(String(v.check))) {
+      const m = String(v.check).match(CHECK);
+      rows.push({ journey: t.journey, step: v.step, rule: m[1] + "." + m[2], key: v.key, measured: v.detail, expected: "", gated: true });
+    } else if (a.type === "argus-taste" || /^taste-/.test(String(v && v.check))) unread += 1;
+  }
+}
+const passed = tests.filter((t) => t.status === "expected" || t.status === "flaky").length;
+const gating = gate.length > 0;
+const gated = rows.filter((r) => r.gated).length;
+if (gating && (!tests.length || passed < tests.length)) failed = true;
+const name = (j) => (j === null ? "(not shown)" : span(j, true));
+out.unshift(
+  "## Taste and usability",
+  "",
+  (header ? "taste-bar " + header[1] + " · " : "") + (gating ? "gating: " + gate.map((g) => span(g, false)).join(", ") : "advisory: .argus/taste.json gates no rule, so this job stays green"),
+  "",
+  "**" + rows.length + "** finding(s) in **" + new Set(rows.map((r) => r.journey)).size + "** journey(s) · **" + gated + "** gated · **" + info.length + "** information line(s) · " + passed + " of " + tests.length + " taste test(s) passed",
+  "",
+);
+if (results === null) out.push("No results.json: the taste project did not run (see the run step's log).", "");
+else if (report === undefined || report === null || typeof report !== "object") out.push("results.json is not Playwright's JSON report.", "");
+if (rows.length) {
+  const families = new Map();
+  for (const r of rows) families.set(r.rule.split(".")[0], (families.get(r.rule.split(".")[0]) || 0) + 1);
+  out.push("| Family | Findings |", "|---|---:|", ...[...families].sort().map(([f, n]) => "| " + span(f, true) + " | " + n + " |"), "");
+  out.push("### Findings", "", "| Journey | Step | Rule | Key | Measured | Expected | Gate |", "|---|---:|---|---|---|---|---|");
+  for (const r of rows.slice(0, 200)) out.push("| " + [name(r.journey), String(r.step), span(r.rule, true), span(r.key, true), span(r.measured, true), r.gated ? "" : span(r.expected, true), r.gated ? "**gated**" : ""].join(" | ") + " |");
+  if (rows.length > 200) out.push("", (rows.length - 200) + " more in the job's results artifact.");
+  out.push("");
+}
+if (info.length) {
+  out.push("### Information", "");
+  for (const i of info.slice(0, 100)) out.push("- " + name(i.journey) + ": " + span(i.line, false));
+  if (info.length > 100) out.push("- " + (info.length - 100) + " more in the job's results artifact.");
+  out.push("");
+}
+if (unread) out.push(unread + " taste annotation(s) not in their shape: not shown.", "");
+const unpassed = tests.filter((t) => !(t.status === "expected" || t.status === "flaky"));
+if (unpassed.length) out.push("Not passed: " + unpassed.map((t) => name(t.journey) + " (" + span(t.status, false) + ")").join(", ") + (gating ? "" : ". The test job gates the paths themselves."), "");
+for (const c of [...new Set(unpassed.map((t) => t.config).filter((c) => c !== null))]) out.push("- " + span(c, false), "");
+out.push(failed ? "**The taste job fails:** " + (gating ? "a gated rule is violated, or a taste test did not pass so a gated rule went unmeasured." : "see above.") : "The taste job passes.");
+const text = out.join("\n") + "\n";
+if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, text);
+else process.stdout.write(text);
+console.log(failed ? "taste: failed" : "taste: " + rows.length + " finding(s), " + (gating ? "gating " + gate.length + " rule(s)" : "advisory"));
+process.exit(failed ? 1 : 0);`;
 
 /** Every `${NAME}` live.json names (passwords, TOTP secrets, env values): the CI secrets the suite reads by name. */
 const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]))].sort();
@@ -361,9 +502,11 @@ const secretNames = (live) => [...new Set([...JSON.stringify(live).matchAll(/\$\
  * request skipped; every action pinned to the commit `gh api` resolves, its tag in a comment; checkout without
  * persisted credentials; the gating `test` job in the pinned Playwright container (`--ipc=host --init`; pinned by
  * digest when the registry answers one, else by tag with a comment saying why), a matrix over the container
- * projects, `npm ci --ignore-scripts` then `--shuffle --grep-invert @quarantine`, every step after the checkout
- * waiting for the suite's package.json (green before the first suite merges); `msedge` on the
- * plain runner; the non-gating `quarantine` job, the same matrix (a flake is judged on its own project's results); the dispatch-only `baseline` job, whose inputs reach the
+ * projects but `taste`, `npm ci --ignore-scripts` then `--shuffle --grep-invert @quarantine`, every step after the checkout
+ * waiting for the suite's package.json (green before the first suite merges); the `taste` job (spec §20.4) in the
+ * same container, its run never failing the job by itself, then TASTE_SUMMARY's scorecard in the job summary, which
+ * fails only when .argus/taste.json gates a rule, its results uploaded as `taste-<ci.artifact>` (outside smoke ci's reads); `msedge` on the
+ * plain runner; the non-gating `quarantine` job, the test job's matrix (a flake is judged on its own project's results); the dispatch-only `baseline` job (its matrix with `taste`), whose inputs reach the
  * shell only through `env:` and are checked against `^(missing|changed)$` and `^[a-z0-9][a-z0-9-]*(\\|[a-z0-9][a-z0-9-]*)*$` first,
  * the ids then anchored to a whole title word in `--grep`; results
  * and written baselines uploaded for 7 days, never `.auth/`; the `${NAME}` names live.json uses as
@@ -388,7 +531,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
   if (!readSuitePaths(main, smoke.dir).length) throw new Error(`refused: smoke workflow: the suite has no paths (${smoke.dir}/journeys): write the workflow once the first suite proposal merged`);
   const use = {};
   for (const [k, a] of Object.entries(ACTIONS)) use[k] = pinned(a, { runner, gh, cwd: main });
-  const { container, msedge, engine } = projectsOf(live, smoke);
+  const { container, baseline, taste, msedge, engine } = projectsOf(live, smoke);
   if (!container.length || !engine) throw new Error("refused: smoke workflow: smoke.json's browsers name no browser of the pinned container (chromium, firefox or webkit)");
   const dir = smoke.dir;
   const artifact = smoke.ci.artifact;
@@ -403,7 +546,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
   const checkout = [`      - uses: ${use.checkout}`, "        with:", "          persist-credentials: false"];
   const { image: pinnedImage, note } = imageOf({ runner, cwd: main });
   const image = ["    container:", `      image: ${pinnedImage}`, "      options: --ipc=host --init"];
-  const matrix = ["    strategy:", "      fail-fast: false", "      matrix:", `        project: [${container.join(", ")}]`];
+  const matrix = (list) => ["    strategy:", "      fail-fast: false", "      matrix:", `        project: [${list.join(", ")}]`];
   const workdir = ["    defaults:", "      run:", `        working-directory: ${dir}`];
   const upload = (name, paths) => [`      - uses: ${use.upload}`, `        if: \${{ !cancelled() && ${suite} }}`, "        with:", `          name: ${name}`, ...(paths.length === 1 ? [`          path: ${paths[0]}`] : ["          path: |", ...paths.map((p) => `            ${p}`)]), "          retention-days: 7"];
   const results = (name) => upload(name, [`${dir}/test-results/`]);
@@ -439,7 +582,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     `    runs-on: ${RUNNER}`,
     "    timeout-minutes: 70",
     ...image,
-    ...matrix,
+    ...matrix(container),
     ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
     ...workdir,
     "    steps:",
@@ -447,6 +590,31 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     ...install,
     ...test('npx playwright test --shuffle --grep-invert @quarantine --project setup --project "$PROJECT"'),
     ...results(`${artifact}-\${{ matrix.project }}`),
+    ...(taste
+      ? [
+          "  taste:",
+          "    # The taste project (spec 20.4): advisory unless .argus/taste.json gates a rule; its scorecard is the job summary.",
+          `    if: github.event_name != 'workflow_dispatch' && ${fork}`,
+          `    runs-on: ${RUNNER}`,
+          "    timeout-minutes: 70",
+          ...image,
+          ...env(["      HOME: /root"]),
+          ...workdir,
+          "    steps:",
+          ...checkout,
+          ...install,
+          // The run never fails the job by itself: the scorecard step decides, from the results and the gate.
+          ...test("npx playwright test --grep-invert @quarantine --project setup --project taste").flatMap((l, i) => (i === 0 ? [l, "        continue-on-error: true"] : [l])),
+          "      - name: The taste scorecard, in the job summary",
+          `        if: \${{ !cancelled() && ${suite} }}`,
+          "        run: |",
+          `          node - test-results/results.json ${upTo(dir)}/.argus/taste.json support.ts <<'ARGUS_TASTE'`,
+          ...TASTE_SUMMARY.split("\n").map((l) => (l === "" ? "" : `          ${l}`)),
+          "          ARGUS_TASTE",
+          // Not under ci.artifact's prefix: smoke ci triages the gating jobs' results; the advisory job's are the owner's to read.
+          ...results(`taste-${artifact}`),
+        ]
+      : []),
     ...(msedge
       ? [
           "  msedge:",
@@ -475,7 +643,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     "    timeout-minutes: 70",
     "    continue-on-error: true",
     ...image,
-    ...matrix,
+    ...matrix(container),
     ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
     ...workdir,
     "    steps:",
@@ -489,7 +657,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     `    runs-on: ${RUNNER}`,
     "    timeout-minutes: 70",
     ...image,
-    ...matrix,
+    ...matrix(baseline),
     ...env(["      HOME: /root", "      PROJECT: ${{ matrix.project }}"]),
     ...workdir,
     "    steps:",

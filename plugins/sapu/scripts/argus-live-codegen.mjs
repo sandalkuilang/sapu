@@ -283,7 +283,7 @@ export const READ_VALUE = `async function readValue(target: Locator): Promise<st
  * failure named by its hook and exit only; live.json's `env` block is not reproduced: the job's environment is); the RED test's `readValue` and error collector; TOTP
  * as the wrapper computes it (Node's crypto); the wrapper's login template verbatim and `signInPage`, which
  * takes the password and TOTP secret as values the caller read from the environment; `login` for a created
- * account; every registered check's source.
+ * account; every registered check's source (the taste core's arms each context `open` makes in the taste project).
  */
 export function supportFile({ live, smoke, roles }) {
   const hooks = hooksOf(live, smoke);
@@ -312,6 +312,8 @@ export function supportFile({ live, smoke, roles }) {
     "export async function open(opened: BrowserContext[], browser: Browser, account: string, signedIn: boolean, options: BrowserContextOptions): Promise<Page> {",
     '  const context = await browser.newContext({ ...options, ...(signedIn ? { storageState: path.join(__dirname, ".auth", account + ".json") } : {}) });',
     "  opened.push(context);",
+    "  // The taste project's recorders run in every document from the first one on (spec 20.4).",
+    '  if (inProject(["taste"])) await tasteArm(context);',
     "  return context.newPage();",
     "}",
     "",
