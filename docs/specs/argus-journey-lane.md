@@ -2159,11 +2159,14 @@ modal dialog is open, everything outside it.
   fields' own `required`, `type=email`, `maxlength`, `minlength` and `pattern` — an empty required
   field, `not-an-email`, `maxlength + 1` characters, `minlength − 1`, and the first of a fixed list of
   values the pattern refuses. The path's own values fill the rest, one field is bad, the path's
-  submit runs. Holds when no non-GET request got a 2xx; the field is invalid (`validity.valid`
+  submit runs. Holds when no non-GET request of the form's own (to its `action` when it names one,
+  else a body carrying one of its field names, issued after the click: an analytics beacon or an
+  autosave elsewhere does not count) got a 2xx; the field is invalid (`validity.valid`
   false for native validation, `aria-invalid="true"` under `novalidate`); an error is associated
   (`validationMessage` for native, else `aria-describedby` or `aria-errormessage` naming a visible
   element with text; 3.3.1 [u-3.3.1]); focus is on the field or on an element linking to it. The first case
-  that submits ends the test (hard fail). No business rule is invented.
+  the server accepts ends the test (hard fail); a form rendered anew or a page gone with no such request
+  ends the cases with a `manual` finding. No business rule is invented.
 - **Links and CTA routes** (every browser project): the `href`s of `a` elements on each step's page
   with the base URL's origin (never another origin; `mailto:`, `javascript:` and fragment-only links
   skipped), at most `link_cap` a journey, requested one at a time with GET from the test's context

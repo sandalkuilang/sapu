@@ -54,6 +54,24 @@
   </fieldset>
 
   <fieldset>
+    <legend>Errors and a beacon</legend>
+    <form id="beacon" novalidate data-post data-mode="field" data-beacon>
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <button type="submit">Save beacon</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Re-rendered</legend>
+    <form id="rerender" novalidate data-post data-mode="rerender">
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <button type="submit">Save rerender</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
     <legend>Silent refusal</legend>
     <form id="silent" novalidate data-post data-mode="silent">
       <label>Name <input name="name" required></label>
@@ -67,8 +85,12 @@
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const mode = form.dataset.mode;
+      // An analytics beacon: a POST of the page's own, not the form's request.
+      if (form.dataset.beacon !== undefined) fetch("/collect", { method: "POST", body: "event=submit" });
       const bad = form.dataset.loose === undefined ? [...form.elements].filter((f) => f.willValidate && !f.checkValidity()) : [];
       if (bad.length && mode === "silent") return;
+      // A framework that renders the form anew: the old one leaves the page, nothing is posted.
+      if (bad.length && mode === "rerender") return form.replaceWith(form.cloneNode(true));
       if (bad.length) {
         form.querySelectorAll(".err").forEach((n) => n.remove());
         const box = form.querySelector("[role=alert]");

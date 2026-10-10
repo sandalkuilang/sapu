@@ -717,6 +717,29 @@ describe("argus-live a11y — form validation cases", () => {
     }
   }, 90_000);
 
+  it("only the form's own request counts: an analytics POST while the form refuses the value is no acceptance", async () => {
+    const t = await filled("beacon", "Save beacon");
+    try {
+      expect(await t.run()).toEqual([]);
+      expect(t.posts.length).toBeGreaterThan(0);
+      expect(t.posts.every((u) => u.endsWith("/collect"))).toBe(true);
+    } finally {
+      await t.close();
+    }
+  }, 90_000);
+
+  it("a form rendered anew leaves its state unknown: a manual finding that ends the cases, never a hard failure", async () => {
+    const t = await filled("rerender", "Save rerender");
+    try {
+      const found = await t.run();
+      expect(found).toEqual([expect.objectContaining({ check: "form-accepts-invalid", step: 5, manual: true, detail: expect.stringContaining("rendered anew") })]);
+      expect(found[0].hard).toBeUndefined();
+      expect(t.posts).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  }, 90_000);
+
   it("a refusal that marks nothing invalid fails: the field is not invalid, with no error and no focus", async () => {
     const t = await filled("silent", "Save silent");
     try {

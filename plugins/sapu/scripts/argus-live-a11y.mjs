@@ -436,8 +436,10 @@ export function a11yCasesOf(fields, max) {
  * own constraint refuses, the others holding the path's values, and clicks the path's submit. It holds when no
  * non-GET request got a 2xx, the field is invalid (validity natively, aria-invalid under novalidate), an error is
  * associated (validationMessage, else aria-describedby or aria-errormessage naming visible text) and focus is on the
- * field or on a link to it. A browser that caps the input at maxlength holds. The first case that submits ends the
- * run with a hard violation (the report ends the test). Values are put back after each case.
+ * field or on a link to it. A browser that caps the input at maxlength holds. Only the form's own request counts (to its
+ * action, else carrying a field's name; one issued after the click). The first case the server accepts ends the run with
+ * a hard violation (the report ends the test); a form rendered anew, or a page gone, with no such request ends it with a
+ * manual one. Values are put back after each case.
  */
 export async function a11yFormCases(page, submit, step, max) {
   const loc = a11yLocate(page, submit);
@@ -447,8 +449,14 @@ export async function a11yFormCases(page, submit, step, max) {
   const form = await page.evaluate((b) => window[Symbol.for("argus.a11y")].form(b), btn);
   if (!form) return [];
   const owner = await btn.evaluateHandle((b) => b.form || b.closest("form"));
+  // The form's own request: to its action when it names one, else a body carrying one of its field names. An
+  // analytics beacon or an autosave elsewhere is not the form accepting a value.
+  const target = await page.evaluate((f) => ({ action: f.getAttribute("action") === null ? null : new URL(f.action).pathname, names: [...f.elements].map((e) => e.name).filter(Boolean) }), owner);
+  const carries = (body) => target.names.some((n) => body.includes('name="' + n + '"') || new URLSearchParams(body).has(n) || body.includes(JSON.stringify(n) + ":"));
+  const own = (r) => (target.action !== null ? new URL(r.url()).pathname === target.action : carries(r.request().postData() || ""));
   const out = [], posted = [];
-  const seen = (r) => { if (r.request().method() !== "GET" && r.status() >= 200 && r.status() < 300) posted.push(r.status() + " " + r.request().method() + " " + new URL(r.url()).pathname); };
+  let armed = false;
+  const seen = (r) => { if (armed && r.request().method() !== "GET" && r.status() >= 200 && r.status() < 300 && own(r)) posted.push(r.status() + " " + r.request().method() + " " + new URL(r.url()).pathname); };
   page.on("response", seen);
   try {
     for (const c of a11yCasesOf(form.fields, max)) {
@@ -463,16 +471,21 @@ export async function a11yFormCases(page, submit, step, max) {
       }
       const blocked = await page.evaluate((f) => !f.noValidate && !f.checkValidity(), owner);
       posted.length = 0;
+      armed = true;
       await btn.click();
       if (!blocked) {
-        try { await page.waitForResponse((r) => r.request().method() !== "GET", { timeout: Math.min(SETTLE, 800) }); } catch (e) { /* no request */ }
+        try { await page.waitForResponse((r) => r.request().method() !== "GET" && own(r), { timeout: Math.min(SETTLE, 800) }); } catch (e) { /* no request of the form's */ }
       }
       let state = null;
       try {
         await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-        state = await page.evaluate(([f, i]) => window[Symbol.for("argus.a11y")].formState(f.elements[i]), [owner, c.index]);
+        state = await page.evaluate(([f, i]) => (f.isConnected ? window[Symbol.for("argus.a11y")].formState(f.elements[i]) : null), [owner, c.index]);
       } catch (e) { state = null; }
-      if (posted.length || !state) return [...out, { check: "form-accepts-invalid", step, key, hard: true, detail: "the form was submitted with a " + c.kind + " value (" + (posted.join(", ") || "the page navigated") + "): the server accepted what the field refuses" }];
+      armed = false;
+      if (posted.length) return [...out, { check: "form-accepts-invalid", step, key, hard: true, detail: "the form was submitted with a " + c.kind + " value (" + posted.join(", ") + "): the server accepted what the field refuses" }];
+      // Rendered anew or navigated away with no request of the form's: whether it refused the value needs a human. The
+      // form's values are gone, so no further case runs; the path's next steps judge the page as they find it.
+      if (!state) return [...out, { check: "form-accepts-invalid", step, key, manual: true, detail: "after a " + c.kind + " value the form was rendered anew or the page navigated, with no request of the form's: whether it refused the value needs a human" }];
       if (!state.invalid) bad("form-case-invalid", state.noValidate ? "the field is not marked aria-invalid" : "the browser does not find the field invalid");
       if (!state.told) bad("form-case-error", "no error message is associated with the field (validationMessage, or aria-describedby or aria-errormessage naming visible text; 3.3.1)");
       if (!state.focused) bad("form-case-focus", "focus is neither on the field nor on a link to it");
