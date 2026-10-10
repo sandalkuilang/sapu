@@ -763,4 +763,4 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   generated suite's files by sha256 as the generator wrote them before the split. S1 changes the output on purpose
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
-  `tests/argus-live-pw.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+  `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
