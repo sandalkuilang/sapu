@@ -150,7 +150,7 @@ A new install also installs its dependency [senior-dev-team](#senior-dev-team) a
 | `/sapu:sapu` | **Orchestrator.** Drains every open PR, then works every issue in parallel lanes until the backlog is clean. |
 | `/sapu:forge` | One issue → one tested, reviewed PR, merged through the merge script when its risk tier allows. |
 | `/sapu:argus` | Autonomous QA against the local dev app. |
-| `/sapu:journey` | Walks your app's business journeys through the real UI as every role, on an isolated instance of its own; files only what a script reproduced twice. `/sapu:journey smoke` also builds a regression net: a generated Playwright suite in your repo that your CI runs on every pull request, with reviewed screenshot baselines and checks for layout, locales, accessibility, links and performance. Every change to it reaches you as a pull request. |
+| `/sapu:journey` | Walks your app's business journeys through the real UI as every role, on an isolated instance of its own; files only what a script reproduced twice. `/sapu:journey smoke` also builds a regression net: a generated Playwright suite in your repo that your CI runs on every pull request, with reviewed screenshot baselines and checks for layout, locales, accessibility and links; the lane times performance in its own Chrome, never in CI. Every change to it reaches you as a pull request. |
 | `/sapu:momus` | Release-readiness audit. |
 | `/sapu:nemesis` | Red team against the local dev app (explicitly authorized targets only). |
 | `/sapu:inspector` | Runs momus → argus → nemesis in sequence, each on its own model and effort, with one combined summary. |

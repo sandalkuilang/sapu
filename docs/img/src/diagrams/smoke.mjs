@@ -28,9 +28,9 @@ export default {
     s += text(96, y1 + 50, `the orchestrator, from the main session · an instance of its own · ${m("argus-live.mjs")}`, "cap");
     const A = [
       ["plan", [m("smoke plan"), "rank · capture · keep"], "sunken", ""],
-      ["capture", [m("ui-explorer"), `${m("path: wanted")}`], "k-violet", "c-violet"],
-      ["admit", [m("smoke admit"), "2 runs: fresh, then used"], "sunken", ""],
       ["re-run", [m("smoke run"), "seeded order · --perf"], "sunken", ""],
+      ["capture", [m("ui-explorer"), `${m("path: wanted")}`], "k-violet", "c-violet"],
+      ["admit", [m("smoke admit"), "every width, then used"], "sunken", ""],
       ["propose", [m("smoke propose"), "scrub every file first"], "k-green", "c-green"],
     ];
     const nw = 152, ng = (824 - 5 * nw) / 4, ny = y1 + 72;
@@ -39,7 +39,7 @@ export default {
       s += node(x, ny, nw, 62, t, caps, cls, tc);
       if (i < 4) s += arrow([[x + nw + 2, ny + 31], [x + nw + ng - 2, ny + 31]], i === 3 ? "ar-g" : "ar");
     });
-    s += text(48, y1 + h1 - 16, `${b("A path", "tb")} is a short, fixed list of actions that ends in an expectation proving the journey's goal. ${b("Admitted", "tb")} only after both runs hold.`, "cap");
+    s += text(48, y1 + h1 - 16, `${b("A path", "tb")} is a short, fixed list of actions that ends in an expectation proving the journey's goal. ${b("Admitted", "tb")} only after every run holds.`, "cap");
 
     // ---- 2. your repo
     const y2 = y1 + h1 + 26, h2 = 136;
@@ -92,7 +92,7 @@ export default {
       ["flaky on a push to the base branch", "flake", "amber", "quarantine PR · tracking issue · still runs"],
       ["flaky only on a pull request's head", "flaky-new", "amber", "a comment there · never quarantined"],
       ["a target matches nothing or several", "UI changed", "green", "heal-mode explorer · expectations hold twice · heal PR"],
-      ["an expectation fails twice, or no control", "bug", "red", "regression candidate · 2 of 2 · scrub · issue"],
+      ["an expectation or an action fails twice", "bug · behaviour changed", "red", "regression candidate · 2 of 2 · scrub · issue"],
       ["failed on every attempt in CI, holds on Chrome", "ci-only", "red", "needs-owner issue with the run's link"],
       ["a screenshot or ARIA snapshot differs", "your call", "violet", `${m("smoke ci")} shows the diff · ${m("--ids")} re-baselines`],
       ["a baseline is missing", "not reviewed", "blue", "the baseline run (below)"],
@@ -101,9 +101,9 @@ export default {
       const yy = y4 + 70 + i * rh;
       s += rect(48, yy, 824, rh - 6, "sunken", 8);
       s += text(62, yy + 21, ev, "t");
-      s += chip(372, yy + 5, verdict, kind, { dot: true })[0];
-      s += arrow([[482, yy + 16], [502, yy + 16]]);
-      s += text(512, yy + 21, next, "t");
+      s += chip(330, yy + 5, verdict, kind, { dot: true })[0];
+      s += arrow([[496, yy + 16], [516, yy + 16]]);
+      s += text(526, yy + 21, next, "t");
     });
 
     // ---- 5. the baseline run

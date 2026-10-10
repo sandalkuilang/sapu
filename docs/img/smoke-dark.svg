@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1498" width="920" height="1498" role="img" aria-label="The smoke cycle: the journey lane captures a path from an explorer, admits it after two runs, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1498" width="920" height="1498" role="img" aria-label="The smoke cycle: the journey lane captures a path from an explorer, admits it once it held at every width and on a used instance, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request.">
   <title>/journey smoke — one smoke cycle</title>
   <desc>One smoke cycle of /journey smoke has three places. In the lane, run from the main session on an instance of its own, smoke plan ranks the catalog and marks the journeys that need a path; a ui-explorer charted with path: wanted returns a path; smoke admit runs it twice, on a fresh and then a used instance, and stages it; smoke run re-runs the suite's paths in a seeded order, and with --perf measures them on Chrome; smoke propose checks every file and the pull request body with scrub and opens one pull request on an argus branch. In your repo, you review that pull request: merging accepts it, closing rejects it and the same change is never proposed again. In CI, the generated workflow runs the suite on every pull request: a matrix of browser projects in the pinned Playwright container (chromium, firefox, webkit, further viewports, a11y and i18n), msedge on the plain runner without screenshots, a non-gating quarantine job, and a baseline job that only a dispatch starts; each uploads its results for seven days. Back in the lane, smoke ci triages the run: a flake on the base branch is quarantined, never hidden; a moved control is healed after the unchanged expectations hold twice; a lost control or a failed expectation becomes a regression candidate that is replayed two of two and filed only after scrub finds no secret; a screenshot or ARIA difference is the owner's call; a missing baseline starts the baseline run, whose files smoke baseline adopts into a pull request that the owner reviews in the image view. Nothing is applied at run time, and sapu never merges a proposal.</desc>
   <style>
@@ -65,26 +65,26 @@
   <text x="124" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke plan</tspan></text>
   <text x="124" y="289" class="cap" text-anchor="middle">rank · capture · keep</text>
   <path d="M202,265 L214,265" class="ar" marker-end="url(#mn)"/>
-  <rect x="216" y="234" width="152" height="62" rx="10" class="k-violet" />
-  <text x="292" y="255" class="tb c-violet" text-anchor="middle">capture</text>
-  <text x="292" y="273" class="cap" text-anchor="middle"><tspan class="mono">ui-explorer</tspan></text>
-  <text x="292" y="289" class="cap" text-anchor="middle"><tspan class="mono">path: wanted</tspan></text>
+  <rect x="216" y="234" width="152" height="62" rx="10" class="sunken" />
+  <text x="292" y="255" class="tb" text-anchor="middle">re-run</text>
+  <text x="292" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke run</tspan></text>
+  <text x="292" y="289" class="cap" text-anchor="middle">seeded order · --perf</text>
   <path d="M370,265 L382,265" class="ar" marker-end="url(#mn)"/>
-  <rect x="384" y="234" width="152" height="62" rx="10" class="sunken" />
-  <text x="460" y="255" class="tb" text-anchor="middle">admit</text>
-  <text x="460" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke admit</tspan></text>
-  <text x="460" y="289" class="cap" text-anchor="middle">2 runs: fresh, then used</text>
+  <rect x="384" y="234" width="152" height="62" rx="10" class="k-violet" />
+  <text x="460" y="255" class="tb c-violet" text-anchor="middle">capture</text>
+  <text x="460" y="273" class="cap" text-anchor="middle"><tspan class="mono">ui-explorer</tspan></text>
+  <text x="460" y="289" class="cap" text-anchor="middle"><tspan class="mono">path: wanted</tspan></text>
   <path d="M538,265 L550,265" class="ar" marker-end="url(#mn)"/>
   <rect x="552" y="234" width="152" height="62" rx="10" class="sunken" />
-  <text x="628" y="255" class="tb" text-anchor="middle">re-run</text>
-  <text x="628" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke run</tspan></text>
-  <text x="628" y="289" class="cap" text-anchor="middle">seeded order · --perf</text>
+  <text x="628" y="255" class="tb" text-anchor="middle">admit</text>
+  <text x="628" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke admit</tspan></text>
+  <text x="628" y="289" class="cap" text-anchor="middle">every width, then used</text>
   <path d="M706,265 L718,265" class="ar-g" marker-end="url(#mg)"/>
   <rect x="720" y="234" width="152" height="62" rx="10" class="k-green" />
   <text x="796" y="255" class="tb c-green" text-anchor="middle">propose</text>
   <text x="796" y="273" class="cap" text-anchor="middle"><tspan class="mono">smoke propose</tspan></text>
   <text x="796" y="289" class="cap" text-anchor="middle">scrub every file first</text>
-  <text x="48" y="324" class="cap"><tspan class="tb">A path</tspan> is a short, fixed list of actions that ends in an expectation proving the journey's goal. <tspan class="tb">Admitted</tspan> only after both runs hold.</text>
+  <text x="48" y="324" class="cap"><tspan class="tb">A path</tspan> is a short, fixed list of actions that ends in an expectation proving the journey's goal. <tspan class="tb">Admitted</tspan> only after every run holds.</text>
   <rect x="32" y="366" width="856" height="136" rx="14" class="card" filter="url(#sh)"/>
   <rect x="48" y="382" width="36" height="36" rx="10.125" fill="url(#brand)"/>
   <g transform="translate(54.75,388.75) scale(0.9375)"><path d="M6 4.5a2 2 0 1 0 0.01 0 M6 15.5a2 2 0 1 0 0.01 0 M18 15.5a2 2 0 1 0 0.01 0 M6 8.5v7 M18 15.5V10a3 3 0 0 0-3-3h-4 M13 4.5L10.5 7 13 9.5" class="ico ico-w"/></g>
@@ -154,53 +154,53 @@
   <text x="96" y="830" class="cap"><tspan class="mono">smoke ci</tspan> reads the run; a script, never the explorer's word, decides</text>
   <rect x="48" y="850" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="871" class="t">flaky on a push to the base branch</text>
-  <rect x="372" y="855" width="60" height="22" rx="11" class="k-amber"/>
-  <circle cx="384" cy="866" r="4" class="f-amber"/>
-  <text x="393" y="870" class="chipt c-amber">flake</text>
-  <path d="M482,866 L502,866" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="871" class="t">quarantine PR · tracking issue · still runs</text>
+  <rect x="330" y="855" width="60" height="22" rx="11" class="k-amber"/>
+  <circle cx="342" cy="866" r="4" class="f-amber"/>
+  <text x="351" y="870" class="chipt c-amber">flake</text>
+  <path d="M496,866 L516,866" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="871" class="t">quarantine PR · tracking issue · still runs</text>
   <rect x="48" y="888" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="909" class="t">flaky only on a pull request's head</text>
-  <rect x="372" y="893" width="85" height="22" rx="11" class="k-amber"/>
-  <circle cx="384" cy="904" r="4" class="f-amber"/>
-  <text x="393" y="908" class="chipt c-amber">flaky-new</text>
-  <path d="M482,904 L502,904" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="909" class="t">a comment there · never quarantined</text>
+  <rect x="330" y="893" width="85" height="22" rx="11" class="k-amber"/>
+  <circle cx="342" cy="904" r="4" class="f-amber"/>
+  <text x="351" y="908" class="chipt c-amber">flaky-new</text>
+  <path d="M496,904 L516,904" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="909" class="t">a comment there · never quarantined</text>
   <rect x="48" y="926" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="947" class="t">a target matches nothing or several</text>
-  <rect x="372" y="931" width="95" height="22" rx="11" class="k-green"/>
-  <circle cx="384" cy="942" r="4" class="f-green"/>
-  <text x="393" y="946" class="chipt c-green">UI changed</text>
-  <path d="M482,942 L502,942" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="947" class="t">heal-mode explorer · expectations hold twice · heal PR</text>
+  <rect x="330" y="931" width="95" height="22" rx="11" class="k-green"/>
+  <circle cx="342" cy="942" r="4" class="f-green"/>
+  <text x="351" y="946" class="chipt c-green">UI changed</text>
+  <path d="M496,942 L516,942" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="947" class="t">heal-mode explorer · expectations hold twice · heal PR</text>
   <rect x="48" y="964" width="824" height="32" rx="8" class="sunken" />
-  <text x="62" y="985" class="t">an expectation fails twice, or no control</text>
-  <rect x="372" y="969" width="50" height="22" rx="11" class="k-red"/>
-  <circle cx="384" cy="980" r="4" class="f-red"/>
-  <text x="393" y="984" class="chipt c-red">bug</text>
-  <path d="M482,980 L502,980" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="985" class="t">regression candidate · 2 of 2 · scrub · issue</text>
+  <text x="62" y="985" class="t">an expectation or an action fails twice</text>
+  <rect x="330" y="969" width="162" height="22" rx="11" class="k-red"/>
+  <circle cx="342" cy="980" r="4" class="f-red"/>
+  <text x="351" y="984" class="chipt c-red">bug · behaviour changed</text>
+  <path d="M496,980 L516,980" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="985" class="t">regression candidate · 2 of 2 · scrub · issue</text>
   <rect x="48" y="1002" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="1023" class="t">failed on every attempt in CI, holds on Chrome</text>
-  <rect x="372" y="1007" width="70" height="22" rx="11" class="k-red"/>
-  <circle cx="384" cy="1018" r="4" class="f-red"/>
-  <text x="393" y="1022" class="chipt c-red">ci-only</text>
-  <path d="M482,1018 L502,1018" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="1023" class="t">needs-owner issue with the run's link</text>
+  <rect x="330" y="1007" width="70" height="22" rx="11" class="k-red"/>
+  <circle cx="342" cy="1018" r="4" class="f-red"/>
+  <text x="351" y="1022" class="chipt c-red">ci-only</text>
+  <path d="M496,1018 L516,1018" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="1023" class="t">needs-owner issue with the run's link</text>
   <rect x="48" y="1040" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="1061" class="t">a screenshot or ARIA snapshot differs</text>
-  <rect x="372" y="1045" width="79" height="22" rx="11" class="k-violet"/>
-  <circle cx="384" cy="1056" r="4" class="f-violet"/>
-  <text x="393" y="1060" class="chipt c-violet">your call</text>
-  <path d="M482,1056 L502,1056" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="1061" class="t"><tspan class="mono">smoke ci</tspan> shows the diff · <tspan class="mono">--ids</tspan> re-baselines</text>
+  <rect x="330" y="1045" width="79" height="22" rx="11" class="k-violet"/>
+  <circle cx="342" cy="1056" r="4" class="f-violet"/>
+  <text x="351" y="1060" class="chipt c-violet">your call</text>
+  <path d="M496,1056 L516,1056" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="1061" class="t"><tspan class="mono">smoke ci</tspan> shows the diff · <tspan class="mono">--ids</tspan> re-baselines</text>
   <rect x="48" y="1078" width="824" height="32" rx="8" class="sunken" />
   <text x="62" y="1099" class="t">a baseline is missing</text>
-  <rect x="372" y="1083" width="101" height="22" rx="11" class="k-blue"/>
-  <circle cx="384" cy="1094" r="4" class="f-blue"/>
-  <text x="393" y="1098" class="chipt c-blue">not reviewed</text>
-  <path d="M482,1094 L502,1094" class="ar" marker-end="url(#mn)"/>
-  <text x="512" y="1099" class="t">the baseline run (below)</text>
+  <rect x="330" y="1083" width="101" height="22" rx="11" class="k-blue"/>
+  <circle cx="342" cy="1094" r="4" class="f-blue"/>
+  <text x="351" y="1098" class="chipt c-blue">not reviewed</text>
+  <path d="M496,1094 L516,1094" class="ar" marker-end="url(#mn)"/>
+  <text x="526" y="1099" class="t">the baseline run (below)</text>
   <path d="M200,1134 L200,1156" class="ar" marker-end="url(#mn)"/>
   <text x="212" y="1150" class="cap">a missing baseline starts it</text>
   <rect x="32" y="1158" width="856" height="168" rx="14" class="card" filter="url(#sh)"/>
