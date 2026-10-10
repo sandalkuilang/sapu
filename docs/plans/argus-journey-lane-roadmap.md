@@ -1,6 +1,6 @@
 # Argus journey lane — implementation roadmap
 
-Spec: [docs/specs/argus-journey-lane.md](../specs/argus-journey-lane.md). Target release: sapu 2.9.0.
+Spec: [docs/specs/argus-journey-lane.md](../specs/argus-journey-lane.md). Target release: sapu 2.9.0 (phases 1 to 5), then 2.10.0 (phase 6).
 
 The spec covers several subsystems that can each be built and tested on their own, so it is
 implemented in phases, each with its own plan. A phase starts only when the one before it is
@@ -24,4 +24,4 @@ Rules for every phase:
 - The suite runs on the release machine; browser tests need a local Chrome and fail without one.
 - Commits carry no assistant attribution. One feature branch, `feat/argus-journey-lane`, one PR at
   the end of phase 5, carrying the backlog of phase 4b too; nothing is merged, tagged or released
-  until the owner says so; phase 6 is built on the release branch and held like it; the pilot (phase 7) runs on the released plugin.
+  until the owner says so; phase 6 is built on the release branch and ships as a PR of its own on top of the held 2.9.0 PR, as 2.10.0, held like it; the pilot (phase 7) runs on the released plugin.
