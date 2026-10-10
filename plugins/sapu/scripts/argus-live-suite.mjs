@@ -5,8 +5,8 @@
 import { createHash, randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
-import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { generateSuite, headerDigest, SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
+import { expandConfig, LIVE_FILE, loadLive, loadSmoke, SMOKE_DEFAULTS, validateLive } from "./argus-live-config.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { readJourneys, score } from "./argus-live-map.mjs";
@@ -372,7 +372,101 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
   return { code: 0, lines };
 }
 
-/** `smoke check` → `{code, lines}`: every hand-edited or stale file of the suite named; writes nothing. */
-export function smokeCheck(main) {
-  throw new Error("refused: smoke check: not built yet");
+// ---------------------------------------------------------------------------------------------------
+// smoke check (spec §19.5), and the suite as generated from a checkout's own inputs (smoke propose's too).
+
+/** `text`, live.json as written (its `${NAME}` references unexpanded), checked → the config; refused when it is not one. */
+export function liveAsWritten(text, verb) {
+  let config;
+  try {
+    config = JSON.parse(text);
+  } catch {
+    throw new Error(`refused: ${verb}: ${LIVE_FILE} is not valid JSON`);
+  }
+  const errors = validateLive(config);
+  if (errors.length) throw new Error(`refused: ${verb}: ${LIVE_FILE}: ${errors.slice(0, 5).join("; ")}`);
+  return config;
+}
+
+/**
+ * The suite `root`'s inputs would generate (spec §19.5): its paths, `live` and `smoke` → `{<file>: text}`
+ * (generateSuite; its fixtures.ts is the owner's, created when missing). Codegen's refusal is named for `verb`.
+ */
+export function generated(root, { live, smoke, verb }) {
+  const paths = suitePaths(root, smoke.dir, verb);
+  try {
+    return generateSuite({ paths: paths.map((p) => ({ id: p.id, path: p.path })), live, smoke, quarantine: quarantineIds(root, smoke.dir) });
+  } catch (e) {
+    throw new Error(String(e.message).replace(/^refused: [^:]+: /, `refused: ${verb}: `));
+  }
+}
+
+/**
+ * live.json as it was when `file` (repo-relative) was last committed, or null (never committed, or no
+ * live.json then): what a generated file that matches its own header was made from, when live.json drifted.
+ */
+function liveWhen(main, file, runner) {
+  const sha = String(runner(["git", "-C", main, "log", "-1", "--format=%H", "--", file]).stdout ?? "").trim();
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) return null;
+  const r = runner(["git", "-C", main, "show", `${sha}:${LIVE_FILE}`]);
+  try {
+    return r.status === 0 ? liveAsWritten(r.stdout, "smoke check") : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `smoke check` → `{code, lines}`: the suite regenerated in memory from its paths, smoke.json and live.json,
+ * each generated file compared with what is there: `missing <file>`; `hand-edited <file>` (its body is not
+ * what its header's digest names); `drift <file> (.argus/live.json changed since it was generated)` (the
+ * live.json of the file's last commit regenerates it exactly); `stale <file> (its header's digest is of another
+ * generation)`; then `orphan <file> (no journeys/<id>.json)` for a spec with no path. Exit 1 on any finding.
+ * Never gated and writes nothing: a subagent may run it (the guard's LIVE_READS).
+ */
+export function smokeCheck(main, { runner = run } = {}) {
+  const smoke = smokeOf(main, "smoke check");
+  const dir = smoke.dir;
+  if (!suitePaths(main, dir, "smoke check").length) return { code: 0, lines: [`smoke check: no suite (${dir}/journeys holds no path)`] };
+  let liveText;
+  try {
+    liveText = fs.readFileSync(path.join(main, LIVE_FILE), "utf8");
+  } catch {
+    throw new Error(`refused: smoke check: no ${LIVE_FILE}`);
+  }
+  const files = generated(main, { live: liveAsWritten(liveText, "smoke check"), smoke, verb: "smoke check" });
+  delete files["fixtures.ts"]; // the owner's: never compared
+  const lines = [];
+  for (const name of Object.keys(files).sort()) {
+    const rel = `${dir}/${name}`;
+    let disk;
+    try {
+      disk = fs.readFileSync(path.join(main, dir, name), "utf8");
+    } catch {
+      lines.push(`missing ${rel}`);
+      continue;
+    }
+    if (disk === files[name]) continue;
+    if (!headerDigest(disk).ok) {
+      lines.push(`hand-edited ${rel}`);
+      continue;
+    }
+    const old = liveWhen(main, rel, runner);
+    let then = null;
+    try {
+      then = old ? generated(main, { live: old, smoke, verb: "smoke check" })[name] : null;
+    } catch {
+      then = null;
+    }
+    lines.push(then === disk ? `drift ${rel} (${LIVE_FILE} changed since it was generated)` : `stale ${rel} (its header's digest is of another generation)`);
+  }
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(main, dir));
+  } catch {
+    names = [];
+  }
+  for (const f of names.filter((n) => n.endsWith(".spec.ts") && !Object.hasOwn(files, n)).sort()) lines.push(`orphan ${dir}/${f} (no journeys/${f.slice(0, -8)}.json)`);
+  if (!lines.length) return { code: 0, lines: [`smoke check: ${Object.keys(files).length} generated files current`] };
+  return { code: 1, lines: [...lines, `smoke check: ${lines.length} finding(s); smoke propose regenerates the suite`] };
 }

@@ -4,13 +4,15 @@
 // prints the CI job. gh and npm are stand-ins; git is real, against a local bare origin.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { SMOKE_PLAYWRIGHT } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+import { generateSuite, SMOKE_PLAYWRIGHT } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+// @ts-expect-error — plain ESM script without types
+import { SMOKE_DEFAULTS } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -22,7 +24,9 @@ import { down, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs"
 // @ts-expect-error — plain ESM script without types
 import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
-import { readStaged, smokeAdmit, smokePlan } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+import { changeDigest, readStaged, smokeAdmit, smokeCheck, smokePlan, stageChange } from "../plugins/sapu/scripts/argus-live-suite.mjs";
+// @ts-expect-error — plain ESM script without types
+import { smokePropose } from "../plugins/sapu/scripts/argus-live-propose.mjs";
 
 type Obj = Record<string, any>;
 
@@ -323,4 +327,260 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     await expect(admit(t.main, "3.1", s.once)).rejects.toThrow("refused: smoke admit: slot 3 generation 1 returned no path");
     expect(s.calls).toEqual([]);
   }, 30_000);
+});
+
+/** The path above as the suite numbers its accounts (what admit stages). */
+const SUITE_PATH = (fill = "2"): Obj[] => PATH(fill).map((el) => (el.as && el.as !== "system" ? { ...el, as: el.as === "customer" ? "customer.2" : "sales.1" } : el));
+const RUN = "20300101000000-0123abcd";
+const commit = (cwd: string, msg: string) => git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", msg);
+/** Every file under `dir`, relative, sorted, with its bytes. */
+const tree = (dir: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  const walk = (d: string, rel: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      if (e.isDirectory()) walk(join(d, e.name), `${rel}${e.name}/`);
+      else out[`${rel}${e.name}`] = readFileSync(join(d, e.name), "latin1");
+    }
+  };
+  walk(dir, "");
+  return out;
+};
+
+/** A repo whose committed suite holds `paths` ({id: path}) generated as smoke propose would write it. */
+const suiteRepo = (paths: Record<string, Obj[]> = { checkout: SUITE_PATH() }) => {
+  const main = committed();
+  mkdirSync(join(main, ".argus"), { recursive: true });
+  writeFileSync(join(main, ".argus/live.json"), `${JSON.stringify(pathLive(), null, 2)}\n`);
+  writeFileSync(join(main, ".argus/smoke.json"), "{}\n");
+  const dir = join(main, "e2e/argus-smoke");
+  mkdirSync(join(dir, "journeys"), { recursive: true });
+  for (const [id, path] of Object.entries(paths)) writeFileSync(join(dir, "journeys", `${id}.json`), `${JSON.stringify({ journey: id, path, admitted: { run: RUN, head: "a".repeat(40), pathSha: "1".repeat(64), seed: 1 } }, null, 2)}\n`);
+  const files = generateSuite({ paths: Object.entries(paths).map(([id, path]) => ({ id, path })), live: pathLive(), smoke: structuredClone(SMOKE_DEFAULTS), quarantine: [] });
+  for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, f), text as string);
+  git(main, "add", ".");
+  commit(main, "suite");
+  return main;
+};
+
+describe("smoke check — hand edits, stale files and live.json drift named; nothing written (spec §19.5)", () => {
+  it("passes a clean suite and writes nothing", () => {
+    const main = suiteRepo();
+    const before = tree(main);
+    const r = smokeCheck(main);
+    expect(r).toEqual({ code: 0, lines: ["smoke check: 6 generated files current"] });
+    expect(tree(main)).toEqual(before);
+  });
+
+  it("names a hand-edited spec, a stale generation and a live.json drift, each once, and writes nothing", () => {
+    const main = suiteRepo();
+    const spec = join(main, "e2e/argus-smoke/checkout.spec.ts");
+    // A body edited by hand: its header's digest no longer matches.
+    writeFileSync(spec, readFileSync(spec, "utf8").replace("test.step(", "test.step.skip("));
+    let r = smokeCheck(main);
+    expect(r.code).toBe(1);
+    expect(r.lines).toEqual(["hand-edited e2e/argus-smoke/checkout.spec.ts", "smoke check: 1 finding(s); smoke propose regenerates the suite"]);
+    // A stale generation: the path changed, the spec was not regenerated (its header matches its own body).
+    git(main, "checkout", "--", ".");
+    const jf = join(main, "e2e/argus-smoke/journeys/checkout.json");
+    const j = JSON.parse(readFileSync(jf, "utf8"));
+    j.path = SUITE_PATH("3");
+    writeFileSync(jf, JSON.stringify(j));
+    r = smokeCheck(main);
+    expect(r.lines).toEqual(["stale e2e/argus-smoke/checkout.spec.ts (its header's digest is of another generation)", "smoke check: 1 finding(s); smoke propose regenerates the suite"]);
+    // live.json drift: live.json changed since the suite was generated; the old live.json regenerates what is there.
+    git(main, "checkout", "--", ".");
+    const live = pathLive();
+    live.login_url = "/sign-in";
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify(live));
+    const before = tree(main);
+    r = smokeCheck(main);
+    expect(r.code).toBe(1);
+    expect(r.lines.slice(0, -1).every((l: string) => /^drift e2e\/argus-smoke\/\S+ \(\.argus\/live\.json changed since it was generated\)$/.test(l))).toBe(true);
+    expect(r.lines.length).toBeGreaterThan(1);
+    expect(tree(main)).toEqual(before);
+  });
+
+  it("names a missing generated file and a spec with no path", () => {
+    const main = suiteRepo();
+    rmSync(join(main, "e2e/argus-smoke/support.ts"));
+    writeFileSync(join(main, "e2e/argus-smoke/refund.spec.ts"), "// no path\n");
+    expect(smokeCheck(main).lines).toEqual(["missing e2e/argus-smoke/support.ts", "orphan e2e/argus-smoke/refund.spec.ts (no journeys/refund.json)", "smoke check: 2 finding(s); smoke propose regenerates the suite"]);
+  });
+
+  it("without a suite there is nothing to check", () => {
+    expect(smokeCheck(committed())).toEqual({ code: 0, lines: ["smoke check: no suite (e2e/argus-smoke/journeys holds no path)"] });
+  });
+});
+
+describe("smoke propose — the staged changes as a pull request sapu never merges (spec §19.8)", () => {
+  /**
+   * A repo with a contract and a suite pushed to a local bare origin, a cycle directory `RUN` whose ledger
+   * holds `cookie`, and stand-ins for gh (`gh(argv)` answers) and npm (writes a lockfile, records its call).
+   */
+  const proposeRepo = ({ gh = (argv: string[]) => ({ status: 0, stdout: argv[1] === "create" ? "https://github.com/owner/app/pull/41\n" : "" }) } = {}) => {
+    const main = suiteRepo({});
+    git(main, "branch", "-M", "main");
+    mkdirSync(join(main, ".claude"), { recursive: true });
+    writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, guard: { ...FIXTURE_CONTRACT.guard, envFiles: ["live.env"] } }));
+    git(main, "add", ".");
+    commit(main, "contract");
+    writeFileSync(join(main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
+    const bare = tempDir();
+    git(bare, "init", "-q", "--bare");
+    git(main, "remote", "add", "origin", bare);
+    git(main, "push", "-q", "origin", "main");
+    const cookie = COOKIE();
+    appendLedger(main, RUN, [{ c: "cookie", v: cookie }]);
+    const calls: { gh: string[][]; npm: Obj[] } = { gh: [], npm: [] };
+    const runner = (argv: string[], opts: Obj = {}) => {
+      if (argv[0] === "gh") {
+        calls.gh.push(argv.slice(1));
+        return { ...gh(argv.slice(1)), stderr: "" };
+      }
+      if (argv[0] === "npm") {
+        calls.npm.push({ argv: argv.slice(1), cwd: opts.cwd });
+        writeFileSync(join(opts.cwd, "package-lock.json"), '{"lockfileVersion": 3}\n');
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return run(argv, opts);
+    };
+    const bareShow = (ref: string, file: string) => spawnSync("git", ["--git-dir", bare, "show", `${ref}:${file}`], { encoding: "utf8" });
+    return { main, bare, cookie, calls, runner, bareShow, propose: (dryRun = false) => smokePropose(main, { dryRun }, { runner }) };
+  };
+  const ADD = (path: Obj[] = SUITE_PATH(), evidence = `held fresh and dirty in run ${RUN} (seed 5)`) => ({ kind: "add", id: "checkout", evidence, run: RUN, journey: { journey: "checkout", path, admitted: { run: RUN, head: "a".repeat(40), pathSha: "2".repeat(64), seed: 5 } } });
+
+  it("builds the proposal from origin/<base>: the staged path, the regenerated files, changes.jsonl and the lockfile; commits signed off, pushes argus/smoke-<run>, opens the pull request", async () => {
+    const p = proposeRepo();
+    stageChange(p.main, ADD());
+    const before = git(p.main, "status", "--porcelain", "--untracked-files=no");
+    const r = await p.propose();
+    expect(r.code).toBe(0);
+    expect(r.lines).toEqual([
+      `branch: argus/smoke-${RUN}`,
+      "change add checkout",
+      "baseline: needed checkout (smoke baseline --from-run after this PR's first CI run)",
+      "proposed: https://github.com/owner/app/pull/41",
+    ]);
+    const branch = `argus/smoke-${RUN}`;
+    const want = generateSuite({ paths: [{ id: "checkout", path: SUITE_PATH() }], live: pathLive(), smoke: structuredClone(SMOKE_DEFAULTS), quarantine: [] });
+    for (const [f, text] of Object.entries(want)) expect(p.bareShow(branch, `e2e/argus-smoke/${f}`).stdout, f).toBe(text);
+    expect(JSON.parse(p.bareShow(branch, "e2e/argus-smoke/journeys/checkout.json").stdout)).toEqual(ADD().journey);
+    expect(p.bareShow(branch, "e2e/argus-smoke/package-lock.json").stdout).toBe('{"lockfileVersion": 3}\n');
+    const log = p.bareShow(branch, "e2e/argus-smoke/changes.jsonl").stdout.trim().split("\n").map((l: string) => JSON.parse(l));
+    expect(log).toEqual([{ kind: "add", id: "checkout", evidence: ADD().evidence, run: RUN }]);
+    expect(p.calls.npm).toEqual([{ argv: ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], cwd: expect.stringMatching(/e2e\/argus-smoke$/) }]);
+    // One commit on main's head, by the contract's gitEmail, signed off.
+    const head = spawnSync("git", ["--git-dir", p.bare, "log", "-1", "--format=%ae%n%B", branch], { encoding: "utf8" }).stdout;
+    expect(head.split("\n")[0]).toBe(FIXTURE_CONTRACT.gitEmail);
+    expect(head).toMatch(new RegExp(`\\nSigned-off-by: .+ <${FIXTURE_CONTRACT.gitEmail.replace(".", "\\.")}>\\n`));
+    expect(git(p.main, "rev-parse", "main")).toBe(spawnSync("git", ["--git-dir", p.bare, "rev-parse", `${branch}~1`], { encoding: "utf8" }).stdout.trim());
+    // The pull request: into the base, from the branch, the agent-filed label, the body naming the baseline still needed.
+    const create = p.calls.gh.find((a) => a[0] === "pr" && a[1] === "create")!;
+    const flag = (f: string) => create[create.indexOf(f) + 1];
+    expect([flag("--repo"), flag("--base"), flag("--head"), flag("--label")]).toEqual(["owner/app", "main", branch, "sapu:agent-filed"]);
+    expect(p.calls.gh.some((a) => a[0] === "pr" && a[1] === "merge")).toBe(false);
+    // Staged changes leave the stage, the proposal is remembered, the owner's checkout is untouched, the worktree gone.
+    expect(readStaged(p.main)).toEqual([]);
+    const state = JSON.parse(readFileSync(join(p.main, ".argus/smoke-state.json"), "utf8"));
+    expect(state.proposals[changeDigest(ADD())]).toEqual({ kind: "add", id: "checkout", branch, url: "https://github.com/owner/app/pull/41", outcome: "open" });
+    expect(git(p.main, "status", "--porcelain", "--untracked-files=no")).toBe(before);
+    expect(git(p.main, "rev-parse", "HEAD")).toBe(git(p.main, "rev-parse", "main"));
+    expect(git(p.main, "worktree", "list").split("\n")).toHaveLength(1);
+  }, 60_000);
+
+  it("the body: the change list, the baselines still needed and the change log, fenced", async () => {
+    let body = "";
+    const p = proposeRepo({ gh: (argv) => (argv[1] === "create" ? ((body = readFileSync(argv[argv.indexOf("--body-file") + 1], "utf8")), { status: 0, stdout: "https://github.com/owner/app/pull/41\n" }) : { status: 0, stdout: "" }) });
+    stageChange(p.main, ADD(SUITE_PATH(), "evidence with ``` and @someone"));
+    await p.propose();
+    expect(body).toContain("- add `checkout`\n");
+    expect(body).toContain("baseline: needed checkout (smoke baseline --from-run after this PR's first CI run)");
+    expect(body).toContain("sapu never merges this pull request");
+    expect(body).toMatch(/\n````json\n\{"kind":"add","id":"checkout","evidence":"evidence with ``` and @someone","run":"[0-9a-f-]+"\}\n````\n/);
+  }, 60_000);
+
+  it("a baseline file that conflicts on the rebase is dropped and listed as needed, never resolved by picking a side", async () => {
+    const p = proposeRepo();
+    const shot = "e2e/argus-smoke/__screenshots__/chromium/linux/checkout/1.png";
+    const aria = "e2e/argus-smoke/__aria__/checkout/1.aria.yml";
+    const put = (f: string, text: string) => {
+      mkdirSync(join(p.main, f, ".."), { recursive: true });
+      writeFileSync(join(p.main, f), text);
+    };
+    put(shot, "\x89PNG v1");
+    git(p.main, "add", ".");
+    commit(p.main, "baseline v1");
+    git(p.main, "push", "-q", "origin", "main");
+    const branch = `argus/smoke-${RUN}`;
+    // The proposal branch's baseline commit (a baseline run's adoption): the shot changed, an ARIA file added.
+    git(p.main, "checkout", "-q", "-b", branch);
+    put(shot, "\x89PNG v2");
+    put(aria, "- main:\n");
+    git(p.main, "add", ".");
+    commit(p.main, "baselines");
+    git(p.main, "push", "-q", "origin", branch);
+    // The base moves on: the same shot changed differently.
+    git(p.main, "checkout", "-q", "main");
+    put(shot, "\x89PNG v3");
+    git(p.main, "add", ".");
+    commit(p.main, "baseline v3");
+    git(p.main, "push", "-q", "origin", "main");
+    stageChange(p.main, ADD());
+    const r = await p.propose();
+    expect(r.code).toBe(0);
+    expect(r.lines).toContain("baseline: dropped e2e/argus-smoke/__screenshots__/chromium/linux/checkout/1.png (it conflicts with origin/main)");
+    expect(r.lines).toContain("baseline: needed checkout (smoke baseline --from-run after this PR's first CI run)");
+    expect(p.bareShow(branch, shot).status).not.toBe(0);
+    expect(p.bareShow(branch, aria).stdout).toBe("- main:\n");
+    expect(spawnSync("git", ["--git-dir", p.bare, "merge-base", "--is-ancestor", "main", branch]).status).toBe(0);
+  }, 60_000);
+
+  it("a file or the body holding a ledger secret refuses before any push, naming file:line:col and class", async () => {
+    const p = proposeRepo();
+    stageChange(p.main, ADD(SUITE_PATH(`x-${p.cookie}`)));
+    let msg = "";
+    await p.propose().catch((e: Error) => (msg = e.message));
+    expect(msg).toMatch(/^refused: smoke propose: \d+ secret\(s\): /);
+    expect(msg).toMatch(/e2e\/argus-smoke\/journeys\/checkout\.json:\d+:\d+ cookie/);
+    expect(msg).toMatch(/e2e\/argus-smoke\/checkout\.spec\.ts:\d+:\d+ cookie/);
+    expect(msg).not.toContain(p.cookie.slice(0, 10));
+    expect(msg).toMatch(/; nothing is pushed$/);
+    const q = proposeRepo();
+    stageChange(q.main, ADD(SUITE_PATH(), `evidence ${q.cookie}`));
+    msg = "";
+    await q.propose().catch((e: Error) => (msg = e.message));
+    expect(msg).toMatch(/body:\d+:\d+ cookie/);
+    for (const x of [p, q]) {
+      expect(spawnSync("git", ["--git-dir", x.bare, "rev-parse", "--verify", `argus/smoke-${RUN}`]).status).not.toBe(0);
+      expect(x.calls.gh.some((a) => a[1] === "create")).toBe(false);
+      expect(readStaged(x.main)).toHaveLength(1);
+      expect(git(x.main, "worktree", "list").split("\n")).toHaveLength(1);
+    }
+  }, 60_000);
+
+  it("a change its pull request was closed on is never proposed again", async () => {
+    const closedUrl = "https://github.com/owner/app/pull/40";
+    const p = proposeRepo({ gh: (argv) => (argv[1] === "view" ? { status: 0, stdout: "CLOSED\n" } : { status: 0, stdout: argv[1] === "create" ? "https://github.com/owner/app/pull/41\n" : "" }) });
+    writeFileSync(join(p.main, ".argus/smoke-state.json"), JSON.stringify({ proposals: { [changeDigest(ADD())]: { kind: "add", id: "checkout", branch: "argus/smoke-x", url: closedUrl, outcome: "open" } } }));
+    // A later run finds the same path again: same digest.
+    stageChange(p.main, { ...ADD(), run: "20300102000000-0123abcd", evidence: "again" });
+    const r = await p.propose();
+    expect(r.lines).toEqual([`skip add checkout: rejected in ${closedUrl}`, "smoke propose: nothing to propose"]);
+    expect(p.calls.gh.filter((a) => a[1] === "create")).toEqual([]);
+    expect(JSON.parse(readFileSync(join(p.main, ".argus/smoke-state.json"), "utf8")).proposals[changeDigest(ADD())].outcome).toBe("closed");
+    expect(readStaged(p.main)).toEqual([]);
+  }, 60_000);
+
+  it("--dry-run prints the change list and writes nothing", async () => {
+    const p = proposeRepo();
+    stageChange(p.main, ADD());
+    const before = tree(p.main);
+    const r = await p.propose(true);
+    expect(r).toEqual({ code: 0, lines: [`would propose on argus/smoke-${RUN}: 1 change(s)`, "change add checkout"] });
+    expect(tree(p.main)).toEqual(before);
+    expect(p.calls.npm).toEqual([]);
+    expect(p.calls.gh.filter((a) => a[1] === "create")).toEqual([]);
+    expect(spawnSync("git", ["--git-dir", p.bare, "rev-parse", "--verify", `argus/smoke-${RUN}`]).status).not.toBe(0);
+  }, 60_000);
 });
