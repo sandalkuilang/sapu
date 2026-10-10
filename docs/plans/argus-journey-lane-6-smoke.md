@@ -1870,7 +1870,8 @@ built" sub-section is kept above. Each lane's "Needs coordinator" item is settle
   registry). `repro --test` prints the API-level hint after the red test's line, which the findings end-to-end test
   now reads as the first line. The a11y and layout tests' browser close and the teardowns that run `down` get 30 s
   hooks. `smoke propose` checks a proposal against the staged changes' own lane runs, the newest run's ledger only
-  when every staged change came from smoke ci (a newest map run has no ledger).
+  when every staged change came from smoke ci (a newest map run has no ledger). pw's request-mask test searched the fence's random hex
+  nonce for the masked values (`abc`, `def`): it searches the page's lines only.
 - **Spec.** §19.7, §19.10–§19.13 follow the as-built behaviour (dedupe, Shift+Tab start, screens, no `children`,
   tokens at run time, empty-state headings, the toast's blind first step, a gone invoker's modal, the perf pass's
   script, `latest`, the five verdicts, the exit codes, the workflow's artifacts, the seed's HEAD, the report's
