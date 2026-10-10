@@ -2,14 +2,20 @@
 // the suite's members, `smoke admit` stages a path that held twice, fresh then dirty, and `smoke check`
 // regenerates the suite in memory and names every file that differs. check writes nothing (the guard lets a
 // subagent run it); every change to the committed suite goes through a proposal.
+import { createHash, randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
-import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
-import { lastRun, liveDir } from "./argus-live-lock.mjs";
+import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
+import { secretHits } from "./argus-live-ledger.mjs";
+import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { readJourneys, score } from "./argus-live-map.mjs";
-import { run } from "./argus-live-proc.mjs";
+import { run, tempBeside } from "./argus-live-proc.mjs";
+import { runOnce } from "./argus-live-repro.mjs";
+import { readRun } from "./argus-live-run.mjs";
+import { scrubSecrets } from "./argus-live-scrub.mjs";
 import { readSuitePaths } from "./argus-live-smoke.mjs";
+import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -199,9 +205,171 @@ export function smokePlan(main, opts = {}) {
   return { code: 0, lines: planOf(main, opts).lines };
 }
 
-/** `smoke admit <slot>.<generation>` → `{code, lines}`: the return's path run twice, staged when it held both times. */
-export function smokeAdmit(main, ref) {
-  throw new Error("refused: smoke admit: not built yet");
+// ---------------------------------------------------------------------------------------------------
+// Staged changes (spec §19.8): what the next `smoke propose` opens as a pull request. Local, gitignored, 0600.
+
+export const STAGED_FILE = ".argus/smoke-staged.json";
+/**
+ * A staged change's kinds: `add` and `heal` carry the journey file (`journey`: `{journey, path, admitted}`),
+ * `drop` and `retire` remove the journey from the suite, `quarantine` carries quarantine.json's entry
+ * (`quarantine`: `{id, issue, since}`), `unquarantine` removes it.
+ */
+export const CHANGE_KINDS = Object.freeze(["add", "heal", "drop", "retire", "quarantine", "unquarantine"]);
+
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+
+/**
+ * A change's digest (spec §19.8: a rejected change is remembered by it and never proposed again): its kind,
+ * journey, step, old and new target and path, never its run or evidence, so the same change found again by a
+ * later run has the same digest.
+ */
+export function changeDigest(c) {
+  return sha256(JSON.stringify([c.kind, c.id, c.step ?? null, c.from ?? null, c.to ?? null, isObj(c.journey) ? (c.journey.path ?? null) : null]));
+}
+
+const isChange = (c) => isObj(c) && CHANGE_KINDS.includes(c.kind) && typeof c.id === "string" && JOURNEY.test(c.id) && typeof c.run === "string";
+
+/** The staged changes, oldest first; none when there is no file. A file that is not `{changes: [...]}` is refused. */
+export function readStaged(main) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(main, STAGED_FILE), "utf8"));
+  } catch (e) {
+    if (e && e.code === "ENOENT") return [];
+    throw new Error(`refused: ${STAGED_FILE} is not a list of staged changes`);
+  }
+  if (!isObj(raw) || !Array.isArray(raw.changes) || !raw.changes.every(isChange)) throw new Error(`refused: ${STAGED_FILE} is not a list of staged changes`);
+  return raw.changes;
+}
+
+/** Writes the staged changes whole (0600, a temp file renamed over it); none removes the file. */
+export function writeStaged(main, changes) {
+  const file = path.join(main, STAGED_FILE);
+  if (!changes.length) return fs.rmSync(file, { force: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.renameSync(tempBeside(file, `${JSON.stringify({ changes }, null, 2)}\n`, 0o600), file);
+}
+
+/**
+ * Stages `change` (`{kind, id, step?, from?, to?, evidence, run, journey?, quarantine?}`) for the next
+ * proposal, replacing an earlier staged change of the same kind and journey. Lanes B's heal, quarantine and
+ * drop stage through it too.
+ */
+export function stageChange(main, change) {
+  if (!isChange(change)) throw new Error("refused: a staged change is {kind, id, run, …} with a known kind");
+  writeStaged(main, [...readStaged(main).filter((c) => !(c.kind === change.kind && c.id === change.id)), change]);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// smoke admit (spec §19.4).
+
+const ADMIT_REF = /^([1-9][0-9]?)\.([1-9])$/;
+/** A path run's verdict line (runOnce in path mode). */
+const BROKE = /^PATH broke step=(\d+) kind=(target-missing|target-ambiguous|expect-failed|action-failed)$/;
+
+/**
+ * `list` with each account the slot allocated (`slotAccounts`, `{"<role>.<k>": user | null}`) written as the
+ * suite's account of the same user (`suite`, suiteAccounts): a users role's `<role>.<k>` by its user, anon and
+ * a login-command role as `.1`. A bare role word is that role's `.1` of the slot.
+ */
+function renumber(list, slotAccounts, suite, id) {
+  const to = {};
+  for (const [a, user] of Object.entries(slotAccounts ?? {})) {
+    const role = a.split(".")[0];
+    const k = Object.keys(suite).find((s) => s.split(".")[0] === role && (user === null ? s === `${role}.1` : suite[s] === user));
+    if (!k) throw new Error(`refused: admit ${id}: ${a}'s user is not one of live.json's ${role} accounts`);
+    to[a] = k;
+  }
+  const step = (el) => {
+    if (!isObj(el) || typeof el.as !== "string" || el.as === "system") return el;
+    const a = el.as.includes(".") ? el.as : `${el.as}.1`;
+    return Object.hasOwn(to, a) ? { ...el, as: to[a] } : el;
+  };
+  return list.map((el) => (isObj(el) && Array.isArray(el.parallel) ? { ...el, parallel: el.parallel.map(step) } : step(el)));
+}
+
+/** Every string leaf of `step` with its field's dotted name (`target.name`, `values.0`). */
+function leaves(v, at = "", out = []) {
+  if (typeof v === "string") out.push([at, v]);
+  else if (Array.isArray(v)) v.forEach((x, i) => leaves(x, at ? `${at}.${i}` : String(i), out));
+  else if (isObj(v)) for (const [k, x] of Object.entries(v)) if (k !== "as") leaves(x, at ? `${at}.${k}` : k, out);
+  return out;
+}
+
+/** Where `list` holds a secret of `secrets` (scrub's matcher): `step <n> <field> <class>` each, never the value. */
+function secretPlaces(list, secrets) {
+  const out = [];
+  let n = 0;
+  for (const el of list) {
+    if (isObj(el) && Object.hasOwn(el, "context")) continue;
+    for (const s of isObj(el) && Array.isArray(el.parallel) ? el.parallel : [el]) {
+      n += 1;
+      for (const [field, v] of leaves(s)) for (const h of secretHits(v, secrets)) out.push(`step ${n} ${/^[A-Za-z0-9_.]{1,60}$/.test(field) ? field : "a field"} ${h.cls}`);
+    }
+  }
+  return [...new Set(out)];
+}
+
+/**
+ * `smoke admit <slot>.<generation>` → `{code, lines}` (spec §19.4): the path slot `<slot>`'s return of that
+ * generation holds, for a journey `smoke plan` lists as `capture`, renumbered to the suite's accounts and
+ * parsed in path mode, checked against every secret scrub knows for the run (a hit refuses by step, field and
+ * class), then run twice: once after `up --fresh`, once right after on the same, now dirty, instance (`seed:
+ * <n>` printed and recorded). Held both times → staged as an `add` with its admission record `{run, head,
+ * pathSha, seed}`; a break → `refused: admit <id>: <fresh|dirty> <kind> at step <n>`; the harness's failure →
+ * exit 2, nothing staged. `once` is the one-run seam (runOnce), `runner` and `gh` smoke plan's.
+ */
+export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runner = run, gh = "gh", env = process.env } = {}) {
+  const m = ADMIT_REF.exec(String(ref));
+  if (!m) throw new Error(`refused: smoke admit: ${/^[0-9.]{1,12}$/.test(String(ref)) ? ref : "that"} is not <slot>.<generation>`);
+  const lock = readLock(main);
+  if (!lock) throw new Error("refused: no journey cycle is running");
+  const rec = readRun(main);
+  if (!rec || rec.runId !== lock.runId || !rec.instanceId) throw new Error(`refused: cycle ${lock.runId} has no instance (its up did not finish)`);
+  const [slot, generation] = [m[1], m[2]];
+  let ret = null;
+  try {
+    ret = JSON.parse(fs.readFileSync(path.join(liveDir(main), lock.runId, "returns", `${slot}.${generation}.json`), "utf8"));
+  } catch {
+    throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} has not submitted`);
+  }
+  const slotRec = rec.slots && rec.slots[slot];
+  if (!isObj(ret) || !Array.isArray(ret.path) || !slotRec) throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} returned no path`);
+  const id = ret.journey;
+  if (typeof id !== "string" || !JOURNEY.test(id)) throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} names no journey`);
+  const entry = planOf(main, { runner, gh }).entries.find((e) => e.id === id);
+  if (!entry) throw new Error(`refused: admit ${id}: smoke plan does not list it`);
+  if (entry.line !== `capture ${id}`) throw new Error(`refused: admit ${id}: smoke plan lists it as ${entry.line.replace(` ${id}`, "").replace(/ https:\S+$/, "")}, not capture`);
+  const { config, errors, secrets: envFile } = loadLive(main);
+  if (!config || errors.length) throw new Error(`refused: .argus/live.json: ${errors.join("; ")}`);
+  const live = expandConfig(config, { ports: { ...(rec.ports ?? {}) }, secrets: envFile });
+  const list = renumber(ret.path, slotRec.accounts, suiteAccounts(live), id);
+  try {
+    parseRepro(list, { accounts: suiteAccounts(live), live, path: true });
+  } catch (e) {
+    if (!/^refused: /.test(e.message)) throw e;
+    throw new Error(`refused: admit ${id}: ${e.message.replace(/^refused: repro: /, "")}`);
+  }
+  const { secrets, refusal } = scrubSecrets(main, { runId: lock.runId, env });
+  if (refusal) throw new Error(`refused: admit ${id}: its values cannot be checked (${refusal.replace(/^refused: scrub: /, "")})`);
+  const places = secretPlaces(list, secrets);
+  if (places.length) throw new Error(`refused: admit ${id}: a secret in its values: ${places.join("; ")}`);
+  const used = seed ?? randomInt(0, 4294967296);
+  const lines = [`seed: ${used}`];
+  for (const dirty of [false, true]) {
+    const r = await once(main, null, { path: { id, list }, dirty });
+    const which = dirty ? "dirty" : "fresh";
+    const b = r.code === 3 ? BROKE.exec(r.lines.at(-1) ?? "") : null;
+    if (b) throw new Error(`refused: admit ${id}: ${which} ${b[2]} at step ${b[1]}`);
+    if (r.code !== 0) {
+      const last = r.lines.at(-1) ?? "";
+      return { code: 2, lines: [...lines, `admit ${id}: harness (${which}): ${last.startsWith("HARNESS: ") ? last.slice(9) : `exit ${r.code}`}`] };
+    }
+  }
+  const admitted = { run: lock.runId, head: rec.worktreeHead ?? null, pathSha: sha256(JSON.stringify(list)), seed: used };
+  stageChange(main, { kind: "add", id, evidence: `held fresh and dirty in run ${lock.runId} (seed ${used})`, run: lock.runId, journey: { journey: id, path: list, admitted } });
+  lines.push(`admit ${id}: held fresh and dirty; staged for smoke propose`);
+  return { code: 0, lines };
 }
 
 /** `smoke check` → `{code, lines}`: every hand-edited or stale file of the suite named; writes nothing. */
