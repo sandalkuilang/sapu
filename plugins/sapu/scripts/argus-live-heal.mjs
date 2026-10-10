@@ -11,7 +11,7 @@ import { readJourneys } from "./argus-live-map.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
-import { readSuitePaths, regressionList, writeRegression } from "./argus-live-smoke.mjs";
+import { readSuitePaths, regressionList, smokeEvent, writeRegression } from "./argus-live-smoke.mjs";
 import { canonical, codeBlock, stage } from "./argus-live-suite.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
@@ -268,6 +268,7 @@ export async function smokeHeal(main, ref, { once = runOnce, runner = run } = {}
     ...codeBlock(lines),
   ];
   const { digest } = stage(main, { kind: "heal", id, run: lock.runId, changes: staged, path: healed, body });
+  smokeEvent(main, lock.runId, { kind: "healed", id, steps: [...new Set(staged.map((c) => c.step))] });
   const f = fence(lines.join("\n"), { secrets });
   return {
     code: 0,

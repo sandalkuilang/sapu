@@ -11,6 +11,8 @@ import { healOnly, healPath, smokeHeal } from "../plugins/sapu/scripts/argus-liv
 // @ts-expect-error — plain ESM script without types
 import { readState, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
+import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
+// @ts-expect-error — plain ESM script without types
 import { reproRef } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
@@ -171,7 +173,11 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     expect(body).toContain("rename the order button");
     // No suite file is touched: the heal reaches the repo only through a proposal.
     expect(JSON.parse(readFileSync(join(t.main, "e2e/argus-smoke/journeys/checkout.json"), "utf8")).path).toEqual(PATH());
-  });
+    // The heal is an event of the cycle, and the cycle's report counts it.
+    expect(readFileSync(join(t.main, ".argus/live", t.runId, "smoke/events.jsonl"), "utf8")).toBe(`${JSON.stringify({ kind: "healed", id: "checkout", steps: [5] })}\n`);
+    const text = readFileSync(report(t.main, { run: t.runId }, { env: { PATH: process.env.PATH ?? "" } }).lines[0].slice(8), "utf8").split("\n");
+    expect(text).toContain("- healed checkout (steps 5)");
+  }, 30_000);
 
   it("names no commit when none removed the old name", async () => {
     const t = healRun({ ret: heal([{ step: 5, target: NEW }]) });

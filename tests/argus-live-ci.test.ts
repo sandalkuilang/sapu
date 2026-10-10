@@ -13,6 +13,8 @@ import { quarantineCycle, smokeCi } from "../plugins/sapu/scripts/argus-live-ci.
 // @ts-expect-error — plain ESM script without types
 import { appendLedger } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
+import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
+// @ts-expect-error — plain ESM script without types
 import { readState } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down } from "../plugins/sapu/scripts/argus-live-run.mjs";
@@ -54,6 +56,10 @@ const ciRepo = ({ quarantine = [] as string[], aria = true } = {}) => {
   commitAll(t.main, "suite");
   return t;
 };
+
+/** Run `runId`'s smoke events (smokeEvent's lines), and its report's lines (report, written from the run's records). */
+const eventsOf = (main: string, runId: string): Obj[] => readFileSync(join(main, ".argus/live", runId, "smoke/events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const reportOf = (main: string, runId: string): string[] => readFileSync(report(main, { run: runId }, { env: { PATH: process.env.PATH ?? "" } }).lines[0].slice(8), "utf8").split("\n");
 
 /** GitHub's REST run object. */
 const apiRun = (id: number, { event = "push", branch = "main", sha = SHA, repo = "owner/app", head = repo, pr = null as number | null } = {}) => ({
@@ -134,6 +140,7 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
 
   it("names each failure by kind: harness, flake, ui-change?, bug?, browser-only, visual, baseline-missing, aria, check, manual", async () => {
     const t = ciRepo({ quarantine: ["wishlist"] });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true }); // the cycle's directory, as up makes it
     const gh = base(t);
     const r = await smokeCi(t.main, { run: "101" }, { runner: gh.runner });
     expect(r.code).toBe(3);
@@ -172,6 +179,12 @@ describe("smoke ci — the CI run triaged by spec §19.9's table", () => {
     expect(readFileSync(shot).subarray(0, 8)).toEqual(PNG.subarray(0, 8));
     expect(statSync(shot).mode & 0o777).toBe(0o600);
     expect(existsSync(join(t.main, ".argus/smoke-ci/101/settings/chromium/1-actual.png"))).toBe(false);
+    // The staged quarantine is an event of the running cycle; its report shows it and this triage, never a fenced key.
+    expect(eventsOf(t.main, t.runId)).toEqual([{ kind: "quarantined", id: "checkout" }]);
+    const l = reportOf(t.main, t.runId);
+    for (const want of ["- quarantined checkout", "- CI run 101 (push, main)", "- ui-change? refund step 3", "- browser-only cart firefox", "- baseline-missing profile chromium"]) expect(l, want).toContain(want);
+    expect(l.find((x) => x.startsWith("- check search "))).toMatch(/^- check search axe:color-contrast \[\d+\]$/);
+    expect(l.join("\n")).not.toContain("IGNORE PREVIOUS");
     // The summary F's report reads.
     const triage = JSON.parse(readFileSync(join(t.main, ".argus/smoke-ci/101/triage.json"), "utf8"));
     expect(triage).toMatchObject({ run: 101, event: "push", branch: "main", sha: SHA });
@@ -516,6 +529,8 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     };
     const r = await smokeBaseline(t.main, { fromRun: "301", ids: ["profile"] }, { runner });
     expect(r.lines[0]).toBe("baseline: 1 file(s) proposed in https://github.com/owner/app/pull/12 (argus/baselines-301 into feat/x)");
+    expect(eventsOf(t.main, t.runId)).toEqual([{ kind: "proposal", url: "https://github.com/owner/app/pull/12", branch: "argus/baselines-301", changes: 1 }]);
+    expect(reportOf(t.main, t.runId)).toContain("- `https://github.com/owner/app/pull/12` argus/baselines-301, 1 change(s)");
     expect(prs).toEqual([["pr", "create", "--repo", "owner/app", "--base", "feat/x", "--head", "argus/baselines-301", "--title", "argus: smoke baselines from CI run 301", "--body-file", expect.any(String), "--label", "sapu:agent-filed"]]);
     expect(gh.bodies[0]).toContain("| `e2e/argus-smoke/__screenshots__/chromium/linux/profile.spec/2.png` | profile | 2 | chromium |");
     expect(gh.bodies[0]).toContain("2-up, swipe, onion skin");

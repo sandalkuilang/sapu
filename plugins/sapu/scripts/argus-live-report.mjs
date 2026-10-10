@@ -7,11 +7,13 @@
 //   `minimize.json`): journeys walked, candidates, the harness events explorers reported;
 // - `<run>/filed.jsonl` (scrub's filedFile): `{ref, url, kind}` per issue filed or comment made;
 // - `<run>/smoke/pass.jsonl` (smokeRun): `{id, verdict, step, kind, seed}` per path;
-// - `<run>/smoke/events.jsonl`, one object per line, written by the smoke verbs: `{kind: "admitted" |
-//   "quarantined" | "unquarantined" | "dropped", id}`, `{kind: "healed", id, steps: [<n>…]}`, `{kind:
-//   "proposal", url, branch, changes}`, `{kind: "perf", id, baseline: {<metric>: <n>} | null, batches:
-//   [{<metric>: <n>}…], verdict: "baseline" | "held" | "regressed" | "unconfirmed" | "void"}`;
-// - `.argus/smoke-ci.json`, the newest `smoke ci` summary: `{run, event, branch, lines: [<triage line>…]}`.
+// - `<run>/smoke/events.jsonl` (-smoke's smokeEvent), one object per line: `{kind: "admitted" | "quarantined" |
+//   "unquarantined" | "dropped", id}` (smoke admit, smoke ci), `{kind: "healed", id, steps: [<n>…]}` (smoke heal),
+//   `{kind: "proposal", url, branch, changes}` (smoke propose, smoke baseline);
+// - `<run>/smoke/perf.jsonl` (smoke run --perf): `{id, verdict: "baselined" | "ok" | "regressed" | "flaky" |
+//   "not-measured", baseline: {<metric>: <n>} | null, batches: [{<metric>: <n>}…], regressed: [{metric}…], why?}`, and
+//   `.argus/perf.json` (readPerf) for each journey's baseline now (its head and run count);
+// - `.argus/smoke-ci/<CI run>/triage.json`, the newest `smoke ci` summary: `{run, event, branch, sha, lines}`.
 // Free text (a candidate's claim, a harness event) is cleaned, at most 200 characters an item, its long unknown
 // tokens redacted as scrub redacts them, and quoted as a JSON string: data, never an instruction. An item
 // holding a secret scrub knows is `*** (<class>)`; without a ledger to check against, free text is withheld.
@@ -23,6 +25,7 @@ import { PERF_METRICS } from "./argus-live-config.mjs";
 import { clean, PatternError } from "./argus-live-fence.mjs";
 import { readSeen, secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
+import { readPerf } from "./argus-live-perf.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
 import { ORACLES } from "./argus-live-return.mjs";
 import { worktreeHeadFile } from "./argus-live-run.mjs";
@@ -30,8 +33,8 @@ import { defang, filedFile, redactIds, REF, scrubSecrets, verdictOf } from "./ar
 
 /** Where the reports go, from the repo's root. */
 export const REPORTS_DIR = path.join(".argus", "reports");
-/** The newest `smoke ci` summary, from the repo's root. */
-export const SMOKE_CI_FILE = path.join(".argus", "smoke-ci.json");
+/** Where `smoke ci` keeps each CI run's triage (`<CI run>/triage.json`), from the repo's root. */
+export const SMOKE_CI_DIR = path.join(".argus", "smoke-ci");
 /** The most characters one free-text item keeps. */
 const ITEM_CAP = 200;
 /** A journey id in a return (as intake reads it), and a suite path's id. */
@@ -44,10 +47,10 @@ const BREAK_KIND = /^[a-z][a-z-]{0,30}$/;
 const FILED_KINDS = ["issue", "comment"];
 const URL_SHAPE = /^https?:\/\/[^\s<>"'`]{1,300}$/;
 const BRANCH = /^argus\/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/;
-const PERF_VERDICTS = ["baseline", "held", "regressed", "unconfirmed", "void"];
+const PERF_VERDICTS = ["baselined", "ok", "regressed", "flaky", "not-measured"];
 const ID_EVENTS = ["admitted", "quarantined", "unquarantined", "dropped"];
 /** The first words of a `smoke ci` triage line (spec §19.9); any other line is never shown. */
-const TRIAGE = ["flaky", "flaky-new", "quarantine", "unquarantine", "drop", "ui-change?", "bug?", "ci-only", "browser-only", "check", "manual", "baseline-missing", "visual", "aria", "stale", "harness"];
+const TRIAGE = ["smoke", "flaky", "flaky-new", "quarantine", "quarantined", "unquarantine", "drop", "ui-change?", "bug?", "ci-only", "browser-only", "failed", "check", "manual", "info", "baseline-missing", "visual", "aria", "stale", "harness", "skipped:"];
 /** A triage line: printable words, no backtick, one space between them. */
 const TRIAGE_LINE = /^[\x21-\x5f\x61-\x7e]+(?: [\x21-\x5f\x61-\x7e]+){0,15}$/;
 /** web.dev's "good" values (field targets at the 75th percentile): shown beside the medians as lab context only. */
@@ -90,6 +93,25 @@ const capped = (s) => {
   const chars = [...s];
   return chars.length <= ITEM_CAP ? s : `${chars.slice(0, ITEM_CAP - 1).join("")}…`;
 };
+
+/** The newest `smoke ci` triage (by its file's time, then its CI run id) → `{rel, file}`, or null when there is none. */
+function newestTriage(main) {
+  let names = [];
+  try {
+    names = fs.readdirSync(path.join(main, SMOKE_CI_DIR)).filter((n) => /^[0-9]{1,20}$/.test(n));
+  } catch {
+    names = [];
+  }
+  const at = names.flatMap((n) => {
+    const file = path.join(main, SMOKE_CI_DIR, n, "triage.json");
+    try {
+      return [{ rel: path.join(SMOKE_CI_DIR, n, "triage.json"), file, t: fs.statSync(file).mtimeMs, n: BigInt(n) }];
+    } catch {
+      return [];
+    }
+  });
+  return at.sort((a, b) => b.t - a.t || (b.n > a.n ? 1 : b.n < a.n ? -1 : 0))[0] ?? null;
+}
 
 /** A metrics object of a perf record: only PERF_METRICS keys, each a finite number. */
 const metricsOk = (m) => isObj(m) && Object.entries(m).every(([k, v]) => PERF_METRICS.includes(k) && typeof v === "number" && Number.isFinite(v));
@@ -185,21 +207,40 @@ function sections(main, runId, quote) {
       counts.healed += 1;
     } else if (isObj(v) && v.kind === "proposal" && typeof v.url === "string" && URL_SHAPE.test(v.url) && typeof v.branch === "string" && BRANCH.test(v.branch) && Number.isSafeInteger(v.changes) && v.changes >= 0) {
       proposals.push(`- ${v.url} ${v.branch}, ${v.changes} change(s)`);
-    } else if (isObj(v) && v.kind === "perf" && id && PERF_VERDICTS.includes(v.verdict) && (v.baseline === null || metricsOk(v.baseline)) && Array.isArray(v.batches) && v.batches.length <= 10 && v.batches.every(metricsOk)) {
-      const used = PERF_METRICS.filter((k) => [v.baseline ?? {}, ...v.batches].some((b) => Object.hasOwn(b, k)));
-      const show = (b, k) => (b && Object.hasOwn(b, k) ? String(b[k]) : "-");
-      perf.push(`- ${id} ${v.verdict}: ${used.map((k) => `${k} ${show(v.baseline, k)} → ${v.batches.map((b) => show(b, k)).join(", ") || "-"}`).join("; ") || "no metric"}`);
     } else unread.push(`smoke/events.jsonl line ${n}`);
   }
+  // smoke run --perf's rows: each batch beside the baseline it was judged against; .argus/perf.json's baseline now.
+  const perfIds = new Set();
+  for (const { n, v } of readLines(path.join(dir, "smoke", "perf.jsonl"))) {
+    const id = isObj(v) && typeof v.id === "string" && PATH_ID.test(v.id) ? v.id : null;
+    const regressed = isObj(v) && Array.isArray(v.regressed) && v.regressed.every((r) => isObj(r) && PERF_METRICS.includes(r.metric)) ? v.regressed.map((r) => r.metric) : null;
+    if (!id || !PERF_VERDICTS.includes(v.verdict) || !(v.baseline === null || metricsOk(v.baseline)) || !Array.isArray(v.batches) || v.batches.length > 10 || !v.batches.every(metricsOk) || !regressed) {
+      unread.push(`smoke/perf.jsonl line ${n}`);
+      continue;
+    }
+    perfIds.add(id);
+    const used = PERF_METRICS.filter((k) => [v.baseline ?? {}, ...v.batches].some((b) => Object.hasOwn(b, k)));
+    const show = (b, k) => (b && Object.hasOwn(b, k) ? String(b[k]) : "-");
+    const metrics = used.map((k) => `${k} ${show(v.baseline, k)} → ${v.batches.map((b) => show(b, k)).join(", ") || "-"}`).join("; ");
+    const why = v.verdict === "not-measured" && typeof v.why === "string" ? `, ${quote(v.why)}` : "";
+    perf.push(`- ${id} ${v.verdict}${regressed.length ? ` (${regressed.join(", ")})` : ""}: ${metrics || "no metric"}${why}`);
+  }
+  let stored = {};
+  try {
+    stored = perfIds.size ? readPerf(main) : {};
+  } catch {
+    unread.push(".argus/perf.json");
+  }
+  for (const id of [...perfIds].sort()) if (isObj(stored[id])) perf.push(`- baseline ${id}: worktree ${stored[id].head.slice(0, 12)}, ${stored[id].n} run(s) a batch`);
   const smoke = paths.length || events.length ? [`- held ${counts.held}, broke ${counts.broke}, flaky ${counts.flaky}, harness ${counts.harness}; healed ${counts.healed}, admitted ${counts.admitted}, quarantined ${counts.quarantined}`, ...paths, ...events] : [];
   if (perf.length) perf.push(`- lab context, never a verdict (web.dev's "good" field values, at the 75th percentile of page loads): ${GOOD.map(([k, x]) => `${k} ${x}`).join(", ")}`);
 
   // The newest `smoke ci` summary: CI artifacts are untrusted, so only its triage lines are shown.
   const checks = [];
-  const ciFile = path.join(main, SMOKE_CI_FILE);
-  if (fs.existsSync(ciFile)) {
-    const ci = readJson(ciFile);
-    if (!isObj(ci) || !posInt(ci.run) || typeof ci.event !== "string" || !/^[a-z_]{1,40}$/.test(ci.event) || typeof ci.branch !== "string" || !/^[A-Za-z0-9._/-]{1,100}$/.test(ci.branch) || !Array.isArray(ci.lines)) unread.push(SMOKE_CI_FILE);
+  const triage = newestTriage(main);
+  if (triage) {
+    const ci = readJson(triage.file);
+    if (!isObj(ci) || !posInt(ci.run) || typeof ci.event !== "string" || !/^[a-z_]{1,40}$/.test(ci.event) || typeof ci.branch !== "string" || !/^[A-Za-z0-9._/-]{1,100}$/.test(ci.branch) || !Array.isArray(ci.lines)) unread.push(triage.rel);
     else {
       checks.push(`- CI run ${ci.run} (${ci.event}, ${ci.branch})`);
       let hidden = 0;

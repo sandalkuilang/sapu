@@ -26,6 +26,8 @@ import { mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { changeDigest, readState, smokeAdmit, smokeCheck, smokePlan, stage } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
+import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
+// @ts-expect-error — plain ESM script without types
 import { smokePropose, smokeWorkflow } from "../plugins/sapu/scripts/argus-live-propose.mjs";
 
 type Obj = Record<string, any>;
@@ -282,6 +284,9 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     const seed = Number(/^seed: (\d+)$/.exec(u.lines[0])![1]);
     expect(readState(t.main).staged[0].admitted.seed).toBe(seed);
     expect(readState(t.main).staged).toHaveLength(1);
+    // Each admission is an event of the cycle, and the cycle's report counts it.
+    expect(eventsOf(t.main, t.runId)).toEqual([{ kind: "admitted", id: "checkout" }, { kind: "admitted", id: "checkout" }]);
+    expect(reportOf(t.main, t.runId)).toContain("- admitted checkout");
     // A path a closed proposal rejected is not staged again.
     const state = readState(t.main);
     writeFileSync(join(t.main, ".argus/smoke-state.json"), JSON.stringify({ ...state, staged: [], rejected: [state.staged[0].digest] }));
@@ -340,6 +345,9 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
 });
 
 /** The path above as the suite numbers its accounts (what admit stages). */
+/** Run `runId`'s smoke events (smokeEvent's lines), and its report's lines (report, written from the run's records). */
+const eventsOf = (main: string, runId: string): Obj[] => readFileSync(join(main, ".argus/live", runId, "smoke/events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const reportOf = (main: string, runId: string): string[] => readFileSync(report(main, { run: runId }, { env: { PATH: process.env.PATH ?? "" } }).lines[0].slice(8), "utf8").split("\n");
 const SUITE_PATH = (fill = "2"): Obj[] => PATH(fill).map((el) => (el.as && el.as !== "system" ? { ...el, as: el.as === "customer" ? "customer.2" : "sales.1" } : el));
 const RUN = "20300101000000-0123abcd";
 const commit = (cwd: string, msg: string) => git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", msg);
@@ -499,6 +507,9 @@ describe("smoke propose — the staged changes as a pull request sapu never merg
     expect(git(p.main, "status", "--porcelain", "--untracked-files=no")).toBe(before);
     expect(git(p.main, "rev-parse", "HEAD")).toBe(git(p.main, "rev-parse", "main"));
     expect(git(p.main, "worktree", "list").split("\n")).toHaveLength(1);
+    // The proposal is an event of the run it is named for, and that run's report lists it.
+    expect(eventsOf(p.main, RUN)).toEqual([{ kind: "proposal", url: "https://github.com/owner/app/pull/41", branch, changes: 1 }]);
+    expect(reportOf(p.main, RUN)).toContain(`- \`https://github.com/owner/app/pull/41\` ${branch}, 1 change(s)`);
   }, 60_000);
 
   it("the body: the change list, the baselines still needed and the change log, fenced", async () => {

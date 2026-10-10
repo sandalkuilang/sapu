@@ -11,7 +11,7 @@ import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { readSuitePaths } from "./argus-live-smoke.mjs";
+import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { changeDigest, generated, liveAsWritten, readState, writeState } from "./argus-live-suite.mjs";
 import { agentFiledLabel, loadContract } from "./sapu-contract.mjs";
 
@@ -303,6 +303,7 @@ export async function smokePropose(main, { dryRun }, { runner = run, gh = "gh", 
       for (const ch of todo) state.proposals[ch.digest ?? changeDigest(ch)] = { kind: ch.kind, id: ch.id, branch, url, outcome: "open" };
       state.staged = staged.filter((ch) => !skipped.has(ch) && !todo.includes(ch));
       writeState(main, state);
+      smokeEvent(main, runId, { kind: "proposal", url, branch, changes: all.length });
       return {
         code: 0,
         lines: [...lines, `branch: ${branch}`, ...all.map(changeLine), ...carried.dropped.map((f) => `baseline: dropped ${f} (it conflicts with origin/${base})`), ...needed.map(NEEDED), `proposed: ${url}`],

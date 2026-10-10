@@ -14,7 +14,7 @@ import { run, tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { quarantineIds, readSuitePaths } from "./argus-live-smoke.mjs";
+import { quarantineIds, readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -396,6 +396,7 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
   const evidence = `held fresh and dirty in run ${lock.runId} (seed ${used})`;
   const body = [`### Add: ${id}`, "", `The path held twice, after up --fresh and then dirty, in run ${lock.runId} (seed ${used}).`];
   const r = stage(main, { kind: "add", id, run: lock.runId, changes: [{ kind: "add", id, evidence, run: lock.runId }], body, path: list, admitted, ...(routes.length ? { routes } : {}) });
+  if (r.staged) smokeEvent(main, lock.runId, { kind: "admitted", id });
   lines.push(r.staged ? `admit ${id}: held fresh and dirty; staged for smoke propose` : `admit ${id}: held fresh and dirty; not staged (a closed proposal rejected this path; digest ${r.digest.slice(0, 12)})`);
   return { code: 0, lines };
 }

@@ -10,6 +10,7 @@ import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
+import { smokeEvent } from "./argus-live-smoke.mjs";
 import { agentFiledLabel } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -199,6 +200,7 @@ function adopt(main, { r, repo, contract, smoke, ids, runner, verb }) {
     const pr = runner(["gh", "pr", "create", "--repo", repo, "--base", r.branch, "--head", dest, "--title", `argus: smoke baselines from CI run ${r.id}`, "--body-file", bodyFile, "--label", agentFiledLabel(contract)], { cwd: main });
     const url = /https:\/\/\S+\/pull\/[0-9]+/.exec(String(pr.stdout ?? ""));
     if (!url) return { code: 2, lines: [`baseline: pushed ${dest} (${sha.slice(0, 12)}); gh pr create exited ${pr.status ?? "on a signal"} before printing a pull request URL`, ...skip] };
+    smokeEvent(main, lastRun(main), { kind: "proposal", url: url[0], branch: dest, changes: files.length });
     return { code: 0, lines: [`baseline: ${files.length} file(s) proposed in ${url[0]} (${dest} into ${r.branch})`, ...skip] };
   } finally {
     runner(["git", "-C", main, "worktree", "remove", "--force", wt]);

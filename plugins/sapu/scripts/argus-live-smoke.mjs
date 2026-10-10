@@ -6,7 +6,7 @@ import { randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
-import { liveDir, readLock } from "./argus-live-lock.mjs";
+import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { runOnce, writePrivate } from "./argus-live-repro.mjs";
 import { perfPath } from "./argus-live-perf.mjs";
 import { run as runCommand } from "./argus-live-proc.mjs";
@@ -69,6 +69,20 @@ export function readSuitePaths(main, dir) {
     const routes = (Array.isArray(raw.routes) ? raw.routes : []).filter((r) => isObj(r) && typeof r.role === "string" && typeof r.route === "string" && r.route.startsWith("/") && r.route.length <= 200);
     return { id, path: raw.path, admitted: isObj(raw.admitted) ? raw.admitted : null, routes: routes.map((r) => ({ role: r.role, route: r.route })) };
   });
+}
+
+/**
+ * Appends `event` to run `runId`'s `smoke/events.jsonl` (0600), what the report reads of the smoke verbs (spec
+ * §19.13): `{kind: "admitted" | "quarantined" | "unquarantined" | "dropped", id}` (smoke admit, smoke ci),
+ * `{kind: "healed", id, steps: [<n>…]}` (smoke heal), `{kind: "proposal", url, branch, changes}` (smoke propose,
+ * smoke baseline). Nothing is written for a run with no directory here → whether it was written.
+ */
+export function smokeEvent(main, runId, event) {
+  if (typeof runId !== "string" || !RUN_ID.test(runId) || !fs.existsSync(path.join(liveDir(main), runId))) return false;
+  const dir = path.join(liveDir(main), runId, "smoke");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.appendFileSync(path.join(dir, "events.jsonl"), `${JSON.stringify(event)}\n`, { mode: 0o600 });
+  return true;
 }
 
 /** The suite's `quarantine.json` (spec §19.9): `[{id, issue, since}]` → the quarantined ids; none when absent or not that shape. */

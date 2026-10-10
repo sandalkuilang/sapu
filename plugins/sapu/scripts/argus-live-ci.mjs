@@ -8,7 +8,7 @@ import { loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { lastRun, liveDir, readLock } from "./argus-live-lock.mjs";
 import { run } from "./argus-live-proc.mjs";
-import { readSuitePaths } from "./argus-live-smoke.mjs";
+import { readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
 import { codeBlock, readState, stageInto, writeState } from "./argus-live-suite.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -442,6 +442,7 @@ export async function smokeCi(main, { run: asked }, { runner = run } = {}) {
           const entry = { kind, id, run: ciRun, changes: [{ kind, id, evidence, run: ciRun }], body: changeBody(`${drop ? "Drop" : "Quarantine"}: ${id}`, [...evidence, ...(drop ? ["It left quarantine once already: a second quarantine drops it."] : ["Tagged @quarantine: the gating job skips it, the quarantine job keeps running it."])]) };
           if (!drop) entry.quarantine = { id, issue: null, since: ciRun };
           const s = stageInto(state, entry);
+          if (s.staged) smokeEvent(main, readLock(main)?.runId ?? lastRun(main), { kind: drop ? "dropped" : "quarantined", id });
           if (!drop) j.tracking = `smoke-flaky:${id}`;
           add(!s.staged ? `${head}: ${kind} not staged (rejected before; digest ${s.digest.slice(0, 12)})` : drop ? `${head}: drop staged (flaky on ${base} after an earlier quarantine; digest ${s.digest.slice(0, 12)})` : `${head}: quarantine staged (digest ${s.digest.slice(0, 12)}), tracking issue smoke-flaky:${id}`);
         }
@@ -526,6 +527,7 @@ function lifecycle(main, { state, smoke, ids, reads, ciRun, add }) {
       const evidence = [action === "exit" ? `${QUARANTINE_EXIT} clean cycles in a row: the lane's pass held it twice and every quarantine-job result passed first time` : `quarantined for ${QUARANTINE_MAX} cycles`];
       const s = stageInto(state, { kind, id, run: ciRun, changes: [{ kind, id, evidence, run: ciRun }], body: changeBody(`${action === "exit" ? "Leave quarantine" : "Drop"}: ${id}`, evidence) });
       const d = s.digest.slice(0, 12);
+      if (s.staged) smokeEvent(main, lock.runId, { kind: action === "exit" ? "unquarantined" : "dropped", id });
       if (!s.staged) add(`quarantine ${id}: ${kind} not staged (rejected before; digest ${d})`);
       else if (action === "exit") {
         j.quarantine = null;
