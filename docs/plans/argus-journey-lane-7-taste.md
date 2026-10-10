@@ -1406,3 +1406,107 @@ to every subagent, this lane's included. `archetypes` stays `{}` and `probe` nul
    witness, add sites through decision 21's procedure (a read justification and a terms review).
 6. *CI.* `tests/taste-calibrate.test.ts` launches Chrome twice (about 15 s together) and falls in the workflow's `rest`
    job by default; no matrix change is needed.
+
+### Integration — the six lanes as one branch
+
+Merged in the plan's order with `git merge --no-ff`, each merge signed off: T1, T2, J, S, F, K. Only this plan
+conflicted (every lane appended its own sub-section; all six are kept, in merge order). No lane-0 stub test
+conflicted: lane 0 had put each stub's pin in its owning lane's file. Then the coordinator's fifteen items, one
+commit each (items 6 and the suite's reporter share the scale; see below). Line counts after it: `-ease` 626,
+`-taste` 640, `-tastejudge` 654, `-session` 614, `-codeproj` 567, `-tastecfg` 553, `-tastefile` 485, `-report` 417.
+
+**Found while integrating (not in the items, decided here).**
+- *Two taste reporters in one support.ts.* S's core and T1's own suite check both declared `tasteStep`,
+  `tasteArmed`, `tasteConfig` and `TasteViolation` at support.ts's top level: a suite generated with the real
+  probes failed to load (the pinned runner said so). T2's check measured the same rules a second time. Decision:
+  S's core is the suite's one taste reporter (phase 6's shapes: `taste-<family>-<name>`, known and allow
+  adoption, taste.json read at run time). The probes export no `CHECKS` any more (lane 0's locked export list
+  loses it); their rules reach the suite through `ruleExpression`. T2's routed fault and form case left the suite
+  with it (items 10 and 13 make them lane-only). T1's suite-check tests now run against the core, on the same
+  fixture pages.
+- *Dark parity in the suite.* A page expression censuses one scheme, so the core's dark pass could never see a
+  dark-only failure. The core measures `colour.dark-*` at a screen through T1's `censusOf` and `rulesFor` (their
+  sources in the table, as J's confirmation does), and notes a single-theme page once.
+- *Off-scale without a scale.* T1's `ruleExpression` with no `cfg` lists every measured value (made for a
+  replay's re-measure by key); in the suite that reported every spacing on every page. Item 6's scale fixes it:
+  without tokens or a frame the off-scale rules measure nothing, as `rulesFor` decides.
+- *The lane never ran T2.* J's recorder evaluated `EASE_SOURCE({})`, which names no kind and throws: every
+  recorded screen held `ease: null`, and the judge never called `crossRules`. Item 8 below.
+
+**The items, as built.**
+1. *Shots.* `-tastecfg` `shotName(key)` (the first 32 hex digits of the screen key's sha256, the recorder's own
+   digest) locks a shot's name: the session keeps only a shot of that name, F finds a row's shot by its screen
+   key. `attachVerdict` also admits `<run>/taste/shots/<32 hex>.png` under the same conditions; every other path
+   decides as before (the old regex is one branch of the new one). F passes the screen's shot to `scrub --create
+   --attach` when it exists; the polish roll-up attaches none.
+2. *NO_MAJORITY.* One constant, `-ease`'s, value `"no majority"`; `-tastefile` imports it and compares the row's
+   `expected` with it. T2 wrote `"no majority: the owner's call"` and F matched `no majority|needs-owner`: a real
+   split never reached needs-owner before.
+3. *The Curator's return.* `CURATOR_FILE` = `taste/curator.json`; `validateCurator` (and `readCuratorFile`) in
+   `-tastecfg`, the shared-shapes leaf the judge, filing and the report all reach (the plan named `-tastejudge`,
+   which the report and filing would then have to reach through the judge). Shape `{verdicts: [{row, verdict:
+   confirm|reject|polish, reason}], leads: [{rule, screen}], substitutions: [{screen, substitution:
+   substitutable|partly|no}], cw: [{journey, step: 1-100, q1..q4: pass|fail|n/a}]}`, every key present, none
+   other. The judge uses the leads of the newest return at or before its run, only when it validates: the rows
+   they name take the first numbers. The scorecard counts the walkthrough from the Curator's words (a step
+   passes when no question is `fail`) and prints the substitution counts; the explorers' free-text `cw` is no
+   longer read.
+4. *`taste` in -smoke's PROJECT.* `smoke baseline --known` adopts a gated taste violation from the baseline
+   run's taste results (tested; red without it).
+5. *Stale rows.* S's four workflow rows and J's fourteen select lines, exactly as their notes said.
+6. *The scale.* `-tastecfg` `tokensPx(kind, text)`: live.json's token file as `{spacing?, radius?, type?}` in px
+   (by the kind each name names; rem and em at 16 px, the root's default; `calc()`/`var()`/`%` are no value; null
+   when nothing), self-contained. Lane: the judge passes `{...taste.json, tokens}` to `rulesFor`, the confirmation
+   `{frame, tokens}` to `ruleExpression` and the census (`laneTokens`). Suite: each taste expression holds two
+   marks support.ts fills when the suite runs (taste.json's `frame`, live.json's tokens through the same
+   `tokensPx` source), so changing either needs no regeneration. The ease probe's `ruleExpression` takes no cfg.
+7. *Step 1's motion.* Every generated spec with a taste project calls `tasteReady(opened)` right after it opened
+   its accounts (open() arms its own contexts; a fixtures.ts page gets the recorders at once). The lane's
+   PAGE_INIT already ran before the first document. Tests: in Chrome, step 1's panel slide is a row when readied
+   and none when armed at the step; PAGE_INIT records it.
+8. *J and T2.* The recorder evaluates T2's `screen` kind (the bar's vague terms, taste.json's `copy.vague`; no
+   palette probe, which would type on the explorer's page, so `consistent.palette` is not measured in the lane)
+   before the drain, and an unchanged state no longer drains (one document's events stay together, as T2
+   asked). The judge hands `crossRules` every recorded screen `{key, route, journey, archetype, events, ease}`; a
+   cross finding is a row of each journey that recorded its screen; cross-screen rules (`consistent.*`,
+   `feedback.skeleton-peers`) come from crossRules only and are confirmed by the next cycle's judge, never a
+   replay. `pathCost` gets `{goals: <the journey's map steps>, targets: []}` for both the explorer's and the best
+   path. `tests/argus-live-tasteflow.test.ts` records five fixture screens with the real recorder, payload,
+   PAGE_INIT and probes, and judge.json holds T1's heading-order, T2's copy.broken and feedback.busy and
+   crossRules' NO_MAJORITY split (red with the old ease call).
+9. *Focus.* `TASTE_EVENTS.change.cause` admits `focus`; T2's clock pushes it when focus moves, after an action, to
+   a shown element other than the action's own control. The judge already counts every change. Twin: the same
+   1.5 s wait with focus moved at once holds, with nothing shown fires (red with the push removed).
+10. *Lane-only rules.* `-tastecfg` `laneOnly(rule)`: a `peer` or `band` threshold, `feedback.skeleton-peers`,
+    `feedback.optimistic`, `states.recovery`, `states.error` and `ai.*`. parseRepro refuses a taste final on one
+    (`refused: repro: step <n>: taste: <rule> is the lane's alone (<why>): a replay's page cannot measure it`);
+    the suite's `TASTE_LANE_ONLY` is derived from it (generating a suite no longer throws on T2's
+    `states.recovery` refusal).
+11. *Carbon.* Out of the corpus (`sites.carbon` "Excluded.", its pages in `skipped`), its frame kept (read, not
+    crawled). Without it one site would give more than half of app, form and data, which calibration cuts: six
+    GitHub and shadcn pages wait in `skipped` until another site joins. Corpus: 43 pages on 6 sites; docs 18 on 5
+    (a witness), marketing 15 on 3, app 6, form 2, data 2 (thin). The coverage statement changed in the corpus
+    and the research in one commit; spec §20.3 and decision 16 say the same. K3 was not run.
+12. *Band metrics.* T1's census also holds `metrics.distinct_{spacing,type,weights,colours,radii,shadows}`;
+    a test checks, for every rule with a `band` threshold, a finite number under its metric name equal to its
+    row's count. No ease rule has a band threshold.
+13. *The routed 500* stays lane-only: the spec's states table and decision 12 say so.
+14. *-ease's lines.* No split: it is at 626 since its suite check left, so the DAG test and the -instance header
+    stay as they are.
+15. *CI.* A `taste` matrix entry: tastejudge, tasteprobe, ease, tasteflow, taste-calibrate. Each file is on one
+    `files:` line; the rest job's check holds.
+
+**Left for later** (owners named).
+- K3, the first calibration, from the maintainer's main session; it then changes lane 0's pin in
+  `tests/argus-live-taste.test.ts` (no band yet, probe null).
+- The `taste` final in `-steps` still cannot re-measure dark parity or reduced motion (T1's first note): it holds
+  for those rules; J's confirmation measures them through the census. Running the census in that template, or
+  refusing those rules at parse, is open.
+- `smoke plan`'s `taste-bar <from> → <to>` and a `smoke check` line naming a bar change (S's seventh note).
+- A bar field for media and lane-only (`media`, `needs`) instead of id lists (S's third and fourth notes).
+- The bar-class rules' own metrics (`primary_actions`, `loader_shown_ms`, …) are not emitted under their names
+  yet: their bands, and so their `bar` rows, wait for that.
+- The AI-pattern rules (D14, `ai.*`): their own task, a new leaf.
+- Engine text, docs and diagrams (lane Z): the taste job and its scorecard, `taste-<family>-<name>`, the
+  Curator's locked return, fractional SELECT scores, `taste file` after the confirmations.
+- Security review (T2's sixth note): PAGE_INIT wraps fetch, XHR and attachShadow in every lane session.
