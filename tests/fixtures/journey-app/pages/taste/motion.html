@@ -22,6 +22,8 @@ button { padding: 4px 8px; background: rgb(229, 229, 229); }
 .on.fade, .on.fade-slow, .on.fade-long { opacity: 0.5; }
 .snap { transition: transform 0.01ms; }
 .snap.on { transform: translateX(10px); }
+.under::after { content: ""; display: block; height: 2px; background: rgb(23, 23, 23); transform: scaleX(0); transition: transform 900ms; }
+.under.on::after { transform: scaleX(1); }
 .themed { transition: background-color 300ms; background: rgb(255, 255, 255); }
 @keyframes nudge-x { from { transform: translateX(0); } to { transform: translateX(8px); } }
 @keyframes pulse { from { opacity: 1; } to { opacity: 0.6; } }
@@ -49,6 +51,11 @@ button { padding: 4px 8px; background: rgb(229, 229, 229); }
 <!-- the excluded twin: a relative offset moves no other box -->
 <section><div id="nudge" class="nudge">Nudge box</div><div>Below</div></section>
 <button id="b-nudge">Nudge</button>
+<!-- the excluded twin: a growing box removed mid-transition moves its neighbour by leaving, not by animating -->
+<section class="row"><div id="gone" class="grow">Gone box</div><div>Neighbour two</div></section>
+<button id="b-gone">Grow and remove</button>
+<!-- the violation: a 900 ms underline drawn on a pseudo-element -->
+<section><div id="under" class="under">Underline</div><button id="b-under">Underline it</button></section>
 <!-- information: transition: all -->
 <section><div class="all">All props</div></section>
 <!-- the excluded twins: a 200 ms fade, and a 600 ms opacity-only fade (a backdrop's band goes to 700 ms) -->
@@ -75,6 +82,8 @@ on("b-grow", "grow");
 on("b-nudge", "nudge");
 on("b-fade", "fade", "fade-slow", "fade-long");
 on("b-snap", "snap");
+on("b-under", "under");
+document.getElementById("b-gone").addEventListener("click", () => { document.getElementById("gone").classList.add("on"); setTimeout(() => document.getElementById("gone").remove(), 100); });
 document.getElementById("b-swap").addEventListener("click", () => document.startViewTransition(() => { document.getElementById("swapped").textContent = "After"; }));
 </script>
 </body></html>

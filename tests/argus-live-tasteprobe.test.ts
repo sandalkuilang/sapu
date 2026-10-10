@@ -179,7 +179,7 @@ describe("argus-live-taste.mjs — hierarchy and rhythm (T1.1)", () => {
     expect(await rowsOf("headings.html", "hierarchy.heading-order")).toEqual([{ rule: "hierarchy.heading-order", key: "h2|Profile", measured: 32, expected: "at most 24 (its parent heading)" }]);
   }, 60_000);
 
-  it("alignment: a sibling 2 px off fires; 8 px, centred, right-aligned and side-by-side siblings hold [apple-layout]", async () => {
+  it("alignment: a sibling 2 px off fires; 8 px, centred, right-aligned, transformed and side-by-side siblings hold [apple-layout]", async () => {
     expect(await rowsOf("align.html", "hierarchy.alignment")).toEqual([{ rule: "hierarchy.alignment", key: "div|Email", measured: 2, expected: "aligned, or at least 4 px apart" }]);
   }, 60_000);
 
@@ -373,24 +373,25 @@ describe("argus-live-taste.mjs — motion (T1.3)", () => {
     expect(events).toContainEqual(expect.objectContaining({ kind: "animation", phase: "start", name: "nudge-x", duration_ms: 1200, target: "div|Hint" }));
   }, 60_000);
 
-  it("duration: a 900 ms slide, an 800 ms fade and a 900 ms view transition are bar rows; a 200 ms fade, a 600 ms opacity fade, a sub-frame snap and the loops hold [mdn-view-transition]", async () => {
+  it("duration: a 900 ms slide, a 900 ms pseudo-element underline, an 800 ms fade and a 900 ms view transition are bar rows; a 200 ms fade, a 600 ms opacity fade, a sub-frame snap and the loops hold [mdn-view-transition]", async () => {
     expect(ruleOf("motion.duration").class).toBe("bar");
     const page = await open("motion.html");
-    await act(page, "b-slide", "b-fade", "b-snap", "b-swap");
+    await act(page, "b-slide", "b-fade", "b-snap", "b-swap", "b-under");
     const rows = rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration");
     expect(rows.sort((a: Obj, b: Obj) => a.key.localeCompare(b.key))).toEqual([
       { rule: "motion.duration", key: "opacity|div|Fade long", measured: 800, expected: "50–700 ms (opacity only)" },
       { rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" },
+      { rule: "motion.duration", key: "transform|div|Underline", measured: 900, expected: "50–500 ms" },
       { rule: "motion.duration", key: "view-transition|::view-transition", measured: 900, expected: "50–500 ms" },
     ]);
     // The page expression measures the same on the same page.
     expect((await page.evaluate(ruleExpression("motion.duration"))).sort((a: Obj, b: Obj) => a.key.localeCompare(b.key))).toEqual(rows);
   }, 60_000);
 
-  it("layout property: a width transition that pushes its neighbour is implicit; a relative offset that moves nothing holds [webdev-animations] [webdev-cls]", async () => {
+  it("layout property: a width transition that pushes its neighbour is implicit; a relative offset that moves nothing, and a box removed mid-transition, hold [webdev-animations] [webdev-cls]", async () => {
     expect(ruleOf("motion.layout-property").class).toBe("implicit");
     const page = await open("motion.html");
-    await act(page, "b-grow", "b-nudge");
+    await act(page, "b-grow", "b-nudge", "b-gone");
     expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.layout-property")).toEqual([{ rule: "motion.layout-property", key: "width|div|Grow box", measured: 1, expected: "transform or opacity: no other box moves" }]);
   }, 60_000);
 

@@ -34,7 +34,7 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
   const half = (n) => Math.round(n * 2) / 2;
   const own = (el) => { let t = ""; for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue; return norm(t); };
-  const label = (el) => norm(el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || el.textContent).slice(0, 60);
+  const label = (el) => norm(el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || (el.matches("input[type=submit], input[type=button], input[type=reset]") ? el.value : el.textContent)).slice(0, 60);
   const keyOf = (el) => el.tagName.toLowerCase() + "|" + label(el).replace(/[0-9]+/g, "#");
   const media = { dark: win.matchMedia("(prefers-color-scheme: dark)").matches, reduce: win.matchMedia("(prefers-reduced-motion: reduce)").matches };
 
@@ -237,7 +237,7 @@ export const TASTE_SOURCE = String.raw`(arg) => {
         let up = el.parentElement;
         while (up && !surfaceKeys.has(up)) up = up.parentElement;
         surfaceKeys.set(el, keyOf(el));
-        surfaces.push({ key: keyOf(el), rgb: str(c), lum: Math.round(lum(c) * 1000) / 1000, in: up ? surfaceKeys.get(up) : null });
+        surfaces.push({ key: keyOf(el), rgb: str(c), lum: Math.round(lum(c) * 1000) / 1000, in: up ? surfaceKeys.get(up) : null, light: /^(only )?light$/.test(norm(s.colorScheme)) });
       }
     }
     // A status badge: short text on its own fill, rounded or padded, no control. Its role is its text; its value the fill and ink.
@@ -288,12 +288,13 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   }
 
   // Siblings stacked in one column, judged by their left edges: a container's in-flow block children, none centred or
-  // pushed right by an auto margin; a container that centres or ends its items, or lays them side by side, is skipped.
+  // pushed right by an auto margin, none moved by a transform; a container that centres or ends its items, or lays
+  // them side by side, is skipped.
   const BLOCK = /^(block|flex|grid|table|list-item|flow-root)$/;
   const stacked = (p) => {
     const ps = cs(p);
     if (/flex|grid/.test(ps.display) && /center|end/.test(ps.alignItems + " " + ps.justifyItems)) return [];
-    const kids = [...p.children].filter((k) => isShown.has(k) && BLOCK.test(cs(k).display) && /^(static|relative|sticky)$/.test(cs(k).position) && cs(k).float === "none" && typed(k, "margin-left") !== null);
+    const kids = [...p.children].filter((k) => isShown.has(k) && BLOCK.test(cs(k).display) && /^(static|relative|sticky)$/.test(cs(k).position) && cs(k).float === "none" && cs(k).transform === "none" && typed(k, "margin-left") !== null);
     const rects = kids.map((k) => ({ k, r: k.getBoundingClientRect() })).sort((x, y) => x.r.top - y.r.top);
     for (let i = 1; i < rects.length; i++) if (rects[i].r.top < rects[i - 1].r.bottom - 1) return [];
     return rects;
@@ -376,20 +377,23 @@ export const TASTE_INIT = String.raw`(() => {
   const settle = (e) => {
     const snap = snaps.get(e);
     if (!snap) return;
+    // An element removed mid-motion moved its neighbours by leaving, not by animating; a removed neighbour is not counted.
+    if (!snap.el.isConnected) return void ((e.moved = 0), snaps.delete(e));
     const after = rects(snap.els);
-    e.moved = differs(rects([snap.el])[0], snap.self) ? snap.before.filter((r, i) => differs(r, after[i])).length : 0;
+    e.moved = differs(rects([snap.el])[0], snap.self) ? snap.before.filter((r, i) => snap.els[i].isConnected && differs(r, after[i])).length : 0;
   };
   doc.__argusTasteMotionNow = () => { for (const e of snaps.keys()) settle(e); };
   const record = (ev, kind, phase) => {
     const el = ev.target;
-    if (!el || el.nodeType !== 1) return;
+    // A view transition's own pseudo-element animations are the one motion the startViewTransition wrapper records.
+    if (!el || el.nodeType !== 1 || String(ev.pseudoElement || "").indexOf("::view-transition") === 0) return;
     const name = kind === "transition" ? ev.propertyName : ev.animationName;
     const id = name + "|" + (ev.pseudoElement || "");
     const mine = live.get(el) || new Map();
     live.set(el, mine);
     let e = mine.get(id);
     if (phase === "run" || (kind === "animation" && phase === "start")) {
-      const a = el.getAnimations().find((x) => (kind === "transition" ? x.transitionProperty === name : x.animationName === name) && ((x.effect && x.effect.pseudoElement) || "") === (ev.pseudoElement || ""));
+      const a = el.getAnimations({ subtree: true }).find((x) => x.effect && x.effect.target === el && (kind === "transition" ? x.transitionProperty === name : x.animationName === name) && (x.effect.pseudoElement || "") === (ev.pseudoElement || ""));
       const tm = a && a.effect ? a.effect.getTiming() : {};
       const props = kind === "transition" ? [name] : propsOf(a);
       e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet: Boolean(doc.__argusTasteQuiet), target: keyOf(el), moved: null };
@@ -549,10 +553,10 @@ export function rulesFor(screen, bar, cfg) {
         const light = lightOf(L.borders);
         each(rule, D.borders.filter((d) => light.has(d.key) && light.get(d.key).edge >= 1.2 && d.edge < 1.1), (d) => ({ key: d.key, measured: d.edge, expected: "an edge of at least 1.1:1, as in light (" + light.get(d.key).edge + ":1)" }));
       } else if (id === "colour.dark-surface" && D.root.lum <= 0.1) {
-        // A light surface the dark theme left as it was in light; one inside another such surface is that one's.
+        // A light surface the dark theme left as it was in light (not one declaring color-scheme: light, light by design); one inside another such surface is that one's.
         const light = lightOf(L.surfaces), left = new Set(), list = [];
         for (const d of D.surfaces) {
-          if (d.lum < 0.4 || !light.has(d.key) || light.get(d.key).rgb !== d.rgb) continue;
+          if (d.lum < 0.4 || d.light || !light.has(d.key) || light.get(d.key).rgb !== d.rgb) continue;
           if (!left.has(d.in)) list.push(d);
           left.add(d.key);
         }
