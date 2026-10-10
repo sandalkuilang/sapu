@@ -12,6 +12,8 @@ import { censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "..
 // @ts-expect-error — plain ESM script without types
 import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
+import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
 import { loadBar, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
@@ -293,7 +295,7 @@ describe("argus-live-taste.mjs — colour roles, dark parity, contrast headroom 
 /** The core's source → its functions (vitest's Function has no dynamic import: `require` stands in). */
 function loadCore(scope: Obj) {
   const js = stripTypeScriptTypes(tasteSource(tasteTable())).replace(/^export /gm, "").replace(/await import\("node:fs"\)/g, 'require("node:fs")');
-  return new Function("require", ...Object.keys(scope), `${js}\nreturn { tasteStep, tasteArm };`)(createRequire(import.meta.url), ...Object.values(scope)) as Obj;
+  return new Function("require", ...Object.keys(scope), `${js}\nreturn { tasteStep, tasteArm, tasteReady };`)(createRequire(import.meta.url), ...Object.values(scope)) as Obj;
 }
 /** A support-file scope: a stand-in `test` collecting annotations, the repo (with `taste` as its .argus/taste.json) and the suite's directory. */
 function suiteEnv(taste: Obj | null = null, known: Obj[] | null = null, tokensCss: string | null = null) {
@@ -349,6 +351,36 @@ describe("the suite's taste core on the probe's pages (phase 7 integration)", ()
     await scaled.lib.tasteStep([(await open("scale-four.html")).context()], 0, 1, "j", true, []);
     const off = ofType(scaled.annotations, "argus-taste").map((d) => JSON.parse(d)).filter((r) => r.rule === "scale.off-scale");
     expect(off.map((r) => r.key)).toEqual([`spacing:${spacings[0]}px`]);
+  }, 120_000);
+
+  it("records step 1's own motion: tasteReady arms the context before the first action; armed only at the step, it is missed", async () => {
+    const PANEL = { rule: "motion.duration", step: 1, key: "transform|div|Panel", measured: 900, expected: "50–500 ms" };
+    const stepOne = async (ready: boolean) => {
+      const env = suiteEnv();
+      const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+      contexts.push(context);
+      if (ready) await env.lib.tasteReady([context]);
+      const page = await context.newPage();
+      await page.goto(`${origin}/motion.html`);
+      await act(page, "b-slide");
+      await env.lib.tasteStep([context], 0, 1, "j", false, []);
+      return ofType(env.annotations, "argus-taste").map((d) => JSON.parse(d)).filter((r) => r.rule === "motion.duration");
+    };
+    expect(await stepOne(true)).toEqual([PANEL]);
+    expect(await stepOne(false)).toEqual([]);
+  }, 120_000);
+
+  it("the lane's init payload (PAGE_INIT) records step 1's motion: the hook installs it before the first document", async () => {
+    const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
+    contexts.push(context);
+    await context.addInitScript({ content: PAGE_INIT });
+    const page = await context.newPage();
+    await page.goto(`${origin}/motion.html`);
+    await act(page, "b-slide");
+    const { events, dropped } = await page.evaluate(TASTE_DRAIN);
+    expect(dropped).toBe(0);
+    expect(events.filter((e: Obj) => e.kind === "transition" && e.phase === "end" && e.duration_ms === 900).map((e: Obj) => e.target)).toContain("div|Panel");
+    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration" && r.key === "transform|div|Panel")).toEqual([{ rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" }]);
   }, 120_000);
 
   it("a rule the owner gates fails as phase 6's violation, unless adopted in known/<id>.json; off leaves it unmeasured", async () => {

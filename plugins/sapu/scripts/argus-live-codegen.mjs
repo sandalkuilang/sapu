@@ -435,6 +435,8 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false, routes =
   );
   const errors = [...pages.values()].filter((p) => p.errors).map(({ v }) => `const errors_${v} = collectErrors(${v});`);
   const projects = suiteProjects({ live, smoke });
+  // The taste recorders run before step 1, so its own action's motion and wait are recorded (spec §20.4).
+  const ready = projects.some((p) => p.name === "taste") ? ['if (inProject(["taste"])) await (await import("./support")).tasteReady(opened);'] : [];
   const checks = projectChecks(projects);
   const screens = screensOf(id, steps, smoke);
   // A screenshot is asserted by the engines and the further viewports, never in msedge (a branded channel moves with the machine).
@@ -461,7 +463,7 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false, routes =
     "  const marker = newMarker();",
     "  const opened: BrowserContext[] = [];",
     "  try {",
-    ...[...opens, ...errors, ...lines].map((l) => `    ${l}`),
+    ...[...opens, ...errors, ...ready, ...lines].map((l) => `    ${l}`),
     "  } finally {",
     "    for (const c of opened) await c.close();",
     "  }",

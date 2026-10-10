@@ -215,6 +215,19 @@ export async function tasteArm(context: BrowserContext): Promise<void> {
   await context.addInitScript({ content: TASTE_INIT });
 }
 
+/**
+ * Before the test's first step (the spec calls it right after it opened its accounts): every context armed, and a page
+ * already open in one open() did not make (fixtures.ts signs a login-command role in) gets the recorders now, so the
+ * motion and the wait of step 1's own action are recorded.
+ */
+export async function tasteReady(opened: BrowserContext[]): Promise<void> {
+  for (const context of opened) {
+    if (tasteArmed.has(context)) continue;
+    await tasteArm(context);
+    for (const page of context.pages()) await page.evaluate(TASTE_INIT).catch(() => undefined);
+  }
+}
+
 /** The owner's design tokens (live.json \`tokens\`, a file in the repo) in px, or null: as the a11y token check reads them. */
 function tasteTokens(fs: any): Record<string, number[]> | null {
   try {

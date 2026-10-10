@@ -331,11 +331,11 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
   const GOLDEN: Record<string, string> = {
     ".gitignore": "5db585b9b755341b58c08d6d04a692d9626ce9d2a7c900417e9e9305535f2151",
     "auth.setup.ts": "a2af7331be220f6e5684857e5be3fe2363e2c7efcedb32dfd01f78537870ff29",
-    "checkout.spec.ts": "780628e9f1faaecd6bb146efac402fc738c3e5ab740fbf9c59885ba2bc64c258",
+    "checkout.spec.ts": "b717da0eea94e90bf4e1baf610056ddfe9b08a36205b7b9019b2f039c83dbf0c",
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
-    "refund.spec.ts": "c50973353f6b6b9c1f72909dc7fcfc1d366c5252f40384c7c929a6574adf59d1",
-    "support.ts": "02a912eafc2021ca6111519a3b2576262e3902e3158352cec8d979310804616d",
+    "refund.spec.ts": "0125b0b69225d90ac7fb27f00883bf49d214bb65de27336bdda05514271344ec",
+    "support.ts": "2387fa4fc4f34bf66c1d4549e6f098504df49106567ae1201f3434dd97cfcd09",
   };
 
   it("leaves every generated file byte-identical", () => {
@@ -803,6 +803,18 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     const allow = { check: "taste-copy-broken", key: "text|undefined" };
     expect(spec({ smoke: validateSmoke({ journeys: { checkout: { allow: [allow] } } }).value })).toContain(`tasteStep(opened, 1, 14, "checkout", true, [${JSON.stringify(allow)}])`);
     expect(check(text)).toEqual({ code: 0, err: "" });
+  }, 60_000);
+
+  it("arms the taste recorders before step 1, right after the test opened its accounts; a suite with no taste project does not", () => {
+    const text = spec();
+    const lines = text.split("\n");
+    const ready = lines.indexOf('    if (inProject(["taste"])) await (await import("./support")).tasteReady(opened);');
+    expect(ready).toBeGreaterThan(0);
+    // After every account's context is open (open() or the owner's signedIn), before any step runs.
+    expect(lines.slice(0, ready).filter((l) => /await (open|signedIn)\(opened/.test(l)).length).toBeGreaterThan(0);
+    expect(lines.slice(ready + 1).some((l) => /await (open|signedIn)\(opened/.test(l))).toBe(false);
+    expect(lines.slice(0, ready).some((l) => /tasteStep|\.goto\(/.test(l))).toBe(false);
+    expect(spec({ smoke: validateSmoke({ browsers: ["firefox"] }).value })).not.toContain("tasteReady");
   }, 60_000);
 
   it("support.ts arms the recorders in every context open() makes in the taste project, and passes phase 6's scans", () => {
