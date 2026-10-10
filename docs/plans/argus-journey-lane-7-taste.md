@@ -848,3 +848,88 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
   `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+
+### As built — Lane T2 (ease probes)
+
+Three commits, one a task: T2.1 feedback and loaders, T2.2 states, copy, path cost and the suite's check, T2.3
+consistency. Only `-ease.mjs`, `tests/argus-live-ease.test.ts` and `tests/fixtures/journey-app/pages/ease/` changed. Every
+rule fires on a fixture and holds on the twin that differs only by the defect (the shadow-root twin was proven red with
+its hook off). `-ease.mjs` is 746 lines of its 750 cap.
+
+**Lane 0's exports, as built** (signatures, refusal style and shapes unchanged; `EASE_RENDER`, `FAULT_SOURCE`,
+`RECOVERY_SOURCE`, `crossRules` and `NO_MAJORITY` added).
+- `EASE_INIT` (in PAGE_INIT, once a document, nothing without the taste buffer) pushes `input` (pointerdown with the
+  main button, click, dblclick, submit, keydown of Enter or Space; typing as one `input` record per burst under 250 ms),
+  the first rendering `change` after an input (an added element, or added or rewritten text, that passes
+  `checkVisibility`; a RENDER_ATTRIBUTES change on a shown node, or one that hides it; a `data-*` change never counts;
+  `navigation` at pagehide), and `busy` on/off per signal: `aria-busy`, `progressbar` (determinate: `aria-valuenow` or
+  `progress[value]`), `spinner` (an indeterminate progressbar, or a shown infinite rotating animation), `skeleton` (a
+  bare box with an infinite non-rotating animation or a `skeleton`/`shimmer` class token), `disabled` (a control that
+  went disabled). Beside the buffer, `document.__argusEase` keeps the page's own fetch and XHR requests `{t, end,
+  status, method, route, keys, same}` (route templated, `keys` the body's field names, never a value), the clicked or
+  submitting controls `{t, role, name, region}`, the edits in forms, and how many skeletons a layout shift replaced.
+- `EASE_SOURCE` kinds: `judge` and `feedback` (pure, no DOM), `screen`, `error`, `fields`, `palette`, `rule` (its doc
+  comment lists the shapes). `easeOf(page)` is the `screen` kind with the bar's vague terms.
+- `rulesFor(screen, bar, cfg)` reads `screen = {route, events, ease}`; `ruleExpression(rule)` answers every screen rule
+  of the ease families but `states.recovery` (a driver runs it), `feedback.skeleton-peers` (it needs peers) and `ai.*`
+  (`refused: ruleExpression: <rule>: not built yet`), each with its own refusal.
+- `pathCost`: P = Fitts' ID / 4.9 s (MacKenzie's typical mouse throughput, [fitts-mackenzie]) bounded to Kieras' 0.8-1.5,
+  Kieras' mean 1.1 where a box or the previous one is unknown; a select's option the short bound; `go-back` P + BB;
+  goto, reload, read, login, trigger and expectations are not the user's actions. `geometry` is `{goals, targets}` or
+  the bare targets (`{x, y, width, height, dialog?}`, index-aligned or keyed by `n`); without `goals`, one M per `expect`.
+- `CHECKS`: one entry, `ease`, project `taste` (its source plain JavaScript with `ease`-prefixed names). It installs
+  the taste buffer (TASTE_BUFFER's text, pinned equal by a test) and the clock in the account's context, configures
+  from `ctx.taste` on the spec's first step, judges every step (argus-taste rows; a gated rule's argus-violation less
+  `known/<id>.json`; each row once a test; a measurement that throws becomes an argus-info line, never a failure),
+  runs D12's routed fault at each `ctx.screens` step in a sibling page (once a route), and the form case before a
+  submit click that follows the path's fills.
+- `crossRules(screens, bar, cfg)` → `[{screen, rule, key, measured, expected}]`, `screen` the screen's key; an even
+  split's `expected` is `NO_MAJORITY` (decision 19's needs-owner case).
+
+**What J and F need from this lane** (the seams, decided here).
+- J1 records a screen as `{key, route, journey, archetype?, events, ease}`: one run-code evaluates the `screen` kind
+  (with `terms` from the bar, `vague` from taste.json's `copy.vague`, and `palette: true` only where the lane accepts a
+  synthetic Mod+K then Escape on the page) BEFORE `TASTE_DRAIN`; the events of consecutive drains of one document
+  are concatenated, since an action and its change can fall in two drains. A pending action is never measured.
+- J2's confirm: arm `FAULT_SOURCE` before the navigation, settle, evaluate the `error` kind and pass `ease.error =
+  {faulted: Boolean(faulted()), ...}` (or `ruleExpression("states.error")`, which assumes the fault is armed);
+  `RECOVERY_SOURCE` for `states.recovery`; `crossRules` for the cycle-scope rules. A replay must not drain the buffer
+  before a feedback rule's `ruleExpression`.
+- F1: a consistency row whose `expected` is `NO_MAJORITY` is the needs-owner case.
+
+**Deviations.**
+- *D10, which actions are measured.* The feedback rules measure only an action that started a same-origin request
+  within 100 ms and showed a change before the user's next input, and the wait ends at the earlier of that change and
+  the request's end. A client-only action (no request) is INP's, phase 6's perf lane; one that showed nothing before
+  the next input is never a wait (a click into a field, a page that refreshes itself). D10's "focus move" is not a
+  change here (TASTE_EVENTS has no `focus` cause): a focus move as the only feedback of a wait could still read as none.
+- *D10's fault and states.success read requests in the page.* EASE_INIT wraps `fetch`, `XMLHttpRequest.open/send`
+  and `Element.prototype.attachShadow` once a window (SIGNAL_SCRIPT already wraps `window.open` and Notification); the
+  wrappers record and change nothing else. The attachShadow hook makes the clock see web components' shadow roots;
+  without it a component's own busy text would read as no feedback.
+- *Post-probe decision 5.* A request whose Accept names JSON is faulted without reaching the app or the proxy; any
+  other (fetch's default Accept is `*/*`) is fetched once with `route.fetch()` to read its content-type, as Task 0.1's
+  change 4 asks, so the app sees that one GET. A replay's request counts must allow it.
+- *copy.broken.* `undefined` after a linking verb (`is undefined`) and `null` outside a value position are prose; code,
+  pre, kbd, samp, var, textarea and contenteditable text is never read. The owner's `copy.vague` labels count in any
+  language, the bar's English list only under `<html lang="en…">`.
+- *consistent.footer-order* compares dialogs with dialogs and forms with forms; a footer whose primary is not one
+  submit or one filled button is skipped. *consistent.save-pattern* counts a PUT or PATCH naming the edited field, or a
+  POST naming two of the form's fields, so a field check (a POST naming one) is no save. *consistent.palette* flags the
+  routes where Mod+K does not open only when it opens on at least as many routes.
+- *D14 (AI surfaces)* is not built: no task of lane T2 names it, `FAMILIES` gives `ai` to this probe.
+
+**Needs coordinator.**
+1. *Lane S (S1).* `codeproj`'s `PROJECT_NAME` must admit `taste` before `suiteChecks()` holds this `CHECKS` (gated()
+   throws on it today), and the emitter context needs `ctx.taste` (loadTaste's taste: gate, off, copy.vague,
+   optimistic). The check reports through its own `easeReport`; if S1 builds one shared reporter for both probes, it
+   replaces that function.
+2. *Lane 0 (-tastecfg).* TASTE_EVENTS's `change.cause` has no `focus` (D10 names a focus move) and no `text` (this
+   lane counts a rewritten text node as `added`). Adding `focus` would let the clock count a focus move.
+3. *Lane 0 (-steps).* A `taste` final accepts any screen rule, but `ruleExpression` refuses `states.recovery`,
+   `feedback.skeleton-peers` and `ai.*` at stepCode time; parseRepro could refuse them at parse instead.
+4. *Unowned.* D14's `ai.stop`, `ai.error`, `ai.regenerate` have no task and no probe.
+5. *The line cap.* `-ease.mjs` is at 746 of 750; a next rule needs a split into a second leaf (the DAG test and the
+   instance header are lane 0's).
+6. *Security review (architect).* PAGE_INIT now wraps fetch, XHR and attachShadow in every lane session, the
+   explorer's included; request body field names and clicked controls' names (page text) reach the recorded screens.
