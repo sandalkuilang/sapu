@@ -1591,3 +1591,56 @@ C2.1–C2.4 are built in `-a11y.mjs` (642 lines, a leaf with no import), `tests/
    - Run `smoke ci` before `smoke baseline`.
    - The orchestrator files `smoke-flaky:<id>` and the `ci-only` and check issues.
    - `smoke heal` follows a `broke` with a target or action kind.
+
+### Lane D: performance (D1)
+
+**Locked for the lanes.**
+- `argus-live-perf.mjs` exports, below the session driver (it imports `-config`, `-fence`, `-map`, `-proc` only):
+  - `PERF_SCRIPT`, `perfCode({wait, waitMs, settle})`;
+  - the sink: `newSink`, `activeSink`, `collecting(sink, fn)`, `recordDocs`, `measure`, `runMetrics`;
+  - the statistic: `median`, `batchMedians`, `regressions`, `confirmedRegressions`;
+  - the store: `readPerf`, `pathSha`, `machineOf`, `perfPath`;
+  - the commands: `perfIssue(main, id)` and `perfRebaseline(main, id)`, both synchronous, returning `{code, lines[, masked]}`.
+- `smoke run --perf [--ids] [--seed]` runs the suite's paths in the seed's order, each through `perfPath`:
+  - **Batch.** One warm-up run after `up --fresh` (left out), then `perf.runs` dirty runs on that instance; a value is each metric's median.
+  - **Verdicts.** There are five. `baselined` means a first batch, or a void baseline whose path digest or machine changed. `ok` means within the thresholds. `regressed` means a second batch, after another `up --fresh`, has the same metric over both thresholds. `flaky` means the second batch was within them. `not-measured` means the path broke or the harness failed.
+  - **Exit.** 3 for a confirmed regression or a path that broke, else 2 for the harness, else 0.
+  - **Lines.** `seed: <n>`; `perf <id>: baseline set (<why>), <n> runs: lcp_ms=… (lab context: good 2500), inp_ms=… (lab context: good 200), cls=… (lab context: good 0.1), duration_ms=…, requests=…, bytes=…`; `perf <id>: ok, …`; `perf <id>: regressed <metric> <baseline> -> <batch 1>, <batch 2> (more than <rel>% and <abs>[ ms])` (one per metric); `perf <id>: flaky …`; `perf <id>: not measured (<reason>)`; `smoke run --perf: <b> baselined, <o> ok, <r> regressed, <f> flaky, <x> not measured`.
+  - **Refusals.** It takes no `--slot` (`refused: smoke run --perf: it writes no regression, so it takes no --slot`). It is refused while another slot of the run holds a live token (`refused: smoke run --perf: <n> other slot(s) live`), counted from run.json `slots[*].tokenHash`.
+- `.argus/perf.json` (0600, local state) is `{<journey id>: {pathSha, head, machine, n, medians, latest}}`:
+  - `pathSha` is the sha256 of the path file's `path` list as JSON.
+  - `head` is the instance worktree's commit.
+  - `machine` is `{cpu, cores, mem_gb, platform, chrome}`, and Chrome's version comes from the user agent.
+  - `latest` is `{pathSha, head, machine, n, batches: [medians…], regressed: [{metric, baseline, values}]}`.
+  - `readPerf` validates every field, and refuses with `refused: .argus/perf.json is not a perf record`.
+- `<run>/smoke/perf.jsonl` (0600) gets one row per path per pass: `{id, verdict, baseline, batches, regressed[, why]}`. It is what F1's report reads for "perf (baseline → batches, verdict)".
+- `smoke perf --issue <id>` prints, fenced and masked (`masked: true`):
+  - `perf regression: <id>`;
+  - one `dedupe: perf:<id>:<metric>` line per regressed metric;
+  - the baseline's head and run count;
+  - `machine: <cores> cores, <GB> GB, <platform>, Chrome <version>`, without the CPU model;
+  - a table of the baseline, each batch, the thresholds and a verdict per metric;
+  - the `lab context` line;
+  - `git log --format='%h %s' <baseline head>..HEAD` over the journey's anchor files, in a `COMMITS` nonce fence.
+
+  It refuses with no record, no batch, or no confirmed regression. `--rebaseline` moves the baseline to the newest batch, carrying that batch's path digest, head, machine and run count, and clears `latest.regressed`.
+- The session driver reads `activeSink()` when it is made. In a perf pass it hooks `${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`, and its `code()` is `measure(...)`: a snapshot after the pages' `load`, the step, a snapshot after `settle: 50`. `stage()` never is. `runOnce` is unchanged.
+
+**Deviations.**
+- **The hook installs the perf script only in a perf pass**, not in every session. The spec's wording ("installed with the signal script") would put it in the explorer's sessions too, where nothing reads it. It would also change the hook payload that `tests/argus-live-findings.test.ts` pins. Z4 may widen it. The spec reads "installed with the signal script", and the as-built reading is "when a perf pass measures".
+- **The script is evaluated at each `domcontentloaded` by the hook and again before every measured step** (it is idempotent per document). It does not run at document start, because the slot's init script (`-browser.mjs`) belongs to another lane. The observers are `buffered`, so LCP, CLS and event entries from before the evaluation are still read, and the Chrome test proves it.
+- **"Background loads ignored"** is read as web.dev's rule: an LCP candidate that comes after the document went to the background, or a document that began there, is not counted.
+- **INP** is the worst `interactionId` group (the longest event of an interaction), so there is no p98 allowance. A path with no event over 16 ms reads 0.
+- **`duration_ms`** is the time of the step templates' `run-code` calls. A parallel group's actions wait for their barrier, so a group adds a constant 1.5 s to the sum. This is stable between runs.
+- **`pathSha`** is computed from the path file, not read from `admitted.pathSha`: a heal changes the path without a new admission.
+- **`perfIssue` and `perfRebaseline` are synchronous.** `smoke run --perf` exits 3 for a confirmed regression, which §19.11 leaves open.
+- Lane 0's `tests/argus-live-smoke.test.ts` lost three not-built entries: the `--perf` row of STUBS, the two `smoke perf` rows, and the `--perf` refusal assertion. The behaviour they pinned is now `tests/argus-live-perf.test.ts`'s.
+- `-smoke.mjs` changed in `smokeRun`'s `--perf` branch only (the refusal, the live-slot check and `perfPass`).
+- Line counts: `-perf` 398, `-smoke` 258, `-session` 265.
+
+**Needs coordinator.**
+- **F1:** the report's perf section reads `<run>/smoke/perf.jsonl` (and `.argus/perf.json` for the baseline), not the pass lines.
+- **Z2:** the orchestrator's text for a perf pass is `smoke run --perf` (exit 3) → `smoke perf --issue <id>` → `scrub --create` with labels `perf`, `argus`, `found-by:user` and the needs-owner label, deduplicated by the printed `dedupe:` keys. The guard needs no change, since `smoke perf` is the orchestrator's verb and already refused to a subagent.
+- **Z4 / the spec:** §19.11 should name `latest` in `perf.json`, the `perf.jsonl` row, and the five verdicts and exit codes above. Its wording "installed with the signal script" is the as-built "installed in a perf pass" (first deviation).
+- **A (A2):** if `admitted.pathSha` is meant to be the digest of the path list as JSON, the two agree on a path written once. If it hashes something else, no change is needed, since `perf.json` keeps its own digest.
+- **Merge:** the three STUBS rows above conflict textually with the other lanes' edits of the same list. Keep every other lane's removals.

@@ -201,7 +201,6 @@ describe("argus-live CLI — phase 6's verbs", () => {
   const STUBS: [string[], string][] = [
     [["smoke", "plan"], "smoke plan"],
     [["smoke", "admit", "2.1"], "smoke admit"],
-    [["smoke", "run", "--ids", "checkout,refund", "--slot", "3", "--perf", "--seed", "4294967295"], "smoke run --perf"],
     [["smoke", "heal", "2.1"], "smoke heal"],
     [["smoke", "propose"], "smoke propose"],
     [["smoke", "propose", "--dry-run"], "smoke propose"],
@@ -210,8 +209,6 @@ describe("argus-live CLI — phase 6's verbs", () => {
     [["smoke", "ci", "--run", "123456"], "smoke ci"],
     [["smoke", "baseline", "--from-run", "123456"], "smoke baseline"],
     [["smoke", "baseline", "--from-run", "123456", "--ids", "checkout"], "smoke baseline"],
-    [["smoke", "perf", "--issue", "checkout"], "smoke perf"],
-    [["smoke", "perf", "--rebaseline", "checkout"], "smoke perf"],
     [["smoke", "workflow"], "smoke workflow"],
     [["seed", "--issue", "12"], "seed"],
     [["seed", "--doc", "docs/flows.md:3-40"], "seed"],
@@ -614,11 +611,10 @@ describe("smoke run — the lane's pass over the suite's paths (spec §19.5, §1
     }
   });
 
-  it("refuses before any run: --perf (lane D), no cycle, a slot minted already, an unknown id, no path, a path its mode refuses", async () => {
+  it("refuses before any run: no cycle, a slot minted already, an unknown id, no path, a path its mode refuses", async () => {
     const t = suiteRun({ checkout: PATH() }, { slots: { "4": { journey: "x", generation: 1, tokenHash: null, accounts: {}, retired: [], submitted: false } } });
     const s = stub();
     const run = (o: Obj) => smokeRun(t.main, { ids: null, slot: null, perf: false, seed: 1, ...o }, { once: s.once });
-    await expect(run({ perf: true })).rejects.toThrow("refused: smoke run --perf: not built yet");
     await expect(run({ slot: 4 })).rejects.toThrow("refused: smoke run: slot 4 is minted already");
     await expect(run({ ids: ["nope"] })).rejects.toThrow("refused: smoke run: the suite has no path nope");
     writeFileSync(join(t.main, "e2e/argus-smoke/journeys/bad.json"), JSON.stringify({ journey: "bad", path: [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }] }));
