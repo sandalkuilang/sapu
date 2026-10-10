@@ -2535,8 +2535,10 @@ measures first-encounter discoverability, with its `clicks` and `term` now recor
 - **Reference corpus** (`scripts/taste-corpus.json`, sapu's repository, not the plugin): public pages of
   sites admitted on a read justification (published design system or interface guidelines, craft
   writing, or a verifiable award) — Apple, Vercel, GitHub, Stripe, Linear, IBM Carbon, Atlassian,
-  shadcn/ui, Figma, Raycast; each grouped by archetype. Marketing and docs are well covered, data fair,
-  app and form poor (real app chrome is mostly behind a login).
+  shadcn/ui, Figma, Raycast; each grouped by archetype. A terms review per site left Apple, Figma,
+  Raycast and IBM Carbon out (their terms bar robots or data mining, or are ambiguous about it): docs
+  reaches the witness threshold (18 pages, 5 sites); marketing (3 sites), app, form and data are thin
+  (real app chrome is mostly behind a login).
 - **Calibration** (`scripts/taste-calibrate.mjs`, maintainer-only, explicit `--network`): runs the same
   probes on the corpus, stores **numbers and URLs only** (no screenshot, text, asset or CSS; a test
   fails on any other string), honours `robots.txt` for `*` and `sapu-taste-calibration`, one page per

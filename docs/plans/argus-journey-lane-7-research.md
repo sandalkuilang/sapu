@@ -138,13 +138,22 @@ visual-language article returned 404), Framer (its site was fetched but no craft
 source was read), Arc (no award or craft source found at its own address). Each can join through the
 update procedure once a source is read.
 
-**Coverage by archetype, plainly.** Marketing/landing: well covered (seven sites). Docs: well
-covered (seven). App/dashboard: poorly covered: real logged-in app chrome is public only on GitHub's
-repository pages and in the shadcn examples; Linear, Vercel, Stripe and Figma dashboards need a
-login and are out. Form/checkout/settings: poorly covered: Carbon's and shadcn's form demos and
-GitHub's few public forms; settings pages all need a login. Data-dense tables: fair: GitHub's issue
-lists and the shadcn and Carbon table demos. The plan therefore lets only archetypes with enough
-references act as a witness (D5).
+**Terms review.** Each admitted site's terms were read before a page joined the corpus
+(`scripts/taste-corpus.json` records who reviewed them and what they say). Apple, Figma and Raycast
+left: their terms bar robots or data mining outright. IBM Carbon left too: its terms let a crawler
+crawl as `robots.txt` permits but bar a robot that retrieves or data-mines the site's presentation,
+ambiguous for these pages; its published numbers stay a frame of the bar (D5), read, not crawled.
+
+**Coverage by archetype, plainly.** Docs: covered: 18 pages from five sites (Vercel, GitHub,
+Stripe, Atlassian, shadcn), the witness threshold of five sites and 15 pages. Marketing/landing:
+thin: 15 pages from three sites (Vercel, Stripe, Linear); Apple, Figma and Raycast left on the terms
+review, their terms barring robots. App/dashboard: thin: real logged-in app chrome is public only on
+GitHub's repository pages and in the shadcn examples; Linear, Vercel, Stripe and Figma dashboards
+need a login and are out. Form/checkout/settings: thin: one shadcn form demo and Stripe's checkout
+demo; settings pages all need a login. Data-dense tables: thin: a GitHub issue list and the shadcn
+task table. IBM Carbon left the corpus too: its terms are ambiguous about robots that data mine. No
+site gives more than half of an archetype's pages. The plan therefore lets only archetypes with
+enough references act as a witness (D5).
 
 **Robots and terms observed.** `robots.txt` read for github.com, linear.app, stripe.com (its `*`
 group allows `/docs`), vercel.com (its `*` group carries `Content-Signal: search=yes, ai-input=yes,

@@ -456,13 +456,13 @@ describe("the reference corpus (scripts/taste-corpus.json)", () => {
     const r = spawnSync(process.execPath, [SCRIPT, "--corpus", CORPUS, "--out", out], { encoding: "utf8", timeout: 30_000 });
     expect(r.status, r.stderr).toBe(0);
     for (const l of [
-      "58 pages on 7 sites; robots.txt honoured for * and sapu-taste-calibration; one page per site every 10 s (at least 2 min)",
+      "43 pages on 6 sites; robots.txt honoured for * and sapu-taste-calibration; one page per site every 10 s (at least 2 min)",
       "marketing: 15 pages, 3 sites (vercel, stripe, linear)",
-      "docs: 21 pages, 6 sites (vercel, github, stripe, carbon, atlassian, shadcn)",
-      "app: 8 pages, 3 sites (github, shadcn, carbon)",
-      "form: 6 pages, 3 sites (shadcn, carbon, stripe)",
-      "data: 8 pages, 3 sites (github, shadcn, carbon)",
-      "left out by the corpus's review: 16",
+      "docs: 18 pages, 5 sites (vercel, github, stripe, atlassian, shadcn)",
+      "app: 6 pages, 2 sites (github, shadcn)",
+      "form: 2 pages, 2 sites (shadcn, stripe)",
+      "data: 2 pages, 2 sites (github, shadcn)",
+      "left out by the corpus's review: 31",
     ])
       expect(r.stdout.split("\n"), l).toContain(l);
     expect(readFileSync(out, "utf8")).toBe(readFileSync(BAR_FILE, "utf8"));
@@ -471,7 +471,8 @@ describe("the reference corpus (scripts/taste-corpus.json)", () => {
   it("a site whose terms bar robot access has no page to measure, and every one of its pages is recorded as skipped", () => {
     const c = corpus();
     const excluded = Object.keys(c.sites).filter((s) => c.sites[s].note.startsWith("Excluded."));
-    expect(excluded.sort()).toEqual(["apple", "figma", "raycast"]);
+    // IBM Carbon: its terms are ambiguous about robots that data mine (the coordinator's ruling).
+    expect(excluded.sort()).toEqual(["apple", "carbon", "figma", "raycast"]);
     expect(c.pages.filter((p: Obj) => excluded.includes(p.site))).toEqual([]);
     for (const s of excluded) expect(c.skipped.some((p: Obj) => p.site === s && p.reason.includes(`sites.${s}`)), s).toBe(true);
     for (const s of Object.keys(c.sites).filter((x) => !excluded.includes(x))) {

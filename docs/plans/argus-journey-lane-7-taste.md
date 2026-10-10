@@ -214,8 +214,9 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
       holds a table or grid of ≥ 10 rows is `data`, and any other inference is `app` and marked
       `inferred` — an inferred archetype's band is shown, never a witness.
     - An archetype's band is a witness only with ≥ 5 sites and ≥ 15 pages; below that it is
-      `thin` and shown only. On the research's corpus, `marketing` and `docs` are well covered,
-      `data` fair, `app` and `form` poor (most real app chrome needs a login).
+      `thin` and shown only. On the corpus after its terms review (Apple, Figma, Raycast and IBM
+      Carbon left), `docs` reaches the threshold (18 pages, 5 sites); `marketing` (3 sites), `app`,
+      `form` and `data` are thin (most real app chrome needs a login).
     - Rules of conduct: public pages only, no login; `robots.txt` honoured for `User-agent: *` and
       the script's own agent `sapu-taste-calibration`; one request at a time per site, at most one
       page per site every 10 s; each corpus entry records who reviewed the site's terms; no
