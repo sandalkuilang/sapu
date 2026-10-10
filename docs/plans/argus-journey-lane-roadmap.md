@@ -3,7 +3,7 @@
 Spec: [docs/specs/argus-journey-lane.md](../specs/argus-journey-lane.md). Target release: sapu 2.9.0.
 
 The spec covers several subsystems that can each be built and tested on their own, so it is
-implemented as six phases, each with its own plan. A phase starts only when the one before it is
+implemented in phases, each with its own plan. A phase starts only when the one before it is
 merged into the feature branch with the whole suite green. Each later plan is written in full at the
 start of its phase, because it builds on facts the earlier phase proves (for example, the filtering
 proxy's mechanics in phase 3 depend on the instance lifecycle of phase 2).
@@ -16,11 +16,12 @@ proxy's mechanics in phase 3 depend on the instance lifecycle of phase 2).
 | 4 | [Findings](argus-journey-lane-4-findings.md) | the module split (`-origin`, `-start`, `-session` and the new findings modules); the in-daemon hook, the secret ledger and the ids the run saw; repro sessions in slot `r`; the repro DSL runner with its exit codes and `final` templates, `parallel` and per-account steps, two of two, minimize, the generated Playwright test, the values a reproducing run read (`repro --saved`); `classify`; `scrub` against the run it names (`--run`, or `--ref` for a candidate reproduced two of two) with screenshot verdicts and filing through `gh`; the fence's matcher for long and re-encoded secrets; `map-check`, refresh triggers and the catalog; map mode (`up --map`, map slots, `map-check --merge`); SELECT scoring and account allocation (`select`), `visit`; doc drift (`drift`) | §5, §6, §7, §8, §9, §10, §12, §14, §16 |
 | 4b | Backlog | every open backlog issue of this repo, fixed or (where the fix is a design limit) documented and closed with its reason, each commit carrying `Closes #N`; order: safety first (agent cwd and memory, the guard following the touched repo, writes into the active plugin folder, machine and git config write paths, a second sweep stopping early, the step budget proof), then portability and generic defaults, then trust-rule refinements and dogfooding | per issue |
 | 5 | Engine text and release | `journeys.md`, the `/sapu:journey` skill, the `sapu:ui-explorer` agent, argus SKILL.md, reference.md and standards.md edits, `/sapu:init`, sapu B2, the inspector exclusion, CONTRACT.md, docs and diagram, engine tests (including one pinning the `ui-explorer` frontmatter to `tools: Bash, Read, StructuredOutput`), the upgrade note (the skills question, the new label, and stricter owner labels: a 2.8.x label with spaces or `, = " ' / [ ] { } ( ) %` must be renamed), the release checklist; the lane prompt runs `argus-live.mjs up` with a long timeout or in the background, so a harness timeout cannot cut it mid-setup (an `up` cut short leaves a run that only `down` accepts) | §4, §5, §7, §16 |
-| 6 | Pilot | repo-side prep in the repo argus has run on longest (explore datastore, `store_check`, `reset`, `facts`, `mail`, `triggers`, `live` block, `env_file`), three journeys, the scorecard | §15 |
+| 6 | [Smoke](argus-journey-lane-6-smoke.md) | the smoke suite generated from admitted paths and committed in the consumer repo (CI, Chromium, Firefox, WebKit, Edge when installed), screenshot, ARIA and check baselines adopted from CI, the layout, locale, accessibility, contrast, token, form, link and dynamic-state checks, reviewable healing and CI triage with quarantine, performance baselines, journeys seeded from issues and docs, the per-cycle report | §3, §19 |
+| 7 | Pilot | repo-side prep in the repo argus has run on longest (explore datastore, `store_check`, `reset`, `facts`, `mail`, `triggers`, `live` block, `env_file`), three journeys, the scorecard, the smoke suite on its CI | §15 |
 
 Rules for every phase:
 - TDD: the failing test first, then the code, then the whole suite (`npx vitest run`).
 - The suite runs on the release machine; browser tests need a local Chrome and fail without one.
 - Commits carry no assistant attribution. One feature branch, `feat/argus-journey-lane`, one PR at
   the end of phase 5, carrying the backlog of phase 4b too; nothing is merged, tagged or released
-  until the owner says so; phase 6 runs on the released plugin.
+  until the owner says so; phase 6 is built on the release branch and held like it; the pilot (phase 7) runs on the released plugin.
