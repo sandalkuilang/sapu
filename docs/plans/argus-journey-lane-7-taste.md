@@ -848,3 +848,102 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
   `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+
+### Lane T1 — visual probes (T1.1, T1.2, T1.3)
+
+Commits: T1.1 census, restraint, hierarchy, alignment; T1.2 colour roles, dark parity, contrast headroom (and the suite's
+check); T1.3 motion and density; then one fix commit adding five exclusions, each with its twin. `-taste.mjs` ends at
+about 730 lines (cap 750: little room left; a later family belongs in its own module). `tests/argus-live-tasteprobe.test.ts`
+(Chrome, one browser for the file, about 45 s) replaces every lane 0 stub pin of `-taste.mjs`; it lands in CI's `rest`
+job, which is fine at that length.
+
+**What each export is.**
+- `TASTE_SOURCE` `(arg) => census`: measures the page in the media it answers now, judges nothing. `{media: {dark,
+  reduce}, vw, truncated, counts: {spacing, type, weights, colours, radii, shadows}, values: {spacing, type: [{px, w,
+  fluid}], radius, gaps}, palette, headings, primary: {scope: view|dialog, buttons}, alignment, nested, shadows, text,
+  borders, surfaces, roles, root, motion, running, transitionAll, controls, tables}`; `{motionOnly: true}` returns
+  `{media, motion, running}`. Colours through a 1x1 canvas, lengths through the Typed OM (an `auto` or percentage margin
+  is never a spacing value), at most 3000 rendered elements (`truncated`).
+- `TASTE_INIT`: the recorder. Every transition (run, start, end, cancel) and animation (start, end, cancel), and a view
+  transition at its `ready` (it fires no event: `document.startViewTransition` is wrapped, returning the same object),
+  go to the taste buffer in TASTE_EVENTS' shape; `document.__argusTasteMotion` keeps the last 200 for the census, with
+  the properties, `reduce` and `quiet` at the start, and for a layout-property motion how many sibling boxes up its
+  ancestors it moved (0 when its own box did not change, or when it was removed mid-motion).
+- `censusOf(page)` → `{media, light, dark, reduce, themes}`: the page's own media read as explicit values and censused;
+  then, with an adopted sheet `transition: none !important` (no DOM mutation, so no feedback-clock event, and no theme
+  transition recorded as motion), the other colour scheme, then `reducedMotion: "reduce"` (motion only); then the media
+  put back as read, never null. `themes` is `single` when both schemes render the same palette (the other census is then
+  null). Self-contained: J1 runs it as `async page => (${String(censusOf)})(page)` in its one run-code a screen. Measured
+  at 320–420 ms for 2,400 elements (three passes) at load about 20.
+- `rulesFor(screen, bar, cfg)`: pure and self-contained (its source runs in a page). `screen` is censusOf's result or a
+  recorded screen holding it as `taste`; the base census is the one under `media.colorScheme`. `cfg` is loadTaste's
+  value; `off` silences a rule; `frame` names the bar's frame for the off-scale rules; **`cfg.tokens`** (`{spacing?,
+  radius?, type?}`, px numbers) is an addition: the owner's tokens, resolved and sorted by kind by the caller (J), outrank
+  the frame. Without either, off-scale rules give nothing.
+- `ruleExpression(rule, cfg = null)`: the page expression; `cfg` is an optional second argument (lane 0's call with one
+  argument is unchanged). With no scale, `scale.off-scale` and `hierarchy.section-gaps` list every value measured, so a
+  replay re-measures a row by its key. Under a reduced-motion page it fills `reduce` from the same census.
+- `CHECKS`: one entry, `{name: "taste", project: "taste", when: "every step", source, emit}`. The source embeds
+  `censusOf`, `rulesFor`, the bar's taste-family rules and frames as `TASTE_BAR` (read from the shipped bar when the module
+  loads) and `TASTE_INIT`; `tasteStep(opened, i, step, id)` arms the recorder on the context at its first step, reads
+  `.argus/taste.json`'s `gate`, `off` and `frame` at run time (a missing or unreadable file: defaults; the lane
+  validates it, the suite does not), annotates each row once a test: `argus-taste` `{rule, step, key, measured,
+  expected}`, an information rule's `argus-info` (`taste <rule> "<key>": <measured> (expected <expected>)`), a gated
+  rule's `argus-violation` `{check: <rule id>, step, key, detail}` less `known/<id>.json` rows `{check, key}` (returned,
+  so the soft check fails), and once a test `taste: single theme (…): dark parity not judged`. Peer rows are never
+  annotated.
+
+**Row conventions the judge and the filing read.**
+- A rule whose threshold is `peer` (the six `scale.*` counts) is one measurement row a screen, `{key: "screen", measured:
+  <count>, expected: "peer"}`: J2 applies the peer and band test; the suite skips it.
+- Cross-screen comparison of `colour.role` and `density.row-heights`: rulesFor judges one screen; J2 joins several
+  screens' `roles` (or `tables`) into one census and runs rulesFor on it (the test does exactly that for two pages).
+- Keys: `<tag>|<label>` (aria-label, own text, a button-type input's value, alt, then text content; at most 60
+  characters; digit runs `#` in the label only). Value keys keep their digits, being CSS values stable across visits:
+  `spacing:13px`, `type:18px`, `radius:20px`, `gap:20px`, a headroom pair `rgb(…) on rgb(…)`, motion `<property or
+  animation name>|<element key>`, density `button`, `field`, `tables`; screen-level rows `screen`, `view` or `dialog`;
+  a role row's key is the badge text, lower-cased.
+- `motion.reduced`'s `expected` cites the level: `no transform motion under reduced motion (WCAG 2.3.3, Level AAA)`.
+
+**Definitions the probe fixes** (what counts as the thing measured; the bar holds the thresholds): a colour is non-neutral
+at OKLCH chroma 0.05 or more; a primary is a filled button whose fill reaches 2:1 against what is behind it, the loudest
+fill counted by distinct names (a row action repeated is one; a disabled one, and one outside an open modal, none); a
+heading is compared only with the heading it sits under in the outline (the plan's "its h1"); alignment reads stacked
+in-flow block siblings, skipping a container that centres or ends its items, a child with an auto left margin, and a
+transformed child, and compares centres too; a corner is shared when the child's corner lies within the parent's radius
+on both axes (a circle or pill is a shape, never compared); shadows exclude rings (no offset, no blur) and insets, and
+a layer is raised, overlay (fixed, absolute, popover, menu) or modal; text contrast is skipped over an image or gradient
+and for a disabled control; an edge is the stronger of border and fill against what is behind (collapsed: under 1.1:1 in
+dark where light had 1.2:1 or more); a surface is at least 100 x 40 px with an opaque fill, never a control or media,
+left light at luminance 0.4 or more on a page root of 0.1 or less, unchanged from light, not declaring `color-scheme:
+light`; a badge is at most 24 characters and three words, at most 40 px tall, on its own fill, rounded or padded, in no
+control; `contrast.headroom` reads body text between 4.5:1 and the bar's 7:1 (under 4.5:1 is axe's failure), one row an
+ink and surface pair; a motion is one iteration's duration (a stagger's delays never add), none under one frame (17 ms),
+neither a loop nor one recorded under reduced motion or while the census was switching media; under reduced motion only
+a running infinite transform loop or a transform an action started under the preference counts (a finite motion still
+running from before the switch never does); control and row heights a pixel apart are one; a wrapped button label and
+an all-header row are excluded; a table needs three body rows. Each of these could move into the bar through D21's
+procedure.
+
+**Deviations.**
+- `ruleExpression` takes an optional `cfg` and `rulesFor` reads `cfg.tokens`: additive, no locked signature changed.
+- `-taste.mjs` reads `plugins/sapu/data/taste-bar.json` as data (a leaf: no argus-live import), for `ruleExpression`'s
+  thresholds and the suite's `TASTE_BAR`; its family list repeats `-tastecfg`'s FAMILIES for `taste` (a leaf cannot
+  import it), and rulesFor repeats it once more (self-contained).
+- censusOf's restore can restart an animation the reduced-motion pass removed (a page whose `prefers-reduced-motion`
+  rule sets `animation: none`): it replays once on the page. A restart that lands while quiet is never counted; one that
+  lands after is recorded under the same key as its first run, so it adds no row unless the first run went unrecorded
+  (it began before the recorder was armed) and is itself outside the band.
+
+**Needs coordinator.**
+1. *The `taste` final cannot re-measure dark parity.* `-steps` (lane 0's) runs `page.evaluate(ruleExpression(rule))`; a
+   page expression cannot switch media, so for `colour.dark-contrast`, `colour.dark-border` and `colour.dark-surface` it
+   gives no row and the final always holds (precision-safe: the row is never confirmed, but it can never be). Either the
+   `taste` template in `-steps` runs `(${String(censusOf)})(page)` and `rulesFor` for those three rules (censusOf is
+   self-contained and takes the run-code's `page`), or J2's `taste confirm` confirms them through censusOf directly. The
+   same holds for `motion.reduced` unless the replay runs under reduced motion.
+2. *Lane S.* `CHECKS[0].project` is `taste`, which `-codeproj`'s `PROJECT_NAME` and `gated()` do not know yet: until S1
+   adds the `taste` project (Chromium, first width) and `-taste.mjs`'s CHECKS to `suiteChecks`, registering it throws.
+   S1's header stamp `taste-bar <n>` should use the same bar the source embeds (both read the shipped file). The
+   recorder is armed at a test's first taste step: motion caused by step 1's own action is not recorded; S1 may arm it
+   before the first step if it wants that.
