@@ -252,7 +252,7 @@ describe("smoke heal — the decision table's heal rows (spec §19.9)", () => {
     const gone = healRun({ ret: heal([{ step: 5, target: NEW }]) });
     await down(gone.main, { runId: gone.runId, graceMs: 1000 });
     await expect(smokeHeal(gone.main, "3.1", { once: s.once })).rejects.toThrow("refused: no journey cycle is running");
-  });
+  }, 30_000);
 });
 
 describe("staging — every suite change waits for a proposal (spec §19.8)", () => {

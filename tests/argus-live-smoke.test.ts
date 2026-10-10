@@ -1,6 +1,6 @@
 // tests/argus-live-smoke.test.ts — phase 6's shared surfaces (spec §19): live.json's smoke keys, the
 // `.argus/smoke.json` schema and its defaults, and the CLI's dispatch of every new verb (each answers
-// through its lane's function; until a lane fills it, `refused: <verb>: not built yet`).
+// through its lane's function).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -198,22 +198,25 @@ describe("argus-live CLI — phase 6's verbs", () => {
     }
     return main;
   };
-  const STUBS: [string[], string][] = [
-    [["smoke", "plan"], "smoke plan"],
-    [["smoke", "admit", "2.1"], "smoke admit"],
-    [["smoke", "heal", "2.1"], "smoke heal"],
-    [["smoke", "propose"], "smoke propose"],
-    [["smoke", "propose", "--dry-run"], "smoke propose"],
-    [["smoke", "check"], "smoke check"],
-    [["smoke", "ci"], "smoke ci"],
-    [["smoke", "ci", "--run", "123456"], "smoke ci"],
-    [["smoke", "baseline", "--from-run", "123456"], "smoke baseline"],
-    [["smoke", "baseline", "--from-run", "123456", "--ids", "checkout"], "smoke baseline"],
-    [["smoke", "workflow"], "smoke workflow"],
-    [["seed", "--issue", "12"], "seed"],
-    [["seed", "--doc", "docs/flows.md:3-40"], "seed"],
-    [["report"], "report"],
-    [["report", "--run", "r1"], "report"],
+  /** Every verb phase 6 added, each built now, with its answer in a repo with a contract but no cycle, suite or run. */
+  const NO_SUITE = "refused: smoke ci: the suite has no paths (e2e/argus-smoke/journeys)\n";
+  const CHECK = "smoke check: no suite (e2e/argus-smoke/journeys holds no path)\n";
+  const VERBS: [string[], string][] = [
+    [["smoke", "plan"], "refused: smoke plan: no journey catalog (.argus/journeys.json): run map-check first\n"],
+    [["smoke", "admit", "2.1"], "refused: no journey cycle is running\n"],
+    [["smoke", "heal", "2.1"], "refused: no journey cycle is running\n"],
+    [["smoke", "ci"], NO_SUITE],
+    [["smoke", "ci", "--run", "123456"], NO_SUITE],
+    [["smoke", "baseline", "--from-run", "123456"], NO_SUITE.replace("smoke ci", "smoke baseline")],
+    [["smoke", "baseline", "--from-run", "123456", "--ids", "checkout"], NO_SUITE.replace("smoke ci", "smoke baseline")],
+    [["smoke", "workflow"], "refused: smoke workflow: no .argus/live.json\n"],
+    [["smoke", "run", "--perf"], "refused: no journey cycle is running\n"],
+    [["smoke", "perf", "--issue", "checkout"], "refused: smoke perf: checkout has no perf record\n"],
+    [["smoke", "perf", "--rebaseline", "checkout"], "refused: smoke perf: checkout has no perf record\n"],
+    [["seed", "--issue", "12"], "refused: seed: no journey cycle is running (up --map or up first)\n"],
+    [["seed", "--doc", "docs/flows.md:3-40"], "refused: seed: no journey cycle is running (up --map or up first)\n"],
+    [["report"], "refused: report: no run here\n"],
+    [["report", "--run", "r1"], "refused: report: --run takes a run id\n"],
   ];
 
   it("the usage line names every verb of spec §19.15", () => {
@@ -236,14 +239,17 @@ describe("argus-live CLI — phase 6's verbs", () => {
     ]) expect(r.stderr, alt).toContain(alt);
   }, 30_000);
 
-  it("each new verb reaches its lane's function, which is not built yet", () => {
+  it("each new verb reaches its lane's function: none is a stub any more", () => {
     const main = repo();
-    for (const [args, verb] of STUBS) {
+    for (const [args, answer] of VERBS) {
       const r = cli(main, ...args);
-      expect(r.stderr, args.join(" ")).toBe(`refused: ${verb}: not built yet\n`);
+      expect(r.stderr, args.join(" ")).toBe(answer);
       expect(r.status, args.join(" ")).toBe(1);
       expect(r.stdout).toBe("");
     }
+    // Propose with nothing staged and check with no suite answer on stdout, exit 0.
+    for (const dry of [[], ["--dry-run"]]) expect(cli(main, "smoke", "propose", ...dry)).toMatchObject({ status: 0, stdout: "smoke propose: nothing to propose\n", stderr: "" });
+    expect(cli(main, "smoke", "check")).toMatchObject({ status: 0, stdout: CHECK, stderr: "" });
     // The lane's own pass is built (Task 0.3): without a cycle it is refused as every runner is.
     expect(cli(main, "smoke", "run").stderr).toBe("refused: no journey cycle is running\n");
   }, 60_000);
@@ -251,11 +257,12 @@ describe("argus-live CLI — phase 6's verbs", () => {
   it("a committed suite needs the repo's own contract with visible traces: every smoke verb but check is refused otherwise", () => {
     const TRACE = "refused: smoke: a committed suite would leave a trace\n";
     for (const main of [repo(null), repo({ traces: "none" })]) {
-      for (const [args, verb] of STUBS) {
+      for (const [args, answer] of [...VERBS, [["smoke", "propose"], ""], [["smoke", "propose", "--dry-run"], ""]] as [string[], string][]) {
         const r = cli(main, ...args);
         expect(r.status, args.join(" ")).toBe(1);
-        expect(r.stderr, args.join(" ")).toBe(args[0] === "smoke" && verb !== "smoke check" ? TRACE : `refused: ${verb}: not built yet\n`);
+        expect(r.stderr, args.join(" ")).toBe(args[0] === "smoke" ? TRACE : answer);
       }
+      expect(cli(main, "smoke", "check")).toMatchObject({ status: 0, stdout: CHECK, stderr: "" });
     }
     const broken = repo();
     writeFileSync(join(broken, ".claude/sapu.json"), "{");
@@ -300,9 +307,9 @@ describe("argus-live CLI — phase 6's verbs", () => {
     expect(cli(main, "smoke", "run", "--seed", "-1").stderr).toBe("refused: a seed is an integer from 0 to 4294967295\n");
   }, 60_000);
 
-  it("slot --map --seed is the seed lane's, not built yet; --seed needs --map", () => {
+  it("slot --map --seed is the seed lane's: it needs a cycle; --seed needs --map", () => {
     const main = repo();
-    expect(cli(main, "slot", "1", "--map", "--seed").stderr).toBe("refused: slot --seed: not built yet\n");
+    expect(cli(main, "slot", "1", "--map", "--seed").stderr).toBe("refused: no journey cycle is running\n");
     expect(cli(main, "slot", "1", "--seed").stderr).toMatch(/^refused: usage: /);
     expect(cli(main, "slot", "1", "--handoff", "--seed").stderr).toMatch(/^refused: usage: /);
   }, 30_000);
