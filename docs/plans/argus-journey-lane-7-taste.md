@@ -848,3 +848,106 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
   `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+
+### Lane S — the suite (S1, S2)
+
+Two commits, S1 then S2. Line counts after them: `-codeproj` 473, `-codegen` 575, `-propose` 683. No new test file:
+`tests/argus-live-codegen.test.ts` (already on the CI `files:` line with the a11y and layout tests) gained the unit
+tests and one Chrome test (three pinned-runner runs, about a minute under load).
+
+**S1, the taste project.**
+- *The project.* `suiteProjects` adds `{name: "taste", kind: "taste", browser: "chromium", width: <first>}` after
+  `a11y`, whenever chromium is among smoke.json's browsers (as a11y; on by default, no switch). `PROJECT_NAME`
+  admits it, so no journey can be named `taste`. The config writes a comment over its line.
+- *Which rules* (`tasteTable`): the bar's `screen` rules with a fixed threshold. A `peer` or `band` threshold compares
+  screens (the judge's), and `TASTE_LANE_ONLY` (`feedback.skeleton-peers`, `feedback.optimistic`, `ai.stop`,
+  `ai.error`, `ai.regenerate`) needs peers or the owner's declared routes, which one page expression cannot see. A rule
+  whose `ruleExpression` throws `refused: …: not built yet` is left out; any other throw is thrown.
+- *Passes.* `TASTE_MEDIA_RULES` (`colour.dark-contrast`, `-border`, `-surface` in dark; `motion.reduced` in reduced
+  motion) run only in their medium. The action families (`motion`, `feedback`, `states`, `copy`, `ai`) run after every
+  step of an account that acts (not `read`) and at every screen. The census families (`scale`, `hierarchy`,
+  `colour`, `contrast`, `density`) run at a screen once its running animations ended (a frame, then every animation
+  ending within 5 s), and again in dark. Order at a screen: action rules, settle, census; reduced motion (the page's
+  colour scheme), settle, its rules; dark (the page's motion setting), settle, census and dark rules; then the media
+  `MEDIA_READ` gave, put back by value, and a settle.
+- *Measuring.* Each rule alone, `page.evaluate(<its expression>)` (a page's CSP does not stop it). A throw is an
+  `argus-info` line (`taste <rule>: the probe failed (<first line, at most 200>)`); a row that is not `{rule: <that
+  rule>, key: 1–300 characters with no newline, measured, expected: a number or a string of at most 200}` is dropped
+  and counted in one line. The buffer is drained once after each pass (`TASTE_DRAIN`). Each probe source an
+  expression holds (64 characters or more) is written once in support.ts and put back at run time.
+- *Arming.* `open()` adds the init script (`TASTE_BUFFER`, `TASTE_INIT`, `EASE_INIT`) to every context it makes in
+  the taste project. A fixtures.ts page is armed at its first taste step: the context's later documents get it, and
+  the current document runs it once.
+- *Reporting.* Each (rule, probe key) once a test, at its first step. A reduced-motion or dark finding's key ends in
+  `|reduce` or `|dark`, so the dark pass shows only what the page's own media did not. An information rule is an
+  `argus-info` line `taste <rule> step <n>: <key>: <measured> (expected <expected>)`. A gated rule is phase 6's
+  `argus-violation` `{check: "taste-<family>-<name>", step, key, detail: "measured <m>, expected <e>"}` unless
+  `known/<id>.json` or the journey's smoke.json `allow` lists that `{check, key}`; it fails the step through the
+  emitted `expect.soft`. Anything else is `argus-taste` `{rule, step, key, measured, expected}`.
+- *taste.json at run time.* support.ts reads `.argus/taste.json`'s `gate` and `off` from the repo when the suite runs
+  (none without the file). A file that is not JSON, a list that is not rule ids, or a gate naming a rule the suite
+  does not measure fails the step, naming the rules.
+- *The stamp.* Every generated file's header reads `argus-live codegen 1, taste-bar <n>, digest <sha>`, the digest
+  the sha256 of `taste-bar <n>` and the body, so a header naming another bar is not its body's. `headerDigest` returns
+  `{digest, ok, bar}`, and a header from before the bar still reads (`bar` null). support.ts holds
+  `TASTE_BAR_VERSION`. `smoke check` names each file of a suite generated against an older bar `stale` (tested).
+- The golden digests moved on purpose (the taste project and core, the stamp).
+
+**S2, the workflow's taste job.**
+- *The matrices* come from `suiteProjects` alone: `test` and `quarantine` run the container projects but `taste`;
+  `baseline` runs them with `taste`, so a dispatch's results hold the gated rules' violations for adoption.
+- *The job* (only when the suite has the project): the test job's `if` (no dispatch, no fork), runner, 70 minutes,
+  pinned container, `HOME`, working directory, checkout without credentials, `npm ci --ignore-scripts`, and every
+  step after the checkout guarded by `hashFiles`. Then `npx playwright test --grep-invert @quarantine --project setup
+  --project taste` with `continue-on-error: true` and the secrets (that step only); then "The taste scorecard, in the
+  job summary", `node - test-results/results.json <up>/.argus/taste.json support.ts <<'ARGUS_TASTE'` with
+  `TASTE_SUMMARY` (exported by `-propose`) as a quoted heredoc. The results upload as `taste-<ci.artifact>`, outside
+  the prefix `smoke ci` reads, for 7 days.
+- *The scorecard.* It reads the taste project's tests (a retried test's last attempt), `argus-taste` notes, gated
+  `taste-…` violations and `taste` information lines, and writes per-family counts, a findings table and the
+  information lines to `$GITHUB_STEP_SUMMARY`. Every page word sits in a code span (control, bidi and line characters
+  removed, at most 200 characters, pipes escaped in a cell) with the bar version. When a taste test failed on the
+  suite's own taste.json refusal, it shows that one line (no other error text: it may quote the page). It exits 1
+  only when taste.json gates a rule and a taste test did not pass (a violation, a skip, no test, no results), or
+  when taste.json is not JSON with a list of rule ids under `gate`. Otherwise it exits 0.
+
+**Deviations.**
+- `gate` and `off` are read at run time, by support.ts and by the scorecard, not baked in by codegen. `-suite`'s
+  `generated()` (smoke check, propose) passes no taste.json, and the owner can promote a rule with no regeneration.
+  "Green unless gate is non-empty" holds at run time: the scorecard's exit is the job's.
+- A gated rule's check name is `taste-<family>-<name>`. Phase 6's check names hold no dot (`-artifacts` `CHECK`,
+  `-smokecfg` `KNOWN_CHECK`), and families hold no hyphen, so the name maps back to one rule.
+- Not every screen rule runs in the suite (above). Reduced motion and dark are separate passes, not one combined
+  pass. The census waits for running animations to end, so a mid-transition frame is never measured.
+- The bar version is stamped in every generated file's header, not only support.ts.
+
+**Needs coordinator.**
+1. `tests/argus-live-suite.test.ts`, the "smoke workflow" describe (no lane owns it), has four stale rows:
+   - "the secrets reach only the step that runs the suite": `npm ci --ignore-scripts` `toHaveLength(4)` becomes 5
+     (the taste job's).
+   - "pins the Playwright image": the two `Array(3).fill(...)` become `Array(4)`.
+   - "the matrix and the generated config's projects are one list": `matrix("test")` equals the names without
+     `msedge` and `taste`; `matrix("baseline")` equals the names without `msedge`, no longer `matrix("test")`.
+   - "uploads the results": `uploads.length` 5 becomes 6.
+2. `-smoke.mjs` `PROJECT` (the `-artifacts` alias too) lacks `taste`. Until it admits it, `smoke baseline --known`
+   skips a baseline run's taste results, so a gated rule's violations cannot be adopted by the verb (a hand-written
+   `known/<id>.json` row works today). Admitting it also lets `smoke ci` see taste tests in a baseline run.
+3. `ruleExpression(rule)` takes no taste.json and sees no peers, so `TASTE_LANE_ONLY` stays out of the suite. The
+   lane's `taste` final has the same gap. The fix is a `cfg` argument, or a bar field (`needs: peers|routes`).
+4. Media binding is by rule id (`TASTE_MEDIA_RULES`), and lane-only is a list. A bar rule field (`media:
+   dark|reduce`, and the field of item 3) in `-tastecfg`'s schema would carry both; a test pins both lists to the
+   bar's ids meanwhile.
+5. For T1 and T2, the contract the core relies on:
+   - an expression returns its own rule's `{rule, key, measured, expected}` rows, may be async, and must neither drain
+     the buffer (the core drains after each pass) nor emulate media;
+   - `TASTE_INIT` and `EASE_INIT` must be idempotent per document;
+   - a probe's own `CHECKS` run after the core's line at each step and should annotate in the same shapes
+     (`argus-taste`, or `argus-violation` with `taste-<family>-<name>`).
+6. Decision 12's routed 500 in the suite (`states.error`) is not run by the core. Decide: T2's `CHECKS` (a sibling
+   page of the same context, the route armed before its `goto` and removed after) or a core follow-up.
+7. `smoke plan`'s `taste-bar <from> → <to>` (decision 17), and a `smoke check` line naming the bar change instead
+   of `stale`. `headerDigest(text).bar` gives the version.
+8. The golden digests in `tests/argus-live-codegen.test.ts` move again when T1 and T2 land: their sources and
+   expressions are in support.ts.
+9. Engine text and docs (Z2, Z3): the taste job and its scorecard, `taste-<family>-<name>`, taste.json read at run
+   time, the `taste-<ci.artifact>` artifact, the lane-only rules.
