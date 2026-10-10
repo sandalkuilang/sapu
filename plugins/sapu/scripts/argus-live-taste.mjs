@@ -144,9 +144,12 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     return false;
   };
   const isButton = (el) => el.matches("button, input[type=submit], input[type=button], input[type=reset], [role=button]");
+  const INTERACTIVE = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=radio], [role=switch]";
+  const NOT_SURFACE = INTERACTIVE + ", img, video, canvas, iframe, picture, embed, object";
 
   const spacing = new Set(), types = new Map(), weights = new Set(), colours = new Set(), palette = new Set(), radii = new Set(), radiusValues = new Set(), shadows = new Map();
-  const headings = [], buttons = [], nested = [];
+  const headings = [], buttons = [], nested = [], text = [], borders = [], surfaces = [], roles = [];
+  const surfaceKeys = new Map();
   const addColour = (c) => {
     if (c.a === 0) return;
     palette.add(str(c));
@@ -168,8 +171,8 @@ export const TASTE_SOURCE = String.raw`(arg) => {
       if (m) spacing.add(half(Math.abs(m)));
     }
     for (const p of ["row-gap", "column-gap"]) { const v = typed(el, p); if (v) spacing.add(half(v)); }
-    const text = own(el);
-    if (text) {
+    const words = own(el), box = el.getBoundingClientRect();
+    if (words) {
       const px = half(num(s.fontSize)), w = Math.round(num(s.fontWeight));
       if (!types.has(px + "/" + w)) types.set(px + "/" + w, { px, w, fluid: fluid(el) });
       weights.add(w);
@@ -182,6 +185,37 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     if (s.boxShadow && s.boxShadow !== "none") {
       const v = shadowOf(s.boxShadow);
       if (v) { if (!shadows.has(v)) shadows.set(v, new Set()); shadows.get(v).add(layerOf(el, s)); }
+    }
+    // Text contrast against its composited surface (none over an image or a gradient); a disabled control is exempt.
+    if (words && text.length < 400 && !el.closest(":disabled, [aria-disabled='true']")) {
+      const sf = surface(el);
+      if (sf) {
+        const ink0 = rgba(s.color), ink = ink0.a < 1 ? over(ink0, sf) : ink0, size = num(s.fontSize);
+        text.push({ key: keyOf(el), ratio: ratio(ink, sf), large: size >= 24 || (size >= 18.66 && num(s.fontWeight) >= 700), ink: str(ink), surface: str(sf) });
+      }
+    }
+    // An edge: the strongest of the border and the fill against what is behind the element.
+    const side = SIDES.find((d) => num(s.getPropertyValue("border-" + d + "-width")) >= 1 && !/none|hidden/.test(s.getPropertyValue("border-" + d + "-style")) && rgba(s.getPropertyValue("border-" + d + "-color")).a > 0);
+    const outer = el.parentElement ? surface(el.parentElement) : null;
+    if (side && outer && s.backgroundImage === "none" && borders.length < 300) {
+      const f = rgba(s.backgroundColor), fill = f.a > 0 ? over(f, outer) : outer;
+      borders.push({ key: keyOf(el), edge: Math.max(ratio(over(rgba(s.getPropertyValue("border-" + side + "-color")), outer), outer), ratio(fill, outer)) });
+    }
+    // A surface: a card-sized box with its own opaque fill, never a control or media; "in" names its nearest surface ancestor.
+    if (box.width >= 100 && box.height >= 40 && s.backgroundImage === "none" && !el.matches(NOT_SURFACE) && surfaces.length < 300) {
+      const f = rgba(s.backgroundColor);
+      if (f.a >= 0.9) {
+        const c = f.a < 1 ? over(f, outer || canvasBg) : f;
+        let up = el.parentElement;
+        while (up && !surfaceKeys.has(up)) up = up.parentElement;
+        surfaceKeys.set(el, keyOf(el));
+        surfaces.push({ key: keyOf(el), rgb: str(c), lum: Math.round(lum(c) * 1000) / 1000, in: up ? surfaceKeys.get(up) : null });
+      }
+    }
+    // A status badge: short text on its own fill, rounded or padded, no control. Its role is its text; its value the fill and ink.
+    if (words && words.length <= 24 && words.split(" ").length <= 3 && box.height <= 40 && !el.closest(INTERACTIVE) && rgba(s.backgroundColor).a > 0 && boxed(el, s) && (radius(el, s, "top-left") || num(s.paddingLeft) >= 2)) {
+      const fill = over(rgba(s.backgroundColor), outer || canvasBg);
+      roles.push({ text: words.toLowerCase().replace(/[0-9]+/g, "#"), sig: str(fill) + " / " + str(over(rgba(s.color), fill)) });
     }
     if (/^h[1-6]$/i.test(el.tagName) || el.getAttribute("role") === "heading") {
       const level = /^h[1-6]$/i.test(el.tagName) ? Number(el.tagName[1]) : Number(el.getAttribute("aria-level")) || 2;
@@ -246,6 +280,7 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     if (gap >= 1 && !gaps.has(gap)) gaps.set(gap, keyOf(sections[i].k));
   }
 
+  const root = surface(doc.body) || canvasBg;
   return {
     media,
     vw: win.innerWidth,
@@ -258,6 +293,11 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     alignment,
     nested,
     shadows: [...shadows].map(([value, layers]) => ({ value, layers: [...layers].sort() })),
+    text,
+    borders,
+    surfaces,
+    roles,
+    root: { rgb: str(root), lum: Math.round(lum(root) * 1000) / 1000 },
   };
 }`;
 
@@ -268,8 +308,6 @@ export const TASTE_SOURCE = String.raw`(arg) => {
  */
 export const TASTE_INIT = "";
 
-/** The suite's taste checks, as argus-live-layout.mjs registers its own: `{name, project, when, source, emit}`. */
-export const CHECKS = [];
 
 /**
  * The per-screen rows `[{rule, key, measured, expected}]` of `screen` against `bar` and `cfg`. `screen` is censusOf's
@@ -342,22 +380,86 @@ export function rulesFor(screen, bar, cfg) {
       if (fires(t, base.shadows.length - layers.length)) out.push({ rule: id, key: "view", measured: base.shadows.length, expected: "at most " + layers.length + " (layers: " + layers.join(", ") + ")" });
     } else if (id === "hierarchy.nested-radius") {
       each(rule, base.nested, (x) => ({ key: x.key, measured: x.child, expected: "at most " + x.parent + " (its parent's)" }));
+    } else if (id === "colour.role") {
+      // One role (a badge's text), one value: the judge joins several screens' roles to compare across them.
+      const by = new Map();
+      for (const x of base.roles) (by.get(x.text) || by.set(x.text, new Set()).get(x.text)).add(x.sig);
+      for (const [text, sigs] of by) if (fires(t, sigs.size)) out.push({ rule: id, key: text, measured: (sigs.size + " values: " + [...sigs].join(" | ")).slice(0, 200), expected: t.max === 1 ? "one value" : "at most " + t.max + " values" });
+    } else if (id === "contrast.headroom") {
+      // Body text that passes AA (4.5:1) yet sits under the headroom; under 4.5:1 is axe's failure, not this.
+      const pairs = new Map();
+      for (const x of base.text) if (!x.large && x.ratio >= 4.5 && fires(t, x.ratio) && !(pairs.get(x.ink + " on " + x.surface) <= x.ratio)) pairs.set(x.ink + " on " + x.surface, x.ratio);
+      for (const [key, v] of [...pairs].slice(0, 10)) out.push({ rule: id, key, measured: v, expected: t.min });
+    } else if (id.startsWith("colour.dark-") && s.light && s.dark) {
+      // Dark parity, element by element: what held in light and broke in dark (a failure in both is not dark's).
+      const L = s.light, D = s.dark;
+      const lightOf = (list) => new Map(list.map((x) => [x.key, x]));
+      if (id === "colour.dark-contrast") {
+        const light = lightOf(L.text);
+        const need = (x) => (x.large ? 3 : 4.5);
+        each(rule, D.text.filter((d) => light.has(d.key) && d.ratio < need(d) && light.get(d.key).ratio >= need(light.get(d.key))), (d) => ({ key: d.key, measured: d.ratio, expected: "at least " + need(d) + ":1, as in light (" + light.get(d.key).ratio + ":1)" }));
+      } else if (id === "colour.dark-border") {
+        const light = lightOf(L.borders);
+        each(rule, D.borders.filter((d) => light.has(d.key) && light.get(d.key).edge >= 1.2 && d.edge < 1.1), (d) => ({ key: d.key, measured: d.edge, expected: "an edge of at least 1.1:1, as in light (" + light.get(d.key).edge + ":1)" }));
+      } else if (id === "colour.dark-surface" && D.root.lum <= 0.1) {
+        // A light surface the dark theme left as it was in light; one inside another such surface is that one's.
+        const light = lightOf(L.surfaces), left = new Set(), list = [];
+        for (const d of D.surfaces) {
+          if (d.lum < 0.4 || !light.has(d.key) || light.get(d.key).rgb !== d.rgb) continue;
+          if (!left.has(d.in)) list.push(d);
+          left.add(d.key);
+        }
+        each(rule, list, (d) => ({ key: d.key, measured: d.rgb + " on " + D.root.rgb, expected: "a dark surface, as the page is" }));
+      }
     }
   }
   return out.map((r) => ({ ...r, key: String(r.key).replace(/[\r\n]+/g, " ").slice(0, 300) }));
 }
 
 /**
- * The census of `page` (a Playwright Page) → `{media, light, dark, reduce, themes}`: the page's own media read
- * first (explicit values) and TASTE_SOURCE's census under it, kept under its colour scheme's name. Self-contained:
- * `String(censusOf)` runs in the lane's run-code and the suite as it runs here.
+ * Quiet while the media is switched (an adopted sheet, so no DOM mutation for the feedback clock): no transition
+ * runs, so a theme switch never interpolates colours mid-census nor records motion the user did not cause.
+ */
+const QUIET = `(on) => {
+  const d = document;
+  if (on && !d.__argusTasteQuietSheet) {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync("*, *::before, *::after { transition: none !important; }");
+    d.__argusTasteQuietSheet = sheet;
+    d.adoptedStyleSheets = [...d.adoptedStyleSheets, sheet];
+  } else if (!on && d.__argusTasteQuietSheet) {
+    const sheet = d.__argusTasteQuietSheet;
+    d.adoptedStyleSheets = d.adoptedStyleSheets.filter((x) => x !== sheet);
+    d.__argusTasteQuietSheet = null;
+  }
+  d.__argusTasteQuiet = on;
+}`;
+
+/**
+ * The census of `page` (a Playwright Page) → `{media, light, dark, reduce, themes}`. The page's own media is read
+ * first (explicit values) and censused; then, quiet, the other colour scheme; then the media is put back as read,
+ * never by null (null hands the choice to the OS: Task 0.1). `themes` is `single` when both schemes render the same
+ * colours (the app does not answer prefers-color-scheme: dark parity is not judged, and the other census is dropped),
+ * else `dual`. Self-contained: `String(censusOf)` runs in the lane's run-code and the suite as it runs here.
  */
 export const censusOf = new Function(`return async (page) => {
   const SOURCE = ${JSON.stringify(TASTE_SOURCE)};
   const run = (arg) => page.evaluate("(" + SOURCE + ")(" + JSON.stringify(arg) + ")");
+  const quiet = (on) => page.evaluate("(" + ${JSON.stringify(QUIET)} + ")(" + on + ")");
   const media = await page.evaluate('({ colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "no-preference" })');
+  const other = media.colorScheme === "dark" ? "light" : "dark";
   const out = { media, light: null, dark: null, reduce: null, themes: null };
   out[media.colorScheme] = await run({});
+  await quiet(true);
+  try {
+    await page.emulateMedia({ colorScheme: other, reducedMotion: media.reducedMotion });
+    out[other] = await run({});
+  } finally {
+    await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
+    await quiet(false);
+  }
+  out.themes = JSON.stringify(out.light.palette) === JSON.stringify(out.dark.palette) ? "single" : "dual";
+  if (out.themes === "single") out[other] = null;
   return out;
 }`)();
 
@@ -379,3 +481,93 @@ export function ruleExpression(rule, cfg = null) {
   return (${String(rulesFor)})(screen, ${JSON.stringify(bar)}, ${JSON.stringify(c)});
 })()`;
 }
+
+// ---------------------------------------------------------------------------------------------------
+// The suite's check (spec §20.4): support.ts embeds this source; the generator adds one soft line a step.
+
+const SUITE_BAR = { version: BAR.version, rules: BAR.rules.filter((r) => OURS.includes(r.family)), frames: BAR.frames };
+const SUITE_SOURCE = String.raw`const tasteCensus: (page: Page) => Promise<any> = ${String(censusOf)};
+const tasteRules: (screen: any, bar: any, cfg: any) => { rule: string; key: string; measured: unknown; expected: unknown }[] = ${String(rulesFor)};
+const TASTE_BAR: { version: number; rules: { id: string; info?: boolean }[]; frames: Record<string, unknown> } = ${JSON.stringify(SUITE_BAR)};
+const TASTE_INIT_SCRIPT: string = ${JSON.stringify(TASTE_INIT)};
+type TasteViolation = { check: string; step: number; key: string; detail: string };
+const tasteArmed = new WeakSet<object>();
+const tasteSaid = new WeakMap<object, Set<string>>();
+
+/** .argus/taste.json as the suite reads it: the owner's gate, off and frame (a missing or unreadable file: every default). */
+async function tasteConfig(): Promise<{ gate: string[]; off: string[]; frame: string | null }> {
+  const fs = await import("node:fs");
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+  try {
+    const t = JSON.parse(fs.readFileSync(path.join(REPO, ".argus", "taste.json"), "utf8"));
+    return { gate: list(t.gate), off: list(t.off), frame: typeof t.frame === "string" ? t.frame : null };
+  } catch (e) {
+    return { gate: [], off: [], frame: null };
+  }
+}
+
+/**
+ * The taste checks after a step (spec 20.4), in the taste project: the screen censused in its own media and the
+ * other colour scheme, each per-screen row annotated once a test — argus-taste ({rule, step, key, measured,
+ * expected}), an information rule's argus-info, a rule the owner gates argus-violation (less the adopted
+ * known/<id>.json rows) and returned, so the soft check fails. A count rule's peer row is the lane's to judge.
+ */
+export async function tasteStep(opened: BrowserContext[], i: number, step: number, id: string): Promise<TasteViolation[]> {
+  const context = opened[i];
+  const page = context ? context.pages()[0] ?? null : null;
+  if (!page) return [];
+  if (!tasteArmed.has(context)) {
+    tasteArmed.add(context);
+    if (TASTE_INIT_SCRIPT) {
+      await context.addInitScript({ content: TASTE_INIT_SCRIPT });
+      await page.evaluate(TASTE_INIT_SCRIPT);
+    }
+  }
+  const cfg = await tasteConfig();
+  const screen = await tasteCensus(page);
+  const info = test.info();
+  const said = tasteSaid.get(opened) ?? new Set<string>();
+  tasteSaid.set(opened, said);
+  const note = (type: string, description: string) => info.annotations.push({ type, description });
+  if (screen.themes === "single" && !said.has("single theme")) {
+    said.add("single theme");
+    note("argus-info", "taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged");
+  }
+  const fs = await import("node:fs");
+  const file = path.join(__dirname, "known", id + ".json");
+  const known = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  const out: TasteViolation[] = [];
+  for (const r of tasteRules(screen, TASTE_BAR, cfg)) {
+    if (r.expected === "peer" || said.has(r.rule + "|" + r.key)) continue;
+    said.add(r.rule + "|" + r.key);
+    const rule = TASTE_BAR.rules.find((x) => x.id === r.rule);
+    if (rule && rule.info) note("argus-info", "taste " + r.rule + " " + JSON.stringify(r.key) + ": " + String(r.measured) + " (expected " + String(r.expected) + ")");
+    else if (cfg.gate.includes(r.rule)) {
+      if (Array.isArray(known) && known.some((k) => k && k.check === r.rule && k.key === r.key)) continue;
+      const v = { check: r.rule, step, key: r.key, detail: String(r.measured) + " → expected " + String(r.expected) };
+      note("argus-violation", JSON.stringify(v));
+      out.push(v);
+    } else note("argus-taste", JSON.stringify({ rule: r.rule, step, key: r.key, measured: r.measured, expected: r.expected }));
+  }
+  return out;
+}
+`;
+
+const J = JSON.stringify;
+/** The accounts a path acts as, in the order they first act: the order the test opens their contexts in. */
+const accountsOf = (steps) => [...new Set(steps.filter((s) => s.as !== "system").map((s) => s.as))];
+
+/**
+ * The suite's taste checks, as argus-live-layout.mjs registers its own: `{name, project, when, source, emit}`. The
+ * `taste` project (lane S adds it to the suite) runs `tasteStep` after each step of an account: advisory unless the
+ * owner gates a rule in .argus/taste.json.
+ */
+export const CHECKS = [
+  {
+    name: "taste",
+    project: "taste",
+    when: "every step",
+    source: SUITE_SOURCE,
+    emit: (step, ctx) => (step.as === "system" ? [] : [`expect.soft(await (await import("./support")).tasteStep(opened, ${accountsOf(ctx.steps).indexOf(step.as)}, ${step.n}, ${J(ctx.id)}), ${J(`taste: step ${step.n}`)}).toEqual([]);`]),
+  },
+];

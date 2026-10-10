@@ -2,17 +2,19 @@
 // for real in Chrome against fixture pages that each hold a violation and its excluded twins: the false-positive set
 // is the test. A probe that reports a twin costs the lane its credibility, so every exclusion has its page here.
 import { createServer, type Server } from "node:http";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire, stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { browserTools } from "./helpers/argus-live";
+import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHECKS, censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadBar, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
+
+afterEach(cleanTemps);
 
 const PAGES = join(__dirname, "fixtures/journey-app/pages/taste");
 const BAR = loadBar();
@@ -68,9 +70,9 @@ afterAll(async () => {
 }, 30_000);
 
 const contexts: any[] = [];
-/** A fixture page in a fresh context (Playwright's default media: light, no reduced motion), the motion recorder installed. */
-async function open(file: string, { width = 1000, height = 800 } = {}) {
-  const context = await browser.newContext({ viewport: { width, height } });
+/** A fixture page in a fresh context (Playwright's default media: light, no reduced motion, unless given), the motion recorder installed. */
+async function open(file: string, { width = 1000, height = 800, colorScheme = "light", reducedMotion = "no-preference" } = {}) {
+  const context = await browser.newContext({ viewport: { width, height }, colorScheme, reducedMotion });
   contexts.push(context);
   if (TASTE_INIT) await context.addInitScript({ content: TASTE_INIT });
   const page = await context.newPage();
@@ -114,7 +116,7 @@ describe("argus-live-taste.mjs — the census (T1.1)", () => {
   }, 60_000);
 
   it("colours resolve through the canvas: an oklch() page scores exactly like its sRGB twin [mdn-oklch]", async () => {
-    for (const file of ["census.html", "primary-three.html", "radius.html"]) {
+    for (const file of ["census.html", "primary-three.html", "radius.html", "dark.html", "role-split.html"]) {
       const srgb = await censusOf(await open(file));
       const ok = await censusOf(await open(`oklch/${file}`));
       expect(await (await open(`oklch/${file}`)).evaluate("getComputedStyle(document.body).color"), file).toMatch(/^oklch\(/);
@@ -221,12 +223,133 @@ describe("argus-live-taste.mjs — the page expression and the pure judge (T1.1)
   });
 });
 
+const ruleOf = (id: string) => BAR.rules.find((r: Obj) => r.id === id);
+const keysOf = (rows: Obj[]) => rows.map((r) => r.key).sort();
+
+describe("argus-live-taste.mjs — colour roles, dark parity, contrast headroom (T1.2)", () => {
+  it("colour roles: one status in two colours on one screen is derived; a status link is not a badge [radix] [stripe-color]", async () => {
+    expect(ruleOf("colour.role").class).toBe("derived");
+    expect(await rowsOf("role-split.html", "colour.role")).toEqual([{ rule: "colour.role", key: "paid", measured: "2 values: rgb(22, 163, 74) / rgb(255, 255, 255) | rgb(37, 99, 235) / rgb(255, 255, 255)", expected: "one value" }]);
+    for (const f of ["role-a.html", "role-b.html"]) expect(await rowsOf(f, "colour.role"), f).toEqual([]);
+  }, 60_000);
+
+  it("colour roles across screens: the judge joins two screens' roles, and only the status rendered two ways is a row", async () => {
+    const a = await censusOf(await open("role-a.html"));
+    const b = await censusOf(await open("role-b.html"));
+    const joined = { ...a, light: { ...a.light, roles: [...a.light.roles, ...b.light.roles] } };
+    expect(rulesFor(joined, BAR, cfgOf()).filter((r: Obj) => r.rule === "colour.role")).toEqual([{ rule: "colour.role", key: "paid", measured: "2 values: rgb(22, 163, 74) / rgb(255, 255, 255) | rgb(37, 99, 235) / rgb(255, 255, 255)", expected: "one value" }]);
+  }, 60_000);
+
+  it("dark parity: a dark-only contrast failure, a collapsed border and a surface left light are implicit; every twin holds [apple-dark]", async () => {
+    for (const id of ["colour.dark-contrast", "colour.dark-border", "colour.dark-surface"]) expect(ruleOf(id).class, id).toBe("implicit");
+    const screen = await censusOf(await open("dark.html"));
+    expect(screen.themes).toBe("dual");
+    const rows = rulesFor(screen, BAR, cfgOf());
+    const of = (id: string) => rows.filter((r: Obj) => r.rule === id);
+    // The legacy panel's light ink on its light surface fails only in dark too: two measured defects of one element.
+    expect(keysOf(of("colour.dark-contrast"))).toEqual(["div|Legacy panel", "p|Last signed in yesterday"]);
+    expect(of("colour.dark-contrast").find((r: Obj) => r.key.startsWith("p|"))).toEqual({ rule: "colour.dark-contrast", key: "p|Last signed in yesterday", measured: 1.91, expected: "at least 4.5:1, as in light (4.74:1)" });
+    expect(of("colour.dark-border")).toEqual([{ rule: "colour.dark-border", key: "input|Display name", measured: 1, expected: "an edge of at least 1.1:1, as in light (1.48:1)" }]);
+    expect(of("colour.dark-surface")).toEqual([{ rule: "colour.dark-surface", key: "div|Legacy panel", measured: "rgb(255, 255, 255) on rgb(10, 10, 10)", expected: "a dark surface, as the page is" }]);
+  }, 60_000);
+
+  it("censusOf reads the other theme and restores the page's own media explicitly, never by null: a dark context stays dark", async () => {
+    const page = await open("dark.html", { colorScheme: "dark", reducedMotion: "reduce" });
+    const sheets = await page.evaluate("document.adoptedStyleSheets.length");
+    const screen = await censusOf(page);
+    expect(screen.media).toEqual({ colorScheme: "dark", reducedMotion: "reduce" });
+    expect(screen.light.media.dark).toBe(false);
+    expect(screen.dark.media.dark).toBe(true);
+    expect(await page.evaluate('[matchMedia("(prefers-color-scheme: dark)").matches, matchMedia("(prefers-reduced-motion: reduce)").matches]')).toEqual([true, true]);
+    expect(await page.evaluate("document.adoptedStyleSheets.length")).toBe(sheets);
+    // The base census is the page's own (dark here), and the parity rows read the same either way.
+    expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-")).length).toBe(4);
+  }, 60_000);
+
+  it("a single-theme app is reported single theme, and no dark parity row is measured", async () => {
+    const screen = await censusOf(await open("single.html"));
+    expect(screen.themes).toBe("single");
+    expect(screen.dark).toBe(null);
+    expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-"))).toEqual([]);
+  }, 60_000);
+
+  it("contrast.headroom: body text that passes AA under 7:1 is a row of an information rule, never gated [apple-dark] [wcag3-wd]", async () => {
+    expect(ruleOf("contrast.headroom")).toMatchObject({ info: true, threshold: { min: 7 } });
+    expect(validateTaste({ gate: ["contrast.headroom"] }).errors).toEqual(["gate: contrast.headroom is information only: it cannot gate"]);
+    expect(await rowsOf("single.html", "contrast.headroom")).toEqual([{ rule: "contrast.headroom", key: "rgb(115, 115, 115) on rgb(255, 255, 255)", measured: 4.74, expected: 7 }]);
+    // Under 4.5:1 is axe's failure, not headroom; over a gradient is unmeasured; a disabled control is exempt.
+    expect(keysOf(await rowsOf("dark.html", "contrast.headroom"))).toEqual(["rgb(115, 115, 115) on rgb(255, 255, 255)"]);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// The suite's check: the registry entry's source loaded as the support file holds it, run against the pages.
+
+/** The taste check's source → its exported and local names (vitest's Function has no dynamic import: `require` stands in). */
+function loadCheck(scope: Obj) {
+  const js = stripTypeScriptTypes(CHECKS.map((c: Obj) => c.source).join("\n")).replace(/^export /gm, "").replace(/await import\("node:fs"\)/g, 'require("node:fs")');
+  const found = [...js.matchAll(/^(?:async function|function|const) (\w+)/gm)].map((m) => m[1]);
+  return new Function("require", ...Object.keys(scope), `${js}\nreturn { ${found.join(", ")} };`)(createRequire(import.meta.url), ...Object.values(scope)) as Obj;
+}
+/** A support-file scope: a stand-in `test` collecting annotations, the repo (with `taste` as its .argus/taste.json) and the suite's directory. */
+function suiteEnv(taste: Obj | null = null, known: Obj[] | null = null) {
+  const dir = tempDir();
+  const annotations: { type: string; description: string }[] = [];
+  if (taste) {
+    mkdirSync(join(dir, ".argus"));
+    writeFileSync(join(dir, ".argus/taste.json"), JSON.stringify(taste));
+  }
+  if (known) {
+    mkdirSync(join(dir, "known"));
+    writeFileSync(join(dir, "known/j.json"), JSON.stringify(known));
+  }
+  const lib = loadCheck({ test: { info: () => ({ project: { name: "taste" }, annotations }) }, path: { join }, REPO: dir, __dirname: dir });
+  return { lib, annotations };
+}
+const ofType = (annotations: Obj[], type: string) => annotations.filter((a) => a.type === type).map((a) => a.description);
+
+describe("argus-live-taste.mjs — the suite's taste check (T1.2)", () => {
+  it("registers one check of the taste project, one soft line a step of each account, none for the system", () => {
+    expect(CHECKS.map((c: Obj) => [c.name, c.project])).toEqual([["taste", "taste"]]);
+    const steps = [{ n: 1, as: "customer.1", do: "goto" }, { n: 2, as: "system", do: "trigger" }, { n: 3, as: "admin.1", do: "click" }];
+    expect(CHECKS[0].emit(steps[0], { id: "j", steps })).toEqual(['expect.soft(await (await import("./support")).tasteStep(opened, 0, 1, "j"), "taste: step 1").toEqual([]);']);
+    expect(CHECKS[0].emit(steps[1], { id: "j", steps })).toEqual([]);
+    expect(CHECKS[0].emit(steps[2], { id: "j", steps })[0]).toContain("tasteStep(opened, 1, 3,");
+    expect(stripTypeScriptTypes(CHECKS[0].source)).not.toMatch(/shell|\bexec\(|spawn\(|waitForTimeout/);
+  });
+
+  it("advisory by default: rows annotate argus-taste, an information rule argus-info, a single theme one line; nothing fails", async () => {
+    const { lib, annotations } = suiteEnv();
+    const opened = [(await open("single.html")).context()];
+    expect(await lib.tasteStep(opened, 0, 2, "j")).toEqual([]);
+    expect(ofType(annotations, "argus-info")).toEqual(["taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged", 'taste contrast.headroom "rgb(115, 115, 115) on rgb(255, 255, 255)": 4.74 (expected 7)']);
+    expect(ofType(annotations, "argus-taste")).toEqual([]);
+    // The same screen again adds nothing: each row is said once a test.
+    await lib.tasteStep(opened, 0, 3, "j");
+    expect(annotations.length).toBe(2);
+    const dark = suiteEnv();
+    expect(await dark.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j")).toEqual([]);
+    const rows = ofType(dark.annotations, "argus-taste").map((d) => JSON.parse(d));
+    expect(rows).toContainEqual({ rule: "colour.dark-border", step: 1, key: "input|Display name", measured: 1, expected: "an edge of at least 1.1:1, as in light (1.48:1)" });
+    expect(rows.some((r) => r.expected === "peer" || r.rule === "contrast.headroom")).toBe(false);
+  }, 60_000);
+
+  it("a rule the owner gates fails as argus-violation, unless adopted in known/<id>.json", async () => {
+    const gated = suiteEnv({ gate: ["colour.dark-border"] });
+    const page = await open("dark.html");
+    expect(await gated.lib.tasteStep([page.context()], 0, 4, "j")).toEqual([{ check: "colour.dark-border", step: 4, key: "input|Display name", detail: "1 → expected an edge of at least 1.1:1, as in light (1.48:1)" }]);
+    expect(ofType(gated.annotations, "argus-violation").map((d) => JSON.parse(d).check)).toEqual(["colour.dark-border"]);
+    expect(ofType(gated.annotations, "argus-taste").map((d) => JSON.parse(d).rule)).not.toContain("colour.dark-border");
+    const adopted = suiteEnv({ gate: ["colour.dark-border"] }, [{ check: "colour.dark-border", key: "input|Display name" }]);
+    expect(await adopted.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j")).toEqual([]);
+    const off = suiteEnv({ off: ["colour.dark-border"] });
+    await off.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j");
+    expect(off.annotations.map((a) => a.description).join("\n")).not.toContain("dark-border");
+  }, 60_000);
+});
+
 describe("argus-live-taste.mjs — lane 0's stubs not yet replaced", () => {
   it("TASTE_INIT is the init payload's motion recorder (stub: empty, so nothing is installed)", () => {
     expect(TASTE_INIT).toBe("");
-  });
-
-  it("CHECKS registers no suite check yet", () => {
-    expect(CHECKS).toEqual([]);
   });
 });
