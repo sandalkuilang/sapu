@@ -1147,3 +1147,82 @@ The config:
 - Codegen never writes `test.fixme`: a quarantined test gets `tag: "@quarantine"` (decision 13). This
   closes 0.2's open line for B2.
 - Line counts at 0.4: `-codegen` 603, `-redtest` 77, `-login` 712.
+
+### Lane F — report, filed record, API hint
+
+**Locked for the lanes.**
+- `filedFile(main, runId)` (`-scrub`) is `<run>/filed.jsonl` (0600). `scrub --create` and `--comment` append
+  `{ref, url, kind}` to it only after gh printed the issue URL: `kind` is `issue` or `comment`, and `ref` is the
+  candidate's, or null for a scrub named by `--run` alone (a perf issue). A refusal, a gh failure and a check
+  without `--create` or `--comment` record nothing. What scrub prints is unchanged; a record that cannot be
+  written adds one `note: … not recorded …` line, and the exit stays 0, so nothing files twice.
+- `report(main, {run}, {env})` (`-report`) writes `.argus/reports/<runId>.md` (0600, the directory 0700) and
+  answers `report: <path>`. `run` null takes `lastRun` (the lock's, else the newest run directory), so it works
+  after `down`. Refusals: `refused: report: --run takes a run id`, `refused: report: no run here`, `refused:
+  report: no run <id> here`, and a secret's pattern that cannot run.
+- The report reads only these records, each optional (missing: `none recorded`; malformed: named under
+  "Records not read", never guessed at):
+  - `<run>/returns/<slot>.<generation>.json`, `<run>/repro/<ref>/verdict.json` and `minimize.json`: journeys
+    walked (status, steps, coverage per oracle), candidates (ref, oracle, verdict, minimized steps, filed URL,
+    claim) and the explorers' harness events;
+  - `<run>/filed.jsonl`: issues filed;
+  - `<run>/smoke/pass.jsonl` (0.3): each path's verdict;
+  - `<run>/smoke/events.jsonl`, one object per line, which the smoke verbs append:
+    `{kind: "admitted" | "quarantined" | "unquarantined" | "dropped", id}`, `{kind: "healed", id, steps:
+    [<n>…]}`, `{kind: "proposal", url, branch: "argus/…", changes}`, `{kind: "perf", id, baseline: {<metric>:
+    <n>} | null, batches: [{<metric>: <n>}…], verdict: "baseline" | "held" | "regressed" | "unconfirmed" |
+    "void"}` (metrics are `PERF_METRICS`);
+  - `.argus/smoke-ci.json`, the newest `smoke ci` summary, overwritten by each `smoke ci`: `{run, event, branch,
+    lines}`. Only lines whose first word is a §19.9 triage word (`flaky`, `flaky-new`, `quarantine`, `ui-change?`,
+    `bug?`, `ci-only`, `browser-only`, `check`, `manual`, `baseline-missing`, `visual`, `aria`, `stale`,
+    `harness`, …) and that are printable single-spaced words of at most 200 characters are shown. The rest is
+    counted as `<k> line(s) not shown: not a triage line`, since CI artifact text is untrusted.
+- Sections, in order: Journeys walked, Candidates, Issues filed, Smoke (`held, broke, flaky, harness; healed,
+  admitted, quarantined` counts, then each path and event), Perf (each batch beside its baseline, then one `lab
+  context, never a verdict` line with web.dev's "good" values), Visual and checks, Proposals, Harness events,
+  and Records not read only when something was not read.
+
+**How secrets and page text are kept out.**
+- Free text means a candidate's claim or an explorer's harness event. Each item is cleaned (`clean`: marker
+  shapes, control characters), its whitespace collapsed, and capped at 200 characters. Its long unknown tokens
+  are redacted (`redactIds`, the run's seen ids kept), and it is quoted as a JSON string, with `<` and `>` as
+  `<` and `>` so that no page tag renders. An item that holds a secret scrub knows, before or after
+  the cap, is `*** (<class>)`.
+- When `scrubSecrets` refuses the run (a ledger gone, damaged or incomplete; a configuration that cannot be
+  read), every free-text item is `(withheld)`, and the header says why. A map run says `a map run keeps no
+  secret ledger`.
+- The whole file is then defanged (scrub's `defang`: an outside URL, a mention and a reference go into code
+  spans, and a loopback URL stays). Last, scrub's matcher (`secretHits`) runs over the whole file: a line in
+  which it still finds a secret becomes `*** (<class>)`, with its list marker kept, until none is left.
+- The CLI prints only the path, never the report's text.
+
+**F2.** `apiLevelHint(main, ref)` (`-repro`) reads the candidate's own final, which minimizing never drops. It
+answers `api-level: suggested (the final reads live.facts)` for `fact-equals`, `… live.mail` for `mail`, and null
+for any other kind. A `mail` final exists only on a `regression` candidate (`FINAL_KINDS`).
+
+**Deviations.**
+- `report` takes a third, optional `{env}` (scrub's environment, a test seam like `smokeRun`'s `{once}`). The
+  CLI's call `report(main, {run})` is unchanged.
+- F1 landed as two commits: scrub's filed record first, then the report.
+- Line counts: `-report` 305, `-scrub` 538, `-repro` 607.
+
+**Needs coordinator.**
+- `tests/argus-live-smoke.test.ts` (lane 0's) fails two tests on this branch: "each new verb reaches its lane's
+  function, which is not built yet" and the trace-gate test. Both iterate a `STUBS` list that still holds
+  `["report"]` and `["report", "--run", "r1"]`. Drop both entries; every lane that fills a stub has the same
+  conflict. What replaces them is pinned in `tests/argus-live-report.test.ts`: `report` on a repo with no run
+  answers `refused: report: no run here`, and `report --run r1` answers `refused: report: --run takes a run id`
+  (exit 1). The trace gate never applies to `report`.
+- The report's inputs from lanes A, B and D are the record shapes above. Each lane must write them:
+  - A2: `admitted`;
+  - A3 and B3: `proposal`;
+  - B1: `healed`;
+  - B2: `quarantined`, `unquarantined` and `dropped`, plus `.argus/smoke-ci.json` holding its triage lines,
+    `flaky-new` and `manual` included;
+  - D1: `perf`.
+
+  If a lane's as-built record differs, Z adapts either the lane or the report's reader (`sections` in
+  `-report.mjs`).
+- Z2 and Z3: spec §19.13 should name the inputs above (`smoke/events.jsonl`, `.argus/smoke-ci.json`). CONTRACT.md
+  and the docs should name `filed.jsonl` and `.argus/reports/`. Both files are already gitignored under
+  `.argus/`'s rule.
