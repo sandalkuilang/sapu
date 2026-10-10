@@ -230,7 +230,10 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     const t = liveRun();
     writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(pathLive(), null, 2)}\n`);
     writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
-    writeFileSync(join(t.main, ".argus/journeys.json"), JSON.stringify({ journeys: [journey("checkout", { money: true, roles: ["customer", "sales"] }), journey("refund")] }));
+    // The map routes of checkout's steps (one twice) ride the admitted journey file, for the CTA-route check.
+    const checkout = journey("checkout", { money: true, roles: ["customer", "sales"] });
+    checkout.steps = [...checkout.steps.map((st: Obj, i: number) => ({ ...st, route: i ? "/inbox" : "/orders/new" })), { role: "customer", goal: "again", route: "/orders/new" }];
+    writeFileSync(join(t.main, ".argus/journeys.json"), JSON.stringify({ journeys: [checkout, journey("refund")] }));
     const ports = { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 };
     writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, worktreeHead: "a".repeat(40), home: t.home, origins: ["http://localhost:41002"], allowOrigins: [], groups: [], env: t.env, ports, instanceId: "0123456789abcdef", slots: {}, internal: { proxy: 41009 }, browser: { channel: "chrome" } });
     runs.push({ main: t.main, runId: t.runId });
@@ -271,7 +274,8 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     const staged = readStaged(t.main);
     expect(staged).toHaveLength(1);
     expect(staged[0]).toMatchObject({ kind: "add", id: "checkout", run: t.runId });
-    expect(staged[0].journey).toEqual({ journey: "checkout", path: want, admitted: { run: t.runId, head: "a".repeat(40), pathSha: expect.stringMatching(/^[0-9a-f]{64}$/), seed: 5 } });
+    const routes = [{ role: "customer", route: "/orders/new" }, { role: "sales", route: "/inbox" }];
+    expect(staged[0].journey).toEqual({ journey: "checkout", path: want, admitted: { run: t.runId, head: "a".repeat(40), pathSha: expect.stringMatching(/^[0-9a-f]{64}$/), seed: 5 }, routes });
     expect(statSync(join(t.main, ".argus/smoke-staged.json")).mode & 0o777).toBe(0o600);
     // Without a seed one is drawn, printed and recorded.
     const u = await admit(t.main, "1.1", stub().once, null);

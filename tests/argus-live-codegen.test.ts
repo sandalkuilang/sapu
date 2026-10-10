@@ -11,6 +11,8 @@ import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP 
 // @ts-expect-error — plain ESM script without types
 import { authSetup, CODEGEN_VERSION, generateSuite, headerDigest, packageJson, SMOKE_AXE, SMOKE_PLAYWRIGHT, smokeConfig, smokeSpec, suiteGitignore, supportFile, TOTP_SOURCE } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
+import { ARIA_EXPECT } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
+// @ts-expect-error — plain ESM script without types
 import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loginStageSource, totp } from "../plugins/sapu/scripts/argus-live-login.mjs";
@@ -352,7 +354,7 @@ describe("argus-live codegen — projects and browsers", () => {
       try {
         return spec({ path: SHORT });
       } finally {
-        layout.CHECKS.length = 0;
+        layout.CHECKS.pop(); // only the probe: the registry is the layout lane's
       }
     };
     expect(gated("a11y")).toContain('    if (inProject(["a11y"])) {\n      await probe(2);\n    }');
@@ -398,16 +400,34 @@ describe("argus-live codegen — screenshots", () => {
     for (const n of [1, 2, 99]) expect(() => spec({ smoke: validateSmoke({ journeys: { checkout: { screens: [n] } } }).value })).toThrow(`failed: codegen: smoke.json journeys.checkout.screens names step ${n}, which is not a step of the path acting on a page`);
   });
 
-  it("every registered check is told the screens and the projects", async () => {
+  it("every registered check is told the screens, the projects, the page variables and the map routes", async () => {
     const layout = await import("../plugins/sapu/scripts/argus-live-layout.mjs");
     const seen: Obj[] = [];
     layout.CHECKS.push({ name: "probe", source: "", emit: (_s: Obj, ctx: Obj) => (seen.push(ctx), []) });
     try {
-      spec({ smoke: validateSmoke({ journeys: { checkout: { screens: [3, 5] } } }).value });
+      spec({ smoke: validateSmoke({ journeys: { checkout: { screens: [3, 5] } } }).value, routes: [{ role: "customer", route: "/orders/:id" }] });
     } finally {
-      layout.CHECKS.length = 0;
+      layout.CHECKS.pop(); // only the probe: the registry is the layout lane's
     }
-    expect(seen[0]).toMatchObject({ id: "checkout", screens: [3, 5], projects: [...SHOT_PROJECTS.slice(0, 3), "msedge", "chromium-390", "a11y"] });
+    expect(seen[0]).toMatchObject({ id: "checkout", screens: [3, 5], projects: [...SHOT_PROJECTS.slice(0, 3), "msedge", "chromium-390", "a11y"], routes: [{ role: "customer", route: "/orders/:id" }] });
+    // The page variables are the spec's own (pageVars), so a check never rebuilds the naming rule.
+    expect([...seen[0].pages].map(([a, p]: [string, Obj]) => [a, p.v])).toEqual([...new Set(seen[0].steps.filter((x: Obj) => x.as !== "system").map((x: Obj) => x.as))].map((a) => [a, a.replace(".", "")]));
+    // Without routes the CTA-route check has none.
+    layout.CHECKS.push({ name: "probe", source: "", emit: (_s: Obj, ctx: Obj) => (seen.push(ctx), []) });
+    try {
+      spec();
+    } finally {
+      layout.CHECKS.pop(); // only the probe: the registry is the layout lane's
+    }
+    expect(seen.at(-1).routes).toEqual([]);
+  });
+
+  it("generateSuite hands each path's routes (its journey file's) to the CTA-route check of that spec only", () => {
+    const routes = [{ role: "sales", route: "/inbox" }];
+    const files = generateSuite({ paths: [{ id: "checkout", path: PATH(), routes }, { id: "other", path: PATH() }], live: LIVE(), smoke: SMOKE() }) as Record<string, string>;
+    const finalOf = (f: string) => files[f].split("\n").find((l) => l.includes(".linksFinal("))!;
+    expect(finalOf("checkout.spec.ts")).toContain('[{"role":"sales","route":"/inbox"}]');
+    expect(finalOf("other.spec.ts")).not.toContain("/inbox");
   });
 
   it("the config names where baselines live and ignores them outside CI", () => {
@@ -418,7 +438,8 @@ describe("argus-live codegen — screenshots", () => {
     expect(ci.snapshotPathTemplate).toBe("{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}");
     expect([ci.ignoreSnapshots, local.ignoreSnapshots]).toEqual([false, true]);
     expect([ci.updateSnapshots, local.updateSnapshots]).toEqual(["none", "missing"]);
-    // ARIA baselines (the a11y checks) sit beside the screenshots', one directory per spec.
+    // ARIA baselines (the a11y checks) sit beside the screenshots', one directory per spec: -a11y's ARIA_EXPECT, as is.
+    expect(ci.expect.toMatchAriaSnapshot).toEqual(ARIA_EXPECT);
     expect(ci.expect.toMatchAriaSnapshot.pathTemplate).toBe("{testDir}/__aria__/{testFileBaseName}/{arg}{ext}");
     // No tolerance of the config's own either.
     expect(JSON.stringify(ci.expect)).not.toMatch(/threshold|maxDiff/);

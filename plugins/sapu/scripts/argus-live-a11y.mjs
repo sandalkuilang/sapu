@@ -10,8 +10,6 @@
 // `require("./support")` (the spec's import line is the generator's), and report through `a11yReport`, which
 // soft-fails every violation not listed in `known/<id>.json` (adopted) or in smoke.json's `allow`.
 
-/** The names a smoke test declares itself (argus-live-codegen's `OWN`): a page variable never takes one. */
-const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "mail", "readValue", "collectErrors", "newMarker", "browser", "baseURL", "viewport", "test", "expect", "a11y"];
 const GATE = 'if (test.info().project.name === "a11y") {';
 
 const CORE = String.raw`
@@ -244,7 +242,8 @@ export async function a11yAriaRoot(page) {
 export function a11yAriaFailure(info, e, step) {
   const name = step + ".aria.yml";
   let there = false;
-  try { there = require("node:fs").existsSync(require("node:path").join(__dirname, "__aria__", info.title, name)); } catch (x) { there = false; }
+  // ARIA_EXPECT's directory is the runner's {testFileBaseName}: the spec file's name without its last extension (<id>.spec).
+  try { there = require("node:fs").existsSync(require("node:path").join(__dirname, "__aria__", require("node:path").parse(info.file).name, name)); } catch (x) { there = false; }
   if (!there) return { check: "aria-snapshot", step, key: "baseline-missing", detail: "no adopted " + name + ": a baseline run writes it and a reviewed pull request adopts it" };
   const diff = String(e && e.message).replace(/\u001b\[[0-9;]*m/g, "").split("\n").filter((l) => /^[-+] /.test(l) && !/^[-+] (Expected|Received)\b/.test(l));
   return { check: "aria-snapshot", step, key: "changed", detail: "the screen differs from " + name + ": " + diff.join(" | ").slice(0, 400) };
@@ -516,19 +515,8 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 /** A parsed target as an object literal, every string through strCode. */
 const targetLit = (t) => `{${Object.entries(t).map(([k, v]) => `${JSON.stringify(k)}: ${isObj(v) ? targetLit(v) : typeof v === "string" ? strCode(v) : JSON.stringify(v)}`).join(", ")}}`;
 
-/** The page variable of account `as` among `steps`, spelled as the generator spells it (a name already taken gets `_`). */
-function pageVar(as, steps, ctx) {
-  if (ctx.pages && ctx.pages.get(as)) return ctx.pages.get(as).v;
-  const taken = new Set([...OWN, ...steps.filter((s) => s.save).map((s) => (s.save === "marker" ? "marker" : `saved_${s.save}`))]);
-  for (const a of new Set(steps.map((s) => s.as).filter((a) => a !== "system"))) {
-    const [role, k] = a.split(".");
-    let v = `${/^[A-Za-z_]/.test(role) ? "" : "_"}${role.replace(/[^A-Za-z0-9_]/g, "_")}${k}`;
-    while (taken.has(v)) v += "_";
-    taken.add(v);
-    if (a === as) return v;
-  }
-  return "page";
-}
+/** The page variable of account `as`: the generator's own (`ctx.pages`, argus-live-codegen's pageVars). */
+const pageVar = (as, ctx) => ctx.pages.get(as).v;
 
 /** The steps that run right after `step`'s group, when `step` is the last of its group (the checks that must see the page before an action). */
 function upcoming(step, ctx) {
@@ -546,24 +534,20 @@ const allowOf = (ctx) => JSON.stringify((((ctx.smoke || {}).journeys || {})[ctx.
 const report = (call, ctx) => `a11y.a11yReport(expect, test.info(), await ${call}, ${JSON.stringify(ctx.id)}, ${allowOf(ctx)});`;
 
 /** Pre-action emitter: for each step that follows the step's group and `pick`s, the line `line(step, pageVariable, ctx)`. */
-const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s, ctx)).map((s) => line(s, pageVar(s.as, ctx.steps, ctx), ctx)));
+const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s, ctx)).map((s) => line(s, pageVar(s.as, ctx), ctx)));
 const reported = (call) => (s, p, ctx) => report(call(s, p), ctx);
 
-/** The steps whose end is a screen (the lanes that photograph or snapshot a screen use this one list): smoke.json's `screens` for the journey, else the last expectation of an account before its next action (or the end of the path). */
-export function screensOf(ctx) {
-  const set = (((ctx.smoke || {}).journeys || {})[ctx.id] || {}).screens;
-  if (Array.isArray(set) && set.length) return new Set(set);
-  return new Set(ctx.steps.filter((s, i) => s.expect && s.as !== "system" && !((ctx.steps.slice(i + 1).find((x) => x.as === s.as) || {}).expect)).map((s) => s.n));
-}
+/** Whether step `s` ends one of the path's screens: the generator's one list (`ctx.screens`, argus-live-codegen's screensOf), which the screenshots use too. */
+const isScreen = (s, ctx) => ctx.screens.includes(s.n);
 /** Post-step emitter: for a step that ends a screen (or is a click), the lines `line(step, pageVariable, ctx)` makes. */
-const after = (pick, line) => (step, ctx) => (step.as !== "system" && pick(step, ctx) ? gated(line(step, pageVar(step.as, ctx.steps, ctx), ctx)) : []);
+const after = (pick, line) => (step, ctx) => (step.as !== "system" && pick(step, ctx) ? gated(line(step, pageVar(step.as, ctx), ctx)) : []);
 
 /**
  * The `expect.toMatchAriaSnapshot` config the specs need (the generator's `playwright.config.ts`): a baseline per test
  * and screen under __aria__/. Matching is already partial by default [pw-aria]; `children: "contain"` is not set on
  * purpose: probed, it makes a missing or empty baseline match, so the run passes with nothing adopted.
  */
-export const ARIA_EXPECT = { pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}" };
+export const ARIA_EXPECT = { pathTemplate: "{testDir}/__aria__/{testFileBaseName}/{arg}{ext}" };
 
 /** The click steps right after the fills of a form: the submits whose form has cases to run. */
 const submits = (s, ctx) => {
@@ -596,7 +580,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path",
     source: ARIA,
-    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [
+    emit: after(isScreen, (s, p, ctx) => [
       `const root = await a11y.a11yAriaRoot(${p});`,
       "const found = [];",
       `try { await expect(root).toMatchAriaSnapshot({ name: "${s.n}.aria.yml", timeout: SETTLE }); } catch (e) { found.push(a11y.a11yAriaFailure(test.info(), e, ${s.n})); }`,
@@ -608,7 +592,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path",
     source: AXE,
-    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [
+    emit: after(isScreen, (s, p, ctx) => [
       'const { AxeBuilder } = require("@axe-core/playwright");',
       `const base = new AxeBuilder({ page: ${p} }).withTags(${WCAG_TAGS}).disableRules(["target-size"]);`,
       `const builder = (await a11y.a11yHasMain(${p})) ? base.include("main") : base;`,
@@ -620,7 +604,7 @@ export const CHECKS = [
     project: "a11y",
     when: "at each screen of the path, with live.json's tokens",
     source: TOKENS,
-    emit: after((s, ctx) => screensOf(ctx).has(s.n), (s, p, ctx) => [report(`a11y.a11yTokens(${p}, ${s.n}, test.info())`, ctx)]),
+    emit: after(isScreen, (s, p, ctx) => [report(`a11y.a11yTokens(${p}, ${s.n}, test.info())`, ctx)]),
   },
   {
     name: "a11y-forms",

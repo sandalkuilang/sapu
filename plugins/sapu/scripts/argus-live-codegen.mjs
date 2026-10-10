@@ -5,7 +5,7 @@
 // check sources verbatim, and reads secrets by their `${NAME}` names only. The RED test a sapu worker gets
 // (argus-live-redtest.mjs) goes through the same step builder. Each file carries a digest of its body.
 import { createHash } from "node:crypto";
-import { CHECKS as A11Y } from "./argus-live-a11y.mjs";
+import { ARIA_EXPECT, CHECKS as A11Y } from "./argus-live-a11y.mjs";
 import { CHECKS as LAYOUT } from "./argus-live-layout.mjs";
 import { loginStageSource } from "./argus-live-login.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
@@ -476,7 +476,7 @@ const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "
  * each step one `test.step` (stepLines), with the registered checks' lines after it. The path is parsed in path
  * mode against the suite's accounts first: its refusal is thrown as is.
  */
-export function smokeSpec({ id, path, live, smoke, quarantined = false }) {
+export function smokeSpec({ id, path, live, smoke, quarantined = false, routes = [] }) {
   if (typeof id !== "string" || !JOURNEY.test(id)) throw fail("a journey id is kebab-case");
   const { context, steps } = parseRepro(path, { accounts: suiteAccounts(live), live, path: true });
   const taken = new Set([...OWN, ...steps.filter((s) => s.save).map((s) => variable(s.save))]);
@@ -503,7 +503,7 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false }) {
     const mask = [`${v}.getByRole("time")`, `...[${texts}].filter((t) => t !== "").map((t) => ${v}.getByText(t))`, ...owners.map((m) => targetCode(parseTarget(m), v, str))];
     return [`if (inProject(${shooting})) {`, `  await ${v}.mouse.move(-1, -1);`, `  await expect(${v}).toHaveScreenshot(${JSON.stringify(`${g.n}.png`)}, {"animations": "disabled", "caret": "hide", "mask": [${mask.join(", ")}]});`, "}"];
   };
-  const lines = stepLines(steps, { pages, smoke: true, checks, shot, ctx: { id, steps, smoke, screens, projects: projects.map((p) => p.name) } });
+  const lines = stepLines(steps, { pages, smoke: true, checks, shot, ctx: { id, steps, smoke, screens, projects: projects.map((p) => p.name), pages, routes } });
   const body = [
     'import { test, expect } from "@playwright/test";',
     'import type { BrowserContext } from "@playwright/test";',
@@ -631,7 +631,7 @@ export function smokeConfig({ live, smoke }) {
     "  // Baselines are the CI container's: elsewhere a screenshot is not compared.",
     "  ignoreSnapshots: !CI,",
     '  snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}",',
-    '  expect: { toMatchAriaSnapshot: { pathTemplate: "{testDir}/__aria__/{testFileBaseName}/{arg}{ext}" } },',
+    `  expect: { toMatchAriaSnapshot: ${literal(ARIA_EXPECT)} },`,
     '  reporter: CI ? [["list"], ["json", { outputFile: "test-results/results.json" }]] : "list",',
     ...(servers.length ? [`  webServer: ${literal(servers).replace(/"cwd": "REPO"/g, '"cwd": REPO')},`] : []),
     `  use: { baseURL: BASE_URL, ...${literal(use)} },`,
@@ -679,8 +679,8 @@ export function generateSuite({ paths, live, smoke, quarantine = [] }) {
   const signed = new Set();
   const roles = new Set();
   let command = false;
-  for (const { id, path } of [...paths].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-    files[`${id}.spec.ts`] = smokeSpec({ id, path, live, smoke, quarantined: quarantine.includes(id) });
+  for (const { id, path, routes = [] } of [...paths].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    files[`${id}.spec.ts`] = smokeSpec({ id, path, live, smoke, quarantined: quarantine.includes(id), routes });
     const { steps } = parseRepro(path, { accounts: suiteAccounts(live), live, path: true });
     const first = new Map();
     for (const s of steps) if (s.as !== "system" && !first.has(s.as)) first.set(s.as, s);

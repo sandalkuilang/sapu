@@ -10,9 +10,9 @@ import { dirname, extname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, example, freePort, PW, SERVER, tempDir, TOTP } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { ARIA_EXPECT, CHECKS, screensOf } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
+import { ARIA_EXPECT, CHECKS } from "../plugins/sapu/scripts/argus-live-a11y.mjs";
 // @ts-expect-error — plain ESM script without types
-import { generateSuite } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+import { generateSuite, pageVars, screensOf } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
 import { validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -38,12 +38,14 @@ const sourceApi = (extra: Obj = {}): Obj => {
 const LIVE: Obj = { base_url: "http://localhost:{port:web}", login_url: "/login", logged_in: "getByRole('button', { name: 'Account' })", settle_ms: 5000, viewports: [1280], triggers: {}, roles: { anon: {}, buyer: { users: [{ user: "a@example.test", password: "${P}" }, { user: "b@example.test", password: "${P}" }] } } };
 const CONTEXT = { context: { viewport: 1280, locale: "en-US", timezone: "UTC" } };
 const parse = (list: Obj[], live: Obj = LIVE) => parseRepro([CONTEXT, ...list], { accounts: suiteAccounts(live), live, path: true }).steps as Obj[];
+/** The emitters' `ctx` as the generator builds it: its screens (screensOf) and page variables (pageVars). */
+const ctxOf = (id: string, steps: Obj[], smoke: Obj = {}, screens: number[] | null = null) => ({ id, steps, smoke, screens: screens ?? screensOf(id, steps, smoke), pages: pageVars(steps, new Set(["marker"])) });
 /** All the registered emitters' lines for every step of `steps`, as the generator calls them. */
-const emitted = (steps: Obj[], smoke: Obj = {}, id = "j", only: string[] | null = null) => {
+const emitted = (steps: Obj[], smoke: Obj = {}, id = "j", only: string[] | null = null, screens: number[] | null = null) => {
   const out: Record<string, string[]> = {};
   for (const c of CHECKS as Obj[]) {
     if (only && !only.includes(c.name)) continue;
-    out[c.name] = steps.flatMap((s) => c.emit(s, { id, steps, smoke }));
+    out[c.name] = steps.flatMap((s) => c.emit(s, ctxOf(id, steps, smoke, screens)));
   }
   return out;
 };
@@ -116,7 +118,7 @@ describe("argus-live a11y — keyboard, focus and names: the emitted lines", () 
       { parallel: [{ as: "buyer", do: "click", target: { role: "button", name: "Claim" } }, { as: "buyer.2", do: "click", target: { role: "button", name: "Claim" } }] },
       { as: "buyer", expect: "visible", target: { text: "Done" } },
     ]);
-    const perStep = steps.map((s) => byName("a11y-keyboard").emit(s, { id: "j", steps, smoke: {} }).join("\n"));
+    const perStep = steps.map((s) => byName("a11y-keyboard").emit(s, ctxOf("j", steps)).join("\n"));
     expect(perStep[0]).toBe("");
     expect(perStep[1]).toContain("buyer1");
     expect(perStep[1]).toContain("buyer2");
@@ -307,18 +309,22 @@ describe("argus-live a11y — ARIA snapshots (partial matching, one baseline per
     { as: "buyer", do: "goto", path: "/c" },
     { as: "buyer", expect: "visible", target: { text: "Done" } },
   ];
-  const aria = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "shop", ["a11y-aria"])["a11y-aria"].join("\n");
+  const aria = (steps: Obj[], smoke: Obj = {}, screens: number[] | null = null) => emitted(steps, smoke, "shop", ["a11y-aria"], screens)["a11y-aria"].join("\n");
 
-  it("emit writes toMatchAriaSnapshot with a name per screen: the last expectation before the account's next action, or the path's end", () => {
+  it("emit writes toMatchAriaSnapshot with a name per screen: the generator's screens (by default the path's last page step)", () => {
     const text = aria(parse(PATH));
-    expect([...text.matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["3", "5", "7"]);
+    expect([...text.matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["7"]);
     expect(text).toContain('test.info().project.name === "a11y"');
-    expect(text).toContain('toMatchAriaSnapshot({ name: "3.aria.yml", timeout: SETTLE })');
+    expect(text).toContain('toMatchAriaSnapshot({ name: "7.aria.yml", timeout: SETTLE })');
     expect(text).toContain("a11yAriaRoot(buyer1)");
   });
 
-  it("screensOf is the one list of screens, for the lanes that photograph or snapshot a screen too", () => {
-    expect([...screensOf({ id: "shop", steps: parse(PATH), smoke: {} })]).toEqual([3, 5, 7]);
+  it("the screens are ctx.screens, the one list the screenshots use too: the ARIA, axe and token checks follow it", () => {
+    const steps = parse(PATH);
+    const all = emitted(steps, {}, "shop", ["a11y-aria", "a11y-axe", "a11y-tokens"], [3, 5]);
+    expect([...all["a11y-aria"].join("\n").matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["3", "5"]);
+    expect(all["a11y-axe"].join("\n").match(/a11yAxeResults\(/g)).toHaveLength(2);
+    expect(all["a11y-tokens"].join("\n").match(/a11yTokens\(/g)).toHaveLength(2);
   });
 
   it("smoke.json's screens for the journey replace the derived ones", () => {
@@ -326,22 +332,25 @@ describe("argus-live a11y — ARIA snapshots (partial matching, one baseline per
     expect([...text.matchAll(/name: "(\d+)\.aria\.yml"/g)].map((m) => m[1])).toEqual(["2", "7"]);
   });
 
-  it("the config the snapshots need: the __aria__ template named by the test, and no children option (probed: \"contain\" lets a missing baseline match)", () => {
-    expect(ARIA_EXPECT).toEqual({ pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}" });
+  it("the config the snapshots need: the __aria__ template named by the spec file (<id>.spec), and no children option (probed: \"contain\" lets a missing baseline match)", () => {
+    expect(ARIA_EXPECT).toEqual({ pathTemplate: "{testDir}/__aria__/{testFileBaseName}/{arg}{ext}" });
   });
 
   it("a snapshot that cannot be compared is baseline-missing when its file is absent, else a changed line diff", () => {
     const err = new Error("expect(locator).toMatchAriaSnapshot(expected) failed\n\n- Expected\n+ Received\n\n- - heading \"Shop\"\n+ - heading \"Store\"");
-    const apis = (exists: boolean) => sourceApi({ require: (m: string) => (m === "node:fs" ? { existsSync: () => exists } : nodeRequire(m)), __dirname: "/suite" });
-    const info = { title: "shop" };
+    const asked: string[] = [];
+    const apis = (exists: boolean) => sourceApi({ require: (m: string) => (m === "node:fs" ? { existsSync: (f: string) => (asked.push(f), exists) } : nodeRequire(m)), __dirname: "/suite" });
+    const info = { title: "shop", file: "/suite/shop.spec.ts" };
     expect(apis(false).a11yAriaFailure(info, err, 3)).toEqual({ check: "aria-snapshot", step: 3, key: "baseline-missing", detail: expect.stringContaining("3.aria.yml") });
+    // The file ARIA_EXPECT names: the spec file's base name, <id>.spec.
+    expect(asked).toEqual(["/suite/__aria__/shop.spec/3.aria.yml"]);
     const changed = apis(true).a11yAriaFailure(info, err, 3);
     expect(changed).toMatchObject({ check: "aria-snapshot", step: 3, key: "changed" });
     expect(changed.detail).toContain('heading "Store"');
     expect(changed.detail).not.toContain("\n");
   });
 
-  it("under the pinned runner: the baseline run writes __aria__/<test>/<n>.aria.yml, a normal run compares it, and a missing or changed file reads as such", async () => {
+  it("under the pinned runner: the baseline run writes __aria__/<id>.spec/<n>.aria.yml, a normal run compares it, and a missing or changed file reads as such", async () => {
     const { cli } = browserTools();
     const dir = mkdtempSync(join(tmpdir(), "argus-a11y-"));
     try {
@@ -374,7 +383,7 @@ describe("argus-live a11y — ARIA snapshots (partial matching, one baseline per
         if (!note) throw new Error(JSON.stringify(test.errors ?? test) + r.stdout.slice(0, 1500));
         return { status: r.status, out: r.stdout + r.stderr, found: JSON.parse(note.description) };
       };
-      const file = join(dir, "__aria__/aria-demo/1.aria.yml");
+      const file = join(dir, "__aria__/aria-demo.spec/1.aria.yml");
       expect(run().found).toEqual([expect.objectContaining({ key: "baseline-missing" })]);
       expect(run("--update-snapshots=missing").found).toEqual([]);
       expect(readFileSync(file, "utf8")).toContain("radiogroup");
@@ -514,9 +523,9 @@ describe("argus-live a11y — axe's WCAG rules at each screen [pw-a11y, axe-api]
     { as: "buyer", do: "click", target: { role: "button", name: "Go" } },
     { as: "buyer", expect: "url", value: "/b" },
   ];
-  const axe = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "shop", ["a11y-axe"])["a11y-axe"].join("\n");
+  const axe = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "shop", ["a11y-axe"], [2, 4])["a11y-axe"].join("\n");
 
-  it("emit writes, at each screen, an AxeBuilder with exactly the WCAG tags, main when the page has one, and target-size off", () => {
+  it("emit writes, at each screen (here 2 and 4), an AxeBuilder with exactly the WCAG tags, main when the page has one, and target-size off", () => {
     const text = axe(parse(PATH));
     expect(text.match(/new AxeBuilder\(/g)).toHaveLength(2);
     expect(text).toContain('const { AxeBuilder } = require("@axe-core/playwright");');
@@ -804,7 +813,8 @@ describe("argus-live a11y — inside the generated suite", () => {
     };
     delete appLive.mail;
     delete appLive.facts;
-    const appSmoke = validateSmoke({ dir: "e2e/argus-smoke", ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-a11y-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
+    // The fixture header's Account button is a real target-size violation (the layout oracle's, in chromium): allowed.
+    const appSmoke = validateSmoke({ dir: "e2e/argus-smoke", journeys: { "place-order": { allow: [{ check: "target-size", key: "button|Account|button" }] } }, ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-a11y-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
     const order = [
       { as: "buyer", do: "goto", path: "/orders/new" },
       { as: "buyer", do: "fill", target: { label: "Quantity" }, value: "1" },
@@ -828,20 +838,19 @@ describe("argus-live a11y — inside the generated suite", () => {
       "",
     ].join("\n"));
     for (const m of ["playwright", "playwright-core"]) symlinkSync(join(pinned, m), join(dir, "node_modules", m));
-    // The a11y project is the generator's to add; the wrapper adds it the way the spec describes (Chromium, after setup, the ARIA config).
-    writeFileSync(join(dir, "wrapper.config.ts"), [
-      'import base from "./playwright.config";',
-      "",
-      `export default { ...base, expect: { toMatchAriaSnapshot: ${JSON.stringify(ARIA_EXPECT)} }, projects: [...base.projects, { name: "a11y", testMatch: /\\.spec\\.ts$/, use: { browserName: "chromium" }, dependencies: ["setup"] }].map((p) => ({ ...p, use: { ...p.use, channel: "chrome" } })) };`,
-      "",
-    ].join("\n"));
+    // The a11y project and the ARIA config are the generator's own: the wrapper only runs every project in the machine's Chrome.
+    writeFileSync(join(dir, "wrapper.config.ts"), 'import base from "./playwright.config";\n\nexport default { ...base, projects: base.projects.map((p) => ({ ...p, use: { ...p.use, channel: "chrome" } })) };\n');
+    expect(files["playwright.config.ts"]).toContain(`expect: { toMatchAriaSnapshot: {"pathTemplate": ${JSON.stringify(ARIA_EXPECT.pathTemplate)}} }`);
+    expect(files["playwright.config.ts"]).toContain('{ name: "a11y", testMatch: /\\.spec\\.ts$/');
     const run = (flags: string[], debug = false) => {
       const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), "test", "-c", "wrapper.config.ts", ...flags], { cwd: dir, encoding: "utf8", timeout: 240_000, env: { ...process.env, ...appEnv, CI: "1", ...(debug ? { DEBUG: "pw:api" } : {}) } });
       const results = JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8"));
       return { r, results, out: `${r.stdout}\n${r.stderr}` };
     };
-    // 1. The chromium project alone: the checks are the a11y project's, so nothing of them runs and no baseline is needed.
-    const plain = run(["--project", "setup", "--project", "chromium"]);
+    // 1. The chromium project alone: the checks are the a11y project's, so nothing of them runs and no ARIA baseline is needed
+    // (its screenshot is written, as a baseline run would).
+    const plain = run(["--project", "setup", "--project", "chromium", "--update-snapshots=missing"]);
+    expect(existsSync(join(dir, "__aria__"))).toBe(false);
     expect(plain.r.status, plain.out).toBe(0);
     expect(existsSync(join(dir, "axe-calls.json"))).toBe(false);
     // 2. The baseline run adopts the screen's ARIA file; the checks run and report only what is the fixture app's own.
@@ -853,10 +862,10 @@ describe("argus-live a11y — inside the generated suite", () => {
     expect(first.out).toMatch(/locator\.ariaSnapshot|toMatchAriaSnapshot|ariaSnapshot/);
     const annotations = (x: Obj): Obj[] => [...(x.specs ?? []).flatMap((sp: Obj) => sp.tests.filter((t: Obj) => t.projectName === "a11y").flatMap((t: Obj) => t.annotations)), ...(x.suites ?? []).flatMap(annotations)];
     expect(first.results.suites.flatMap(annotations)).toEqual([{ type: "a11y-note", description: "design tokens: not checked (no token source)" }]);
-    expect(existsSync(join(dir, "__aria__/place-order/4.aria.yml")), first.out).toBe(true);
+    expect(existsSync(join(dir, "__aria__/place-order.spec/4.aria.yml")), first.out).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, "axe-calls.json"), "utf8"))).toEqual([["new", true], ["tags", "wcag2a,wcag2aa,wcag21a,wcag21aa,wcag22aa"], ["off", "target-size"], ["include", "main"]]);
     // 3. A normal run compares it; a deleted baseline reads as baseline-missing, a soft failure of the a11y test.
-    rmSync(join(dir, "__aria__/place-order/4.aria.yml"));
+    rmSync(join(dir, "__aria__/place-order.spec/4.aria.yml"));
     const missing = run(["--project", "setup", "--project", "a11y"]);
     expect(missing.r.status).not.toBe(0);
     expect(missing.out).toContain("aria-snapshot (step 4) baseline-missing");

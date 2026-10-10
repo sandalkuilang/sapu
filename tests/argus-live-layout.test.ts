@@ -459,7 +459,8 @@ describe("argus-live layout — loading, empty states, toasts", () => {
 // ---------------------------------------------------------------------------------------------------
 // What the generator embeds and emits.
 
-const LIVE = (): Obj => ({ ...example(), test_id_attribute: "data-testid" });
+/** With a locale, so the suite has its i18n project (codegen's suiteProjects) and the locale check its lines. */
+const LIVE = (): Obj => ({ ...example(), test_id_attribute: "data-testid", locales: ["de-DE"] });
 const SMOKE = (extra: Obj = {}): Obj => validateSmoke({ ci: { web_server: [{ command: "npm start", url: "http://localhost:4100/health" }], ports: { web: 4100 }, ...extra } }).value;
 const PATH = (): Obj[] => [
   { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } },
@@ -494,7 +495,12 @@ describe("argus-live layout — the registry and its emitted lines", () => {
     const lines = text.split("\n").filter((l) => l.includes('(await import("./support"))'));
     const layout = lines.filter((l) => l.includes(".layoutStep("));
     expect(layout.length).toBe(6);
-    expect(layout[0]).toBe('    expect.soft(await (await import("./support")).layoutStep(opened, 0, 1, "checkout", []), "layout: step 1").toEqual([]);');
+    // Gated by the generator to the viewport projects: the engines and each further width, never a11y or i18n.
+    const at = text.split("\n").indexOf(layout[0]);
+    expect(text.split("\n")[at - 1]).toBe('    if (inProject(["chromium","firefox","webkit","msedge","chromium-390"])) {');
+    expect(layout[0]).toBe('      expect.soft(await (await import("./support")).layoutStep(opened, 0, 1, "checkout", []), "layout: step 1").toEqual([]);');
+    const locale = text.split("\n").find((l) => l.includes(".localeStep("))!;
+    expect(text.split("\n")[text.split("\n").indexOf(locale) - 1]).toBe('    if (inProject(["i18n"])) {');
     // Every check follows each of the six account steps; the last (system) step gets only the final link pass.
     for (const fn of ["layoutStep", "localeStep", "linksStep", "loadingStep", "emptyStep", "toastStep"]) expect(lines.filter((l) => l.includes(`.${fn}(`)).length, fn).toBe(6);
     expect(lines.filter((l) => l.includes(".linksFinal(")).length).toBe(1);
@@ -567,6 +573,8 @@ describe("argus-live layout — in a generated suite", () => {
       triggers: {},
       settle_ms: 5000,
       viewports,
+      locales: ["de-DE"],
+      pseudo_locales: ["en-XA"],
       roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] } },
       ...journeyLive,
     };
@@ -587,7 +595,7 @@ describe("argus-live layout — in a generated suite", () => {
     mkdirSync(dir, { recursive: true });
     for (const [f, text] of Object.entries(files) as [string, string][]) writeFileSync(join(dir, f), text);
     mkdirSync(join(repo, ".argus"), { recursive: true });
-    writeFileSync(join(repo, ".argus/live.json"), JSON.stringify({ ...live, locales: ["de-DE"], pseudo_locales: ["en-XA"] }));
+    writeFileSync(join(repo, ".argus/live.json"), JSON.stringify(live));
     const pinned = join(cli.dir, "node_modules");
     mkdirSync(join(dir, "node_modules/@playwright/test"), { recursive: true });
     writeFileSync(join(dir, "node_modules/@playwright/test/index.js"), 'module.exports = require("playwright/test");\n');
@@ -597,7 +605,8 @@ describe("argus-live layout — in a generated suite", () => {
       join(dir, "wrapper.config.ts"),
       'import base from "./playwright.config";\n\nconst chromium = base.projects!.find((p) => p.name === "chromium")!;\nexport default { ...base, projects: [base.projects![0], ...["chromium", "i18n", "a11y"].map((name) => ({ ...chromium, name, use: { ...chromium.use, channel: "chrome" } }))].map((p) => (p.name === "setup" ? { ...p, use: { ...p.use, channel: "chrome" } } : p)) };\n',
     );
-    const args = ["test", "-c", "wrapper.config.ts", ...projects.flatMap((p) => ["--project", p])];
+    // The screenshots' baselines are CI's baseline run's: here the run writes them (spec 19.8).
+    const args = ["test", "-c", "wrapper.config.ts", "--update-snapshots=missing", ...projects.flatMap((p) => ["--project", p])];
     const r = spawnSync(process.execPath, [join(pinned, "playwright/cli.js"), ...args], { cwd: dir, encoding: "utf8", timeout: 240_000, env: { ...process.env, ...appEnv, CI: "1" } });
     return { r, dir, files, results: JSON.parse(readFileSync(join(dir, "test-results/results.json"), "utf8")) };
   }
@@ -606,17 +615,21 @@ describe("argus-live layout — in a generated suite", () => {
   it("the fixture app's journey passes every check in the viewport project and the i18n project, and the a11y project runs none of them", async () => {
     // The fixture app's header really has two small controls close together; the journey's allow list rules it out.
     const allow = { journeys: { "place-order": { allow: [{ check: "target-size", key: "button|Account|button" }] } } };
-    const { r, results, files } = await runSuite({ viewports: [1280], projects: ["setup", "chromium", "i18n", "a11y"], lines: allow });
+    const { r, results, files } = await runSuite({ viewports: [1280], projects: ["setup", "chromium", "i18n"], lines: allow });
     expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
     const ran = results.suites.flatMap(tests).filter((t: Obj) => t.title === "place-order");
-    expect(ran.map((t: Obj) => t.project).sort()).toEqual(["a11y", "chromium", "i18n"]);
+    expect(ran.map((t: Obj) => t.project).sort()).toEqual(["chromium", "i18n"]);
+    // The a11y project (the a11y lane's checks, run by its own test) is in no layout check's gate.
+    const spec = files["place-order.spec.ts"].split("\n");
+    const gates = spec.filter((l: string, i: number) => /^\s*if \(inProject\(/.test(l) && /\(await import\("\.\/support"\)\)\.(?:layout|locale|links|loading|empty|toast)/.test(spec[i + 1] ?? ""));
+    expect(gates.length).toBeGreaterThan(0);
+    for (const g of gates) expect(g).not.toContain('"a11y"');
     const notes = (project: string) => ran.find((t: Obj) => t.project === project).results.flatMap((x: Obj) => x.annotations ?? []);
     expect(notes("chromium").filter((a: Obj) => a.type === "argus-violation")).toEqual([]);
     // The i18n project says what it covered; the others say nothing.
     const info = notes("i18n").filter((a: Obj) => a.type === "argus-info").map((a: Obj) => a.description);
     expect(info).toContain("locale: only URL-addressable states are checked");
     expect(info.filter((l: string) => l.startsWith("pseudo-localization: "))).toEqual(expect.arrayContaining([expect.stringMatching(/^pseudo-localization: \d+ text unchanged under en-XA \(hard-coded\?\)$/)]));
-    expect(notes("a11y")).toEqual([]);
     expect(files["support.ts"]).toContain("export async function layoutStep(");
   }, 300_000);
 

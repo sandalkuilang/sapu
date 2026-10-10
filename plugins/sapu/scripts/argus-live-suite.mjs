@@ -288,6 +288,13 @@ function renumber(list, slotAccounts, suite, id) {
   return list.map((el) => (isObj(el) && Array.isArray(el.parallel) ? { ...el, parallel: el.parallel.map(step) } : step(el)));
 }
 
+/** The map's routes of catalog journey `id` (`[{role, route}]`, distinct): the CTA-route check's, kept in the journey file. */
+function mapRoutes(main, id) {
+  const j = ((readJourneys(main) ?? {}).journeys ?? []).find((x) => isObj(x) && x.id === id);
+  const rows = (isObj(j) && Array.isArray(j.steps) ? j.steps : []).filter((s) => isObj(s) && typeof s.role === "string" && typeof s.route === "string");
+  return [...new Map(rows.map((s) => [`${s.role} ${s.route}`, { role: s.role, route: s.route }])).values()];
+}
+
 /** Every string leaf of `step` with its field's dotted name (`target.name`, `values.0`). */
 function leaves(v, at = "", out = []) {
   if (typeof v === "string") out.push([at, v]);
@@ -367,7 +374,8 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
     }
   }
   const admitted = { run: lock.runId, head: rec.worktreeHead ?? null, pathSha: sha256(JSON.stringify(list)), seed: used };
-  stageChange(main, { kind: "add", id, evidence: `held fresh and dirty in run ${lock.runId} (seed ${used})`, run: lock.runId, journey: { journey: id, path: list, admitted } });
+  const routes = mapRoutes(main, id);
+  stageChange(main, { kind: "add", id, evidence: `held fresh and dirty in run ${lock.runId} (seed ${used})`, run: lock.runId, journey: { journey: id, path: list, admitted, ...(routes.length ? { routes } : {}) } });
   lines.push(`admit ${id}: held fresh and dirty; staged for smoke propose`);
   return { code: 0, lines };
 }
@@ -395,7 +403,7 @@ export function liveAsWritten(text, verb) {
 export function generated(root, { live, smoke, verb }) {
   const paths = suitePaths(root, smoke.dir, verb);
   try {
-    return generateSuite({ paths: paths.map((p) => ({ id: p.id, path: p.path })), live, smoke, quarantine: quarantineIds(root, smoke.dir) });
+    return generateSuite({ paths: paths.map((p) => ({ id: p.id, path: p.path, routes: p.routes })), live, smoke, quarantine: quarantineIds(root, smoke.dir) });
   } catch (e) {
     throw new Error(String(e.message).replace(/^refused: [^:]+: /, `refused: ${verb}: `));
   }

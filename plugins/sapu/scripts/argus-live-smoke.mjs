@@ -42,8 +42,9 @@ export function seededOrder(ids, seed) {
 
 /**
  * The suite's admitted paths (spec §19.2): every `<repo>/<dir>/journeys/<id>.json`, `{journey: <id>, path:
- * [...], admitted?}` → `[{id, path, admitted}]` sorted by id; none when the directory is missing. Refused: a
- * file name that is not a journey id, a file that is not that object, or one naming another journey.
+ * [...], admitted?, routes?}` → `[{id, path, admitted, routes}]` sorted by id (`routes`: the map's `{role,
+ * route}` of the journey at admission, for the CTA-route check; malformed rows dropped); none when the directory is
+ * missing. Refused: a file name that is not a journey id, a file that is not that object, or one naming another journey.
  */
 export function readSuitePaths(main, dir) {
   const at = path.join(main, dir, "journeys");
@@ -65,7 +66,8 @@ export function readSuitePaths(main, dir) {
     }
     if (!isObj(raw) || !Array.isArray(raw.path)) throw new Error(`refused: smoke run: ${f} is not {"journey", "path"}`);
     if (raw.journey !== id) throw new Error(`refused: smoke run: ${f} names journey ${typeof raw.journey === "string" && JOURNEY.test(raw.journey) ? raw.journey : "another"}`);
-    return { id, path: raw.path, admitted: isObj(raw.admitted) ? raw.admitted : null };
+    const routes = (Array.isArray(raw.routes) ? raw.routes : []).filter((r) => isObj(r) && typeof r.role === "string" && typeof r.route === "string" && r.route.startsWith("/") && r.route.length <= 200);
+    return { id, path: raw.path, admitted: isObj(raw.admitted) ? raw.admitted : null, routes: routes.map((r) => ({ role: r.role, route: r.route })) };
   });
 }
 
