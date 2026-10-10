@@ -1236,3 +1236,73 @@ The config:
    (a `-codegen` export such as `suiteProjects(live, smoke)`), so the two never disagree.
 4. Z2's engine text: the smoke cycle's `admit` needs a cycle with an instance. `propose` needs the staged
    changes' runs' ledgers, so a staged change from a run a later `up` dropped refuses until re-admitted.
+
+### Lane C3: projects, browsers, visual
+
+All in `-codegen.mjs` (now 705 lines) and `tests/argus-live-codegen.test.ts`; no other file.
+
+**Locked for the lanes.**
+- `suiteProjects({live, smoke}) → [{name, kind, browser, width}]` (exported). After `setup`: `chromium`, `firefox`,
+  `webkit`, `msedge` (kind `browser`, the first `viewports` width, filtered by smoke.json `browsers`); then, only
+  with `chromium` among the browsers, `chromium-<w>` for each further width (`viewport`), `a11y` and, with `locales`
+  or `pseudo_locales`, `i18n`. Every project depends on `setup`. A journey's own `browsers` become a `testIgnore` of
+  its spec in the other engines' projects; the chromium-engine projects (`chromium-<w>`, `a11y`, `i18n`) follow
+  `chromium`.
+- `msedge` is decided by the generated config at run time (generation stays pure): the project exists only where the
+  host's documented Edge path exists, else the config prints `msedge: skipped (not installed)`. sapu never installs it.
+- A check's `project` (`CHECKS[].project`) gates its `emit` lines with `if (inProject([...])) {…}`. Accepted: a project
+  name (`chromium`, `firefox`, `webkit`, `msedge`, `chromium-<w>`, `a11y`, `i18n`), `"browser"` (the engines),
+  `"viewport"` (those and every `chromium-<w>`), an array of these, or `"all"`, `"*"`, absent (every project). Any
+  other name is refused at generation (`failed: codegen: check <name> names project <x>, which the suite does not
+  define`); a known project this suite lacks (`i18n` with no locales) leaves the check no lines. `support.ts` exports
+  `inProject(names)`; every spec imports it. `when` is not read.
+- `emit(step, ctx)`'s `ctx` is now `{id, steps, smoke, screens, projects}`: `screens` the ascending step numbers of
+  the path's screens, `projects` the names above (msedge included). `screensOf(id, steps, smoke)` (exported): smoke.json
+  `journeys.<id>.screens`, else the last step that acts on a page. A step that is not one, or is the system's, is
+  refused (`smoke.json journeys.<id>.screens names step <n>, which is not a step of the path acting on a page`). C2's
+  ARIA and axe emitters take their screens from `ctx.screens`.
+- The shot, after the step and before its checks' lines: `if (inProject([engines and chromium-<w>, never msedge, a11y
+  or i18n])) { await <page>.mouse.move(-1, -1); await expect(<page>).toHaveScreenshot("<n>.png", {animations:
+  "disabled", caret: "hide", mask: [...]}) }`. Masks: `getByRole("time")`, the marker and every value read at or before
+  the step (empty strings dropped, since `getByText("")` matches everything), then smoke.json `masks` and the journey's
+  `masks` through `targetCode`. No `maxDiffPixels`, no `threshold`, not full page. It is not its own `test.step`, so
+  the title list stays the DSL's; the name `<n>.png` carries the step.
+- The config adds `ignoreSnapshots: !CI`, `snapshotPathTemplate` (the plan's string), and
+  `expect.toMatchAriaSnapshot.pathTemplate` `{testDir}/__aria__/{testFileBaseName}/{arg}{ext}`, which C2.2 needs
+  and the plan's C3 lines did not list.
+- `package.json` also pins `@axe-core/playwright` to `SMOKE_AXE` (`4.13.0`, exported), exact.
+
+**The ARIA `--update-snapshots=changed` probe (plan C3.2), run live on the pinned alpha: YES.** With a stale
+`.aria.yml` holding a different heading, a normal run fails with a line diff; `--update-snapshots=changed` rewrites the
+file to the received snapshot (the `page.ariaSnapshot()` form, without a trailing newline), reports `A snapshot is
+generated at …` and passes; a missing file under `missing` is written the same way. So B3 may adopt a changed ARIA
+baseline from a CI update run with `changed`, and the `run-code` fallback is not needed. The test pins it. Other
+facts met: `getByRole("time")` matches a `<time>` element; `toHaveScreenshot` and `toMatchAriaSnapshot` both accept
+the path templates; `--project` is variadic, so a file filter must come before it on the command line.
+
+**Deviations.**
+- **`{testFileBaseName}` is `<id>.spec`, not `<id>`:** the base name drops only the last extension, so every baseline
+  is `__screenshots__/<project>/<platform>/<id>.spec/<n>.png` and `__aria__/<id>.spec/<n>.aria.yml` (probed). I kept
+  the plan's template string, because C2 chooses the ARIA name without the id and needs the template to carry it.
+- The existing green browser test now runs `--update-snapshots=missing`: a generated suite has a default screen per
+  journey, so under `"none"` it fails until a baseline exists (decision 7). The new browser test proves that failure
+  has no `-actual.png`, that `missing` writes the PNGs and passes, and that a normal run then holds with the
+  marker and order number masked.
+- The browser tests run Chromium only (`channel: "chrome"`): this machine has no Firefox build, and WebKit is not what
+  the pinned install resolves. The Firefox, WebKit and msedge projects are proven on the evaluated config
+  (`name`, `use`, `testIgnore`, the Edge seam), not by a run.
+- The Edge seam is the generated `const EDGE = …` line, which the test replaces; there is no environment override.
+
+**Needs coordinator.**
+- **Spec §19.2 and §19.8, and lane B3's adoption globs** say `__screenshots__/<project>/<platform>/<id>/*.png` and
+  `__aria__/<id>/*.aria.yml`; the real directory is `<id>.spec`. Either the spec and B3 take `<id>.spec`, or the
+  generator renames the spec files (a lane 0 contract change). I left the spec and B3 alone.
+- **Lane Z (CI workflow, A4's `smoke workflow`):** the matrix needs the project list above; the screenshot projects
+  (engines and `chromium-<w>`) run in the pinned container and `msedge` on the plain runner; the baseline job's
+  `--update-snapshots` run must name `--project` entries (screenshots and `a11y`'s ARIA), and `a11y`/`i18n` take no
+  screenshot.
+- **Lanes C1, C2:** use the `project` names above and `ctx.screens`; a `project` outside the list is refused when
+  the first spec is generated.
+- **Lane A (A3 `smoke check`, `smoke propose`) and any test that runs a generated suite under `CI=1`:** needs
+  `--update-snapshots=missing` or committed baselines, or it fails by design.
+- **Z4:** this section's `changed` result replaces the "documented, not probed" line of open risk 8.

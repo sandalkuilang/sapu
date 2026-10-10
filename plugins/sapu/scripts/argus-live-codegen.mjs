@@ -13,6 +13,8 @@ import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
 /** The `@playwright/test` the suite pins (decision 4): its major.minor is the pinned CLI's `playwright-core`'s. */
 export const SMOKE_PLAYWRIGHT = "1.64.0";
+/** The `@axe-core/playwright` the suite pins (decision 4), exact, like SMOKE_PLAYWRIGHT. */
+export const SMOKE_AXE = "4.13.0";
 /** The generator's version, in every file's header: a new one regenerates the suite. */
 export const CODEGEN_VERSION = "1";
 
@@ -20,6 +22,9 @@ const JOURNEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const PLACEHOLDER = /(\{\{[a-z][a-z0-9_]*\}\})/;
 const ENV_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/;
 export const WAIT = "{ timeout: SETTLE }";
+const BROWSERS = ["chromium", "firefox", "webkit", "msedge"];
+/** Every project runs at this height; its width is a `viewports` entry. */
+const HEIGHT = 900;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const fail = (why) => new Error(`failed: codegen: ${why}`);
@@ -69,9 +74,9 @@ const stepTitle = (s) => JSON.stringify(`step ${s.n} ${s.do ? "do" : "expect"}:$
  * false: the RED test's (each step its statement, the final under its comment naming `oracle`); true: the
  * suite's, each step one `test.step("step <n> <do|expect>:<kind>")`, a `login` through the support's with
  * its account, a fact compared as the runner compares it (as strings), and after each step the lines every
- * registered check emits (`checks`, `ctx`).
+ * registered check emits (`checks`, `ctx`), once the step's `shot` lines (a screenshot at a screen) are in.
  */
-export function stepLines(steps, { pages, oracle = null, smoke = false, checks = [], ctx = {} }) {
+export function stepLines(steps, { pages, oracle = null, smoke = false, checks = [], ctx = {}, shot = () => [] }) {
   const loc = (s) => targetCode(s.target, pages.get(s.as).v, str);
   const call = (s) => {
     const p = s.as === "system" ? null : pages.get(s.as).v;
@@ -150,7 +155,7 @@ export function stepLines(steps, { pages, oracle = null, smoke = false, checks =
     if (group.length > 1) body.push(`${into}await Promise.all([`, ...group.flatMap((g) => `${wrapped(g)},`.split("\n").map((l) => `  ${l}`)), "]);");
     else if (s.do) body.push(...`${into}await ${wrapped(s)};`.split("\n"));
     else body.push(`await test.step(${stepTitle(s)}, async () => {`, `  ${expectation(s)}`, "});");
-    for (const g of group) for (const c of checks) body.push(...c.emit(g, ctx));
+    for (const g of group) body.push(...shot(g), ...checks.flatMap((c) => c.emit(g, ctx)));
   }
   return body;
 }
@@ -187,6 +192,46 @@ export function headerDigest(text) {
 
 // ---------------------------------------------------------------------------------------------------
 // The suite's files.
+
+// ---------------------------------------------------------------------------------------------------
+// Projects (spec §19.6).
+
+/**
+ * The suite's projects after `setup` → `[{name, kind, browser, width}]`: `chromium`, `firefox`, `webkit` and
+ * `msedge` (kind `browser`, at the first `viewports` width; smoke.json's `browsers` choose them), then, with
+ * chromium among the browsers, `chromium-<w>` for each further width (`viewport`), `a11y` and, with `locales`
+ * or `pseudo_locales`, `i18n`. (`msedge` is dropped at run time by the config where Edge is not installed.)
+ */
+export function suiteProjects({ live, smoke }) {
+  const widths = [...new Set(Array.isArray(live.viewports) && live.viewports.length ? live.viewports : [1440])];
+  const at = (name, kind, browser, width) => ({ name, kind, browser, width });
+  const out = BROWSERS.filter((b) => smoke.browsers.includes(b)).map((b) => at(b, "browser", b, widths[0]));
+  if (!smoke.browsers.includes("chromium")) return out;
+  for (const w of widths.slice(1)) out.push(at(`chromium-${w}`, "viewport", "chromium", w));
+  out.push(at("a11y", "a11y", "chromium", widths[0]));
+  if ((live.locales || []).length + (live.pseudo_locales || []).length > 0) out.push(at("i18n", "i18n", "chromium", widths[0]));
+  return out;
+}
+
+const PROJECT_NAME = /^(?:chromium|firefox|webkit|msedge|a11y|i18n|chromium-[0-9]+)$/;
+
+/**
+ * A registered check whose `emit` lines run only in the project(s) it names: a project (`a11y`), `browser`
+ * (the engines at the first width), `viewport` (those and every `chromium-<w>`), an array of these, or
+ * `all` (also absent) for every project. A name the suite does not define is refused; one it defines but this
+ * suite lacks (`i18n` without locales) leaves the check with no lines.
+ */
+function gated(check, projects) {
+  const p = check.project;
+  if (p === undefined || p === "all" || p === "*") return check;
+  const names = new Set();
+  for (const t of [].concat(p)) {
+    if (t !== "browser" && t !== "viewport" && !PROJECT_NAME.test(t)) throw fail(`check ${check.name} names project ${String(t)}, which the suite does not define`);
+    for (const x of projects) if (t === x.name || (t === "browser" && x.kind === "browser") || (t === "viewport" && (x.kind === "browser" || x.kind === "viewport"))) names.add(x.name);
+  }
+  const list = JSON.stringify([...names]);
+  return { ...check, emit: (s, ctx) => (names.size ? [`if (inProject(${list})) {`, ...check.emit(s, ctx).map((l) => `  ${l}`), "}"] : []) };
+}
 
 /** What the suite takes from `live` about roles and accounts: each account the paths sign in → its user and secrets by name. */
 function accountRows(live, accounts) {
@@ -329,6 +374,11 @@ export function supportFile({ live, smoke, roles }) {
     '  return "argus-" + createHash("sha256").update(test.info().testId).digest("hex").slice(0, 8) + Date.now().toString(36) + randomBytes(3).toString("hex");',
     "}",
     "",
+    "/** Whether the test runs in one of the projects `names`: a check that belongs to some of them only. */",
+    "export function inProject(names: string[]): boolean {",
+    "  return names.includes(test.info().project.name);",
+    "}",
+    "",
     "export async function open(opened: BrowserContext[], browser: Browser, account: string, signedIn: boolean, options: BrowserContextOptions): Promise<Page> {",
     '  const context = await browser.newContext({ ...options, ...(signedIn ? { storageState: path.join(__dirname, ".auth", account + ".json") } : {}) });',
     "  opened.push(context);",
@@ -400,8 +450,22 @@ export function supportFile({ live, smoke, roles }) {
   return withHeader(body, { what: "from .argus/live.json and .argus/smoke.json" });
 }
 
+/**
+ * The screens of journey `id` (spec §19.7: "the path's screens"): the steps of `steps` that get a screenshot (and
+ * the ARIA snapshot and axe run of the a11y project), ascending. smoke.json's `journeys.<id>.screens`, else the
+ * last step that acts on a page (the goal's own screen). A step that is no step of the path, or is the system's,
+ * has no page to shoot: refused, naming the key.
+ */
+export function screensOf(id, steps, smoke) {
+  const withPage = steps.filter((s) => s.as !== "system").map((s) => s.n);
+  const named = smoke.journeys && smoke.journeys[id] && smoke.journeys[id].screens;
+  if (!named) return withPage.slice(-1);
+  for (const n of named) if (!withPage.includes(n)) throw fail(`smoke.json journeys.${id}.screens names step ${n}, which is not a step of the path acting on a page`);
+  return [...named].sort((a, b) => a - b);
+}
+
 /** The names a smoke test declares itself: a page variable never takes one. */
-const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "mail", "readValue", "collectErrors", "newMarker", "browser", "baseURL", "viewport", "test", "expect"];
+const OWN = ["SETTLE", "marker", "opened", "open", "login", "trigger", "fact", "mail", "readValue", "collectErrors", "newMarker", "inProject", "browser", "baseURL", "viewport", "test", "expect"];
 
 /**
  * `<id>.spec.ts` (spec §19.5) of path `path` (the raw DSL list) of journey `id` → its text: one `test` titled
@@ -425,12 +489,25 @@ export function smokeSpec({ id, path, live, smoke, quarantined = false }) {
     command(a) ? `const ${v} = await signedIn(opened, browser, ${JSON.stringify(a)}, ${options});` : `const ${v} = await open(opened, browser, ${JSON.stringify(a)}, ${!a.startsWith("anon.") && first.do !== "login"}, ${options});`,
   );
   const errors = [...pages.values()].filter((p) => p.errors).map(({ v }) => `const errors_${v} = collectErrors(${v});`);
-  const checks = [...LAYOUT, ...A11Y];
-  const lines = stepLines(steps, { pages, smoke: true, checks, ctx: { id, steps, smoke } });
+  const projects = suiteProjects({ live, smoke });
+  const checks = [...LAYOUT, ...A11Y].map((c) => gated(c, projects));
+  const screens = screensOf(id, steps, smoke);
+  // A screenshot is asserted by the engines and the further viewports, never in msedge (a branded channel moves with the machine).
+  const shooting = JSON.stringify(projects.filter((p) => (p.kind === "browser" || p.kind === "viewport") && p.browser !== "msedge").map((p) => p.name));
+  const owners = [...(smoke.masks || []), ...((smoke.journeys && smoke.journeys[id] && smoke.journeys[id].masks) || [])];
+  // Masked: <time> elements, the marker, every value read so far and the owner's locators (smoke.json masks).
+  const shot = (g) => {
+    if (!screens.includes(g.n)) return [];
+    const v = pages.get(g.as).v;
+    const texts = ["marker", ...steps.filter((x) => x.save && x.n <= g.n).map((x) => variable(x.save))].join(", ");
+    const mask = [`${v}.getByRole("time")`, `...[${texts}].filter((t) => t !== "").map((t) => ${v}.getByText(t))`, ...owners.map((m) => targetCode(parseTarget(m), v, str))];
+    return [`if (inProject(${shooting})) {`, `  await ${v}.mouse.move(-1, -1);`, `  await expect(${v}).toHaveScreenshot(${JSON.stringify(`${g.n}.png`)}, {"animations": "disabled", "caret": "hide", "mask": [${mask.join(", ")}]});`, "}"];
+  };
+  const lines = stepLines(steps, { pages, smoke: true, checks, shot, ctx: { id, steps, smoke, screens, projects: projects.map((p) => p.name) } });
   const body = [
     'import { test, expect } from "@playwright/test";',
     'import type { BrowserContext } from "@playwright/test";',
-    'import { collectErrors, fact, login, mail, newMarker, open, readValue, SETTLE, trigger } from "./support";',
+    'import { collectErrors, fact, inProject, login, mail, newMarker, open, readValue, SETTLE, trigger } from "./support";',
     ...([...pages.keys()].some(command) ? ['import { signedIn } from "./fixtures";'] : []),
     "",
     `test(${JSON.stringify(id)}, ${literal(details)}, async ({ browser, baseURL, viewport }) => {`,
@@ -504,14 +581,27 @@ export function smokeConfig({ live, smoke }) {
   const web = (smoke.ci && smoke.ci.web_server) || [];
   const use = {
     trace: "on-first-retry",
-    viewport: { width: (Array.isArray(live.viewports) && live.viewports[0]) || 1440, height: 900 },
+    viewport: { width: (Array.isArray(live.viewports) && live.viewports[0]) || 1440, height: HEIGHT },
     locale: live.locale || "en-US",
     timezoneId: live.timezone || "UTC",
     ...(live.test_id_attribute ? { testIdAttribute: live.test_id_attribute } : {}),
   };
   const servers = web.map((w) => ({ command: w.command, url: w.url, timeout: (w.timeout_s ?? 120) * 1000, reuseExistingServer: false, cwd: "REPO" }));
+  // A journey's own `browsers` leave its spec out of the projects of an engine it does not name (chromium-engine projects follow "chromium").
+  const ignore = (browser) => {
+    const ids = Object.entries(smoke.journeys || {}).filter(([, j]) => j.browsers && !j.browsers.includes(browser)).map(([id]) => id).sort();
+    return ids.length ? `, testIgnore: /(?:^|[\\\\/])(?:${ids.join("|")})\\.spec\\.ts$/` : "";
+  };
+  const projects = suiteProjects({ live, smoke }).flatMap((p) => {
+    const line = `{ name: ${JSON.stringify(p.name)}, testMatch: /\\.spec\\.ts$/${ignore(p.browser)}, use: ${literal({ browserName: p.browser === "msedge" ? "chromium" : p.browser, ...(p.browser === "msedge" ? { channel: "msedge" } : {}), ...(p.kind === "viewport" ? { viewport: { width: p.width, height: HEIGHT } } : {}) })}, dependencies: ["setup"] },`;
+    if (p.name === "webkit") return ["// WebKit is the closest stand-in for Safari, not Safari.", line];
+    if (p.name === "msedge") return ["// msedge runs the path and the checks and no screenshot: a branded channel moves with the machine, not with the pin.", `...(HAS_EDGE ? [${line.slice(0, -1)}] : []),`];
+    return [line];
+  });
+  const edge = smoke.browsers.includes("msedge");
   const body = [
     'import { defineConfig } from "@playwright/test";',
+    ...(edge ? ['import fs from "node:fs";'] : []),
     'import path from "node:path";',
     "",
     "const CI = Boolean(process.env.CI);",
@@ -521,6 +611,14 @@ export function smokeConfig({ live, smoke }) {
     "const HOST = new URL(BASE_URL).hostname;",
     "// The suite drives loopback only: never a deployed system.",
     'if (!/^(localhost|127(\\.\\d{1,3}){3}|\\[::1\\])$/.test(HOST)) throw new Error("argus-smoke: the base URL must name a loopback host, not " + HOST);',
+    ...(edge
+      ? [
+          "// Edge is the machine's own, never installed by the suite: the msedge project exists only where its executable does.",
+          'const EDGE: string[] = ({ darwin: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"], linux: ["/opt/microsoft/msedge/msedge"], win32: ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"].map((v) => path.join(process.env[v] ?? "", "Microsoft", "Edge", "Application", "msedge.exe")) } as Record<string, string[]>)[process.platform] ?? [];',
+          "const HAS_EDGE = EDGE.some((f) => fs.existsSync(f));",
+          'if (!HAS_EDGE) console.log("msedge: skipped (not installed)");',
+        ]
+      : []),
     "",
     "export default defineConfig({",
     '  testDir: ".",',
@@ -530,12 +628,16 @@ export function smokeConfig({ live, smoke }) {
     `  workers: CI ? 1 : ${smoke.workers === null || smoke.workers === undefined ? "undefined" : JSON.stringify(smoke.workers)},`,
     "  globalTimeout: CI ? 3_600_000 : 0,",
     '  updateSnapshots: CI ? "none" : "missing",',
+    "  // Baselines are the CI container's: elsewhere a screenshot is not compared.",
+    "  ignoreSnapshots: !CI,",
+    '  snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}",',
+    '  expect: { toMatchAriaSnapshot: { pathTemplate: "{testDir}/__aria__/{testFileBaseName}/{arg}{ext}" } },',
     '  reporter: CI ? [["list"], ["json", { outputFile: "test-results/results.json" }]] : "list",',
     ...(servers.length ? [`  webServer: ${literal(servers).replace(/"cwd": "REPO"/g, '"cwd": REPO')},`] : []),
     `  use: { baseURL: BASE_URL, ...${literal(use)} },`,
     "  projects: [",
     '    { name: "setup", testMatch: /auth\\.setup\\.ts$/, use: { trace: "off", video: "off", screenshot: "off" } },',
-    '    { name: "chromium", testMatch: /\\.spec\\.ts$/, use: { browserName: "chromium" }, dependencies: ["setup"] },',
+    ...projects.map((l) => `    ${l}`),
     "  ],",
     "});",
     "",
@@ -543,9 +645,9 @@ export function smokeConfig({ live, smoke }) {
   return withHeader(body, { what: "from .argus/smoke.json and .argus/live.json" });
 }
 
-/** The suite's `package.json`: `@playwright/test` pinned exactly to SMOKE_PLAYWRIGHT, private, no scripts that install. */
+/** The suite's `package.json`: `@playwright/test` and `@axe-core/playwright` pinned exactly (SMOKE_PLAYWRIGHT, SMOKE_AXE), private, no scripts that install. */
 export function packageJson() {
-  const body = `${JSON.stringify({ name: "argus-smoke", private: true, scripts: { test: "playwright test" }, devDependencies: { "@playwright/test": SMOKE_PLAYWRIGHT } }, null, 2)}\n`;
+  const body = `${JSON.stringify({ name: "argus-smoke", private: true, scripts: { test: "playwright test" }, devDependencies: { "@axe-core/playwright": SMOKE_AXE, "@playwright/test": SMOKE_PLAYWRIGHT } }, null, 2)}\n`;
   return withHeader(body, { what: "for the suite", style: "json", at: 1 });
 }
 
