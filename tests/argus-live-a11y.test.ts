@@ -136,6 +136,11 @@ beforeAll(async () => {
   const { cli, chrome } = browserTools();
   pw = nodeRequire(join(cli.dir, "node_modules/playwright-core"));
   server = createServer((req, res) => {
+    if (req.method === "POST") {
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      return;
+    }
     const name = (req.url ?? "/").split("?")[0].slice(1);
     if (!readdirSync(PAGES).includes(name)) {
       res.writeHead(404).end();
@@ -492,6 +497,254 @@ describe("argus-live a11y — modal dialogs (APG, 2.1.2): Escape, Tab, focus ret
       await close();
     }
   }, 90_000);
+});
+
+const RECORDED = (name: string): Obj => JSON.parse(readFileSync(join(__dirname, "fixtures/axe-results", name), "utf8"));
+
+describe("argus-live a11y — axe's WCAG rules at each screen [pw-a11y, axe-api]", () => {
+  const PATH = [
+    { as: "buyer", do: "goto", path: "/a" },
+    { as: "buyer", expect: "visible", target: { role: "heading", name: "Shop" } },
+    { as: "buyer", do: "click", target: { role: "button", name: "Go" } },
+    { as: "buyer", expect: "url", value: "/b" },
+  ];
+  const axe = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "shop", ["a11y-axe"])["a11y-axe"].join("\n");
+
+  it("emit writes, at each screen, an AxeBuilder with exactly the WCAG tags, main when the page has one, and target-size off", () => {
+    const text = axe(parse(PATH));
+    expect(text.match(/new AxeBuilder\(/g)).toHaveLength(2);
+    expect(text).toContain('const { AxeBuilder } = require("@axe-core/playwright");');
+    expect(text).toContain('const base = new AxeBuilder({ page: buyer1 }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).disableRules(["target-size"]);');
+    expect(text).toContain('const builder = (await a11y.a11yHasMain(buyer1)) ? base.include("main") : base;');
+    expect(text).toContain("a11y.a11yAxeResults(await builder.analyze(), 2)");
+    expect(text).toContain('test.info().project.name === "a11y"');
+  });
+
+  it("each violation node is {check: axe:<rule>, key: its target joined}; a repeated one is one; a shadow or iframe target keeps its levels", () => {
+    const found = sourceApi().a11yAxeResults(RECORDED("shop.json"), 4).filter((v: Obj) => !v.manual);
+    expect(found.map((v: Obj) => [v.check, v.key])).toEqual([
+      ["axe:color-contrast", ".hint"],
+      ["axe:color-contrast", "footer > a"],
+      ["axe:image-alt", "img"],
+      ["axe:button-name", "#host >> button.icon"],
+      ["axe:button-name", "iframe.pay | button.icon"],
+    ]);
+    expect(found[0]).toMatchObject({ step: 4, detail: expect.stringContaining("Elements must meet minimum color contrast ratio thresholds") });
+    expect(found[0].detail).toContain("1.4.3");
+    expect(found[2].detail).toContain("1.1.1");
+    expect(sourceApi().a11yAxeResults({ violations: [...RECORDED("shop.json").violations, ...RECORDED("shop.json").violations], incomplete: [] }, 1)).toHaveLength(found.length);
+  });
+
+  it("incomplete results are manual, never a fail (axe could not decide)", () => {
+    const manual = sourceApi().a11yAxeResults(RECORDED("shop.json"), 4).filter((v: Obj) => v.manual);
+    expect(manual.map((v: Obj) => [v.check, v.key])).toEqual([["axe:color-contrast", ".badge"], ["axe:aria-valid-attr-value", "input[aria-controls]"]]);
+    expect(manual[0].detail).toContain("needs a human");
+  });
+
+  it("a clean page reports nothing, and a known violation is filtered by the report like every check", () => {
+    const api = sourceApi({ require: (m: string) => (m === "node:fs" ? { readFileSync: () => JSON.stringify([{ check: "axe:image-alt", key: "img" }]) } : nodeRequire(m)) });
+    expect(api.a11yAxeResults(RECORDED("clean.json"), 1)).toEqual([]);
+    const soft: Obj[] = [];
+    const reported = api.a11yReport({ soft: (actual: unknown) => ({ toEqual: () => soft.push(actual) }) }, { annotations: [] }, api.a11yAxeResults(RECORDED("shop.json"), 4), "shop", []);
+    expect(reported.map((v: Obj) => v.check + " " + v.key)).not.toContain("axe:image-alt img");
+    expect(soft[0]).toHaveLength(4);
+  });
+
+  it("a page has main exactly when it holds a main landmark", async () => {
+    const api = sourceApi();
+    const withMain = await open("keys.html");
+    const without = await open("modals.html");
+    try {
+      expect(await api.a11yHasMain(withMain.page)).toBe(true);
+      await without.page.evaluate(() => document.querySelector("main")!.removeAttribute("id"));
+      await without.page.evaluate(() => document.querySelector("main")!.replaceWith(...document.querySelector("main")!.childNodes));
+      expect(await api.a11yHasMain(without.page)).toBe(false);
+    } finally {
+      await withMain.close();
+      await without.close();
+    }
+  }, 60_000);
+});
+
+describe("argus-live a11y — design tokens", () => {
+  const fs = (live: Obj | null, files: Record<string, string> = {}) => {
+    const repo = mkdtempSync(join(tmpdir(), "argus-a11y-"));
+    mkdirSync(join(repo, ".argus"), { recursive: true });
+    if (live) writeFileSync(join(repo, ".argus/live.json"), JSON.stringify(live));
+    for (const [n, t] of Object.entries(files)) writeFileSync(join(repo, n), t);
+    return repo;
+  };
+  const tokenFile = (n: string) => readFileSync(join(PAGES, n), "utf8");
+
+  it("reads a CSS file's custom properties and a JSON file's string leaves and $values; a reference to another token is no value of its own", () => {
+    const api = sourceApi();
+    expect(api.a11yTokenValues("css", tokenFile("tokens.css")).sort()).toEqual(["#0b1b3a", "#0b5fff", "#ffffff", "#ffffff", "1rem", "Helvetica, Arial, sans-serif"].sort());
+    expect(api.a11yTokenValues("json", tokenFile("tokens.json")).sort()).toEqual(["#0b1b3a", "#0b5fff", "#ffffff", "#ffffff", "1rem", "Helvetica, Arial, sans-serif"].sort());
+    expect(api.a11yTokenValues("json", "{not json")).toEqual([]);
+  });
+
+  it("an off-token colour, background, font or size fails; on-token controls, transparent backgrounds and hidden ones do not", async () => {
+    for (const [kind, file] of [["css", "tokens.css"], ["json", "tokens.json"]] as const) {
+      const repo = fs({ tokens: { [kind]: file } }, { [file]: tokenFile(file) });
+      const { page, close } = await open("tokens.html");
+      try {
+        const info = { annotations: [] as Obj[] };
+        const found = await sourceApi({ REPO: repo }).a11yTokens(page, 6, info);
+        expect(found.map((v: Obj) => v.key).sort(), kind).toEqual(['background-color button "Off background"', 'color button "Off colour"', 'font-family button "Off font"', 'font-size button "Off size"']);
+        expect(found.every((v: Obj) => v.check === "design-token" && v.step === 6 && !v.manual)).toBe(true);
+        expect(info.annotations).toEqual([]);
+      } finally {
+        await close();
+        rmSync(repo, { recursive: true, force: true });
+      }
+    }
+  }, 90_000);
+
+  it("without tokens the page says so once and nothing is checked", async () => {
+    const { page, close } = await open("tokens.html");
+    const info = { annotations: [] as Obj[] };
+    const repos = [fs(null), fs({ tokens: { css: "../escape.css" } }), fs({ tokens: { css: "missing.css" } })];
+    try {
+      for (const repo of repos) expect(await sourceApi({ REPO: repo }).a11yTokens(page, 1, info)).toEqual([]);
+      const api = sourceApi({ REPO: repos[0] });
+      await api.a11yTokens(page, 2, info);
+      const notes = info.annotations.filter((a) => a.type === "a11y-note");
+      expect(notes).toHaveLength(1);
+      expect(notes[0].description).toBe("design tokens: not checked (no token source)");
+    } finally {
+      await close();
+      for (const r of repos) rmSync(r, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe("argus-live a11y — form validation cases", () => {
+  const FIELDS = [
+    { index: 0, key: 'textbox "Name"', type: "text", required: true, minLength: null, maxLength: null, pattern: null },
+    { index: 1, key: 'textbox "Email"', type: "email", required: true, minLength: null, maxLength: null, pattern: null },
+    { index: 2, key: 'textbox "Code"', type: "text", required: false, minLength: null, maxLength: 5, pattern: null },
+    { index: 3, key: 'textbox "Nick"', type: "text", required: false, minLength: 3, maxLength: null, pattern: null },
+    { index: 4, key: 'textbox "Ref"', type: "text", required: false, minLength: null, maxLength: null, pattern: "[A-Z]{3}" },
+    { index: 5, key: 'textbox "Plain"', type: "text", required: false, minLength: null, maxLength: null, pattern: null },
+    { index: 6, key: 'textbox "Age"', type: "number", required: false, minLength: null, maxLength: null, pattern: null },
+  ];
+
+  it("generates one case from each of required, type=email, maxlength, minlength and pattern, and none other, up to the cap", () => {
+    const api = sourceApi();
+    const cases = api.a11yCasesOf(FIELDS, 10);
+    expect(cases.map((c: Obj) => [c.kind, c.index, c.value])).toEqual([
+      ["required", 0, ""],
+      ["required", 1, ""],
+      ["email", 1, "not-an-email"],
+      ["maxlength", 2, "xxxxxx"],
+      ["minlength", 3, "xx"],
+      ["pattern", 4, "!"],
+    ]);
+    expect(api.a11yCasesOf(FIELDS, 3)).toHaveLength(3);
+    expect(api.a11yCasesOf(FIELDS, 0)).toEqual([]);
+    // minlength 1 would be the empty value, which no minlength check refuses; a pattern every listed value meets has no case.
+    expect(api.a11yCasesOf([{ ...FIELDS[3], minLength: 1 }, { ...FIELDS[4], pattern: ".*" }], 5)).toEqual([]);
+  });
+
+  const VALID: Record<string, string> = { Name: "Ada", Email: "ada@example.test", Code: "ab12", Nick: "ada", Ref: "ABC" };
+  /** What a path does before its submit: fills the form's fields with valid values; then the check runs. */
+  const filled = async (id: string, submit: string, max = 10) => {
+    const { page, close } = await open("forms.html");
+    const form = page.locator("#" + id);
+    for (const [label, value] of Object.entries(VALID)) if ((await form.getByLabel(label).count()) === 1) await form.getByLabel(label).fill(value);
+    const posts: string[] = [];
+    page.on("request", (r: Obj) => r.method() === "POST" && posts.push(r.url()));
+    return { page, close, posts, run: () => sourceApi().a11yFormCases(page, byRole("button", submit), 5, max), form };
+  };
+
+  it("native validation holds: every case is stopped by the browser, names the field, and moves focus to it; the values are put back", async () => {
+    const t = await filled("native", "Save native");
+    try {
+      expect(await t.run()).toEqual([]);
+      expect(t.posts).toEqual([]);
+      expect(await t.form.getByLabel("Name").inputValue()).toBe("Ada");
+      expect(await t.form.getByLabel("Code").inputValue()).toBe("ab12");
+    } finally {
+      await t.close();
+    }
+  }, 90_000);
+
+  it("novalidate with aria-invalid and aria-describedby holds, and so does focus on an error-summary link to the field", async () => {
+    for (const [id, submit] of [["custom", "Save custom"], ["summary", "Save summary"]]) {
+      const t = await filled(id, submit);
+      try {
+        expect(await t.run(), id).toEqual([]);
+        expect(t.posts, id).toEqual([]);
+      } finally {
+        await t.close();
+      }
+    }
+  }, 120_000);
+
+  it("a form that posts and gets 200 on a bad value fails hard, on the first case that submits (the report ends the test)", async () => {
+    const t = await filled("loose", "Save loose");
+    try {
+      const found = await t.run();
+      expect(found).toEqual([expect.objectContaining({ check: "form-accepts-invalid", step: 5, hard: true, detail: expect.stringContaining("200") })]);
+      expect(t.posts).toHaveLength(1);
+      const api = sourceApi();
+      const soft: Obj[] = [];
+      expect(() => api.a11yReport({ soft: (a: unknown) => ({ toEqual: () => soft.push(a) }) }, { annotations: [] }, found, "j", [])).toThrow(/accepts-invalid/);
+      expect(() => api.a11yReport({ soft: () => ({ toEqual: () => 0 }) }, { annotations: [] }, found, "j", [{ check: found[0].check, key: found[0].key }])).not.toThrow();
+    } finally {
+      await t.close();
+    }
+  }, 90_000);
+
+  it("a refusal that marks nothing invalid fails: the field is not invalid, with no error and no focus", async () => {
+    const t = await filled("silent", "Save silent");
+    try {
+      const found = await t.run();
+      expect([...new Set(found.map((v: Obj) => v.check))].sort()).toEqual(["form-case-error", "form-case-focus", "form-case-invalid"]);
+      expect(found.find((v: Obj) => v.check === "form-case-invalid").detail).toContain("aria-invalid");
+      expect(found.every((v: Obj) => !v.hard)).toBe(true);
+      expect(t.posts).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  }, 90_000);
+
+  it("a click that is not a submit of a form with fields, or a missing target, is left alone", async () => {
+    const t = await filled("native", "Save native");
+    try {
+      const api = sourceApi();
+      expect(await api.a11yFormCases(t.page, byRole("button", "Nowhere"), 5, 6)).toEqual([]);
+      expect(await api.a11yFormCases(t.page, byRole("group", "Native validation"), 5, 6)).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  }, 60_000);
+});
+
+describe("argus-live a11y — the form and token emitters", () => {
+  const PATH = [
+    { as: "buyer", do: "goto", path: "/a" },
+    { as: "buyer", do: "fill", target: { label: "Name" }, value: "Ada" },
+    { as: "buyer", do: "fill", target: { label: "Email" }, value: "ada@example.test" },
+    { as: "buyer", do: "click", target: { role: "button", name: "Save" } },
+    { as: "buyer", do: "click", target: { role: "button", name: "Later" } },
+    { as: "buyer", expect: "visible", target: { text: "Saved" } },
+  ];
+
+  it("a click right after the fills of a form runs the cases first, with the journey's cap; a click without fills, or a cap of 0, runs none", () => {
+    const form = (steps: Obj[], smoke: Obj = {}) => emitted(steps, smoke, "j", ["a11y-forms"])["a11y-forms"].join("\n");
+    const text = form(parse(PATH), { form_cases_max: 4 });
+    expect(text.match(/a11yFormCases\(/g)).toHaveLength(1);
+    expect(text).toContain('a11yFormCases(buyer1, {"by": "role", "role": "button", "name": "Save"}, 4, 4)');
+    expect(form(parse(PATH), { form_cases_max: 0 })).toBe("");
+    expect(form(parse(PATH.filter((s) => !s.value)))).toBe("");
+  });
+
+  it("the token check runs at each screen and reads its source in the page's own run", () => {
+    const text = emitted(parse(PATH), {}, "j", ["a11y-tokens"])["a11y-tokens"].join("\n");
+    expect(text).toContain("a11yTokens(buyer1, 6, test.info())");
+    expect(text.match(/a11yTokens\(/g)).toHaveLength(1);
+  });
 });
 
 describe("argus-live a11y — inside the generated suite", () => {

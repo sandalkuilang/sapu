@@ -44,6 +44,8 @@ export function a11yReport(expect, info, found, id, allow) {
   const say = (v) => v.check + " (step " + v.step + ") " + v.key + ": " + v.detail;
   for (const v of live) if (v.manual) info.annotations.push({ type: "a11y-manual", description: say(v) });
   expect.soft(live.filter((v) => !v.manual).map(say), "accessibility violations").toEqual([]);
+  const hard = live.find((v) => v.hard && !v.manual);
+  if (hard) throw new Error("accessibility: " + say(hard) + ": the test ends here"); // a state-changing submit: the path's later steps no longer start from its state
   return live;
 }
 
@@ -128,6 +130,23 @@ export function a11yPageHelpers() {
     return { hidden, clip: clip.width > 0 && clip.height > 0 ? clip : null, style: c.outlineStyle, width: parseFloat(c.outlineWidth) || 0, ratio: ink ? ratio(over(ink, under), under) : null, obscured: Boolean(top) && !mine, by: top ? desc(top) : "" };
   };
   const shown = (e) => { const r = e.getBoundingClientRect(), c = cs(e); return r.width > 0 && r.height > 0 && c.visibility !== "hidden" && c.display !== "none"; };
+  H.shown = shown;
+  H.form = (b) => {
+    const f = b.form || b.closest("form");
+    if (!f || !b.matches("button:not([type]), button[type=submit], input[type=submit], input[type=image]")) return null;
+    const text = (e) => e.tagName === "TEXTAREA" || (e.tagName === "INPUT" && !/^(hidden|submit|button|reset|image|file|checkbox|radio|range|color)$/.test(e.type));
+    return { fields: [...f.elements].map((e, index) => ({ e, index })).filter(({ e }) => text(e) && !e.disabled && !e.readOnly && shown(e)).map(({ e, index }) => ({ index, key: desc(e), type: e.tagName === "TEXTAREA" ? "textarea" : e.type, required: e.required, minLength: e.minLength > 0 ? e.minLength : null, maxLength: e.maxLength >= 0 ? e.maxLength : null, pattern: e.getAttribute("pattern") })) };
+  };
+  H.formState = (e) => {
+    const flagged = e.getAttribute("aria-invalid") === "true", a = document.activeElement;
+    const ids = ((e.getAttribute("aria-errormessage") || "") + " " + (e.getAttribute("aria-describedby") || "")).split(/\s+/).filter(Boolean);
+    return {
+      noValidate: e.form.noValidate,
+      invalid: e.form.noValidate ? flagged : !e.validity.valid,
+      told: e.form.noValidate ? ids.some((i) => { const n = document.getElementById(i); return Boolean(n) && shown(n) && n.textContent.trim() !== ""; }) : e.validationMessage !== "",
+      focused: a === e || Boolean(a && a.tagName === "A" && e.id && a.getAttribute("href") === "#" + e.id),
+    };
+  };
   H.modal = () => {
     for (const d of document.querySelectorAll("dialog, [role=dialog], [role=alertdialog]")) {
       let modal = d.getAttribute("aria-modal") === "true";
@@ -291,6 +310,176 @@ export async function a11yModal(page, invoker, step, info) {
 }
 `;
 
+const AXE = String.raw`
+/** Whether the page holds a main landmark (axe is then scoped to it). */
+export async function a11yHasMain(page) {
+  return (await page.getByRole("main").count()) > 0;
+}
+
+/** axe's results for one screen → violations {check: "axe:<rule>", key: its target joined}; incomplete nodes are manual. */
+export function a11yAxeResults(results, step) {
+  const out = [], seen = new Set();
+  const joined = (t) => t.map((x) => (Array.isArray(x) ? x.join(" >> ") : x)).join(" | ");
+  const criteria = (tags) => tags.filter((t) => /^wcag\d{3,4}$/.test(t)).map((t) => t.slice(4, 5) + "." + t.slice(5, 6) + "." + t.slice(6));
+  for (const [list, manual] of [[results.violations || [], false], [results.incomplete || [], true]]) {
+    for (const rule of list) {
+      for (const node of rule.nodes || []) {
+        const key = joined(node.target || []), id = manual + rule.id + "|" + key;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const sc = criteria(rule.tags || []);
+        out.push({ check: "axe:" + rule.id, step, key, detail: rule.help + (sc.length ? " (WCAG " + sc.join(", ") + ")" : "") + (manual ? ": axe could not decide, needs a human" : ""), ...(manual ? { manual: true } : {}) });
+      }
+    }
+  }
+  return out;
+}
+`;
+
+const TOKENS = String.raw`
+/** The values of a token source: a CSS file's custom properties (a reference to another token is no value of its own), or a JSON file's string leaves ($value included). */
+export function a11yTokenValues(kind, text) {
+  const out = [];
+  if (kind === "css") {
+    for (const m of String(text).replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/--[\w-]+\s*:\s*([^;}]+)/g)) if (m[1].trim() && !/var\(/.test(m[1])) out.push(m[1].trim());
+    return out;
+  }
+  const walk = (n) => {
+    if (typeof n === "string") out.push(n.trim());
+    else if (n && typeof n === "object") for (const [k, v] of Object.entries(n)) if (!/^(\$type|\$description|\$extensions|type|description)$/.test(k)) walk(v);
+  };
+  try { walk(JSON.parse(text)); } catch (e) { return []; }
+  return out.filter(Boolean);
+}
+
+/**
+ * Design tokens (live.json's tokens: a tracked CSS or JSON file, read from the repo's root): each visible control's computed
+ * color, non-transparent background-color, first font-family and font-size must be one of the tokens, normalized in the
+ * page by setting each on a probe. A kind of property the file holds no value for is not checked. Tokens are never inferred:
+ * without a source the page says so once.
+ */
+export async function a11yTokens(page, step, info) {
+  const note = (why) => {
+    if (!info.annotations.some((a) => a.type === "a11y-note")) info.annotations.push({ type: "a11y-note", description: "design tokens: not checked (" + why + ")" });
+    return [];
+  };
+  const path = require("node:path");
+  let src = null;
+  try { src = JSON.parse(require("node:fs").readFileSync(path.join(REPO, ".argus", "live.json"), "utf8")).tokens; } catch (e) { src = null; }
+  const kind = src && typeof src.css === "string" ? "css" : src && typeof src.json === "string" ? "json" : null;
+  if (!kind) return note("no token source");
+  const file = path.resolve(REPO, src[kind]);
+  let values = [];
+  try { values = a11yTokenValues(kind, require("node:fs").readFileSync(file, "utf8")); } catch (e) { values = []; }
+  if (!values.length || path.relative(REPO, file).startsWith("..")) return note("the token source holds no values");
+  await page.evaluate(a11yPageHelpers);
+  const off = await page.evaluate((tokens) => {
+    const H = window[Symbol.for("argus.a11y")];
+    const first = (v) => v.split(",")[0].trim().replace(/^["']|["']$/g, "").toLowerCase();
+    const props = { color: new Set(), "background-color": new Set(), "font-family": new Set(), "font-size": new Set() };
+    for (const prop of Object.keys(props)) {
+      for (const v of tokens) {
+        const probe = document.createElement("span");
+        probe.style.setProperty(prop, v);
+        if (!probe.style.getPropertyValue(prop)) continue;
+        document.body.append(probe);
+        const got = getComputedStyle(probe).getPropertyValue(prop);
+        probe.remove();
+        props[prop].add(prop === "font-family" ? first(got) : got);
+      }
+    }
+    const found = new Map();
+    for (const e of document.querySelectorAll("a[href], button, input:not([type=hidden]), select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [role=radio], [role=switch]")) {
+      if (!H.shown(e) || e.closest("[aria-hidden=true], [inert]")) continue;
+      const c = getComputedStyle(e), bg = H.parse(c.backgroundColor);
+      const mine = { color: c.color, "background-color": bg && bg[3] === 0 || c.backgroundColor === "transparent" ? null : c.backgroundColor, "font-family": first(c.fontFamily), "font-size": c.fontSize };
+      for (const [prop, v] of Object.entries(mine)) if (v !== null && props[prop].size && !props[prop].has(v)) found.set(prop + " " + H.desc(e), prop + " " + v);
+    }
+    return [...found].slice(0, 25);
+  }, values);
+  return off.map(([key, what]) => ({ check: "design-token", step, key, detail: what + " is not one of the design tokens" }));
+}
+`;
+
+const FORMS = String.raw`
+/**
+ * The cases a form's fields give (spec 19.7), at most max: from each field's own required (empty), type=email
+ * ("not-an-email"), maxlength (one character too many), minlength (one too few, from 2) and pattern (the first of a
+ * fixed list of values the pattern refuses). No other constraint gives a case, and no business rule is invented.
+ */
+export function a11yCasesOf(fields, max) {
+  const refused = ["!", "~", " ", "@", "0", "a", "A", "-", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"];
+  const out = [];
+  for (const f of fields) {
+    const add = (kind, value, limit) => out.push({ kind, index: f.index, key: f.key, value, limit });
+    if (f.required) add("required", "");
+    if (f.type === "email") add("email", "not-an-email");
+    if (f.maxLength > 0 && f.maxLength <= 1000) add("maxlength", "x".repeat(f.maxLength + 1), f.maxLength);
+    if (f.minLength > 1) add("minlength", "x".repeat(f.minLength - 1));
+    if (f.pattern) {
+      let re = null;
+      for (const flags of ["v", "u"]) if (!re) try { re = new RegExp("^(?:" + f.pattern + ")$", flags); } catch (e) { re = null; }
+      const bad = re ? refused.find((v) => !re.test(v)) : undefined;
+      if (bad !== undefined) add("pattern", bad);
+    }
+  }
+  return out.slice(0, Math.max(0, max));
+}
+
+/**
+ * The negative cases of the form a path's submit click belongs to (3.3.1): each case fills one field with a value its
+ * own constraint refuses, the others holding the path's values, and clicks the path's submit. It holds when no
+ * non-GET request got a 2xx, the field is invalid (validity natively, aria-invalid under novalidate), an error is
+ * associated (validationMessage, else aria-describedby or aria-errormessage naming visible text) and focus is on the
+ * field or on a link to it. A browser that caps the input at maxlength holds. The first case that submits ends the
+ * run with a hard violation (the report ends the test). Values are put back after each case.
+ */
+export async function a11yFormCases(page, submit, step, max) {
+  const loc = a11yLocate(page, submit);
+  if ((await loc.count()) !== 1) return [];
+  await page.evaluate(a11yPageHelpers);
+  const btn = await loc.elementHandle();
+  const form = await page.evaluate((b) => window[Symbol.for("argus.a11y")].form(b), btn);
+  if (!form) return [];
+  const owner = await btn.evaluateHandle((b) => b.form || b.closest("form"));
+  const out = [], posted = [];
+  const seen = (r) => { if (r.request().method() !== "GET" && r.status() >= 200 && r.status() < 300) posted.push(r.status() + " " + r.request().method() + " " + new URL(r.url()).pathname); };
+  page.on("response", seen);
+  try {
+    for (const c of a11yCasesOf(form.fields, max)) {
+      const field = (await page.evaluateHandle(([f, i]) => f.elements[i], [owner, c.index])).asElement();
+      const original = await field.inputValue();
+      await field.fill(c.value);
+      const key = c.key + " " + c.kind;
+      const bad = (check, detail) => out.push({ check, step, key, detail: "after a " + c.kind + " value: " + detail });
+      if (c.kind === "maxlength" && (await field.inputValue()).length <= c.limit) {
+        await field.fill(original);
+        continue;
+      }
+      const blocked = await page.evaluate((f) => !f.noValidate && !f.checkValidity(), owner);
+      posted.length = 0;
+      await btn.click();
+      if (!blocked) {
+        try { await page.waitForResponse((r) => r.request().method() !== "GET", { timeout: Math.min(SETTLE, 800) }); } catch (e) { /* no request */ }
+      }
+      let state = null;
+      try {
+        await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+        state = await page.evaluate(([f, i]) => window[Symbol.for("argus.a11y")].formState(f.elements[i]), [owner, c.index]);
+      } catch (e) { state = null; }
+      if (posted.length || !state) return [...out, { check: "form-accepts-invalid", step, key, hard: true, detail: "the form was submitted with a " + c.kind + " value (" + (posted.join(", ") || "the page navigated") + "): the server accepted what the field refuses" }];
+      if (!state.invalid) bad("form-case-invalid", state.noValidate ? "the field is not marked aria-invalid" : "the browser does not find the field invalid");
+      if (!state.told) bad("form-case-error", "no error message is associated with the field (validationMessage, or aria-describedby or aria-errormessage naming visible text; 3.3.1)");
+      if (!state.focused) bad("form-case-focus", "focus is neither on the field nor on a link to it");
+      await field.fill(original);
+    }
+  } finally {
+    page.off("response", seen);
+  }
+  return out;
+}
+`;
+
 const NAMES = String.raw`
 /** Every action target has an accessible name (4.1.2): toHaveAccessibleName(/\S/). A target the page does not hold once is left to the path. */
 export async function a11yNames(expect, page, target, step) {
@@ -356,7 +545,7 @@ const allowOf = (ctx) => JSON.stringify((((ctx.smoke || {}).journeys || {})[ctx.
 const report = (call, ctx) => `a11y.a11yReport(expect, test.info(), await ${call}, ${JSON.stringify(ctx.id)}, ${allowOf(ctx)});`;
 
 /** Pre-action emitter: for each step that follows the step's group and `pick`s, the line `line(step, pageVariable, ctx)`. */
-const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s)).map((s) => line(s, pageVar(s.as, ctx.steps, ctx), ctx)));
+const before = (pick, line) => (step, ctx) => gated(upcoming(step, ctx).filter((s) => s.as !== "system" && s.target && pick(s, ctx)).map((s) => line(s, pageVar(s.as, ctx.steps, ctx), ctx)));
 const reported = (call) => (s, p, ctx) => report(call(s, p), ctx);
 
 /** The steps whose end is a screen: smoke.json's `screens` for the journey, else the last expectation of an account before its next action (or the end of the path). */
@@ -374,6 +563,16 @@ const after = (pick, line) => (step, ctx) => (step.as !== "system" && pick(step,
  * purpose: probed, it makes a missing or empty baseline match, so the run passes with nothing adopted.
  */
 export const ARIA_EXPECT = { pathTemplate: "{testDir}/__aria__/{testName}/{arg}{ext}" };
+
+/** The click steps right after the fills of a form: the submits whose form has cases to run. */
+const submits = (s, ctx) => {
+  const i = ctx.steps.findIndex((x) => x.n === s.n);
+  let j = i - 1;
+  while (j >= 0 && ctx.steps[j].as === s.as && ["fill", "select", "check", "uncheck"].includes(ctx.steps[j].do)) j--;
+  return s.do === "click" && j < i - 1;
+};
+const casesMax = (ctx) => (Number.isInteger((ctx.smoke || {}).form_cases_max) ? ctx.smoke.form_cases_max : 6);
+const WCAG_TAGS = '["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]';
 
 export const CHECKS = [
   { name: "a11y-core", project: "a11y", when: "never: the shared helpers", source: CORE, emit: () => [] },
@@ -402,6 +601,32 @@ export const CHECKS = [
       `try { await expect(root).toMatchAriaSnapshot({ name: "${s.n}.aria.yml", timeout: SETTLE }); } catch (e) { found.push(a11y.a11yAriaFailure(test.info(), e, ${s.n})); }`,
       `a11y.a11yReport(expect, test.info(), found, ${JSON.stringify(ctx.id)}, ${allowOf(ctx)});`,
     ]),
+  },
+  {
+    name: "a11y-axe",
+    project: "a11y",
+    when: "at each screen of the path",
+    source: AXE,
+    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [
+      'const { AxeBuilder } = require("@axe-core/playwright");',
+      `const base = new AxeBuilder({ page: ${p} }).withTags(${WCAG_TAGS}).disableRules(["target-size"]);`,
+      `const builder = (await a11y.a11yHasMain(${p})) ? base.include("main") : base;`,
+      report(`a11y.a11yAxeResults(await builder.analyze(), ${s.n})`, ctx),
+    ]),
+  },
+  {
+    name: "a11y-tokens",
+    project: "a11y",
+    when: "at each screen of the path, with live.json's tokens",
+    source: TOKENS,
+    emit: after((s, ctx) => screens(ctx).has(s.n), (s, p, ctx) => [report(`a11y.a11yTokens(${p}, ${s.n}, test.info())`, ctx)]),
+  },
+  {
+    name: "a11y-forms",
+    project: "a11y",
+    when: "before a click that submits the form the path just filled",
+    source: FORMS,
+    emit: (step, ctx) => (casesMax(ctx) > 0 ? before(submits, reported((s, p) => `a11y.a11yFormCases(${p}, ${targetLit(s.target)}, ${s.n}, ${casesMax(ctx)})`))(step, ctx) : []),
   },
   {
     name: "a11y-modals",

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Forms</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; }
+  fieldset { margin: 0 0 12px; }
+  label { display: block; margin: 4px 0; }
+  .err { color: rgb(160, 0, 0); display: block; }
+  :focus-visible { outline: 3px solid rgb(26, 79, 214); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main>
+  <fieldset>
+    <legend>Native validation</legend>
+    <form id="native" data-post>
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <label>Code <input name="code" maxlength="5"></label>
+      <label>Nick <input name="nick" minlength="3"></label>
+      <label>Ref <input name="ref" pattern="[A-Z]{3}"></label>
+      <button type="submit">Save native</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Accepts anything</legend>
+    <form id="loose" novalidate data-post data-loose>
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <button type="submit">Save loose</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Custom errors</legend>
+    <form id="custom" novalidate data-post data-mode="field">
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <button type="submit">Save custom</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Error summary</legend>
+    <form id="summary" novalidate data-post data-mode="summary">
+      <label>Name <input id="summary-name" name="name" required></label>
+      <label>Email <input id="summary-email" name="email" type="email" required></label>
+      <div id="summary-box" role="alert"></div>
+      <button type="submit">Save summary</button>
+    </form>
+  </fieldset>
+
+  <fieldset>
+    <legend>Silent refusal</legend>
+    <form id="silent" novalidate data-post data-mode="silent">
+      <label>Name <input name="name" required></label>
+      <label>Email <input name="email" type="email" required></label>
+      <button type="submit">Save silent</button>
+    </form>
+  </fieldset>
+</main>
+<script>
+  for (const form of document.querySelectorAll("form")) {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const mode = form.dataset.mode;
+      const bad = form.dataset.loose === undefined ? [...form.elements].filter((f) => f.willValidate && !f.checkValidity()) : [];
+      if (bad.length && mode === "silent") return;
+      if (bad.length) {
+        form.querySelectorAll(".err").forEach((n) => n.remove());
+        const box = form.querySelector("[role=alert]");
+        if (box) box.textContent = "";
+        for (const f of bad) {
+          const note = document.createElement(mode === "summary" ? "a" : "span");
+          note.className = "err";
+          note.id = "err-" + form.id + "-" + f.name;
+          note.textContent = f.name + ": " + f.validationMessage;
+          f.setAttribute("aria-invalid", "true");
+          f.setAttribute("aria-describedby", note.id);
+          if (mode === "summary") {
+            note.href = "#" + f.id;
+            box.append(note);
+          } else f.after(note);
+        }
+        (mode === "summary" ? form.querySelector("[role=alert] a") : bad[0]).focus();
+        return;
+      }
+      fetch("/submit", { method: "POST", body: new FormData(form) });
+    });
+  }
+</script>
+</body>
+</html>
