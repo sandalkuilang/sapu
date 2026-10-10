@@ -1,13 +1,15 @@
 // argus-live-smoke.mjs — the lane's own pass over the smoke suite's paths (spec §19.4, §19.9, §19.11):
 // `smoke run` runs each path on the live instance in a seeded random order, confirms a break with a second
 // run after `up --fresh`, writes a confirmed expectation break as a slot's regression candidate, and with
-// `--perf` measures each path against its baseline. Above the repro runner, below the CLI.
+// `--perf` measures each path against its baseline (argus-live-perf.mjs). Above the repro runner, below the CLI.
 import { randomInt } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { expandConfig, loadLive, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
 import { runOnce, writePrivate } from "./argus-live-repro.mjs";
+import { perfPath } from "./argus-live-perf.mjs";
+import { run as runCommand } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 
@@ -148,11 +150,17 @@ function writeRegression(main, { runId, slot, id, list, n, parsed, live, account
  * (writeRegression; a locator break waits for a heal); then `smoke run: <h> held, <b> broke, <f> flaky, <x>
  * harness`. Each verdict is appended to `<run>/smoke/pass.jsonl` (0600) `{id, verdict, step, kind, seed}`.
  * Exit 3 when a path broke, else 2 when one was the harness's, else 0. `once` is the one-run seam (runOnce).
- * Refused before any run: `--perf` (not built yet), no cycle, a slot minted already, an unknown id, no path,
- * a path its mode refuses (`refused: smoke run: <id>: step <n>: <reason>`).
+ * `perf` (spec §19.11) measures instead of judging: the same paths in the same order, each run by `perfPass`
+ * (`perf <id>: …` lines, `smoke run --perf: <b> baselined, <o> ok, <r> regressed, <f> flaky, <x> not measured`),
+ * exit 3 when a metric regressed (both batches) or a path broke, else 2 when the harness failed, else 0. It
+ * takes no `--slot`, and is refused while another slot of the run holds a token (`refused: smoke run --perf:
+ * <n> other slot(s) live`): concurrent load skews every timing. Each path's verdict is appended to
+ * `<run>/smoke/perf.jsonl` (0600) `{id, verdict, baseline, batches, regressed}`.
+ * Refused before any run: no cycle, a slot minted already, an unknown id, no path, a path its mode refuses
+ * (`refused: smoke run: <id>: step <n>: <reason>`).
  */
 export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce } = {}) {
-  if (perf) throw new Error("refused: smoke run --perf: not built yet");
+  if (perf && slot !== null) throw new Error("refused: smoke run --perf: it writes no regression, so it takes no --slot");
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
   const rec = readRun(main);
@@ -164,6 +172,8 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
   if (loaded.errors.length) throw new Error(`refused: smoke run: ${loaded.errors.join("; ")}`);
   const smoke = loaded.smoke ?? SMOKE_DEFAULTS;
   if (slot !== null && rec.slots && Object.hasOwn(rec.slots, String(slot))) throw new Error(`refused: smoke run: slot ${slot} is minted already`);
+  const others = Object.values(rec.slots ?? {}).filter((x) => x && x.tokenHash).length;
+  if (perf && others) throw new Error(`refused: smoke run --perf: ${others} other slot(s) live`);
   const all = readSuitePaths(main, smoke.dir);
   for (const id of ids ?? []) if (!all.some((p) => p.id === id)) throw new Error(`refused: smoke run: the suite has no path ${id}`);
   if (!all.length) throw new Error(`refused: smoke run: the suite has no paths (${smoke.dir}/journeys)`);
@@ -179,6 +189,7 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
   }
   const used = seed ?? randomInt(0, 4294967296);
   const lines = [`seed: ${used}`];
+  if (perf) return perfPass({ main, lock, rec, smoke, picked, order: seededOrder([...picked.keys()], used), lines, once });
   const count = { held: 0, broke: 0, flaky: 0, harness: 0 };
   const records = [];
   let written = null;
@@ -219,4 +230,29 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.appendFileSync(path.join(dir, "pass.jsonl"), records.map((r) => `${JSON.stringify(r)}\n`).join(""), { mode: 0o600 });
   return { code: count.broke ? 3 : count.harness ? 2 : 0, lines };
+}
+
+/**
+ * `smoke run --perf`'s body: each picked path, in `order`, through perfPath (runs a batch from smoke.json's
+ * `perf.runs`, thresholds from `perf.thresholds`), the instance's commit as the baseline's `head`.
+ */
+async function perfPass({ main, lock, rec, smoke, picked, order, lines, once }) {
+  const g = runCommand(["git", "-C", rec.worktree ?? main, "rev-parse", "HEAD"]);
+  const head = g.status === 0 ? String(g.stdout).trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error("refused: smoke run --perf: the instance's commit could not be read");
+  const count = { baselined: 0, ok: 0, regressed: 0, flaky: 0, "not-measured": 0 };
+  const rows = [];
+  let exit = 0;
+  for (const id of order) {
+    const r = await perfPath({ main, id, list: picked.get(id).path, once, runs: smoke.perf.runs, thresholds: smoke.perf.thresholds, head });
+    lines.push(...r.lines);
+    rows.push(r.row);
+    count[r.verdict] += 1;
+    exit = r.exit === 3 || exit === 3 ? 3 : Math.max(exit, r.exit);
+  }
+  lines.push(`smoke run --perf: ${count.baselined} baselined, ${count.ok} ok, ${count.regressed} regressed, ${count.flaky} flaky, ${count["not-measured"]} not measured`);
+  const dir = path.join(liveDir(main), lock.runId, "smoke");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.appendFileSync(path.join(dir, "perf.jsonl"), rows.map((x) => `${JSON.stringify(x)}\n`).join(""), { mode: 0o600 });
+  return { code: exit, lines };
 }
