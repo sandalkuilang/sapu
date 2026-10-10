@@ -11,7 +11,7 @@ The contract has three layers:
 |---|---|---|
 | Engine facts | `.claude/sapu.json` | the scripts (`sapu-contract.mjs`, `sapu-merge.sh`, `sapu-guard.mjs`) and the `sapu-wave.js` workflow |
 | Per-skill profile | `.claude/sapu/<skill>.md` (`sapu`, `worker`, `forge`, `argus`, `momus`, `nemesis`, `dream`) | the skill concerned, as its first step |
-| Existing QA configuration | `.argus/config.yml`, `.argus/live.json` (the journey lane's instance; format: `skills/journey/live.md`), `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged); `argus-live.mjs` |
+| Existing QA configuration | `.argus/config.yml`, `.argus/live.json` (the journey lane's instance; format: `skills/journey/live.md`), `.argus/smoke.json` (the journey lane's smoke suite: its members, browsers, CI wiring and budgets; format: `skills/journey/smoke.md`), `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged); `argus-live.mjs` |
 
 **Where it lives: in the repo, or local.** By default the contract and profiles are committed in
 the repo (the table above). A repo that must not show sapu at all (someone else's repo, an

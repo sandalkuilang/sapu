@@ -497,4 +497,63 @@ the API-level RED test the hint suggests.
 
 ## As built (phase 6)
 
-Empty until the tasks land.
+### Task 0.2: shared surfaces
+
+**Locked for the lanes.** Every verb's function returns (or resolves to) `{code, lines, masked?}`: the CLI
+prints `lines` through the env-file mask, or as they are when `masked: true` (a function that fenced or
+masked its own lines, so a nonce is never cut), and exits `code`. A stub throws `refused: <verb>: not built
+yet` (stderr, exit 1, the CLI's refusal channel); a lane replaces the body. The dispatch reads the line
+whole before anything runs: flags at most once, `--slot` 1–99 (`refused: a slot is a number from 1 to
+99`), `--seed` 0–4294967295 (`refused: a seed is an integer from 0 to 4294967295`), `--ids` a comma list of
+kebab ids (an array), `--issue` a positive integer (a number); refs, run ids, journey ids and doc ranges
+reach the lane as typed, for it to validate. Absent options are `null` (`perf`, `dryRun`: booleans).
+
+| Verb | Function (module) |
+|---|---|
+| `smoke plan` | `smokePlan(main)` (`-suite`) |
+| `smoke admit <slot>.<generation>` | `smokeAdmit(main, ref)` (`-suite`) |
+| `smoke check` | `smokeCheck(main)` (`-suite`), never gated |
+| `smoke run [--ids] [--slot] [--perf] [--seed]` | `smokeRun(main, {ids, slot, perf, seed})` (`-smoke`) |
+| `smoke heal <slot>.<generation>` | `smokeHeal(main, ref)` (`-heal`) |
+| `smoke propose [--dry-run]` | `smokePropose(main, {dryRun})` (`-propose`) |
+| `smoke workflow` | `smokeWorkflow(main)` (`-propose`) |
+| `smoke ci [--run <id>]` | `smokeCi(main, {run})` (`-ci`) |
+| `smoke baseline --from-run <id> [--ids]` | `smokeBaseline(main, {fromRun, ids})` (`-ci`) |
+| `smoke perf --issue <id>` / `--rebaseline <id>` | `perfIssue(main, id)` / `perfRebaseline(main, id)` (`-perf`; verb `smoke perf`) |
+| `seed (--issue <n>\|--doc <file>:<a>-<b>)` | `seed(main, {issue, doc})` (`-seed`), exactly one set |
+| `report [--run <runId>]` | `report(main, {run})` (`-report`) |
+
+`CHECKS = []` in `-layout.mjs` and `-a11y.mjs`. Hooks added for lanes that cannot edit the CLI:
+`apiLevelHint(main, ref) → string | null` in `-repro.mjs` (F2; `repro --test` prints it after `red test:`);
+`seedsOf(main, runId, slot) → [{kind, ref}]` in `-seed.mjs`, passed by `map-check --merge` as
+`mergeMap(prev, value, {head, seeds})` (E1); `slot <n> --map --seed` → `mintMapSlot(main, {slot, seed})`,
+which refuses `slot --seed: not built yet` until E1. The DAG order is fixed in `-instance.mjs`'s header:
+`-seed` after `-run` (below `-slots` and `-pw`), `-perf` after `-map` (below `-session`, which installs its
+script), `-codegen` beside the instance before `-redtest`, then `-repro` → `-smoke` → `-suite` → `-propose` →
+`-heal`, `-ci` → `-report` → `argus-live.mjs`; no phase 1–5 module reaches the six upper ones.
+
+**Deviations.**
+- `-a11y` holds digits: the DAG test's module pattern is `^argus-live(-[a-z0-9]+)?\.mjs$` (and its import
+  and header patterns likewise).
+- `ORACLES` lives in `-return.mjs`, which gains `LANE_ORACLES = ["regression"]`: an explorer's return naming
+  `regression`, as a candidate or in `coverage`, is refused (§19.9: never the explorer's word). Task 0.3's
+  `smokeRun --slot` writes its regression return itself. engine.test's two brief checks read the explorer's
+  oracles (`Rule-Change` trailer). `FINAL_KINDS.regression` is `Object.keys(EXPECTS)`, so Z1's `layout`
+  joins it.
+- `skills/journey/live.md` names the three new keys and `seed` (engine.test requires every `TOP_KEYS` key
+  there; 14,443 of its 14,500 bytes). docs/security.md and docs/usage.md name `smoke check` as a read.
+- §19.2's trace gate is in the dispatch: every `smoke` verb but `check`, once the line parses, before the
+  lane runs: no committed contract, a local one, or `traces: "none"` → `refused: smoke: a committed suite
+  would leave a trace`; a broken contract → its error. `seed` and `report` are not gated.
+- `smoke.json` where §19.2 is silent: `ci` defaults `{web_server: [], ports: {}, workflow:
+  "argus-smoke.yml", artifact: "argus-smoke-results"}` (a given `web_server` is non-empty, each
+  `{command, url, timeout_s?}`, `timeout_s` 1–3600); loopback is judged by spelling (`localhost`, `127.x`,
+  `[::1]`: CI resolves nothing for the suite); ranges `heal_max_steps` 1–10, `form_cases_max` 0–50,
+  `link_cap` 0–500, `perf.runs` 1–20, `workers` 1–64 or `"N%"`; `journeys.<id>.screens` distinct step numbers
+  1–500, `allow` `[{check, key}]`, `masks` locators `parseTarget` reads (no ref); `dir` repo-relative, not
+  under `.git` or `.argus`; a journey both pinned and excluded is refused. `validateSmoke(raw) → {value,
+  errors}` (`value` with every default, null on any error); `loadSmoke(main) → {smoke, errors, missing}`.
+  Exported: `SMOKE_FILE`, `SMOKE_KEYS`, `SMOKE_BROWSERS`, `PERF_METRICS`, `SMOKE_DEFAULTS` (frozen).
+- Line counts at 0.2: `-config` 747, `-repro` 750 (the cap; 0.3's move frees it), `-run` 748.
+- `-codegen.mjs` gets no stub (0.4 creates it); `-minimize.mjs` is not yet in the header (0.3 adds it).
+- Open for the lanes' owners: B2's "codegen writes `test.fixme`" lands in `-codegen.mjs`, which is C3's.

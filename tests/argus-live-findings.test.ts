@@ -62,12 +62,12 @@ afterEach(cleanTemps);
 const SCRIPTS = join(__dirname, "../plugins/sapu/scripts");
 
 describe("argus-live modules — the DAG", () => {
-  /** Each argus-live module (`argus-live`, `argus-live-pw`, …) → the argus-live modules it imports. */
+  /** Each argus-live module (`argus-live`, `argus-live-pw`, `argus-live-a11y`, …) → the argus-live modules it imports. */
   const graph = () => {
     const out = new Map<string, string[]>();
-    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z]+)?\.mjs$/.test(x))) {
+    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(x))) {
       const text = readFileSync(join(SCRIPTS, f), "utf8");
-      out.set(f.replace(/\.mjs$/, ""), [...text.matchAll(/from "\.\/(argus-live-[a-z]+)\.mjs"/g)].map((m) => m[1]));
+      out.set(f.replace(/\.mjs$/, ""), [...text.matchAll(/from "\.\/(argus-live-[a-z0-9]+)\.mjs"/g)].map((m) => m[1]));
     }
     return out;
   };
@@ -116,6 +116,31 @@ describe("argus-live modules — the DAG", () => {
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
   });
 
+  it("admits phase 6's modules, each with the imports it may have (spec §19)", () => {
+    const g = graph();
+    const PHASE6 = ["argus-live-layout", "argus-live-a11y", "argus-live-perf", "argus-live-seed", "argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-report"];
+    for (const m of PHASE6) expect(g.has(m), m).toBe(true);
+    // The in-page check sources are leaves: embedded verbatim in the suite, run by the lane through run-code.
+    for (const leaf of ["argus-live-layout", "argus-live-a11y"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
+    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
+    // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
+    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-report"];
+    for (const m of g.keys()) {
+      if (m === "argus-live" || UPPER.includes(m)) continue;
+      for (const u of UPPER) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);
+    }
+    // perf's in-page script is installed by the session hook beside the signal script, and seed's text is read by pw: both sit below them.
+    for (const [low, above] of [["argus-live-perf", "argus-live-session"], ["argus-live-seed", "argus-live-pw"]]) expect(reach(g, low).has(above), `${low} reaches ${above}`).toBe(false);
+    for (const m of [...PHASE6.slice(2), "argus-live-seed"]) expect(g.get("argus-live"), m).toContain(m);
+  });
+
+  it("caps every argus-live module at 750 lines", () => {
+    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(x))) {
+      expect(readFileSync(join(SCRIPTS, f), "utf8").trimEnd().split("\n").length, f).toBeLessThanOrEqual(750);
+    }
+  });
+
   it("one helper names a run's browser HOME: browserHome in the run module", () => {
     expect(browserHome({ home: "/h/run" })).toBe(join("/h/run", "browser"));
     for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live.*\.mjs$/.test(x) && x !== "argus-live-run.mjs")) {
@@ -128,8 +153,8 @@ describe("argus-live modules — the DAG", () => {
     const text = readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8");
     const header = text.slice(0, text.indexOf("\nimport ")).replace(/^\/\/ ?/gm, "");
     const dag = header.slice(header.indexOf("argus-live-proc.mjs"), header.indexOf("Leaves:"));
-    const leaves = [...header.slice(header.indexOf("Leaves:")).split(/\.\s/)[0].matchAll(/-([a-z]+)\.mjs/g)].map((m) => `argus-live-${m[1]}`);
-    const order = [...dag.matchAll(/argus-live\.mjs|argus-live-[a-z]+\.mjs|-([a-z]+)\.mjs|this module/g)].map((m) => (m[0] === "this module" ? "argus-live-instance" : m[1] ? `argus-live-${m[1]}` : m[0].replace(/\.mjs$/, "")));
+    const leaves = [...header.slice(header.indexOf("Leaves:")).split(/\.\s/)[0].matchAll(/-([a-z0-9]+)\.mjs/g)].map((m) => `argus-live-${m[1]}`);
+    const order = [...dag.matchAll(/argus-live\.mjs|argus-live-[a-z0-9]+\.mjs|-([a-z0-9]+)\.mjs|this module/g)].map((m) => (m[0] === "this module" ? "argus-live-instance" : m[1] ? `argus-live-${m[1]}` : m[0].replace(/\.mjs$/, "")));
     const at = (m: string) => order.indexOf(m);
     for (const m of g.keys()) expect(leaves.includes(m) || at(m) >= 0, `${m} is named in the header`).toBe(true);
     for (const leaf of leaves) expect(g.get(leaf), leaf).toEqual([]);

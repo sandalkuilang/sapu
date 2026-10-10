@@ -684,6 +684,9 @@ export function redTestFile(main, ref) {
   return file;
 }
 
+/** Spec §19.14 (not built yet): the `api-level: suggested (…)` line `repro <ref> --test` adds for candidate `ref`, or null. */
+export const apiLevelHint = (main, ref) => null;
+
 /**
  * `repro <ref> --saved` (Phase 5's issue body): the values the candidate's newest reproducing run of its whole
  * list read (`run-<i>.json` `saved`) as scrub would let them leave → `{code, out}`: scrub's refusal for the

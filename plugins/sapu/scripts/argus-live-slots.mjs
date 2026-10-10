@@ -260,9 +260,10 @@ export async function mintSlot(main, { slot, journey, accounts }, { runner = run
  * has a worktree (a map run, or a full `up` still starting): run.json `slots[<n>]` keeps `{mode: "map",
  * journey: null, generation, tokenHash, accounts: {}, retired: [], submitted: false}`, and the slot's
  * directory a fresh state.json only. Refused: no lock, past its deadline, a sealed run, no worktree yet, a
- * slot minted already.
+ * slot minted already. `seed`: a seed map slot, whose token also takes `pw <token> source` (spec §19.12).
  */
-export async function mintMapSlot(main, { slot }) {
+export async function mintMapSlot(main, { slot, seed = false }) {
+  if (seed) throw new Error("refused: slot --seed: not built yet");
   if (!Number.isInteger(slot) || slot < 1 || slot > 99) throw new Error("refused: a slot is a number from 1 to 99");
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");

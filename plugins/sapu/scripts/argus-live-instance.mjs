@@ -7,12 +7,14 @@
 // import none, and any module may import them): argus-live-proc.mjs (processes) → -config.mjs (the
 // configuration) → -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose,
 // the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
-// -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs and
-// -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs) and -scrub.mjs (after -ledger.mjs) →
-// -return.mjs → -login.mjs → -session.mjs → -pw.mjs and -steps.mjs → this module and -redtest.mjs →
-// -repro.mjs → argus-live.mjs. Leaves: -fence.mjs, -targets.mjs, -origin.mjs, -classes.mjs. `pw` never
-// imports this module, and -start.mjs never imports -browser.mjs (tests/argus-live-findings.test.ts pins
-// both, and this order).
+// -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs,
+// -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
+// -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -login.mjs → -session.mjs →
+// -pw.mjs and -steps.mjs → this module, -codegen.mjs (the smoke suite's generator) and -redtest.mjs →
+// -repro.mjs → -smoke.mjs (the lane's smoke pass) → -suite.mjs (membership) → -propose.mjs (proposals) →
+// -heal.mjs and -ci.mjs → -report.mjs → argus-live.mjs. Leaves: -fence.mjs, -targets.mjs, -origin.mjs,
+// -classes.mjs, -layout.mjs, -a11y.mjs (the in-page checks). `pw` never imports this module, and -start.mjs
+// never imports -browser.mjs (tests/argus-live-findings.test.ts pins both, and this order).
 import { randomBytes } from "node:crypto";
 import dns from "node:dns";
 import { isIP } from "node:net";

@@ -34,9 +34,10 @@
 //   argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>,…
 //                                mint slot <n>'s token for an explorer: one line of JSON {slot, token,
 //                                generation, journey, accounts} (the only place a token is printed)
-//   argus-live.mjs slot <n> --map
+//   argus-live.mjs slot <n> --map [--seed]
 //                                mint map slot <n>'s token, in any run with a worktree (a map run, or an up still
 //                                starting): {slot, token, generation, mode}; it takes only pw <token> code and submit
+//                                (--seed: a seed map slot, whose token also takes pw <token> source; spec §19.12)
 //   argus-live.mjs slot <n> --handoff
 //                                retire slot <n>'s token and mint the next generation (fresh budget)
 //   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit> [args]
@@ -107,27 +108,61 @@
 //                                doc-newer → class B(a), or undecidable (<why>) → needs-owner
 //   argus-live.mjs proxy <runId> internal: the run's filtering proxy `up` starts; exits once the lock
 //                                names another run
+// The smoke suite's verbs (spec §19.15), all the orchestrator's but smoke check (a read: it writes nothing).
+// Each is its lane's function, returning {code, lines[, masked]}: the lines printed (masked with the env
+// file's values unless the function masked them itself, masked: true), the code the exit. Every smoke verb
+// but check needs the repo's own committed contract with traces "visible" (spec §19.2):
+//   argus-live.mjs smoke plan    the catalog ranked into the suite's members (-suite.mjs smokePlan)
+//   argus-live.mjs smoke admit <slot>.<generation>
+//                                stage the return's path once it held fresh and dirty (-suite.mjs smokeAdmit)
+//   argus-live.mjs smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>]
+//                                the lane's pass over the suite's paths (-smoke.mjs smokeRun)
+//   argus-live.mjs smoke heal <slot>.<generation>
+//                                a heal-mode return judged by the decision table (-heal.mjs smokeHeal)
+//   argus-live.mjs smoke propose [--dry-run]
+//                                the staged changes as a pull request (-propose.mjs smokePropose)
+//   argus-live.mjs smoke check   every hand-edited or stale suite file named; writes nothing (-suite.mjs smokeCheck)
+//   argus-live.mjs smoke ci [--run <id>]
+//                                a CI run triaged, flakes quarantined (-ci.mjs smokeCi)
+//   argus-live.mjs smoke baseline --from-run <id> [--ids …]
+//                                CI's screenshots, ARIA snapshots and violations adopted (-ci.mjs smokeBaseline)
+//   argus-live.mjs smoke perf (--issue|--rebaseline) <id>
+//                                a perf issue's body, or a moved baseline (-perf.mjs perfIssue, perfRebaseline)
+//   argus-live.mjs smoke workflow
+//                                the CI workflow init writes (-propose.mjs smokeWorkflow)
+//   argus-live.mjs seed (--issue <n>|--doc <file>:<a>-<b>)
+//                                a seed map slot's source text (-seed.mjs seed)
+//   argus-live.mjs report [--run <runId>]
+//                                the cycle's scrubbed report (-report.mjs report)
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
 import path from "node:path";
+import { smokeBaseline, smokeCi } from "./argus-live-ci.mjs";
 import { classify } from "./argus-live-classes.mjs";
 import { showDashboard } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { drift } from "./argus-live-drift.mjs";
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, selectJourneys, visitJourney, writeJourneys } from "./argus-live-map.mjs";
+import { smokeHeal } from "./argus-live-heal.mjs";
 import { configProblems, guardsEnvFile, renewRun, status, statusJson, up, upMap } from "./argus-live-instance.mjs";
 import { liveDir, readLock } from "./argus-live-lock.mjs";
+import { perfIssue, perfRebaseline } from "./argus-live-perf.mjs";
 import { redact, run } from "./argus-live-proc.mjs";
+import { smokePropose, smokeWorkflow } from "./argus-live-propose.mjs";
 import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
-import { minimize, redTestFile, repro, runOnce, savedValues } from "./argus-live-repro.mjs";
+import { report } from "./argus-live-report.mjs";
+import { apiLevelHint, minimize, redTestFile, repro, runOnce, savedValues } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
 import { browserHome, down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
+import { seed, seedsOf } from "./argus-live-seed.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
-import { findMain, loadContract, needsOwnerLabel } from "./sapu-contract.mjs";
+import { smokeRun } from "./argus-live-smoke.mjs";
+import { smokeAdmit, smokeCheck, smokePlan } from "./argus-live-suite.mjs";
+import { findMain, loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
 const main = findMain(process.cwd());
@@ -142,9 +177,83 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] | smoke perf (--issue|--rebaseline) <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>]";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
+/** Journey ids, comma-separated. */
+const IDS = /^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$/;
+const refuseUsage = () => {
+  throw new Error(`refused: ${usage}`);
+};
+/** A flag's value read by its kind (a bare flag is "flag"); a malformed one refused. */
+const VALUES = {
+  ids: (v) => (IDS.test(v) ? v.split(",") : refuseUsage()),
+  slot: (v) => (/^[1-9][0-9]?$/.test(v) ? Number(v) : refuseWith("a slot is a number from 1 to 99")),
+  seed: (v) => (/^(0|[1-9][0-9]{0,9})$/.test(v) && Number(v) <= 0xffffffff ? Number(v) : refuseWith("a seed is an integer from 0 to 4294967295")),
+  issue: (v) => (/^[1-9][0-9]{0,9}$/.test(v) ? Number(v) : refuseUsage()),
+  text: (v) => v,
+};
+function refuseWith(why) {
+  throw new Error(`refused: ${why}`);
+}
+/** `words` read as flags of `spec` ({flag: kind}), each at most once → {flag: value}; anything else refused with the usage. */
+function options(words, spec) {
+  const out = {};
+  for (let i = 0; i < words.length; i++) {
+    const f = words[i];
+    const kind = Object.hasOwn(spec, f) && !Object.hasOwn(out, f) ? spec[f] : null;
+    if (kind === "flag") out[f] = true;
+    else if (kind && i + 1 < words.length) out[f] = VALUES[kind](words[++i]);
+    else refuseUsage();
+  }
+  return out;
+}
+
+/** Spec §19.2: a committed suite is a trace in the repo, so it needs the repo's own contract with traces "visible". */
+function smokeGate() {
+  const c = loadContract(main);
+  if (!c.contract && !c.missing) throw new Error(`refused: ${c.error}`);
+  if (!c.contract || c.home?.mode === "local" || resolvePolicy(c.contract).traces !== "visible") throw new Error("refused: smoke: a committed suite would leave a trace");
+}
+
+/**
+ * `smoke <verb> …`, `seed …` or `report …` → its lane's `{code, lines[, masked]}`. The line is read whole
+ * first: a malformed one is refused with the usage before the trace gate or any lane runs.
+ */
+async function laneCommand(cmd, args) {
+  if (cmd === "seed") {
+    const f = options(args, { "--issue": "issue", "--doc": "text" });
+    if ((f["--issue"] === undefined) === (f["--doc"] === undefined)) refuseUsage();
+    return seed(main, { issue: f["--issue"] ?? null, doc: f["--doc"] ?? null });
+  }
+  if (cmd === "report") return report(main, { run: options(args, { "--run": "text" })["--run"] ?? null });
+  const [verb, ...rest] = args;
+  const o = (spec) => options(rest, spec);
+  let call;
+  if (verb === "check" && !rest.length) return smokeCheck(main);
+  if (verb === "plan" && !rest.length) call = () => smokePlan(main);
+  else if (verb === "admit" && rest.length === 1) call = () => smokeAdmit(main, rest[0]);
+  else if (verb === "heal" && rest.length === 1) call = () => smokeHeal(main, rest[0]);
+  else if (verb === "run") {
+    const f = o({ "--ids": "ids", "--slot": "slot", "--perf": "flag", "--seed": "seed" });
+    call = () => smokeRun(main, { ids: f["--ids"] ?? null, slot: f["--slot"] ?? null, perf: Boolean(f["--perf"]), seed: f["--seed"] ?? null });
+  } else if (verb === "propose") {
+    const f = o({ "--dry-run": "flag" });
+    call = () => smokePropose(main, { dryRun: Boolean(f["--dry-run"]) });
+  } else if (verb === "ci") {
+    const f = o({ "--run": "text" });
+    call = () => smokeCi(main, { run: f["--run"] ?? null });
+  } else if (verb === "baseline") {
+    const f = o({ "--from-run": "text", "--ids": "ids" });
+    if (f["--from-run"] === undefined) refuseUsage();
+    call = () => smokeBaseline(main, { fromRun: f["--from-run"], ids: f["--ids"] ?? null });
+  } else if (verb === "perf" && rest.length === 2 && rest[0] === "--issue") call = () => perfIssue(main, rest[1]);
+  else if (verb === "perf" && rest.length === 2 && rest[0] === "--rebaseline") call = () => perfRebaseline(main, rest[1]);
+  else if (verb === "workflow" && !rest.length) call = () => smokeWorkflow(main);
+  else refuseUsage();
+  smokeGate();
+  return call();
+}
 
 try {
   // down and the reaper drain every session into the run's secret ledger before they close it.
@@ -161,11 +270,12 @@ try {
     for (let i = 1; i < args.length; i++) {
       if (args[i] === "--handoff" && !opts.handoff) opts.handoff = true;
       else if (args[i] === "--map" && !opts.map) opts.map = true;
+      else if (args[i] === "--seed" && !opts.seed) opts.seed = true;
       else if ((args[i] === "--journey" || args[i] === "--accounts") && i + 1 < args.length && !Object.hasOwn(opts, args[i])) opts[args[i]] = args[++i];
       else throw new Error(`refused: ${usage}`);
     }
     if (Number.isNaN(n)) throw new Error("refused: a slot is a number from 1 to 99");
-    if (opts.map && Object.keys(opts).length === 1) printMasked(JSON.stringify(await mintMapSlot(main, { slot: n })));
+    if (opts.map && Object.keys(opts).length === 1 + (opts.seed ? 1 : 0)) printMasked(JSON.stringify(await mintMapSlot(main, { slot: n, seed: Boolean(opts.seed) })));
     else if (opts.handoff && Object.keys(opts).length === 1) printMasked(JSON.stringify(await handoffSlot(main, n)));
     else if (!opts.handoff && !opts.map && opts["--journey"] !== undefined && opts["--accounts"] !== undefined) printMasked(JSON.stringify(await mintSlot(main, { slot: n, journey: opts["--journey"], accounts: parseAccounts(opts["--accounts"]) })));
     else throw new Error(`refused: ${usage}`);
@@ -182,7 +292,11 @@ try {
     // Only the tried labels and exits: no browser output reaches the orchestrator (spec §10 "Minimize").
     const r = await minimize(main, args[0], { say: print });
     process.exit(r.code);
-  } else if (cmd === "repro" && args.length === 2 && args[1] === "--test") print(`red test: ${redTestFile(main, args[0])}`);
+  } else if (cmd === "repro" && args.length === 2 && args[1] === "--test") {
+    print(`red test: ${redTestFile(main, args[0])}`);
+    const hint = apiLevelHint(main, args[0]);
+    if (hint !== null) print(hint);
+  }
   else if (cmd === "repro" && args.length === 2 && args[1] === "--saved") {
     // What the issue may quote of the run's reads: scrub's refusal, or each value as scrub would let it leave.
     const r = savedValues(main, args[0]);
@@ -230,7 +344,7 @@ try {
       if (!/^[1-9][0-9]?$/.test(args[1])) throw new Error("refused: a slot is a number from 1 to 99");
       // The map as the map agent read the code: stamped with its run's worktree commit, never MAIN's HEAD (decision 20).
       const m = mapReturn(main, Number(args[1]));
-      writeJourneys(main, mergeMap(readJourneys(main), m.value, { head: m.head }));
+      writeJourneys(main, mergeMap(readJourneys(main), m.value, { head: m.head, seeds: seedsOf(main, m.runId, Number(args[1])) }));
     }
     const r = mapCheck(main);
     for (const d of r.dropped) print(`dropped ${d.id}: ${d.reason}`);
@@ -241,7 +355,6 @@ try {
     if (!r.kept.length) throw new Error("refused: no journey is selectable");
   } else if (cmd === "select") {
     const opts = {};
-    const IDS = /^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$/;
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
       if (a === "--cycle" && i + 1 < args.length && opts.cycle === undefined && /^[1-9][0-9]{0,8}$/.test(args[i + 1])) opts.cycle = Number(args[++i]);
@@ -317,6 +430,10 @@ try {
       for (const line of report) print(line);
       print(`cycle ${lock.runId} is down`);
     }
+  } else if (cmd === "smoke" || cmd === "seed" || cmd === "report") {
+    const r = await laneCommand(cmd, args);
+    for (const line of r.lines) (r.masked === true ? printMasked : print)(line);
+    process.exit(r.code);
   } else if (cmd === "status" && !args.length) for (const line of await status(main)) print(line);
   else if (cmd === "status" && args.length === 1 && args[0] === "--json") print(JSON.stringify(statusJson(main)));
   else {

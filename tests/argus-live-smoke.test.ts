@@ -1,9 +1,12 @@
-// tests/argus-live-smoke.test.ts — phase 6's shared surfaces (spec §19): live.json's smoke keys and the
-// `.argus/smoke.json` schema and its defaults.
+// tests/argus-live-smoke.test.ts — phase 6's shared surfaces (spec §19): live.json's smoke keys, the
+// `.argus/smoke.json` schema and its defaults, and the CLI's dispatch of every new verb (each answers
+// through its lane's function; until a lane fills it, `refused: <verb>: not built yet`).
+import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, committed, example } from "./helpers/argus-live";
+import { FIXTURE_CONTRACT } from "./fixture-contract";
+import { ARGUS_LIVE, cleanTemps, committed, example, git } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { loadSmoke, PERF_METRICS, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateLive, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 
@@ -166,4 +169,129 @@ describe("smoke.json — the suite's schema", () => {
     writeFileSync(join(main, ".argus/smoke.json"), JSON.stringify({ max: 5 }));
     expect(loadSmoke(main)).toEqual({ smoke: { ...SMOKE_DEFAULTS, max: 5 }, errors: [], missing: false });
   });
+});
+
+describe("argus-live CLI — phase 6's verbs", () => {
+  const cli = (main: string, ...args: string[]) => spawnSync(process.execPath, [ARGUS_LIVE, ...args], { cwd: main, encoding: "utf8" });
+  /** A repo whose committed contract has `policy` (null: no contract at all). */
+  const repo = (policy: Obj | null = {}) => {
+    const main = committed();
+    if (policy) {
+      mkdirSync(join(main, ".claude"), { recursive: true });
+      writeFileSync(join(main, ".claude/sapu.json"), JSON.stringify({ ...FIXTURE_CONTRACT, ...(Object.keys(policy).length ? { policy } : {}) }));
+      git(main, "add", ".");
+      git(main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "contract");
+    }
+    return main;
+  };
+  const STUBS: [string[], string][] = [
+    [["smoke", "plan"], "smoke plan"],
+    [["smoke", "admit", "2.1"], "smoke admit"],
+    [["smoke", "run"], "smoke run"],
+    [["smoke", "run", "--ids", "checkout,refund", "--slot", "3", "--perf", "--seed", "4294967295"], "smoke run"],
+    [["smoke", "heal", "2.1"], "smoke heal"],
+    [["smoke", "propose"], "smoke propose"],
+    [["smoke", "propose", "--dry-run"], "smoke propose"],
+    [["smoke", "check"], "smoke check"],
+    [["smoke", "ci"], "smoke ci"],
+    [["smoke", "ci", "--run", "123456"], "smoke ci"],
+    [["smoke", "baseline", "--from-run", "123456"], "smoke baseline"],
+    [["smoke", "baseline", "--from-run", "123456", "--ids", "checkout"], "smoke baseline"],
+    [["smoke", "perf", "--issue", "checkout"], "smoke perf"],
+    [["smoke", "perf", "--rebaseline", "checkout"], "smoke perf"],
+    [["smoke", "workflow"], "smoke workflow"],
+    [["seed", "--issue", "12"], "seed"],
+    [["seed", "--doc", "docs/flows.md:3-40"], "seed"],
+    [["report"], "report"],
+    [["report", "--run", "r1"], "report"],
+  ];
+
+  it("the usage line names every verb of spec §19.15", () => {
+    const r = cli(committed(), "nonsense");
+    expect(r.status).toBe(2);
+    for (const alt of [
+      " | smoke plan | ",
+      " | smoke admit <slot>.<generation> | ",
+      " | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | ",
+      " | smoke heal <slot>.<generation> | ",
+      " | smoke propose [--dry-run] | ",
+      " | smoke check | ",
+      " | smoke ci [--run <id>] | ",
+      " | smoke baseline --from-run <id> [--ids …] | ",
+      " | smoke perf (--issue|--rebaseline) <id> | ",
+      " | smoke workflow | ",
+      " | seed (--issue <n>|--doc <file>:<a>-<b>) | ",
+      " | report [--run <runId>]",
+      " | slot <n> --map [--seed] | ",
+    ]) expect(r.stderr, alt).toContain(alt);
+  }, 30_000);
+
+  it("each new verb reaches its lane's function, which is not built yet", () => {
+    const main = repo();
+    for (const [args, verb] of STUBS) {
+      const r = cli(main, ...args);
+      expect(r.stderr, args.join(" ")).toBe(`refused: ${verb}: not built yet\n`);
+      expect(r.status, args.join(" ")).toBe(1);
+      expect(r.stdout).toBe("");
+    }
+  }, 60_000);
+
+  it("a committed suite needs the repo's own contract with visible traces: every smoke verb but check is refused otherwise", () => {
+    const TRACE = "refused: smoke: a committed suite would leave a trace\n";
+    for (const main of [repo(null), repo({ traces: "none" })]) {
+      for (const [args, verb] of STUBS) {
+        const r = cli(main, ...args);
+        expect(r.status, args.join(" ")).toBe(1);
+        expect(r.stderr, args.join(" ")).toBe(args[0] === "smoke" && verb !== "smoke check" ? TRACE : `refused: ${verb}: not built yet\n`);
+      }
+    }
+    const broken = repo();
+    writeFileSync(join(broken, ".claude/sapu.json"), "{");
+    git(broken, "add", ".");
+    git(broken, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "broken");
+    expect(cli(broken, "smoke", "plan").stderr).toMatch(/^refused: .*sapu\.json is not valid JSON/);
+  }, 60_000);
+
+  it("refuses a malformed line with the usage, before any lane runs", () => {
+    const main = repo();
+    for (const args of [
+      ["smoke"],
+      ["smoke", "nonsense"],
+      ["smoke", "plan", "x"],
+      ["smoke", "admit"],
+      ["smoke", "admit", "2.1", "x"],
+      ["smoke", "run", "--perf", "--perf"],
+      ["smoke", "run", "--ids"],
+      ["smoke", "run", "--ids", "Checkout"],
+      ["smoke", "run", "--wat"],
+      ["smoke", "propose", "--dry-run", "--dry-run"],
+      ["smoke", "check", "--json"],
+      ["smoke", "baseline"],
+      ["smoke", "baseline", "--ids", "a"],
+      ["smoke", "perf", "checkout"],
+      ["smoke", "perf", "--issue"],
+      ["smoke", "perf", "--issue", "a", "--rebaseline", "b"],
+      ["smoke", "workflow", "x"],
+      ["seed"],
+      ["seed", "--issue", "1", "--doc", "a.md:1-2"],
+      ["seed", "--issue", "x"],
+      ["seed", "--issue", "0"],
+      ["report", "--run"],
+      ["report", "x"],
+    ]) {
+      const r = cli(main, ...args);
+      expect(r.status, args.join(" ")).toBe(1);
+      expect(r.stderr, args.join(" ")).toMatch(/^refused: usage: argus-live\.mjs /);
+    }
+    expect(cli(main, "smoke", "run", "--slot", "100").stderr).toBe("refused: a slot is a number from 1 to 99\n");
+    expect(cli(main, "smoke", "run", "--seed", "4294967296").stderr).toBe("refused: a seed is an integer from 0 to 4294967295\n");
+    expect(cli(main, "smoke", "run", "--seed", "-1").stderr).toBe("refused: a seed is an integer from 0 to 4294967295\n");
+  }, 60_000);
+
+  it("slot --map --seed is the seed lane's, not built yet; --seed needs --map", () => {
+    const main = repo();
+    expect(cli(main, "slot", "1", "--map", "--seed").stderr).toBe("refused: slot --seed: not built yet\n");
+    expect(cli(main, "slot", "1", "--seed").stderr).toMatch(/^refused: usage: /);
+    expect(cli(main, "slot", "1", "--handoff", "--seed").stderr).toMatch(/^refused: usage: /);
+  }, 30_000);
 });
