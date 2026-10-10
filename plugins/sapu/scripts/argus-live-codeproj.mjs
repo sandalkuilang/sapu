@@ -9,7 +9,7 @@ import { ARIA_EXPECT, CHECKS as A11Y } from "./argus-live-a11y.mjs";
 import * as easeProbe from "./argus-live-ease.mjs";
 import { CHECKS as LAYOUT } from "./argus-live-layout.mjs";
 import * as tasteProbe from "./argus-live-taste.mjs";
-import { FAMILIES, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN } from "./argus-live-tastecfg.mjs";
 
 /** The generator's version, in every file's header: a new one regenerates the suite. */
 export const CODEGEN_VERSION = "1";
@@ -116,11 +116,11 @@ export const tasteCheckName = (rule) => `taste-${rule.replace(".", "-")}`;
 /** The rules measured only under one emulated medium (decisions 6 and 9): elsewhere they would measure the wrong page. */
 export const TASTE_MEDIA_RULES = Object.freeze({ "colour.dark-contrast": "dark", "colour.dark-border": "dark", "colour.dark-surface": "dark", "motion.reduced": "reduce" });
 /**
- * Screen rules the suite leaves to the lane: their verdict needs what one page expression cannot see — the app's
- * peer screens (a spinner where peers use a skeleton) or the owner's declared routes (optimistic, AI surfaces, read
- * from .argus/taste.json by the judge). Run on a lone page they would guess: lane-only until the probes get those.
+ * Screen rules the suite leaves to the lane (-tastecfg laneOnly): their verdict needs what one page expression cannot
+ * see — the app's peer screens, a driven form case, the routed fault (decision 12: lane-only in this phase) or the
+ * owner's declared routes (optimistic, AI surfaces). Run on a lone page they would guess.
  */
-export const TASTE_LANE_ONLY = Object.freeze(["feedback.skeleton-peers", "feedback.optimistic", "ai.stop", "ai.error", "ai.regenerate"]);
+export const TASTE_LANE_ONLY = Object.freeze(loadBar().rules.filter((r) => FAMILIES[r.family].scope === "screen" && laneOnly(r) !== null).map((r) => r.id));
 /** The families that measure what an action caused (an animation, a wait, a state, its copy): run after every action. */
 const ACTION_FAMILIES = new Set(["motion", "feedback", "states", "copy", "ai"]);
 const NOT_BUILT = /^refused: [A-Za-z_]+: not built yet$/;
@@ -130,8 +130,8 @@ const probeOf = (name) => (name === "ease" ? easeProbe : tasteProbe);
 
 /**
  * The rules the taste project measures → `{version, rules: [{id, info, passes, expr}], probes}`: the bar's screen rules
- * (FAMILIES' scope) with a fixed threshold (a `peer` or `band` threshold compares screens: the lane's judge) and not
- * TASTE_LANE_ONLY, each
+ * (FAMILIES' scope) that a page expression can measure (not TASTE_LANE_ONLY: a `peer` or `band` threshold compares
+ * screens, the lane's judge), each
  * through its probe's `ruleExpression` (a rule whose probe is not built yet is left out; any other refusal is the
  * engine's and thrown). `passes`: a media rule's medium alone, an action family `action` (after every action and at a
  * screen), the census `light` and `dark` (at a screen, once its animations ended). Each probe's source held by an expression is replaced by its mark and kept once in `probes`.
@@ -141,7 +141,7 @@ export function tasteTable({ bar = loadBar(), expression = (rule, probe) => prob
   const probes = {};
   for (const r of bar.rules) {
     const family = FAMILIES[r.family];
-    if (family.scope !== "screen" || "peer" in r.threshold || "band" in r.threshold || TASTE_LANE_ONLY.includes(r.id)) continue;
+    if (family.scope !== "screen" || laneOnly(r) !== null) continue;
     let expr;
     try {
       expr = expression(r.id, family.probe);

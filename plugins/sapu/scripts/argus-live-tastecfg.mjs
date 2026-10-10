@@ -44,6 +44,23 @@ export const FAMILIES = deepFreeze({
   consistent: { probe: "ease", scope: "cycle" },
   efficiency: { probe: "ease", scope: "cycle" },
 });
+/**
+ * Screen rules only the lane's judge and confirmation measure (never the suite, never a replay's `taste` final): what
+ * one page expression on one page cannot see. A rule with a `peer` or `band` threshold compares the cycle's screens.
+ */
+const LANE_ONLY = Object.freeze({
+  "feedback.skeleton-peers": "it compares a screen with its peers",
+  "feedback.optimistic": "it reads the owner's optimistic routes",
+  "states.recovery": "a form case drives it",
+  "states.error": "the routed fault: only the lane's confirmation arms it",
+});
+/** Bar rule `rule` → why only the lane measures it, or null when a page expression can (the suite, a `taste` final). */
+export function laneOnly(rule) {
+  if (!isObj(rule) || typeof rule.id !== "string") return null;
+  if (isObj(rule.threshold) && ("peer" in rule.threshold || "band" in rule.threshold)) return "it compares the cycle's screens";
+  if (rule.family === "ai") return "it reads the owner's declared AI surfaces";
+  return Object.hasOwn(LANE_ONLY, rule.id) ? LANE_ONLY[rule.id] : null;
+}
 /** Decision 16's archetypes: a screen is compared only with its own. */
 export const ARCHETYPES = Object.freeze(["marketing", "docs", "app", "form", "data"]);
 const BAR_KEYS = ["version", "probe", "sources", "rules", "frames", "archetypes"];

@@ -750,7 +750,7 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     const ids = t.rules.map((r: Obj) => r.id);
     expect(ids).toEqual(bar.rules.filter((r: Obj) => FAMILIES[r.family].scope === "screen" && !("peer" in r.threshold) && !("band" in r.threshold) && !TASTE_LANE_ONLY.includes(r.id)).map((r: Obj) => r.id));
     // Peer and band thresholds compare screens, consistency and efficiency compare a cycle, the lane-only rules need peers or the owner's routes: the lane's.
-    for (const id of ["scale.spacing", "scale.shadows", "consistent.action", "efficiency.klm", ...TASTE_LANE_ONLY]) expect(ids, id).not.toContain(id);
+    for (const id of ["scale.spacing", "scale.shadows", "consistent.action", "efficiency.klm", "states.error", "states.recovery", ...TASTE_LANE_ONLY]) expect(ids, id).not.toContain(id);
     // Every rule the suite treats by name is a rule of the bar: a renamed one would silently change its passes.
     for (const id of [...Object.keys(TASTE_MEDIA_RULES), ...TASTE_LANE_ONLY]) expect(bar.rules.some((r: Obj) => r.id === id), id).toBe(true);
     const passes = (id: string) => t.rules.find((r: Obj) => r.id === id).passes;

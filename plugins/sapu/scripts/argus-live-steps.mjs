@@ -14,7 +14,7 @@ import { ORACLES } from "./argus-live-return.mjs";
 import { configuredUser } from "./argus-live-session.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 import { ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { FAMILIES, loadBar } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, laneOnly, loadBar } from "./argus-live-tastecfg.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
 
@@ -231,6 +231,8 @@ function stepOf(raw, n, { accounts, live, path = false }) {
       step.check = raw.check;
     } else if ((name === "rule" || name === "key") && kind === "taste") {
       if (!tasteStep(raw)) refuse("taste takes a screen rule of the bar (rule) and a key");
+      const only = laneOnly(loadBar().rules.find((r) => r.id === raw.rule));
+      if (only) refuse(`taste: ${raw.rule} is the lane's alone (${only}): a replay's page cannot measure it`);
       step[name] = raw[name];
     } else if (name === "save") {
       if (typeof raw.save !== "string" || !SAVE.test(raw.save) || raw.save === "marker") refuse(`save takes a name (${SAVE.source}, not marker)`);

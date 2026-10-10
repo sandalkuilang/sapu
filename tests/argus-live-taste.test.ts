@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, loadBar, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, laneOnly, loadBar, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -435,6 +435,22 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
       ["the taste final on another expectation", { as: "customer.1", expect: "visible", target: { text: "x" }, final: "taste" }, "taste's final is taste"],
     ] as [string, Obj, string][]) expect(last(repro(step)), what).toBe(`refused: repro: step 2: ${why}`);
     expect(last(repro({ ...TASTE, final: undefined }))).toMatch(/^refused: repro: step 2: the last step must be an expect naming its oracle/);
+  });
+
+  it("refuses a lane-only rule when it parses the repro, before any step's code is built", () => {
+    // What one page expression cannot see: peers and bands, a driven form case, the routed fault, the owner's routes.
+    const only = loadBar().rules.filter((r: Obj) => laneOnly(r) !== null).map((r: Obj) => r.id);
+    expect(only).toEqual(expect.arrayContaining(["scale.spacing", "scale.shadows", "feedback.skeleton-peers", "feedback.optimistic", "states.recovery", "states.error", "ai.stop", "ai.error", "ai.regenerate"]));
+    expect(only.filter((id: string) => !/^(scale\.(spacing|type|weights|colours|radii|shadows)|feedback\.(skeleton-peers|optimistic)|states\.(recovery|error)|ai\..+)$/.test(id))).toEqual([]);
+    for (const [rule, why] of [
+      ["scale.spacing", "it compares the cycle's screens"],
+      ["feedback.skeleton-peers", "it compares a screen with its peers"],
+      ["states.recovery", "a form case drives it"],
+      ["states.error", "the routed fault: only the lane's confirmation arms it"],
+      ["ai.stop", "it reads the owner's declared AI surfaces"],
+    ]) expect(last(repro({ ...TASTE, rule })), rule).toBe(`refused: repro: step 2: taste: ${rule} is the lane's alone (${why}): a replay's page cannot measure it`);
+    expect(laneOnly(null)).toBe(null);
+    expect(laneOnly(loadBar().rules.find((r: Obj) => r.id === "copy.broken"))).toBe(null);
   });
 
   it("is never a regression's final, and a path holds no taste expectation (the suite runs the taste checks)", () => {
