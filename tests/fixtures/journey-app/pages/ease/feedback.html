@@ -14,6 +14,7 @@
 <button id="slow">Slow</button>
 <button id="busy">Busy</button>
 <button id="silent">Silent</button>
+<button id="focus-now">Focus now</button>
 <button id="data">Data</button>
 <button id="classy">Classy</button>
 <button id="long-spin">Long spin</button>
@@ -53,6 +54,8 @@
   });
   // 1.5 s with nothing shown: unsignalled
   on("silent", async () => { await wait(1500); show("silent done"); });
+  // the same 1.5 s, focus moved at once to the field it concerns: a focus move is visible feedback
+  on("focus-now", async () => { document.getElementById("note").focus(); await wait(1500); show("focus-now done"); });
   // 1.5 s with only a data-* attribute set at once: nothing rendered, still unsignalled
   on("data", async () => {
     document.body.dataset.state = "saving";

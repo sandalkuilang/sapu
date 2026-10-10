@@ -327,6 +327,7 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
   it("names each event kind's fields, and its validator refuses another shape", () => {
     expect(Object.keys(TASTE_EVENTS)).toEqual(["input", "change", "busy", "transition", "animation"]);
     for (const e of [CHANGE, MOTION, { kind: "input", t: 1, type: "click" }, { kind: "busy", t: 2, on: true, signal: "aria-busy" }, { ...MOTION, kind: "animation", phase: "start", name: "grow" }]) expect(tasteEventFault(e), e.kind).toBeNull();
+    expect(tasteEventFault({ ...CHANGE, cause: "focus", attr: null })).toBeNull();
     for (const e of [{ ...CHANGE, attr: "data-state" }, { ...CHANGE, cause: "mutation" }, { ...MOTION, duration_ms: -1 }, { ...MOTION, phase: "paused" }, { ...CHANGE, t: "3" }, { ...CHANGE, extra: 1 }, { kind: "input", t: 1, type: "scroll" }]) expect(tasteEventFault(e), JSON.stringify(e)).not.toBeNull();
   });
 

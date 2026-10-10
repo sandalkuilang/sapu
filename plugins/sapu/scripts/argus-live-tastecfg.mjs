@@ -340,13 +340,14 @@ const MOTION = { phase: (v) => ["run", "start", "end", "cancel", "iteration"].in
 /**
  * Every buffered event is `{kind, t, …fields}`, `t` the document's `performance.now()` (ms): `input` a user action
  * (`type`), `change` the first rendering-relevant change after it (`cause` an added node that passes
- * `checkVisibility`, a RENDER_ATTRIBUTES `attribute` (`attr`), or a `navigation`; `attr` null otherwise), `busy` a
+ * `checkVisibility`, a RENDER_ATTRIBUTES `attribute` (`attr`), a `focus` move to another shown element than the
+ * action's own (decision 10: a focus move is visible feedback), or a `navigation`; `attr` null otherwise), `busy` a
  * busy signal shown or gone (`on`, `signal`), and `transition` / `animation` a motion event with its timing and a
  * short target key (page text: fenced wherever printed).
  */
 export const TASTE_EVENTS = deepFreeze({
   input: { type: (v) => ["click", "dblclick", "pointerdown", "keydown", "input", "submit"].includes(v) },
-  change: { cause: (v) => ["added", "attribute", "navigation"].includes(v), attr: (v) => v === null || RENDER_ATTRIBUTES.includes(v) },
+  change: { cause: (v) => ["added", "attribute", "focus", "navigation"].includes(v), attr: (v) => v === null || RENDER_ATTRIBUTES.includes(v) },
   busy: { on: (v) => typeof v === "boolean", signal: (v) => ["aria-busy", "progressbar", "disabled", "spinner", "skeleton"].includes(v) },
   transition: MOTION,
   animation: MOTION,

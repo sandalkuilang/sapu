@@ -27,7 +27,8 @@ const LOADER_FNS = String.raw`const SKELETON = /(^|[-_])(skeleton|shimmer)([-_]|
  * taste buffer: `input` records (pointerdown with the main button, click, dblclick, submit, keydown of Enter or Space,
  * and typing as `input`, one record per burst), the first rendering change after each (`change`: an added node or text
  * that passes checkVisibility (a text node's new text counts as added), a RENDER_ATTRIBUTES change on a shown node or
- * one that hides it, or `navigation` at pagehide), and `busy` on/off per signal: `aria-busy`, `progressbar` (a
+ * one that hides it, `focus` when focus moves to a shown element other than the action's own target, or `navigation`
+ * at pagehide), and `busy` on/off per signal: `aria-busy`, `progressbar` (a
  * determinate one), `spinner` (an indeterminate progressbar or a rotating infinite animation), `skeleton`, `disabled`
  * (a control that went disabled). Beside the buffer, `document.__argusEase` keeps the page's fetch and XHR requests
  * (`{t, end, status, method, route, keys, same}`: body field names, never values), the clicked controls (`{t, role,
@@ -54,7 +55,7 @@ export const EASE_INIT = String.raw`(() => {
     const tag = c ? c.tagName.toLowerCase() : "";
     if (c) cap(S.actions, 100, { t, role: norm(c.getAttribute("role")).split(" ")[0] || (tag === "input" ? (/^(button|submit|reset|image)$/i.test(c.type) ? "button" : c.type) : TAGS[tag] || tag), name: norm(c.getAttribute("aria-label") || (tag === "input" ? c.value : c.innerText || c.textContent) || c.getAttribute("title")).replace(/[0-9]+/g, "#").replace(/\|/g, "/").slice(0, 80), region: (REGION.find(([, q]) => c.closest(q)) || ["page"])[0] });
   };
-  let typed = -1e9;
+  let typed = -1e9, acted = null;
   const onInput = (e) => {
     const type = e.type;
     if ((type !== "submit" && type !== "input" && !e.isTrusted) || (type === "pointerdown" && e.button !== 0) || (type === "keydown" && e.key !== "Enter" && e.key !== " ")) return;
@@ -65,6 +66,7 @@ export const EASE_INIT = String.raw`(() => {
     if (burst) return;
     push({ kind: "input", t, type });
     S.pending = true;
+    acted = e.target;
     const prior = S.actions[S.actions.length - 1];
     if (type === "click" || type === "dblclick" || (type === "submit" && !(prior && t - prior.t <= 50))) control(t, type === "submit" ? e.submitter || e.target : e.target);
   };
@@ -110,6 +112,14 @@ export const EASE_INIT = String.raw`(() => {
   (S.observe = (root) => S.roots.add(root) && mo.observe(root, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true, attributeOldValue: true, attributeFilter: ${JSON.stringify(EASE_RENDER)} }))(doc);
   try { new PerformanceObserver((list) => { for (const e of list.getEntries()) if (e.value > 0.001) cap(jolts, 50, e.startTime); match(); }).observe({ type: "layout-shift", buffered: true }); } catch (e) {}
   addEventListener("pagehide", () => { if (S.pending) push({ kind: "change", t: now(), cause: "navigation", attr: null }); });
+  // A focus move is visible feedback (decision 10): to a shown element that is not the action's own control, which
+  // takes focus on the click itself.
+  doc.addEventListener("focusin", (e) => {
+    const el = e.target;
+    if (!S.pending || el !== doc.activeElement || !shown(el) || (acted && acted.nodeType === 1 && (acted === el || acted.contains(el) || el.contains(acted)))) return;
+    push({ kind: "change", t: now(), cause: "focus", attr: null });
+    S.pending = false;
+  }, true);
   if (window.__argusEaseWrapped) return;
   window.__argusEaseWrapped = true;
   const attach = Element.prototype.attachShadow;

@@ -244,6 +244,15 @@ describe("argus-live ease — the feedback clock in Chrome", () => {
     expect(filed(judged(classy))).toEqual([]);
   }, 60_000);
 
+  it("a focus move at once is visible feedback: the 1.5 s wait holds; its twin with nothing shown fires", async () => {
+    const [moved, silent] = await Promise.all([act("focus-now", "focus-now done"), act("silent", "silent done")]);
+    expect(moved.events.filter((e: Obj) => e.kind === "change")[0]).toMatchObject({ cause: "focus", attr: null });
+    expect(filed(judged(moved))).toEqual([]);
+    expect(one(judged(silent), "feedback.busy").measured).toBeGreaterThanOrEqual(1450);
+    // The click's own focus (the button it lands on) is no feedback.
+    expect(silent.events.some((e: Obj) => e.kind === "change" && e.cause === "focus")).toBe(false);
+  }, 60_000);
+
   it("a data-* attribute set at once is no feedback: the wait still fires", async () => {
     const s = await act("data", "data done");
     const b = one(judged(s), "feedback.busy").measured;
