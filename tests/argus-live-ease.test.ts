@@ -2,14 +2,14 @@
 // Every rule is shown firing on its fixture and silent on the twin that shares everything but the defect: a false
 // positive costs the lane its credibility. Real Chrome (the pinned install's playwright-core) against a local server;
 // the pure parts (the judge, the path's cost, the cross-screen rules) on synthetic data.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { browserTools, cleanTemps } from "./helpers/argus-live";
+import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHECKS, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, pathCost, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+import { CHECKS, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadBar, RENDER_ATTRIBUTES, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
@@ -120,14 +120,14 @@ describe("argus-live-ease.mjs — the shapes it shares with lane 0", () => {
     expect(() => new Function(EASE_INIT)).not.toThrow();
     expect(typeof ease).toBe("function");
     // The in-page sources never hold a template interpolation or a word the support file's scans refuse.
-    for (const src of [EASE_INIT, EASE_SOURCE]) {
+    for (const src of [EASE_INIT, EASE_SOURCE, FAULT_SOURCE, RECOVERY_SOURCE]) {
       expect(src).not.toContain("${");
       expect(src).not.toMatch(/shell|\bexec\(|spawn\(/);
     }
   });
 
   it("ruleExpression answers only the screen rules a page can measure alone", () => {
-    for (const r of ["feedback.busy", "feedback.loader-flash", "feedback.optimistic", "states.success"]) {
+    for (const r of ["feedback.busy", "feedback.loader-flash", "copy.broken", "copy.vague", "states.error", "states.empty-next", "states.success"]) {
       expect(ruleExpression(r)).toContain('"kind":"rule"');
     }
     expect(() => ruleExpression("consistent.action")).toThrow("refused: ruleExpression: consistent.action is not a screen rule of the ease probe");
@@ -289,7 +289,7 @@ describe("argus-live ease — the feedback clock in Chrome", () => {
     expect(ids(judged(await record(still)))).toEqual([]);
   }, 60_000);
 
-  it("a change inside a shadow root counts: a component that signals holds; one silent for 1.5 s fires", async () => {
+  it("a change inside a shadow root counts: a component that signals holds; one silent for 1.5 s fires; never blank", async () => {
     const run = async (mode: string) => {
       const page = await open(`shadow.html?mode=${mode}`);
       await page.evaluate(TASTE_DRAIN);
@@ -303,6 +303,8 @@ describe("argus-live ease — the feedback clock in Chrome", () => {
     const b = one(judged(silent.s), "feedback.busy").measured;
     expect(b).toBeGreaterThanOrEqual(1450);
     expect(b).toBeLessThanOrEqual(1550);
+    // What a custom element renders is out of the walker's sight: its main is never called blank.
+    expect(await silent.page.evaluate(`(${EASE_SOURCE})({"kind":"error"})`)).toMatchObject({ blank: false, loader: false });
   }, 60_000);
 
   it("the clock is installed once a document, and not at all without the taste buffer", async () => {
@@ -318,20 +320,299 @@ describe("argus-live ease — the feedback clock in Chrome", () => {
   }, 60_000);
 });
 
-describe("argus-live-ease.mjs — lane 0's stubs not built yet (T2.2 builds them)", () => {
-  it("CHECKS registers no suite check yet", () => {
-    expect(CHECKS).toEqual([]);
+// ---------------------------------------------------------------------------------------------------
+// T2.2 — states, copy, path cost.
+
+const faultArm = fnOf(FAULT_SOURCE);
+/** A states page loaded with its data request faulted (armed before the navigation), settled, then measured. */
+async function faulted(mode: string, arm = true) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  contexts.push(context);
+  const page = await context.newPage();
+  const fault = arm ? await faultArm(page, origin) : null;
+  await page.goto(`${origin}/states.html?mode=${mode}`);
+  await page.waitForLoadState("networkidle");
+  await sleep(400);
+  const error = { faulted: Boolean(fault && fault.faulted()), ...(await page.evaluate(`(${EASE_SOURCE})({"kind":"error"})`)) };
+  if (fault) await fault.off();
+  return { page, fault, found: judged({ route: "/states.html", events: [], ease: { now: 1, requests: [], error } }) };
+}
+
+describe("argus-live ease — states: the routed fault, success, recovery, empty", () => {
+  it("states.error: a blank main and an endless loader fire; a message with a retry holds; no fault, no rule", async () => {
+    const before = hits.length;
+    const blank = await faulted("blank");
+    expect(blank.fault.faulted()).toBe("/api/items");
+    expect(one(blank.found, "states.error")).toEqual({ rule: "states.error", key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" });
+    expect(one((await faulted("spin")).found, "states.error").measured).toBe("endless loader");
+    expect(ids((await faulted("retry")).found)).toEqual([]);
+    expect(ids((await faulted("blank", false)).found)).toEqual([]);
+    // The request whose Accept does not name JSON was fetched once to read its content-type, then answered 500.
+    expect(hits.slice(before).filter((h) => h === "GET /api/items")).toHaveLength(4);
+  }, 60_000);
+
+  it("the fault answers only the first same-origin JSON GET, armed before the navigation, and goes with off()", async () => {
+    const { page } = await faulted("retry");
+    await page.click("#retry");
+    await page.getByText("Order one").waitFor({ timeout: 30_000 });
+    // Armed after the navigation, the screen's request is already gone: nothing is faulted.
+    const late = await open("states.html?mode=blank", { arm: false });
+    await late.getByText("Order one").waitFor({ timeout: 30_000 });
+    const f = await faultArm(late, origin);
+    await sleep(300);
+    expect(f.faulted()).toBeNull();
+    await f.off();
+  }, 60_000);
+
+  it("ruleExpression(states.error) measures the page the replay faulted; the twin holds", async () => {
+    const context = await browser.newContext();
+    contexts.push(context);
+    const page = await context.newPage();
+    const f = await faultArm(page, origin);
+    await page.goto(`${origin}/states.html?mode=blank`);
+    await page.waitForLoadState("networkidle");
+    expect(await page.evaluate(ruleExpression("states.error"))).toEqual([expect.objectContaining({ rule: "states.error", measured: "blank main" })]);
+    await f.off();
+    const ok = await open("states.html?mode=retry", { arm: false });
+    await ok.getByText("Order one").waitFor({ timeout: 30_000 });
+    expect(await ok.evaluate(ruleExpression("states.error"))).toEqual([]);
+  }, 60_000);
+
+  it("states.success: a 2xx write with nothing named within 1 s fires; one named in a status region holds", async () => {
+    const quiet = await open("success.html");
+    await quiet.click("#quiet");
+    await sleep(1400);
+    expect(one(judged(await record(quiet)), "states.success").measured).toBeGreaterThan(1000);
+    const named = await open("success.html");
+    await named.click("#named");
+    await named.getByText("Saved.").waitFor({ timeout: 30_000 });
+    await sleep(1200);
+    expect(filed(judged(await record(named)))).toEqual([]);
+  }, 60_000);
+
+  it("feedback.optimistic in Chrome: the late count fires on a declared route only; the early count holds", async () => {
+    const cfg = { ...CFG, optimistic: ["/success.html"] };
+    const late = await open("success.html");
+    await late.click("#like-late");
+    await late.getByText("Likes: 1").waitFor({ timeout: 30_000 });
+    const l = await record(late);
+    expect(filed(judged(l, cfg))).toEqual(["feedback.optimistic"]);
+    expect(filed(judged(l))).toEqual([]);
+    const early = await open("success.html");
+    await early.click("#like-early");
+    await early.getByText("Likes: 1").waitFor({ timeout: 30_000 });
+    await sleep(500);
+    expect(filed(judged(await record(early), cfg))).toEqual([]);
+  }, 60_000);
+
+  it("states.recovery: a refusal that clears the other fields counts each lost value, and the values go back", async () => {
+    const recover = fnOf(RECOVERY_SOURCE);
+    const posted = hits.length;
+    const run = async (mode: string) => {
+      const page = await open(`recovery.html?mode=${mode}`);
+      await page.getByLabel("Name").fill("Ana");
+      await page.getByLabel("Email").fill("ana@example.test");
+      await page.getByLabel("Notes").fill("call after five");
+      await page.getByLabel("VIP").check();
+      const lost = await recover(page, page.getByRole("button", { name: "Save contact" }), ease);
+      const values = await page.evaluate(() => { const f = (document.getElementById("f") as HTMLFormElement).elements as any; return [f.name.value, f.email.value, f.notes.value, f.vip.checked]; });
+      return { page, lost, values };
+    };
+    const clear = await run("clear");
+    expect(clear.lost.map((x: Obj) => x.key)).toEqual(["Email", "Notes", "VIP"]);
+    expect(clear.values).toEqual(["Ana", "ana@example.test", "call after five", true]);
+    const found = judged({ route: "/recovery.html", events: [], ease: { now: 1, requests: [], recovery: clear.lost } });
+    expect(found.map((f: Obj) => [f.rule, f.key])).toEqual([["states.recovery", "Email"], ["states.recovery", "Notes"], ["states.recovery", "VIP"]]);
+    const keep = await run("keep");
+    expect(keep.lost).toEqual([]);
+    expect(keep.values).toEqual(["Ana", "ana@example.test", "call after five", true]);
+    // A form the browser validates itself never submits: the case is not run.
+    expect((await run("native")).lost).toBeNull();
+    expect(hits.slice(posted).filter((h) => h === "POST /api/save")).toEqual([]);
+  }, 60_000);
+
+  it("states.empty-next: an empty state with a message and no way on fires; with a control, or no message at all, it holds", async () => {
+    const s = await record(await open("empty.html"));
+    expect(judged(s).filter((f: Obj) => f.rule === "states.empty-next").map((f: Obj) => f.key)).toEqual(["table|Orders", "table|Tags"]);
+  }, 60_000);
+
+  it("states.error-exit is information: an alert with no control in its region, never one beside its retry", async () => {
+    const page = await open("states.html?mode=retry");
+    await page.getByText("Order one").waitFor({ timeout: 30_000 });
+    await page.evaluate(() => { document.getElementById("main")!.insertAdjacentHTML("beforeend", '<section><p role="alert">Sync failed.</p></section>'); });
+    const found = judged(await record(page)).filter((f: Obj) => f.rule.startsWith("states."));
+    expect(found).toEqual([{ rule: "states.error-exit", key: "alert|Sync failed.", measured: "no control in its region", expected: "a way on beside the error" }]);
+    expect(BAR.rules.find((r: Obj) => r.id === "states.error-exit").info).toBe(true);
+  }, 60_000);
+});
+
+describe("argus-live ease — copy", () => {
+  it("copy.broken: every unrendered token fires once per line; code, prose and hidden twins hold", async () => {
+    const broken = judged(await record(await open("copy-broken.html")));
+    expect(broken.map((f: Obj) => f.key)).toEqual([
+      "undefined|Status undefined, quantity undefined",
+      "NaN|Total: NaN items",
+      "[object Object]|Customer [object Object]",
+      "Invalid Date|Placed Invalid Date",
+      "{{|Hello {{ user.name }}",
+      "%s|Shipped to %s",
+      "null|Coupon: null",
+      "undefined|Search undefined",
+    ]);
+    expect(broken.every((f: Obj) => f.rule === "copy.broken" && f.expected === "no unrendered value")).toBe(true);
+    expect(judged(await record(await open("copy-clean.html")))).toEqual([]);
+  }, 60_000);
+
+  it("copy.vague: a form's submit and a dialog's confirm named only from the list fire under a matching lang only", async () => {
+    const en = judged(await record(await open("vague.html?lang=en-GB")));
+    expect(en.map((f: Obj) => [f.rule, f.key, f.measured])).toEqual([["copy.vague", "dialog|OK", "OK"], ["copy.vague", "form|Submit", "Submit"]]);
+    expect(judged(await record(await open("vague.html?lang=de")))).toEqual([]);
+    expect(judged(await record(await open("vague.html?lang=en&submit=Save%20settings&confirm=Leave")))).toEqual([]);
+    // The owner's own labels count in any language.
+    const own = await record(await open("vague.html?lang=de&submit=Absenden&confirm=Leave"), { vague: ["Absenden"] });
+    expect(judged(own).map((f: Obj) => f.key)).toEqual(["form|Absenden"]);
+  }, 60_000);
+});
+
+describe("argus-live ease — pathCost (decision 3: KLM, Fitts)", () => {
+  // Boxes: A (100,100) 100x40, B (400,500) 300x40, C (900,100) 80x30, D in a dialog.
+  const A = { x: 50, y: 80, width: 100, height: 40 };
+  const B = { x: 250, y: 480, width: 300, height: 40 };
+  const C = { x: 860, y: 85, width: 80, height: 30 };
+  const D = { x: 500, y: 300, width: 120, height: 40, dialog: "Archive note" };
+  const bits = (from: Obj, to: Obj) => Math.log2(Math.hypot(to.x + to.width / 2 - (from.x + from.width / 2), to.y + to.height / 2 - (from.y + from.height / 2)) / Math.min(to.width, to.height) + 1);
+  const P = (b: number) => Math.min(1.5, Math.max(0.8, b / 4.9));
+
+  it("equals a hand KLM sum: K .28, BB .2, H .4, M 1.2, P from Fitts bounded 0.8-1.5", () => {
+    const steps = [
+      { do: "goto", path: "/notes" },
+      { do: "click", target: { role: "button", name: "New" } },
+      { do: "fill", target: { label: "Title" }, value: "Groceries" },
+      { do: "press", key: "Control+Enter" },
+      { do: "click", target: { role: "button", name: "Archive" } },
+      { do: "click", target: { role: "button", name: "Confirm" } },
+      { expect: "visible", target: { text: "Archived" } },
+      { as: "system", do: "trigger", name: "x", values: [] },
+    ];
+    const geometry = { goals: 2, targets: [null, A, B, null, C, D, null, null] };
+    const c = pathCost(steps, geometry);
+    const ab = bits(A, B), bc = bits(B, C), cd = bits(C, D);
+    // click A: P (first target: Kieras' mean 1.1) + BB; fill B: P(ab) + BB + H + 9 K; press: 2 K (hand on keys);
+    // click C: H + P(bc) + BB; click D: P(cd) + BB; two goal steps: 2 M.
+    const hand = 1.1 + 0.2 + (P(ab) + 0.2 + 0.4 + 9 * 0.28) + 2 * 0.28 + (0.4 + P(bc) + 0.2) + (P(cd) + 0.2) + 2 * 1.2;
+    expect(c).toEqual({ actions: 5, typed: 9, modals: 1, fitts_bits: Math.round((ab + bc + cd) * 100) / 100, klm_s: Math.round(hand * 100) / 100 });
   });
 
-  it("pathCost(steps, geometry) is not built yet", () => {
-    expect(() => pathCost([], [])).toThrow("refused: pathCost: not built yet");
+  it("a dialog where a field is filled is no modal cost; missing geometry costs Kieras' mean and breaks the Fitts chain", () => {
+    const steps = [{ do: "click", target: { label: "x" } }, { do: "fill", target: { label: "y" }, value: "ab" }, { do: "select", target: { label: "z" }, value: "1" }, { do: "hover", target: { label: "w" } }, { do: "dblclick", target: { label: "v" } }];
+    const c = pathCost(steps, [D, D, null, A, B]);
+    const sum = 1.1 + 0.2 + (P(bits(D, D)) + 0.2 + 0.4 + 2 * 0.28) + (0.4 + 1.1 + 0.2 + 0.8 + 0.2) + 1.1 + (P(bits(A, B)) + 0.4);
+    expect(c).toEqual({ actions: 5, typed: 2, modals: 0, fitts_bits: Math.round((bits(D, D) + bits(A, B)) * 100) / 100, klm_s: Math.round(sum * 100) / 100 });
+    // Without `goals`, one M per expectation of the path.
+    expect(pathCost([{ do: "click", target: { label: "x" } }, { expect: "visible", target: { text: "y" } }], []).klm_s).toBe(Math.round((1.1 + 0.2 + 1.2) * 100) / 100);
+    expect(() => pathCost("x", [])).toThrow("failed: pathCost: steps must be an array");
   });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// T2.2 — the suite's ease checks.
+
+describe("argus-live ease — the suite's checks (project taste)", () => {
+  const steps = [
+    { n: 1, as: "customer.1", do: "goto", path: "/recovery.html" },
+    { n: 2, as: "customer.1", do: "fill", target: { by: "label", value: "Name" }, value: "Ana" },
+    { n: 3, as: "customer.1", do: "click", target: { by: "role", role: "button", name: "Save contact" } },
+    { n: 4, as: "customer.1", expect: "visible", target: { by: "text", value: "Contact saved." } },
+  ];
+  const ctx = { id: "contacts", steps, screens: [1, 4], taste: { ...CFG, gate: ["copy.broken"], copy: { vague: ["Absenden"] } } };
+
+  it("registers one check, project taste, whose lines configure once, judge after every step, fault each screen, case each submit", () => {
+    expect(CHECKS.map((c: Obj) => [c.name, c.project])).toEqual([["ease", "taste"]]);
+    const [c] = CHECKS;
+    const lines = steps.map((s) => c.emit(s, ctx));
+    expect(lines[0][0]).toBe(`(await import("./support")).easeConfig({"gate":["copy.broken"],"off":[],"vague":["Absenden"],"optimistic":[]});`);
+    expect(lines[0].slice(1)).toEqual([
+      'expect.soft(await (await import("./support")).easeStep(opened, 0, 1, "contacts"), "taste: ease: step 1").toEqual([]);',
+      'expect.soft(await (await import("./support")).easeFaultStep(opened, 0, 1, "contacts"), "taste: ease: the error state at step 1").toEqual([]);',
+    ]);
+    expect(lines[1]).toEqual([
+      'expect.soft(await (await import("./support")).easeStep(opened, 0, 2, "contacts"), "taste: ease: step 2").toEqual([]);',
+      'expect.soft(await (await import("./support")).easeRecoveryStep(opened, 0, {"by":"role","role":"button","name":"Save contact"}, 3, "contacts"), "taste: ease: the form case before step 3").toEqual([]);',
+    ]);
+    expect(lines[3]).toHaveLength(2);
+    for (const l of lines.flat()) expect(l).not.toMatch(/`|\$\{|setTimeout|waitFor\(|waitForTimeout/);
+    expect(c.emit({ n: 9, as: "system", do: "trigger", name: "x", values: [] }, ctx)).toEqual([]);
+    expect(c.source).not.toMatch(/shell|\bexec\(|spawn\(|`/);
+    // The suite installs the taste buffer exactly as -tastecfg writes it, then the clock.
+    expect(c.source).toContain(`const EASE_INSTALL = ${JSON.stringify(`${TASTE_BUFFER};\n${EASE_INIT}`)};`);
+  });
+
+  /** The support source run in Node as the suite runs it: `test.info()` collects annotations, `__dirname` a temp dir. */
+  function support(dir: string) {
+    const annotations: Obj[] = [];
+    const test = { info: () => ({ annotations }) };
+    const src = CHECKS[0].source.replace(/^export /gm, "").replace('await import("node:fs")', 'require("node:fs")');
+    const api = new Function("test", "path", "__dirname", "require", `${src}\nreturn { easeConfig, easeStep, easeFaultStep, easeRecoveryStep };`)(test, require("node:path"), dir, require);
+    return { api, annotations };
+  }
+
+  it("easeStep annotates advisory rows as argus-taste and gated ones as argus-violation, less the adopted known rows", async () => {
+    const dir = tempDir();
+    const { api, annotations } = support(dir);
+    const context = await browser.newContext();
+    contexts.push(context);
+    const page = await context.newPage();
+    await page.goto(`${origin}/copy-broken.html`);
+    api.easeConfig({ gate: ["copy.broken"], off: [], vague: [], optimistic: [] });
+    mkdirSync(join(dir, "known"));
+    writeFileSync(join(dir, "known", "orders.json"), JSON.stringify([{ check: "copy.broken", key: "NaN|Total: NaN items" }]));
+    const gated = await api.easeStep([context], 0, 1, "orders");
+    expect(gated.map((v: Obj) => v.key)).toHaveLength(7);
+    expect(gated[0]).toEqual({ check: "copy.broken", step: 1, key: "undefined|Status undefined, quantity undefined", detail: "Status undefined, quantity undefined (expected no unrendered value)" });
+    expect(annotations.filter((a) => a.type === "argus-violation")).toHaveLength(7);
+    // Reported once a test: the next step finds the same rows and says nothing new.
+    expect(await api.easeStep([context], 0, 2, "orders")).toEqual([]);
+    api.easeConfig({ gate: [], off: [], vague: [], optimistic: [] });
+    const other = await browser.newContext();
+    contexts.push(other);
+    await (await other.newPage()).goto(`${origin}/vague.html?lang=en`);
+    expect(await api.easeStep([other], 0, 1, "settings")).toEqual([]);
+    expect(annotations.filter((a) => a.type === "argus-taste").map((a) => JSON.parse(a.description))).toEqual([
+      { rule: "copy.vague", step: 1, key: "dialog|OK", measured: "OK", expected: "a label that names its result" },
+      { rule: "copy.vague", step: 1, key: "form|Submit", measured: "Submit", expected: "a label that names its result" },
+    ]);
+  }, 60_000);
+
+  it("easeFaultStep measures the screen's error state in a sibling page; easeRecoveryStep runs the form case", async () => {
+    const { api, annotations } = support(tempDir());
+    api.easeConfig({ gate: [], off: [], vague: [], optimistic: [] });
+    const context = await browser.newContext();
+    contexts.push(context);
+    const page = await context.newPage();
+    await page.goto(`${origin}/states.html?mode=blank`);
+    await page.getByText("Order one").waitFor({ timeout: 30_000 });
+    expect(await api.easeFaultStep([context], 0, 1, "orders")).toEqual([]);
+    expect(context.pages()).toHaveLength(1);
+    expect(annotations.map((a) => JSON.parse(a.description))).toEqual([{ rule: "states.error", step: 1, key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" }]);
+    // Once a screen a test.
+    expect(await api.easeFaultStep([context], 0, 2, "orders")).toEqual([]);
+    expect(annotations).toHaveLength(1);
+    const form = await browser.newContext();
+    contexts.push(form);
+    const fp = await form.newPage();
+    await fp.goto(`${origin}/recovery.html?mode=clear`);
+    await fp.getByLabel("Name").fill("Ana");
+    await fp.getByLabel("Notes").fill("call");
+    expect(await api.easeRecoveryStep([form], 0, { by: "role", role: "button", name: "Save contact" }, 3, "contacts")).toEqual([]);
+    expect(annotations.slice(1).map((a) => JSON.parse(a.description).key)).toEqual(["Notes"]);
+    expect(await fp.getByLabel("Notes").inputValue()).toBe("call");
+  }, 60_000);
 });
 
 describe("argus-live ease — easeOf", () => {
   it("answers the screen kind of the page it is given", async () => {
-    const s = await easeOf(await open("feedback.html"));
-    expect(s.route).toBe("/feedback.html");
-    expect(s.requests).toEqual([]);
+    const s = await easeOf(await open("copy-broken.html"));
+    expect(s.route).toBe("/copy-broken.html");
+    expect(s.copy).toHaveLength(8);
   }, 60_000);
 });
