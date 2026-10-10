@@ -1,11 +1,20 @@
 // tests/argus-live-taste.test.ts — phase 7's shared surfaces (spec §20, plan lane 0): the taste bar
 // (`plugins/sapu/data/taste-bar.json`) and its validator, `.argus/taste.json` and its defaults,
 // `.argus/taste-state.json`'s one reader and writer, and the contract's rows for both files.
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanTemps, tempDir } from "./helpers/argus-live";
+import { ARGUS_LIVE, cleanTemps, committed, tempDir } from "./helpers/argus-live";
+// @ts-expect-error — plain ESM script without types
+import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_INIT } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+// @ts-expect-error — plain ESM script without types
+import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
+// @ts-expect-error — plain ESM script without types
+import { TASTE_INIT } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, loadBar, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
@@ -327,6 +336,57 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
 
   it("bounds the taste pass of a cycle by a lane constant", () => {
     expect(TASTE_BUDGET_MS).toBe(15 * 60_000);
+  });
+});
+
+describe("argus-live CLI — the taste verbs (spec §20.4, §20.5)", () => {
+  const cli = (main: string, ...args: string[]) => spawnSync(process.execPath, [ARGUS_LIVE, ...args], { cwd: main, encoding: "utf8" });
+
+  it("the usage line names every taste verb", () => {
+    const r = cli(committed(), "nonsense");
+    expect(r.status).toBe(2);
+    for (const alt of [" | taste judge [--run <runId>] | ", " | taste confirm <row> | ", " | taste file [--run <runId>] | ", " | taste accept <rule> <key>"]) expect(r.stderr, alt).toContain(alt);
+  }, 30_000);
+
+  it("refuses a malformed taste line with the usage, before any lane runs", () => {
+    const main = committed();
+    for (const args of [
+      ["taste"],
+      ["taste", "nonsense"],
+      ["taste", "judge", "x"],
+      ["taste", "judge", "--run"],
+      ["taste", "judge", "--run", "a", "--run", "b"],
+      ["taste", "confirm"],
+      ["taste", "confirm", "t1", "t2"],
+      ["taste", "file", "--cap", "3"],
+      ["taste", "file", "--run"],
+      ["taste", "accept", "scale.spacing"],
+      ["taste", "accept", "scale.spacing", "k", "x"],
+    ]) {
+      const r = cli(main, ...args);
+      expect(r.status, args.join(" ")).toBe(1);
+      expect(r.stderr, args.join(" ")).toMatch(/^refused: usage: argus-live\.mjs /);
+    }
+  }, 60_000);
+});
+
+describe("the session hook's init payload (Task 0.1's post-probe seam)", () => {
+  it("is the signal script, then the taste buffer, then the taste and ease init scripts, in every document", () => {
+    expect(PAGE_INIT.startsWith(SIGNAL_SCRIPT)).toBe(true);
+    expect(PAGE_INIT).toContain(TASTE_BUFFER);
+    expect(PAGE_INIT.indexOf(TASTE_BUFFER)).toBeGreaterThan(PAGE_INIT.indexOf(SIGNAL_SCRIPT));
+    for (const s of [TASTE_INIT, EASE_INIT]) if (s) expect(PAGE_INIT.indexOf(s)).toBeGreaterThan(PAGE_INIT.indexOf(TASTE_BUFFER));
+    expect(() => new Function(PAGE_INIT)).not.toThrow();
+  });
+
+  it("the slot's init script file holds it", () => {
+    const dir = tempDir();
+    writeSlotConfig(dir, slotConfig({ dir, origins: ["http://localhost:4100"], proxyPort: 4999, chrome: { channel: "chrome" } }));
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT);
+  });
+
+  it("emulation stays the lane's own: the explorer's pw has no media command", () => {
+    for (const c of Object.keys(COMMANDS)) expect(c, c).not.toMatch(/color-scheme|reduced-motion|emulat|media/i);
   });
 });
 

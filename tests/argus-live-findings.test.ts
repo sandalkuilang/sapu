@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { openSession, PAGE_INIT, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { sessionName, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -145,6 +145,24 @@ describe("argus-live modules — the DAG", () => {
     for (const m of [...PHASE6.slice(2), "argus-live-seed"]) expect(g.get("argus-live"), m).toContain(m);
   });
 
+  it("admits phase 7's modules, each with the imports it may have (spec §20)", () => {
+    const g = graph();
+    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-tastejudge", "argus-live-tastefile"];
+    for (const m of PHASE7) expect(g.has(m), m).toBe(true);
+    // The shapes, and the in-page probes the suite embeds verbatim: leaves.
+    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The judge reads both probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
+    expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
+    expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
+    // The judge and filing sit above the runner, below the report and the CLI: nothing else reaches them.
+    for (const m of g.keys()) {
+      if (["argus-live", "argus-live-report", "argus-live-tastejudge", "argus-live-tastefile"].includes(m)) continue;
+      for (const u of ["argus-live-tastejudge", "argus-live-tastefile"]) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);
+    }
+    expect(reach(g, "argus-live-tastejudge").has("argus-live-tastefile")).toBe(false);
+    for (const m of ["argus-live-tastejudge", "argus-live-tastefile"]) expect(g.get("argus-live"), m).toContain(m);
+  });
+
   it("caps every argus-live module at 750 lines", () => {
     for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(x))) {
       expect(readFileSync(join(SCRIPTS, f), "utf8").trimEnd().split("\n").length, f).toBeLessThanOrEqual(750);
@@ -240,7 +258,7 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     // Opened and hooked (one hook stage: the run's origins, the signal script, the byte cap), never signed in by ensure: that is the caller's.
     expect(first.events).toEqual([]);
     expect(t.stages()).toHaveLength(1);
-    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: SIGNAL_SCRIPT, capBytes: 4 * 2 ** 20 })};`);
+    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT, capBytes: 4 * 2 ** 20 })};`);
     expect(t.stages()[0].code).toContain("ctx.__argus = {");
     const again = await t.driver().ensure();
     expect(again).toEqual({ record: first.record, opened: false, events: [] });

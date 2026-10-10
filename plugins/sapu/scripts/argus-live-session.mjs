@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openSession, SIGNAL_SCRIPT } from "./argus-live-browser.mjs";
+import { openSession, PAGE_INIT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-ledger.mjs";
@@ -185,7 +185,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     d.state = { signedIn: Boolean(storageState) };
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
     try {
-      await d.stage("hook", { runOrigins, signals: perf ? `${SIGNAL_SCRIPT};\n${PERF_SCRIPT}` : SIGNAL_SCRIPT, capBytes });
+      await d.stage("hook", { runOrigins, signals: perf ? `${PAGE_INIT};\n${PERF_SCRIPT}` : PAGE_INIT, capBytes });
       return [];
     } catch {
       if (markUnhooked) appendLedger(main, runId, [{ c: "incomplete", v: `${name} unhooked` }]);

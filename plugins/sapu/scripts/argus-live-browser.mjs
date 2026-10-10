@@ -11,7 +11,10 @@ import { fileURLToPath } from "node:url";
 import { cliEnv, closeSessions, runCli, sessionName, sweepSessions } from "./argus-live-cli.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { processTable, redact, run, runAsync, within } from "./argus-live-proc.mjs";
+import { EASE_INIT } from "./argus-live-ease.mjs";
 import { ownDir, updateRun } from "./argus-live-run.mjs";
+import { TASTE_INIT } from "./argus-live-taste.mjs";
+import { TASTE_BUFFER } from "./argus-live-tastecfg.mjs";
 
 export const CLI_PACKAGE = "@playwright/cli";
 export const CLI_VERSION = "0.1.22";
@@ -331,6 +334,15 @@ export const SIGNAL_SCRIPT = `(() => {
 `;
 
 /**
+ * The session hook's init payload (spec §20.4; Task 0.1): every document of a slot's sessions runs it, from the
+ * slot's init script file and again at each domcontentloaded (the hook stage): the signal script, then the taste
+ * buffer (argus-live-tastecfg.mjs TASTE_BUFFER, once a document), then the taste and ease init scripts that write
+ * into it (motion events, the feedback clock). An observer a run-code arms dies with its document; this one is
+ * armed in every document. The lane drains the buffer with TASTE_DRAIN in its own run-code.
+ */
+export const PAGE_INIT = [SIGNAL_SCRIPT, TASTE_BUFFER, TASTE_INIT, EASE_INIT].filter((s) => s !== "").join(";\n");
+
+/**
  * Chrome switches that keep its own background services off the network (probed with 0.1.22's Chrome:
  * without them a fresh profile reaches accounts.google.com, android.clients.google.com,
  * update.googleapis.com, www.google.com and www.gstatic.com through the run's proxy, which blocks and logs
@@ -364,7 +376,7 @@ export const CHROME_QUIET = [
  * Playwright then adds `<-loopback>`, so loopback goes through it too), host names other than the run's
  * and `allow_origins`' resolving to nothing, WebRTC kept off non-proxied UDP, Chrome's own background
  * services off (CHROME_QUIET), the run's locale, time zone
- * and first viewport width (else en-US, UTC, 1440), service workers blocked, the signal script in every
+ * and first viewport width (else en-US, UTC, 1440), service workers blocked, the init payload (PAGE_INIT) in every
  * page, `network.allowedOrigins` = the run's origins and `allow_origins`, output under `<dir>/out`.
  */
 export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = {}, chrome }) {
@@ -391,7 +403,7 @@ export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = 
   };
 }
 
-/** Writes a slot's CLI config and signal script (0600) under `<dir>/.playwright/`, and creates `out/` and `files/` (all 0700). */
+/** Writes a slot's CLI config and init payload (PAGE_INIT, as signals.js; 0600) under `<dir>/.playwright/`, and creates `out/` and `files/` (all 0700). */
 export function writeSlotConfig(dir, cfg) {
   for (const d of [dir, path.join(dir, ".playwright"), path.join(dir, "out"), path.join(dir, "files")]) {
     fs.mkdirSync(d, { recursive: true, mode: 0o700 });
@@ -404,7 +416,7 @@ export function writeSlotConfig(dir, cfg) {
     fs.renameSync(tmp, file);
   };
   put("cli.config.json", `${JSON.stringify(cfg, null, 2)}\n`);
-  put("signals.js", SIGNAL_SCRIPT);
+  put("signals.js", PAGE_INIT);
 }
 
 /** `{pid, pgid, started}` of a process-table row. */
