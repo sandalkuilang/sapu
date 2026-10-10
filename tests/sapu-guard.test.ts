@@ -2635,6 +2635,24 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     ["map-check --merge", `node ${L} map-check --merge 1`],
     ["reap", `node ${L} reap r1`],
     ["proxy", `node ${L} proxy r1`],
+    ["smoke plan", `node ${L} smoke plan`],
+    ["smoke propose, which pushes a branch", `node ${L} smoke propose`],
+    ["smoke propose --dry-run", `node ${L} smoke propose --dry-run`],
+    ["smoke run", `node ${L} smoke run --seed 7`],
+    ["smoke admit", `node ${L} smoke admit 2.1`],
+    ["smoke heal", `node ${L} smoke heal 2.1`],
+    ["smoke ci", `node ${L} smoke ci`],
+    ["smoke baseline", `node ${L} smoke baseline --from-run 9`],
+    ["smoke perf", `node ${L} smoke perf --rebaseline j1`],
+    ["smoke workflow", `node ${L} smoke workflow`],
+    ["seed", `node ${L} seed --issue 12`],
+    ["report", `node ${L} report`],
+    ["smoke check with a word more", `node ${L} smoke check --json`],
+    ["smoke alone", `node ${L} smoke`],
+    ["a smoke verb the shell builds", `node ${L} smoke $VERB`],
+    ["a built script name and smoke", `node "$S" smoke check`],
+    ["a built script name and seed", `node "$S" seed --issue 1`],
+    ["a built script name and report", `node "$S" report`],
     ["status with a word more", `node ${L} status --json x`],
     ["node options", `node --no-warnings --stack-size=4000 ${L} up`],
     ["node --", `node -- ${L} down`],
@@ -2677,7 +2695,7 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
   });
 
-  it.each([[`node ${L} status`], [`node ${L} status --json`], [`node ${L} check`], [`node "\${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" status --json`], [`cd ${plug}/scripts && node argus-live.mjs check`], [`node ${L} status --json 2>/dev/null`], [`node ${L} status --json | head -1`], [`node ${L}-notes.md up`], [`node "$D/build.js" up`], [`node $(which tsc) --build`]])("lets a subagent run %s", (cmd) => {
+  it.each([[`node ${L} status`], [`node ${L} status --json`], [`node ${L} check`], [`node ${L} smoke check`], [`cd ${plug}/scripts && node argus-live.mjs smoke check 2>&1 | tail -5`], [`node "\${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" status --json`], [`cd ${plug}/scripts && node argus-live.mjs check`], [`node ${L} status --json 2>/dev/null`], [`node ${L} status --json | head -1`], [`node ${L}-notes.md up`], [`node "$D/build.js" up`], [`node $(which tsc) --build`]])("lets a subagent run %s", (cmd) => {
     expect(sub(cmd)).toBeNull();
   });
 
@@ -2692,11 +2710,17 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     expect(sub(cmd)).toBeNull();
   });
 
+  it("names every read a subagent may run when it refuses one", () => {
+    expect(sub(`node ${L} up`)).toContain("(`status`, `status --json`, `check`, `smoke check`)");
+  });
+
   it("lets the explorer run its pw through the plugin's wrapper, and nothing else of it", () => {
     const explorer = (command: string) => decide({ agent_id: "a1", agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command }, cwd: wt });
     expect(explorer(`node ${WRAPPER} pw tk1 customer snapshot`)).toBeNull();
     expect(explorer(`node ${WRAPPER} pw tk1 submit '{"status":"done"}'`)).toBeNull();
     expect(explorer(`node ${WRAPPER} up`)).toMatch(/journey explorer's shell runs only its wrapper/);
+    expect(explorer(`node ${WRAPPER} smoke check`)).toMatch(/journey explorer's shell runs only its wrapper/);
+    expect(explorer(`node ${WRAPPER} status`)).toMatch(/journey explorer's shell runs only its wrapper/);
   });
 
   it("leaves the main session alone", () => {

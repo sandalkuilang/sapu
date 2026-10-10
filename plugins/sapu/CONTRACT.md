@@ -828,9 +828,10 @@ could use them.
   any case. A map run's worktree (`up --map`) is the live run's too: the map agent reads there. It
   has no Grep or Glob: code search comes through the wrapper.
 - The journey lane's script (`argus-live.mjs`) is the orchestrator's. A subagent runs only its reads,
-  `status`, `status --json` and `check`, every word after the script literal; the explorer also its
-  `pw` (above). Every other verb (`up`, `down`, `renew`, `slot`, `repro`, `scrub`, `intake`, `select`,
-  `visit`, `map-check` with or without `--list` or `--merge`, which rewrites the map, …) is refused, by
+  `status`, `status --json`, `check` and `smoke check` (which writes nothing), every word after the
+  script literal; the explorer also its `pw` (above). Every other verb (`up`, `down`, `renew`, `slot`,
+  `repro`, `scrub`, `intake`, `select`, `visit`, `map-check` with or without `--list` or `--merge`,
+  which rewrites the map, every other `smoke` verb, `seed`, `report`, …) is refused, by
   the script's name in any case or the real file behind a path, run by its path or by an interpreter
   as its first operand past its options and their values, or loaded by an option (`-r`, `--import`),
   behind env prefixes, wrappers and `sh -c`; a script name or a loaded file the shell builds whole
