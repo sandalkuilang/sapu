@@ -779,3 +779,33 @@ describe("argus-live a11y — inside the generated suite", () => {
     expect(support).not.toMatch(/shell|\bexec\(|spawn\(|\/bin\/sh/);
   });
 });
+
+describe("argus standards — the WCAG criteria the smoke suite's checks measure", () => {
+  const text = readFileSync(join(__dirname, "../plugins/sapu/skills/argus/standards.md"), "utf8");
+  const ROWS: [string, string, string, string, string][] = [
+    ["2.1.1", "Keyboard", "A", "keyboard", "All functionality of the content is operable through a keyboard interface"],
+    ["2.1.2", "No Keyboard Trap", "A", "no-keyboard-trap", "then focus can be moved away from that component using only a keyboard interface"],
+    ["2.4.3", "Focus Order", "A", "focus-order", "focusable components receive focus in an order that preserves meaning and operability."],
+    ["3.3.1", "Error Identification", "A", "error-identification", "the item that is in error is identified and the error is described to the user in text."],
+    ["4.1.2", "Name, Role, Value", "A", "name-role-value", "the name and role can be programmatically determined"],
+    ["4.1.3", "Status Messages", "AA", "status-messages", "status messages can be programmatically determined through role or properties"],
+  ];
+
+  it("each criterion appears in the accessibility table with its level as printed, a quoted sentence and its Understanding page", () => {
+    for (const [sc, name, level, slug, quoted] of ROWS) {
+      const row = text.split("\n").find((l) => l.startsWith(`| ${sc} ${name} |`));
+      expect(row, sc).toBeDefined();
+      expect(row, sc).toContain(`| ${level} |`);
+      expect(row, sc).toContain(`https://www.w3.org/WAI/WCAG22/Understanding/${slug}.html`);
+      expect(row, sc).toContain(quoted);
+      expect(row, sc).not.toContain("⚠");
+    }
+  });
+
+  it("the rows stay in criterion order", () => {
+    const table = text.slice(text.indexOf("## Accessibility"), text.indexOf("## Usability"));
+    const scs = [...table.matchAll(/^\| (\d\.\d+\.\d+) /gm)].map((m) => m[1].split(".").map(Number));
+    const sorted = [...scs].sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    expect(scs).toEqual(sorted);
+  });
+});
