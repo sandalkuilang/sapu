@@ -10,9 +10,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { generateSuite, SMOKE_PLAYWRIGHT } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
+import { generateSuite, SMOKE_PLAYWRIGHT, smokeConfig, suiteProjects } from "../plugins/sapu/scripts/argus-live-codegen.mjs";
 // @ts-expect-error — plain ESM script without types
-import { SMOKE_DEFAULTS } from "../plugins/sapu/scripts/argus-live-config.mjs";
+import { SMOKE_DEFAULTS, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendLedger, ledgerFile } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -733,6 +733,25 @@ describe("smoke workflow — the CI job /sapu:init writes with consent (spec §1
     expect(edge).toContain("      - run: npx playwright test --shuffle --grep-invert @quarantine --project setup --project msedge");
     expect(flow({ smoke: { browsers: ["chromium", "webkit"] } }).out().lines.join("\n")).not.toContain("msedge");
     expect(job(flow({ smoke: { browsers: ["chromium", "webkit"] }, live: { locales: [], viewports: [1440] } }).out().lines, "test")).toContain("        project: [chromium, webkit, a11y]");
+  });
+
+  it("the matrix and the generated config's projects are one list, codegen's suiteProjects: msedge alone leaves the container", () => {
+    for (const [smoke, live] of [[{}, {}], [{ browsers: ["firefox", "msedge"] }, { viewports: [1280, 390] }], [{ browsers: ["webkit", "chromium"] }, { locales: [], pseudo_locales: ["en-XA"] }]] as [Obj, Obj][]) {
+      const f = flow({ smoke, live });
+      const { lines } = f.out();
+      const writtenLive = JSON.parse(readFileSync(join(f.main, ".argus/live.json"), "utf8"));
+      const full = validateSmoke(smoke).value;
+      const names = suiteProjects({ live: writtenLive, smoke: full }).map((p: Obj) => p.name);
+      const matrix = (j: string) => /^ {8}project: \[(.*)\]$/.exec(job(lines, j).find((l) => l.startsWith("        project: ["))!)![1].split(", ");
+      expect(matrix("test"), JSON.stringify(smoke)).toEqual(names.filter((n: string) => n !== "msedge"));
+      expect(matrix("baseline")).toEqual(matrix("test"));
+      expect(lines.includes("  msedge:")).toBe(names.includes("msedge"));
+      // The config names the same projects (after setup), so --project "$PROJECT" always finds one.
+      const config = smokeConfig({ live: writtenLive, smoke: full });
+      for (const n of names) expect(config, n).toContain(`{ name: ${JSON.stringify(n)}, `);
+      // The quarantine job runs on the first engine of the container.
+      expect(job(lines, "quarantine").join("\n")).toContain(`--project setup --project ${names.find((n: string) => ["chromium", "firefox", "webkit"].includes(n))}`);
+    }
   });
 
   it("keeps quarantined tests running in a non-gating job", () => {

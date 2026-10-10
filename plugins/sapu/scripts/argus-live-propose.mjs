@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SMOKE_PLAYWRIGHT } from "./argus-live-codegen.mjs";
+import { SMOKE_PLAYWRIGHT, suiteProjects } from "./argus-live-codegen.mjs";
 import { LIVE_FILE, loadSmoke, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { secretHits } from "./argus-live-ledger.mjs";
 import { lastRun, RUN_ID } from "./argus-live-lock.mjs";
@@ -334,16 +334,14 @@ function pinned([action, tag], { runner, gh, cwd }) {
 }
 
 /**
- * The suite's CI projects (spec §19.6): those that run in the pinned container (the screenshot projects
- * chromium, firefox and webkit as smoke.json's browsers list them, `chromium-<width>` for each further
- * viewport, `a11y`, and `i18n` with a locale or pseudo-locale), and whether `msedge` runs on the plain runner.
+ * The suite's CI projects (spec §19.6), from codegen's suiteProjects, the generated config's own list: every one
+ * but msedge runs in the pinned container (the screenshot projects, the engines and `chromium-<width>`, write the
+ * baselines; `a11y` its ARIA files; `a11y` and `i18n` take no screenshot), and msedge, when smoke.json's browsers
+ * name it, on the plain runner, whose image ships Edge, with no screenshot.
  */
 function projectsOf(live, smoke) {
-  const browsers = smoke.browsers ?? SMOKE_DEFAULTS.browsers;
-  const widths = Array.isArray(live.viewports) ? live.viewports.slice(1) : [];
-  const i18n = (Array.isArray(live.locales) && live.locales.length > 0) || (Array.isArray(live.pseudo_locales) && live.pseudo_locales.length > 0);
-  const container = [...["chromium", "firefox", "webkit"].filter((b) => browsers.includes(b)), ...widths.map((w) => `chromium-${w}`), "a11y", ...(i18n ? ["i18n"] : [])];
-  return { container, msedge: browsers.includes("msedge") };
+  const projects = suiteProjects({ live, smoke });
+  return { container: projects.filter((p) => p.browser !== "msedge").map((p) => p.name), msedge: projects.some((p) => p.browser === "msedge"), engine: projects.find((p) => p.kind === "browser" && p.browser !== "msedge")?.name ?? null };
 }
 
 /** Every `${NAME}` live.json names (passwords, TOTP secrets, env values): the CI secrets the suite reads by name. */
@@ -376,7 +374,8 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
   const live = liveAsWritten(liveText, "smoke workflow");
   const use = {};
   for (const [k, a] of Object.entries(ACTIONS)) use[k] = pinned(a, { runner, gh, cwd: main });
-  const { container, msedge } = projectsOf(live, smoke);
+  const { container, msedge, engine } = projectsOf(live, smoke);
+  if (!container.length || !engine) throw new Error("refused: smoke workflow: smoke.json's browsers name no browser of the pinned container (chromium, firefox or webkit)");
   const dir = smoke.dir;
   const artifact = smoke.ci.artifact;
   const fork = "(github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)";
@@ -458,7 +457,7 @@ export function smokeWorkflow(main, { runner = run, gh = "gh" } = {}) {
     "    steps:",
     ...checkout,
     "      - run: npm ci",
-    "      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project chromium",
+    `      - run: npx playwright test --grep @quarantine --pass-with-no-tests --project setup --project ${engine}`,
     ...results(`${artifact}-quarantine`),
     "  baseline:",
     "    # Dispatched by smoke baseline: writes the baselines the pull request then proposes for review.",
