@@ -14,8 +14,8 @@ export const LIVE_FILE = ".argus/live.json";
 /** Role names: no `.` (`<role>.<n>` names an account). */
 export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ROLES = ["anon", "system"];
-/** The wrapper's commands that take no role (`pw <token> submit <json>`): never a role name. */
-export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail"];
+/** The wrapper's commands that take no role (`pw <token> submit <json>`; `source`, a seed map slot's, spec §19.12): never a role name. */
+export const ROLE_FREE = ["submit", "code", "trigger", "facts", "mail", "source"];
 const PORT_NAME = /^[a-z][a-z0-9_-]*$/;
 const START_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const SECRET = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/;

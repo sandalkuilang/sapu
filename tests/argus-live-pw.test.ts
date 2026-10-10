@@ -1013,7 +1013,7 @@ describe("argus-live config — the browser keys", () => {
   });
 
   it("role names the wrapper takes as commands are reserved", () => {
-    expect(ROLE_FREE).toEqual(["submit", "code", "trigger", "facts", "mail"]);
+    expect(ROLE_FREE).toEqual(["submit", "code", "trigger", "facts", "mail", "source"]);
     for (const name of ROLE_FREE) {
       expect(errorsOf((c) => (c.roles[name] = { users: [{ user: "u@example.test", password: "x" }] }))).toEqual([`roles.${name}: ${name} is reserved (a wrapper command)`]);
     }

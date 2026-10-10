@@ -90,11 +90,6 @@ export const COMMANDS = {
   source: { roleFree: true, args: [] },
 };
 
-/**
- * The role-free words: config's ROLE_FREE (never a role name) and `source`, a seed map slot's command (spec
- * §19.12). A role named `source` would be shadowed by it.
- */
-const PW_ROLE_FREE = [...ROLE_FREE, "source"];
 /** `source` on any token but a seed map slot's. */
 const SOURCE_ONLY = "refused: source takes a seed map slot's token (slot <n> --map --seed)";
 
@@ -111,7 +106,7 @@ const PW_USAGE = "pw <token> <role>[.<k>] <command> [args] | pw <token> <code|tr
 export function parsePw(argv) {
   if (!Array.isArray(argv) || argv.length < 2) throw new Error(`refused: ${PW_USAGE}`);
   const token = argv[0];
-  const roleFree = PW_ROLE_FREE.includes(argv[1]);
+  const roleFree = ROLE_FREE.includes(argv[1]);
   const account = roleFree ? null : argv[1];
   const cmd = roleFree ? argv[1] : argv[2];
   const rest = argv.slice(roleFree ? 2 : 3);
