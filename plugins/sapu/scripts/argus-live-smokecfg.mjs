@@ -26,10 +26,11 @@ const deepFreeze = (o) => {
 export const SMOKE_DEFAULTS = deepFreeze({
   dir: "e2e/argus-smoke", max: 20, pin: [], exclude: [], browsers: [...SMOKE_BROWSERS], journeys: {}, masks: [], workers: null,
   ci: { web_server: [], ports: {}, workflow: "argus-smoke.yml", artifact: "argus-smoke-results" },
-  perf: { runs: 5, thresholds: { lcp_ms: [0.2, 250], inp_ms: [0.25, 50], cls: [0.25, 0.05], duration_ms: [0.2, 500], requests: [0.2, 5], bytes: [0.2, 102400] } },
+  perf: { runs: 5, max_load: 0.5, thresholds: { lcp_ms: [0.2, 250], inp_ms: [0.25, 50], cls: [0.25, 0.05], duration_ms: [0.2, 500], requests: [0.2, 5], bytes: [0.2, 102400] } },
   heal_max_steps: 3, form_cases_max: 6, link_cap: 50,
 });
-const SMOKE_RANGES = { max: [1, 50], heal_max_steps: [1, 10], form_cases_max: [0, 50], link_cap: [0, 500], "perf.runs": [1, 20] };
+// perf.runs: a median of fewer than three runs is one run's noise.
+const SMOKE_RANGES = { max: [1, 50], heal_max_steps: [1, 10], form_cases_max: [0, 50], link_cap: [0, 500], "perf.runs": [3, 20] };
 /** A journey id as the catalog spells it (argus-live-map's KEBAB). */
 const isJourneyId = (v) => typeof v === "string" && v.length <= 100 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(v);
 /** A check's name (`covered`, `target-size`, …) as an `allow` entry names it. */
@@ -127,8 +128,9 @@ export function validateSmoke(raw) {
     if ("artifact" in ci) need(typeof ci.artifact === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(ci.artifact), "ci.artifact must be a name of letters, digits, ., _ and - (at most 100)");
   }
   if (has("perf") && need(isObj(raw.perf), "perf must be an object") === true) {
-    unknown(raw.perf, "perf", ["runs", "thresholds"]);
+    unknown(raw.perf, "perf", ["runs", "max_load", "thresholds"]);
     if ("runs" in raw.perf) int(raw.perf.runs, "perf.runs");
+    if ("max_load" in raw.perf) need(typeof raw.perf.max_load === "number" && raw.perf.max_load >= 0.1 && raw.perf.max_load <= 8, "perf.max_load must be a number from 0.1 to 8 (the load average a core may carry)");
     if ("thresholds" in raw.perf && need(isObj(raw.perf.thresholds), "perf.thresholds must be an object") === true) {
       unknown(raw.perf.thresholds, "perf.thresholds", PERF_METRICS);
       for (const [m, t] of Object.entries(raw.perf.thresholds)) {

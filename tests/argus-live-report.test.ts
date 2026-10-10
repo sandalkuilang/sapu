@@ -347,7 +347,7 @@ describe("argus-live report — the records the producers write, read as written
     mkdirSync(join(dir, "journeys"), { recursive: true });
     for (const id of ["checkout", "refund"]) writeFileSync(join(dir, "journeys", `${id}.json`), JSON.stringify({ journey: id, path: PATHS.checkout }));
     writeFileSync(join(dir, "quarantine.json"), JSON.stringify([{ id: "refund", issue: null, since: "100" }]));
-    writeFileSync(join(t.main, ".argus/smoke.json"), JSON.stringify({ perf: { runs: 1 } }));
+    writeFileSync(join(t.main, ".argus/smoke.json"), JSON.stringify({ perf: { runs: 3, max_load: 8 } }));
     return t;
   };
   const M = (lcp: number) => ({ lcp, cls: 0.02, inp: 100, requests: 20, bytes: 500000 });
@@ -388,8 +388,9 @@ describe("argus-live report — the records the producers write, read as written
     ])
       expect(l, want).toContain(want);
     const perf = text.slice(text.indexOf("## Perf"), text.indexOf("## Visual and checks"));
-    expect(perf).toMatch(/\n- checkout baselined: lcp_ms - → 1200; inp_ms - → 100; cls - → 0\.02; duration_ms - → \d+; requests - → 20; bytes - → 500000\n/);
-    expect(perf).toMatch(/\n- baseline checkout: worktree [0-9a-f]{12}, 1 run\(s\) a batch\n/);
+    // A baseline is two batches: both are shown.
+    expect(perf).toMatch(/\n- checkout baselined: lcp_ms - → 1200, 1200; inp_ms - → 100, 100; cls - → 0\.02, 0\.02; duration_ms - → \d+, \d+; requests - → 20, 20; bytes - → 500000, 500000\n/);
+    expect(perf).toMatch(/\n- baseline checkout: worktree [0-9a-f]{12}, 3 run\(s\) a batch\n/);
     expect(perf).toContain("lab context, never a verdict");
     expect(text).not.toContain("## Records not read");
   }, 30_000);

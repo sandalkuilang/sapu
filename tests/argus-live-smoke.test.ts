@@ -72,7 +72,7 @@ describe("smoke.json — the suite's schema", () => {
     expect(errors).toEqual([]);
     expect(value).toEqual(SMOKE_DEFAULTS);
     expect(value).toMatchObject({ dir: "e2e/argus-smoke", max: 20, pin: [], exclude: [], browsers: ["chromium", "firefox", "webkit", "msedge"], workers: null, heal_max_steps: 3, form_cases_max: 6, link_cap: 50 });
-    expect(value.perf).toEqual({ runs: 5, thresholds: { lcp_ms: [0.2, 250], inp_ms: [0.25, 50], cls: [0.25, 0.05], duration_ms: [0.2, 500], requests: [0.2, 5], bytes: [0.2, 102400] } });
+    expect(value.perf).toEqual({ runs: 5, max_load: 0.5, thresholds: { lcp_ms: [0.2, 250], inp_ms: [0.25, 50], cls: [0.25, 0.05], duration_ms: [0.2, 500], requests: [0.2, 5], bytes: [0.2, 102400] } });
     expect(value.ci).toEqual({ web_server: [], ports: {}, workflow: "argus-smoke.yml", artifact: "argus-smoke-results" });
     expect(SMOKE_BROWSERS).toEqual(["chromium", "firefox", "webkit", "msedge"]);
     expect(PERF_METRICS).toEqual(["lcp_ms", "inp_ms", "cls", "duration_ms", "requests", "bytes"]);
@@ -105,7 +105,10 @@ describe("smoke.json — the suite's schema", () => {
     expect(validateSmoke({ heal_max_steps: 11 }).errors).toEqual(["heal_max_steps must be an integer from 1 to 10"]);
     expect(validateSmoke({ form_cases_max: 51 }).errors).toEqual(["form_cases_max must be an integer from 0 to 50"]);
     expect(validateSmoke({ link_cap: -1 }).errors).toEqual(["link_cap must be an integer from 0 to 500"]);
-    expect(validateSmoke({ perf: { runs: 0 } }).errors).toEqual(["perf.runs must be an integer from 1 to 20"]);
+    // A median of fewer than three runs is one run's noise.
+    for (const runs of [0, 2]) expect(validateSmoke({ perf: { runs } }).errors).toEqual(["perf.runs must be an integer from 3 to 20"]);
+    expect(validateSmoke({}).value.perf.max_load).toBe(0.5);
+    for (const max_load of [0, 9, "1"]) expect(validateSmoke({ perf: { max_load } }).errors, String(max_load)).toEqual(["perf.max_load must be a number from 0.1 to 8 (the load average a core may carry)"]);
     expect(validateSmoke({ heal_max_steps: 1, form_cases_max: 0, link_cap: 0, perf: { runs: 20 } }).errors).toEqual([]);
   });
 
@@ -175,7 +178,7 @@ describe("smoke.json — the suite's schema", () => {
 
   it("perf: thresholds per metric, merged over the defaults", () => {
     const { value } = validateSmoke({ perf: { runs: 7, thresholds: { lcp_ms: [0.1, 100] } } });
-    expect(value.perf).toEqual({ runs: 7, thresholds: { ...SMOKE_DEFAULTS.perf.thresholds, lcp_ms: [0.1, 100] } });
+    expect(value.perf).toEqual({ runs: 7, max_load: 0.5, thresholds: { ...SMOKE_DEFAULTS.perf.thresholds, lcp_ms: [0.1, 100] } });
     expect(validateSmoke({ perf: { thresholds: { fcp_ms: [0.1, 1] } } }).errors).toEqual(['perf.thresholds: unknown key "fcp_ms"']);
     for (const t of [[0.1], [-0.1, 1], [0.1, -1], [11, 1], ["0.1", 1], [0.1, Infinity]]) {
       expect(validateSmoke({ perf: { thresholds: { cls: t } } }).errors, JSON.stringify(t)).toEqual(["perf.thresholds.cls must be [<relative 0-10>, <absolute >= 0>]"]);

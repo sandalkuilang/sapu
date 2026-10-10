@@ -100,7 +100,7 @@ Tracked beside `live.json`; unknown keys are refused at every level; every absen
 - `journeys` — per journey id, its own `browsers` and `viewports` (widths it leaves out; the first always runs); `masks` hidden in its screenshots; `screens`, the step numbers whose screen is shot, ARIA-snapshotted and axe-checked (default: its last step acting on a page); `allow`, the `{check, key}` violations the owner accepts.
 - `masks` — role, text, label or test-id locators hidden in every screenshot (time elements, the marker and saved values always are). `workers` — local workers, 1 to 64 or `"N%"`; CI runs one.
 - `ci` — `web_server`, how CI starts the app (`{command, url, timeout_s?}`, loopback URLs, ports written out); `ports`, the port each `{port:<name>}` of a live.json hook takes in CI; `workflow`, the file under `.github/workflows/`; `artifact`, the results artifacts' prefix.
-- `perf` — `runs` a batch; `thresholds`, `[relative, absolute]` per metric (`lcp_ms`, `inp_ms`, `cls`, `duration_ms`, `requests`, `bytes`), a regression exceeding both.
+- `perf` — `runs` a batch (at least 3); `max_load`, the load average a core may carry before `--perf` refuses (0.5); `thresholds`, `[relative, absolute]` per metric (`lcp_ms`, `inp_ms`, `cls`, `duration_ms`, `requests`, `bytes`), a regression exceeding both.
 - `heal_max_steps` — targets one heal changes; `form_cases_max` — negative cases a form; `link_cap` — links checked a test.
 
 ## CI wiring

@@ -4,6 +4,7 @@
 // `--perf` measures each path against its baseline (argus-live-perf.mjs). Above the repro runner, below the CLI.
 import { randomInt } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { expandConfig, loadLive } from "./argus-live-config.mjs";
 import { loadSmoke, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
@@ -245,12 +246,13 @@ export function writeRegression(main, { runId, slot = null, id, repro, n, live, 
  * (`perf <id>: …` lines, `smoke run --perf: <b> baselined, <o> ok, <r> regressed, <f> flaky, <x> not measured`),
  * exit 3 when a metric regressed (both batches) or a path broke, else 2 when the harness failed, else 0. It
  * takes no `--slot`, and is refused while another slot of the run holds a token (`refused: smoke run --perf:
- * <n> other slot(s) live`): concurrent load skews every timing. Each path's verdict is appended to
+ * <n> other slot(s) live`) or the load average (`load`, the seam of os.loadavg) is over `perf.max_load` of each
+ * core: concurrent load skews every timing. Each path's verdict is appended to
  * `<run>/smoke/perf.jsonl` (0600) `{id, verdict, baseline, batches, regressed}`.
  * Refused before any run: no cycle, a slot minted already, an unknown id, no path, a path its mode refuses
  * (`refused: smoke run: <id>: step <n>: <reason>`).
  */
-export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce } = {}) {
+export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce, load = os.loadavg } = {}) {
   if (perf && slot !== null) throw new Error("refused: smoke run --perf: it writes no regression, so it takes no --slot");
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
@@ -278,6 +280,10 @@ export async function smokeRun(main, { ids, slot, perf, seed }, { once = runOnce
       throw new Error(`refused: smoke run: ${p.id}: ${e.message.replace(/^refused: repro: /, "")}`);
     }
   }
+  // A busy machine measures its own load: refused over perf.max_load of each core (smoke.json's, 0.5 by default).
+  const cores = os.cpus().length;
+  const busy = load()[0];
+  if (perf && busy > cores * smoke.perf.max_load) throw new Error(`refused: smoke run --perf: the machine is busy (load ${busy.toFixed(1)} over ${(cores * smoke.perf.max_load).toFixed(1)}, ${smoke.perf.max_load} of its ${cores} cores; smoke.json perf.max_load)`);
   const used = seed ?? randomInt(0, 4294967296);
   const lines = [`seed: ${used}`];
   if (perf) return perfPass({ main, lock, rec, smoke, picked, order: seededOrder([...picked.keys()], used), lines, once });

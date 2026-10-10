@@ -190,25 +190,33 @@ export function batchMedians(runs) {
   return Object.fromEntries(PERF_METRICS.map((m) => [m, rounded(m, median(runs.map((r) => r[m] ?? 0)))]));
 }
 
-/** The metrics of `now` over `base` by more than both thresholds `[relative, absolute]` → `[{metric, baseline, value}]`. */
-export function regressions(base, now, thresholds) {
+/**
+ * The metrics of `now` over `base` by more than both thresholds `[relative, absolute]` and over `ceiling` (the
+ * slowest run of the baseline's batches, when it records one: within the baseline's own spread is noise) →
+ * `[{metric, baseline, value}]`.
+ */
+export function regressions(base, now, thresholds, ceiling = null) {
   const out = [];
   for (const metric of PERF_METRICS) {
     const [relative, absolute] = thresholds[metric];
-    if (now[metric] - base[metric] > Math.max(base[metric] * relative, absolute)) out.push({ metric, baseline: base[metric], value: now[metric] });
+    const over = now[metric] - base[metric] > Math.max(base[metric] * relative, absolute);
+    if (over && (!ceiling || now[metric] > ceiling[metric])) out.push({ metric, baseline: base[metric], value: now[metric] });
   }
   return out;
 }
 
 /** The metrics that regress in every batch of `batches` → `[{metric, baseline, values: [one per batch]}]`. */
-export function confirmedRegressions(base, batches, thresholds) {
+export function confirmedRegressions(base, batches, thresholds, ceiling = null) {
   if (!batches.length) return [];
-  const each = batches.map((b) => regressions(base, b, thresholds));
+  const each = batches.map((b) => regressions(base, b, thresholds, ceiling));
   return each[0].filter((r) => each.every((list) => list.some((x) => x.metric === r.metric))).map((r) => ({ metric: r.metric, baseline: r.baseline, values: batches.map((b) => b[r.metric]) }));
 }
 
 // ---------------------------------------------------------------------------------------------------
-// .argus/perf.json: per journey `{pathSha, head, machine, n, medians, latest}`; local state, never committed.
+// .argus/perf.json: `{version: 1, journeys: {<id>: {pathSha, head, machine, n, medians, max?, latest}}}`; local state,
+// never committed. A file written before the version is the journeys object itself.
+
+const PERF_VERSION = 1;
 
 const NOT_A_RECORD = "refused: .argus/perf.json is not a perf record";
 const hex = (v, min, max) => typeof v === "string" && new RegExp(`^[0-9a-f]{${min},${max}}$`).test(v);
@@ -219,7 +227,7 @@ const regressedOk = (list) => Array.isArray(list) && list.every((r) => isObj(r) 
 const stateOk = (s) => isObj(s) && hex(s.pathSha, 64, 64) && hex(s.head, 4, 64) && machineOk(s.machine) && Number.isInteger(s.n) && s.n > 0;
 const latestOk = (l) => stateOk(l) && Array.isArray(l.batches) && l.batches.length > 0 && l.batches.every(metricsOk) && regressedOk(l.regressed);
 
-/** `<main>/.argus/perf.json` → `{<journey id>: entry}`; `{}` when there is none; refused when it is not a perf record. */
+/** `<main>/.argus/perf.json` → `{<journey id>: entry}` (its `journeys`); `{}` when there is none; refused when it is not a perf record. */
 export function readPerf(main) {
   let raw;
   try {
@@ -235,14 +243,18 @@ export function readPerf(main) {
     throw new Error(NOT_A_RECORD);
   }
   if (!isObj(all)) throw new Error(NOT_A_RECORD);
-  for (const [id, e] of Object.entries(all)) if (!JOURNEY.test(id) || !stateOk(e) || !metricsOk(e.medians) || (e.latest !== undefined && !latestOk(e.latest))) throw new Error(NOT_A_RECORD);
+  if (Object.hasOwn(all, "version")) {
+    if (all.version !== PERF_VERSION || !isObj(all.journeys) || Object.keys(all).length !== 2) throw new Error(NOT_A_RECORD);
+    all = all.journeys;
+  }
+  for (const [id, e] of Object.entries(all)) if (!JOURNEY.test(id) || !stateOk(e) || !metricsOk(e.medians) || (e.max !== undefined && !metricsOk(e.max)) || (e.latest !== undefined && !latestOk(e.latest))) throw new Error(NOT_A_RECORD);
   return all;
 }
 
 function writePerf(main, all) {
   const file = path.join(main, ".argus", "perf.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.renameSync(tempBeside(file, `${JSON.stringify(all, null, 2)}\n`, 0o600), file);
+  fs.renameSync(tempBeside(file, `${JSON.stringify({ version: PERF_VERSION, journeys: all }, null, 2)}\n`, 0o600), file);
 }
 
 /** The digest of a path (its list as the suite holds it): a baseline is void when it changes. */
@@ -278,8 +290,10 @@ function failure(r) {
  * Path `id` (`list`) measured and judged against its baseline (spec §19.11) → `{verdict, lines, row, exit}`.
  * A batch is one warm-up run after `up --fresh` (`once` with `dirty: false`, left out), then `runs` runs on that
  * instance; its value is each metric's median. No baseline, or one whose path digest or machine differs, is
- * void: this batch becomes the baseline. Otherwise a metric that exceeds the baseline by more than both
- * thresholds is a suspect, confirmed only when a second batch, after another `up --fresh`, has it too.
+ * void: this batch and a second one, after another `up --fresh`, become the baseline (the median of their runs,
+ * their slowest run its `max`; a Chrome-only change also prints the comparison with the old baseline). Otherwise a
+ * metric that exceeds the baseline by more than both thresholds and its `max` is a suspect, confirmed only when a
+ * second batch, after another `up --fresh`, has it too.
  * `perf.json` keeps the baseline and the newest batches (`latest`); `exit` is 3 for a confirmed regression or a
  * path that broke, 2 for the harness's failure, else 0.
  */
@@ -295,7 +309,7 @@ export async function perfPath({ main, id, list, once, runs, thresholds, head })
       chrome ||= sink.chrome;
       if (i > 0) kept.push(runMetrics(sink));
     }
-    return { medians: batchMedians(kept), chrome };
+    return { medians: batchMedians(kept), chrome, kept };
   };
   const stored = readPerf(main)[id] ?? null;
   const out = (verdict, lines, extra = {}) => ({ verdict, lines, exit: verdict === "regressed" || extra.broke ? 3 : verdict === "not-measured" ? 2 : 0, row: { id, verdict, baseline: stored ? stored.medians : null, batches: extra.batches ?? [], regressed: extra.regressed ?? [], ...(extra.why ? { why: extra.why } : {}) } });
@@ -311,10 +325,23 @@ export async function perfPath({ main, id, list, once, runs, thresholds, head })
   };
   const voided = !stored ? "first batch" : stored.pathSha !== sha ? "the path changed" : !sameMachine(stored.machine, machine) ? "the machine changed" : null;
   if (voided) {
-    save({ ...state, medians: first.medians, latest: { ...state, batches: [first.medians], regressed: [] } });
-    return out("baselined", [`perf ${id}: baseline set (${voided}), ${runs} runs: ${show(first.medians)}`], { batches: [first.medians] });
+    // A baseline is two batches, each after up --fresh: their runs' medians, and their slowest run as its ceiling.
+    const more = await batch();
+    if (more.fail) return out("not-measured", [`perf ${id}: not measured (the baseline's second batch: ${more.fail})`], { why: `the baseline's second batch: ${more.fail}`, broke: more.broke });
+    const all = [...first.kept, ...more.kept];
+    const medians = batchMedians(all);
+    const max = Object.fromEntries(PERF_METRICS.map((m) => [m, rounded(m, Math.max(...all.map((r) => r[m] ?? 0)))]));
+    save({ ...state, medians, max, latest: { ...state, batches: [first.medians, more.medians], regressed: [] } });
+    const lines = [`perf ${id}: baseline set (${voided}), 2 batches of ${runs} runs: ${show(medians)}`];
+    // Only Chrome moved: what the new version changed is worth a look, against the baseline it replaces.
+    const others = ["cpu", "cores", "mem_gb", "platform"].every((k) => stored && stored.machine[k] === machine[k]);
+    if (stored && stored.pathSha === sha && others && stored.machine.chrome !== machine.chrome) {
+      const moved = regressions(stored.medians, medians, thresholds, stored.max ?? null);
+      lines.push(`perf ${id}: Chrome ${stored.machine.chrome} -> ${machine.chrome}, against the old baseline: ${moved.length ? moved.map((r) => `${r.metric} ${r.baseline} -> ${r.value} (more than ${percent(thresholds[r.metric][0])} and ${thresholds[r.metric][1]}${unit(r.metric)})`).join("; ") : "every metric within the thresholds"}`);
+    }
+    return out("baselined", lines, { batches: [first.medians, more.medians] });
   }
-  const suspects = regressions(stored.medians, first.medians, thresholds);
+  const suspects = regressions(stored.medians, first.medians, thresholds, stored.max ?? null);
   const keep = (batches, regressed) => save({ ...stored, latest: { ...state, batches, regressed } });
   if (!suspects.length) {
     keep([first.medians], []);
@@ -323,7 +350,7 @@ export async function perfPath({ main, id, list, once, runs, thresholds, head })
   const second = await batch();
   if (second.fail) return out("not-measured", [`perf ${id}: not measured (the second batch: ${second.fail})`], { why: `the second batch: ${second.fail}`, broke: second.broke });
   const batches = [first.medians, second.medians];
-  const confirmed = confirmedRegressions(stored.medians, batches, thresholds);
+  const confirmed = confirmedRegressions(stored.medians, batches, thresholds, stored.max ?? null);
   keep(batches, confirmed);
   const say = (r) => `${r.metric} ${r.baseline} -> ${r.values.join(", ")}`;
   if (!confirmed.length) {

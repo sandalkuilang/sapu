@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { cpus } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -223,6 +224,13 @@ describe("medians and regressions", () => {
     expect(regressions(base, M({ lcp_ms: 10, bytes: 1, duration_ms: 1 }), THRESHOLDS)).toEqual([]);
   });
 
+  it("a regression must also exceed the slowest run of the baseline's batches, when the baseline records it", () => {
+    // 1260 is over both thresholds of 1000, but a baseline run already took 1300: the noise, not a regression.
+    expect(regressions(M(), M({ lcp_ms: 1260 }), THRESHOLDS, M({ lcp_ms: 1300 }))).toEqual([]);
+    expect(regressions(M(), M({ lcp_ms: 1301 }), THRESHOLDS, M({ lcp_ms: 1300 }))).toEqual([{ metric: "lcp_ms", baseline: 1000, value: 1301 }]);
+    expect(confirmedRegressions(M(), [M({ lcp_ms: 1400 }), M({ lcp_ms: 1290 })], THRESHOLDS, M({ lcp_ms: 1300 }))).toEqual([]);
+  });
+
   it("a threshold the owner set replaces the default for its metric", () => {
     const tight = { ...THRESHOLDS, lcp_ms: [0.05, 10] };
     expect(regressions(M(), M({ lcp_ms: 1100 }), tight)).toEqual([{ metric: "lcp_ms", baseline: 1000, value: 1100 }]);
@@ -395,8 +403,8 @@ describe("smoke run --perf (spec §19.11)", () => {
   afterEach(async () => {
     for (const r of live.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
   });
-  /** A live cycle whose repo holds the suite's `paths`, and smoke.json with `perf.runs` 2 (three runs a batch). */
-  const suiteRun = (paths: Record<string, Obj[]>, { slots = {} as Obj, smoke = { perf: { runs: 2 } } as Obj } = {}) => {
+  /** A live cycle whose repo holds the suite's `paths`, and smoke.json with `perf.runs` 3 (four runs a batch). */
+  const suiteRun = (paths: Record<string, Obj[]>, { slots = {} as Obj, smoke = { perf: { runs: 3 } } as Obj } = {}) => {
     const t = liveRun();
     writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(pathLive(), null, 2)}\n`);
     writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
@@ -429,27 +437,32 @@ describe("smoke run --perf (spec §19.11)", () => {
     };
     return { once, calls };
   };
-  const perf = (t: { main: string }, o: Obj, s: ReturnType<typeof stub>) => smokeRun(t.main, { ids: null, slot: null, perf: true, seed: 1, ...o }, { once: s.once });
-  const store = (t: { main: string }) => JSON.parse(readFileSync(join(t.main, ".argus/perf.json"), "utf8"));
+  /** smoke run --perf on an idle machine (`load` the load average it reads). */
+  const perf = (t: { main: string }, o: Obj, s: ReturnType<typeof stub>, load = [0, 0, 0]) => smokeRun(t.main, { ids: null, slot: null, perf: true, seed: 1, ...o }, { once: s.once, load: () => load });
+  const store = (t: { main: string }) => {
+    const doc = JSON.parse(readFileSync(join(t.main, ".argus/perf.json"), "utf8"));
+    expect(doc.version).toBe(1);
+    return doc.journeys;
+  };
 
-  it("a batch is one warm-up run after up --fresh, then perf.runs dirty runs; the first batch is the baseline", async () => {
+  it("a batch is one warm-up run after up --fresh, then perf.runs dirty runs; the first two batches are the baseline", async () => {
     const t = suiteRun({ checkout: PATH() });
-    const s = stub((_id, k) => M({ lcp_ms: [0, 9000, 1000, 1100][k] ?? 1000, bytes: 500000 + k }));
+    const s = stub((_id, k) => M({ lcp_ms: [0, 9000, 1000, 1100, 1200, 9000, 900, 1000, 1300][k] ?? 1000, bytes: 500000 + k }));
     const r = await perf(t, {}, s);
     expect(r.code).toBe(0);
-    expect(s.calls.map((c) => c.dirty)).toEqual([false, true, true]);
+    expect(s.calls.map((c) => c.dirty)).toEqual([false, true, true, true, false, true, true, true]);
     expect(s.calls[0].path).toEqual({ id: "checkout", list: PATH() });
-    // The warm-up (call 1) is left out; the median of the two kept runs is what the baseline holds.
+    // The warm-ups (calls 1 and 5) are left out; the median of the six kept runs is the baseline, their slowest its ceiling.
     const e = store(t).checkout;
-    expect(e).toMatchObject({ n: 2, medians: M({ lcp_ms: 1050, bytes: 500003 }) });
+    expect(e).toMatchObject({ n: 3, medians: M({ lcp_ms: 1050, bytes: 500005 }), max: M({ lcp_ms: 1300, bytes: 500008 }) });
     expect(e.pathSha).toMatch(/^[0-9a-f]{64}$/);
     expect(e.head).toBe(git(t.wt, "rev-parse", "HEAD"));
     expect(e.machine).toMatchObject({ chrome: "147.0.7727.55", platform: expect.stringMatching(/^[a-z0-9]+-[a-z0-9_]+$/), cores: expect.any(Number), mem_gb: expect.any(Number), cpu: expect.any(String) });
-    expect(e.latest).toMatchObject({ pathSha: e.pathSha, head: e.head, n: 2, regressed: [] });
-    expect(e.latest.batches).toHaveLength(1);
+    expect(e.latest).toMatchObject({ pathSha: e.pathSha, head: e.head, n: 3, regressed: [] });
+    expect(e.latest.batches).toHaveLength(2);
     expect(statSync(join(t.main, ".argus/perf.json")).mode & 0o777).toBe(0o600);
     expect(r.lines[0]).toBe("seed: 1");
-    expect(r.lines[1]).toMatch(/^perf checkout: baseline set \(first batch\), 2 runs: lcp_ms=1050 /);
+    expect(r.lines[1]).toMatch(/^perf checkout: baseline set \(first batch\), 2 batches of 3 runs: lcp_ms=1050 /);
     expect(r.lines.at(-1)).toBe("smoke run --perf: 1 baselined, 0 ok, 0 regressed, 0 flaky, 0 not measured");
   });
 
@@ -471,8 +484,8 @@ describe("smoke run --perf (spec §19.11)", () => {
     const s = stub(() => M({ lcp_ms: 1100, requests: 22 }));
     const r = await perf(t, {}, s);
     expect(r.code).toBe(0);
-    expect(s.calls).toHaveLength(3);
-    expect(r.lines[1]).toMatch(/^perf checkout: ok, 2 runs: lcp_ms=1100 /);
+    expect(s.calls).toHaveLength(4);
+    expect(r.lines[1]).toMatch(/^perf checkout: ok, 3 runs: lcp_ms=1100 /);
     const e = store(t).checkout;
     expect({ ...e, latest: null }).toEqual({ ...before, latest: null });
     expect(e.latest.batches).toEqual([M({ lcp_ms: 1100, requests: 22 })]);
@@ -481,11 +494,11 @@ describe("smoke run --perf (spec §19.11)", () => {
   it("a regression is confirmed by a second batch after up --fresh: both batches regress → regressed, exit 3", async () => {
     const t = suiteRun({ checkout: PATH() });
     await perf(t, {}, stub(() => M()));
-    const s = stub((_id, k) => M({ lcp_ms: k <= 3 ? 1600 : 1700 }));
+    const s = stub((_id, k) => M({ lcp_ms: k <= 4 ? 1600 : 1700 }));
     const r = await perf(t, {}, s);
     expect(r.code).toBe(3);
     // Two batches, each starting on a fresh instance.
-    expect(s.calls.map((c) => c.dirty)).toEqual([false, true, true, false, true, true]);
+    expect(s.calls.map((c) => c.dirty)).toEqual([false, true, true, true, false, true, true, true]);
     expect(r.lines[1]).toBe("perf checkout: regressed lcp_ms 1000 -> 1600, 1700 (more than 20% and 250 ms)");
     expect(r.lines.at(-1)).toBe("smoke run --perf: 0 baselined, 0 ok, 1 regressed, 0 flaky, 0 not measured");
     const e = store(t).checkout;
@@ -497,20 +510,21 @@ describe("smoke run --perf (spec §19.11)", () => {
   it("a regression the second batch does not repeat is a flake: exit 0, nothing filed", async () => {
     const t = suiteRun({ checkout: PATH() });
     await perf(t, {}, stub(() => M()));
-    const r = await perf(t, {}, stub((_id, k) => M({ lcp_ms: k <= 3 ? 1600 : 1010 })));
+    const r = await perf(t, {}, stub((_id, k) => M({ lcp_ms: k <= 4 ? 1600 : 1010 })));
     expect(r.code).toBe(0);
     expect(r.lines[1]).toBe("perf checkout: flaky lcp_ms 1000 -> 1600, 1010 (the second batch was within the thresholds)");
     expect(r.lines.at(-1)).toBe("smoke run --perf: 0 baselined, 0 ok, 0 regressed, 1 flaky, 0 not measured");
     expect(store(t).checkout.latest.regressed).toEqual([]);
   });
 
-  it("a changed path or machine voids the baseline: this batch becomes the new one", async () => {
+  it("a changed path or machine voids the baseline: these batches become the new one; a new Chrome is compared with the old one too", async () => {
     const t = suiteRun({ checkout: PATH() });
     await perf(t, {}, stub(() => M()));
     // Another Chrome: the machine differs.
     const a = await perf(t, {}, stub(() => M({ lcp_ms: 5000 }), { ua: CHROME.replace("147", "148") }));
     expect(a.code).toBe(0);
-    expect(a.lines[1]).toMatch(/^perf checkout: baseline set \(the machine changed\), 2 runs: lcp_ms=5000 /);
+    expect(a.lines[1]).toMatch(/^perf checkout: baseline set \(the machine changed\), 2 batches of 3 runs: lcp_ms=5000 /);
+    expect(a.lines[2]).toBe("perf checkout: Chrome 147.0.7727.55 -> 148.0.7727.55, against the old baseline: lcp_ms 1000 -> 5000 (more than 20% and 250 ms)");
     expect(store(t).checkout.machine.chrome).toBe("148.0.7727.55");
     // Another path: its digest differs.
     const changed = PATH();
@@ -518,7 +532,7 @@ describe("smoke run --perf (spec §19.11)", () => {
     writeFileSync(join(t.main, "e2e/argus-smoke/journeys/checkout.json"), `${JSON.stringify({ journey: "checkout", path: changed })}\n`);
     const before = store(t).checkout.pathSha;
     const b = await perf(t, {}, stub(() => M({ lcp_ms: 1 }), { ua: CHROME.replace("147", "148") }));
-    expect(b.lines[1]).toMatch(/^perf checkout: baseline set \(the path changed\), 2 runs: lcp_ms=1 /);
+    expect(b.lines[1]).toMatch(/^perf checkout: baseline set \(the path changed\), 2 batches of 3 runs: lcp_ms=1 /);
     expect(store(t).checkout.pathSha).not.toBe(before);
     expect(b.code).toBe(0);
   });
@@ -540,6 +554,24 @@ describe("smoke run --perf (spec §19.11)", () => {
     const v = stub(() => M());
     await perf(t, { ids: ["returns"] }, v);
     expect([...new Set(v.calls.map((c) => c.path.id))]).toEqual(["returns"]);
+  });
+
+  it("is refused on a busy machine (load over perf.max_load of its cores): the timings would measure the load", async () => {
+    const t = suiteRun({ checkout: PATH() });
+    const s = stub(() => M());
+    const cores = cpus().length;
+    await expect(perf(t, {}, s, [cores * 0.5 + 1, 0, 0])).rejects.toThrow(/^refused: smoke run --perf: the machine is busy \(load \d+\.\d over \d+\.\d, 0\.5 of its \d+ cores; smoke\.json perf\.max_load\)$/);
+    expect(s.calls).toEqual([]);
+    const owner = suiteRun({ checkout: PATH() }, { smoke: { perf: { runs: 3, max_load: 8 } } });
+    expect((await perf(owner, {}, s, [cores * 0.5 + 1, 0, 0])).code).toBe(0);
+  });
+
+  it("reads a perf.json written before the version as it was", async () => {
+    const t = suiteRun({ checkout: PATH() });
+    await perf(t, {}, stub(() => M()));
+    writeFileSync(join(t.main, ".argus/perf.json"), JSON.stringify(store(t)));
+    expect(Object.keys(readPerf(t.main))).toEqual(["checkout"]);
+    expect((await perf(t, {}, stub(() => M()))).lines[1]).toMatch(/^perf checkout: ok, /);
   });
 
   it("a run that measured no document is not measured, and writes no baseline", async () => {
@@ -566,11 +598,11 @@ describe("smoke run --perf (spec §19.11)", () => {
   it("writes one line a path to the run's smoke records (0600), for the report", async () => {
     const t = suiteRun({ checkout: PATH() });
     await perf(t, {}, stub(() => M()));
-    await perf(t, {}, stub((_id, k) => M({ lcp_ms: k <= 3 ? 1600 : 1700 })));
+    await perf(t, {}, stub((_id, k) => M({ lcp_ms: k <= 4 ? 1600 : 1700 })));
     const file = join(t.main, ".argus/live", t.runId, "smoke/perf.jsonl");
     const rows = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(rows).toEqual([
-      { id: "checkout", verdict: "baselined", baseline: null, batches: [M()], regressed: [] },
+      { id: "checkout", verdict: "baselined", baseline: null, batches: [M(), M()], regressed: [] },
       { id: "checkout", verdict: "regressed", baseline: M(), batches: [M({ lcp_ms: 1600 }), M({ lcp_ms: 1700 })], regressed: [{ metric: "lcp_ms", baseline: 1000, values: [1600, 1700] }] },
     ]);
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -660,7 +692,7 @@ describe("smoke perf --issue / --rebaseline", () => {
     const r = perfRebaseline(t.main, "checkout");
     expect(r.code).toBe(0);
     expect(r.lines).toEqual([`perf checkout: baseline moved to the newest batch (head ${git(t.main, "rev-parse", "--short=7", "HEAD")})`]);
-    const e = JSON.parse(readFileSync(join(t.main, ".argus/perf.json"), "utf8")).checkout;
+    const e = JSON.parse(readFileSync(join(t.main, ".argus/perf.json"), "utf8")).journeys.checkout;
     expect(e).toMatchObject({ pathSha: "b".repeat(64), n: 5, medians: M({ lcp_ms: 1700, bytes: 520000 }), machine: { chrome: "147.0.7727.60" } });
     expect(e.head).toBe(git(t.main, "rev-parse", "HEAD"));
     expect(e.latest.regressed).toEqual([]);
@@ -802,16 +834,17 @@ describe("smoke run --perf on the fixture app", () => {
       { as: "buyer.1", expect: "visible", target: { testId: "order-number" } },
     ];
     writeFileSync(join(journeys, "place-order.json"), `${JSON.stringify({ journey: "place-order", path: place })}\n`);
-    writeFileSync(join(c.main, ".argus/smoke.json"), `${JSON.stringify({ perf: { runs: 1 } })}\n`);
+    // Three runs a batch (the least), and a load limit a machine running other suites at once stays under.
+    writeFileSync(join(c.main, ".argus/smoke.json"), `${JSON.stringify({ perf: { runs: 3, max_load: 8 } })}\n`);
     const first = c.cli("smoke", "run", "--perf", "--seed", "3");
     expect(first.code, `${first.out}\n${first.err}`).toBe(0);
     const lines = first.out.trimEnd().split("\n");
     expect(lines[0]).toBe("seed: 3");
-    expect(lines[1]).toMatch(/^perf place-order: baseline set \(first batch\), 1 runs: lcp_ms=\d+ \(lab context: good 2500\), inp_ms=\d+ /);
+    expect(lines[1]).toMatch(/^perf place-order: baseline set \(first batch\), 2 batches of 3 runs: lcp_ms=\d+ \(lab context: good 2500\), inp_ms=\d+ /);
     expect(lines.at(-1)).toBe("smoke run --perf: 1 baselined, 0 ok, 0 regressed, 0 flaky, 0 not measured");
-    const rec = () => JSON.parse(readFileSync(join(c.main, ".argus/perf.json"), "utf8"))["place-order"];
+    const rec = () => JSON.parse(readFileSync(join(c.main, ".argus/perf.json"), "utf8")).journeys["place-order"];
     const base = rec();
-    expect(base.n).toBe(1);
+    expect(base.n).toBe(3);
     expect(base.medians.lcp_ms).toBeGreaterThan(0);
     expect(base.medians.requests).toBeGreaterThanOrEqual(2);
     expect(base.medians.bytes).toBeGreaterThan(1000);

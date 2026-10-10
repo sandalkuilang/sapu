@@ -2362,15 +2362,18 @@ from a script of `PerformanceObserver`s (`buffered`, so entries from before it r
 session hook installs beside the signal script (§7) only in a perf pass, at each `domcontentloaded` and again
 before each measured step, and read after every step. A batch is one warm-up run, then `perf.runs` runs on one instance; its value is each
 metric's median (five runs' median is about twice as stable as one) [lh-variability]
-[lhci-config]. A batch is refused while another slot of the run is live (`refused: smoke run
---perf: <n> other slot(s) live`): concurrent load on one machine skews every timing
-[lh-variability]. Baseline per journey in `.argus/perf.json` `{pathSha, head, machine, n, medians, latest}`
+[lhci-config]; `perf.runs` is at least 3. A batch is refused while another slot of the run is live (`refused: smoke run
+--perf: <n> other slot(s) live`) or the load average is over `perf.max_load` (default 0.5) of each core:
+concurrent load on one machine skews every timing [lh-variability]. Baseline per journey in `.argus/perf.json`
+`{version: 1, journeys: {<id>: {pathSha, head, machine, n, medians, max, latest}}}` (a file without `version`, written
+before, is the journeys object)
 (`latest`: the newest pass's `{pathSha, head, machine, n, batches, regressed}`, what `--issue` reads and
-`--rebaseline` moves the baseline to): the first batch; void when the path's digest or the machine (CPU model and count, memory, platform,
-Chrome version) differs; moved only by `smoke perf --rebaseline <id>` (the owner's command, or the
+`--rebaseline` moves the baseline to): the first two batches, each after `up --fresh` (`medians` the median of
+their runs, `max` their slowest run); void when the path's digest or the machine (CPU model and count, memory, platform,
+Chrome version) differs, and when only Chrome moved, the new baseline is also printed against the old one; moved only by `smoke perf --rebaseline <id>` (the owner's command, or the
 owner closing a perf issue as not planned). Default thresholds `[relative, absolute]`: `lcp_ms` [0.2,
 250], `inp_ms` [0.25, 50], `cls` [0.25, 0.05], `duration_ms` [0.2, 500], `requests` [0.2, 5], `bytes`
-[0.2, 102400]. A metric regresses when its median exceeds the baseline by more than both; a
+[0.2, 102400]. A metric regresses when its median exceeds the baseline by more than both and exceeds the baseline's `max`; a
 regression counts only when a second batch after `up --fresh` regresses too. Each path's verdict is one
 of five: `baselined` (a first batch, or a void baseline), `ok`, `regressed` (both batches), `flaky` (the
 second batch was within the thresholds), `not-measured` (the path broke or the harness failed), one
