@@ -68,9 +68,10 @@
 //   argus-live.mjs repro <slot>.<generation>.<k> --saved
 //                                the values the candidate's reproducing run read (`save`), as scrub would let them
 //                                leave: saved <name>: <JSON string>, or *** (<class>) for one holding a secret
-//   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
-//                                a journey finding's class, labels and starting severity (spec §10's table):
-//                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
+//   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <c>] [--cost]
+//                                a journey finding's class, labels and starting severity (spec §10's table; the taste
+//                                oracle's --class implicit|derived|bar and --cost, spec §20.5):
+//                                class <A|B(a)|heuristic|taste> labels <l>,… severity <…> because <words>
 //   argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…]
 //                   [--create [--label <l>…] | --comment <n>]
 //                                the last check before an issue is filed (spec §10 "Scrub"), against the run named
@@ -192,9 +193,9 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste accept <rule> <key>";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste accept <rule> <key>";
 /** classify's flags → classify's facts. */
-const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
+const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule", "--cost": "cost" };
 /** Journey ids, comma-separated. */
 const IDS = /^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$/;
 const refuseUsage = () => {
@@ -336,6 +337,7 @@ try {
     const facts = {};
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--oracle" && i + 1 < args.length && facts.oracle === undefined) facts.oracle = args[++i];
+      else if (args[i] === "--class" && i + 1 < args.length && facts.tasteClass === undefined) facts.tasteClass = args[++i];
       else if (Object.hasOwn(CLASSIFY_FLAGS, args[i]) && facts[CLASSIFY_FLAGS[args[i]]] === undefined) facts[CLASSIFY_FLAGS[args[i]]] = true;
       else throw new Error(`refused: ${usage}`);
     }

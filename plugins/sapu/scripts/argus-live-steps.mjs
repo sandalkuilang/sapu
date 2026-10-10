@@ -5,6 +5,7 @@
 // <JSON>;`, its target only through targetCode — whose every answer drains the session's hook;
 // reductions names the units minimize may drop. Path mode (spec §19.4) reads the smoke suite's paths:
 // no final, the selector order, seed triggers only; suiteAccounts and pathChecks serve it.
+import { ruleExpression as easeExpression } from "./argus-live-ease.mjs";
 import { fillArgv } from "./argus-live-hooks.mjs";
 import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { HELPERS } from "./argus-live-login.mjs";
@@ -12,6 +13,8 @@ import { BLOCKED_ERROR } from "./argus-live-origin.mjs";
 import { ORACLES } from "./argus-live-return.mjs";
 import { configuredUser } from "./argus-live-session.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
+import { ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
+import { FAMILIES, loadBar } from "./argus-live-tastecfg.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
 
@@ -47,6 +50,8 @@ const EXPECTS = {
   "no-error": [],
   // The layout oracle's check (argus-live-layout.mjs) on the page: held when it finds no violation, on the target's when one is named.
   layout: ["check", "target?"],
+  // The taste lane oracle's re-measure (spec §20.4): one screen rule of the bar on the page, held when no row of it has `key`.
+  taste: ["rule", "key"],
 };
 /** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
 export const FINAL_KINDS = {
@@ -63,7 +68,8 @@ export const FINAL_KINDS = {
   "interrupted-flow": ["count"],
   "viewport-locale": ["visible", "enabled", "layout"],
   // Spec §19.9: whatever expectation of a suite path broke is the regression candidate's final (a path holds no layout expectation: the suite runs the oracle after every step).
-  regression: Object.keys(EXPECTS).filter((k) => k !== "layout"),
+  regression: Object.keys(EXPECTS).filter((k) => k !== "layout" && k !== "taste"),
+  taste: ["taste"],
 };
 /** Decision 6: the steps that always change state, and those that do when the page sent a request other than GET or HEAD meanwhile. */
 const ALWAYS_CHANGES = ["select", "check", "uncheck", "trigger", "login"];
@@ -185,6 +191,7 @@ function stepOf(raw, n, { accounts, live, path = false }) {
   const table = isAction ? ACTIONS : EXPECTS;
   if (typeof kind !== "string" || !Object.hasOwn(table, kind)) refuse("unknown action");
   if (path && kind === "layout") refuse("a path has no layout expectation: the suite runs the layout oracle after every step");
+  if (path && kind === "taste") refuse("a path has no taste expectation: the suite runs the taste checks after every step");
   const fields = table[kind];
   const allowed = ["as", isAction ? "do" : "expect", "final", ...fields.map((f) => f.replace(/\?$/, ""))];
   for (const k of Object.keys(raw)) if (!allowed.includes(k)) refuse(`unknown key ${keyWord(k)}`);
@@ -216,12 +223,15 @@ function stepOf(raw, n, { accounts, live, path = false }) {
     else if (name === "path") {
       if (typeof raw.path !== "string" || !/^\/(?![/\\])/.test(raw.path)) refuse("goto takes a path (/…)");
       step.path = raw.path;
-    } else if (name === "key") {
+    } else if (name === "key" && kind === "press") {
       if (typeof raw.key !== "string" || !/^[A-Za-z0-9+]{1,32}$/.test(raw.key)) refuse("press takes a key (letters, digits and +, at most 32)");
       step.key = raw.key;
     } else if (name === "check" && kind === "layout") {
       if (typeof raw.check !== "string" || !LAYOUT_KINDS.includes(raw.check)) refuse(`layout takes a check (${LAYOUT_KINDS.join(", ")})`);
       step.check = raw.check;
+    } else if ((name === "rule" || name === "key") && kind === "taste") {
+      if (!tasteStep(raw)) refuse("taste takes a screen rule of the bar (rule) and a key");
+      step[name] = raw[name];
     } else if (name === "save") {
       if (typeof raw.save !== "string" || !SAVE.test(raw.save) || raw.save === "marker") refuse(`save takes a name (${SAVE.source}, not marker)`);
       step.save = raw.save;
@@ -273,6 +283,12 @@ function stepOf(raw, n, { accounts, live, path = false }) {
     step.final = raw.final;
   }
   return step;
+}
+
+/** A taste expectation's rule and key: a rule of the bar whose family is measured on one screen, and a key of 1 to 300 characters. */
+function tasteStep(raw) {
+  const rule = typeof raw.rule === "string" ? loadBar().rules.find((r) => r.id === raw.rule) : null;
+  return Boolean(rule && FAMILIES[rule.family].scope === "screen" && typeof raw.key === "string" && raw.key !== "" && raw.key.length <= 300);
 }
 
 /** True when step `s` changes state: always (decision 6), or a click, double click or press the run recorded in `changed`. */
@@ -557,7 +573,8 @@ const ACTION = `  const step = async () => {
  * `layout` runs the layout oracle's own expression for `P.check` (argus-live-layout.mjs) and holds when it finds no violation
  * less the rows in `P.skip`; with a target, only the violations whose key names the target (the name its ARIA snapshot
  * gives, digit runs written `#`, or one inside it) count, and a target the page lacks is `error`: `violations:<k>` otherwise,
- * `shown` the keys.
+ * `shown` the keys. `taste` runs its rule's page expression (argus-live-taste.mjs or -ease.mjs ruleExpression) and holds
+ * when no row of `P.rule` has `P.key`: `rows:<k>` otherwise, `shown` each row's `{key, measured}` (at most 20).
  */
 const EXPECT = `  const layout = async () => {
     const found = await page.evaluate(P.expr);
@@ -578,8 +595,14 @@ const EXPECT = `  const layout = async () => {
     }
     return list.length === 0 ? { held: true } : { held: false, observed: "violations:" + list.length, shown: list.slice(0, 20).map((f) => f.key) };
   };
+  const taste = async () => {
+    const found = await page.evaluate(P.expr);
+    const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.rule === P.rule && f.key === P.key);
+    return rows.length === 0 ? { held: true } : { held: false, observed: "rows:" + rows.length, shown: rows.slice(0, 20).map((f) => ({ key: f.key, measured: f.measured })) };
+  };
   const judge = async () => {
     if (P.kind === "layout") return await layout();
+    if (P.kind === "taste") return await taste();
     if (P.kind === "url") {
       const u = new URL(page.url());
       return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
@@ -627,6 +650,11 @@ export function stepCode(step, { settleMs, at = null, runOrigins, skip = [] }) {
   for (const k of ["url", "value", "key"]) if (step[k] !== undefined) P[k] = step[k];
   // The layout check runs as the oracle's own expression; `skip` ({check, key} rows: the journey's allowed and adopted ones) is data it is compared with.
   if (kind === "layout") Object.assign(P, { check: step.check, skip: skip.map(({ check, key }) => ({ check, key })), expr: pageExpression("layout", { only: [step.check] }) });
+  // The taste re-measure runs its probe's own expression for the rule (the family's module, FAMILIES).
+  if (kind === "taste") {
+    const family = step.rule.split(".")[0];
+    Object.assign(P, { rule: step.rule, key: step.key, expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(step.rule) });
+  }
   const T = step.target ? `(pg) => ${targetCode(step.target, "pg")}` : "null";
   const fail = step.do ? '{ ok: false, why: "error", detail: failure(e) }' : '{ held: false, observed: "error", detail: failure(e) }';
   return `async page => {\n  const P = ${JSON.stringify(P)};\n  const T = ${T};\n${HELPERS}${COMMON}${step.do ? ACTION : EXPECT}  try {\n    return await finish(await step());\n  } catch (e) {\n    return await finish(${fail});\n  }\n}\n`;

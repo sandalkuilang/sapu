@@ -13,12 +13,13 @@ import { readRun, updateRun, worktreeHeadFile } from "./argus-live-run.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 
 /** The oracles a candidate may name and coverage may judge (spec §7, §10, §19.9). */
-export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale", "regression"];
+export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale", "regression", "taste"];
 /**
- * The oracles only the lane's own pass names (spec §19.9): a regression is decided by re-running the suite's
- * unchanged expectations, never by an explorer's word, so an explorer's return never names one.
+ * The oracles only the lane's own pass names: a regression is decided by re-running the suite's unchanged
+ * expectations (spec §19.9), a taste row by the taste pass's measurement on a second visit (spec §20.4), never by an
+ * explorer's word, so an explorer's return never names one.
  */
-export const LANE_ORACLES = ["regression"];
+export const LANE_ORACLES = ["regression", "taste"];
 const EXPLORER_ORACLES = ORACLES.filter((o) => !LANE_ORACLES.includes(o));
 /** Why a heal-mode explorer found no new target (spec §19.9): no control for the step's goal, a page that blocked it, the harness. */
 const HEAL_REASONS = ["no-control", "blocked", "harness"];

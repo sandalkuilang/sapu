@@ -5,20 +5,31 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
-import { afterEach, describe, expect, it } from "vitest";
-import { ARGUS_LIVE, cleanTemps, committed, tempDir } from "./helpers/argus-live";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ARGUS_LIVE, cleanTemps, committed, example, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { EASE_INIT } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+import { classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_INIT, ruleExpression as easeRuleExpression } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+// @ts-expect-error — plain ESM script without types
+import { LANE_ORACLES, ORACLES, validateReturn } from "../plugins/sapu/scripts/argus-live-return.mjs";
+// @ts-expect-error — plain ESM script without types
+import { FINAL_KINDS, parseRepro, stepCode } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
-import { TASTE_INIT } from "../plugins/sapu/scripts/argus-live-taste.mjs";
+import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
 import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, loadBar, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
+
+// The probes' ruleExpression are lanes T1's and T2's: here each answers fixed rows, so the replay's taste expectation
+// is tested on its own (the stubs and the real probes are pinned in those lanes' files).
+vi.mock("../plugins/sapu/scripts/argus-live-taste.mjs", async (orig) => ({ ...(await orig()), ruleExpression: (rule: string) => `(() => ${JSON.stringify([{ rule, key: "k1", measured: 2, expected: 1 }])})()` }));
+vi.mock("../plugins/sapu/scripts/argus-live-ease.mjs", async (orig) => ({ ...(await orig()), ruleExpression: (rule: string) => `(() => ${JSON.stringify([{ rule, key: "k1", measured: 2, expected: 1 }, { rule: "other.rule", key: "k9", measured: 1, expected: 0 }])})()` }));
 
 afterEach(cleanTemps);
 
@@ -388,6 +399,88 @@ describe("the session hook's init payload (Task 0.1's post-probe seam)", () => {
   it("emulation stays the lane's own: the explorer's pw has no media command", () => {
     for (const c of Object.keys(COMMANDS)) expect(c, c).not.toMatch(/color-scheme|reduced-motion|emulat|media/i);
   });
+});
+
+describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
+  const ACCOUNTS = { "customer.1": "buyer1@example.test", "sales.1": "sales1@example.test" };
+  const at = { accounts: ACCOUNTS, live: example() };
+  const TASTE = { as: "customer.1", expect: "taste", rule: "copy.broken", key: "p|Status undefined|#", final: "taste" };
+  const last = (list: Obj[], o: Obj = at) => {
+    try {
+      return parseRepro(list, o).steps.at(-1);
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const repro = (step: Obj) => [{ as: "customer.1", do: "goto", path: "/orders/7" }, step];
+
+  it("is the lane's own: last in ORACLES, in LANE_ORACLES, never in an explorer's return", () => {
+    expect(ORACLES.at(-1)).toBe("taste");
+    expect(LANE_ORACLES).toEqual(["regression", "taste"]);
+    const opts = { journey: "j1", accounts: { "customer.1": "buyer1@example.test" }, outFiles: [] };
+    expect(validateReturn({ journey: "j1", status: "done", candidates: [{ claim: "c", oracle: "taste", repro: [] }] }, opts).errors).toEqual([expect.stringMatching(/^candidates\[0\]\.oracle must be one of handoff, .*, viewport-locale$/)]);
+    expect(validateReturn({ journey: "j1", status: "done", coverage: { taste: "held" } }, opts).errors).toEqual(['coverage: "taste" is not an oracle']);
+  });
+
+  it("its final is a taste expectation {rule, key}: one screen rule of the bar re-run on the replay's screen", () => {
+    expect(FINAL_KINDS.taste).toEqual(["taste"]);
+    expect(last(repro(TASTE))).toEqual({ n: 2, ...TASTE });
+    for (const [what, step, why] of [
+      ["a rule the bar lacks", { ...TASTE, rule: "copy.vibes" }, "taste takes a screen rule of the bar (rule) and a key"],
+      ["a cycle rule (consistency)", { ...TASTE, rule: "consistent.action" }, "taste takes a screen rule of the bar (rule) and a key"],
+      ["a cycle rule (efficiency)", { ...TASTE, rule: "efficiency.klm" }, "taste takes a screen rule of the bar (rule) and a key"],
+      ["an empty key", { ...TASTE, key: "" }, "taste takes a screen rule of the bar (rule) and a key"],
+      ["no key", { as: "customer.1", expect: "taste", rule: "copy.broken", final: "taste" }, "taste takes a screen rule of the bar (rule) and a key"],
+      ["another oracle's final", { ...TASTE, final: "viewport-locale" }, "viewport-locale's final is visible or enabled or layout"],
+      ["the taste final on another expectation", { as: "customer.1", expect: "visible", target: { text: "x" }, final: "taste" }, "taste's final is taste"],
+    ] as [string, Obj, string][]) expect(last(repro(step)), what).toBe(`refused: repro: step 2: ${why}`);
+    expect(last(repro({ ...TASTE, final: undefined }))).toMatch(/^refused: repro: step 2: the last step must be an expect naming its oracle/);
+  });
+
+  it("is never a regression's final, and a path holds no taste expectation (the suite runs the taste checks)", () => {
+    expect(FINAL_KINDS.regression).not.toContain("taste");
+    const live = { ...example(), test_id_attribute: "data-testid" };
+    const path = [{ as: "customer.1", do: "goto", path: "/orders/7" }, { as: "customer.1", expect: "taste", rule: "copy.broken", key: "k" }, { as: "customer.1", expect: "visible", target: { text: "x" } }];
+    expect(last(path, { accounts: { "customer.1": "buyer1@example.test" }, live, path: true })).toBe("refused: repro: step 2: a path has no taste expectation: the suite runs the taste checks after every step");
+  });
+
+  it("stepCode carries the rule, the key and its probe's page expression as data; held when no row of that rule has that key", async () => {
+    const code = stepCode({ n: 2, as: "customer.1", expect: "taste", rule: "copy.broken", key: "k1", final: "taste" }, { settleMs: 300, runOrigins: ["http://localhost:41002"] });
+    const P = JSON.parse(/\n  const P = (.*);\n/.exec(code)![1]);
+    expect(P).toMatchObject({ kind: "taste", rule: "copy.broken", key: "k1", expr: easeRuleExpression("copy.broken") });
+    expect(stepCode({ n: 2, as: "customer.1", expect: "taste", rule: "scale.spacing", key: "k1" }, { settleMs: 300, runOrigins: [] })).toContain(JSON.stringify(tasteRuleExpression("scale.spacing")));
+    // Run against a stand-in page whose expression answers the mocked probe's rows.
+    const run = async (key: string) => {
+      const c = stepCode({ n: 2, as: "customer.1", expect: "taste", rule: "copy.broken", key, final: "taste" }, { settleMs: 300, runOrigins: [] });
+      const page = { waitForTimeout: async () => {}, evaluate: async (e: unknown) => (typeof e === "string" ? (0, eval)(e) : []), context: () => ({ cookies: async () => [], pages: () => [] }) };
+      const r = await new Function(`return (${c})`)()(page);
+      return { held: r.held, observed: r.observed, shown: r.shown };
+    };
+    expect(await run("k9")).toEqual({ held: true, observed: null, shown: undefined });
+    expect(await run("k1")).toEqual({ held: false, observed: "rows:1", shown: [{ key: "k1", measured: 2 }] });
+  });
+
+  it("classify --oracle taste: ux always, bug for implicit and derived, never for bar; S4 for bar, S3 with a cost", () => {
+    const REST = ["argus", "found-by:user"];
+    expect(classify({ oracle: "taste", tasteClass: "implicit" })).toEqual({ cls: "taste", labels: ["bug", "ux", ...REST], severity: "by outcome", because: "taste row, implicit: broken on its face, rated by what the user did (aesthetics.md §7)" });
+    expect(classify({ oracle: "taste", tasteClass: "derived" })).toMatchObject({ cls: "taste", labels: ["bug", "ux", ...REST], severity: "by outcome" });
+    expect(classify({ oracle: "taste", tasteClass: "bar" })).toEqual({ cls: "taste", labels: ["ux", ...REST], severity: "S4", because: "taste row, bar: beyond the outside range, never a bug" });
+    expect(classify({ oracle: "taste", tasteClass: "bar", cost: true })).toMatchObject({ labels: ["ux", ...REST], severity: "S3" });
+    expect(classify({ oracle: "taste", tasteClass: "derived", cost: true })).toMatchObject({ severity: "at least S3" });
+    expect(() => classify({ oracle: "taste" })).toThrow("refused: classify: --oracle taste takes --class implicit, derived or bar");
+    expect(() => classify({ oracle: "taste", tasteClass: "taste" })).toThrow("refused: classify: --oracle taste takes --class implicit, derived or bar");
+    for (const f of [{ tasteClass: "bar" }, { cost: true }]) expect(() => classify({ oracle: "dead-end", ...f }), JSON.stringify(f)).toThrow("refused: classify: --class and --cost are the taste oracle's");
+  });
+
+  it("the CLI's classify takes --class and --cost for the taste oracle", () => {
+    const main = committed();
+    const cli = (...args: string[]) => spawnSync(process.execPath, [ARGUS_LIVE, "classify", ...args], { cwd: main, encoding: "utf8" });
+    expect(cli("--oracle", "taste", "--class", "bar", "--cost")).toMatchObject({ status: 0, stdout: "class taste labels ux,argus,found-by:user severity S3 because taste row, bar: beyond the outside range, never a bug\n" });
+    expect(cli("--oracle", "taste", "--class", "implicit").stdout).toBe("class taste labels bug,ux,argus,found-by:user severity by outcome because taste row, implicit: broken on its face, rated by what the user did (aesthetics.md §7)\n");
+    expect(cli("--oracle", "taste")).toMatchObject({ status: 1, stderr: "refused: classify: --oracle taste takes --class implicit, derived or bar\n" });
+    expect(cli("--oracle", "taste", "--class")).toMatchObject({ status: 1 });
+    expect(cli("--oracle", "taste", "--class", "bar", "--class", "bar")).toMatchObject({ status: 1 });
+  }, 30_000);
 });
 
 describe("CONTRACT.md — phase 7's files", () => {

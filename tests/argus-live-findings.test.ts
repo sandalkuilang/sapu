@@ -104,7 +104,7 @@ describe("argus-live modules — the DAG", () => {
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
     // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
     expect(g.has("argus-live-steps")).toBe(true);
-    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout"], d).toContain(d);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
     // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
@@ -657,8 +657,8 @@ describe("argus-live repro DSL", () => {
   });
 
   it("the regression oracle (spec §19.9): the lane's own, its final any expectation kind", () => {
-    expect(ORACLES.at(-1)).toBe("regression");
-    expect(LANE_ORACLES).toEqual(["regression"]);
+    expect(ORACLES.at(-2)).toBe("regression");
+    expect(LANE_ORACLES).toContain("regression");
     expect(FINAL_KINDS.regression).toEqual(["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals", "count", "url", "fact-equals", "mail", "no-error"]);
     const last = EXAMPLE().at(-1);
     expect(parseRepro([...EXAMPLE().slice(0, -1), { ...last, final: "regression" }], at).steps.at(-1)).toMatchObject({ final: "regression" });
