@@ -282,3 +282,48 @@ describe("argus-live report", () => {
     }
   }, 30_000);
 });
+
+describe("argus-live repro --test — the API-level hint", () => {
+  /** The spec §8 example's repro up to its fact, which becomes the final. */
+  const BASE = () => [
+    { context: { viewport: 1440, locale: "en-US", timezone: "UTC" } },
+    { as: "customer", do: "goto", path: "/orders/new" },
+    { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
+    { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+    { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+    { as: "customer", expect: "visible", target: { text: "{{order}}" } },
+    { as: "system", do: "trigger", name: "payment-settles", values: ["{{order}}"] },
+  ];
+  const FINALS: [string, Obj, string | null][] = [
+    ["fact-equals", { as: "customer", expect: "fact-equals", marker: "{{order}}", field: "status", value: "paid", final: "status-coherence" }, "api-level: suggested (the final reads live.facts)"],
+    ["mail", { as: "system", expect: "mail", to: "buyer1@example.test", contains: "Paid", final: "regression" }, "api-level: suggested (the final reads live.mail)"],
+    ["visible", { as: "sales", expect: "visible", target: { text: "{{order}}" }, final: "handoff" }, null],
+  ];
+  /** A run whose slot 1 returned one candidate per final, each reproduced two of two with its repro.json. */
+  const hinted = () => {
+    const t = cycle();
+    const lists = FINALS.map(([, final]) => [...BASE(), final]);
+    t.put("returns/1.1.json", { journey: "order-to-cash", status: "done", candidates: lists.map((repro) => ({ claim: "a seeded defect", oracle: repro.at(-1)!.final, repro })) });
+    lists.forEach((repro, k) => {
+      t.put(`repro/1.1.${k + 1}/verdict.json`, { runs: [3, 3], verdict: "reproduced" });
+      t.put(`repro/1.1.${k + 1}/repro.json`, { ref: `1.1.${k + 1}`, repro });
+    });
+    return t;
+  };
+
+  it("names live.facts or live.mail when the final reads one, else nothing", () => {
+    const t = hinted();
+    FINALS.forEach(([, , hint], k) => expect(apiLevelHint(t.main, `1.1.${k + 1}`)).toBe(hint));
+  });
+
+  for (const [kind, , hint] of FINALS) {
+    it(`repro --test prints it after the red test line: a ${kind} final`, () => {
+      const t = hinted();
+      const ref = `1.1.${FINALS.findIndex(([k]) => k === kind) + 1}`;
+      const r = spawnSync(process.execPath, [ARGUS_LIVE, "repro", ref, "--test"], { cwd: t.main, encoding: "utf8", env: ENV });
+      expect([r.status, r.stderr]).toEqual([0, ""]);
+      const file = join(realpathSync(join(t.runDir, "repro", ref)), "red.spec.ts");
+      expect(r.stdout).toBe(`red test: ${file}\n${hint === null ? "" : `${hint}\n`}`);
+    }, 30_000);
+  }
+});

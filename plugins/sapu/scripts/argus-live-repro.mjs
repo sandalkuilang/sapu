@@ -556,8 +556,21 @@ export function nextRun(dir) {
   return Math.max(0, ...names.map((f) => Number(f.slice(4, -5)))) + 1;
 }
 
-/** Spec §19.14 (not built yet): the `api-level: suggested (…)` line `repro <ref> --test` adds for candidate `ref`, or null. */
-export const apiLevelHint = (main, ref) => null;
+/** The final kinds whose defect shows without the UI (spec §19.14), each with the live.json key it reads. */
+const API_READS = { "fact-equals": "live.facts", mail: "live.mail" };
+
+/**
+ * Spec §19.14: the line `repro <ref> --test` adds after `red test:` for candidate `ref` → `api-level: suggested
+ * (the final reads live.facts|live.mail)` when its final is a `fact-equals` or `mail` expectation (the defect is
+ * observable through the app's facts or mail, so the issue suggests an API-level RED test beside the UI one),
+ * else null. The final is the candidate's own: minimizing never drops it (reductions).
+ */
+export function apiLevelHint(main, ref) {
+  const { candidate } = reproRef(main, ref);
+  const last = Array.isArray(candidate.repro) ? candidate.repro.at(-1) : null;
+  const reads = isObj(last) && typeof last.final === "string" && Object.hasOwn(API_READS, last.expect) ? API_READS[last.expect] : null;
+  return reads === null ? null : `api-level: suggested (the final reads ${reads})`;
+}
 
 /**
  * The end of every run (decision 13, decision 3): each opened account's last drain (`observe`; one that
