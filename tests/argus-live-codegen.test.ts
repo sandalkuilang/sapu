@@ -445,7 +445,11 @@ async function fixtureSuite({ paths, smokeExtra = {} }: { paths: { id: string; p
     roles: { anon: {}, buyer: { users: [{ user: "buyer1@example.test", password: "${APP_PW}" }] }, clerk: { users: [{ user: "clerk1@example.test", password: "${APP_PW}", totp_secret: "${APP_TOTP}" }] } },
   };
   delete live.mail;
-  const smoke = validateSmoke({ dir: "e2e/argus-smoke", ...smokeExtra, ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-codegen-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
+  // The fixture header's 64 x 21 px "Account" button under the "Home" link is a real WCAG 2.5.8 target-size
+  // violation the layout oracle reports: the owner's allow entry for it, on every journey.
+  const ACCOUNT = { check: "target-size", key: "button|Account|button" };
+  const journeys = Object.fromEntries(paths.map(({ id }) => [id, { ...(smokeExtra.journeys?.[id] ?? {}), allow: [ACCOUNT] }]));
+  const smoke = validateSmoke({ dir: "e2e/argus-smoke", ...smokeExtra, journeys, ci: { web_server: [{ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(SERVER)} --from=argus-live-codegen-tests`, url: `http://localhost:${web}/health`, timeout_s: 30 }], ports: { web } } }).value;
   expect(smoke).not.toBeNull();
   const files = generateSuite({ paths, live, smoke }) as Record<string, string>;
   const dir = join(tempDir(), "e2e/argus-smoke");
