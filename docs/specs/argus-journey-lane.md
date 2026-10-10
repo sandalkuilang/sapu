@@ -1789,8 +1789,8 @@ Elsewhere:
   idle, restart). The upgrade note covers the skills question, the new label, and the stricter owner
   labels (an `accepted` or `needsOwner` label with spaces or `, = " ' / [ ] { } ( ) %` is refused and
   must be renamed).
-- **Phase 6** (§19, the smoke suite and its checks) is built before the pilot; the pilot moves to
-  phase 7 and exercises both lanes.
+- **Phase 6** (§19, the smoke suite and its checks) and **phase 7** (§20, world-class UI quality)
+  are built before the pilot; the pilot moves to phase 8 and exercises both lanes and the taste pass.
 - **Pilot 1**, the repo argus has run on longest: three journeys — one cross-role money journey under
   separation of duties, one self-serve journey at phone width, one internal approval journey.
   Repo-side prep, through that repo's normal PR flow: an explore datastore with its `store_check`
@@ -1912,6 +1912,10 @@ and the nonce fences carry the safety).
    seeded from issues and docs, the per-cycle report and performance baselines close the gaps the
    owner approved; native mobile apps, real-device clouds and tests generated from external design
    tools stay out.
+4. Phase 7 (§20): world-class UI quality is the lane's first purpose. Taste and usability are its
+   primary oracle family, on by default in every cycle and in the suite (advisory unless a rule is
+   promoted), calibrated against the best public websites and the leading design systems, filed
+   only on measured, reproduced gaps.
 
 ## 19. Phase 6 — the smoke suite and its checks (built)
 
@@ -2468,3 +2472,123 @@ Out: native mobile apps and real-device clouds; tests generated from Figma or ot
 services (the lane is loopback-only and reads no outside service). Covered: intelligent
 prioritization is SELECT's score (§6) and the smoke rank (§19.3); parallel execution is Playwright's
 workers and CI's project matrix.
+
+## 20. Phase 7 — world-class UI quality (not built yet)
+
+**Status: not built yet** (target 2.11.0). Plan: [argus-journey-lane-7-taste.md](../plans/argus-journey-lane-7-taste.md);
+evidence: [argus-journey-lane-7-research.md](../plans/argus-journey-lane-7-research.md) (the source ids in
+square brackets below). §1–§19 describe the lane as built through phase 6; this section is the design
+for phase 7.
+
+### 20.1 Purpose
+
+The lane's first question becomes: **is this UI good by the standard of world-class products?** — easy
+to use, elegant, modern, complete in its states — not only "does it work". Taste and usability are the
+lane's primary oracle family; the functional oracles of §7 stay. The law of aesthetics.md §1 is
+unchanged: taste proposes, measurement decides. A gap is filed only when it is measured beyond a
+threshold, re-measured on a second visit, and, for a comparison with the outside bar, agreed by an
+internal witness. Nothing is filed on opinion, and nothing for differing from a famous site.
+
+### 20.2 What is measured
+
+Usability is split as ISO 9241-11 splits it [iso-9241-11]: **effectiveness** (the goal reached: §7's
+oracles), **efficiency** (resources spent, measured below), **satisfaction** (never claimed: no script
+measures it). The rule families, each a deterministic in-page probe in `argus-live-taste.mjs` (visual) or
+`argus-live-ease.mjs` (interaction), with a class: `implicit` (broken on its face), `derived` (the app
+contradicts itself or its tokens), `bar` (beyond the outside range):
+
+| Family | Measured as | Sources |
+|---|---|---|
+| Scale and restraint | per screen: distinct spacing, type (size × weight), weights, non-neutral colours, radii, shadows; values off the tokens or frame | [refactoring-ui] [primer] [carbon] [atlassian] [m3-tokens] |
+| Hierarchy and rhythm | primary-styled actions per view; heading sizes monotonic with level; sibling edges 1–3 px off; section gaps off-scale; shadows beyond layers; child radius above parent's | [m3-expressive] [lux-hick] [apple-layout] [vercel-wig] |
+| Colour roles, dark parity | one role, one value per theme; under `colorScheme: "dark"`: dark-only contrast failures, collapsed borders, light surfaces left on a dark page; a single-theme app is reported, not filed | [radix] [shadcn] [geist] [apple-dark] [linear-redesign] |
+| Contrast | WCAG 2.2 through axe stays the gate (§19.7); `contrast.headroom` (body text under 7:1) is information only; APCA is not used (WCAG 3's algorithm undecided; APCA beta and licensed for WCAG work only) | [wcag3-wd] [apca] [apple-dark] |
+| Motion | action-triggered animations outside 50–500 ms (700 ms opacity-only backdrops); layout-property animation that moves other boxes; transforms still running under `reducedMotion: "reduce"` (SC 2.3.3, AAA) | [atlassian] [carbon] [m3-tokens] [webdev-animations] [wcag-233] |
+| Perceived performance | time from action to first visible change: > 100 ms information, > 1 s with no busy signal and > 10 s with no determinate progress `implicit`; loaders that flash (< 300 ms, or for a wait under 1 s); a spinner where peers use a skeleton; a skeleton that shifts; owner-declared optimistic routes | [nng-response] [nng-skeleton] [nng-progress] [vercel-wig] |
+| Density | control heights of one kind beyond two per screen; table row heights differing between tables | [cloudscape-density] [primer] |
+| States and microcopy | a routed 500 on the screen's first data request (suite and confirmation replay only); empty states with a next step; success named within 1 s; fields lost after a rejected submit; `undefined`/`NaN`/`[object Object]`-class copy; vague labels under a matching language | [nng-errors] [nng-empty] [atlassian] [primer-patterns] |
+| Consistency | across the cycle's screens: one action (by request) reached by different controls, names or regions; primary-button order differing between footers; autosave and submit mixed in one form; a command palette's chord working on some screens only | [nng-consistency] [superhuman-cmdk] |
+| AI surfaces | only on owner-declared routes: Stop while streaming, an error state, regenerate | [teams-streaming] [aisdk-chat] [apple-genai] |
+| Efficiency | per journey path: `actions`, `typed`, `modals`, `wait_ms`, `recovery`, `fitts_bits` (Σ log2(A/W + 1)), `klm_s` (K 0.28, P from Fitts, BB 0.2, H 0.4, one M 1.2 per goal step); the best known held path | [klm] [fitts-mackenzie] [nng-fitts] |
+
+No rule requires or rewards a CSS feature or a visual style [webdev-baseline] [mdn-animation-timeline].
+Learnability proper (a learning curve) is not measurable by a script; the cognitive walkthrough (§7)
+measures first-encounter discoverability, with its `clicks` and `term` now recorded as numbers
+[nng-learnability].
+
+### 20.3 The bar, calibration and the reference corpus
+
+- **`plugins/sapu/data/taste-bar.json`** (versioned): `{version, probe, sources, rules, frames,
+  archetypes}`. Rules carry `{id, family, class, metric, threshold, cite, gate: false}`. Frames are the
+  scales of Carbon, Primer, Atlassian, Material, Geist and shadcn as their token files ship them (Polaris
+  historical only) [polaris]. Archetypes (`marketing`, `docs`, `app`, `form`, `data`) hold calibrated
+  distributions `{n, sites, p10, p50, p90}` with the URLs measured.
+- **`.argus/taste.json`** (tracked, the owner's; unknown keys refused): `frame`, `archetypes` (route
+  globs), `accept` (`{rule, key, why}`), `gate`, `off`, `cap` (default 5), `optimistic`, `ai`, `copy.vague`.
+  Tokens stay `live.json` `tokens`.
+- **Witnesses.** The owner's tokens (or frame), the app's own best screen of the same archetype (among
+  ≥ 3), and the archetype's corpus band. `implicit` and `derived` rows stand on their own measurement;
+  a `bar` row needs the band and one internal witness. A count rule fires beyond `max(best × 1.5,
+  best + 3)` and, where the band is a witness, beyond its p90. A band is a witness only with ≥ 5 sites
+  and ≥ 15 pages (else `thin`, shown only), and only for an owner-declared archetype or a `main` holding
+  a table of ≥ 10 rows (else `inferred`, shown only).
+- **Reference corpus** (`scripts/taste-corpus.json`, sapu's repository, not the plugin): public pages of
+  sites admitted on a read justification (published design system or interface guidelines, craft
+  writing, or a verifiable award) — Apple, Vercel, GitHub, Stripe, Linear, IBM Carbon, Atlassian,
+  shadcn/ui, Figma, Raycast; each grouped by archetype. Marketing and docs are well covered, data fair,
+  app and form poor (real app chrome is mostly behind a login).
+- **Calibration** (`scripts/taste-calibrate.mjs`, maintainer-only, explicit `--network`): runs the same
+  probes on the corpus, stores **numbers and URLs only** (no screenshot, text, asset or CSS; a test
+  fails on any other string), honours `robots.txt` for `*` and `sapu-taste-calibration`, one page per
+  site every 10 s, a terms review per site. It is not part of the lane's runtime: the lane stays
+  loopback-only and never fetches the internet; the guard refuses the script to every subagent; its
+  output reaches sapu only through a reviewed sapu pull request.
+- **Freshness.** On each sapu minor release, at least twice a year, and when a researched system ships
+  a new major version: re-read the sources, re-calibrate, review `--diff`'s band changes in a pull
+  request, bump `version`. Every generated suite carries the bar version in its header digest
+  (`smoke check` flags an older one; `smoke plan` lists `taste-bar <from> → <to>`), and every report
+  names it.
+
+### 20.4 Where it runs
+
+- **Journey lane, every cycle, every journey.** The session hook records each settled screen an
+  explorer reaches — census, ease measurements, one viewport screenshot per screen key (route template
+  × viewport × theme), 0600 — under `<run>/taste/`; the explorer sees none of it. Explore charters
+  always ask for a `path`. `argus-live.mjs taste judge` scores every rule against the witnesses
+  (`<run>/taste/judge.json`); `taste confirm <row>` replays the journey's path to the screen in slot
+  `r` on a fresh instance, adds dark, reduced motion and the routed fault, and re-measures — a row is
+  confirmed two of two, through the new lane oracle `taste` (in `LANE_ORACLES`; `classify --oracle
+  taste` → `ux`). An efficiency regression is confirmed only when the best known path no longer holds
+  with the same expectations.
+- **The Curator** (`sapu:curator`: Opus, high effort, tools Read and StructuredOutput; reads confined
+  by the guard to the run's `taste/`) judges each cycle's screens from screenshots and numbers: per
+  screen aesthetics.md §8's output; per judge row `confirm`, `reject` (with reason) or `polish`; leads
+  for the next pass. It files nothing; a verdict that names no row is dropped.
+- **SELECT** multiplies by `taste = 1 + min(1, debt / 4)`, `debt` the journey's confirmed, open or
+  queued, unaccepted rows (S2 2, S3 1, S4 0.5), 2 for a journey never judged: taste debt lifts a
+  journey at most as far as money does.
+- **Smoke suite.** A `taste` project (Chromium, first width) is on by default: the per-screen rules at
+  the path's screens and after each action, again under dark and reduced motion; `argus-taste`
+  annotations; a separate `taste` workflow job writes the scorecard to the job summary and stays green.
+  A rule in `taste.json` `gate` emits `argus-violation` with §19.8's known-violation adoption, and the
+  job then gates. Cross-screen rules run only in the lane.
+
+### 20.5 Filing and the report
+
+`ux`, `argus`, `found-by:user`; `bug` too for `implicit` and `derived`, never for `bar`. Severity is
+aesthetics.md §7's (what the user did because of what they saw), plus efficiency: a confirmed
+efficiency regression (≥ 3× the best path's actions, or ≥ 10 s more `klm_s`) is S3. One issue per
+`taste:<rule>:<screen key>`, deduplicated; `Viewport:` and `Measured:` (value → expected, witnesses,
+bar version) in the body; screenshots only through scrub's verdicts. needs-owner only for a
+consistency split with no majority or a row the Curator decided. At most `cap` issues a cycle, the rest
+queued; measured S4 coherence items go to the one `[polish]` roll-up; `accept` rows never file (the
+owner's ruling, `taste accept` staged only on their word). `report` opens with `## Taste and
+usability` — per journey the screens judged, rows by family and state, the efficiency figures, the
+walkthrough's pass rate, the Curator's verdicts and the bar version — before the functional results.
+
+### 20.6 Security
+
+Unchanged: loopback only, the confined explorer, fenced page text, masked secrets, scrub before any
+filing. New: the Curator has no Bash and reads only its run's `taste/`; judge rows hold page text and
+are fenced wherever printed; the calibration script is outside the plugin, explicit, refused to
+subagents, and commits numbers and URLs only.
