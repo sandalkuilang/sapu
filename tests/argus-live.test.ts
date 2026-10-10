@@ -18,7 +18,7 @@ import { checkEgress, egressAllowed, portHolder } from "../plugins/sapu/scripts/
 // @ts-expect-error — plain ESM script without types
 import { renewRun, status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
-import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, runSetup, startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
+import { allocatePorts, bringUpRest, bringUpStore, checkStore, instanceEnv, makeHome, makeWorktree, portFree, runSetup, shellArgv, startEntry, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { appendEnd, readLock, renew, staleRecords, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1259,6 +1259,67 @@ describe("argus-live instance — processes, health, store", () => {
     }
     expect(() => process.kill(child, 0)).toThrow();
     await expect(startEntry({ name: "x", cmd: "true", env: { HOME: "/" } }, { ...w.ctx, groups })).rejects.toThrow("refused: start entry x may not set HOME");
+  }, 30_000);
+
+  it.each([
+    ["sleep 601", "exec sleep 601"],
+    [`"/opt/n/node" "/w/server.mjs" --port 3`, `exec "/opt/n/node" "/w/server.mjs" --port 3`],
+    [`node -e "a(); b() && c() | d"`, `exec node -e "a(); b() && c() | d"`],
+    [`node -e 'x > 1 ; y'`, `exec node -e 'x > 1 ; y'`],
+    [`node "$APP" --dir=\\;x`, `exec node "$APP" --dir=\\;x`],
+    ["  npm start\t", "exec   npm start\t"],
+  ])("shellArgv execs one simple command, so dash leaves no shell above it: %s", (cmd, want) => {
+    expect(shellArgv(cmd)).toEqual(["/bin/sh", "-c", want]);
+  });
+
+  it.each([
+    "a && b",
+    "a || b",
+    "a; b",
+    "a | b",
+    "sleep 602 & exit 0",
+    "a\nb",
+    "node x > log",
+    "node x 2>&1",
+    "node < in",
+    "(node x)",
+    "{ node x; }",
+    "! node x",
+    "if true; then node x; fi",
+    "while :; do x; done",
+    "FOO=1 node x",
+    "cd app",
+    "exec node x",
+    "exec",
+    ". ./env",
+    "trap '' INT",
+    "node $(cat args)",
+    "node `cat args`",
+    `node "$(printf '"')"; rm x`,
+    'node "`cat args`"',
+    "# a comment",
+    "",
+    "   ",
+    `node "unclosed`,
+  ])("shellArgv leaves anything else to the shell as written: %j", (cmd) => {
+    expect(shellArgv(cmd)).toEqual(["/bin/sh", "-c", cmd]);
+  });
+
+  it("a start entry of one command is that command's own process: its group has no shell above it, on any /bin/sh", async () => {
+    const w = await world();
+    const entry = { name: "one", cmd: "sleep 611" };
+    const s = await startEntry(entry, { ...w.ctx, groups });
+    let members: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      members = execFileSync("ps", ["-A", "-ww", "-o", "pgid=", "-o", "command="], { encoding: "utf8" })
+        .split("\n")
+        .map((l) => l.trim().match(/^(\d+)\s+(.*)$/))
+        .filter((m): m is RegExpMatchArray => Boolean(m) && Number(m![1]) === s.pgid)
+        .map((m) => m[2]);
+      if (members.length === 1 && members[0] === "sleep 611") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(members).toEqual(["sleep 611"]);
   }, 30_000);
 });
 
@@ -2619,9 +2680,10 @@ describe("argus-live instance — run files, reaper, down, recovery", () => {
   const liveFiles = (main: string) => readdirSync(join(main, ".argus/live")).sort();
   const logOf = (main: string) => readFileSync(join(main, ".git/sapu-live.log"), "utf8").trim().split("\n");
   const runJson = (main: string) => JSON.parse(readFileSync(join(main, ".argus/live/run.json"), "utf8"));
-  /** A detached process group, as startEntry or runSetup leave one: `/bin/sh -c <cmd>`. */
+  /** A detached process group, as startEntry leaves one: `/bin/sh -c <cmd>`, one simple command exec'd (shellArgv). */
   const group = (cmd: string) => {
-    const p = spawn("/bin/sh", ["-c", cmd], { detached: true, stdio: "ignore" });
+    const [sh, ...args] = shellArgv(cmd);
+    const p = spawn(sh, args, { detached: true, stdio: "ignore" });
     started.push(p.pid!);
     return p.pid!;
   };

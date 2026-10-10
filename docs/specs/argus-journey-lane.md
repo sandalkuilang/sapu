@@ -654,7 +654,9 @@ defence in depth and not enforcement:
    and its paths are its own and are not compared, and a host that is the Docker host
    (`host.docker.internal`, `gateway.docker.internal`, `host-gateway`, a bridge gateway such as
    `172.17.0.1`) is refused unless on one of the run's ports.
-7. **Start.** Each remaining entry in its own process group. Refuse when an entry's health already
+7. **Start.** Each remaining entry in its own process group, run by `/bin/sh -c`; an entry (or `reset`)
+   that is one simple command runs as `exec <cmd>`, so the command leads its group on every `/bin/sh`
+   (bash execs such a command itself, dash, the Debian and Ubuntu one, does not). Refuse when an entry's health already
    answers before its command ran (a `url` that responds, a `cmd` that exits 0: something else serves
    there). Health = `{url}` answering, `{cmd}` exiting 0, or, when omitted, the process alive after
    5 s; an entry whose process exits before its health passes — checked again after a health that

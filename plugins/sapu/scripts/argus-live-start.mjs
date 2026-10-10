@@ -280,6 +280,53 @@ function healthAnswer(url, timeoutMs) {
   });
 }
 
+/** Words a shell reads as syntax or runs itself: after `exec` they would name a program, or none. */
+const SHELL_OWN = new Set(
+  "! { } [[ ]] case do done elif else esac fi for function if in select then until while . : alias bg break cd command continue eval exec exit export false fc fg getopts hash jobs kill local newgrp pwd read readonly return set shift source test times trap true type typeset ulimit umask unalias unset wait".split(" "),
+);
+
+/**
+ * The argv that runs `cmd` through `/bin/sh -c`. One simple command (no operator, redirection,
+ * command substitution, comment or leading assignment outside quotes, and not a shell word of its
+ * own) runs as `exec <cmd>`: bash, the macOS /bin/sh, execs such a command itself, but dash, the
+ * Debian and Ubuntu one, stays its parent, so the group's leader would be the shell, not the command.
+ * Anything else is left to the shell as written.
+ */
+export function shellArgv(cmd) {
+  const text = String(cmd);
+  let quote = null;
+  let first = "";
+  let inFirst = true;
+  let started = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+    } else if (quote === '"') {
+      // A command substitution, even quoted, may hold quotes and operators this scan does not follow.
+      if (ch === "`" || (ch === "$" && text[i + 1] === "(")) return ["/bin/sh", "-c", text];
+      if (ch === "\\") i++;
+      else if (ch === '"') quote = null;
+    } else if (ch === "\\") {
+      if (inFirst) first += text.slice(i, i + 2);
+      i++;
+      started = true;
+      continue;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (/[;&|<>()`\n#]/.test(ch) || (ch === "$" && text[i + 1] === "(")) {
+      return ["/bin/sh", "-c", text];
+    } else if (/\s/.test(ch)) {
+      if (started) inFirst = false;
+      continue;
+    }
+    started = true;
+    if (inFirst) first += ch;
+  }
+  const simple = !quote && first && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(first) && !SHELL_OWN.has(first.replace(/["'\\]/g, ""));
+  return ["/bin/sh", "-c", simple ? `exec ${text}` : text];
+}
+
 /** A shell field's command run once: `/bin/sh -c`, its own group killed afterwards, bounded by `timeoutMs`. */
 function shellOnce(cmd, { cwd, env, secrets = {}, timeoutMs, capture = false, runner = runAsync }) {
   return runner(["/bin/sh", "-c", cmd], { cwd, env: { ...env, ...secretEnv(cmd, secrets) }, timeoutMs, capture, killAfter: true });
@@ -289,7 +336,8 @@ function shellOnce(cmd, { cwd, env, secrets = {}, timeoutMs, capture = false, ru
 const PRECHECK_MS = 5000;
 
 /**
- * Starts one expanded `start` entry: `/bin/sh -c <cmd>` in the worktree, detached into its own process
+ * Starts one expanded `start` entry: `/bin/sh -c <cmd>` (shellArgv: one simple command is exec'd, so it
+ * leads its group itself) in the worktree, detached into its own process
  * group (recorded in `groups`), under `env` plus the entry's own env and the secrets its command
  * references, logged to `<logs>/<name>.log`. Refused when its health already answers before it runs
  * (a `url` that responds, a `cmd` that exits 0: something else serves there) and when its env names
@@ -311,7 +359,8 @@ export async function startEntry(entry, { worktree, env, logs, secrets = {}, gro
   const fd = fs.openSync(log, "a", 0o600);
   let child;
   try {
-    child = spawn("/bin/sh", ["-c", entry.cmd], { cwd: worktree, env: { ...env, ...(entry.env ?? {}), ...secretEnv(entry.cmd, secrets) }, detached: true, stdio: ["ignore", fd, fd] });
+    const [sh, ...args] = shellArgv(entry.cmd);
+    child = spawn(sh, args, { cwd: worktree, env: { ...env, ...(entry.env ?? {}), ...secretEnv(entry.cmd, secrets) }, detached: true, stdio: ["ignore", fd, fd] });
   } finally {
     fs.closeSync(fd);
   }
@@ -436,7 +485,7 @@ export async function checkStore({ config, env, worktree, main, contract, secret
   for (const scope of scopes) check(scope.label, scope.env, { own: scope.own });
 }
 
-/** Runs one config command (`reset`) through the shell in the worktree, logged, bounded by `deadline`. */
+/** Runs one config command (`reset`) through the shell (shellArgv) in the worktree, logged, bounded by `deadline`. */
 async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {}, groups = [], runner = runAsync }) {
   const left = msLeft(deadline, name);
   if (left <= 0) throw new Error(`failed: ${name} timed out (the cycle's deadline passed)`);
@@ -447,7 +496,7 @@ async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {},
   let r;
   let record = null;
   try {
-    r = await runner(["/bin/sh", "-c", cmd], {
+    r = await runner(shellArgv(cmd), {
       cwd: worktree,
       env: { ...env, ...secretEnv(cmd, secrets) },
       stdio: ["ignore", fd, fd],

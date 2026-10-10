@@ -154,8 +154,8 @@ export function updateRun(main, runId, fn, { waitMs = 2000, sealed = false, crea
  * hold — another owner's (`sessions`, `slots`, `loginFailed`, `reaper`, `internal`, `closing`) or one
  * this version does not know — is kept as written. `up` and `up --fresh` pass only the keys they own
  * (UP_KEYS). `worktree` is the absolute path the guard reads (null until it exists). Groups go through
- * refreshGroups — `/bin/sh -c <one command>` execs that command, so what ps shows is what `down` and
- * recovery can match; without ps they stay as recorded. `create: false` (every write of `up` after its
+ * refreshGroups — startEntry and runStep exec one simple command (shellArgv, on dash too), so what ps
+ * shows is what `down` and recovery can match; without ps they stay as recorded. `create: false` (every write of `up` after its
  * first) refuses to write a run.json a `down` removed.
  */
 export function writeRunFiles(main, state, { runner = run, secrets = {}, create = true } = {}) {
