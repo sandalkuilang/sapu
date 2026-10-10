@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Motion</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+main { padding: 24px; }
+section { margin: 12px 0; }
+button { padding: 4px 8px; background: rgb(229, 229, 229); }
+.panel { width: 200px; transition: transform 900ms ease-out; }
+.panel.on { transform: translateX(100px); }
+.panel-calm { width: 200px; transition: transform 900ms ease-out; }
+.panel-calm.on { transform: translateX(100px); }
+.row { display: flex; }
+.grow { width: 100px; transition: width 300ms; background: rgb(229, 229, 229); }
+.grow.on { width: 200px; }
+.nudge { position: relative; left: 0; width: 100px; transition: left 300ms; }
+.nudge.on { left: 40px; }
+.all { transition: all 200ms; }
+.fade { transition: opacity 200ms; }
+.fade-slow { transition: opacity 600ms; }
+.fade-long { transition: opacity 800ms; }
+.on.fade, .on.fade-slow, .on.fade-long { opacity: 0.5; }
+.snap { transition: transform 0.01ms; }
+.snap.on { transform: translateX(10px); }
+.themed { transition: background-color 300ms; background: rgb(255, 255, 255); }
+@keyframes nudge-x { from { transform: translateX(0); } to { transform: translateX(8px); } }
+@keyframes pulse { from { opacity: 1; } to { opacity: 0.6; } }
+.hint { animation: nudge-x 1200ms infinite alternate; width: 120px; }
+.calm { animation: nudge-x 1200ms infinite alternate; width: 120px; }
+.pulse { animation: pulse 1200ms infinite alternate; width: 120px; }
+::view-transition-group(root) { animation-duration: 900ms; }
+@media (prefers-reduced-motion: reduce) {
+  .calm { animation: none; }
+  .panel-calm { transition: none; }
+}
+@media (prefers-color-scheme: dark) {
+  .themed { background: rgb(10, 10, 10); }
+}
+</style></head>
+<body>
+<main>
+<!-- the violation: a 900 ms slide, beyond 50-500 ms -->
+<section><button id="b-slide">Open panel</button><div id="slide" class="panel">Panel</div></section>
+<!-- the excluded twin: the same slide that honours reduced motion -->
+<section><button id="b-calm-panel">Open calm panel</button><div id="calm-panel" class="panel-calm">Calm panel</div></section>
+<!-- the violation: a width transition that pushes its neighbour -->
+<section class="row"><div id="grow" class="grow">Grow box</div><div>Neighbour</div></section>
+<button id="b-grow">Grow</button>
+<!-- the excluded twin: a relative offset moves no other box -->
+<section><div id="nudge" class="nudge">Nudge box</div><div>Below</div></section>
+<button id="b-nudge">Nudge</button>
+<!-- information: transition: all -->
+<section><div class="all">All props</div></section>
+<!-- the excluded twins: a 200 ms fade, and a 600 ms opacity-only fade (a backdrop's band goes to 700 ms) -->
+<section><div id="fade" class="fade">Fade</div><div id="fade-slow" class="fade-slow">Fade slow</div></section>
+<!-- the violation: an 800 ms fade, beyond even the opacity band -->
+<section><div id="fade-long" class="fade-long">Fade long</div></section>
+<button id="b-fade">Fade all</button>
+<!-- the excluded twin: a transition shorter than a frame is no motion (the reduced-motion reset's 0.01 ms) -->
+<section><div id="snap" class="snap">Snap</div><button id="b-snap">Snap it</button></section>
+<!-- the excluded twin: a theme transition the census's own dark pass must not record -->
+<section><div class="themed">Themed</div></section>
+<!-- the violation under reduced motion: a looping transform that ignores the preference -->
+<section><div class="hint">Hint</div></section>
+<!-- the excluded twins: the same loop that honours it, and an opacity loop (not motion) -->
+<section><div class="calm">Calm</div><div class="pulse">Pulse</div></section>
+<!-- the violation: a 900 ms view transition -->
+<section><button id="b-swap">Swap</button><div id="swapped">Before</div></section>
+</main>
+<script>
+const on = (b, ...ids) => document.getElementById(b).addEventListener("click", () => ids.forEach((id) => document.getElementById(id).classList.toggle("on")));
+on("b-slide", "slide");
+on("b-calm-panel", "calm-panel");
+on("b-grow", "grow");
+on("b-nudge", "nudge");
+on("b-fade", "fade", "fade-slow", "fade-long");
+on("b-snap", "snap");
+document.getElementById("b-swap").addEventListener("click", () => document.startViewTransition(() => { document.getElementById("swapped").textContent = "After"; }));
+</script>
+</body></html>

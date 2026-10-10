@@ -68,7 +68,9 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   const rootScheme = norm(cs(doc.documentElement).colorScheme + " " + ((doc.querySelector('meta[name="color-scheme"]') || {}).content || ""));
   const canvasBg = /dark/.test(rootScheme) && (!/light/.test(rootScheme) || media.dark) ? { r: 18, g: 18, b: 18, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
   // The colour behind an element's content, composited up its ancestors; null over an image or a gradient (unknown).
-  const surface = (el) => {
+  const behindOf = new Map();
+  const surface = (el) => (behindOf.has(el) ? behindOf.get(el) : behindOf.set(el, surfaceOf(el)).get(el));
+  const surfaceOf = (el) => {
     const stack = [];
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
       const s = cs(n);
@@ -80,6 +82,18 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     for (let i = stack.length - 1; i >= 0; i--) out = over(stack[i], out);
     return out;
   };
+
+  // Motion: what the recorder (TASTE_INIT) kept this document, and what runs now.
+  if (typeof doc.__argusTasteMotionNow === "function") doc.__argusTasteMotionNow();
+  const motion = (doc.__argusTasteMotion || []).slice(-100).map((m) => ({ name: m.name, duration: m.duration, infinite: m.infinite, layout: m.layout, moved: m.moved, transform: m.transform, opacityOnly: m.opacityOnly, reduce: m.reduce, quiet: m.quiet, target: m.target }));
+  const running = [];
+  for (const a of doc.getAnimations ? doc.getAnimations() : []) {
+    if (a.playState !== "running" || !a.effect || !a.effect.target) continue;
+    const props = a.transitionProperty ? [a.transitionProperty] : (a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k));
+    const vt = String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0;
+    running.push({ name: a.transitionProperty || a.animationName || "animation", infinite: a.effect.getTiming().iterations === Infinity, transform: props.some((p) => /^(transform|translate|scale|rotate)$/.test(p)), target: vt ? "::view-transition" : keyOf(a.effect.target) });
+  }
+  if (o.motionOnly) return { media, motion, running };
 
   // What renders: a box of some size, visible, not hidden from everyone (the visually-hidden pattern is 1x1).
   const shown = (el) => {
@@ -144,12 +158,26 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     return false;
   };
   const isButton = (el) => el.matches("button, input[type=submit], input[type=button], input[type=reset], [role=button]");
+  const FIELD = "input:not([type]), input[type=text], input[type=email], input[type=password], input[type=search], input[type=number], input[type=tel], input[type=url], input[type=date], input[type=time], input[type=datetime-local], input[type=month], input[type=week], select";
+  // A label on more than one line (its text boxes' tops further apart than most of a line) makes a taller control, not another density.
+  const wraps = (el) => {
+    const tops = [];
+    const w = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (!norm(n.nodeValue)) continue;
+      const range = doc.createRange();
+      range.selectNodeContents(n);
+      for (const r of range.getClientRects()) tops.push(r.top);
+    }
+    return tops.length > 1 && Math.max(...tops) - Math.min(...tops) > num(cs(el).fontSize) * 0.8;
+  };
   const INTERACTIVE = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=tab], [role=menuitem], [role=option], [role=checkbox], [role=radio], [role=switch]";
   const NOT_SURFACE = INTERACTIVE + ", img, video, canvas, iframe, picture, embed, object";
 
   const spacing = new Set(), types = new Map(), weights = new Set(), colours = new Set(), palette = new Set(), radii = new Set(), radiusValues = new Set(), shadows = new Map();
   const headings = [], buttons = [], nested = [], text = [], borders = [], surfaces = [], roles = [];
   const surfaceKeys = new Map();
+  const transitionAll = [], controls = [], tables = [];
   const addColour = (c) => {
     if (c.a === 0) return;
     palette.add(str(c));
@@ -216,6 +244,18 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     if (words && words.length <= 24 && words.split(" ").length <= 3 && box.height <= 40 && !el.closest(INTERACTIVE) && rgba(s.backgroundColor).a > 0 && boxed(el, s) && (radius(el, s, "top-left") || num(s.paddingLeft) >= 2)) {
       const fill = over(rgba(s.backgroundColor), outer || canvasBg);
       roles.push({ text: words.toLowerCase().replace(/[0-9]+/g, "#"), sig: str(fill) + " / " + str(over(rgba(s.color), fill)) });
+    }
+    if (/\ball\b/.test(s.transitionProperty) && transitionAll.length < 20) {
+      const props = s.transitionProperty.split(","), durations = s.transitionDuration.split(",");
+      if (props.some((p, i) => p.trim() === "all" && num(durations[i % durations.length]) > 0)) transitionAll.push(keyOf(el));
+    }
+    // Density: control heights by kind, and each table's typical body row (the median of three or more).
+    const kind = isButton(el) ? "button" : el.matches(FIELD) && !(el.tagName === "SELECT" && (el.multiple || el.size > 1)) ? "field" : null;
+    if (kind && controls.length < 300) controls.push({ kind, h: half(box.height), wrapped: kind === "button" && wraps(el) });
+    if (el.matches("table, [role=grid], [role=table]") && tables.length < 50) {
+      const rows = (el.tagName === "TABLE" ? [...el.tBodies].flatMap((b) => [...b.rows]) : [...el.querySelectorAll("[role=row]")].filter((r) => r.closest("table, [role=grid], [role=table]") === el)).filter((r) => isShown.has(r) && ![...r.children].every((c) => c.matches("th, [role=columnheader]")));
+      const hs = rows.map((r) => r.getBoundingClientRect().height).sort((a, b) => a - b);
+      if (hs.length >= 3) tables.push({ key: keyOf(el), rowH: half(hs[Math.floor(hs.length / 2)]), rows: hs.length });
     }
     if (/^h[1-6]$/i.test(el.tagName) || el.getAttribute("role") === "heading") {
       const level = /^h[1-6]$/i.test(el.tagName) ? Number(el.tagName[1]) : Number(el.getAttribute("aria-level")) || 2;
@@ -298,15 +338,95 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     surfaces,
     roles,
     root: { rgb: str(root), lum: Math.round(lum(root) * 1000) / 1000 },
+    motion,
+    running,
+    transitionAll,
+    controls,
+    tables,
   };
 }`;
 
 /**
- * The motion recorder of the session hook's init payload (argus-live-browser.mjs PAGE_INIT): self-contained
- * script text run once a document after the taste buffer, recording `transition` and `animation` events through
- * `document.__argusTastePush` (argus-live-tastecfg.mjs TASTE_EVENTS). Empty until built: nothing is installed.
+ * The motion recorder of the session hook's init payload (argus-live-browser.mjs PAGE_INIT): self-contained script
+ * text, installed once a document. Each transition (run, start, end, cancel) and animation (start, end, cancel) goes
+ * to the taste buffer through `document.__argusTastePush` (argus-live-tastecfg.mjs TASTE_EVENTS), timed by the
+ * browser's own animation (`effect.getTiming()`); a view transition, which fires no event, is read at its `ready`.
+ * For the census it also keeps `document.__argusTasteMotion` (the last 200): each motion's properties, whether
+ * reduced motion was asked for and whether the census was switching media (quiet) when it began, and, for one
+ * animating a layout property, how many other boxes it moved (sibling boxes up its ancestors, compared at its start
+ * and end; never counted when its own box did not change).
  */
-export const TASTE_INIT = "";
+export const TASTE_INIT = String.raw`(() => {
+  const doc = document;
+  if (doc.__argusTasteMotion) return;
+  const store = (doc.__argusTasteMotion = []);
+  const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  const own = (el) => { let t = ""; for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue; return norm(t); };
+  const keyOf = (el) => el.tagName.toLowerCase() + "|" + norm(el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || el.textContent).slice(0, 60).replace(/[0-9]+/g, "#");
+  const LAYOUT = /^(width|height|top|left|right|bottom|inset|min-width|min-height|max-width|max-height|margin|padding)(-.+)?$/;
+  const MOVE = /^(transform|translate|scale|rotate)$/;
+  const propsOf = (a) => [...new Set((a && a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k)).filter((p) => !/^(offset|easing|composite|computedOffset)$/.test(p)).map((p) => p.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())))];
+  const reduce = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const push = (rec) => { if (typeof doc.__argusTastePush === "function") doc.__argusTastePush(rec); };
+  const keep = (e) => { if (store.length >= 200) store.shift(); store.push(e); };
+  const rects = (els) => els.map((x) => { const r = x.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
+  const differs = (a, b) => a.some((v, j) => Math.abs(v - b[j]) >= 1);
+  const snaps = new Map();
+  const live = new WeakMap();
+  const settle = (e) => {
+    const snap = snaps.get(e);
+    if (!snap) return;
+    const after = rects(snap.els);
+    e.moved = differs(rects([snap.el])[0], snap.self) ? snap.before.filter((r, i) => differs(r, after[i])).length : 0;
+  };
+  doc.__argusTasteMotionNow = () => { for (const e of snaps.keys()) settle(e); };
+  const record = (ev, kind, phase) => {
+    const el = ev.target;
+    if (!el || el.nodeType !== 1) return;
+    const name = kind === "transition" ? ev.propertyName : ev.animationName;
+    const id = name + "|" + (ev.pseudoElement || "");
+    const mine = live.get(el) || new Map();
+    live.set(el, mine);
+    let e = mine.get(id);
+    if (phase === "run" || (kind === "animation" && phase === "start")) {
+      const a = el.getAnimations().find((x) => (kind === "transition" ? x.transitionProperty === name : x.animationName === name) && ((x.effect && x.effect.pseudoElement) || "") === (ev.pseudoElement || ""));
+      const tm = a && a.effect ? a.effect.getTiming() : {};
+      const props = kind === "transition" ? [name] : propsOf(a);
+      e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet: Boolean(doc.__argusTasteQuiet), target: keyOf(el), moved: null };
+      mine.set(id, e);
+      keep(e);
+      if (e.layout) {
+        const els = [];
+        for (let n = el; n && n.parentElement && n !== doc.body && els.length < 40; n = n.parentElement) for (const x of n.parentElement.children) if (x !== n && els.length < 40) els.push(x);
+        snaps.set(e, { el, els, self: rects([el])[0], before: rects(els) });
+      }
+    } else if (e && (phase === "end" || phase === "cancel")) {
+      settle(e);
+      snaps.delete(e);
+      mine.delete(id);
+    }
+    push({ kind, t: performance.now(), phase, name: String(name).slice(0, 120), duration_ms: e ? e.duration : 0, delay_ms: e ? e.delay : 0, easing: e ? e.easing : "", target: (e ? e.target : keyOf(el)).slice(0, 120) });
+  };
+  for (const [type, kind, phase] of [["transitionrun", "transition", "run"], ["transitionstart", "transition", "start"], ["transitionend", "transition", "end"], ["transitioncancel", "transition", "cancel"], ["animationstart", "animation", "start"], ["animationend", "animation", "end"], ["animationcancel", "animation", "cancel"]]) {
+    doc.addEventListener(type, (ev) => { try { record(ev, kind, phase); } catch (err) {} }, true);
+  }
+  const start = doc.startViewTransition;
+  if (typeof start === "function") {
+    doc.startViewTransition = function () {
+      const vt = start.apply(this, arguments);
+      try {
+        vt.ready.then(() => {
+          let longest = 0;
+          for (const a of doc.getAnimations()) if (a.effect && String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0) longest = Math.max(longest, Number(a.effect.getTiming().duration) || 0);
+          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet: Boolean(doc.__argusTasteQuiet), target: "::view-transition", moved: null });
+          push({ kind: "animation", t: performance.now(), phase: "start", name: "view-transition", duration_ms: longest, delay_ms: 0, easing: "", target: "::view-transition" });
+        }, () => {});
+      } catch (err) {}
+      return vt;
+    };
+  }
+})();
+`;
 
 
 /**
@@ -340,6 +460,11 @@ export function rulesFor(screen, bar, cfg) {
     return Math.abs(k - Math.round(k)) * sc.step < 0.5;
   };
   const fires = (t, v) => (t.max !== undefined && v > t.max) || (t.min !== undefined && v < t.min) || (t.range !== undefined && (v < t.range[0] || v > t.range[1])) || (t.within !== undefined && v >= t.within[0] && v <= t.within[1]);
+  // A motion shorter than a frame is none (the reduced-motion reset's 0.01 ms); a motion seen twice is one row.
+  const FRAME = 17;
+  const once = (list) => [...new Map(list.map((m) => [m.name + "|" + m.target, m])).values()];
+  // Heights a pixel apart are one (subpixel layout): each cluster is named by its first height.
+  const clusters = (hs) => hs.slice().sort((a, b) => a - b).reduce((acc, h) => (acc.length && h - acc[acc.length - 1].last <= 1 ? ((acc[acc.length - 1].last = h), acc) : [...acc, { first: Math.round(h), last: h }]), []).map((c) => c.first);
   const out = [];
   const each = (rule, list, row) => {
     if (list.length && fires(rule.threshold, list.length)) for (const x of list.slice(0, 50)) out.push({ rule: rule.id, ...row(x) });
@@ -390,6 +515,28 @@ export function rulesFor(screen, bar, cfg) {
       const pairs = new Map();
       for (const x of base.text) if (!x.large && x.ratio >= 4.5 && fires(t, x.ratio) && !(pairs.get(x.ink + " on " + x.surface) <= x.ratio)) pairs.set(x.ink + " on " + x.surface, x.ratio);
       for (const [key, v] of [...pairs].slice(0, 10)) out.push({ rule: id, key, measured: v, expected: t.min });
+    } else if (id === "motion.duration") {
+      // Recorded motion the user's own action caused: not a loop, not under reduced motion (motion.reduced's), not the census's own.
+      const band = (m) => (m.opacityOnly && t.opacity_max !== undefined ? [t.range[0], t.opacity_max] : t.range);
+      const list = once(base.motion.filter((m) => !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME && (m.duration < band(m)[0] || m.duration > band(m)[1])));
+      each(rule, list, (m) => ({ key: m.name + "|" + m.target, measured: m.duration, expected: band(m)[0] + "–" + band(m)[1] + " ms" + (band(m) === t.range ? "" : " (opacity only)") }));
+    } else if (id === "motion.layout-property") {
+      each(rule, once(base.motion.filter((m) => m.layout && m.moved > 0 && !m.quiet)), (m) => ({ key: m.name + "|" + m.target, measured: m.moved, expected: "transform or opacity: no other box moves" }));
+    } else if (id === "motion.transition-all") {
+      each(rule, base.transitionAll, (k) => ({ key: k, measured: "transition: all", expected: "the properties it animates, named" }));
+    } else if (id === "motion.reduced" && s.reduce) {
+      // Under reduced motion: a transform loop still running, or a transform an action started while it was asked for.
+      const r = s.reduce;
+      const list = once([...r.running.filter((a) => a.infinite && a.transform).map((a) => ({ ...a, duration: "running" })), ...r.motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && m.duration >= FRAME)]);
+      each(rule, list, (m) => ({ key: m.name + "|" + m.target, measured: m.duration, expected: "no transform motion under reduced motion (WCAG 2.3.3, Level AAA)" }));
+    } else if (id === "density.control-heights") {
+      for (const kind of ["button", "field"]) {
+        const hs = clusters(base.controls.filter((x) => x.kind === kind && !x.wrapped).map((x) => x.h));
+        if (fires(t, hs.length)) out.push({ rule: id, key: kind, measured: hs.length + " heights: " + hs.join(", ") + " px", expected: "at most " + t.max });
+      }
+    } else if (id === "density.row-heights") {
+      const hs = clusters(base.tables.map((x) => x.rowH));
+      if (fires(t, hs.length)) out.push({ rule: id, key: "tables", measured: hs.length + " row heights: " + hs.join(", ") + " px", expected: t.max === 1 ? "one" : "at most " + t.max });
     } else if (id.startsWith("colour.dark-") && s.light && s.dark) {
       // Dark parity, element by element: what held in light and broke in dark (a failure in both is not dark's).
       const L = s.light, D = s.dark;
@@ -437,7 +584,8 @@ const QUIET = `(on) => {
 
 /**
  * The census of `page` (a Playwright Page) → `{media, light, dark, reduce, themes}`. The page's own media is read
- * first (explicit values) and censused; then, quiet, the other colour scheme; then the media is put back as read,
+ * first (explicit values) and censused; then, quiet, the other colour scheme, and the motion under reduced motion
+ * (`reduce`: what still runs, and what the recorder saw while it was asked for); then the media is put back as read,
  * never by null (null hands the choice to the OS: Task 0.1). `themes` is `single` when both schemes render the same
  * colours (the app does not answer prefers-color-scheme: dark parity is not judged, and the other census is dropped),
  * else `dual`. Self-contained: `String(censusOf)` runs in the lane's run-code and the suite as it runs here.
@@ -454,6 +602,8 @@ export const censusOf = new Function(`return async (page) => {
   try {
     await page.emulateMedia({ colorScheme: other, reducedMotion: media.reducedMotion });
     out[other] = await run({});
+    await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: "reduce" });
+    out.reduce = await run({ motionOnly: true });
   } finally {
     await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
     await quiet(false);
@@ -476,8 +626,9 @@ export function ruleExpression(rule, cfg = null) {
   const bar = { rules: [r], frames: BAR.frames };
   return `(() => {
   const census = (${TASTE_SOURCE})({});
-  const screen = { media: { colorScheme: census.media.dark ? "dark" : "light" }, light: null, dark: null };
+  const screen = { media: { colorScheme: census.media.dark ? "dark" : "light" }, light: null, dark: null, reduce: null };
   screen[screen.media.colorScheme] = census;
+  if (census.media.reduce) screen.reduce = census;
   return (${String(rulesFor)})(screen, ${JSON.stringify(bar)}, ${JSON.stringify(c)});
 })()`;
 }

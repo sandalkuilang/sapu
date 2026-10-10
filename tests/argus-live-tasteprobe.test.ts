@@ -10,7 +10,7 @@ import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { CHECKS, censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loadBar, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { loadBar, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -71,10 +71,12 @@ afterAll(async () => {
 
 const contexts: any[] = [];
 /** A fixture page in a fresh context (Playwright's default media: light, no reduced motion, unless given), the motion recorder installed. */
-async function open(file: string, { width = 1000, height = 800, colorScheme = "light", reducedMotion = "no-preference" } = {}) {
+async function open(file: string, { width = 1000, height = 800, colorScheme = "light", reducedMotion = "no-preference", buffer = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height }, colorScheme, reducedMotion });
   contexts.push(context);
-  if (TASTE_INIT) await context.addInitScript({ content: TASTE_INIT });
+  // As the session hook's payload holds them: the taste buffer, then the motion recorder.
+  if (buffer) await context.addInitScript({ content: TASTE_BUFFER });
+  await context.addInitScript({ content: TASTE_INIT });
   const page = await context.newPage();
   await page.goto(`${origin}/${file}`);
   return page;
@@ -348,8 +350,92 @@ describe("argus-live-taste.mjs — the suite's taste check (T1.2)", () => {
   }, 60_000);
 });
 
-describe("argus-live-taste.mjs — lane 0's stubs not yet replaced", () => {
-  it("TASTE_INIT is the init payload's motion recorder (stub: empty, so nothing is installed)", () => {
-    expect(TASTE_INIT).toBe("");
-  });
+/** Clicks each control, then waits until no finite animation runs (every recorded motion has ended). */
+async function act(page: any, ...ids: string[]) {
+  for (const id of ids) await page.click(`#${id}`);
+  await page.waitForFunction(() => document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });
+}
+const AAA = "no transform motion under reduced motion (WCAG 2.3.3, Level AAA)";
+
+describe("argus-live-taste.mjs — motion (T1.3)", () => {
+  it("TASTE_INIT records each transition and animation into the shared buffer, in its shape, once a document", async () => {
+    const page = await open("motion.html", { buffer: true });
+    await act(page, "b-slide");
+    // The session hook evaluates the payload again at domcontentloaded: the recorder installs once a document.
+    await page.evaluate(TASTE_INIT);
+    await act(page, "b-slide");
+    const { events, dropped } = await page.evaluate(TASTE_DRAIN);
+    expect(dropped).toBe(0);
+    for (const e of events) expect(tasteEventFault(e), JSON.stringify(e)).toBe(null);
+    const panel = events.filter((e: Obj) => e.target === "div|Panel" && e.name === "transform");
+    expect(panel.map((e: Obj) => e.phase)).toEqual(["run", "start", "end", "run", "start", "end"]);
+    expect(panel[0]).toMatchObject({ kind: "transition", duration_ms: 900, delay_ms: 0, easing: "ease-out" });
+    expect(events).toContainEqual(expect.objectContaining({ kind: "animation", phase: "start", name: "nudge-x", duration_ms: 1200, target: "div|Hint" }));
+  }, 60_000);
+
+  it("duration: a 900 ms slide, an 800 ms fade and a 900 ms view transition are bar rows; a 200 ms fade, a 600 ms opacity fade, a sub-frame snap and the loops hold [mdn-view-transition]", async () => {
+    expect(ruleOf("motion.duration").class).toBe("bar");
+    const page = await open("motion.html");
+    await act(page, "b-slide", "b-fade", "b-snap", "b-swap");
+    const rows = rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration");
+    expect(rows.sort((a: Obj, b: Obj) => a.key.localeCompare(b.key))).toEqual([
+      { rule: "motion.duration", key: "opacity|div|Fade long", measured: 800, expected: "50–700 ms (opacity only)" },
+      { rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" },
+      { rule: "motion.duration", key: "view-transition|::view-transition", measured: 900, expected: "50–500 ms" },
+    ]);
+    // The page expression measures the same on the same page.
+    expect((await page.evaluate(ruleExpression("motion.duration"))).sort((a: Obj, b: Obj) => a.key.localeCompare(b.key))).toEqual(rows);
+  }, 60_000);
+
+  it("layout property: a width transition that pushes its neighbour is implicit; a relative offset that moves nothing holds [webdev-animations] [webdev-cls]", async () => {
+    expect(ruleOf("motion.layout-property").class).toBe("implicit");
+    const page = await open("motion.html");
+    await act(page, "b-grow", "b-nudge");
+    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.layout-property")).toEqual([{ rule: "motion.layout-property", key: "width|div|Grow box", measured: 1, expected: "transform or opacity: no other box moves" }]);
+  }, 60_000);
+
+  it("transition: all is a row of an information rule [vercel-wig]", async () => {
+    expect(ruleOf("motion.transition-all")).toMatchObject({ info: true });
+    expect(await rowsOf("motion.html", "motion.transition-all")).toEqual([{ rule: "motion.transition-all", key: "div|All props", measured: "transition: all", expected: "the properties it animates, named" }]);
+  }, 60_000);
+
+  it("reduced motion: a looping transform still running under the preference is a bar row citing SC 2.3.3 at its level, AAA; the honouring loop and an opacity loop hold [wcag-233]", async () => {
+    expect(ruleOf("motion.reduced")).toMatchObject({ class: "bar", cite: expect.arrayContaining(["wcag-233"]) });
+    const page = await open("motion.html");
+    const screen = await censusOf(page);
+    expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.reduced")).toEqual([{ rule: "motion.reduced", key: "nudge-x|div|Hint", measured: "running", expected: AAA }]);
+    expect(AAA).not.toMatch(/Level AA\b(?!A)/);
+    expect(await page.evaluate('matchMedia("(prefers-reduced-motion: reduce)").matches')).toBe(false);
+  }, 60_000);
+
+  it("reduced motion: a slide an action started under the preference is a row; the slide that honours it records nothing, and duration leaves both to this rule", async () => {
+    const page = await open("motion.html", { reducedMotion: "reduce" });
+    await act(page, "b-slide", "b-calm-panel");
+    const rows = rulesFor(await censusOf(page), BAR, cfgOf());
+    expect(rows.filter((r: Obj) => r.rule === "motion.reduced").map((r: Obj) => [r.key, r.measured])).toEqual([["nudge-x|div|Hint", "running"], ["transform|div|Panel", 900]]);
+    expect(rows.filter((r: Obj) => r.rule === "motion.duration")).toEqual([]);
+    expect(await page.evaluate(ruleExpression("motion.reduced"))).toEqual(rows.filter((r: Obj) => r.rule === "motion.reduced"));
+  }, 60_000);
+
+  it("the census's own theme switch records no motion (quiet); the same switch unquieted would (the tripwire)", async () => {
+    const tripwire = await open("motion.html");
+    await tripwire.emulateMedia({ colorScheme: "dark", reducedMotion: "no-preference" });
+    await tripwire.waitForFunction(() => (document as any).__argusTasteMotion.some((m: Obj) => m.name === "background-color"), null, { timeout: 10_000 });
+    const page = await open("motion.html");
+    await censusOf(page);
+    await act(page, "b-snap");
+    expect(await page.evaluate("document.__argusTasteMotion.map((m) => m.name)")).not.toContain("background-color");
+  }, 60_000);
+});
+
+describe("argus-live-taste.mjs — density (T1.3)", () => {
+  it("three button heights on a screen and two tables' row heights are derived; a wrapped label, two field heights and a header row hold [cloudscape-density]", async () => {
+    for (const id of ["density.control-heights", "density.row-heights"]) expect(ruleOf(id).class, id).toBe("derived");
+    const rows = (await rowsOf("density.html", null)).filter((r: Obj) => r.rule.startsWith("density."));
+    expect(rows).toEqual([
+      { rule: "density.control-heights", key: "button", measured: "3 heights: 28, 36, 44 px", expected: "at most 2" },
+      { rule: "density.row-heights", key: "tables", measured: "2 row heights: 32, 48 px", expected: "one" },
+    ]);
+    expect((await rowsOf("density-twin.html", null)).filter((r: Obj) => r.rule.startsWith("density."))).toEqual([]);
+  }, 60_000);
 });

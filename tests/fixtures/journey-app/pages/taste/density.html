@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Density</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+main { padding: 24px; }
+button { padding: 0 12px; margin: 4px; background: rgb(229, 229, 229); }
+input, select { margin: 4px; padding: 0 8px; border: 1px solid rgb(212, 212, 212); }
+table { border-collapse: collapse; margin: 12px 0; }
+td { padding: 0 8px; }
+</style></head>
+<body>
+<main>
+<!-- the violation: three button heights on one screen -->
+<button style="height: 28px">Small</button><button style="height: 36px">Medium</button><button style="height: 44px">Large</button>
+<!-- the excluded twin: a label that wraps makes a taller button, not another density -->
+<button style="width: 80px; height: auto; padding: 4px">Save all the changes now</button>
+<!-- the excluded twin: two field heights stay within two -->
+<input aria-label="Name" style="height: 36px"><select aria-label="Role" style="height: 44px"><option>Admin</option></select>
+<!-- the violation: two tables of the screen, two row heights -->
+<table aria-label="Orders"><tbody><tr style="height: 32px"><td>A</td></tr><tr style="height: 32px"><td>B</td></tr><tr style="height: 32px"><td>C</td></tr></tbody></table>
+<table aria-label="Invoices"><tbody><tr style="height: 48px"><td>D</td></tr><tr style="height: 48px"><td>E</td></tr><tr style="height: 48px"><td>F</td></tr></tbody></table>
+</main>
+</body></html>
