@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Feedback</title>
+<style>
+  .spin { width: 24px; height: 24px; border: 3px solid gray; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .note { width: 200px; height: 16px; background: lightgray; }
+  button { margin: 4px; }
+</style></head>
+<body>
+<main>
+<h1>Feedback</h1>
+<!-- Each button waits on /api/wait?ms=<n> (the server answers after n ms) and shows what it got. -->
+<button id="quick">Quick</button>
+<button id="slow">Slow</button>
+<button id="busy">Busy</button>
+<button id="silent">Silent</button>
+<button id="data">Data</button>
+<button id="classy">Classy</button>
+<button id="long-spin">Long spin</button>
+<button id="long-bar">Long bar</button>
+<button id="flash">Flash</button>
+<button id="delayed">Delayed</button>
+<button id="quick-loader">Quick loader</button>
+<button id="local">Local</button>
+<label>Note <input id="note"></label>
+<div id="out" aria-live="polite"></div>
+<div id="slot"></div>
+</main>
+<script>
+  const out = document.getElementById("out");
+  const slot = document.getElementById("slot");
+  const wait = (ms) => fetch("/api/wait?ms=" + ms).then((r) => r.json());
+  const show = (t) => { out.textContent = t; };
+  const on = (id, fn) => document.getElementById(id).addEventListener("click", fn);
+  const spinner = () => {
+    const s = document.createElement("div");
+    s.className = "spin";
+    s.setAttribute("role", "progressbar");
+    s.setAttribute("aria-label", "Loading");
+    slot.appendChild(s);
+    return s;
+  };
+  // under 100 ms: no busy signal needed
+  on("quick", async () => show("quick " + (await wait(50)).ms));
+  // 150 ms: past the instant limit (information only)
+  on("slow", async () => show("slow " + (await wait(150)).ms));
+  // 1.5 s with aria-busy at once: signalled
+  on("busy", async () => {
+    out.setAttribute("aria-busy", "true");
+    await wait(1500);
+    out.removeAttribute("aria-busy");
+    show("busy done");
+  });
+  // 1.5 s with nothing shown: unsignalled
+  on("silent", async () => { await wait(1500); show("silent done"); });
+  // 1.5 s with only a data-* attribute set at once: nothing rendered, still unsignalled
+  on("data", async () => {
+    document.body.dataset.state = "saving";
+    await wait(1500);
+    show("data done");
+  });
+  // 1.5 s with a class set at once on a shown element: a rendering change
+  on("classy", async () => {
+    out.className = "saving";
+    await wait(1500);
+    out.className = "";
+    show("classy done");
+  });
+  // 12 s with an indeterminate progressbar only
+  on("long-spin", async () => {
+    const s = spinner();
+    await wait(12000);
+    s.remove();
+    show("long spin done");
+  });
+  // 12 s with a determinate progressbar
+  on("long-bar", async () => {
+    const b = document.createElement("div");
+    b.setAttribute("role", "progressbar");
+    b.setAttribute("aria-label", "Export");
+    b.setAttribute("aria-valuemin", "0");
+    b.setAttribute("aria-valuemax", "100");
+    b.setAttribute("aria-valuenow", "0");
+    b.style.width = "200px";
+    b.textContent = "0 percent";
+    slot.appendChild(b);
+    const tick = setInterval(() => {
+      const v = Math.min(99, Number(b.getAttribute("aria-valuenow")) + 10);
+      b.setAttribute("aria-valuenow", String(v));
+      b.textContent = v + " percent";
+    }, 1000);
+    await wait(12000);
+    clearInterval(tick);
+    b.remove();
+    show("long bar done");
+  });
+  // a spinner shown for the 120 ms the answer takes: it flashes
+  on("flash", async () => {
+    const s = spinner();
+    await wait(120);
+    s.remove();
+    show("flash done");
+  });
+  // a spinner after a 200 ms show-delay, for a 1.5 s wait: the twin that holds
+  on("delayed", async () => {
+    let s = null;
+    const t = setTimeout(() => { s = spinner(); }, 200);
+    await wait(1500);
+    clearTimeout(t);
+    if (s) s.remove();
+    show("delayed done");
+  });
+  // a spinner after a 200 ms show-delay, for a 600 ms wait: shown for a wait under 1 s
+  on("quick-loader", async () => {
+    let s = null;
+    const t = setTimeout(() => { s = spinner(); }, 200);
+    await wait(600);
+    clearTimeout(t);
+    if (s) s.remove();
+    show("quick loader done");
+  });
+  // no request: a client-only change after 1.5 s is not a wait on the system
+  on("local", () => { setTimeout(() => show("local done"), 1500); });
+</script>
+</body></html>
