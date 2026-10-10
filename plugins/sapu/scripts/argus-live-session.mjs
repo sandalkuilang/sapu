@@ -9,12 +9,18 @@ import path from "node:path";
 import { openSession, PAGE_INIT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
+import { EASE_SOURCE } from "./argus-live-ease.mjs";
 import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-ledger.mjs";
+import { liveDir } from "./argus-live-lock.mjs";
+import { readJourneys } from "./argus-live-map.mjs";
 import { activeSink, measure, PERF_SCRIPT } from "./argus-live-perf.mjs";
-import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
+import { commandLogin, login, loginCode, loginPlan, loginStageSource, runCode } from "./argus-live-login.mjs";
 import { run, runAsync } from "./argus-live-proc.mjs";
 import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
+import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
+import { TASTE_SOURCE } from "./argus-live-taste.mjs";
+import { MEDIA_READ, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
@@ -109,6 +115,334 @@ function logProbe(main, runId, entry) {
     fs.appendFileSync(path.join(logs, "probes.jsonl"), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
   } catch {
     // the `probed:` line still tells it
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The taste pass's recording (spec §20.4, decision 17): every screen an explorer reaches, measured by the
+// observation's own run-code after it observed, kept under `<run>/taste/` and never shown to the explorer.
+
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+/** `<run>/taste/`: run `runId`'s taste files (each slot's screens, the shots, the judge's rows, the time spent). */
+export const tasteDir = (main, runId) => path.join(liveDir(main), runId, "taste");
+const privateDir = (d) => {
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  fs.chmodSync(d, 0o700);
+};
+const appendPrivate = (file, obj) => fs.appendFileSync(file, `${JSON.stringify(obj)}\n`, { mode: 0o600 });
+
+/** The milliseconds run `runId`'s taste pass spent so far (recording, judging, confirmation replays): `<run>/taste/spent.jsonl`'s sum. */
+export function tasteSpent(main, runId) {
+  let text = "";
+  try {
+    text = fs.readFileSync(path.join(tasteDir(main, runId), "spent.jsonl"), "utf8");
+  } catch {
+    return 0;
+  }
+  let ms = 0;
+  for (const l of text.split("\n")) {
+    try {
+      const e = JSON.parse(l);
+      if (isObj(e) && Number.isFinite(e.ms) && e.ms > 0) ms += e.ms;
+    } catch {
+      // a torn line counts nothing
+    }
+  }
+  return ms;
+}
+
+/** Adds `ms` of `what` (`record`, `judge`, `confirm`) to run `runId`'s taste time (TASTE_BUDGET_MS a cycle); never throws. */
+export function spendTaste(main, runId, what, ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  try {
+    privateDir(tasteDir(main, runId));
+    appendPrivate(path.join(tasteDir(main, runId), "spent.jsonl"), { what, ms: Math.round(ms) });
+  } catch {
+    // the budget is a bound, not a record
+  }
+}
+
+/**
+ * The route template of `pathname` (decision 17's screen key): the map's route it matches (a `:name`, `*`, `{name}`
+ * or `[name]` segment matches any one segment; the most literal match wins), else the path with each id-like
+ * segment (digits, a UUID, 16+ hex digits, a run of 3+ digits, or 20+ characters mixing letters and digits) written
+ * `:id`; whitespace and `|` become `_`, at most 200 characters. Self-contained: the recorder runs its source in the daemon.
+ */
+export function routeTemplate(pathname, routes) {
+  const segs = String(pathname || "/").split("/").filter(Boolean);
+  let best = null;
+  let most = -1;
+  for (const r of Array.isArray(routes) ? routes : []) {
+    if (typeof r !== "string" || !r.startsWith("/")) continue;
+    const ts = r.split(/[?#]/)[0].split("/").filter(Boolean);
+    if (ts.length !== segs.length) continue;
+    let literal = 0;
+    let ok = true;
+    for (let i = 0; i < ts.length && ok; i++) {
+      if (/^(:.+|\*|\{.+\}|\[.+\])$/.test(ts[i])) continue;
+      if (ts[i] === segs[i]) literal += 1;
+      else ok = false;
+    }
+    if (ok && literal > most) {
+      best = `/${ts.join("/")}`;
+      most = literal;
+    }
+  }
+  const idLike = (s) => /^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) || /^[0-9a-f]{16,}$/i.test(s) || /\d{3,}/.test(s) || (s.length >= 20 && /[A-Za-z]/.test(s) && /\d/.test(s));
+  return (best ?? `/${segs.map((s) => (idLike(s) ? ":id" : s)).join("/")}`).replace(/[\s|]/g, "_").slice(0, 200);
+}
+
+/** A page expression → the most data rows a table or grid in `main` holds (decision 16: 10 or more make a screen `data`). */
+export const MAIN_ROWS = `(() => {
+  const root = document.querySelector("main, [role=main]") || document.body;
+  let most = 0;
+  for (const t of root ? root.querySelectorAll("table, [role=grid], [role=table], [role=treegrid]") : []) {
+    let n = 0;
+    for (const r of t.querySelectorAll("tr, [role=row]")) if (r.querySelector("td, [role=gridcell], [role=cell]")) n += 1;
+    most = Math.max(most, n);
+  }
+  return most;
+})()`;
+
+/**
+ * A page expression → each of the first 400 elements' computed colours, which a dark pass compares to tell a themed
+ * page (decision 6); an element with a running animation reads `~`, so a colour that only animates never tells a theme.
+ */
+export const PALETTE = `(() => [document.documentElement, document.body, ...document.querySelectorAll("body *")].filter(Boolean).slice(0, 400).map((el) => {
+  if (el.getAnimations().some((a) => a.playState === "running")) return "~";
+  const s = getComputedStyle(el);
+  return s.color + "/" + s.backgroundColor + "/" + s.borderTopColor;
+}))()`;
+
+/**
+ * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the
+ * action's taste events drained first (TASTE_DRAIN); the same state as the last observation (`T.prev`, the
+ * sha256 of its URL and ARIA snapshot, as the loop rule hashes it) → `{changed: false}`. Else the screen: its route
+ * template, width and theme (MEDIA_READ), the census (`T.taste`, `{pass: "base"}`), the ease measurements (`T.ease`),
+ * the rows of `main`'s largest table (`T.rows`), one viewport screenshot per screen key not yet shot this run (its name the
+ * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
+ * stage body of `page`), a text past `T.maxText` unread); then, on a light page, a dark pass (`themed` when an element whose
+ * colours held still in two light reads, not animating, changed under dark: its census and screenshot), and a reduced-motion pass, each
+ * restoring the explicit media it read, never null (Task 0.1); the events those passes caused drained and dropped.
+ * A probe that throws is a `faults` entry, never a failure.
+ */
+export const RECORDER = `async (page, o, T) => {
+  const t0 = Date.now();
+  const ev = (expr) => page.evaluate(expr);
+  const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const drained = await ev(T.drain);
+  if ((await hex((o.url ?? "") + "\\n" + (o.aria ?? ""))) === T.prev) return { changed: false };
+  const u = new URL(page.url());
+  if (u.protocol !== "http:" && u.protocol !== "https:") return { changed: true, skipped: true };
+  const route = (${routeTemplate.toString()})(u.pathname, T.routes);
+  const media = await ev(T.media);
+  const vp = page.viewportSize();
+  const width = vp && vp.width ? vp.width : await ev("innerWidth");
+  const faults = [];
+  const probe = async (name, src, arg) => {
+    try {
+      return await ev("(" + src + ")(" + JSON.stringify(arg) + ")");
+    } catch (e) {
+      faults.push(name);
+      return null;
+    }
+  };
+  const read = new Function("page", "return (async () => {\\n" + T.read + "})();");
+  const taken = new Set(T.taken);
+  const shoot = async (theme) => {
+    const name = (await hex(route + "|" + width + "|" + theme)).slice(0, 32);
+    if (taken.has(name)) return null;
+    taken.add(name);
+    try {
+      await page.screenshot({ path: T.shots + "/" + name + ".png", type: "png" });
+    } catch (e) {
+      faults.push("shot");
+      return null;
+    }
+    let verdict = null;
+    try {
+      verdict = await read(page);
+      if (String(verdict.text).length > T.maxText) verdict = { ...verdict, text: "", unread: true };
+    } catch (e) {
+      verdict = null;
+    }
+    return { theme, name, verdict };
+  };
+  const pause = () => page.waitForTimeout(T.settle);
+  const census = await probe("census", T.taste, { pass: "base" });
+  const ease = await probe("ease", T.ease, {});
+  let rows = 0;
+  try {
+    rows = await ev(T.rows);
+  } catch (e) {
+    faults.push("rows");
+  }
+  const shots = [await shoot(media.colorScheme)];
+  let themed = false;
+  let dark = null;
+  let reduce = null;
+  if (media.colorScheme === "light") {
+    const a = await ev(T.palette);
+    await pause();
+    const b = await ev(T.palette);
+    try {
+      await page.emulateMedia({ colorScheme: "dark", reducedMotion: media.reducedMotion });
+      await pause();
+      const d = await ev(T.palette);
+      themed = a.some((x, i) => x !== "~" && x === b[i] && d[i] !== undefined && d[i] !== x);
+      if (themed) {
+        dark = await probe("dark", T.taste, { pass: "dark" });
+        shots.push(await shoot("dark"));
+      }
+    } finally {
+      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
+    }
+  }
+  if (media.reducedMotion === "no-preference") {
+    try {
+      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: "reduce" });
+      await pause();
+      reduce = await probe("reduce", T.taste, { pass: "reduce" });
+    } finally {
+      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
+    }
+  }
+  await pause();
+  try {
+    await ev(T.drain);
+  } catch (e) {}
+  return { changed: true, route, width, theme: media.colorScheme, census, ease, rows, themed, dark, reduce, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
+}`;
+
+/**
+ * The observation's run-code for `payload` (loginCode's `observe` stage, byte for byte when `T` is null); with `T`
+ * (the recorder's payload), the stage first, then RECORDER bounded by `T.limitMs` and its answer by `T.maxBytes`,
+ * caught whole: the observation's answer gains `taste` (the recorder's, or `{failed: "timeout"|"error"|"too
+ * large"}`) and is otherwise the stage's, so recording can never fail an observation or lose its drain.
+ */
+export function observeCode(payload, T = null) {
+  const observe = loginCode("observe", payload);
+  if (!T) return observe;
+  return `async page => {
+  const observed = await (${observe.trimEnd()})(page);
+  const T = ${JSON.stringify(T)};
+  const record = ${RECORDER};
+  let taste;
+  try {
+    taste = await Promise.race([record(page, observed, T), new Promise((ok) => setTimeout(() => ok({ failed: "timeout" }), T.limitMs))]);
+  } catch (e) {
+    taste = { failed: "error" };
+  }
+  try {
+    if (JSON.stringify(taste).length > T.maxBytes) taste = { failed: "too large" };
+  } catch (e) {
+    taste = { failed: "error" };
+  }
+  return { ...observed, taste };
+}
+`;
+}
+
+/** Scrub's `shot` stage (the text a screenshot's verdict reads), run by the recorder on the page it just shot. */
+export const SHOT_READ = loginStageSource("shot");
+
+/** The recorder's answers that are a harness event of the taste pass (in `<run>/taste/<slot>/harness.jsonl`, never the explorer's output). */
+const RECORD_FAULTS = ["timeout", "error", "too large", "no answer", "bad screen", "write failed"];
+
+/**
+ * Keeps recording `answer` of account `at.account` in slot `at.slot` (journey `at.journey`) of run `runId`, after the
+ * observation's drain was kept: a new screen is one line of `<run>/taste/<slot>/screens.jsonl` (0600) `{v: 1, t,
+ * journey, slot, account, key, route, width, theme, rows, themed, census, dark, reduce, ease, events, dropped, shots:
+ * [{theme, name, key}], faults}` (events of a shape tasteEventFault refuses dropped and counted), each new shot made
+ * 0600 with its scrub verdict beside it, and its time added to the budget. A failed or missing answer is a line of
+ * `harness.jsonl` `{t, account, why}`. Never throws.
+ */
+export function keepScreen(main, runId, at, answer) {
+  const base = tasteDir(main, runId);
+  const dir = path.join(base, String(at.slot));
+  const harness = (why) => {
+    try {
+      privateDir(dir);
+      appendPrivate(path.join(dir, "harness.jsonl"), { t: Date.now(), account: at.account, why: RECORD_FAULTS.includes(why) ? why : "error" });
+    } catch {
+      // nowhere left to say it
+    }
+  };
+  if (!isObj(answer)) return harness("no answer");
+  if (answer.failed !== undefined) return harness(answer.failed);
+  if (answer.changed !== true || answer.skipped === true) return;
+  try {
+    const key = `${answer.route}|${answer.width}|${answer.theme}`;
+    if (typeof answer.route !== "string" || !SCREEN_KEY.test(key)) return harness("bad screen");
+    const events = [];
+    let dropped = Number.isInteger(answer.dropped) && answer.dropped >= 0 ? answer.dropped : 0;
+    for (const e of Array.isArray(answer.events) ? answer.events : []) {
+      if (tasteEventFault(e) === null) events.push(e);
+      else dropped += 1;
+    }
+    const shots = [];
+    for (const s of Array.isArray(answer.shots) ? answer.shots : []) {
+      if (!isObj(s) || typeof s.name !== "string" || !/^[0-9a-f]{32}$/.test(s.name) || !["light", "dark"].includes(s.theme)) continue;
+      const png = path.join(base, "shots", `${s.name}.png`);
+      if (!fs.lstatSync(png, { throwIfNoEntry: false })?.isFile()) continue;
+      fs.chmodSync(png, 0o600);
+      writeVerdict(main, runId, png, isObj(s.verdict) ? s.verdict : null, { drained: true });
+      shots.push({ theme: s.theme, name: s.name, key: `${answer.route}|${answer.width}|${s.theme}` });
+    }
+    const pick = (k) => (answer[k] === undefined ? null : answer[k]);
+    privateDir(dir);
+    appendPrivate(path.join(dir, "screens.jsonl"), {
+      v: 1,
+      t: Date.now(),
+      journey: at.journey,
+      slot: at.slot,
+      account: at.account,
+      key,
+      route: answer.route,
+      width: answer.width,
+      theme: answer.theme,
+      rows: Number.isInteger(answer.rows) && answer.rows >= 0 ? answer.rows : 0,
+      themed: answer.themed === true,
+      census: pick("census"),
+      dark: pick("dark"),
+      reduce: pick("reduce"),
+      ease: pick("ease"),
+      events,
+      dropped,
+      shots,
+      faults: (Array.isArray(answer.faults) ? answer.faults : []).filter((f) => ["census", "ease", "rows", "dark", "reduce", "shot"].includes(f)),
+    });
+    spendTaste(main, runId, "record", answer.ms);
+  } catch {
+    harness("write failed");
+  }
+}
+
+/** How long the recorder may take after an observation, and how much it may answer (a shot's text past maxText is unread). */
+const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100 };
+
+/**
+ * The driver's views of the taste pass: recording runs for an explorer's slot (a positive integer) of a journey,
+ * outside a perf pass and a confirmation replay, while the run's taste time is under TASTE_BUDGET_MS → the
+ * recorder's payload with `prev` (the last observation's state hash), or null (the plain observation).
+ */
+function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) {
+  if (!Number.isInteger(slot) || slot < 1 || !isObj(slotRec) || typeof slotRec.journey !== "string" || slotRec.mode === "map") return null;
+  try {
+    if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) return null;
+    const shots = path.join(tasteDir(main, runId), "shots");
+    privateDir(shots);
+    let routes = [];
+    try {
+      routes = [...new Set((readJourneys(main)?.journeys ?? []).flatMap((j) => j.steps.map((s) => s.route)).filter((r) => typeof r === "string"))].slice(0, 500);
+    } catch {
+      routes = [];
+    }
+    const taken = fs.readdirSync(shots).filter((f) => /^[0-9a-f]{32}\.png$/.test(f)).map((f) => f.slice(0, 32));
+    const limitMs = Math.min(30_000, Math.max(5_000, 2 * settleMs));
+    return { prev: prev ?? null, routes, taste: TASTE_SOURCE, ease: EASE_SOURCE, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, palette: PALETTE, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+  } catch {
+    return null;
   }
 }
 
@@ -219,15 +553,24 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   d.observe = async () => {
     let o = null;
     const events = [];
+    const payload = { loggedIn: role === "anon" ? null : plan.loggedIn };
+    const T = perf ? null : recorderPayload({ main, runId, slot, slotRec, prev: d.state.lastState, settleMs: plan.settleMs });
     try {
-      o = await d.stage("observe", { loggedIn: role === "anon" ? null : plan.loggedIn });
+      o = await raw(observeCode(payload, T));
     } catch {
       events.push("harness: observation failed");
+    }
+    let screen;
+    if (o && typeof o === "object" && T) {
+      screen = o.taste;
+      delete o.taste;
     }
     if (o && typeof o === "object") {
       d.state.lastState = sha256(`${o.url ?? ""}\n${o.aria ?? ""}`);
       keepDrain(main, runId, name, o.secrets, capBytes);
       d.state.drained = true;
+      // Recorded once the drain is kept: a shot's verdict reads the ledger that drain fed.
+      if (T) keepScreen(main, runId, { slot, account, journey: slotRec.journey }, screen);
     }
     return { o, events };
   };
