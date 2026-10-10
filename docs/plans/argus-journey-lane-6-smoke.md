@@ -1881,3 +1881,57 @@ built" sub-section is kept above. Each lane's "Needs coordinator" item is settle
 **Left to lane Z.** A4's and B's Z2 engine text (admit needs an instance, ci before baseline, the orchestrator files
 `smoke-flaky:<id>`, perf's `--issue` flow, the seed sequence), `live.md`'s token file, CONTRACT.md and the docs naming
 `filed.jsonl`, `.argus/reports/` and the new `argus-live-baseline.mjs`, and open risk 8's line (C3's probe answered it).
+
+### Lane Z2 — engine text
+
+**As built.** `agents/ui-explorer.md` gains `## Paths` (`path: wanted`, the selector order, seed triggers, an example
+path), `## Heal mode` (the path as data, the broken step, "never change an expectation", `heal`/`heal_reason`, an
+example return), `pw '<token>' <role>.<k> layout [<check>]`, the `layout` expectation and final, `source` among the
+role-free commands, and the seed map token's `source` read once as data. `skills/argus/journeys.md`: `path: wanted`
+in the explore charter, `live smoke admit <s>.<g>` in step 6, the seed sequence in step 2 and the map charter, `live
+report` last in step 10. New `skills/journey/smoke.md`: the ten-step smoke cycle, filing, perf, the heal charter, the
+decision table's actions, the baseline run, admit and propose requirements, `smoke.json` and the CI wiring.
+`/sapu:journey` gains `smoke`, `seed --issue <n>` and `seed --doc <file>:<a>-<b>`; `/sapu:init` the smoke block, the
+`!/.argus/smoke.json` exception and the consented workflow; CONTRACT.md the lane's files and modules, the trust row
+"the journey lane's seeds and smoke suite" and the explorer's `source`; `live.md` names `source` as role-free and the
+token file read from the repo's root. `tests/engine.test.ts` pins the example path (path mode), the heal example
+(`validateReturn` with `pathChecks`), smoke.md's `smoke.json` (`validateSmoke`, every `SMOKE_KEYS` key), every `live …`
+command and flag smoke.md names against the usage line (split outside brackets), the smoke cycle's step per command,
+the filing words, init's and CONTRACT.md's statements, and that every budget names an existing file.
+
+| File | Bytes | Budget |
+|---|---|---|
+| `agents/ui-explorer.md` | 19,101 | 19,200 (was 15,500) |
+| `skills/argus/journeys.md` | 12,764 | 12,800 (was 12,500) |
+| `skills/journey/SKILL.md` | 4,677 | 4,700 (was 4,000) |
+| `skills/journey/smoke.md` | 12,778 | 12,800 (new) |
+| `skills/journey/live.md` | 14,500 | 14,500 (unchanged, full) |
+| `skills/init/SKILL.md` | 22,560 | 50,000 (the default) |
+
+**Deviations.**
+- Labels follow argus's exact list (SKILL.md: `performance`, `ux`; no `perf` or `a11y`): perf issues file with
+  `performance` and the needs-owner label, check issues with `ux`, S3.
+- `up --fresh` retires every live explorer token, so `smoke run` and `smoke run --perf` come before any explorer slot,
+  and `smoke heal` and `smoke admit` only after every explorer returned. Heal and capture explorers are dispatched
+  together in step 5; the order is still plan → up → run → `--perf` → ci → heal → admit → propose → baseline → report →
+  down.
+- A heal slot is minted with the path's own accounts (`<role>.<k>=<the role's k-th user>`); one refused with
+  `already serves slot <m>` waits for the next cycle.
+- `smoke workflow` passes the trace gate only on a committed contract, so init writes the workflow in its own pull
+  request after the init PR merged.
+- journeys.md runs `live report` last (after `down`); smoke.md before `down`, as this plan orders it. `report` reads only
+  records, so both hold.
+- The `layout` command and expectation are written as Z1's task states them (checks `page-scroll`, `clipped`, `covered`,
+  `target-size`; the answer in a page fence). No engine example uses `layout`, so the tests hold before Z1 merges.
+
+**Needs coordinator.**
+1. **Code vs plan.** `smoke heal` prints `staged: heal <id> (digest …)` and appends a `healed` event even when
+   `stage()` answered `staged: false` (a digest the owner rejected): `-heal.mjs` ignores the `staged` flag that
+   `smoke ci` and `smoke admit` read.
+2. **Code vs spec §19.9.** No verb sets `smoke-state.json` `journeys.<id>.retire` ("an issue the owner closes as not
+   planned marks the journey retire"), though `smoke plan` and `smoke propose` read it; and nothing turns a closed heal
+   proposal into a needs-owner regression issue (the rejected heal is only skipped). smoke.md promises neither.
+3. **Spec §19.9, §19.11 and lane D's note** name the labels `ux or a11y` and `perf`; argus's label list has `ux` and
+   `performance` only. Z4 aligns the spec (or argus's list).
+4. **Z1.** If its `layout` checks or answer differ from the above, ui-explorer.md's layout sentence follows.
+5. **Z3.** The docs gain `/sapu:journey seed --issue|--doc` beside `/sapu:journey smoke`.
