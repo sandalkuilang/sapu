@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHECKS, crossRules, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, NO_MAJORITY, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+import { crossRules, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, NO_MAJORITY, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadBar, RENDER_ATTRIBUTES, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
@@ -512,101 +512,6 @@ describe("argus-live ease — pathCost (decision 3: KLM, Fitts)", () => {
     expect(pathCost([{ do: "click", target: { label: "x" } }, { expect: "visible", target: { text: "y" } }], []).klm_s).toBe(Math.round((1.1 + 0.2 + 1.2) * 100) / 100);
     expect(() => pathCost("x", [])).toThrow("failed: pathCost: steps must be an array");
   });
-});
-
-// ---------------------------------------------------------------------------------------------------
-// T2.2 — the suite's ease checks.
-
-describe("argus-live ease — the suite's checks (project taste)", () => {
-  const steps = [
-    { n: 1, as: "customer.1", do: "goto", path: "/recovery.html" },
-    { n: 2, as: "customer.1", do: "fill", target: { by: "label", value: "Name" }, value: "Ana" },
-    { n: 3, as: "customer.1", do: "click", target: { by: "role", role: "button", name: "Save contact" } },
-    { n: 4, as: "customer.1", expect: "visible", target: { by: "text", value: "Contact saved." } },
-  ];
-  const ctx = { id: "contacts", steps, screens: [1, 4], taste: { ...CFG, gate: ["copy.broken"], copy: { vague: ["Absenden"] } } };
-
-  it("registers one check, project taste, whose lines configure once, judge after every step, fault each screen, case each submit", () => {
-    expect(CHECKS.map((c: Obj) => [c.name, c.project])).toEqual([["ease", "taste"]]);
-    const [c] = CHECKS;
-    const lines = steps.map((s) => c.emit(s, ctx));
-    expect(lines[0][0]).toBe(`(await import("./support")).easeConfig({"gate":["copy.broken"],"off":[],"vague":["Absenden"],"optimistic":[]});`);
-    expect(lines[0].slice(1)).toEqual([
-      'expect.soft(await (await import("./support")).easeStep(opened, 0, 1, "contacts"), "taste: ease: step 1").toEqual([]);',
-      'expect.soft(await (await import("./support")).easeFaultStep(opened, 0, 1, "contacts"), "taste: ease: the error state at step 1").toEqual([]);',
-    ]);
-    expect(lines[1]).toEqual([
-      'expect.soft(await (await import("./support")).easeStep(opened, 0, 2, "contacts"), "taste: ease: step 2").toEqual([]);',
-      'expect.soft(await (await import("./support")).easeRecoveryStep(opened, 0, {"by":"role","role":"button","name":"Save contact"}, 3, "contacts"), "taste: ease: the form case before step 3").toEqual([]);',
-    ]);
-    expect(lines[3]).toHaveLength(2);
-    for (const l of lines.flat()) expect(l).not.toMatch(/`|\$\{|setTimeout|waitFor\(|waitForTimeout/);
-    expect(c.emit({ n: 9, as: "system", do: "trigger", name: "x", values: [] }, ctx)).toEqual([]);
-    expect(c.source).not.toMatch(/shell|\bexec\(|spawn\(|`/);
-    // The suite installs the taste buffer exactly as -tastecfg writes it, then the clock.
-    expect(c.source).toContain(`const EASE_INSTALL = ${JSON.stringify(`${TASTE_BUFFER};\n${EASE_INIT}`)};`);
-  });
-
-  /** The support source run in Node as the suite runs it: `test.info()` collects annotations, `__dirname` a temp dir. */
-  function support(dir: string) {
-    const annotations: Obj[] = [];
-    const test = { info: () => ({ annotations }) };
-    const src = CHECKS[0].source.replace(/^export /gm, "").replace('await import("node:fs")', 'require("node:fs")');
-    const api = new Function("test", "path", "__dirname", "require", `${src}\nreturn { easeConfig, easeStep, easeFaultStep, easeRecoveryStep };`)(test, require("node:path"), dir, require);
-    return { api, annotations };
-  }
-
-  it("easeStep annotates advisory rows as argus-taste and gated ones as argus-violation, less the adopted known rows", async () => {
-    const dir = tempDir();
-    const { api, annotations } = support(dir);
-    const context = await browser.newContext();
-    contexts.push(context);
-    const page = await context.newPage();
-    await page.goto(`${origin}/copy-broken.html`);
-    api.easeConfig({ gate: ["copy.broken"], off: [], vague: [], optimistic: [] });
-    mkdirSync(join(dir, "known"));
-    writeFileSync(join(dir, "known", "orders.json"), JSON.stringify([{ check: "copy.broken", key: "NaN|Total: NaN items" }]));
-    const gated = await api.easeStep([context], 0, 1, "orders");
-    expect(gated.map((v: Obj) => v.key)).toHaveLength(7);
-    expect(gated[0]).toEqual({ check: "copy.broken", step: 1, key: "undefined|Status undefined, quantity undefined", detail: "Status undefined, quantity undefined (expected no unrendered value)" });
-    expect(annotations.filter((a) => a.type === "argus-violation")).toHaveLength(7);
-    // Reported once a test: the next step finds the same rows and says nothing new.
-    expect(await api.easeStep([context], 0, 2, "orders")).toEqual([]);
-    api.easeConfig({ gate: [], off: [], vague: [], optimistic: [] });
-    const other = await browser.newContext();
-    contexts.push(other);
-    await (await other.newPage()).goto(`${origin}/vague.html?lang=en`);
-    expect(await api.easeStep([other], 0, 1, "settings")).toEqual([]);
-    expect(annotations.filter((a) => a.type === "argus-taste").map((a) => JSON.parse(a.description))).toEqual([
-      { rule: "copy.vague", step: 1, key: "dialog|OK", measured: "OK", expected: "a label that names its result" },
-      { rule: "copy.vague", step: 1, key: "form|Submit", measured: "Submit", expected: "a label that names its result" },
-    ]);
-  }, 60_000);
-
-  it("easeFaultStep measures the screen's error state in a sibling page; easeRecoveryStep runs the form case", async () => {
-    const { api, annotations } = support(tempDir());
-    api.easeConfig({ gate: [], off: [], vague: [], optimistic: [] });
-    const context = await browser.newContext();
-    contexts.push(context);
-    const page = await context.newPage();
-    await page.goto(`${origin}/states.html?mode=blank`);
-    await page.getByText("Order one").waitFor({ timeout: 30_000 });
-    expect(await api.easeFaultStep([context], 0, 1, "orders")).toEqual([]);
-    expect(context.pages()).toHaveLength(1);
-    expect(annotations.map((a) => JSON.parse(a.description))).toEqual([{ rule: "states.error", step: 1, key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" }]);
-    // Once a screen a test.
-    expect(await api.easeFaultStep([context], 0, 2, "orders")).toEqual([]);
-    expect(annotations).toHaveLength(1);
-    const form = await browser.newContext();
-    contexts.push(form);
-    const fp = await form.newPage();
-    await fp.goto(`${origin}/recovery.html?mode=clear`);
-    await fp.getByLabel("Name").fill("Ana");
-    await fp.getByLabel("Notes").fill("call");
-    expect(await api.easeRecoveryStep([form], 0, { by: "role", role: "button", name: "Save contact" }, 3, "contacts")).toEqual([]);
-    expect(annotations.slice(1).map((a) => JSON.parse(a.description).key)).toEqual(["Notes"]);
-    expect(await fp.getByLabel("Notes").inputValue()).toBe("call");
-  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------

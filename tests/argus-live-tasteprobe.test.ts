@@ -4,11 +4,13 @@
 import { createServer, type Server } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire, stripTypeScriptTypes } from "node:module";
-import { join } from "node:path";
+import nodePath, { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHECKS, censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
+import { censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
+// @ts-expect-error — plain ESM script without types
+import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadBar, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
@@ -285,69 +287,83 @@ describe("argus-live-taste.mjs — colour roles, dark parity, contrast headroom 
 });
 
 // ---------------------------------------------------------------------------------------------------
-// The suite's check: the registry entry's source loaded as the support file holds it, run against the pages.
+// The suite's taste core (-codeproj, the one reporter of both probes' rules), loaded as support.ts holds it and run
+// against these pages with the real probes: dark parity goes through censusOf, so a one-scheme expression cannot miss it.
 
-/** The taste check's source → its exported and local names (vitest's Function has no dynamic import: `require` stands in). */
-function loadCheck(scope: Obj) {
-  const js = stripTypeScriptTypes(CHECKS.map((c: Obj) => c.source).join("\n")).replace(/^export /gm, "").replace(/await import\("node:fs"\)/g, 'require("node:fs")');
-  const found = [...js.matchAll(/^(?:async function|function|const) (\w+)/gm)].map((m) => m[1]);
-  return new Function("require", ...Object.keys(scope), `${js}\nreturn { ${found.join(", ")} };`)(createRequire(import.meta.url), ...Object.values(scope)) as Obj;
+/** The core's source → its functions (vitest's Function has no dynamic import: `require` stands in). */
+function loadCore(scope: Obj) {
+  const js = stripTypeScriptTypes(tasteSource(tasteTable())).replace(/^export /gm, "").replace(/await import\("node:fs"\)/g, 'require("node:fs")');
+  return new Function("require", ...Object.keys(scope), `${js}\nreturn { tasteStep, tasteArm };`)(createRequire(import.meta.url), ...Object.values(scope)) as Obj;
 }
 /** A support-file scope: a stand-in `test` collecting annotations, the repo (with `taste` as its .argus/taste.json) and the suite's directory. */
-function suiteEnv(taste: Obj | null = null, known: Obj[] | null = null) {
+function suiteEnv(taste: Obj | null = null, known: Obj[] | null = null, tokensCss: string | null = null) {
   const dir = tempDir();
   const annotations: { type: string; description: string }[] = [];
+  if (tokensCss !== null) {
+    mkdirSync(join(dir, ".argus"), { recursive: true });
+    writeFileSync(join(dir, ".argus/live.json"), JSON.stringify({ tokens: { css: "tokens.css" } }));
+    writeFileSync(join(dir, "tokens.css"), tokensCss);
+  }
   if (taste) {
-    mkdirSync(join(dir, ".argus"));
+    mkdirSync(join(dir, ".argus"), { recursive: true });
     writeFileSync(join(dir, ".argus/taste.json"), JSON.stringify(taste));
   }
   if (known) {
     mkdirSync(join(dir, "known"));
     writeFileSync(join(dir, "known/j.json"), JSON.stringify(known));
   }
-  const lib = loadCheck({ test: { info: () => ({ project: { name: "taste" }, annotations }) }, path: { join }, REPO: dir, __dirname: dir });
+  const lib = loadCore({ test: { info: () => ({ project: { name: "taste" }, annotations }) }, path: nodePath, REPO: dir, __dirname: dir });
   return { lib, annotations };
 }
 const ofType = (annotations: Obj[], type: string) => annotations.filter((a) => a.type === type).map((a) => a.description);
+const BORDER = "an edge of at least 1.1:1, as in light (1.48:1)";
 
-describe("argus-live-taste.mjs — the suite's taste check (T1.2)", () => {
-  it("registers one check of the taste project, one soft line a step of each account, none for the system", () => {
-    expect(CHECKS.map((c: Obj) => [c.name, c.project])).toEqual([["taste", "taste"]]);
-    const steps = [{ n: 1, as: "customer.1", do: "goto" }, { n: 2, as: "system", do: "trigger" }, { n: 3, as: "admin.1", do: "click" }];
-    expect(CHECKS[0].emit(steps[0], { id: "j", steps })).toEqual(['expect.soft(await (await import("./support")).tasteStep(opened, 0, 1, "j"), "taste: step 1").toEqual([]);']);
-    expect(CHECKS[0].emit(steps[1], { id: "j", steps })).toEqual([]);
-    expect(CHECKS[0].emit(steps[2], { id: "j", steps })[0]).toContain("tasteStep(opened, 1, 3,");
-    expect(stripTypeScriptTypes(CHECKS[0].source)).not.toMatch(/shell|\bexec\(|spawn\(|waitForTimeout/);
-  });
-
+describe("the suite's taste core on the probe's pages (phase 7 integration)", () => {
   it("advisory by default: rows annotate argus-taste, an information rule argus-info, a single theme one line; nothing fails", async () => {
     const { lib, annotations } = suiteEnv();
     const opened = [(await open("single.html")).context()];
-    expect(await lib.tasteStep(opened, 0, 2, "j")).toEqual([]);
-    expect(ofType(annotations, "argus-info")).toEqual(["taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged", 'taste contrast.headroom "rgb(115, 115, 115) on rgb(255, 255, 255)": 4.74 (expected 7)']);
+    expect(await lib.tasteStep(opened, 0, 2, "j", true, [])).toEqual([]);
+    expect(ofType(annotations, "argus-info")).toEqual(expect.arrayContaining(["taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged", "taste contrast.headroom step 2: rgb(115, 115, 115) on rgb(255, 255, 255): 4.74 (expected 7)"]));
     expect(ofType(annotations, "argus-taste")).toEqual([]);
-    // The same screen again adds nothing: each row is said once a test.
-    await lib.tasteStep(opened, 0, 3, "j");
-    expect(annotations.length).toBe(2);
+    // The same screen again adds nothing: each row and each line is said once a test.
+    const said = annotations.length;
+    await lib.tasteStep(opened, 0, 3, "j", true, []);
+    expect(annotations.length).toBe(said);
     const dark = suiteEnv();
-    expect(await dark.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j")).toEqual([]);
+    expect(await dark.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j", true, [])).toEqual([]);
     const rows = ofType(dark.annotations, "argus-taste").map((d) => JSON.parse(d));
-    expect(rows).toContainEqual({ rule: "colour.dark-border", step: 1, key: "input|Display name", measured: 1, expected: "an edge of at least 1.1:1, as in light (1.48:1)" });
+    expect(rows).toContainEqual({ rule: "colour.dark-border", step: 1, key: "input|Display name", measured: 1, expected: BORDER });
     expect(rows.some((r) => r.expected === "peer" || r.rule === "contrast.headroom")).toBe(false);
-  }, 60_000);
+  }, 120_000);
 
-  it("a rule the owner gates fails as argus-violation, unless adopted in known/<id>.json", async () => {
+  it("the owner's tokens (live.json) are the scale the off-scale rules read; without tokens or a frame they measure nothing", async () => {
+    const page = await open("scale-four.html");
+    const bare = suiteEnv();
+    await bare.lib.tasteStep([page.context()], 0, 1, "j", true, []);
+    expect(ofType(bare.annotations, "argus-taste").map((d) => JSON.parse(d).rule)).not.toContain("scale.off-scale");
+    // A scale that lacks one of the page's spacings: that value, and only off-scale values, are reported.
+    const census = await page.evaluate(`(${TASTE_SOURCE})({})`);
+    const spacings = [...new Set((census.values.spacing as number[]).map(Number))].sort((a, b) => a - b);
+    expect(spacings.length).toBeGreaterThan(1);
+    const scaled = suiteEnv(null, null, `:root { ${spacings.slice(1).map((v, i) => `--space-${i}: ${v}px;`).join(" ")} }`);
+    await scaled.lib.tasteStep([(await open("scale-four.html")).context()], 0, 1, "j", true, []);
+    const off = ofType(scaled.annotations, "argus-taste").map((d) => JSON.parse(d)).filter((r) => r.rule === "scale.off-scale");
+    expect(off.map((r) => r.key)).toEqual([`spacing:${spacings[0]}px`]);
+  }, 120_000);
+
+  it("a rule the owner gates fails as phase 6's violation, unless adopted in known/<id>.json; off leaves it unmeasured", async () => {
+    const check = "taste-colour-dark-border";
     const gated = suiteEnv({ gate: ["colour.dark-border"] });
     const page = await open("dark.html");
-    expect(await gated.lib.tasteStep([page.context()], 0, 4, "j")).toEqual([{ check: "colour.dark-border", step: 4, key: "input|Display name", detail: "1 → expected an edge of at least 1.1:1, as in light (1.48:1)" }]);
-    expect(ofType(gated.annotations, "argus-violation").map((d) => JSON.parse(d).check)).toEqual(["colour.dark-border"]);
+    expect(await gated.lib.tasteStep([page.context()], 0, 4, "j", true, [])).toEqual([{ check, step: 4, key: "input|Display name", detail: `measured 1, expected ${BORDER}` }]);
+    expect(ofType(gated.annotations, "argus-violation").map((d) => JSON.parse(d).check)).toEqual([check]);
     expect(ofType(gated.annotations, "argus-taste").map((d) => JSON.parse(d).rule)).not.toContain("colour.dark-border");
-    const adopted = suiteEnv({ gate: ["colour.dark-border"] }, [{ check: "colour.dark-border", key: "input|Display name" }]);
-    expect(await adopted.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j")).toEqual([]);
+    const adopted = suiteEnv({ gate: ["colour.dark-border"] }, [{ check, key: "input|Display name" }]);
+    expect(await adopted.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j", true, [])).toEqual([]);
     const off = suiteEnv({ off: ["colour.dark-border"] });
-    await off.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j");
+    await off.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j", true, []);
     expect(off.annotations.map((a) => a.description).join("\n")).not.toContain("dark-border");
-  }, 60_000);
+  }, 120_000);
 });
 
 /** Clicks each control, then waits until no finite animation runs (every recorded motion has ended). */

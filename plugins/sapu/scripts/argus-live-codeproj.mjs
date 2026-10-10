@@ -9,7 +9,7 @@ import { ARIA_EXPECT, CHECKS as A11Y } from "./argus-live-a11y.mjs";
 import * as easeProbe from "./argus-live-ease.mjs";
 import { CHECKS as LAYOUT } from "./argus-live-layout.mjs";
 import * as tasteProbe from "./argus-live-taste.mjs";
-import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN, tokensPx } from "./argus-live-tastecfg.mjs";
 
 /** The generator's version, in every file's header: a new one regenerates the suite. */
 export const CODEGEN_VERSION = "1";
@@ -113,8 +113,12 @@ function gated(check, projects) {
 
 /** A gated taste rule's check name in phase 6's shape (no dot, at most 40 characters): `taste-<family>-<name>`. */
 export const tasteCheckName = (rule) => `taste-${rule.replace(".", "-")}`;
-/** The rules measured only under one emulated medium (decisions 6 and 9): elsewhere they would measure the wrong page. */
-export const TASTE_MEDIA_RULES = Object.freeze({ "colour.dark-contrast": "dark", "colour.dark-border": "dark", "colour.dark-surface": "dark", "motion.reduced": "reduce" });
+/**
+ * The rules measured only under one emulated medium (decisions 6 and 9): elsewhere they would measure the wrong page.
+ * `parity` (dark parity) compares the light and dark censuses of one screen, which one page expression cannot switch
+ * between: the taste probe's censusOf takes them both (its own media restored by value) and its rulesFor judges them.
+ */
+export const TASTE_MEDIA_RULES = Object.freeze({ "colour.dark-contrast": "parity", "colour.dark-border": "parity", "colour.dark-surface": "parity", "motion.reduced": "reduce" });
 /**
  * Screen rules the suite leaves to the lane (-tastecfg laneOnly): their verdict needs what one page expression cannot
  * see — the app's peer screens, a driven form case, the routed fault (decision 12: lane-only in this phase) or the
@@ -127,6 +131,12 @@ const NOT_BUILT = /^refused: [A-Za-z_]+: not built yet$/;
 /** Where a probe's source stood in an expression: support.ts writes each source once and puts it back at run time. */
 const PROBE_MARK = Object.freeze({ taste: "\u0001argus-taste-source\u0001", ease: "\u0001argus-ease-source\u0001" });
 const probeOf = (name) => (name === "ease" ? easeProbe : tasteProbe);
+/**
+ * The owner's scale in a taste expression, filled when the suite runs (support.ts's tasteConfig): taste.json's `frame`
+ * and live.json's tokens in px (-tastecfg tokensPx), so the owner's tokens outrank the frame as they do in the lane,
+ * and a change of either needs no regeneration. Without both, the off-scale rules measure nothing (rulesFor's rule).
+ */
+export const TASTE_SCALE_MARK = Object.freeze({ tokens: "@@argus-taste-tokens@@", frame: "@@argus-taste-frame@@" });
 
 /**
  * The rules the taste project measures → `{version, rules: [{id, info, passes, expr}], probes}`: the bar's screen rules
@@ -135,13 +145,21 @@ const probeOf = (name) => (name === "ease" ? easeProbe : tasteProbe);
  * through its probe's `ruleExpression` (a rule whose probe is not built yet is left out; any other refusal is the
  * engine's and thrown). `passes`: a media rule's medium alone, an action family `action` (after every action and at a
  * screen), the census `light` and `dark` (at a screen, once its animations ended). Each probe's source held by an expression is replaced by its mark and kept once in `probes`.
+ * `parity`: the dark-parity rules, measured together at a screen by `census` (the taste probe's censusOf and rulesFor
+ * sources, self-contained) with their bar rules and the frames, or null when the bar has none.
  */
-export function tasteTable({ bar = loadBar(), expression = (rule, probe) => probeOf(probe).ruleExpression(rule), sources = { taste: tasteProbe.TASTE_SOURCE, ease: easeProbe.EASE_SOURCE } } = {}) {
+export function tasteTable({ bar = loadBar(), expression = (rule, probe) => (probe === "taste" ? tasteProbe.ruleExpression(rule, TASTE_SCALE_MARK) : easeProbe.ruleExpression(rule)), sources = { taste: tasteProbe.TASTE_SOURCE, ease: easeProbe.EASE_SOURCE }, census = { census: String(tasteProbe.censusOf), rules: String(tasteProbe.rulesFor) } } = {}) {
   const rules = [];
   const probes = {};
+  const parity = [];
   for (const r of bar.rules) {
     const family = FAMILIES[r.family];
     if (family.scope !== "screen" || laneOnly(r) !== null) continue;
+    if (TASTE_MEDIA_RULES[r.id] === "parity") {
+      parity.push(r);
+      rules.push({ id: r.id, info: r.info === true, passes: ["parity"], expr: "" });
+      continue;
+    }
     let expr;
     try {
       expr = expression(r.id, family.probe);
@@ -159,7 +177,7 @@ export function tasteTable({ bar = loadBar(), expression = (rule, probe) => prob
     const media = TASTE_MEDIA_RULES[r.id];
     rules.push({ id: r.id, info: r.info === true, passes: media ? [media] : ACTION_FAMILIES.has(r.family) ? ["action"] : ["light", "dark"], expr });
   }
-  return { version: bar.version, rules, probes };
+  return { version: bar.version, rules, probes, parity: parity.length ? { ...census, bar: { version: bar.version, rules: parity, frames: bar.frames } } : null };
 }
 
 /** The probes' recorders a document needs before its first action: the taste buffer, then each probe's init. */
@@ -177,13 +195,18 @@ type TasteAllowed = { check: string; key: string };
 /** The bar's screen rules the suite measures, each with its page expression (a probe's source as its mark, below). */
 const TASTE_RULES: TasteRule[] = ${literal(table.rules)};
 const TASTE_PROBES: Record<string, string> = ${literal(table.probes)};
+/** The dark-parity rules' census and judge (the taste probe's censusOf and rulesFor sources) and their bar rules, or null. */
+const TASTE_PARITY: { census: string; rules: string; bar: unknown } | null = ${literal(table.parity ?? null)};
 const TASTE_INIT = ${JSON.stringify(tasteInit())};
 const TASTE_DRAIN = ${JSON.stringify(TASTE_DRAIN)};
 const TASTE_MEDIA = ${JSON.stringify(MEDIA_READ)};
 const TASTE_SETTLE = ${JSON.stringify(SETTLE)};
 const tasteArmed = new WeakSet<object>();
 const tasteSeen = new WeakMap<object, Set<string>>();
-let tasteConfigRead: Promise<{ gate: string[]; off: string[] }> | null = null;
+type TasteConfig = { gate: string[]; off: string[]; frame: string | null; tokens: Record<string, number[]> | null };
+let tasteConfigRead: Promise<TasteConfig> | null = null;
+/** live.json's tokens as the taste probe's scale in px (argus-live-tastecfg.mjs tokensPx): null without a source. */
+const tasteTokensPx = ${String(tokensPx)};
 
 /** Installs the taste buffer and the probes' recorders in every document of \`context\`, once (open() calls it in the taste project). */
 export async function tasteArm(context: BrowserContext): Promise<void> {
@@ -192,17 +215,32 @@ export async function tasteArm(context: BrowserContext): Promise<void> {
   await context.addInitScript({ content: TASTE_INIT });
 }
 
+/** The owner's design tokens (live.json \`tokens\`, a file in the repo) in px, or null: as the a11y token check reads them. */
+function tasteTokens(fs: any): Record<string, number[]> | null {
+  try {
+    const src = JSON.parse(fs.readFileSync(path.join(REPO, ".argus", "live.json"), "utf8")).tokens;
+    const kind = src && typeof src.css === "string" ? "css" : src && typeof src.json === "string" ? "json" : null;
+    if (!kind) return null;
+    const file = path.resolve(REPO, src[kind]);
+    if (path.relative(REPO, file).startsWith("..")) return null;
+    return tasteTokensPx(kind, fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    return null;
+  }
+}
+
 /**
- * .argus/taste.json's gate and off as the committed file holds them when the suite runs (none without it): the owner
- * promotes a rule there with no regeneration. A file that is not JSON, or a list naming no rule of this bar, fails
- * the step: a gate is never dropped in silence.
+ * .argus/taste.json's gate, off and frame as the committed file holds them when the suite runs (none without it), and
+ * live.json's tokens: the owner promotes a rule or changes the scale with no regeneration. A file that is not JSON, or
+ * a list naming no rule of this bar, fails the step: a gate is never dropped in silence.
  */
-function tasteConfig(): Promise<{ gate: string[]; off: string[] }> {
+function tasteConfig(): Promise<TasteConfig> {
   if (tasteConfigRead) return tasteConfigRead;
   tasteConfigRead = (async () => {
     const fs = await import("node:fs");
     const file = path.join(REPO, ".argus", "taste.json");
-    if (!fs.existsSync(file)) return { gate: [], off: [] };
+    const tokens = tasteTokens(fs);
+    if (!fs.existsSync(file)) return { gate: [], off: [], frame: null, tokens };
     let raw: any;
     try {
       raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -220,12 +258,19 @@ function tasteConfig(): Promise<{ gate: string[]; off: string[] }> {
     const gate = list("gate");
     const lost = gate.filter((x) => !ids.has(x));
     if (lost.length) throw new Error("argus-smoke: .argus/taste.json gate names " + lost.join(", ") + ": no rule the suite measures in taste-bar " + TASTE_BAR_VERSION);
-    return { gate, off: list("off") };
+    return { gate, off: list("off"), frame: typeof raw.frame === "string" ? raw.frame : null, tokens };
   })();
   return tasteConfigRead;
 }
 
-const tasteExpr = (r: TasteRule): string => Object.entries(TASTE_PROBES).reduce((s, [mark, src]) => s.split(mark).join(src), r.expr);
+/** A rule's expression as it runs: each probe's source and the owner's scale put back. */
+const tasteExpr = (r: TasteRule, cfg: TasteConfig): string =>
+  Object.entries(TASTE_PROBES)
+    .reduce((s, [mark, src]) => s.split(mark).join(src), r.expr)
+    .split(${JSON.stringify(JSON.stringify(TASTE_SCALE_MARK.tokens))})
+    .join(JSON.stringify(cfg.tokens))
+    .split(${JSON.stringify(JSON.stringify(TASTE_SCALE_MARK.frame))})
+    .join(JSON.stringify(cfg.frame));
 const tasteLine = (v: unknown, n: number): string => {
   const s = Array.from(String(v).replace(/[\\u0000-\\u001f\\u007f]+/g, " "));
   return s.length > n ? s.slice(0, n - 1).join("") + "…" : s.join("");
@@ -233,12 +278,12 @@ const tasteLine = (v: unknown, n: number): string => {
 const tasteValue = (v: unknown): boolean => (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && v.length <= 200);
 
 /** Each rule of \`rules\` on \`page\`, alone: a probe that throws is named in \`notes\`, a row not in the finding shape dropped and counted; the step's events drained after. */
-async function tasteMeasure(page: Page, rules: TasteRule[], notes: string[]): Promise<TasteFinding[]> {
+async function tasteMeasure(page: Page, rules: TasteRule[], cfg: TasteConfig, notes: string[]): Promise<TasteFinding[]> {
   const found: TasteFinding[] = [];
   for (const r of rules) {
     let rows: unknown;
     try {
-      rows = await page.evaluate(tasteExpr(r));
+      rows = await page.evaluate(tasteExpr(r, cfg));
     } catch (e) {
       notes.push("taste " + r.id + ": the probe failed (" + tasteLine(e instanceof Error ? e.message.split("\\n")[0] : e, 200) + ")");
       continue;
@@ -256,6 +301,39 @@ async function tasteMeasure(page: Page, rules: TasteRule[], notes: string[]): Pr
   } catch (e) {
     // A document that navigated away took its buffer along: the next one starts empty.
     notes.push("taste: the step's events could not be drained (" + tasteLine(e instanceof Error ? e.message.split("\\n")[0] : e, 200) + ")");
+  }
+  return found;
+}
+
+/**
+ * The dark-parity rules at a screen: the census of the page in both colour schemes (censusOf restores the page's own
+ * media by value), judged by the taste probe's rulesFor; rows checked as tasteMeasure checks them. A page that renders
+ * one palette in both schemes says so (a note, once a test like every note: dark parity not judged).
+ */
+async function tasteParity(page: Page, rules: TasteRule[], cfg: TasteConfig, notes: string[]): Promise<TasteFinding[]> {
+  if (!TASTE_PARITY || !rules.length) return [];
+  const found: TasteFinding[] = [];
+  try {
+    const census = new Function("return " + TASTE_PARITY.census)();
+    const judge = new Function("return " + TASTE_PARITY.rules)();
+    const screen = await census(page);
+    if (screen && screen.themes === "single") notes.push("taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged");
+    const ids = rules.map((r) => r.id);
+    const bar = TASTE_PARITY.bar as { rules: { id: string }[] };
+    let bad = 0;
+    for (const f of judge(screen, { ...bar, rules: bar.rules.filter((r) => ids.includes(r.id)) }, { frame: cfg.frame, tokens: cfg.tokens }) || []) {
+      const ok = f !== null && typeof f === "object" && ids.includes(f.rule) && typeof f.key === "string" && f.key !== "" && f.key.length <= 300 && !/[\\r\\n]/.test(f.key) && tasteValue(f.measured) && tasteValue(f.expected);
+      if (ok) found.push({ rule: f.rule, key: f.key, measured: f.measured, expected: f.expected });
+      else bad += 1;
+    }
+    if (bad) notes.push("taste parity: " + bad + " result(s) not in the finding shape, dropped");
+  } catch (e) {
+    notes.push("taste parity: the probe failed (" + tasteLine(e instanceof Error ? e.message.split("\\n")[0] : e, 200) + ")");
+  }
+  try {
+    await page.evaluate(TASTE_DRAIN);
+  } catch (e) {
+    // a document that navigated away took its buffer along
   }
   return found;
 }
@@ -300,7 +378,8 @@ export async function tasteStep(opened: BrowserContext[], i: number, step: numbe
     await tasteArm(opened[i]);
     await page.evaluate(TASTE_INIT);
   }
-  const { gate, off } = await tasteConfig();
+  const cfg = await tasteConfig();
+  const { gate, off } = cfg;
   const fs = await import("node:fs");
   const file = path.join(__dirname, "known", id + ".json");
   const known = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
@@ -311,12 +390,13 @@ export async function tasteStep(opened: BrowserContext[], i: number, step: numbe
   const out: TasteViolation[] = [];
   const rules = (pass: string) => TASTE_RULES.filter((r) => r.passes.includes(pass) && !off.includes(r.id));
   const run = async (pass: string) => {
-    out.push(...tasteReport(id, step, pass, await tasteMeasure(page, rules(pass), notes), gate, skip, seen, notes));
+    out.push(...tasteReport(id, step, pass, await tasteMeasure(page, rules(pass), cfg, notes), gate, skip, seen, notes));
   };
   await run("action");
   if (screen) {
     await page.evaluate(TASTE_SETTLE);
     await run("light");
+    out.push(...tasteReport(id, step, "parity", await tasteParity(page, rules("parity"), cfg, notes), gate, skip, seen, notes));
   }
   if (screen && (rules("reduce").length || rules("dark").length)) {
     const m = await page.evaluate(TASTE_MEDIA);
@@ -380,10 +460,11 @@ export function tasteCheck(table = tasteTable()) {
 // The check registry and the config.
 
 /**
- * The suite's registered checks, in order: the layout oracle's, a11y's, the taste core, then the taste and ease
- * probes' own. A registry is read at each call, so a check pushed on it counts.
+ * The suite's registered checks, in order: the layout oracle's, a11y's, then the taste core, the one reporter of both
+ * probes' rules (their page expressions and the taste probe's census). A registry is read at each call, so a check
+ * pushed on it counts.
  */
-export const suiteChecks = () => [...LAYOUT, ...A11Y, tasteCheck(), ...tasteProbe.CHECKS, ...easeProbe.CHECKS];
+export const suiteChecks = () => [...LAYOUT, ...A11Y, tasteCheck()];
 /** Every registered check's in-page source, as support.ts embeds them. */
 export const checkSources = () => suiteChecks().map((c) => c.source);
 /** Every registered check, each gated to the projects it names among `projects` (suiteProjects'). */

@@ -24,7 +24,9 @@ import { parseRepro } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { FAMILIES, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
-import { suiteProjects, TASTE_LANE_ONLY, TASTE_MEDIA_RULES, tasteCheckName, tasteSource, tasteTable, withHeader } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
+import { suiteProjects, TASTE_LANE_ONLY, TASTE_MEDIA_RULES, TASTE_SCALE_MARK, tasteCheckName, tasteSource, tasteTable, withHeader } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
+// @ts-expect-error — plain ESM script without types
+import { censusOf, rulesFor as tasteRulesFor } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
 import { smokeCheck } from "../plugins/sapu/scripts/argus-live-suite.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -333,7 +335,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
     "refund.spec.ts": "c50973353f6b6b9c1f72909dc7fcfc1d366c5252f40384c7c929a6574adf59d1",
-    "support.ts": "2d6acd35f1894776e96679add911eeb3f9c2f6ae4615083cf50e9cb47646c00b",
+    "support.ts": "02a912eafc2021ca6111519a3b2576262e3902e3158352cec8d979310804616d",
   };
 
   it("leaves every generated file byte-identical", () => {
@@ -675,20 +677,26 @@ describe("argus-live codegen — the generated suite under the pinned runner", (
 const TSRC = "(rule) => { /* stand-in for the census source: support.ts writes it once for every rule */ return [rule].filter(() => false); }";
 const ESRC = "(rule) => { /* stand-in for the ease source: support.ts writes it once for every rule too */ return [rule].filter(() => false); }";
 const standIn = (rule: string, probe: string) => `(${probe === "ease" ? ESRC : TSRC})(${JSON.stringify(rule)})`;
-const standInTable = () => tasteTable({ expression: standIn, sources: { taste: TSRC, ease: ESRC } });
+/** The dark-parity census stood in: no page call, one dark-surface row on a two-theme screen. */
+const CENSUS = {
+  census: 'async (page) => ({ themes: "dual", page: typeof page })',
+  rules: '(screen, bar) => (screen.themes === "dual" ? bar.rules.filter((r) => r.id === "colour.dark-surface").map((r) => ({ rule: r.id, key: "card|light", measured: 1, expected: 0 })) : [])',
+};
+const standInTable = () => tasteTable({ expression: standIn, sources: { taste: TSRC, ease: ESRC }, census: CENSUS });
 
 /** A Playwright page and its context stood in: each rule's expression answered by `answers(rule, media)`, the media emulated, the drains, inits and settles counted. */
 function fakePage(answers: (rule: string, media: Obj) => unknown, start: Obj = { colorScheme: "light", reducedMotion: "no-preference" }) {
   const media = { ...start };
-  const calls = { emulate: [] as Obj[], drains: 0, settles: 0, armed: 0, initRuns: 0, evaluated: [] as string[] };
+  const calls = { emulate: [] as Obj[], drains: 0, settles: 0, armed: 0, initRuns: 0, evaluated: [] as string[], scales: [] as string[] };
   const page = {
     evaluate: async (expr: string) => {
       if (expr === TASTE_DRAIN) return void (calls.drains += 1);
       if (expr === MEDIA_READ) return { ...media };
       if (expr.includes("__argusTastePush")) return void (calls.initRuns += 1);
       if (expr.includes("getAnimations")) return void (calls.settles += 1);
-      const m = /^\((.*)\)\("([a-z]+\.[a-z0-9-]+)"\)$/s.exec(expr);
+      const m = /^\((.*)\)\("([a-z]+\.[a-z0-9-]+)"(?:, (\{.*\}))?\)$/s.exec(expr);
       if (!m || ![TSRC, ESRC].includes(m[1])) throw new Error(`not a stand-in expression: ${expr.slice(0, 80)}`);
+      if (m[3] !== undefined) calls.scales.push(m[3]);
       calls.evaluated.push(`${m[2]}@${media.colorScheme}/${media.reducedMotion}`);
       const a = answers(m[2], { ...media });
       if (a instanceof Error) throw a;
@@ -704,8 +712,12 @@ function fakePage(answers: (rule: string, media: Obj) => unknown, start: Obj = {
 }
 
 /** The taste core of `table` loaded as plain JS beside a scratch suite (`.argus/taste.json`, `known/checkout.json`), test.info() stood in. */
-function tasteCore(table: Obj, { project = "taste", tasteJson = null as string | null, known = null as Obj[] | null } = {}) {
+function tasteCore(table: Obj, { project = "taste", tasteJson = null as string | null, known = null as Obj[] | null, files = {} as Record<string, string> } = {}) {
   const repo = tempDir();
+  for (const [f, text] of Object.entries(files)) {
+    mkdirSync(nodePath.dirname(join(repo, f)), { recursive: true });
+    writeFileSync(join(repo, f), text);
+  }
   const suite = join(repo, "e2e/argus-smoke");
   mkdirSync(join(suite, "known"), { recursive: true });
   if (tasteJson !== null) {
@@ -754,7 +766,10 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     // Every rule the suite treats by name is a rule of the bar: a renamed one would silently change its passes.
     for (const id of [...Object.keys(TASTE_MEDIA_RULES), ...TASTE_LANE_ONLY]) expect(bar.rules.some((r: Obj) => r.id === id), id).toBe(true);
     const passes = (id: string) => t.rules.find((r: Obj) => r.id === id).passes;
-    expect([passes("colour.dark-surface"), passes("motion.reduced"), passes("copy.broken"), passes("hierarchy.primary-actions")]).toEqual([["dark"], ["reduce"], ["action"], ["light", "dark"]]);
+    expect([passes("colour.dark-surface"), passes("motion.reduced"), passes("copy.broken"), passes("hierarchy.primary-actions")]).toEqual([["parity"], ["reduce"], ["action"], ["light", "dark"]]);
+    // Dark parity compares a screen's light and dark censuses: the taste probe's censusOf and rulesFor, with the parity rules alone.
+    expect(t.parity).toEqual({ ...CENSUS, bar: { version: bar.version, rules: bar.rules.filter((r: Obj) => /^colour\.dark-/.test(r.id)), frames: bar.frames } });
+    expect(tasteTable().parity).toMatchObject({ census: String(censusOf), rules: String(tasteRulesFor) });
     expect(t.rules.filter((r: Obj) => r.info).map((r: Obj) => r.id)).toEqual(bar.rules.filter((r: Obj) => r.info && ids.includes(r.id)).map((r: Obj) => r.id));
     const src = tasteSource(t);
     for (const s of [TSRC, ESRC]) expect(src.split(JSON.stringify(s).slice(1, -1)).length - 1, s).toBe(1);
@@ -795,8 +810,11 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     expect(text).toContain('  opened.push(context);\n  // The taste project\'s recorders run in every document from the first one on (spec 20.4).\n  if (inProject(["taste"])) await tasteArm(context);\n  return context.newPage();');
     expect(text).toContain(JSON.stringify(TASTE_BUFFER).slice(1, -1));
     expect(text).toContain(tasteSource(tasteTable()));
-    // The core waits on events only (an animation's end, a frame), never a clock, and restores media by value.
-    const core = tasteSource(standInTable());
+    // The core waits on events only (an animation's end, a frame), never a clock, and restores media by value. The
+    // recorders it installs (TASTE_INIT, one line) keep their own timers: they measure the page, they wait for nothing.
+    const whole = tasteSource(standInTable());
+    expect(whole.split("\n").filter((l) => l.startsWith("const TASTE_INIT = ")).length).toBe(1);
+    const core = whole.split("\n").filter((l) => !l.startsWith("const TASTE_INIT = ")).join("\n");
     for (const banned of ["waitForTimeout", "setTimeout", "sleep(", "networkidle", "colorScheme: null", "reducedMotion: null"]) expect(core, banned).not.toContain(banned);
     expect(text).not.toMatch(/shell|\bexec\(|spawn\(|\/bin\/sh/);
     expect(check(text)).toEqual({ code: 0, err: "" });
@@ -828,9 +846,9 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     expect(core.notes("argus-taste")).toEqual([
       { rule: "copy.broken", step: 3, key: "text|undefined", measured: "undefined", expected: "no broken copy" },
       { rule: "hierarchy.primary-actions", step: 5, key: "button|Save", measured: 2, expected: 1 },
+      { rule: "colour.dark-surface", step: 5, key: "card|light", measured: 1, expected: 0 },
       { rule: "motion.reduced", step: 5, key: "spinner|reduce", measured: 1, expected: 0 },
       { rule: "hierarchy.primary-actions", step: 5, key: "button|Dark|dark", measured: 2, expected: 1 },
-      { rule: "colour.dark-surface", step: 5, key: "card|light|dark", measured: 1, expected: 0 },
     ]);
     // Information rules are lines, never notes; rows out of the finding shape are counted, never shown.
     expect(core.notes("argus-info").sort()).toEqual(["taste contrast.headroom step 5: body: 5.2 (expected 7)", "taste density.control-heights: 3 result(s) not in the finding shape, dropped", "taste states.success: the probe failed (the stand-in broke)"]);
@@ -855,8 +873,24 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     const v = await core.api.tasteStep([fakePage(answers).context], 0, 5, "checkout", true, [{ check, key: "button|Dark|dark" }]);
     expect(v).toEqual([{ check, step: 5, key: "button|Delete", detail: "measured 2, expected 1" }]);
     expect(core.notes("argus-violation")).toEqual(v);
-    expect(core.notes("argus-taste")).toEqual([]);
+    // Only the ungated rows stay notes (the stood-in census's dark-parity row).
+    expect(core.notes("argus-taste")).toEqual([{ rule: "colour.dark-surface", step: 5, key: "card|light", measured: 1, expected: 0 }]);
     expect(core.notes("argus-info")).toEqual(["taste contrast.headroom step 5: body: 5.2 (expected 7)"]);
+  });
+
+  it("the core fills each taste expression's scale when it runs: taste.json's frame and live.json's tokens in px, null without them", async () => {
+    const scaled = (rule: string, probe: string) => `(${probe === "ease" ? ESRC : TSRC})(${JSON.stringify(rule)}, ${JSON.stringify(TASTE_SCALE_MARK)})`;
+    const table = tasteTable({ expression: scaled, sources: { taste: TSRC, ease: ESRC }, census: CENSUS });
+    // The plugin's own taste expressions hold the marks; support.ts never bakes a scale in.
+    expect(tasteTable().rules.find((r: Obj) => r.id === "scale.off-scale").expr).toContain(JSON.stringify(TASTE_SCALE_MARK.tokens));
+    const files = { ".argus/live.json": JSON.stringify({ tokens: { css: "design/tokens.css" } }), "design/tokens.css": ":root { --space-1: 4px; --space-2: 0.5rem; --radius-md: 6px; }" };
+    const f = fakePage(() => []);
+    await tasteCore(table, { tasteJson: JSON.stringify({ frame: "material" }), files }).api.tasteStep([f.context], 0, 5, "checkout", true, []);
+    expect(f.calls.scales.length).toBeGreaterThan(0);
+    expect(new Set(f.calls.scales)).toEqual(new Set(['{"tokens":{"spacing":[4,8],"radius":[6]},"frame":"material"}']));
+    const g = fakePage(() => []);
+    await tasteCore(table).api.tasteStep([g.context], 0, 5, "checkout", true, []);
+    expect(new Set(g.calls.scales)).toEqual(new Set(['{"tokens":null,"frame":null}']));
   });
 
   it("the core: off leaves a rule unmeasured; a taste.json that is not JSON, or gates a rule the suite does not measure, fails the step by name; another project runs nothing", async () => {
@@ -931,6 +965,15 @@ const RSRC = `(rule) => {
   if (rule === "copy.broken") return dark || reduce ? [{ rule, key: "media-left-emulated", measured: 1, expected: 0 }] : [];
   return [];
 }`;
+/** The dark-parity census stood in for the fixture app: dark measured in dark only, the page's own scheme put back by value. */
+const DARK_CENSUS = async (page: any) => {
+  const own = await page.evaluate('matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"');
+  await page.emulateMedia({ colorScheme: "dark" });
+  const dark = await page.evaluate('matchMedia("(prefers-color-scheme: dark)").matches && Boolean(document.querySelector("h1, h2"))');
+  await page.emulateMedia({ colorScheme: own });
+  return { themes: "dual", dark };
+};
+const DARK_RULES = (screen: any, bar: any) => (screen.dark ? bar.rules.map((r: any) => ({ rule: r.id, key: "main|light", measured: 1, expected: 0 })) : [{ rule: "colour.dark-surface", key: "measured-outside-dark", measured: 1, expected: 0 }]).filter((f: any) => f.rule === "colour.dark-surface");
 /** The scorecard script as the taste job runs it: from the suite's directory, the step summary in `summary`. */
 const scorecard = (dir: string, summary: string) => spawnSync(process.execPath, ["-", "test-results/results.json", "../../.argus/taste.json", "support.ts"], { cwd: dir, input: TASTE_SUMMARY, encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary } });
 /** A test's notes of `type` in a Playwright JSON report, for the project `project`. */
@@ -943,7 +986,7 @@ describe("argus-live codegen — the taste project and its scorecard under the p
   it("advisory by default (notes, green, the media put back); a gated rule fails its step and the job; its known row passes again", async () => {
     vi.resetModules();
     const expression = (rule: string) => `(${RSRC})(${JSON.stringify(rule)})`;
-    vi.doMock("../plugins/sapu/scripts/argus-live-taste.mjs", async (orig) => ({ ...(await orig<Obj>()), TASTE_SOURCE: RSRC, ruleExpression: expression }));
+    vi.doMock("../plugins/sapu/scripts/argus-live-taste.mjs", async (orig) => ({ ...(await orig<Obj>()), TASTE_SOURCE: RSRC, ruleExpression: expression, censusOf: DARK_CENSUS, rulesFor: DARK_RULES }));
     vi.doMock("../plugins/sapu/scripts/argus-live-ease.mjs", async (orig) => ({ ...(await orig<Obj>()), ruleExpression: expression }));
     let generate: (x: Obj) => Obj;
     try {
@@ -961,7 +1004,7 @@ describe("argus-live codegen — the taste project and its scorecard under the p
     const advisory = run([]);
     expect(advisory.status, advisory.out).toBe(0);
     const heading = { rule: "hierarchy.primary-actions", step: 1, key: "heading|Sign in", measured: 2, expected: 1 };
-    expect(notesIn(advisory.results, "argus-taste")).toEqual([heading, { rule: "colour.dark-surface", step: 1, key: "main|light|dark", measured: 1, expected: 0 }]);
+    expect(notesIn(advisory.results, "argus-taste")).toEqual([heading, { rule: "colour.dark-surface", step: 1, key: "main|light", measured: 1, expected: 0 }]);
     expect(notesIn(advisory.results, "argus-info")).toEqual(["taste contrast.headroom step 1: body: 5.5 (expected 7)"]);
     expect(notesIn(advisory.results, "argus-violation")).toEqual([]);
     // Each rule measured in its own medium only, and the step after the screen in the page's own again.
