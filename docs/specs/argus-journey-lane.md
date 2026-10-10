@@ -1838,8 +1838,8 @@ Elsewhere:
 | `docs/usage.md`, `docs/agents.md`, `docs/security.md`, `README.md`, `docs/img/src` | `/sapu:journey`, the new agent, requirements, the isolation and browser safety rules, a light and dark diagram |
 
 Phase 6 (§19, built): new modules `argus-live-smoke.mjs`, `-minimize.mjs`, `-codegen.mjs`,
-`-suite.mjs`, `-propose.mjs`, `-heal.mjs`, `-ci.mjs`, `-baseline.mjs`, `-layout.mjs`, `-a11y.mjs`, `-perf.mjs`,
-`-seed.mjs`, `-report.mjs`; changes to `-config.mjs`, `-steps.mjs`, `-classes.mjs`, `-return.mjs`, `-repro.mjs`,
+`-smokecfg.mjs` (`.argus/smoke.json`), `-suite.mjs`, `-propose.mjs`, `-heal.mjs`, `-artifacts.mjs` (CI's runs and
+artifacts), `-ci.mjs`, `-baseline.mjs`, `-layout.mjs`, `-a11y.mjs`, `-perf.mjs`, `-seed.mjs`, `-report.mjs`; changes to `-config.mjs`, `-steps.mjs`, `-classes.mjs`, `-return.mjs`, `-repro.mjs`,
 `-session.mjs`, `-pw.mjs`, `-slots.mjs`, `-map.mjs`, `-scrub.mjs`, `argus-live.mjs`, `sapu-guard.mjs`;
 new engine text `skills/journey/smoke.md`; edits to the explorer's agent file, `journeys.md`,
 `/sapu:journey`, `/sapu:init`, `standards.md`, CONTRACT.md and the docs. The plan's file table is
@@ -2223,16 +2223,25 @@ only a line diff [probe]. So the workflow has a `baseline` job, run only by `wor
 missing|changed --grep <ids>` — `missing` writes new baselines and still verifies the existing ones
 in the same run [pw-release] — and uploads the files it wrote as `argus-smoke-baselines`.
 
-`smoke baseline --from-run <run id>` does one of two things. On a normal run it dispatches the
-baseline job on that run's branch: `missing` for its `baseline-missing` ids, `changed` only for the
-ids the owner names with `--ids` after reading `smoke ci`'s diff (no mismatch is ever re-baselined
-unasked); it prints the dispatched run. On a baseline run it downloads the artifact with `gh run
+`smoke ci` and `smoke baseline` take the suite's journey ids from the run's own commit (`git ls-tree`
+of `<dir>/journeys` at its head, fetched from origin when the clone lacks it), so a proposal's run
+triages, dispatches and adopts the journeys the proposal adds. `smoke ci` writes
+`.argus/smoke-ci/<run>/triage.json` `{version: 1, run, event, branch, sha, lines, findings}`, `findings` the
+lines' structured form, which `smoke baseline` reads. `smoke baseline --from-run <run id>` does one of
+two things. On a normal run it dispatches the baseline job on that run's branch: `missing` for its
+`baseline-missing` ids, `changed` only for the ids the owner names with `--ids` after reading `smoke
+ci`'s diff (no mismatch is ever re-baselined unasked); it prints the dispatched run and records the
+dispatch in `smoke-state.json` (`{ciRun, from, branch, mode, ids}`). On a baseline run it downloads the artifact with `gh run
 download` into a 0700 temporary directory and adopts only files whose names the suite defines
 (`__screenshots__/<project>/<platform>/<id>.spec/*.png` with a PNG signature under 5 MB, never `msedge`;
 `__aria__/<id>.spec/*.aria.yml` under 1 MB, pruned as §19.7 says), and reads the run's results
 (`results.json` at each `argus-smoke-results-<project>` artifact's root): the `argus-violation` annotations of
-the adopted journeys become `known/<id>.json`, a JSON list of `{check, key}` merged with the branch's own,
-sorted (the collected annotations are the artifact; there is no violations file); nothing else is read, no artifact text is printed outside a fence, and a run on another repository
+the adopted journeys are known-violation candidates (the collected annotations are the artifact; there is no
+violations file). A file the branch lacks is adopted; one it holds that the run changed, only for a journey
+the run was dispatched to re-baseline (`changed`, by the recorded dispatch, else an unrecorded dispatch of
+the branch). New known rows join `known/<id>.json` (a JSON list of `{check, key}` merged with the branch's
+own, sorted) only with `--known`, always in an `argus/baselines-<runId>` pull request whose body lists each
+new row: a re-baseline never hides an accessibility or layout regression unasked; nothing else is read, no artifact text is printed outside a fence, and a run on another repository
 (a fork) or a run whose head is no longer its branch's head (`stale`) is refused. Without the right
 to dispatch, the `gh workflow run` line is printed for the owner.
 
