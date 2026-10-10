@@ -686,6 +686,21 @@ describe("smoke baseline — CI's baseline run, dispatched and adopted (spec §1
     expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: "axe:color-contrast", key: "button.pay" }, { check: "axe:image-alt", key: "img" }, { check: "clipped", key: "heading|Results #|h1" }]);
   }, 30_000);
 
+  it("with --known, a gated taste rule's violation from the baseline run's taste project is adopted too (phase 7)", async () => {
+    const t = baseRepo();
+    git(t.main, "push", "-q", "origin", "HEAD:refs/heads/argus/smoke-200");
+    const sha = git(t.main, "rev-parse", "HEAD");
+    const taste = { check: "taste-copy-broken", step: 2, key: "p|Total undefined", detail: "measured undefined, expected no unrendered value" };
+    const art = baselines({ "argus-smoke-results-taste/results.json": JSON.stringify(violationReport("search", "taste", [taste])) });
+    const gh = fakeGh({ api: { "repos/owner/app/actions/runs/300": apiRun(300, { event: "workflow_dispatch", branch: "argus/smoke-200", sha }), "repos/owner/app/branches/argus%2Fsmoke-200": { commit: { sha } } }, artifacts: { "300": art } });
+    expect((await smokeBaseline(t.main, { fromRun: "300", ids: null }, { runner: gh.runner })).lines).toContain("known: 1 new violation row(s) of search not adopted (smoke baseline --known adopts them, listed in a pull request)");
+    const runner = (argv: string[], opts: Obj = {}) => (argv[0] === "gh" && argv[1] === "pr" && argv[2] === "create" ? { status: 0, stdout: "https://github.com/owner/app/pull/14\n", stderr: "" } : gh.runner(argv, opts));
+    const r = await smokeBaseline(t.main, { fromRun: "300", ids: null, known: true }, { runner });
+    expect(r.lines[0]).toBe("baseline: 1 file(s) proposed in https://github.com/owner/app/pull/14 (argus/baselines-300 into argus/smoke-200)");
+    const head = git(t.origin, "rev-parse", "refs/heads/argus/baselines-300");
+    expect(JSON.parse(git(t.origin, "show", `${head}:e2e/argus-smoke/known/search.json`))).toEqual([{ check: taste.check, key: taste.key }]);
+  }, 30_000);
+
   it("on a baseline run of another branch, opens an argus/baselines-<run> pull request into it, each file listed with journey, step and project", async () => {
     const t = baseRepo();
     const gh = fakeGh({ api: { "repos/owner/app/actions/runs/301": apiRun(301, { event: "workflow_dispatch", branch: "feat/x", sha: t.sha }), "repos/owner/app/branches/feat%2Fx": { commit: { sha: t.sha } } }, artifacts: { "301": baselines(files()) } });
