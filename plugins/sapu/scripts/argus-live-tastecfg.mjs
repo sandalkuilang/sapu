@@ -482,3 +482,71 @@ export function writeTasteState(main, state) {
   fs.chmodSync(tmp, 0o600);
   fs.renameSync(tmp, file);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// The Curator's return (spec §20.4, decision 17): `<run>/taste/curator.json`, written by the agent's dispatcher, read
+// by the judge (its leads), filing (its verdicts) and the report (its verdicts, substitutions and walkthrough).
+
+/** Where the Curator's return of a run lies, relative to the run's directory. */
+export const CURATOR_FILE = "taste/curator.json";
+export const CURATOR_VERDICTS = Object.freeze(["confirm", "reject", "polish"]);
+/** aesthetics.md §8's substitution test, one answer a screen. */
+export const SUBSTITUTIONS = Object.freeze(["substitutable", "partly", "no"]);
+/** A cognitive-walkthrough answer: fixed words, never free text (decision 20). */
+export const CW_WORDS = Object.freeze(["pass", "fail", "n/a"]);
+const CURATOR_KEYS = ["verdicts", "leads", "substitutions", "cw"];
+
+/**
+ * The Curator's return checked whole → `{value, errors}` (`value` null on any error): `{verdicts: [{row: "t<k>",
+ * verdict: confirm|reject|polish, reason (at most 2000 characters)}], leads: [{rule: a screen rule of the bar, screen:
+ * a screen key}], substitutions: [{screen, substitution: substitutable|partly|no}] (one a screen), cw: [{journey,
+ * step: 1–100, q1, q2, q3, q4: pass|fail|n/a}]}`, every key present, none other. A verdict naming no judge row is the
+ * reader's to drop (it knows the rows); everything else out of shape refuses the record.
+ */
+export function validateCurator(raw, bar = loadBar()) {
+  const errors = [];
+  const err = (e) => errors.length < 20 && errors.push(e);
+  if (!isObj(raw)) return { value: null, errors: ["is not {verdicts, leads, substitutions, cw}"] };
+  for (const k of Object.keys(raw)) if (!CURATOR_KEYS.includes(k)) err(`unknown key ${shown(k)}`);
+  for (const k of CURATOR_KEYS) if (!Array.isArray(raw[k])) err(`${k} must be a list`);
+  if (errors.length) return { value: null, errors };
+  const screenRules = new Set(bar.rules.filter((r) => FAMILIES[r.family].scope === "screen").map((r) => r.id));
+  const list = (k, max, each) => {
+    if (raw[k].length > max) err(`${k} holds more than ${max}`);
+    raw[k].slice(0, max).forEach((x, i) => (isObj(x) ? each(x, `${k}[${i}]`) : err(`${k}[${i}] is not an object`)));
+  };
+  const only = (x, at, keys) => Object.keys(x).filter((k) => !keys.includes(k)).forEach((k) => err(`${at}: unknown key ${shown(k)}`));
+  list("verdicts", 500, (x, at) => {
+    only(x, at, ["row", "verdict", "reason"]);
+    if (typeof x.row !== "string" || !/^t[1-9][0-9]{0,4}$/.test(x.row) || !CURATOR_VERDICTS.includes(x.verdict) || typeof x.reason !== "string" || x.reason.length > 2000) err(`${at} is not {row, verdict: confirm|reject|polish, reason}`);
+  });
+  list("leads", 100, (x, at) => {
+    only(x, at, ["rule", "screen"]);
+    if (!screenRules.has(x.rule) || typeof x.screen !== "string" || !SCREEN_KEY.test(x.screen)) err(`${at} is not {rule: a screen rule of taste-bar ${bar.version}, screen: a screen key}`);
+  });
+  const screens = new Set();
+  list("substitutions", 200, (x, at) => {
+    only(x, at, ["screen", "substitution"]);
+    if (typeof x.screen !== "string" || !SCREEN_KEY.test(x.screen) || !SUBSTITUTIONS.includes(x.substitution)) err(`${at} is not {screen, substitution: substitutable|partly|no}`);
+    else if (screens.has(x.screen)) err(`${at}: a second substitution for ${shown(x.screen)}`);
+    else screens.add(x.screen);
+  });
+  list("cw", 500, (x, at) => {
+    only(x, at, ["journey", "step", "q1", "q2", "q3", "q4"]);
+    if (typeof x.journey !== "string" || !KEBAB.test(x.journey) || !isInt(x.step, 1, 100) || !["q1", "q2", "q3", "q4"].every((q) => CW_WORDS.includes(x[q]))) err(`${at} is not {journey, step: 1-100, q1..q4: pass|fail|n/a}`);
+  });
+  return errors.length ? { value: null, errors } : { value: { verdicts: raw.verdicts, leads: raw.leads, substitutions: raw.substitutions, cw: raw.cw }, errors: [] };
+}
+
+/** Run directory `runDir`'s Curator return → `{value, fault}`: none → `{value: null, fault: null}`; unreadable or out of shape → the fault's words. */
+export function readCuratorFile(runDir, bar = loadBar()) {
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(runDir, CURATOR_FILE), "utf8"));
+  } catch (e) {
+    if (e && e.code === "ENOENT") return { value: null, fault: null };
+    return { value: null, fault: `${CURATOR_FILE} ${e instanceof SyntaxError ? "is not valid JSON" : "cannot be read"}` };
+  }
+  const { value, errors } = validateCurator(raw, bar);
+  return value ? { value, fault: null } : { value: null, fault: `${CURATOR_FILE} ${errors[0]}` };
+}

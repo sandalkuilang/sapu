@@ -15,7 +15,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { FAMILIES, loadBar, loadTaste, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -130,6 +130,23 @@ function heldPaths(main) {
     }
   }
   return out;
+}
+
+/**
+ * The Curator's leads for run `runId`'s judge (decision 17: a perception the next pass measures first): those of the
+ * newest Curator return at or before the run, only when it validates whole (validateCurator) → `{run, leads, fault}`.
+ */
+function curatorLeads(main, runId, bar) {
+  let names = [];
+  try {
+    names = fs.readdirSync(liveDir(main)).filter((n) => RUN_ID.test(n) && n <= runId && fs.existsSync(path.join(liveDir(main), n, CURATOR_FILE)));
+  } catch {
+    names = [];
+  }
+  const run = names.sort().at(-1);
+  if (!run) return { run: null, leads: [], fault: null };
+  const { value, fault } = readCuratorFile(path.join(liveDir(main), run), bar);
+  return { run, leads: value ? value.leads : [], fault };
 }
 
 /** Run `runId`'s judge.json, or null. */
@@ -368,7 +385,11 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   // Two cycles are a cross-screen row's two visits; an earlier judge of this run keeps its confirmations.
   const before = new Map((readJudge(main, runId)?.rows ?? []).map((r) => [`${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`, r.confirmed]));
   const earlier = previousJudge(main, runId);
-  rows.sort((x, y) => (x.journey < y.journey ? -1 : x.journey > y.journey ? 1 : x.screen < y.screen ? -1 : x.screen > y.screen ? 1 : x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
+  // The Curator's leads, when its return validates, are measured first: the rows they name take the first numbers, so
+  // a confirmation run in row order under the pass's budget replays them before the rest.
+  const lead = curatorLeads(main, runId, bar);
+  const led = (r) => lead.leads.some((l) => l.rule === r.rule && l.screen === r.screen);
+  rows.sort((x, y) => Number(led(y)) - Number(led(x)) || (x.journey < y.journey ? -1 : x.journey > y.journey ? 1 : x.screen < y.screen ? -1 : x.screen > y.screen ? 1 : x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
   const out = rows.map((r, i) => {
     const id = `${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`;
     const again = FAMILIES[rules.get(r.rule).family].scope === "cycle" && !r.rule.startsWith("efficiency.") && earlier.has(id) ? true : null;
@@ -385,6 +406,8 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (unwitnessed) lines.push(`not rows: ${unwitnessed} beyond the bar without the corpus band and an internal witness`);
   if (info) lines.push(`information: ${info} findings of information rules (never rows)`);
   if (shown.size) lines.push(`bands shown only: ${shown.size}`);
+  if (lead.fault) lines.push(`leads: the Curator's return of ${lead.run} is out of shape: its leads are not used`);
+  else if (lead.leads.length) lines.push(`leads: ${out.filter(led).length} row(s) named by the ${lead.leads.length} lead(s) of ${lead.run}'s Curator come first`);
   if (failed) lines.push(`harness: a probe's rules failed ${failed} times`);
   if (bad) lines.push(`harness: ${bad} recorded screens of another shape skipped`);
   const secrets = loadLive(main).secrets ?? {};

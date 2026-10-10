@@ -23,7 +23,7 @@ import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
 import { NO_MAJORITY } from "./argus-live-ease.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
-import { FAMILIES, loadBar, loadTaste, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -37,7 +37,6 @@ const TEXT_MAX = 300;
 const WITNESS_KINDS = ["tokens", "frame", "peer", "band"];
 /** The witnesses inside the app: the owner's tokens (or the frame they adopted) and the app's own best peer screen. */
 const INTERNAL = ["tokens", "frame", "peer"];
-const VERDICTS = ["confirm", "reject", "polish"];
 /** A judge row's `expected` for a consistency split where no way holds a majority (two screens, two ways). */
 const EFFICIENCY = ["actions", "best", "klm_s", "typed", "fitts_bits", "modals", "wait_ms", "recovery"];
 /** The most issues gh's listing returns for the dedupe (every state: a closed issue may be the owner's ruling). Titles are compared, never printed. */
@@ -70,8 +69,8 @@ const CLASS_WORDS = { implicit: "broken on its face", derived: "the app contradi
 
 /** Where the judge's record of run `runId` lies. */
 export const judgeFile = (main, runId) => path.join(liveDir(main), runId, "taste", "judge.json");
-/** Where the Curator's return of run `runId` lies (`{verdicts, leads}`, Z1's validateCurator's shape). */
-export const curatorFile = (main, runId) => path.join(liveDir(main), runId, "taste", "curator.json");
+/** Where the Curator's return of run `runId` lies (-tastecfg CURATOR_FILE, validateCurator's shape). */
+export const curatorFile = (main, runId) => path.join(liveDir(main), runId, CURATOR_FILE);
 
 const text = (v) => typeof v === "string" && v.length <= TEXT_MAX && !/[\r\n]/.test(v);
 const value = (v) => v === null || num(v) || text(v);
@@ -133,26 +132,16 @@ export function readJudge(main, runId) {
 }
 
 /**
- * Run `runId`'s Curator return (`<run>/taste/curator.json`) → `{verdicts: Map<row, {verdict, reason}>, fault}`, a
- * verdict naming no row of `rows` (a Set of judge row ids) dropped, the first of a row kept. None → an empty map.
+ * Run `runId`'s Curator return (`<run>/taste/curator.json`, checked whole by -tastecfg's validateCurator) →
+ * `{verdicts: Map<row, {verdict, reason}>, substitutions, cw, fault}`, a verdict naming no row of `rows` (a Set of
+ * judge row ids) dropped, the first of a row kept. None → empty; out of shape → empty with the fault's words.
  */
 export function readCurator(main, runId, rows) {
   const verdicts = new Map();
-  let c;
-  try {
-    c = JSON.parse(fs.readFileSync(curatorFile(main, runId), "utf8"));
-  } catch (e) {
-    if (e && e.code === "ENOENT") return { verdicts, fault: null };
-    return { verdicts, fault: `taste/curator.json ${e instanceof SyntaxError ? "is not valid JSON" : "cannot be read"}` };
-  }
-  if (!isObj(c) || !Array.isArray(c.verdicts)) return { verdicts, fault: "taste/curator.json is not {verdicts, leads}" };
-  for (const [i, v] of c.verdicts.entries()) {
-    if (!isObj(v) || typeof v.row !== "string" || !ROW_ID.test(v.row) || !VERDICTS.includes(v.verdict) || !(v.reason === undefined || (typeof v.reason === "string" && v.reason.length <= 2000))) {
-      return { verdicts: new Map(), fault: `taste/curator.json verdict ${i + 1} is not {row, verdict: confirm|reject|polish, reason}` };
-    }
-    if (rows.has(v.row) && !verdicts.has(v.row)) verdicts.set(v.row, { verdict: v.verdict, reason: typeof v.reason === "string" ? v.reason.slice(0, 500) : "" });
-  }
-  return { verdicts, fault: null };
+  const { value, fault } = readCuratorFile(path.join(liveDir(main), runId));
+  if (!value) return { verdicts, substitutions: [], cw: [], fault };
+  for (const v of value.verdicts) if (rows.has(v.row) && !verdicts.has(v.row)) verdicts.set(v.row, { verdict: v.verdict, reason: v.reason.slice(0, 500) });
+  return { verdicts, substitutions: value.substitutions, cw: value.cw, fault: null };
 }
 
 /** A row's severity and why → `{severity, why}` (OUTCOME, then the cost). */

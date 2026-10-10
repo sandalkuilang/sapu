@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, explicitMedia, FAMILIES, laneOnly, loadBar, tokensPx, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, CURATOR_FILE, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -435,6 +435,39 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
       ["the taste final on another expectation", { as: "customer.1", expect: "visible", target: { text: "x" }, final: "taste" }, "taste's final is taste"],
     ] as [string, Obj, string][]) expect(last(repro(step)), what).toBe(`refused: repro: step 2: ${why}`);
     expect(last(repro({ ...TASTE, final: undefined }))).toMatch(/^refused: repro: step 2: the last step must be an expect naming its oracle/);
+  });
+
+  it("validateCurator locks the Curator's return: verdicts, leads, substitutions per screen, and a walkthrough in fixed words", () => {
+    const ok = {
+      verdicts: [{ row: "t1", verdict: "confirm", reason: "" }, { row: "t12", verdict: "polish", reason: "minor" }],
+      leads: [{ rule: "copy.broken", screen: "/orders/:id|1440|light" }],
+      substitutions: [{ screen: "/orders/:id|1440|light", substitution: "partly" }, { screen: "/orders|1440|dark", substitution: "no" }],
+      cw: [{ journey: "order-to-cash", step: 1, q1: "pass", q2: "fail", q3: "n/a", q4: "pass" }],
+    };
+    expect(validateCurator(ok)).toEqual({ value: ok, errors: [] });
+    expect([CURATOR_FILE, CW_WORDS, SUBSTITUTIONS]).toEqual(["taste/curator.json", ["pass", "fail", "n/a"], ["substitutable", "partly", "no"]]);
+    for (const [bad, why] of [
+      [null, "is not {verdicts, leads, substitutions, cw}"],
+      [{ ...ok, extra: [] }, "unknown key extra"],
+      [{ verdicts: [], leads: [], substitutions: [] }, "cw must be a list"],
+      [{ ...ok, verdicts: [{ row: "1", verdict: "confirm", reason: "" }] }, "verdicts[0] is not {row, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, verdicts: [{ row: "t1", verdict: "confirm" }] }, "verdicts[0] is not {row, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, leads: [{ rule: "consistent.action", screen: "/a|1440|light" }] }, "leads[0] is not {rule: a screen rule of taste-bar 1, screen: a screen key}"],
+      [{ ...ok, leads: [{ rule: "copy.broken", screen: "/a" }] }, "leads[0] is not {rule: a screen rule of taste-bar 1, screen: a screen key}"],
+      [{ ...ok, substitutions: [{ screen: "/a|1440|light", substitution: "maybe" }] }, "substitutions[0] is not {screen, substitution: substitutable|partly|no}"],
+      [{ ...ok, substitutions: [{ screen: "/a|1440|light", substitution: "no" }, { screen: "/a|1440|light", substitution: "partly" }] }, "substitutions[1]: a second substitution for /a|1440|light"],
+      [{ ...ok, cw: [{ journey: "order-to-cash", step: 1, q1: "yes, it held", q2: "pass", q3: "pass", q4: "pass" }] }, "cw[0] is not {journey, step: 1-100, q1..q4: pass|fail|n/a}"],
+      [{ ...ok, cw: [{ journey: "order-to-cash", step: 0, q1: "pass", q2: "pass", q3: "pass", q4: "pass" }] }, "cw[0] is not {journey, step: 1-100, q1..q4: pass|fail|n/a}"],
+      [{ ...ok, cw: [{ ...ok.cw[0], note: "free text" }] }, "cw[0]: unknown key note"],
+    ] as [unknown, string][]) expect(validateCurator(bad).errors[0], why).toBe(why);
+    // The file: none is no fault; JSON of another shape names its first fault.
+    const run = tempDir();
+    expect(readCuratorFile(run)).toEqual({ value: null, fault: null });
+    mkdirSync(join(run, "taste"));
+    writeFileSync(join(run, CURATOR_FILE), JSON.stringify(ok));
+    expect(readCuratorFile(run)).toEqual({ value: ok, fault: null });
+    writeFileSync(join(run, CURATOR_FILE), "{");
+    expect(readCuratorFile(run)).toEqual({ value: null, fault: "taste/curator.json is not valid JSON" });
   });
 
   it("tokensPx: the owner's tokens as the taste probe's scale in px, by the kind each name names; null when none", () => {

@@ -242,6 +242,8 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
         { row: "t99", verdict: "reject", reason: "names no row" },
       ],
       leads: [],
+      substitutions: [],
+      cw: [],
     });
     const gh = fakeGh();
     const r = await file(t, gh, 10);
@@ -379,8 +381,11 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     t.put("taste/judge.json", { version: 1, run: "20000101000000-0123abcd", bar: 1, rows: [], journeys: {} });
     await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/judge.json is not this run's");
     judged(t, [row(1)]);
-    t.put("taste/curator.json", { verdicts: [{ row: "t1", verdict: "maybe" }] });
-    await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json verdict 1 is not {row, verdict: confirm|reject|polish, reason}");
+    t.put("taste/curator.json", { verdicts: [{ row: "t1", verdict: "maybe", reason: "" }], leads: [], substitutions: [], cw: [] });
+    await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json verdicts[0] is not {row, verdict: confirm|reject|polish, reason}");
+    // The return is checked whole (validateCurator): a free-text walkthrough answer refuses it too.
+    t.put("taste/curator.json", { verdicts: [], leads: [], substitutions: [], cw: [{ journey: "order-to-cash", step: 1, q1: "yes, it held", q2: "pass", q3: "pass", q4: "pass" }] });
+    await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json cw[0] is not {journey, step: 1-100, q1..q4: pass|fail|n/a}");
     expect(gh.calls).toEqual([]);
     expect(readJudge(t.main, "20000101000000-0123abcd")).toEqual({ judge: null, fault: null });
   }, 30_000);
@@ -451,7 +456,13 @@ describe("argus-live report — the taste and usability scorecard first (decisio
       ],
       { "order-to-cash": { screens: 3, efficiency: EFFICIENCY }, refund: { screens: [ORDER, LIST], efficiency: null } },
     );
-    t.put("taste/curator.json", { verdicts: [{ row: "t1", verdict: "confirm", reason: `see ${link}` }, { row: "t2", verdict: "reject", reason: t.s.cookie }, { row: "t9", verdict: "polish", reason: "x" }], leads: [] });
+    const cw = (step: number, over: Obj = {}) => ({ journey: "order-to-cash", step, q1: "pass", q2: "pass", q3: "pass", q4: "pass", ...over });
+    t.put("taste/curator.json", {
+      verdicts: [{ row: "t1", verdict: "confirm", reason: `see ${link}` }, { row: "t2", verdict: "reject", reason: t.s.cookie }, { row: "t9", verdict: "polish", reason: "x" }],
+      leads: [],
+      substitutions: [{ screen: ORDER, substitution: "partly" }, { screen: LIST, substitution: "no" }],
+      cw: [cw(1), cw(2, { q2: "fail" }), cw(3, { q3: "n/a" })],
+    });
     writeTasteState(t.main, {
       version: 1,
       journeys: {
@@ -471,11 +482,12 @@ describe("argus-live report — the taste and usability scorecard first (decisio
     expect(l.filter((x) => x.startsWith("## "))[0]).toBe("## Taste and usability");
     expect(section(l, "Taste and usability")).toEqual([
       "- taste-bar 1; confirmed: measured two of two this run; queued and accepted: the journey's standing rows in .argus/taste-state.json; satisfaction is never measured, discoverability only through the walkthrough",
-      "- journey order-to-cash: screens 3; efficiency actions 14 (best 9), klm_s 31.5, typed 42, fitts_bits 18.25, modals 1, wait_ms 2300, recovery 0; walkthrough 2 of 3 step(s) pass all four questions; Curator confirm 1, reject 1, polish 0",
+      "- journey order-to-cash: screens 3; efficiency actions 14 (best 9), klm_s 31.5, typed 42, fitts_bits 18.25, modals 1, wait_ms 2300, recovery 0; walkthrough 2 of 3 step(s) fail no question; Curator confirm 1, reject 1, polish 0",
       "  - copy: confirmed 1, queued 0, accepted 1",
       "  - scale: confirmed 1, queued 1, accepted 0",
       "- journey refund: screens 2; efficiency not measured; walkthrough none recorded; Curator confirm 0, reject 0, polish 0",
       "  - states: confirmed 1, queued 0, accepted 0",
+      "- Curator substitution test: substitutable 0, partly 1, no 1 screen(s)",
     ]);
     // No page text and no Curator reason reaches the report: the planted secret and link are nowhere in it.
     const text = l.join("\n");

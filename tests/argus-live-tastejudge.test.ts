@@ -727,6 +727,23 @@ describe("argus-live taste judge (J2)", () => {
     expect(t.file().journeys.j.efficiency).toMatchObject({ wait_ms: 290, recovery: 2 });
   }, 30_000);
 
+  it("the Curator's leads, when its return validates, give the rows they name the first numbers; out of shape, none are used", async () => {
+    const t = judgeRepo();
+    const lead = { rule: "copy.broken", screen: "/b|1440|light" };
+    t.put(1, [t.screen("/a", [], { ease: { findings: [{ rule: "copy.broken", key: "a", measured: "undefined", expected: 0 }] } }), t.screen("/b", [], { ease: { findings: [{ rule: "copy.broken", key: "b", measured: "undefined", expected: 0 }] } })]);
+    await t.judge();
+    expect(t.file().rows.map((r: Obj) => [r.row, r.screen])).toEqual([["t1", "/a|1440|light"], ["t2", "/b|1440|light"]]);
+    writeFileSync(join(t.dir, "curator.json"), JSON.stringify({ verdicts: [], leads: [lead], substitutions: [], cw: [] }));
+    const r = await t.judge();
+    expect(t.file().rows.map((x: Obj) => [x.row, x.screen])).toEqual([["t1", "/b|1440|light"], ["t2", "/a|1440|light"]]);
+    expect(r.lines).toContain(`leads: 1 row(s) named by the 1 lead(s) of ${t.runId}'s Curator come first`);
+    // A return that does not validate (a free-text walkthrough answer) lends no lead.
+    writeFileSync(join(t.dir, "curator.json"), JSON.stringify({ verdicts: [], leads: [lead], substitutions: [], cw: [{ journey: "j", step: 1, q1: "yes", q2: "pass", q3: "pass", q4: "pass" }] }));
+    const bad = await t.judge();
+    expect(t.file().rows.map((x: Obj) => x.screen)).toEqual(["/a|1440|light", "/b|1440|light"]);
+    expect(bad.lines).toContain(`leads: the Curator's return of ${t.runId} is out of shape: its leads are not used`);
+  }, 30_000);
+
   it("judges with the owner's scale: live.json's tokens in px beside taste.json's frame; none without a token source", async () => {
     const t = judgeRepo();
     expect(laneTokens(t.main)).toBe(null);
