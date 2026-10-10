@@ -3,146 +3,284 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task names its model (`Model:`); reviewers are always Opus.
 
 **Goal:** the lane leaves a regression net behind it. The catalog's critical journeys become a lean,
-generated Playwright suite committed in the consumer repo and run by its CI on every pull request —
-Chromium, Firefox, WebKit and Edge when installed, every viewport, with screenshot and ARIA baselines,
-a responsive layout oracle, locale and accessibility checks, form, link and dynamic-state checks — and
-the lane keeps it healthy: it admits paths only after two runs, proposes every change as a pull
-request the owner merges or closes, tells a UI change from a bug by re-running unchanged expectations,
-quarantines flakes, measures performance against per-journey baselines, seeds journeys from trusted
-issues and docs, and writes one report per cycle.
+generated Playwright suite that is committed in the consumer repo and run by its CI on every pull
+request, with no LLM at run time. It runs on Chromium, Firefox and WebKit inside the pinned
+Playwright container, and on Edge where the runner has it. It covers every viewport and carries
+reviewed screenshot and ARIA baselines, a responsive layout oracle, locale checks, axe's WCAG rules
+with journey-scoped keyboard and dialog checks, and form, link and dynamic-state checks. The lane
+keeps the suite healthy:
+- it admits paths only after two runs;
+- it proposes every change, baselines included, as a pull request the owner merges or closes;
+- it tells a UI change from a bug by re-running unchanged expectations;
+- it quarantines base-branch flakes off the critical path without hiding them;
+- it measures performance against per-journey baselines;
+- it seeds journeys from trusted issues and docs;
+- it writes one report per cycle.
 
-**Architecture:** spec §19 is the design (read it first; every rule below points into it). One data
-format (the repro DSL in *path* mode), one generator (`argus-live-codegen.mjs`, grown from
-`argus-live-redtest.mjs`'s body builder), one source per in-page check (two leaf modules, embedded
-verbatim in the suite and run by the lane through `run-code`). The exploratory lane is unchanged but
-for three additions (paths in returns, heal mode, `pw layout`/`source`). Zero sapu runtime
-dependencies: the suite's only dependency is `@playwright/test` at an exact version, in its own
-`package.json`.
+**Architecture:** spec §19 is the design. Read it first; every rule below points into it. The design
+has one data format (the repro DSL in *path* mode) and one generator (`argus-live-codegen.mjs`,
+grown from `argus-live-redtest.mjs`'s body builder). Each in-page check has one source, in two leaf
+modules: the suite embeds it verbatim, and the lane runs it through `run-code`. The exploratory
+lane is unchanged except for three additions: paths in returns, heal mode, and `pw layout`/`source`.
+sapu gains no runtime dependency. The suite has exactly two dependencies, `@playwright/test` and
+`@axe-core/playwright`, both pinned to exact versions in the suite's own `package.json`.
 
-**Tech stack:** Node ≥ 22.18 ESM, vitest, the pinned `@playwright/cli` 0.1.22 install (its
-`playwright` 1.64 alpha package carries the test runner the browser tests drive), `gh`, `git`.
+**Tech stack:** Node ≥ 22.18 ESM, vitest, `gh`, `git`, and the pinned `@playwright/cli` 0.1.22
+install. That install's `playwright` 1.64 alpha package carries the test runner the lane's browser
+tests drive, through a scratch `@playwright/test` stub (see D4).
 
 Spec: [docs/specs/argus-journey-lane.md §19](../specs/argus-journey-lane.md#19-phase-6--the-smoke-suite-and-its-checks-not-built-yet);
 §3 (narrowed non-goals), §10 (the DSL), §11 (guard). Roadmap: row 6, [argus-journey-lane-roadmap.md](argus-journey-lane-roadmap.md).
+**Evidence:** [argus-journey-lane-6-research.md](argus-journey-lane-6-research.md). Each decision
+below carries its source ids in square brackets. `[probe]` is Task 0.1's measured result, which
+outranks every document.
 
-**Precondition.** Phase 5 as built (`feat/argus-p6` from the 2.9.0 release branch, this plan written at
-2225fcb). Rebase onto the release branch once its Linux CI fixes land, before lane 0 starts. The
-plugin-text rules of phase 5's plan apply unchanged (English, no date, no three- or four-digit `#`
-reference, no home path, no consumer name, no run history, no machine-tuned number in prose); every
-commit carries the branch's `Signed-off-by` trailer and no assistant attribution; a commit touching
-an enforcement file carries a `Rule-Change:` trailer.
+**Precondition.** Phase 5 as built. This plan was written at 2225fcb on `feat/argus-p6`, which
+branched from the 2.9.0 release branch. Its research revision builds on Task 0.1 (6bf856d). Rebase
+onto the release branch once its Linux CI fixes land, before lane 0 goes on. The plugin-text rules
+of phase 5's plan apply unchanged: English, no date, no three- or four-digit `#` reference, no home
+path, no consumer name, no run history, and no machine-tuned number in prose. Every commit carries
+the branch's `Signed-off-by` trailer and no assistant attribution. A commit that touches an
+enforcement file also carries a `Rule-Change:` trailer.
 
 ---
 
-## Verified at 2225fcb
+## Verified at 2225fcb, and since
 
 | Fact | Where |
 |---|---|
-| The pinned install holds `@playwright/cli` 0.1.22, `playwright` and `playwright-core` `1.64.0-alpha-1790635538000`; npm's `latest` for `@playwright/test` is `1.64.0` | `scripts/pw/package-lock.json`, `npm view` |
-| `parseRepro` requires a last step with `final` naming an oracle; `FINAL_KINDS` keys are exactly `ORACLES` | `argus-live-steps.mjs` |
-| `redTest` builds every string through `str()` (JSON literal or placeholder variable) and targets through `targetCode`; its helpers are stubs that throw | `argus-live-redtest.mjs` |
-| `argus-live-repro.mjs` is 747 lines; the DAG test caps only `-instance.mjs` (< 700) and pins `-redtest`'s imports to `-return`, `-targets` | `tests/argus-live-findings.test.ts` "the DAG" |
-| Module names must match `^argus-live(-[a-z]+)?\.mjs$` to be in the DAG graph | same |
-| The guard lets a subagent run only `status`, `status --json`, `check` of `argus-live.mjs`; the explorer only `pw` | `sapu-guard.mjs` `LIVE_READS` |
-| The wrapper's login code is built from constant templates and `live.json`'s parsed locators; TOTP is Node crypto | `argus-live-login.mjs` |
-| `SIGNAL_SCRIPT` is installed in every page by the session hook | `argus-live-browser.mjs`, `-session.mjs` |
-| `live.json` already has `viewports`, `locales`, `locale`, `timezone`; unknown keys are refused | `argus-live-config.mjs` `TOP_KEYS` |
-| standards.md cites WCAG 2.2 1.4.3, 1.4.10, 1.4.11, 1.4.12, 2.4.7, 2.4.11, 2.5.5, 2.5.8, 3.2.4; not 2.1.1, 2.1.2, 2.4.3, 3.3.1, 4.1.2, 4.1.3 | `skills/argus/standards.md` |
-| Playwright: tests are passed, flaky (failed, then passed on retry) or failed; no shuffle option is documented; ARIA snapshots match partially by default, `.aria.yml` files take `expect.toMatchAriaSnapshot.pathTemplate`, `-u` updates; screenshots differ per platform | playwright.dev (test-retries, aria-snapshots, test-snapshots) |
-| WCAG 2.4.3 requires an order that "preserves meaning and operability", not visual order; F44 is the positive-tabindex failure | w3.org Understanding Focus Order |
+| The pinned install holds `@playwright/cli` 0.1.22, `playwright` and `playwright-core` `1.64.0-alpha-1790635538000`, but **not** `@playwright/test`. npm's `latest` for `@playwright/test` is `1.64.0`, and for `@axe-core/playwright` it is `4.13.0` (MPL-2.0, `axe-core ~4.13.0`). | `scripts/pw/package-lock.json`, `npm view`, [probe], [npm] |
+| `parseRepro` requires a last step with a `final` naming an oracle. `FINAL_KINDS`'s keys are exactly `ORACLES`. | `argus-live-steps.mjs` |
+| `redTest` builds every string through `str()` (a JSON literal or a placeholder variable) and every target through `targetCode`. Its helpers are stubs that throw. | `argus-live-redtest.mjs` |
+| `argus-live-repro.mjs` is 747 lines. The DAG test caps only `-instance.mjs` (< 700) and pins `-redtest`'s imports to `-return` and `-targets`. | `tests/argus-live-findings.test.ts` "the DAG" |
+| Module names must match `^argus-live(-[a-z]+)?\.mjs$` to be in the DAG graph. | same |
+| The guard lets a subagent run only `status`, `status --json` and `check` of `argus-live.mjs`. The explorer runs only `pw`. | `sapu-guard.mjs` `LIVE_READS` |
+| The wrapper's login code is built from constant templates and `live.json`'s parsed locators. TOTP is Node crypto. | `argus-live-login.mjs` |
+| The session hook installs `SIGNAL_SCRIPT` in every page. | `argus-live-browser.mjs`, `-session.mjs` |
+| `live.json` already has `viewports`, `locales`, `locale` and `timezone`. Unknown keys are refused. | `argus-live-config.mjs` `TOP_KEYS` |
+| standards.md cites WCAG 2.2 1.4.3, 1.4.10, 1.4.11, 1.4.12, 2.4.7, 2.4.11, 2.5.5, 2.5.8 and 3.2.4. It does not cite 2.1.1, 2.1.2, 2.4.3, 3.3.1, 4.1.2 or 4.1.3. | `skills/argus/standards.md` |
+| A test is passed, flaky (failed, then passed on retry) or failed. 1.64 adds `--shuffle [seed]`, and 1.63 adds test locks. ARIA snapshots match partially by default. Screenshots differ per browser and platform. | [pw-retries], [pw-release], [pw-cli], [pw-aria], [pw-snap] |
+| Under `updateSnapshots: "none"`, a missing screenshot fails with no actual. A mismatch attaches expected, actual and diff. `--update-snapshots=missing` writes the baseline and passes. An ARIA mismatch gives only a line diff, and a missing `.aria.yml` compares as `""`. | [probe] (As built, Task 0.1) |
+| WCAG 2.4.3 requires an order that "preserves meaning and operability", not the visual order. F44 is the failure of a positive tabindex that breaks meaning. | [u-2.4.3] |
 
 ---
 
 ## Decisions (one each; alternatives rejected)
 
-1. **The suite is generated from paths, not map steps.** A map step is a goal, not an action; only an
-   LLM could turn it into code, and no LLM runs at test time. *Rejected:* codegen from map steps.
-2. **Paths come from explorers that reached the goal** (`path` in the return, charter `path: wanted`),
-   admitted only after two runs, fresh then dirty. *Rejected:* recording the explorer's trail (free
-   text, not the DSL).
-3. **Suite location:** `e2e/argus-smoke/` by default (`smoke.json` `dir`), self-contained with its own
-   `package.json`, so a repo in any language runs it. *Rejected:* the repo's root `package.json` (none
-   in non-Node repos; touches the app's lockfile).
-4. **`@playwright/test` pinned exactly** to `SMOKE_PLAYWRIGHT` = `1.64.0` (stable), with a test that its
-   major.minor equals the pinned lockfile's `playwright-core`; bumping the CLI fails that test until the
-   constant moves, and `smoke plan` then lists the suite's upgrade. Lockfile committed (`npm install
-   --package-lock-only --ignore-scripts`). *Rejected:* the CLI's alpha build in a consumer repo.
-5. **Every suite change is a pull request** on an `argus/` branch, never merged by sapu; merged =
-   accepted, closed = rejected and remembered. *Rejected:* filing an issue for a sapu worker to apply
-   (workers may not run lane verbs, and sapu would merge it itself); local patches (no review trail).
+1. **The suite is generated from paths, not map steps.** A map step is a goal, not an action. Only
+   an LLM could turn it into code, and no LLM runs at test time. *Rejected:* codegen from map steps.
+   [pw-best]
+2. **Paths come from explorers that reached the goal** (`path` in the return, charter `path:
+   wanted`). A path is admitted only after two runs, fresh then dirty, which catches its assumptions
+   about the data's state. *Rejected:* recording the explorer's trail (free text, not the DSL).
+   [google-tott-flaky]
+3. **Suite location:** `e2e/argus-smoke/` by default (`smoke.json` `dir`). The suite is
+   self-contained with its own `package.json` and lockfile, so a repo in any language runs it with
+   `npm ci`. *Rejected:* the repo's root `package.json`, because non-Node repos have none and it
+   would touch the app's lockfile. [pw-ci]
+4. **Exact pins, one version line.**
+   - `@playwright/test` is pinned to `SMOKE_PLAYWRIGHT` = `1.64.0` (stable), and `@axe-core/playwright`
+     to `SMOKE_AXE` = `4.13.0`. Both pins are exact, and the lockfile is committed (`npm install
+     --package-lock-only --ignore-scripts`).
+   - The CI image is `mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble`.
+   - A test checks that `SMOKE_PLAYWRIGHT`'s major.minor equals the pinned lockfile's
+     `playwright-core`. Bumping the CLI fails that test until the constant moves, and `smoke plan`
+     then lists the suite's upgrade, which needs a baseline run (D7).
+   - The pinned install has no `@playwright/test` [probe]. The lane's own browser tests therefore
+     run a generated suite against the pinned alpha through a scratch
+     `node_modules/@playwright/test/index.js` holding `module.exports = require("playwright/test")`.
+     The probe showed this passes. Tests never run `npm install`.
+   - Generated code uses only APIs present in both the alpha and 1.64.0 (test locks arrived in
+     1.63). `--shuffle` lives only in the CI command line.
+   - *Rejected:* the CLI's alpha in a consumer repo; installing from npm inside sapu's tests (network
+     in the gate). [probe] [npm] [axe-pw] [pw-ci] [pw-release]
+5. **Every suite change is a pull request** on an `argus/` branch, and sapu never merges it. This
+   covers paths, heals, quarantine, drops and baselines. Merged = accepted; closed = rejected and
+   remembered. *Rejected:* filing an issue for a sapu worker to apply (workers may not run lane
+   verbs, and sapu would merge it itself); local patches (no review trail). [chromatic-review]
+   [chromatic-branch]
 6. **UI change vs bug is decided by re-running unchanged expectations** (spec §19.9). A heal changes
-   only action targets, at most `heal_max_steps`; it can never add, drop or reorder a step. *Rejected:*
-   letting the explorer judge; healing expectations.
-7. **Visual, ARIA and known-violation baselines are adopted from CI's artifact** (`smoke baseline
-   --from-run`), committed, so per branch. *Rejected:* lane-made baselines (wrong platform for
-   screenshots; one adoption path is simpler than two); an external baseline store (no review trail).
-8. **Cross-browser lives only in the suite.** The exploratory lane stays on Chrome: its isolation
-   (proxy, in-daemon hook, signal script) is proven on the pinned CLI's Chrome; Firefox and WebKit would
-   be downloads at `up`; explorer cost would multiply for workflow defects that are browser-independent;
-   perf APIs are Chromium-complete.
-9. **Performance is measured by the lane, not by CI**, on suite paths, median of `perf.runs` after a
-   warm-up, confirmed by a second batch. *Rejected:* a CI perf gate (noisy shared runners, no baseline
-   store); explorer walks (not repeatable).
-10. **axe-core is not used** (spec §19.7). *Rejected:* `@axe-core/playwright` as a suite dev dependency —
-    whole-page rules fail CI on debt the journeys never touch and need a second suppression baseline.
-    Revisit when the owner wants a conformance audit rather than journey checks.
-11. **Hybrid setup:** one `setup` project signs every account in through the real UI with the
-    wrapper's own login template, storageState gitignored and 0600; seeds through `seed: true`
-    triggers. *Rejected:* an owner-wired `signedIn` stub for every role (kept only for `login.command`
-    roles).
-12. **Workers:** `fullyParallel: true`, Playwright's default worker count; storageState reuse means no
-    sign-in races. Order independence is proven by admission's dirty run and the lane's seeded random
-    order (the runner has no shuffle).
-13. **Flakes are quarantined** (`quarantine.json` in the suite, `test.fixme`, one tracking issue),
-    leave after three clean lane cycles, and are dropped after a second quarantine or five cycles.
-14. **The API-level RED hint ships in phase 6** (one line from `repro --test` when the final is
-    `fact-equals` or `mail`); generating API tests is a follow-up.
-15. **A smoke suite needs the contract's home `repo` and `traces: "visible"`**; office mode gets none.
-16. **The CI workflow is written by `/sapu:init`, only with consent**, from `smoke workflow`; without a
-    `workflow` token scope init hands the file over.
-17. **Version 2.10.0** at the end (new behaviour, new `live.json` keys an older plugin refuses), unless
-    2.9.0 is still untagged when this phase closes, in which case phase 6 rides in 2.9.0 and the
-    upgrade note grows (Task Z4 decides from `git ls-remote --tags`).
+   only action targets, at most `heal_max_steps` of them. It can never add, drop or reorder a step,
+   skip the test, add a wait or change a value. A heal is never applied at run time: CI fails, and
+   the heal arrives later as a proposal. *Rejected:* runtime healing that picks the best-scoring
+   locator and continues [healenium]; a healer that may patch waits or data, or skip a test it
+   "believes" broken [pw-agents]; letting the explorer judge.
+7. **Visual and ARIA baselines are made only by CI's baseline run on the pinned container, and they
+   reach the repo as a reviewed pull request.**
+   - A normal CI run never writes baselines (`updateSnapshots: "none"`). A missing baseline fails
+     the run, and the failure attaches nothing to adopt [probe]. An ARIA mismatch carries only a
+     line diff [probe].
+   - `smoke baseline --from-run <id>` on a normal run therefore dispatches the workflow's
+     `baseline` job (`workflow_dispatch`) on that run's branch, with `--update-snapshots=missing`
+     for missing ids. It uses `changed` only for ids the owner names with `--ids` after reading
+     `smoke ci`'s diff.
+   - The same command on a baseline run adopts the files that run wrote. The adopted ARIA files are
+     pruned: digit runs become `\d+`, and the marker becomes `argus-[0-9a-z]+`.
+   - The files land as a commit on the run's `argus/` branch, or in an `argus/baselines-<runId>` PR
+     into the run's branch. The owner reviews them in the PR's image view (2-up, swipe, onion skin)
+     and accepts them by merging.
+   - A journey has no visual check until its first baseline merges. Tests fail until a baseline is
+     accepted, as Chromatic's do.
+   - A conflicting baseline file is never resolved by picking a side. It is dropped and
+     regenerated by a baseline run on the merged branch, since a stale baseline yields false
+     positives.
+   - *Rejected:* lane-made baselines (the wrong platform for screenshots, a second adoption path for
+     ARIA); adopting `-actual.png` from a failing normal run (that covers mismatches only, and the
+     probe shows new baselines need the update run anyway, so one path serves both); an external
+     baseline store (no review trail). [probe] [pw-release] [pw-ci] [pw-snap] [gh-dispatch]
+     [gh-images] [chromatic-branch] [percy-baseline]
+8. **Cross-browser lives only in the suite.**
+   - Screenshot projects run on Playwright's own Chromium, Firefox and WebKit inside the pinned
+     container. WebKit is labelled as not Safari.
+   - `msedge` runs the path and checks, but no screenshots, on the plain runner, whose image ships
+     Edge. A branded channel moves with the runner image, not with the pin, so a baseline would
+     drift. sapu never installs Edge, since `install msedge` overrides the machine's own copy.
+   - The exploratory lane stays on Chrome. Its isolation (proxy, in-daemon hook, signal script) is
+     proven there, and workflow defects are browser-independent. [pw-browsers] [gh-runner]
+     [pw-snap]
+9. **Performance is measured by the lane, not by CI.**
+   - It runs on suite paths, on a quiet machine: refused while another slot is live, since
+     concurrent load skews results.
+   - Each batch is a warm-up, then `perf.runs` = 5 runs, and each metric takes its median. A
+     regression is confirmed by a second batch.
+   - LCP is read per document, and a perf run waits for `load` before acting on a new document,
+     because LCP stops at the first input.
+   - INP is the worst interaction, with `durationThreshold: 16`. CLS is the largest session window,
+     skipping `hadRecentInput` shifts.
+   - web.dev's "good" thresholds are field targets at the 75th percentile. The report shows them
+     only as lab context, never as a verdict.
+   - *Rejected:* a CI perf gate (noisy shared runners, no baseline store); explorer walks (not
+     repeatable). [lh-variability] [lhci-config] [webdev-lcp] [webdev-cls] [webdev-inp]
+     [webdev-vitals] [webdev-labfield]
+10. **axe-core runs in the suite's `a11y` project** at each path screen. It uses
+    `withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])` and is scoped with
+    `include("main")`, or the whole page without a `main`. `target-size` is disabled, because the
+    layout oracle owns 2.5.8 in every viewport.
+    - Violations are fingerprinted `{check: "axe:<rule>", key: <node target>}`, and adopted known
+      ones never fail. axe's `incomplete` results are reported `manual`, never failed.
+    - axe replaces the hand-written contrast check. The custom checks keep what axe cannot see:
+      keyboard reach, focus, dialogs, forms, layout, locale, links, loading, empty states and
+      toasts.
+    - *Rejected:* the earlier "no axe" decision. Its reasons (whole-page debt, a second suppression
+      baseline) are exactly what `withTags`, `include` and fingerprinted known issues answer, and
+      axe's zero-false-positive policy beats a re-implemented contrast engine. [pw-a11y]
+      [axe-readme] [axe-api] [axe-pw]
+11. **Hybrid setup.** One `setup` project signs every account in through the real UI with the
+    wrapper's own login template. The storageState is gitignored and 0600, since it holds session
+    cookies. The setup project records no trace, video or screenshot, because typed passwords would
+    land in the artifact. Seeds go through `seed: true` triggers. *Rejected:* an owner-wired
+    `signedIn` stub for every role (kept only for `login.command` roles). [pw-auth] [pw-use]
+12. **Order and concurrency are proven on every CI run.**
+    - Every test declares a `lock` named after each account it opens (`account:<role>.<k>`), so two
+      tests sharing an account never run at once, in any project. The auth guide limits a shared
+      signed-in state to tests without server-side state, and journeys change it.
+    - The config sets `fullyParallel: true` (shard balance) and `workers: 1` under CI, which
+      Playwright's CI guide recommends. Elsewhere it uses Playwright's default or `smoke.json`
+      `workers`.
+    - CI runs `--shuffle`, and the seed is printed. *Correction:* the earlier "the runner has no
+      shuffle" was wrong for 1.64. [pw-auth] [pw-parallel] [pw-ci] [pw-release] [pw-cli]
+      [google-tott-flaky]
+13. **Flakes are quarantined off the critical path, never out of sight.**
+    - A test `flaky` on a base-branch push run is proposed into `quarantine.json`. Codegen tags it
+      `@quarantine`. The gating job runs `--grep-invert @quarantine`, and a non-gating quarantine
+      job keeps running it.
+    - A flake first seen on a pull request's head, never seen on the base, is `flaky-new`. It gets a
+      comment on that PR and is never quarantined, since quarantine "could easily mask a real race
+      condition".
+    - A test leaves quarantine after three cycles in which the lane held it twice and every
+      quarantine-job result read passed first time. It is dropped after a second quarantine or
+      five cycles. `failOnFlakyTests` stays off, because a retry-pass reports as `flaky`, not red.
+    - *Rejected:* `test.fixme` (it stops the runs that prove recovery); marking a test flaky and
+      re-running it until green. [google-flaky] [google-flaky-size] [pw-retries] [pw-config]
+14. **The API-level RED hint ships in phase 6.** It is one line from `repro --test` when the final
+    is `fact-equals` or `mail`. Generating API tests is a follow-up, because the engine knows no
+    app's API.
+15. **A smoke suite needs the contract's home `repo` and `traces: "visible"`.** Office mode gets
+    none.
+16. **The CI workflow is written by `/sapu:init`, only with consent**, from `smoke workflow`. It
+    carries:
+    - `permissions: contents: read` and no `pull_request_target`;
+    - actions pinned to full commit SHAs, which `smoke workflow` resolves through `gh api` when it
+      prints the file;
+    - the container with `--ipc=host --init`;
+    - `globalTimeout` and `forbidOnly` under CI;
+    - artifacts with `retention-days: 7`;
+    - the `baseline` dispatch, whose inputs reach the shell only through `env:` and are checked
+      against fixed shapes.
+
+    Without a `workflow` token scope, init hands the file over. [pw-ci] [pw-docker] [pw-config]
+    [gh-secure] [gh-artifacts] [gh-dispatch]
+17. **Version 2.10.0** at the end (new behaviour, new `live.json` keys an older plugin refuses).
+    If 2.9.0 is still untagged when this phase closes, phase 6 rides in 2.9.0 and the upgrade note
+    grows. Task Z4 decides from `git ls-remote --tags`.
+18. **Screenshot settings are Playwright's own defaults, made explicit.**
+    - `threshold` stays at 0.2, with no pixel allowance. `animations: "disabled"` and `caret:
+      "hide"` are set, and the pointer is parked (`page.mouse.move(-1, -1)`) before each shot.
+    - Shots are viewport-only PNGs. The `mask` covers `time` elements, the marker, every saved
+      value and the journey's configured `masks`. Each project names its own path:
+      `__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}`.
+    - *Rejected:* a pixel allowance by default (the pinned container removes the platform noise it
+      would paper over); WebP (PNG is what the PR image view shows). [pw-snap] [pw-config]
+19. **Fences are hygiene, not a boundary.** Text from pages, issues, docs and CI artifacts is
+    fenced as data. The guarantees come from elsewhere: the explorer's confinement (only `pw`, no
+    network out), the deterministic gates (`validateMap`, `map-check` anchors, repro two of two,
+    the heal decision table) and the owner's merge of every proposal. *Rejected:* an LLM guardrail
+    filter, which is "itself susceptible to prompt injection". [owasp-llm01] [owasp-pi-cheat]
 
 ---
 
 ## Lanes, models, merge order
 
-Lane 0 is sequential and lands first: it owns every shared hotspot (the config schema, the CLI
-dispatch, the guard, CONTRACT.md, the DAG test, the DSL, the runner, the generator). After it, lanes
-A–F run in parallel worktrees, each owning disjoint files. Lane Z is sequential and last. The spec is
-not edited by any lane; Z4 folds the as-built notes.
+Lane 0 is sequential and lands first. It owns every shared hotspot: the config schema, the CLI
+dispatch, the guard, CONTRACT.md, the DAG test, the DSL, the runner and the generator. After it,
+lanes A–F run in parallel worktrees, each owning disjoint files. Lane Z is sequential and last. No
+lane edits the spec; Z4 folds in the as-built notes.
 
-**Rules for parallel lanes.** A lane edits only the files its table lists. A lane implements the
-function bodies lane 0 stubbed, with the signatures below, and never edits `argus-live.mjs`,
-`argus-live-config.mjs`, `sapu-guard.mjs`, CONTRACT.md, the DAG test or the spec; a missing hook is
-reported back to lane 0, not added. Each lane's tests live in its own test file. Engine text (agent
-file, skills, init, docs) waits for lane Z.
+**Rules for parallel lanes.**
+- A lane edits only the files its table row lists.
+- A lane implements the function bodies lane 0 stubbed, with the signatures below.
+- A lane never edits `argus-live.mjs`, `argus-live-config.mjs`, `sapu-guard.mjs`, CONTRACT.md, the
+  DAG test or the spec. A missing hook is reported back to lane 0, not added.
+- Each lane's tests live in its own test file.
+- Engine text (agent file, skills, init, docs) waits for lane Z.
 
 | Lane | Tasks | Owns | Model mix | Estimate |
 |---|---|---|---|---|
 | 0 | 0.1 → 0.2 → 0.3 → 0.4 | `argus-live.mjs`, `-config.mjs`, `-steps.mjs`, `-classes.mjs`, `-return.mjs`, `-repro.mjs`, `-minimize.mjs`, `-smoke.mjs`, `-codegen.mjs`, `-redtest.mjs`, `sapu-guard.mjs`, CONTRACT.md, `tests/argus-live-findings.test.ts`, `tests/argus-live-smoke.test.ts`, `tests/sapu-guard.test.ts`, every new module's stub | opus-high (0.1 sonnet-medium) | 7 h |
-| A | A1 → A2 → A3 → A4 | `-suite.mjs`, `-propose.mjs`, `tests/argus-live-suite.test.ts` | A1 sonnet-medium, A2–A4 opus-high | 5 h |
-| B | B1 → B2 → B3 | `-heal.mjs`, `-ci.mjs`, `tests/argus-live-ci.test.ts`, `tests/fixtures/ci-artifact/` | opus-high | 6 h |
+| A | A1 → A2 → A3 → A4 | `-suite.mjs`, `-propose.mjs`, `tests/argus-live-suite.test.ts` | A1 sonnet-medium, A2–A4 opus-high | 5.5 h |
+| B | B1 → B2 → B3 | `-heal.mjs`, `-ci.mjs`, `tests/argus-live-ci.test.ts`, `tests/fixtures/ci-artifact/` | opus-high | 7 h |
 | C1 | C1.1 → C1.2 → C1.3 | `-layout.mjs`, `tests/argus-live-layout.test.ts`, `tests/fixtures/journey-app/pages/layout/` | sonnet-medium | 4 h |
-| C2 | C2.1 → C2.2 → C2.3 → C2.4 | `-a11y.mjs`, `skills/argus/standards.md`, `tests/argus-live-a11y.test.ts`, `tests/fixtures/journey-app/pages/a11y/` | sonnet-medium | 5 h |
-| C3 | C3.1 → C3.2 | `-codegen.mjs` (after lane 0), `tests/argus-live-codegen.test.ts` | sonnet-medium | 3 h |
-| D | D1 | `-perf.mjs`, `-session.mjs`, `-smoke.mjs` (after lane 0), `tests/argus-live-perf.test.ts` | sonnet-medium | 3 h |
+| C2 | C2.1 → C2.2 → C2.3 → C2.4 | `-a11y.mjs`, `skills/argus/standards.md`, `tests/argus-live-a11y.test.ts`, `tests/fixtures/journey-app/pages/a11y/`, `tests/fixtures/axe-results/` | sonnet-medium | 4.5 h |
+| C3 | C3.1 → C3.2 | `-codegen.mjs` (after lane 0), `tests/argus-live-codegen.test.ts` | sonnet-medium | 3.5 h |
+| D | D1 | `-perf.mjs`, `-session.mjs`, `-smoke.mjs` (after lane 0), `tests/argus-live-perf.test.ts` | sonnet-medium | 3.5 h |
 | E | E1 | `-seed.mjs`, `-pw.mjs`, `-slots.mjs`, `-map.mjs`, `tests/argus-live-seed.test.ts` | opus-high | 3 h |
 | F | F1 → F2 | `-report.mjs`, `-scrub.mjs`, `-repro.mjs` (after lane 0), `tests/argus-live-report.test.ts` | F1 opus-high, F2 sonnet-medium | 2.5 h |
 | Z | Z1 → Z2 → Z3 → Z4 | `-pw.mjs`/`-steps.mjs` runner kind (Z1), engine text, docs, diagrams, spec, roadmap, this plan | Z1, Z3 sonnet-medium; Z2 opus-high; Z4 review Opus | 7 h |
 
-Merge order after lane 0: **A, C3, C1, C2, B, D, E, F**, each rebased on the one before and the whole
-suite green before the next merges (A before B: heal proposals use A's propose; C3 before C1 and C2: the
-check registry's emitters run inside C3's projects). Critical path ≈ lane 0 (7 h) + the longest lane
-(B, 6 h) + merges (2 h) + Z (7 h) ≈ 22 h wall-clock, against ≈ 45 h serial.
+**Merge order after lane 0:** A, C3, C1, C2, B, D, E, F. Each lane is rebased on the one before,
+and the whole suite is green before the next merges.
+- A goes before B, because heal and baseline proposals use A's propose and A4's dispatch job.
+- C3 goes before C1 and C2, because the check registry's emitters and the axe pin live in C3's
+  projects and `package.json`.
 
-**Signatures lane 0 fixes** (each returns `{code, lines}`; the CLI prints `lines`, exits `code`):
-`smokePlan(main)`, `smokeAdmit(main, ref)`, `smokeCheck(main)` (`-suite.mjs`); `smokePropose(main,
-{dryRun})`, `smokeWorkflow(main)` (`-propose.mjs`); `smokeRun(main, {ids, slot, perf, seed})`
-(`-smoke.mjs`); `smokeHeal(main, ref)` (`-heal.mjs`); `smokeCi(main, {run})`, `smokeBaseline(main,
-{fromRun, ids})` (`-ci.mjs`); `perfIssue(main, id)`, `perfRebaseline(main, id)` (`-perf.mjs`);
-`seed(main, {issue, doc})` (`-seed.mjs`); `report(main, {run})` (`-report.mjs`). Check modules export
+Critical path ≈ lane 0 (7 h) + the longest lane (B, 7 h) + merges (2 h) + Z (7 h) ≈ 23 h
+wall-clock, against ≈ 47 h serial.
+
+**Signatures lane 0 fixes.** Each returns `{code, lines}`; the CLI prints `lines` and exits with
+`code`. They are unchanged by the research revision.
+
+| Module | Signatures |
+|---|---|
+| `-suite.mjs` | `smokePlan(main)`, `smokeAdmit(main, ref)`, `smokeCheck(main)` |
+| `-propose.mjs` | `smokePropose(main, {dryRun})`, `smokeWorkflow(main)` |
+| `-smoke.mjs` | `smokeRun(main, {ids, slot, perf, seed})` |
+| `-heal.mjs` | `smokeHeal(main, ref)` |
+| `-ci.mjs` | `smokeCi(main, {run})`, `smokeBaseline(main, {fromRun, ids})` |
+| `-perf.mjs` | `perfIssue(main, id)`, `perfRebaseline(main, id)` |
+| `-seed.mjs` | `seed(main, {issue, doc})` |
+| `-report.mjs` | `report(main, {run})` |
+
+`smokeBaseline` dispatches on a normal run and adopts on a baseline run (D7). Check modules export
 `CHECKS`: `[{name, project, when, source, emit(step, ctx) → string[]}]` (`-layout.mjs`, `-a11y.mjs`).
 
 ---
@@ -152,19 +290,19 @@ check registry's emitters run inside C3's projects). Critical path ≈ lane 0 (7
 | File | Responsibility |
 |---|---|
 | `scripts/argus-live-config.mjs` | `live.json` keys `test_id_attribute`, `pseudo_locales`, `tokens`, `triggers.*.seed`; `loadSmoke`, `validateSmoke`, `SMOKE_KEYS` (0.2) |
-| `scripts/argus-live-steps.mjs` | path mode, selector order, `regression` oracle, `layout` expectation (0.2, 0.3) |
+| `scripts/argus-live-steps.mjs` | path mode, selector order, the `regression` oracle, the `layout` expectation (0.2, 0.3) |
 | `scripts/argus-live-classes.mjs` | the `regression` row (0.2) |
 | `scripts/argus-live-return.mjs` | `path` and `heal` in a return (0.3) |
 | `scripts/argus-live-minimize.mjs` | new: `minimize`, `redTestFile`, `savedValues` moved out of `-repro.mjs` (0.3) |
 | `scripts/argus-live-repro.mjs` | `runOnce` path mode (0.3); the API-level hint (F2) |
 | `scripts/argus-live-smoke.mjs` | new: `smokeRun` (0.3); `--perf` (D1) |
-| `scripts/argus-live-codegen.mjs` | new: the suite generator (0.4); projects, visual, browsers (C3) |
-| `scripts/argus-live-redtest.mjs` | its body builder moved to `-codegen.mjs`, `redTest` a thin caller (0.4) |
+| `scripts/argus-live-codegen.mjs` | new: the suite generator, locks, CI config rules (0.4); projects, visual, browsers, the axe pin (C3) |
+| `scripts/argus-live-redtest.mjs` | its body builder moved to `-codegen.mjs`; `redTest` becomes a thin caller (0.4) |
 | `scripts/argus-live-suite.mjs` | new: plan, admit, check (A1–A3) |
 | `scripts/argus-live-propose.mjs` | new: propose, workflow (A3, A4) |
-| `scripts/argus-live-heal.mjs`, `-ci.mjs` | new: heal (B1); CI triage, quarantine, baselines (B2, B3) |
-| `scripts/argus-live-layout.mjs`, `-a11y.mjs` | new leaves: check sources and emitters (C1, C2) |
-| `scripts/argus-live-perf.mjs` | new: `PERF_SCRIPT`, medians, baselines, perf issue (D1) |
+| `scripts/argus-live-heal.mjs`, `-ci.mjs` | new: heal (B1); CI triage, quarantine, the baseline run and adoption (B2, B3) |
+| `scripts/argus-live-layout.mjs`, `-a11y.mjs` | new leaves: check sources and emitters, with axe's emitter in `-a11y` (C1, C2) |
+| `scripts/argus-live-perf.mjs` | new: `PERF_SCRIPT`, medians, baselines, the perf issue (D1) |
 | `scripts/argus-live-seed.mjs` | new: seeds (E1); `-pw.mjs` `source`, `-slots.mjs` `--seed`, `-map.mjs` `seeds` |
 | `scripts/argus-live-report.mjs` | new: the report (F1); `-scrub.mjs` `filed.jsonl` |
 | `scripts/argus-live.mjs` | dispatch and usage for every new verb (0.2) |
@@ -228,24 +366,47 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
 - [ ] **Commit** `feat(sapu): argus-live paths — the DSL's path mode, the runner's PATH verdicts, the
   lane's smoke pass`.
 
+
 ### Task 0.4: the generator core
 **Model: opus-high** (codegen of page-derived strings, storageState). **Files:** `-codegen.mjs` (new),
 `-redtest.mjs`, `tests/argus-live-codegen.test.ts`, `tests/fixtures/argus-red/` (golden unchanged).
-- [ ] **Failing tests** (each scans the generated text): the golden RED test is byte-identical through
-  the moved builder; `smokeSpec` for the fixture path holds no `waitForTimeout`, `setTimeout`, `sleep`,
-  template literal of path data, CSS selector, XPath, `describe.serial`, `beforeAll`, `afterAll` or
-  module-level `let`; the marker is declared inside the test; every step is a `test.step("step <n> …")`;
-  every string of the path appears only as a JSON literal (a path value holding `` ` ``, `${`, `"` and
-  `\n` comes out inert); `smokeConfig` sets `fullyParallel: true`, `retries` 1 under CI, a loopback guard
-  that throws on `http://example.test`, `testIdAttribute` only with `test_id_attribute`; `authSetup`
-  embeds the wrapper's login template verbatim, writes `.auth/<role>.<k>.json` and chmods it 0600, reads
-  passwords and TOTP secrets by their `${NAME}` names from `process.env` and never holds a value;
-  `support.ts` runs triggers by argv without a shell and checks values against `args`; the suite's
-  `.gitignore` lists `.auth/`; `package.json` pins `@playwright/test` exactly to `SMOKE_PLAYWRIGHT`, whose
-  major.minor equals the pinned lockfile's `playwright-core`; generation is a pure function (same input,
-  same bytes) and every file's header digest matches its body. Browser test: the generated suite for
-  the fixture app, run by the pinned runner with a wrapper config (`channel: "chrome"`, `--project setup
-  --project chromium`), passes.
+- [ ] **Failing tests.** Each test scans the generated text.
+  - **The RED test.** The golden RED test is byte-identical through the moved builder.
+  - **`smokeSpec` bans.** The fixture path's spec holds none of: `waitForTimeout`, `setTimeout`,
+    `sleep`, a template literal of path data, a CSS selector, an XPath, `describe.serial`,
+    `beforeAll`, `afterAll`, a module-level `let`, `test.fixme`.
+  - **`smokeSpec` shape.**
+    - The marker is declared inside the test.
+    - Every step is a `test.step("step <n> …")`.
+    - The test declares `lock: ["account:<role>.<k>", …]`, one entry for each account it opens and
+      no other [pw-parallel].
+    - A quarantined id carries `tag: "@quarantine"` [google-flaky].
+    - Every string of the path appears only as a JSON literal: a path value holding `` ` ``, `${`,
+      `"` and `\n` comes out inert.
+  - **`smokeConfig`.**
+    - It sets `fullyParallel: true`, plus under CI: `retries: 1`, `workers: 1`, `forbidOnly: true`,
+      `globalTimeout` and `updateSnapshots: "none"`. Outside CI, `workers` follows `smoke.json` or
+      is unset [pw-ci] [pw-config].
+    - It sets `trace: "on-first-retry"`, and `use: {trace: "off", video: "off", screenshot: "off"}`
+      on the `setup` project [pw-auth].
+    - It has a loopback guard that throws on `http://example.test`.
+    - It sets `testIdAttribute` only with `test_id_attribute`.
+  - **`authSetup`.** It embeds the wrapper's login template verbatim, writes
+    `.auth/<role>.<k>.json` and chmods it 0600. It reads passwords and TOTP secrets by their
+    `${NAME}` names from `process.env` and never holds a value.
+  - **Support and package files.**
+    - `support.ts` runs triggers by argv without a shell and checks values against `args`.
+    - The suite's `.gitignore` lists `.auth/`.
+    - `package.json` pins `@playwright/test` exactly to `SMOKE_PLAYWRIGHT`, whose major.minor
+      equals the pinned lockfile's `playwright-core`.
+  - **Determinism.** Generation is a pure function (same input, same bytes), and every file's
+    header digest matches its body.
+  - **Browser test.**
+    - The generated suite for the fixture app runs with `CI=1` under the pinned alpha runner and a
+      wrapper config (`channel: "chrome"`, `--project setup --project chromium`).
+    - `@playwright/test` resolves through a scratch `node_modules/@playwright/test/index.js` holding
+      `module.exports = require("playwright/test")`, never through `npm install` [probe].
+    - The suite passes, and the runner accepts the `lock` option.
 - [ ] **Run** → FAIL. **Implement** (the `CHECKS` registry loop is in place, empty until C1, C2).
   **Run**, then `npx vitest run` → PASS.
 - [ ] **Commit** `feat(sapu): argus-live codegen — the smoke suite generated from paths, setup project
@@ -256,244 +417,492 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
 ## Lane A — suite lifecycle
 
 ### A1: `smoke plan`
-**Model: sonnet-medium.** - [ ] **Failing tests:** the rank of §19.3 on a fixture catalog (pin > money >
-exposure > filed > roles > id), members before non-members of a tier, `global` and dropped skipped,
-`exclude` and `max`, each output line kind, a pinned global refused, home `local` or `traces: "none"`
-refused, `pending` from an open `argus/` PR (gh stub). - [ ] Run → FAIL; implement; run → PASS.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - the rank of §19.3 on a fixture catalog: pin > money > exposure > filed > roles > id;
+  - members before non-members of a tier;
+  - `global` and dropped journeys skipped;
+  - `exclude` and `max`;
+  - each output line kind;
+  - a pinned global refused;
+  - home `local` or `traces: "none"` refused;
+  - `pending` from an open `argus/` PR (gh stub);
+  - `upgrade <from> → <to> (baseline run needed)` when the suite's pin is behind `SMOKE_PLAYWRIGHT`
+    [pw-snap].
+- [ ] Run → FAIL; implement; run → PASS.
 - [ ] **Commit** `feat(sapu): argus-live smoke plan ranks the catalog into the suite's members`.
 
 ### A2: `smoke admit`
-**Model: opus-high.** - [ ] **Failing tests:** a return's path runs twice (fresh, dirty; `up --fresh` stub
-counted once) and is staged with `{run, head, pathSha, seed}`; a break in either run refuses with
-`<run> <kind> at step <n>`; a journey `smoke plan` does not list `capture` is refused; a path whose
-values hold a ledger secret is refused by name and position, never value. - [ ] Run → FAIL; implement;
-run → PASS. - [ ] **Commit** `feat(sapu): argus-live smoke admit stages a path that held fresh and dirty`.
+**Model: opus-high.**
+- [ ] **Failing tests:**
+  - a return's path runs twice, fresh then dirty (the `up --fresh` stub is counted once), and is
+    staged with `{run, head, pathSha, seed}`;
+  - a break in either run refuses with `<run> <kind> at step <n>`;
+  - a journey that `smoke plan` does not list as `capture` is refused;
+  - a path whose values hold a ledger secret is refused by name and position, never by value.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke admit stages a path that held fresh and dirty`.
 
 ### A3: `smoke propose`, `smoke check`
-**Model: opus-high.** - [ ] **Failing tests:** propose (git and gh stubs) builds a worktree from
-`origin/<base>`, writes staged paths, regenerated files, `changes.jsonl` lines, lockfile (npm stub),
-commits with the contract's `gitEmail` and `Signed-off-by`, pushes `argus/smoke-<runId>`, opens a PR
-with `labels.agentFiled`; a file or body holding a ledger secret refuses before any push, naming
-`file:line:col class`; a rejected digest is never proposed again; `--dry-run` prints the change list and
-writes nothing; `smoke check` names a hand-edited spec, a stale header digest, a `live.json` drift, and
-passes a clean suite; it writes nothing. - [ ] Run → FAIL; implement; run → PASS.
+**Model: opus-high.**
+- [ ] **Failing tests** (git and gh stubs):
+  - propose builds a worktree from `origin/<base>` and writes the staged paths, the regenerated
+    files, the `changes.jsonl` lines and the lockfile (npm stub);
+  - it commits with the contract's `gitEmail` and `Signed-off-by`, pushes `argus/smoke-<runId>`,
+    and opens a PR with `labels.agentFiled`;
+  - the body lists each journey that still needs a baseline, as
+    `baseline: needed <id> (smoke baseline --from-run after this PR's first CI run)` [probe];
+  - a baseline file that conflicts on rebase is dropped from the commit and listed as `baseline:
+    needed`, never resolved by picking a side [chromatic-branch];
+  - a file or body holding a ledger secret refuses before any push, naming `file:line:col class`;
+  - a rejected digest is never proposed again;
+  - `--dry-run` prints the change list and writes nothing;
+  - `smoke check` names a hand-edited spec, a stale header digest and a `live.json` drift, passes a
+    clean suite, and writes nothing.
+- [ ] Run → FAIL; implement; run → PASS.
 - [ ] **Commit** `feat(sapu): argus-live smoke propose opens the suite's changes as a pull request;
   smoke check finds hand edits`.
 
 ### A4: `smoke workflow`
-**Model: opus-high** (CI secrets). - [ ] **Failing tests:** the YAML has `pull_request` and a base-branch
-push, `permissions: contents: read`, the fork skip, `persist-credentials: false`, a matrix of the
-config's projects with `setup`, the suite directory's `npm ci` and `playwright install --with-deps`, the
-artifact upload of `test-results/` only (never `.auth/`), and passes exactly the `${NAME}` names
-`live.json` uses as `secrets.<NAME>`; no value, no `pull_request_target`. - [ ] Run → FAIL; implement;
-run → PASS. - [ ] **Commit** `feat(sapu): argus-live smoke workflow prints the CI job init writes`.
+**Model: opus-high** (CI secrets).
+- [ ] **Failing tests:** the YAML has:
+  - `pull_request`, a base-branch push and `workflow_dispatch` with inputs `baseline`
+    (`missing|changed`) and `grep`;
+  - `permissions: contents: read`, and no `pull_request_target`;
+  - the fork skip;
+  - every `uses:` pinned to a 40-hex SHA with a `# <tag>` comment, resolved by `gh api` (gh stub;
+    an unresolvable tag refuses printing) [gh-secure];
+  - `persist-credentials: false`;
+  - the test job in `container: mcr.microsoft.com/playwright:v<SMOKE_PLAYWRIGHT>-noble` with
+    `--ipc=host --init`, its matrix over the screenshot projects with `setup` [pw-ci] [pw-docker];
+  - an `msedge` job on the plain runner with no container [gh-runner];
+  - the suite directory's `npm ci` and `npx playwright test --shuffle --grep-invert @quarantine`;
+  - a `quarantine` job with `--grep @quarantine` and `continue-on-error: true` [google-flaky];
+  - the `baseline` job, dispatch only, running `--update-snapshots=$MODE --grep "$GREP"` with both
+    inputs passed through `env:` and checked against `^(missing|changed)$` and `^[a-z0-9|-]+$`
+    before use [gh-dispatch] [gh-secure];
+  - the upload of `test-results/` as `argus-smoke-results`, and in the baseline job also the
+    written `__screenshots__/` and `__aria__/` files as `argus-smoke-baselines`, all with
+    `retention-days: 7` and never `.auth/` [gh-artifacts];
+  - exactly the `${NAME}` names `live.json` uses, passed as `secrets.<NAME>`: no value.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke workflow prints the CI job init writes`.
 
 ## Lane B — breaks, triage, baselines
 
 ### B1: `smoke heal` and the decision table
-**Model: opus-high.** - [ ] **Failing tests:** a heal return replaces only the named steps' targets; the
-healed path runs twice (fresh, dirty); held → staged heal with `git log -S` evidence (`no commit removed
-it` when none); an expectation failing → a regression candidate at it; `heal: []` with `no-control` →
-a regression candidate ending in `visible` on the old target; a heal touching an expectation, a value, an
-action kind or more than `heal_max_steps` steps is refused; every §19.9 row has a test.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live smoke heal proposes
-  only what unchanged expectations prove`.
+**Model: opus-high.**
+- [ ] **Failing tests:**
+  - a heal return replaces only the named steps' targets;
+  - the healed path runs twice, fresh then dirty;
+  - held → a staged heal with `git log -S` evidence (`no commit removed it` when none), and the
+    proposal body shows the old and new target of each healed step;
+  - an expectation failing → a regression candidate at it;
+  - `heal: []` with `no-control` → a regression candidate ending in `visible` on the old target;
+  - a heal is refused if it touches an expectation, a value or an action kind, removes or adds a
+    step, or names more than `heal_max_steps` steps [pw-agents];
+  - nothing in CI ever applies a heal [healenium];
+  - every §19.9 row has a test.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke heal proposes only what unchanged expectations prove`.
 
 ### B2: `smoke ci` and quarantine
-**Model: opus-high.** - [ ] **Failing tests** (fixture artifacts): flaky → staged quarantine and its
-fingerprint; failed in an action step → `ui-change? <id> step <n>`; in an expectation → `bug? <id> step
-<n>`; only off Chromium → `browser-only <project>`; a check → `check <id> <check> <key>`; a screenshot →
-`visual <id> <n>`; a run from a fork, a path outside the suite's names, a non-PNG `-actual.png` and an
-oversized file are refused or skipped; no artifact text appears outside a fence; codegen writes
-`test.fixme` for a quarantined id; three clean cycles stage the exit, a second quarantine or five cycles
-stage `drop`. - [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live smoke
-  ci triages the CI run and quarantines flakes`.
+**Model: opus-high.**
+- [ ] **Failing tests** (fixture artifacts and `gh run view` stubs):
+  - **Flakes.**
+    - `flaky` on a base-branch push run → a staged quarantine and its fingerprint.
+    - `flaky` on a PR head with no base-branch flake in `smoke-state.json` → `flaky-new <id> <pr>`
+      and a PR comment, never a quarantine [google-flaky].
+  - **Failures.**
+    - Failed in an action step → `ui-change? <id> step <n>`.
+    - Failed in an expectation → `bug? <id> step <n>`.
+    - Failed only off Chromium → `browser-only <project>`.
+  - **Checks and baselines.**
+    - A check → `check <id> <check> <key>`, and an axe `incomplete` → `manual <id> <rule>`.
+    - A missing baseline (`A snapshot doesn't exist`) → `baseline-missing <id> <project>`.
+    - A screenshot mismatch → `visual <id> <n> <project>`, naming the expected, actual and diff
+      files [probe].
+    - An ARIA mismatch → `aria <id> <n>` with the message's line diff, ANSI stripped and fenced
+      [probe].
+  - **Refusals.** These are refused or skipped: a run from a fork, a path outside the suite's
+    names, a non-PNG `-actual.png`, and an oversized file. No artifact text appears outside a fence.
+  - **Quarantine lifecycle.**
+    - The exit is staged after three cycles in which the lane held the test twice and every
+      quarantine-job result read passed first time.
+    - A second quarantine, or five cycles, stages `drop`.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke ci triages the CI run and quarantines base-branch flakes`.
 
 ### B3: `smoke baseline`
-**Model: opus-high.** - [ ] **Failing tests:** actual PNGs, ARIA files (pruned: digit runs to `\d+`, the
-marker shape) and violations land at the suite's paths on a branch whose base is the run's branch;
-nothing outside the defined names is copied. - [ ] Run → FAIL; implement; run → PASS.
-- [ ] **Commit** `feat(sapu): argus-live smoke baseline adopts CI's screenshots, ARIA snapshots and known
-  violations as a proposal`.
+**Model: opus-high.**
+- [ ] **Failing tests** (gh stubs):
+  - **A normal run.** `--from-run` dispatches `gh workflow run <workflow> --ref <head branch> -f
+    baseline=missing -f grep=<ids>` for its `baseline-missing` ids, and prints `baseline:
+    dispatched <ids> mode=missing; adopt with smoke baseline --from-run <new run id>`.
+  - **Changed baselines.** `--ids <ids>` on a run with `visual` or `aria` mismatches dispatches
+    `mode=changed` for exactly those ids. Without `--ids` a mismatch is never re-baselined
+    [chromatic-branch].
+  - **A baseline run** (event `workflow_dispatch`, artifact `argus-smoke-baselines`).
+    - It adopts only `__screenshots__/<project>/<platform>/<id>/*.png` (a PNG signature, under 5 MB,
+      not `msedge`), `__aria__/<id>/*.aria.yml` (under 1 MB; digit runs to `\d+`, the marker
+      shape) and `violations-<id>.json` (under 1 MB).
+    - The files land as a commit on the run's `argus/` branch, else as an `argus/baselines-<runId>`
+      PR into the run's branch. The PR body lists each file with journey, step and project, for
+      review in GitHub's image view [gh-images].
+  - **Refusals.**
+    - A run on another repository is refused.
+    - A run whose head SHA is no longer its branch's head is refused as `stale`.
+    - Nothing outside the defined names is copied.
+  - **No dispatch right.** Without the `actions` scope, the `gh workflow run` line is printed for the
+    owner instead [gh-dispatch].
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke baseline runs CI's baseline job and proposes what it
+  wrote`.
 
 ## Lane C1 — layout, locale, links, dynamic states
 
 ### C1.1: layout oracle
-**Model: sonnet-medium.** Fixture pages, each with a violation and its excluded twin (wide table,
-sr-only text, ellipsis with `title`, fixed header over a control, modal backdrop, inline link, native
-checkbox, label-covered custom checkbox). - [ ] **Failing tests:** every positive is reported with a
-stable key, every excluded twin is not (the false-positive set is the test); `emit` adds a soft check
-after every step for the viewport projects. - [ ] Run → FAIL; implement; run → PASS.
+**Model: sonnet-medium.** Fixture pages each hold a violation and its excluded twin: a wide table,
+sr-only text, an ellipsis with `title`, a fixed header over a control, a modal backdrop, an inline
+link, a native checkbox, and a label-covered custom checkbox.
+- [ ] **Failing tests:**
+  - every positive is reported with a stable key, and no excluded twin is (the false-positive set
+    is the test);
+  - `emit` adds a soft check after every step for the viewport projects;
+  - the target-size rule follows 2.5.8's circle and exceptions [wcag22] [u-2.5.8].
+- [ ] Run → FAIL; implement; run → PASS.
 - [ ] **Commit** `feat(sapu): argus-live layout oracle — page scroll, clipped text, covered controls,
   target size`.
 
 ### C1.2: locale and format checks
-**Model: sonnet-medium.** - [ ] **Failing tests:** under `de-DE` `1,234.56` fails and `1.234,56` holds;
-`13/02/2026`-shaped text under `en-US` fails on day order; ISO dates, inputs, `code` and `translate="no"`
-are skipped; a page with `lang="en"` under `de-DE` is `not localized`; pseudo-locales run only page-scroll
-and clipped; without `pseudo_locales` the line `pseudo-localization: not done (no pseudo-locale listed)`.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live locale checks —
-  overflow under each locale, number and date formats`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - under `de-DE`, `1,234.56` fails and `1.234,56` holds;
+  - `13/02/2026`-shaped text fails on day order under `en-US`;
+  - ISO dates, inputs, `code` and `translate="no"` are skipped;
+  - a page with `lang="en"` under `de-DE` is `not localized`;
+  - pseudo-locales run only page-scroll and clipped;
+  - under a pseudo-locale, visible text identical to the default locale's render (path values,
+    digits and `translate="no"` excluded) is reported as `pseudo-localization: <n> text unchanged
+    under <code> (hard-coded?)`, never failed [android-pseudo] [mozilla-pseudo];
+  - without `pseudo_locales`, the line `pseudo-localization: not done (no pseudo-locale listed)`.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live locale checks — overflow under each locale, number and date
+  formats`.
 
 ### C1.3: links, CTA routes, loading, empty, toasts
-**Model: sonnet-medium.** - [ ] **Failing tests:** a 404 and a 500 link fail, a 302 to sign-in holds,
-another origin is never requested, `link_cap` holds; an unvisited map route fails; a stuck `aria-busy`
-fails, a resolved one holds; an empty table without text fails, with an empty-state message holds; a
-non-live fixed toast fails 4.1.3, a live toast over the next target fails, a dismissible one holds.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live checks — links and CTA
-  routes, loading, empty states, toasts`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **Links** [lychee] [linkinator].
+    - A 404, 410 and 500 link fail. A 302 to sign-in holds.
+    - A 401 or 403 is `manual` (a link offered to a role that cannot open it). A 429 is `manual`,
+      with no retry wait.
+    - Requests go one at a time, with `maxRedirects: 0` and redirects followed by hand only within
+      the origin (at most 5). Another origin is never requested. `link_cap` holds.
+  - **CTA routes.** An unvisited map route fails.
+  - **Loading.** A stuck `aria-busy` fails, and a resolved one holds.
+  - **Empty states.** An empty table without text fails, and one with an empty-state message holds.
+  - **Toasts.** A non-live fixed toast fails 4.1.3, a live toast over the next target fails, and a
+    dismissible one holds [u-4.1.3].
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live checks — links and CTA routes, loading, empty states, toasts`.
 
 ## Lane C2 — accessibility
 
-### C2.1: keyboard pass and names
-**Model: sonnet-medium.** - [ ] **Failing tests:** a `div` with a click handler is not in the tab order;
-`tabindex="3"` fails order; an outline-less button fails focus visible; a sticky footer over the focused
-control fails 2.4.11; `hover` and `dblclick` targets are skipped; 500 presses → undetermined; a nameless
-icon button fails `toHaveAccessibleName`. - [ ] Run → FAIL; implement; run → PASS.
+### C2.1: keyboard pass, focus and names
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - a `div` with a click handler is not in the tab order (2.1.1);
+  - a radio inside a `radiogroup`, a `tab` and a `menuitem` pass once Tab reaches their widget,
+    because arrows move inside a composite [apg-keyboard];
+  - `tabindex="3"` jumping back in DOM order is `manual` (F44 needs a human), never a fail
+    [u-2.4.3];
+  - an outline-less button fails focus visible;
+  - a solid `outline` under 3:1 against the adjacent background fails 1.4.11, and any other
+    indicator is `manual` [u-1.4.11];
+  - a sticky footer over the focused control fails 2.4.11;
+  - `hover` and `dblclick` targets are skipped;
+  - 500 presses → undetermined;
+  - a nameless icon button fails `toHaveAccessibleName`.
+- [ ] Run → FAIL; implement; run → PASS.
 - [ ] **Commit** `feat(sapu): argus-live a11y — keyboard reach, order, visible focus, names`.
 
 ### C2.2: ARIA snapshots, modals
-**Model: sonnet-medium.** - [ ] **Failing tests:** `emit` writes `toMatchAriaSnapshot` at screens with the
-`__aria__` template; a dialog Escape-closes and returns focus; an `alertdialog` is exempt from Escape;
-focus escaping a modal fails; two dialogs with different backdrop behaviour fail consistency.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live a11y — ARIA snapshots
-  and modal dialogs`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **ARIA snapshots** [probe].
+    - `emit` writes `toMatchAriaSnapshot({name: "<n>.aria.yml"})` at the path's screens, with the
+      `__aria__` template and `children: "contain"` [pw-aria].
+    - A journey with no adopted `.aria.yml` fails as `baseline-missing` (the probe compares it as
+      `""`), and B3 is the only way it gets one.
+  - **Modals** [apg-dialog] [apg-alertdialog] [mdn-dialog].
+    - A modal dialog and a modal `alertdialog` both Escape-close.
+    - A non-modal dialog is exempt from the Escape and Tab rules.
+    - Focus returns to the invoker. A removed invoker is exempt, focus lost to `body` fails, and
+      focus elsewhere is `manual`.
+    - Focus escaping a modal fails.
+    - Two modal dialogs with different backdrop behaviour fail consistency.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live a11y — ARIA snapshots and modal dialogs`.
 
-### C2.3: contrast, tokens, forms
-**Model: sonnet-medium.** - [ ] **Failing tests:** grey on white at 3.9:1 fails, 4.6:1 holds, large
-text at 3.1:1 holds; a gradient background is `manual`; a disabled control is skipped; with a token
-CSS file an off-token colour fails, without `tokens` the skip line; each form case from `required`,
-`type=email`, `maxlength`, `minlength`, `pattern` is generated and none other; a form that posts and
-gets 200 on a bad value fails; native validation holds; `novalidate` with `aria-invalid` and
-`aria-describedby` holds; focus on an error-summary link to the field holds. - [ ] Run → FAIL;
-implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live a11y — contrast, design tokens, form
-  validation cases`.
+### C2.3: axe rules, tokens, forms
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **axe** [pw-a11y] [axe-api] [axe-readme].
+    - `emit` writes at each path screen of the `a11y` project an `AxeBuilder` with exactly the
+      tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`, `include("main")` when the page
+      has one, and `disableRules(["target-size"])`.
+    - From recorded results in `tests/fixtures/axe-results/` (no axe runs in sapu's tests): each
+      violation node becomes `{check: "axe:<rule>", key: <target joined>}`, a known one is
+      filtered, and `incomplete` becomes `manual`.
+  - **Tokens.**
+    - With a token CSS file, an off-token colour fails.
+    - Without `tokens`, the skip line.
+  - **Forms.**
+    - Each form case from `required`, `type=email`, `maxlength`, `minlength` and `pattern` is
+      generated, and none other.
+    - A form that posts and gets 200 on a bad value fails.
+    - Native validation holds.
+    - `novalidate` with `aria-invalid` and `aria-describedby` holds.
+    - Focus on an error-summary link to the field holds.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live a11y — axe's WCAG rules, design tokens, form validation
+  cases`.
 
 ### C2.4: standards citations
-**Model: sonnet-medium.** Fetch, read and quote WCAG 2.2 Understanding pages for 2.1.1, 2.1.2, 2.4.3,
-3.3.1, 4.1.2, 4.1.3 into standards.md's accessibility table (level as printed, the sentence quoted, the
-page's URL), as phase 5 did; a page that does not load is marked ⚠, never quoted.
-- [ ] **Failing test** (engine): each SC above appears with its Understanding URL. - [ ] Run → FAIL;
-  edit; run → PASS. - [ ] **Commit** `docs(sapu): argus standards cite the WCAG criteria the smoke
-  suite's checks measure`.
+**Model: sonnet-medium.** Fetch, read and quote the WCAG 2.2 Understanding pages for 2.1.1, 2.1.2,
+2.4.3, 3.3.1, 4.1.2 and 4.1.3 into standards.md's accessibility table: the level as printed, the
+sentence quoted, and the page's URL, as phase 5 did. A page that does not load is marked ⚠, never
+quoted. The research doc lists the URLs [wcag22] [u-2.1.1] [u-2.1.2] [u-2.4.3] [u-3.3.1] [u-4.1.2]
+[u-4.1.3].
+- [ ] **Failing test** (engine): each SC above appears with its Understanding URL.
+- [ ] Run → FAIL; edit; run → PASS.
+- [ ] **Commit** `docs(sapu): argus standards cite the WCAG criteria the smoke suite's checks measure`.
 
 ## Lane C3 — projects, browsers, visual
 
 ### C3.1: projects and browsers
-**Model: sonnet-medium.** - [ ] **Failing tests:** projects `setup`, `chromium`, `firefox`, `webkit`,
-`msedge` only when the executable exists (a filesystem seam; absent → the skip line, no project),
-`chromium-<w>` per further viewport, `a11y`, `i18n` only with locales; every project depends on
-`setup`; per-journey `browsers` honoured; a comment names WebKit as not Safari. - [ ] Run → FAIL;
-implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live codegen — browser, viewport, a11y and
-  i18n projects`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **Projects.**
+    - `setup`, `chromium`, `firefox` and `webkit`.
+    - `msedge` only when the executable exists (a filesystem seam). Absent → the skip line, and no
+      project.
+    - `chromium-<w>` for each further viewport.
+    - `a11y`, and `i18n` only with locales.
+  - **Project rules.**
+    - Every project depends on `setup`, and per-journey `browsers` are honoured.
+    - `msedge` has no screenshot assertions [pw-browsers].
+    - A comment names WebKit as not Safari.
+  - **Package.** `package.json` pins `@axe-core/playwright` exactly to `SMOKE_AXE` [axe-pw].
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live codegen — browser, viewport, a11y and i18n projects`.
 
 ### C3.2: screenshots
-**Model: sonnet-medium.** - [ ] **Failing tests:** `toHaveScreenshot` at the path's screens with
-`animations: "disabled"`, `caret: "hide"`, masks for `time`, the marker, every saved value and the
-configured targets; `snapshotPathTemplate` per project and platform; `ignoreSnapshots` outside CI.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live codegen — screenshot
-  baselines with dynamic masks`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **The shot.**
+    - `toHaveScreenshot("<n>.png")` at the path's screens with `animations: "disabled"` and
+      `caret: "hide"`, after `page.mouse.move(-1, -1)`.
+    - Masks for `time`, the marker, every saved value and the journey's `masks`.
+    - No `maxDiffPixels` and no `threshold` override [pw-snap] [pw-config].
+  - **Config.**
+    - The `snapshotPathTemplate` is `{testDir}/__screenshots__/{projectName}/{platform}/{testFileBaseName}/{arg}{ext}`.
+    - `ignoreSnapshots` is on outside CI.
+  - **Browser test** (stub runner of Task 0.4, `CI=1`).
+    - `"none"` fails a missing shot with no actual.
+    - `--update-snapshots=missing` writes it and passes, overriding the config's `"none"`.
+    - `--update-snapshots=changed` rewrites a mismatching `.aria.yml`, a mode the probe did not
+      cover. A "no" here moves B3's ARIA adoption to the lane regenerating the snapshot with
+      `run-code` and `page.ariaSnapshot()`, which the probe showed matches the baseline form. Z4
+      records it.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live codegen — screenshot baselines with dynamic masks`.
 
 ## Lane D — performance
 
 ### D1: perf collection, baselines, regressions
-**Model: sonnet-medium.** - [ ] **Failing tests:** `PERF_SCRIPT` on fixture pages reports LCP, CLS, INP,
-requests and bytes; the session hook installs it beside the signal script; `smokeRun --perf` runs a
-warm-up and `perf.runs` runs, medians recorded; the first batch is the baseline; a changed `pathSha` or
-machine voids it; a regression needs both thresholds and a second batch; `perfIssue` prints the
-baseline, both batches and `git log` over the anchor files; `perfRebaseline` moves it.
-- [ ] Run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live smoke run --perf —
-  web vitals and request budgets against per-journey baselines`.
+**Model: sonnet-medium.**
+- [ ] **Failing tests:**
+  - **Collection.**
+    - `PERF_SCRIPT` on fixture pages reports LCP (the largest per document, background loads
+      ignored), CLS (the largest session window, `hadRecentInput` shifts skipped), INP (the worst
+      interaction from `event` entries with `durationThreshold: 16`, grouped by `interactionId`),
+      requests and bytes [webdev-lcp] [webdev-cls] [webdev-inp].
+    - The session hook installs it beside the signal script.
+  - **Batches.**
+    - `smokeRun --perf` waits for `load` before acting on each new document, runs a warm-up, then
+      `perf.runs` runs, and records the medians [lh-variability].
+    - It is refused (`refused: smoke run --perf: <n> other slot(s) live`) while another slot of the
+      run is live [lh-variability].
+  - **Baselines.**
+    - The first batch is the baseline.
+    - A changed `pathSha` or machine voids it.
+  - **Regressions.**
+    - A regression needs both thresholds and a second batch.
+    - The report line shows web.dev's "good" values as `lab context`, never a verdict
+      [webdev-vitals] [webdev-labfield].
+  - **Commands.**
+    - `perfIssue` prints the baseline, both batches and `git log` over the anchor files.
+    - `perfRebaseline` moves it.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live smoke run --perf — web vitals and request budgets against
+  per-journey baselines`.
 
 ## Lane E — journeys from issues and docs
 
 ### E1: seeds
-**Model: opus-high.** - [ ] **Failing tests:** `seed --issue` refused when `issue-trust` fails (gh stub);
-`--doc` refused untracked or outside the repo; `seed.json` is 0600; `pw <token> source` exists only on a
-`--seed` map token and fences the text with escaped marker shapes; a fenced instruction in the source
-changes nothing the wrapper does; `map-check --merge` adds `seeds` to that slot's journeys only and a
-returned `seeds` key is refused by `validateMap`; the catalog marks `seeded`. - [ ] Run → FAIL;
-implement; run → PASS. - [ ] **Commit** `feat(sapu): argus-live seed — journeys from trusted issues and
-  tracked docs, fenced, linked to their source`.
+**Model: opus-high.**
+- [ ] **Failing tests:**
+  - **Sources.**
+    - `seed --issue` is refused when `issue-trust` fails (gh stub).
+    - `--doc` is refused when the file is untracked or outside the repo.
+    - `seed.json` is 0600.
+  - **The `source` command.**
+    - `pw <token> source` exists only on a `--seed` map token.
+    - It fences the text with escaped marker shapes.
+  - **Fenced text changes nothing.** A fenced instruction in the source changes nothing the
+    wrapper does: the explorer's command set, network and return validation are identical with and
+    without it [owasp-llm01] [owasp-pi-cheat].
+  - **Merging.**
+    - `map-check --merge` adds `seeds` to that slot's journeys only.
+    - A returned `seeds` key is refused by `validateMap`.
+    - The catalog marks the journeys `seeded`.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live seed — journeys from trusted issues and tracked docs, fenced,
+  linked to their source`.
 
 ## Lane F — report, filed record, API hint
 
 ### F1: filed record and report
-**Model: opus-high** (scrub). - [ ] **Failing tests:** `scrub --create` and `--comment` append `{ref, url,
-kind}` to `<run>/filed.jsonl` after gh succeeds, never before; `report` writes `.argus/reports/<runId>.md`
-0600 with every §19.13 section from fixture records; a ledger secret planted in a claim comes out as
-`*** (<class>)`; links are defanged; it works after `down`. - [ ] Run → FAIL; implement; run → PASS.
+**Model: opus-high** (scrub).
+- [ ] **Failing tests:**
+  - `scrub --create` and `--comment` append `{ref, url, kind}` to `<run>/filed.jsonl` after gh
+    succeeds, never before;
+  - `report` writes `.argus/reports/<runId>.md` 0600 with every §19.13 section from fixture
+    records, including `manual` items and `flaky-new`;
+  - a ledger secret planted in a claim comes out as `*** (<class>)`;
+  - links are defanged;
+  - it works after `down`.
+- [ ] Run → FAIL; implement; run → PASS.
 - [ ] **Commit** `feat(sapu): argus-live report writes one scrubbed summary per cycle`.
 
 ### F2: the API-level hint
-**Model: sonnet-medium.** - [ ] **Failing test:** `repro --test` prints the `api-level: suggested` line for
-a `fact-equals` or `mail` final and not otherwise. - [ ] Run → FAIL; implement; run → PASS.
-- [ ] **Commit** `feat(sapu): argus-live repro --test suggests an API-level RED test where the UI is not
-  the observable`.
+**Model: sonnet-medium.**
+- [ ] **Failing test:** `repro --test` prints the `api-level: suggested` line for a `fact-equals` or
+  `mail` final, and not otherwise.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): argus-live repro --test suggests an API-level RED test where the UI is
+  not the observable`.
 
 ## Lane Z — integration (sequential, last)
 
 ### Z1: the exploratory layout oracle
-**Model: sonnet-medium.** `layout` expectation in the runner, `pw <token> <role>.<k> layout [<check>]`
-(answer fenced), `viewport-locale`'s final kinds gain `layout`. - [ ] Failing tests in the pw and repro
-test files; run → FAIL; implement; run → PASS. - [ ] **Commit** `feat(sapu): the explorer's layout
-  oracle`.
+**Model: sonnet-medium.** Three additions:
+- the `layout` expectation in the runner;
+- `pw <token> <role>.<k> layout [<check>]`, with its answer fenced;
+- `layout` among `viewport-locale`'s final kinds.
+- [ ] Failing tests in the pw and repro test files.
+- [ ] Run → FAIL; implement; run → PASS.
+- [ ] **Commit** `feat(sapu): the explorer's layout oracle`.
 
 ### Z2: engine text
-**Model: opus-high** (heal and seed briefs read untrusted text). `ui-explorer.md`: paths (`path: wanted`,
-selector order, seed triggers), heal mode (the path, the broken step, "never change an expectation",
-`heal` return), the `layout` command, `pw source` in seed map mode; `journeys.md`: `path: wanted`, `smoke
-admit`, `seed`, `report` at the end; new `skills/journey/smoke.md` (the smoke cycle: plan → up → run
-`--perf` → ci → heal → admit → propose → baseline → report → down, the decision table's actions,
-`smoke.json`'s format, the CI wiring); `/sapu:journey smoke`; `/sapu:init` (the smoke questions, the
-workflow with consent, the gitignore exception); CONTRACT.md's text. - [ ] Failing engine tests: the
-brief's example path passes `parseRepro(..., {path: true})`; its heal example passes `validateReturn`;
-`smoke.md`'s `smoke.json` example passes `validateSmoke`; every command it names is in the usage line;
-budgets for the changed files. - [ ] Run → FAIL; write; run → PASS. - [ ] **Commit** `feat(sapu): the
-  smoke cycle's engine text`, trailer `Rule-Change: engine.test.ts pins the smoke cycle's text and budgets`.
+**Model: opus-high** (heal and seed briefs read untrusted text).
+- **`ui-explorer.md`:**
+  - paths: `path: wanted`, selector order, seed triggers;
+  - heal mode: the path, the broken step, "never change an expectation", and the `heal` return;
+  - the `layout` command;
+  - `pw source` in seed map mode.
+- **`journeys.md`:** `path: wanted`, `smoke admit`, `seed`, and `report` at the end.
+- **New `skills/journey/smoke.md`:**
+  - the smoke cycle: plan → up → run `--perf` → ci → heal → admit → propose → baseline → report →
+    down;
+  - the decision table's actions;
+  - the baseline run and its review in the PR;
+  - `smoke.json`'s format;
+  - the CI wiring.
+- **Also:** `/sapu:journey smoke`; `/sapu:init` (the smoke questions, the workflow with consent,
+  the gitignore exception); CONTRACT.md's text.
+- [ ] **Failing engine tests:**
+  - the brief's example path passes `parseRepro(..., {path: true})`;
+  - its heal example passes `validateReturn`;
+  - `smoke.md`'s `smoke.json` example passes `validateSmoke`;
+  - every command it names is in the usage line;
+  - budgets for the changed files.
+- [ ] Run → FAIL; write; run → PASS.
+- [ ] **Commit** `feat(sapu): the smoke cycle's engine text`, trailer `Rule-Change: engine.test.ts
+  pins the smoke cycle's text and budgets`.
 
 ### Z3: docs and diagrams
-**Model: sonnet-medium.** README (`/sapu:journey smoke`), usage (requirements, the CI wiring, common
-problems, the upgrade note), security ("The smoke suite": §19.16), agents; a `smoke.mjs` diagram (one
-smoke cycle and the proposal loop) and `journey.mjs` gaining the path capture. `node docs/img/src/build.mjs
-smoke journey`. - [ ] `npx vitest run tests/engine.test.ts` → PASS. - [ ] **Commit** `docs: the smoke
-  suite — README, usage, security, agents, diagrams`.
+**Model: sonnet-medium.**
+- **Docs.**
+  - README: `/sapu:journey smoke`.
+  - Usage: requirements, the CI wiring, the baseline run, common problems and the upgrade note.
+  - Security: a "The smoke suite" section (§19.16).
+  - Agents.
+- **Diagrams.**
+  - A new `smoke.mjs` diagram shows one smoke cycle, the proposal loop and the baseline run.
+  - `journey.mjs` gains the path capture.
+  - Build them with `node docs/img/src/build.mjs smoke journey`.
+- [ ] `npx vitest run tests/engine.test.ts` → PASS.
+- [ ] **Commit** `docs: the smoke suite — README, usage, security, agents, diagrams`.
 
 ### Z4: whole suite, review, as built
 - [ ] `npx vitest run` and `npm run gate` → green.
-- [ ] **Phase-end team review** on `git diff 2225fcb..HEAD`: `senior-dev-team:senior-qa-reviewer`
-  (each task's tests against §19), `senior-dev-team:senior-software-architect` (the DAG, the decision
-  table as built, the proposal loop, the security boundaries of §19.16), `senior-dev-team:senior-technical-writer`
-  (docs, `smoke.md`, diagrams). Findings fixed, re-reviewed, green.
-- [ ] Version per decision 17; fold the as-built notes into §19 (removing "not built yet" from what
-  landed, keeping it on anything cut); roadmap row 6 links this plan; "As built (phase 6)" below.
-  Commit `docs(sapu): argus journey lane — phase 6 as built`. No push, merge or tag: the owner holds
-  every release.
+- [ ] **Phase-end team review** on `git diff 2225fcb..HEAD`.
+  - `senior-dev-team:senior-qa-reviewer`: each task's tests against §19.
+  - `senior-dev-team:senior-software-architect`: the DAG, the decision table as built, the proposal
+    and baseline loops, and the security boundaries of §19.16.
+  - `senior-dev-team:senior-technical-writer`: docs, `smoke.md` and diagrams.
+  - Findings are fixed, re-reviewed and green.
+- [ ] **As built.**
+  - Set the version per decision 17.
+  - Fold the as-built notes into §19: remove "not built yet" from what landed and keep it on
+    anything cut.
+  - Link roadmap row 6 to this plan, and fill in "As built (phase 6)" below.
+  - Commit `docs(sapu): argus journey lane — phase 6 as built`. No push, merge or tag: the owner
+    holds every release.
 
 ---
 
 ## Out of scope, and covered elsewhere
 
-Out: native mobile apps and real-device clouds; tests generated from Figma or other external design
-services (the lane is loopback-only). Covered: intelligent prioritization is SELECT's score and the
-smoke rank; parallel execution is Playwright's workers and CI's project matrix. Follow-up: generating
-the API-level RED test the hint suggests.
+- **Out:** native mobile apps and real-device clouds; tests generated from Figma or other external
+  design services (the lane is loopback-only); hosted visual review services. Committed baselines
+  and the PR image view cover review [chromatic-branch] [gh-images].
+- **Covered:** intelligent prioritization is SELECT's score and the smoke rank; parallel execution
+  is CI's project matrix, with locks for shared accounts.
+- **Follow-up:** generating the API-level RED test the hint suggests.
 
 ## Open risks
 
-1. **A heal that hides a regression** — a control moved somewhere the role still reaches with the same
-   number of steps passes as a UI change. Mitigated by the owner's review with the `git log -S`
-   evidence; a heal cannot add a step, so a control buried one level deeper is a bug.
-2. **CI's app start and seed** are the owner's (`ci.web_server`, the users `live.json` names); a repo that
-   cannot seed CI gets a red setup project, reported as harness, never a finding.
-3. **Branch protection deadlock** — a sapu worker's PR that renames a control stays red on the suite
-   until the heal proposal merges; the report names both PRs.
-4. **Alpha vs stable Playwright** (the lane's 1.64 alpha, the suite's 1.64.0): same minor, pinned by test;
-   a locator difference would show as a CI-only break.
-5. **Check false positives** — every exclusion is a fixture twin; the known-violation adoption keeps day
-   one green; a check that still misfires is the owner's `allow`, and Z4's review reads the fixture set.
-6. **CI duration** — projects × journeys; the matrix runs projects in parallel jobs and `max` caps the
-   journeys.
+1. **A heal that hides a regression.** A control moved somewhere the role still reaches in the same
+   number of steps passes as a UI change. The owner's review mitigates this, with the `git log -S`
+   evidence and the old and new target shown. A heal cannot add a step, so a control buried one level
+   deeper is a bug.
+2. **CI's app start and seed are the owner's** (`ci.web_server`, the users `live.json` names). A repo
+   that cannot seed CI gets a red setup project, reported as harness, never as a finding.
+3. **Branch protection deadlock.** A sapu worker's PR that renames a control stays red on the suite
+   until the heal proposal merges. The report names both PRs. A journey-adding proposal is red until
+   its baseline commit lands on the same branch. That is intended: tests fail until a baseline is
+   accepted [chromatic-branch].
+4. **Alpha vs stable Playwright** (the lane's 1.64 alpha, the suite's 1.64.0). Both share a minor,
+   pinned by test, and the stub runner proves the generated code on the alpha. A locator difference
+   would show as a CI-only break.
+5. **Check false positives.** Every exclusion has a fixture twin, and axe's own policy is "zero false
+   positives". Known-violation adoption keeps day one green, and uncertain cases are `manual`,
+   never red. A check that still misfires is the owner's `allow`, and Z4's review reads the fixture
+   set.
+6. **CI duration.** Duration grows with projects × journeys. The matrix runs projects in parallel
+   jobs, `workers: 1` keeps each job reproducible, and `max` caps the journeys. Sharding is the
+   next lever once a job passes `globalTimeout` [pw-shard].
+7. **The baseline run needs a dispatch right.** It needs write access and the workflow on the
+   default branch [gh-dispatch]. Until init's workflow merges, `smoke baseline` prints the command
+   and the suite runs with no visual check.
+8. **`--update-snapshots=changed` for ARIA is documented, not probed.** C3.2 probes it. Its fallback
+   is decided in advance (C3.2).
+9. **`@axe-core/playwright` is MPL-2.0.** It is a dev dependency of the consumer's suite only, never
+   of sapu, and the owner sees it in the proposal's `package.json` [npm].
 
 ## As built (phase 6)
 
