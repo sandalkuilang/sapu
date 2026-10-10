@@ -10,7 +10,8 @@
 // -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs,
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
 // -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -login.mjs → -session.mjs →
-// -steps.mjs → -pw.mjs → this module, -codegen.mjs (the smoke suite's generator) and -redtest.mjs →
+// -steps.mjs → -pw.mjs → this module, -codeproj.mjs (the suite's projects, checks and config), -codegen.mjs (the smoke
+// suite's generator) and -redtest.mjs →
 // -repro.mjs → -minimize.mjs (minimize, the RED test) → -smoke.mjs (the lane's smoke pass) → -suite.mjs
 // (membership) → -propose.mjs (proposals) and -artifacts.mjs (CI's runs and artifacts) → -heal.mjs and -ci.mjs →
 // -baseline.mjs (baselines from CI) → -tastejudge.mjs (the taste judge) → -tastefile.mjs (taste filing) → -report.mjs →

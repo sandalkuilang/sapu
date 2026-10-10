@@ -130,7 +130,7 @@ describe("argus-live modules — the DAG", () => {
     // The in-page check sources are leaves: embedded verbatim in the suite, run by the lane through run-code.
     for (const leaf of ["argus-live-layout", "argus-live-a11y"]) expect(g.get(leaf), leaf).toEqual([]);
     // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
-    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
+    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login", "argus-live-codeproj"], d).toContain(d);
     // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
     const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-artifacts", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
     // CI's runs and artifacts are read through one module, below both verbs that read them.
@@ -147,13 +147,16 @@ describe("argus-live modules — the DAG", () => {
 
   it("admits phase 7's modules, each with the imports it may have (spec §20)", () => {
     const g = graph();
-    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-tastejudge", "argus-live-tastefile"];
+    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
     for (const m of PHASE7) expect(g.has(m), m).toBe(true);
     // The shapes, and the in-page probes the suite embeds verbatim: leaves.
     for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease"]) expect(g.get(leaf), leaf).toEqual([]);
     // The judge reads both probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
     expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
     expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
+    // The suite's projects, registry and config (split from the generator) read the in-page checks and the shapes only.
+    for (const d of g.get("argus-live-codeproj") ?? []) expect(["argus-live-layout", "argus-live-a11y", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
+    expect(g.get("argus-live-codegen")).toContain("argus-live-codeproj");
     // The judge and filing sit above the runner, below the report and the CLI: nothing else reaches them.
     for (const m of g.keys()) {
       if (["argus-live", "argus-live-report", "argus-live-tastejudge", "argus-live-tastefile"].includes(m)) continue;

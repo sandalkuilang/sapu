@@ -2,7 +2,7 @@
 // the generated text, the RED test goes through the same step builder, and the suite generated for the
 // fixture app runs green under the pinned runner (a machine without Chrome fails here, never skips).
 import { spawnSync } from "node:child_process";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
@@ -307,6 +307,34 @@ describe("argus-live codegen — config, setup, support, package", () => {
     expect([...a["auth.setup.ts"].matchAll(/"account": "([a-z0-9.-]+)"/g)].map((m) => m[1])).toEqual(["customer.1", "customer.2", "sales.1"]);
     expect(headerDigest("no header").ok).toBe(false);
     expect(SMOKE_DEFAULTS.dir).toBe("e2e/argus-smoke");
+  });
+});
+
+describe("argus-live codegen — the split into -codegen and -codeproj (phase 7, Task 0.3)", () => {
+  // Every file of a suite that reaches every project, check registry and config branch, by its sha256, as the
+  // generator wrote it before the split: the split moved code and changed no output. A lane that changes the
+  // output on purpose (S1's taste project, the bar's version in the header) updates these digests in its commit.
+  const GOLDEN: Record<string, string> = {
+    ".gitignore": "d4710e1c0a5208b310f7b9861c36a1957ce3553e142354ef289d3396f1d7056b",
+    "auth.setup.ts": "98df74cef587955e459378f8cf3cca66f68390c6e065780830c7df63fbb20c37",
+    "checkout.spec.ts": "11f987e78b0f86a0e35bc1477c35e9fda360c748e71f7e82f7f6aa5dd1cf3c4a",
+    "package.json": "e24861b3d2078b9c14d8674f6537efb2016889efc940184bf5ccc09f2bc9d918",
+    "playwright.config.ts": "a7b11e07cfb5937205848734e5296749b33cb4393f42383212b3ca7805963df4",
+    "refund.spec.ts": "95b84d98248cedd1b21d0f165a4af512ef14303eb82916511c6c8357ad727e8c",
+    "support.ts": "f2adccc658e2536282ebb7694ba1360170a0084290e35a718b9c5fad43dcf412",
+  };
+
+  it("leaves every generated file byte-identical", () => {
+    const smoke = validateSmoke({
+      ci: { web_server: [{ command: "npm start", url: "http://localhost:4100/health" }], ports: { web: 4100 } },
+      browsers: ["chromium", "firefox", "webkit", "msedge"],
+      masks: ["getByTestId('clock')"],
+      journeys: { refund: { browsers: ["chromium"], viewports: [1440], screens: [4, 7] }, checkout: { masks: ["getByRole('status', { name: 'Promo' })"] } },
+    }).value;
+    const live = { ...LIVE(), viewports: [1440, 390], locales: ["de-DE"] };
+    const files = generateSuite({ paths: [{ id: "checkout", path: PATH(), routes: [{ role: "customer", route: "/orders/new" }] }, { id: "refund", path: PATH().slice(0, 8) }], live, smoke, quarantine: ["refund"] }) as Record<string, string>;
+    const digests = Object.fromEntries(Object.entries(files).map(([f, t]) => [f, createHash("sha256").update(t).digest("hex")]));
+    expect(digests).toEqual(GOLDEN);
   });
 });
 
