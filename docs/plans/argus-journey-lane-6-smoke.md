@@ -1802,3 +1802,75 @@ for any other kind. A `mail` final exists only on a `regression` candidate (`FIN
 - Z2 and Z3: spec §19.13 should name the inputs above (`smoke/events.jsonl`, `.argus/smoke-ci.json`). CONTRACT.md
   and the docs should name `filed.jsonl` and `.argus/reports/`. Both files are already gitignored under
   `.argus/`'s rule.
+
+### Integration
+
+The lanes merged in the order A, C3, C1, C2, B, D, E, F (`--no-ff`); only this plan conflicted, and every lane's "As
+built" sub-section is kept above. Each lane's "Needs coordinator" item is settled here; what the lanes left to lane Z
+(engine skill texts, `live.md`, CONTRACT.md, docs and diagrams, the plan's open risks) stays lane Z's.
+
+**Decisions.**
+- **Dispatch test.** `tests/argus-live-smoke.test.ts` holds no stub row any more: each phase 6 verb's own answer in
+  a repo with a contract and no cycle, suite or run is pinned (`smoke check: no suite (e2e/argus-smoke/journeys holds
+  no path)`, exit 0; `seed` and `slot 1 --map --seed`: no journey cycle), and the trace gate over every smoke verb but
+  `check`. The heal refusal test spawns git, so it has an explicit timeout.
+- **Fixture header.** The codegen browser tests' suite allows `target-size` `button|Account|button` on every journey;
+  `tests/fixtures/journey-app/server.mjs` is unchanged. The codegen probes of the layout registry pop their probe
+  rather than emptying the array (which had erased C1's checks for the rest of the file).
+- **Codegen `ctx`.** `{id, steps, smoke, screens, projects, pages, routes}`. `pages` is `pageVars`' map, so -a11y lost
+  its copy of the naming rule; `screens` is codegen's `screensOf` (smoke.json's `screens`, else the path's last page
+  step), the one list the screenshots, the ARIA snapshots, axe and the tokens check use (C2's own rule, the last
+  expectation before each account's next action, is gone). `routes` is the journey file's `routes` (`[{role,
+  route}]`): `smoke admit` records the catalog journey's map routes in it (the catalog is gitignored, so generation
+  must not read it), `readSuitePaths` returns them, a heal keeps them. The config's ARIA settings are -a11y's
+  `ARIA_EXPECT`, imported as is; the generated `a11y` project runs the whole check set under the pinned runner
+  (C2's end-to-end test now runs the generator's own project, not a hand-added one).
+- **Baseline directories.** `{testFileBaseName}` is `<id>.spec`: screenshots `__screenshots__/<project>/<platform>/
+  <id>.spec/<n>.png`, ARIA `__aria__/<id>.spec/<n>.aria.yml` (ARIA_EXPECT's template is `{testFileBaseName}` too,
+  and `a11yAriaFailure` looks there by the spec file's name). Adoption, `smoke ci`'s baseline-missing check, propose's
+  drop, its baseline-needed list and its rebase's dropped files read `<id>.spec`; spec §19.2, §19.7 and §19.8 say so.
+- **Smoke state.** One file and one format, B's, owned by `-suite.mjs` (below -propose, -heal and -ci):
+  `.argus/smoke-state.json` `{version: 1, staged, rejected, journeys, comments, proposals}`, every writer writing it
+  whole; `readState` refuses another shape (a file without `version` is read as version 1). `.argus/smoke-staged.json`
+  and A's `stageChange`/`readStaged` are gone. A staged entry is `{kind, id, run, changes, body, path?, admitted?,
+  routes?, quarantine?, digest}`; admit stages `add` this way and skips a rejected digest. `smoke propose` applies
+  add, heal (keeping the base file's admission and routes; a heal of a journey the base lacks refuses), drop and retire
+  (with the `<id>.spec` baselines), quarantine and unquarantine; appends each entry's `changes`; adds each entry's
+  `body` under "Details"; and moves a closed proposal's digest into `rejected`. An entry `smoke ci` staged names a CI
+  run (digits), which has no ledger: propose's secrets come from the lane runs.
+- **Regressions.** -smoke exports `regressionList(list, n, context, last?)` and `writeRegression(main, {runId, slot?,
+  id, repro, n, live, accounts, claim, result?})` (slot null: the run's lowest free one); -heal's copies are gone.
+  `quarantineIds` moved down to -smoke. `smoke run` runs each quarantined path twice, one after the other
+  (`quarantined <id>: run twice`), so the quarantine lifecycle can count two holds a cycle.
+- **Workflow.** Its projects are codegen's `suiteProjects`, the config's list: every project but msedge in the
+  container matrix of the test and baseline jobs (each run with `--project setup --project "$PROJECT"`), msedge on the
+  plain runner with no screenshot; the quarantine job runs on the container's first engine. Artifacts:
+  `argus-smoke-results-<project>` (`results.json` at the root; `-msedge`, `-quarantine`) and
+  `argus-smoke-baselines-<project>` rooted at the suite directory.
+- **Violations.** The collected annotations are the artifact. a11yReport now writes `argus-violation` and
+  `argus-manual` (JSON `{check, step, key, detail}`) as C1's checks do, and the token note as `argus-info`. `smoke
+  ci` reads them from results.json (a passing test's `manual` and `info` too; `info <id> <project> [k]` is a new
+  line), and reads an `aria-snapshot` violation as `baseline-missing` or `aria`. `smoke baseline` adopts the baseline
+  run's `argus-violation` rows of the adopted journeys from its results artifacts as `known/<id>.json`, a JSON list
+  of `{check, key}` merged with the branch's own and sorted; no `violations-<id>.json` is read. Keys, details and
+  info lines are fenced wherever printed.
+- **New module.** `smoke baseline` and its adoption moved from -ci into `argus-live-baseline.mjs` (after -ci, before
+  -report in the module order), so -ci stays under the line cap; -ci exports its artifact readers.
+- **Report records.** -smoke's `smokeEvent(main, runId, event)` is the one writer of `<run>/smoke/events.jsonl`:
+  `admitted` (smoke admit), `healed` with steps (smoke heal), `quarantined`/`unquarantined`/`dropped` when smoke ci
+  stages them, `proposal` (smoke propose; smoke baseline's pull request). The report reads perf from `perf.jsonl`
+  (D's five verdicts, the regressed metrics, a quoted not-measured reason) and `.argus/perf.json`'s baseline, and
+  the CI summary from the newest `.argus/smoke-ci/<run>/triage.json` (no `.argus/smoke-ci.json`, no perf event). Its
+  shown triage words gain `smoke`, `quarantined`, `failed`, `info` and `skipped:`. The integration tests run the real
+  producers and read the report: pass and perf in `tests/argus-live-report.test.ts`, the events in each producer's
+  own test.
+- **ROLE_FREE** holds `source`; pw's local copy is gone.
+- **Spec.** §19.7, §19.10–§19.13 follow the as-built behaviour (dedupe, Shift+Tab start, screens, no `children`,
+  tokens at run time, empty-state headings, the toast's blind first step, a gone invoker's modal, the perf pass's
+  script, `latest`, the five verdicts, the exit codes, the workflow's artifacts, the seed's HEAD, the report's
+  inputs). A2's `admitted.pathSha` and D's `pathSha` are the same digest (sha256 of the path list's JSON) for a path
+  written once.
+
+**Left to lane Z.** A4's and B's Z2 engine text (admit needs an instance, ci before baseline, the orchestrator files
+`smoke-flaky:<id>`, perf's `--issue` flow, the seed sequence), `live.md`'s token file, CONTRACT.md and the docs naming
+`filed.jsonl`, `.argus/reports/` and the new `argus-live-baseline.mjs`, and open risk 8's line (C3's probe answered it).
