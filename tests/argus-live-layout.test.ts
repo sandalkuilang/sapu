@@ -239,6 +239,86 @@ describe("argus-live layout — known and allowed violations, the project gate",
 });
 
 // ---------------------------------------------------------------------------------------------------
+// C1.2 — locale and format checks.
+
+describe("argus-live layout — number and date formats under each locale", () => {
+  it("under de-DE, 1,234.56 fails and 1.234,56 holds; a date, an ISO date, a URL, an address, an input, code and translate=no are skipped", async () => {
+    const { page } = await open("locale-de.html", { locale: "de-DE" });
+    expect(await ask(page, "format", { locale: "de-DE" })).toEqual([{ check: "format", key: "number|#,#.#", detail: expect.stringContaining('"1,234.56" under de-DE') }]);
+  }, 60_000);
+
+  it("under en-US, a date proving day-first or using another separator fails; month-first, ambiguous and ISO dates hold", async () => {
+    const { page } = await open("locale-en.html");
+    const found = await ask(page, "format", { locale: "en-US" });
+    expect(found.map((f: Obj) => f.key).sort()).toEqual(["date|#.#.#|separator", "date|#/#/#|order"]);
+    expect(found.find((f: Obj) => f.key.endsWith("|order")).detail).toContain('"13/02/2026" under en-US');
+    // The same dates under en-GB: day first, so the 13th reads right and the 02/13 one is the wrong one.
+    const gb = await ask(page, "format", { locale: "en-GB" });
+    expect(gb.map((f: Obj) => f.detail.split(" under")[0]).sort()).toEqual(['"02.13.2026"', '"02/13/2026"']);
+  }, 60_000);
+
+  it("a locale that does not write Latin digits is not judged", async () => {
+    const { page } = await open("locale-de.html");
+    expect(await ask(page, "format", { locale: "ar-EG" })).toEqual([]);
+  }, 60_000);
+});
+
+describe("argus-live layout — localeStep (the i18n project)", () => {
+  const setup = (live: Obj, project = "i18n") => {
+    const e = env(project);
+    mkdirSync(join(e.dir, ".argus"), { recursive: true });
+    writeFileSync(join(e.dir, ".argus/live.json"), JSON.stringify(live));
+    return { ...e, lib: load(["locale"], e.scope) };
+  };
+  const run = async (lib: Obj, file: string, { exclude = [], last = true, mutates = false } = {}) => {
+    const { context } = await open(file);
+    return lib.localeStep(browser, [context], 0, "buyer.1", 2, "j", origin, { width: 1000, height: 700 }, [], exclude, mutates, last);
+  };
+
+  it("a real locale runs the formats and overflow of the step's URL, and says it is only URL-addressable states", async () => {
+    const { lib, annotations } = setup({ locales: ["de-DE"] });
+    const found = await run(lib, "locale-de.html");
+    expect(found.map((f: Obj) => [f.check, f.key])).toEqual([["locale-format", "de-DE|number|#,#.#"]]);
+    expect(annotations.filter((a) => a.type === "argus-info").map((a) => a.description)).toEqual(["locale: only URL-addressable states are checked", "pseudo-localization: not done (no pseudo-locale listed)"]);
+  }, 60_000);
+
+  it("a page with lang=en under de-DE is not localized: reported manual, its formats not judged", async () => {
+    const { lib, annotations } = setup({ locales: ["de-DE"] });
+    expect(await run(lib, "locale-static.html")).toEqual([]);
+    const manual = annotations.filter((a) => a.type === "argus-manual").map((a) => JSON.parse(a.description));
+    expect(manual).toEqual([{ check: "locale", step: 2, key: "de-DE|not localized", detail: 'not localized: <html lang> is "en" under de-DE' }]);
+  }, 60_000);
+
+  it("a pseudo-locale runs only page-scroll and clipped, and counts the text its render shares with the default locale's", async () => {
+    const { lib, annotations } = setup({ pseudo_locales: ["en-XA"] });
+    const found = await run(lib, "pseudo.html", { exclude: ["ORDER-77"] });
+    // The page holds a number that would fail format checks under a real locale; none runs here.
+    expect(found.map((f: Obj) => [f.check, f.key])).toEqual([["locale-clipped", "en-XA||Clipped everywhere|p"]]);
+    // Place order changed; the other four (digits-only and translate=no excluded, the typed ORDER-77 excluded) did not.
+    expect(annotations.filter((a) => a.type === "argus-info").map((a) => a.description)).toContain("pseudo-localization: 4 text unchanged under en-XA (hard-coded?)");
+    expect(annotations.map((a) => a.description).join("\n")).not.toContain("not done");
+  }, 90_000);
+
+  it("a pseudo-locale is never failed for its text, and a code the page ignores is counted, not failed", async () => {
+    const { lib } = setup({ pseudo_locales: ["de-XA"] });
+    const found = await run(lib, "pseudo.html");
+    expect(found.filter((f: Obj) => f.check !== "locale-clipped")).toEqual([]);
+  }, 90_000);
+
+  it("the other projects skip it, and a repeated URL is looked at once unless the step changes state", async () => {
+    const { lib } = setup({ locales: ["de-DE"] }, "chromium");
+    expect(await run(lib, "locale-de.html")).toEqual([]);
+    const { lib: i18n } = setup({ locales: ["de-DE"] });
+    const { context } = await open("locale-de.html");
+    const opened = [context];
+    const call = (mutates: boolean) => i18n.localeStep(browser, opened, 0, "buyer.1", 2, "j", origin, { width: 1000, height: 700 }, [], [], mutates, true);
+    expect((await call(false)).length).toBe(1);
+    expect(await call(false)).toEqual([]);
+    expect((await call(true)).length).toBe(1);
+  }, 90_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
 // What the generator embeds and emits.
 
 const LIVE = (): Obj => ({ ...example(), test_id_attribute: "data-testid" });
@@ -255,9 +335,10 @@ const PATH = (): Obj[] => [
 ];
 
 describe("argus-live layout — the registry and its emitted lines", () => {
-  it("registers the layout check, each with the shape the generator reads, and the sources parse", () => {
+  it("registers the layout and locale checks, each with the shape the generator reads, and the sources parse", () => {
     expect(CHECKS.map((c: Obj) => [c.name, c.project, typeof c.source, typeof c.emit])).toEqual([
       ["layout", "viewport", "string", "function"],
+      ["locale", "i18n", "string", "function"],
     ]);
     const file = join(tempDir(), "support.mjs");
     writeFileSync(file, stripTypeScriptTypes(CHECKS.map((c: Obj) => c.source).join("\n")));
@@ -273,7 +354,7 @@ describe("argus-live layout — the registry and its emitted lines", () => {
     expect(layout.length).toBe(6);
     expect(layout[0]).toBe('    expect.soft(await (await import("./support")).layoutStep(opened, 0, 1, "checkout", []), "layout: step 1").toEqual([]);');
     // Every check follows each of the six account steps; the last (system) step gets none.
-    for (const fn of ["layoutStep"]) expect(lines.filter((l) => l.includes(`.${fn}(`)).length, fn).toBe(6);
+    for (const fn of ["layoutStep", "localeStep"]) expect(lines.filter((l) => l.includes(`.${fn}(`)).length, fn).toBe(6);
     expect(text.indexOf("fact-equals")).toBeGreaterThan(text.lastIndexOf(".layoutStep("));
     expect(text).not.toContain("`");
   });
@@ -282,6 +363,20 @@ describe("argus-live layout — the registry and its emitted lines", () => {
     const smoke = validateSmoke({ journeys: { checkout: { allow: [{ check: "target-size", key: 'button|Edit "x"|button' }] } }, ci: { web_server: [{ command: "npm start", url: "http://localhost:4100/health" }], ports: { web: 4100 } } }).value;
     const text = smokeSpec({ id: "checkout", path: PATH(), live: LIVE(), smoke });
     expect(text).toContain('.layoutStep(opened, 0, 1, "checkout", [{"check":"target-size","key":"button|Edit \\"x\\"|button"}])');
+  });
+
+  it("locale lines pass the typed values as variables (only those read before the step), a mutating step, and the last account step", () => {
+    const text = smokeSpec({ id: "checkout", path: PATH(), live: LIVE(), smoke: SMOKE() });
+    const locale = text.split("\n").filter((l) => l.includes(".localeStep("));
+    const tail = (l: string) => l.slice(l.indexOf("baseURL"), l.indexOf('), "locale'));
+    expect(locale.map(tail)).toEqual([
+      "baseURL, viewport, [], [], false, false",
+      'baseURL, viewport, [], ["2 " + marker], false, false',
+      'baseURL, viewport, [], ["2 " + marker], true, false',
+      'baseURL, viewport, [], ["2 " + marker], false, false',
+      'baseURL, viewport, [], ["2 " + marker], true, false',
+      'baseURL, viewport, [], ["2 " + marker, saved_order], false, true',
+    ]);
   });
 
   it("support.ts embeds every source once, and holds no hard wait, shell or exec", () => {

@@ -13,7 +13,7 @@ export const LAYOUT_KINDS = ["page-scroll", "clipped", "covered", "target-size"]
 /**
  * The in-page function: `(arg: {kind, opts}) → answer`, plain script with no outer reference, so it runs as
  * the support file's `page.evaluate` source and as the exploratory lane's `run-code` source alike. Kinds:
- * `layout` ({only?}) → [{check, key, detail}].
+ * `layout` ({only?}) → [{check, key, detail}]; `format` ({locale}); `lang`; `text` ({exclude}) → visible text units.
  */
 export const PAGE_FN = String.raw`(arg) => {
   const kind = arg.kind;
@@ -179,11 +179,64 @@ export const PAGE_FN = String.raw`(arg) => {
     return out;
   };
 
+  // ------------------------------------------------------------------------------------ text
+  const units = () => {
+    const out = [];
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n && out.length < 4000; n = walker.nextNode()) {
+      const p = n.parentElement;
+      if (!norm(n.nodeValue) || !p || p.closest("input, textarea, select, option, script, style, noscript, code, pre, kbd, samp, [translate=no], [contenteditable]") || !ok(p)) continue;
+      out.push(n.nodeValue);
+    }
+    return out;
+  };
+  const formatCheck = (locale) => {
+    let np;
+    let dp;
+    try {
+      const nf = new Intl.NumberFormat(locale);
+      if (nf.resolvedOptions().numberingSystem !== "latn") return [];
+      np = nf.formatToParts(1234567.891);
+      dp = new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "UTC", numberingSystem: "latn" }).formatToParts(new Date(Date.UTC(2026, 0, 31)));
+    } catch (e) {
+      return [];
+    }
+    const part = (type) => (np.find((p) => p.type === type) || {}).value;
+    const [group, decimal] = [part("group") || "", part("decimal") || "."];
+    const order = dp.filter((p) => p.type !== "literal").map((p) => p.type);
+    const sep = ((dp.find((p) => p.type === "literal") || { value: "" }).value.trim()).charAt(0);
+    const out = [];
+    for (const raw of units()) {
+      const t = raw.replace(/(?:https?:\/\/|www\.)\S+/gi, " ").replace(/\S+@\S+/g, " ");
+      for (const m of t.matchAll(/(?<![\d.,])\d{1,3}(?:[.,]\d{3})+[.,]\d+(?!\d)/g)) {
+        const seps = [...m[0].matchAll(/[.,]/g)].map((x) => x[0]);
+        const [g, d] = [seps[0], seps[seps.length - 1]];
+        if (g === d || seps.slice(0, -1).some((x) => x !== g) || (group === g && decimal === d)) continue;
+        out.push({ check: "format", key: "number|" + digits(m[0]), detail: JSON.stringify(m[0]) + " under " + locale + ": the group separator is " + JSON.stringify(group) + " and the decimal " + JSON.stringify(decimal) });
+      }
+      for (const m of t.matchAll(/(?<![\d./-])(\d{1,2})([./-])(\d{1,2})\2(\d{4})(?!\d|[./-]\d)/g)) {
+        const dayFirst = order.indexOf("day") < order.indexOf("month");
+        const [a, b] = [Number(m[1]), Number(m[3])];
+        const why = order[0] === "year" || (a > 12 && a <= 31 && !dayFirst) || (b > 12 && b <= 31 && dayFirst) ? "order" : sep && "./-".indexOf(sep) >= 0 && m[2] !== sep ? "separator" : "";
+        if (why) out.push({ check: "format", key: "date|" + digits(m[0]) + "|" + why, detail: JSON.stringify(m[0]) + " under " + locale + ": day order " + order.join("-") + ", separator " + JSON.stringify(sep) });
+      }
+    }
+    return dedupe(out);
+  };
+
   switch (kind) {
     case "layout": {
       const want = (k) => !Array.isArray(o.only) || o.only.indexOf(k) >= 0;
       const found = [].concat(want("page-scroll") ? pageScroll() : [], want("clipped") ? clippedText() : [], want("covered") ? covered() : [], want("target-size") ? targetSize() : []);
       return dedupe(found).sort((a, b) => (a.check + a.key < b.check + b.key ? -1 : 1));
+    }
+    case "format":
+      return formatCheck(String(o.locale));
+    case "lang":
+      return doc.documentElement.getAttribute("lang") || "";
+    case "text": {
+      const ex = (o.exclude || []).map(String).filter((e) => e.length > 0);
+      return [...new Set(units().map(norm).filter((t) => /\p{L}/u.test(t) && !ex.some((e) => t.indexOf(e) >= 0)))];
     }
     default:
       throw new Error("argus layout: no check " + kind);
@@ -246,6 +299,77 @@ export async function layoutStep(opened: BrowserContext[], i: number, step: numb
 }
 `;
 
+const LOCALE_SOURCE = String.raw`type LocaleState = { seen: Set<string>; said: boolean; unchanged: Map<string, Set<string>> };
+const localeStates = new WeakMap<object, LocaleState>();
+
+/** The codes live.json lists (the committed file; a missing or unreadable one lists none). */
+async function localeConfig(): Promise<{ locales: string[]; pseudo: string[]; locale: string; timezone: string }> {
+  const fs = await import("node:fs");
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : []);
+  try {
+    const live = JSON.parse(fs.readFileSync(path.join(REPO, ".argus", "live.json"), "utf8"));
+    return { locales: list(live.locales), pseudo: list(live.pseudo_locales), locale: typeof live.locale === "string" ? live.locale : "en-US", timezone: typeof live.timezone === "string" ? live.timezone : "UTC" };
+  } catch (e) {
+    return { locales: [], pseudo: [], locale: "en-US", timezone: "UTC" };
+  }
+}
+
+/**
+ * The locale checks after a step (spec 19.7), in the i18n project: a sibling context in each listed locale opens
+ * the step's URL (with the account's signed-in state when it has one) and runs page-scroll and clipped; a real
+ * locale also its number and date formats (a page whose lang is not the locale's language is not localized, and
+ * its formats are not judged); a pseudo-locale counts the text its page shares with the default locale's.
+ */
+export async function localeStep(browser: Browser, opened: BrowserContext[], i: number, account: string, step: number, id: string, baseURL: string | undefined, viewport: { width: number; height: number } | null, allow: LayoutRule[], exclude: string[], mutates: boolean, last: boolean): Promise<LayoutViolation[]> {
+  const page = layoutPageOf(opened, i);
+  if (!page || layoutKind() !== "i18n") return [];
+  const cfg = await localeConfig();
+  const st = localeStates.get(opened) ?? { seen: new Set<string>(), said: false, unchanged: new Map<string, Set<string>>() };
+  localeStates.set(opened, st);
+  if (!st.said) {
+    st.said = true;
+    layoutInfo("locale: only URL-addressable states are checked");
+    if (cfg.pseudo.length === 0) layoutInfo("pseudo-localization: not done (no pseudo-locale listed)");
+  }
+  const url = page.url();
+  const found: LayoutFound[] = [];
+  if (/^https?:/.test(url) && !(st.seen.has(account + " " + url) && !mutates)) {
+    st.seen.add(account + " " + url);
+    const fs = await import("node:fs");
+    const file = path.join(__dirname, ".auth", account + ".json");
+    const visit = async <T>(code: string, work: (p: Page) => Promise<T>): Promise<T> => {
+      const context = await browser.newContext({ baseURL, viewport: viewport ?? undefined, locale: code, timezoneId: cfg.timezone, ...(fs.existsSync(file) ? { storageState: file } : {}) });
+      try {
+        const p = await context.newPage();
+        await p.goto(url);
+        await p.waitForLoadState("load");
+        return await work(p);
+      } finally {
+        await context.close();
+      }
+    };
+    let base: Set<string> | null = null;
+    for (const code of [...cfg.locales, ...cfg.pseudo]) {
+      await visit(code, async (p) => {
+        for (const f of await layoutRun(p, "layout", { only: ["page-scroll", "clipped"] })) found.push({ check: "locale-" + f.check, key: code + "|" + f.key, detail: f.detail });
+        if (cfg.pseudo.includes(code)) {
+          base = base ?? new Set<string>(await visit(cfg.locale, (d) => layoutRun(d, "text", { exclude })));
+          const same = st.unchanged.get(code) ?? new Set<string>();
+          for (const t of await layoutRun(p, "text", { exclude })) if (base.has(t)) same.add(t);
+          st.unchanged.set(code, same);
+          return;
+        }
+        const lang = String((await layoutRun(p, "lang", {})) || "");
+        if (!lang.toLowerCase().startsWith(code.split("-")[0].toLowerCase())) layoutManual(step, "locale", code + "|not localized", "not localized: <html lang> is " + JSON.stringify(lang) + " under " + code);
+        else for (const f of await layoutRun(p, "format", { locale: code })) found.push({ check: "locale-format", key: code + "|" + f.key, detail: f.detail });
+      });
+    }
+  }
+  if (last) for (const code of cfg.pseudo) layoutInfo("pseudo-localization: " + (st.unchanged.get(code)?.size ?? 0) + " text unchanged under " + code + " (hard-coded?)");
+  return layoutJudge(id, step, found, allow);
+}
+`;
+
 // ---------------------------------------------------------------------------------------------------
 // The registry's emitters.
 
@@ -256,10 +380,31 @@ const allowOf = (ctx) => {
   const j = ctx.smoke && ctx.smoke.journeys && ctx.smoke.journeys[ctx.id];
   return j && Array.isArray(j.allow) ? j.allow.map((a) => ({ check: a.check, key: a.key })) : [];
 };
+const lastAccountStep = (ctx) => [...ctx.steps].reverse().find((s) => s.as !== "system") || ctx.steps[ctx.steps.length - 1];
 const soft = (fn, args, what) => `expect.soft(await (await import("./support")).${fn}(${args.join(", ")}), ${J(what)}).toEqual([]);`;
 /** The common emitter: one soft check on what `fn` returns after each step of an account; `more(step, ctx)` adds arguments. */
 const perStep = (fn, what, more = () => []) => (step, ctx) =>
   step.as === "system" ? [] : [soft(fn, ["opened", accountsOf(ctx.steps).indexOf(step.as), step.n, J(ctx.id), J(allowOf(ctx)), ...more(step, ctx)], `${what}: step ${step.n}`)];
+/** Steps that may change what a sibling context sees of the same URL. */
+const MUTATING = ["click", "dblclick", "press", "reload", "login", "go-back"];
+
+/** A repro string as an expression of the test's variables, or null when it names a value not read before step `n`. */
+function valueExpr(s, steps, n) {
+  const saved = new Set(steps.filter((x) => x.save && x.n < n && x.do === "read").map((x) => x.save));
+  const out = [];
+  for (const p of String(s).split(/(\{\{[a-z][a-z0-9_]*\}\})/).filter((x) => x !== "")) {
+    const name = /^\{\{([a-z][a-z0-9_]*)\}\}$/.exec(p);
+    if (!name) out.push(J(p));
+    else if (name[1] === "marker" || saved.has(name[1])) out.push(name[1] === "marker" ? "marker" : `saved_${name[1]}`);
+    else return null;
+  }
+  return out.length ? out.join(" + ") : null;
+}
+
+/** The text a step typed or compared up to step `n`: what a pseudo-locale render is not expected to translate. */
+const typedValues = (steps, n) =>
+  steps.filter((s) => s.n <= n && typeof s.value === "string" && (s.do === "fill" || s.do === "select" || ["value-equals", "text-equals", "text-contains"].includes(s.expect))).map((s) => valueExpr(s.value, steps, n)).filter(Boolean);
+
 /**
  * The check registry the generator loops over: `[{name, project, when, source, emit(step, ctx) → string[]}]`
  * — `project` the suite project that runs it, `when` the steps it follows, `source` the TypeScript embedded in
@@ -268,4 +413,14 @@ const perStep = (fn, what, more = () => []) => (step, ctx) =>
  */
 export const CHECKS = [
   { name: "layout", project: "viewport", when: "every step", source: CORE_SOURCE, emit: perStep("layoutStep", "layout") },
+  {
+    name: "locale",
+    project: "i18n",
+    when: "every step",
+    source: LOCALE_SOURCE,
+    emit: (step, ctx) =>
+      step.as === "system"
+        ? []
+        : [soft("localeStep", ["browser", "opened", accountsOf(ctx.steps).indexOf(step.as), J(step.as), step.n, J(ctx.id), "baseURL", "viewport", J(allowOf(ctx)), `[${typedValues(ctx.steps, step.n).join(", ")}]`, J(MUTATING.includes(step.do)), J(step.n === lastAccountStep(ctx).n)], `locale: step ${step.n}`)],
+  },
 ];
