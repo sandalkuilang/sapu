@@ -2085,3 +2085,99 @@ Z2's and Z3's "Needs coordinator" items 1 to 5 (Z2) and 1, 4 and 5 (Z3) are sett
 - **Version 2.10.0** (decision 17): plugin.json and the two workflow metas, as the 2.9.0 commit did; the upgrade notes were
   already under "before 2.10.0", and the roadmap names both releases. Phase 6 ships as a pull request of its own on top of the
   held 2.9.0 one.
+
+### Review fixes — the phase-end review (architect, writer, QA)
+
+Every item below has a test that failed first; one commit per item or small group.
+
+**Decisions, in the reviews' order.**
+- **B1, traces.** A spec whose path holds a `login` step gets `test.use({ trace: "off" })` (a trace keeps each typed
+  value and CI uploads it); the config sets `video: "off"` and `screenshot: "off"` for every project, and a failed
+  `toHaveScreenshot` shows a password field as the browser masks it. docs/security.md says so.
+- **M1(a), baseline grep.** The job checks `GREP` with a POSIX `case` (no empty id, no leading `-` or `|`, no `||`)
+  plus the old character check, which together equal `^[a-z0-9][a-z0-9-]*(\|[a-z0-9][a-z0-9-]*)*$` under `sh`, and runs
+  `--grep "(^| )($GREP)( |\$)"`. Codegen refuses a journey named as a project (`setup` and the PROJECT shapes). Each
+  dispatch is recorded in smoke-state `dispatches` (`{ciRun, from, branch, mode, ids}`; `ciRun` null when gh printed no
+  run URL, then it counts for its branch). Adoption compares each file with the branch at the run's head: an unchanged
+  file is left out, a new one adopted, a changed one only for an id the run was dispatched with in `changed` mode.
+- **M1(b), known rows.** New rows only with `--known`, and then always as an `argus/baselines-<run>` pull request whose
+  body lists each new row (`+ <file> {"check","key"}` in a code block), even on an `argus/` branch: a direct commit has no
+  body to list them in. Without the flag: `known: <n> new violation row(s) of <id> not adopted (…)`.
+- **M3, heal.** `action-failed` is refused by `smoke heal`; `smoke run --slot` writes it as a regression candidate whose
+  final is `enabled` on the step's target (a step in a parallel group, or without a target, is not written). Heal answers
+  `target-missing` and `target-ambiguous` only (the old locator, two of two, no longer finds one control). A heal to a
+  target of another role is refused when both name a role; a target found by role where the old one was not (or the
+  reverse) is flagged `role changed`, different names `name changed`: a `needs owner` line, a body line, the staged entry's
+  `needsOwner`, and the needs-owner label on the pull request (`--label` on create, `--add-label` on edit). `smoke plan`
+  lists an `expect-failed` or `action-failed` last pass as `regression-candidate <id> step <n> <kind>` (QA m2).
+- **M4, quarantine.** `smoke ci` with no `--run` reads `?status=completed&event=push&branch=<base>`. Lifecycle counts only
+  on a base push, once per lane cycle and once per CI run (`ciRuns`); no lane pass of the path or no quarantine-job result
+  of its projects is "not counted" and keeps the streak (quarantineCycle answers `counted: false`). The workflow's
+  quarantine job is the test job's matrix: the workflow is written once, so it cannot follow quarantine.json; instead
+  quarantine.json entries carry `projects` (the flake's) and the lifecycle reads only those projects' results (every
+  project for an entry that names none, or only `msedge`). The quarantine digest is `{id}` only (QA M2), and a base flake
+  is `{run, at}`, kept 30 days (a bare id from before is dated at its first read). An exit's `quarantine: null` and
+  `exits + 1` happen when refreshOutcomes sees it merged (QA m7); smoke ci asks for outcomes before it judges flakes.
+  Found on the way: smoke propose dropped a quarantine's `projects` when it wrote quarantine.json.
+- **M5, admission.** Fresh at live.json's first viewport, then on the same instance at each further width the suite runs
+  it at, then one pass over the suite's other paths in the recorded seed's order (their breaks are smoke run's to judge;
+  a harness failure stops the admission), then dirty at the first width. `journeys.<id>.viewports` leaves further widths
+  out (a `testIgnore` on those `chromium-<w>` projects); the first width, every engine's, always runs.
+- **M6, M7, workflow.** Refused without `ci.web_server` or a suite path. The `hashFiles('<dir>/package.json') != ''` guard
+  is on every step after the checkout, not on the job: a job-level `if` has no workspace to hash. Secrets only in the
+  env of the step that runs `npx playwright test`; `npm ci --ignore-scripts`. The image is pinned by the digest an HTTPS
+  `curl -sSfI` of `mcr.microsoft.com/v2/playwright/manifests/<tag>` answers (probed live: anonymous, `Docker-Content-
+  Digest`), as `<name>:<tag>@sha256:…`; when it cannot be resolved the tag stays and a comment line says why.
+- **M8.** No code: docs/usage.md says the suite is advisory CI (and why a required check could deadlock), and the
+  follow-up is listed under "Out of scope".
+- **Minors.** One reader per shared file: quarantine.json `readQuarantine`/`quarantineAt` in -smoke (its writer,
+  smoke propose, sits above -smoke, which cannot import it, so the reader lives in the lowest module every reader shares
+  and propose writes what it reads), pass.jsonl `readPass` in -smoke (its writer), known/<id>.json `readKnown` and
+  `knownText` in -smokecfg (below -pw, the lowest reader), triage.json `readTriage`/`writeTriage` in the new -artifacts.
+  triage.json gains `version: 1` and `findings[]`, which smoke baseline reads (an older file's findings are parsed from its
+  lines in the reader); the report shares the CI branch shape. perf.json is `{version: 1, journeys}` (the flat file still
+  reads). Perf: the baseline is two batches, its `max` the slowest run; a regression needs both thresholds and more than
+  `max` (the architect's first option; p75 + k·MAD not built); `perf.runs` at least 3; a new `perf.max_load` (default 0.5
+  of each core) refuses `smoke run --perf` on a busy machine — an owner knob rather than a fixed constant, so a machine
+  that always runs other work (and the fixture test, through the CLI) can opt in knowingly; a Chrome-only change prints
+  the new baseline against the old one. `smoke baseline` adopt and `smoke propose` check text with no run's values against
+  the newest run that keeps a ledger (`newestLedgerRun`), never a map run's (QA m1). -smokecfg holds smoke.json's schema
+  (-config 747 → 609 lines); -artifacts holds CI's runs and artifacts (-ci 635 → 376; -baseline no longer imports -ci).
+  CI is optional: without `.github/workflows/<ci.workflow>` in the checkout, `smoke ci` and `smoke baseline` answer `no CI
+  wiring (…): skipped`, exit 0.
+- **Writer M1 and QA's blocker.** `suiteIdsAt` reads `git ls-tree <head>:<dir>/journeys`, fetching the run's branch, then
+  its sha, when the clone lacks the head; when no fetch brings it the working tree's ids are used with a `note:` line.
+  The early "no paths" refusal (before any gh call) now waits while a proposal is open. QA's scenario is the test.
+- **Writer M2.** /sapu Phase A's `OWNER-ONLY` class: a pull request whose head branch starts with `argus/` (read from the
+  pr-trust file) is never reviewed, fixed, merged or closed, and is listed in the report.
+- **QA M1.** A staged drop or retire supersedes the journey's heal, quarantine and unquarantine: stageInto removes them
+  when the drop comes later, smoke propose skips one staged after it (`skip heal <id>: superseded by the staged drop`).
+- **QA M3, m6.** The suite's hooks substitute `${NAME}` from `process.env` when they run, in one pass with the `{k}`
+  values; `{port:<name>=<n>}` takes `ci.ports`' port, else `n`; a failed hook throws `argus-smoke: <hook> exited <code>`,
+  no stderr; a `login_url` that is no URL is `failed: codegen: login_url … is not a URL or a path`. live.json's `env`
+  block is not reproduced in CI (decided: the step's environment and `ci.web_server` are the owner's).
+- **QA m3.** A form case counts only the form's own request (to its `action` when it names one, else a body carrying a
+  field name, issued after the click); a form rendered anew, or a page gone, with no such request is a `manual`
+  `form-accepts-invalid` that ends the cases, never `hard`.
+- **QA m5.** `dir` is `[A-Za-z0-9._/-]`, never under `.git`, `.github` or `.argus`; a mask is a role, text, label or
+  test-id locator (a container's too), never `locator(…)`, a title or XPath.
+- **QA test.** The journey-app cycle's `settle_ms` (repro 3000 → 6000, else 5000 → 8000) and `live_health_timeout_s` (20 →
+  90) were short for a loaded machine; the tests' own timeouts were already generous.
+
+**Engine-text budgets.**
+
+| File | Bytes | Budget |
+|---|---|---|
+| `skills/journey/smoke.md` | 15,137 | 15,150 (was 13,600) |
+| `skills/sapu/SKILL.md` | 40,603 | 40,610 (was 40,336) |
+| `skills/argus/journeys.md` | 12,791 | 12,800 (unchanged) |
+| `agents/ui-explorer.md` | 19,088 | 19,200 (unchanged) |
+
+**Left over.**
+- `sapu-merge.sh` does not refuse an `argus/` branch in code: the rule is the skill's (Phase A), as M8's gate is a
+  follow-up.
+- An `action-failed` candidate ends in `enabled`: a control covered by another element stays enabled, so its replay
+  does not reproduce and nothing is filed; the path stays broken and `smoke plan` keeps listing it.
+- A quarantine digest the owner rejected before these fixes no longer matches (the digest is now the journey's alone):
+  that quarantine may be proposed once more.
+- The full suite was not run here (the coordinator runs it).
