@@ -850,7 +850,8 @@ could use them.
   (`node "$S" up`, `node --import=$S x up`) counts as the script when one of its verbs, or any word the
   shell builds, follows. A later operand is an argument (`node --test a.test.mjs argus-live.mjs`), and
   `node --check` runs nothing. Not caught (a guard LIMIT): a copy of the script under another name, or
-  an interpreter's own code that imports it (`node -e`).
+  an interpreter's own code that imports it (`node -e`); either reaches every verb, the ones that push a
+  branch or dispatch a workflow (`smoke propose`, `smoke baseline`) included.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,
