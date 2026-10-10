@@ -1,5 +1,5 @@
 // argus-live-repro.mjs — the repro runner (spec §10 "Reproduce"; decisions 2–4, 6, 8, 11–13, 26): one run
-// of a candidate's repro on a freshly reset instance. Its steps are data (argus-live-steps.mjs); every
+// of a candidate's repro on a freshly reset instance, or of a smoke path (spec §19.4) with its PATH verdict. Its steps are data (argus-live-steps.mjs); every
 // browser step runs as the wrapper's own `run-code` template in slot `r`'s sessions, through the session
 // driver, proxy and per-slot config an explorer's use; its answer is an exit code — 0 not reproduced, 3
 // reproduced, 2 a harness failure — and lines in the wrapper's own words, what the page showed fenced.
@@ -22,7 +22,7 @@ import { readRun, updateRun } from "./argus-live-run.mjs";
 import { REF } from "./argus-live-scrub.mjs";
 import { CAP_BYTES, configuredUser, keepDrain, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { readSlotState, slotLockWaitMs, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
-import { CLICKS, parseRepro, provingExpect, stepCode, substitute } from "./argus-live-steps.mjs";
+import { CLICKS, parseRepro, provingExpect, stepCode, substitute, suiteAccounts } from "./argus-live-steps.mjs";
 import { targetCode } from "./argus-live-targets.mjs";
 
 /** What a failed expectation may say it observed (decision 8): enums and integers only. */
@@ -34,6 +34,29 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** A harness failure: the run ends with exit 2 and `HARNESS: <message>`. */
 class Harness extends Error {}
+
+/** A path's action that broke (spec §19.9): the run ends with exit 3 and `PATH broke step=<n> kind=<kind>`. */
+class Broke extends Error {
+  constructor(step, kind) {
+    super(`step ${step} ${kind}`);
+    Object.assign(this, { step, kind });
+  }
+}
+
+/** A path's action failure → its break kind: no match, several, or the action itself. */
+const breakOf = (why) => (why === "missing-target" ? "target-missing" : why === "ambiguous-target" ? "target-ambiguous" : "action-failed");
+
+/**
+ * Smoke path `path` (`{id, list}`: a journey id and its DSL list) of the lock's run → `{runId, slotRec, dir}`
+ * as reproRef gives a candidate's: `slotRec` holds the journey (its accounts are the suite's, set once
+ * live.json is read), `dir` the path's records `.argus/live/<run>/smoke/<id>/`. Refused: another shape, no cycle.
+ */
+function pathRef(main, p) {
+  if (!isObj(p) || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(p.id) || !Array.isArray(p.list)) throw new Error("refused: a path is {id, list}: a journey id and its steps");
+  const lock = readLock(main);
+  if (!lock) throw new Error("refused: no journey cycle is running");
+  return { runId: lock.runId, candidate: null, slotRec: { journey: p.id, accounts: {} }, dir: path.join(liveDir(main), lock.runId, "smoke", p.id) };
+}
 
 /**
  * Candidate `ref` (`<slot>.<generation>.<k>`) of the lock's run → `{runId, slot, generation, k, candidate,
@@ -129,9 +152,17 @@ export const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text,
  *    `reduced` true for a run of a minimizer's `list`) and `steps-<i>.jsonl` (0600) written to the
  *    candidate's directory, with `repro.json` unless the run was given a `list`.
  * Any other throw → exit 2 `HARNESS: failed: <message, masked>`; a ref reproRef refuses is thrown as is.
+ *
+ * Path mode (spec §19.4, §19.9; `path` `{id, list}`, `ref` unused): the list parsed in path mode against the
+ * suite's accounts (suiteAccounts), `dirty` skipping the `up --fresh` (`dirty: instance <id>`: the instance
+ * as the last run left it); an action with no match, several or failing → exit 3 `PATH broke step=<n>
+ * kind=target-missing|target-ambiguous|action-failed`, an expectation that fails (several matches included)
+ * → its fence and exit 3 `PATH broke step=<n> kind=expect-failed`, every step held → exit 0 `PATH held`; the
+ * harness's failures as above. Records under `.argus/live/<run>/smoke/<id>/`: `path.json` (the list and its
+ * parse) and the numbered `run-<i>.json` (with `kind` and `dirty`) and `steps-<i>.jsonl`.
  */
-export async function runOnce(main, ref, { list = null, i = null, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
-  const { runId, candidate, slotRec, dir } = reproRef(main, ref);
+export async function runOnce(main, ref, { list = null, i = null, path: smoke = null, dirty = false, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
+  const { runId, candidate, slotRec, dir } = smoke ? pathRef(main, smoke) : reproRef(main, ref);
   const n = i ?? nextRun(dir);
   const started = Date.now();
   const lines = [];
@@ -139,8 +170,8 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
     lines.push(l);
     say(l);
   };
-  const result = { exit: 2, step: null, expected: null, observed: null, shownSha256: null, ms: 0, saved: {}, traces: [], changed: [], reduced: list !== null };
-  const repro = list ?? candidate.repro;
+  const result = { exit: 2, step: null, expected: null, observed: null, shownSha256: null, ms: 0, saved: {}, traces: [], changed: [], reduced: list !== null, ...(smoke ? { kind: null, dirty } : {}) };
+  const repro = smoke ? smoke.list : (list ?? candidate.repro);
   const created = [];
   const stepLog = [];
   let secrets = {};
@@ -157,8 +188,9 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
     const live = expandConfig(config, { ports: { ...(rec.ports ?? {}) }, secrets: envSecrets });
     const mask = () => ({ ...maskSecrets(main, config, live, { created: {} }), ...Object.fromEntries(created.map((p, j) => [`created:repro.${j}`, p])) });
     secrets = mask();
+    if (smoke) slotRec.accounts = suiteAccounts(live);
     try {
-      parsed = parseRepro(repro, { accounts: slotRec.accounts, live });
+      parsed = parseRepro(repro, { accounts: slotRec.accounts, live, path: Boolean(smoke) });
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       throw new Harness(e.message.replace(/^refused: /, ""));
@@ -178,12 +210,15 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
       runId,
       "r",
       async () => {
-        try {
-          const summary = await fresh(main, { runner });
-          emit(`fresh: instance ${summary.instanceId}`);
-        } catch (e) {
-          if (e && e.step) throw new Harness(`up --fresh failed at ${e.step}`);
-          throw e;
+        if (dirty) emit(`dirty: instance ${rec.instanceId}`);
+        else {
+          try {
+            const summary = await fresh(main, { runner });
+            emit(`fresh: instance ${summary.instanceId}`);
+          } catch (e) {
+            if (e && e.step) throw new Harness(`up --fresh failed at ${e.step}`);
+            throw e;
+          }
         }
         rec = readRun(main);
         const ifLive = { main, runId };
@@ -285,6 +320,7 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
           if (!ans.ok) {
             line(s, "failed");
             if (await lost(s.as)) throw new Harness(`step ${s.n} ${s.as} lost its session`);
+            if (smoke) throw new Broke(s.n, breakOf(ans.why));
             throw new Harness(ans.why === "missing-target" ? `step ${s.n} missing target` : `step ${s.n} ${s.do} failed (${ans.why === "timeout" ? "timeout" : "error"})`);
           }
           if (s.do === "read") saved[s.save] = vars[s.save] = String(ans.value ?? "");
@@ -408,14 +444,23 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
             }
             line(s, "failed");
             if (!HOOK_EXPECTS.includes(s.expect) && (await lost(s.as))) throw new Harness(`step ${s.n} ${s.as} lost its session`);
-            if (!OBSERVED.test(String(ans.observed))) throw new Harness(`step ${s.n} expectation could not be judged`);
-            if (s.final === undefined) throw new Harness(`step ${s.n} expectation failed before the final step`);
+            if (!OBSERVED.test(String(ans.observed)) && !(smoke && ans.observed === "ambiguous")) throw new Harness(`step ${s.n} expectation could not be judged`);
+            if (s.final === undefined && !smoke) throw new Harness(`step ${s.n} expectation failed before the final step`);
             const expected = s.expect === "count" ? `count:${s.value}` : s.expect;
             finalFence(s, ans);
             Object.assign(result, { step: s.n, expected, observed: ans.observed, shownSha256: shownDigest(ans.shown, s, vars) });
+            if (smoke) {
+              result.kind = "expect-failed";
+              emit(`PATH broke step=${s.n} kind=expect-failed`);
+              return 3;
+            }
             emit(`REPRODUCED step=${s.n} expected=${expected} observed=${ans.observed}`);
             return 3;
           }
+        }
+        if (smoke) {
+          emit("PATH held");
+          return 0;
         }
         throw new Error("failed: the repro ended without its final");
       },
@@ -424,7 +469,10 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
     result.exit = code;
   } catch (e) {
     result.exit = 2;
-    if (e instanceof Harness) {
+    if (e instanceof Broke) {
+      Object.assign(result, { exit: 3, step: e.step, kind: e.kind });
+      emit(`PATH broke step=${e.step} kind=${e.kind}`);
+    } else if (e instanceof Harness) {
       const m = /^step (\d+) /.exec(e.message);
       if (m) result.step = Number(m[1]);
       emit(`HARNESS: ${e.message}`);
@@ -443,7 +491,8 @@ export async function runOnce(main, ref, { list = null, i = null, fresh = upFres
         result.traces = now.filter((f) => !tracesBefore.has(f) || f.startsWith(`resources${path.sep}`));
       }
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      if (list === null) writePrivate(path.join(dir, "repro.json"), `${JSON.stringify({ ref, repro, ...(parsed ? parsed : {}) })}\n`);
+      if (smoke) writePrivate(path.join(dir, "path.json"), `${JSON.stringify({ id: smoke.id, path: repro, ...(parsed ? parsed : {}) })}\n`);
+      else if (list === null) writePrivate(path.join(dir, "repro.json"), `${JSON.stringify({ ref, repro, ...(parsed ? parsed : {}) })}\n`);
       writePrivate(path.join(dir, `run-${n}.json`), `${JSON.stringify(result)}\n`);
       writePrivate(path.join(dir, `steps-${n}.jsonl`), stepLog.map((x) => `${clean(JSON.stringify(x), { secrets })}\n`).join(""));
     } catch (e) {

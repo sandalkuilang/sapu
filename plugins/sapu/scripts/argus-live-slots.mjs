@@ -234,6 +234,7 @@ export async function mintSlot(main, { slot, journey, accounts }, { runner = run
       const slots = prev.slots ?? {};
       if (Object.hasOwn(slots, String(slot))) throw new Error(`refused: slot ${slot} is minted already; hand it off (slot ${slot} --handoff)`);
       for (const [n, s] of Object.entries(slots)) {
+        if (s && s.mode === "smoke") continue; // the smoke pass's regression record: its accounts browse only in slot r
         const taken = new Set(Object.values(allocationKeysQuiet(s.accounts, live)));
         for (const [a, key] of Object.entries(keys)) if (taken.has(key)) throw new Error(`refused: ${accounts[a] ?? a} already serves slot ${n}`);
       }
@@ -319,6 +320,7 @@ export async function handoffSlot(main, slot) {
   const { lock, rec } = cycle(main);
   const n = String(slot);
   if (!rec.slots || !Object.hasOwn(rec.slots, n)) throw new Error(`refused: slot ${slot} was never minted`);
+  if (rec.slots[n] && rec.slots[n].mode === "smoke") throw new Error(`refused: slot ${slot} holds the smoke pass's regression candidate: no explorer takes it`);
   const token = randomBytes(16).toString("hex");
   let entry = null;
   const settle = (loadLive(main).config ?? {}).settle_ms;

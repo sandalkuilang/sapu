@@ -349,9 +349,9 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
 ### Task 0.3: path mode and the lane's pass
 **Model: opus-high** (page-derived strings become committed data). **Files:** `-steps.mjs`, `-return.mjs`,
 `-repro.mjs`, `-minimize.mjs` (new), `-smoke.mjs`, `tests/argus-live-repro.test.ts`, `tests/argus-live-smoke.test.ts`.
-- [ ] **Step 0 (pure move):** `minimize`, `redTestFile`, `savedValues` to `-minimize.mjs`; the existing
+- [x] **Step 0 (pure move):** `minimize`, `redTestFile`, `savedValues` to `-minimize.mjs`; the existing
   repro tests pass unchanged. Commit `refactor(sapu): argus-live minimize moves beside the runner`.
-- [ ] **Failing tests:** `parseRepro(list, {accounts, live, path: true})` takes a list ending in an
+- [x] **Failing tests:** `parseRepro(list, {accounts, live, path: true})` takes a list ending in an
   `expect` with no `final`, refuses a `final`, a `{text}` action target, `{testId}` without
   `test_id_attribute`, `within` nested twice, a leading `trigger` not `seed: true`, and keeps every §10
   rule; `validateReturn` takes `path` (parsed in path mode against the slot's accounts) and `heal`
@@ -362,8 +362,8 @@ and status `flaky` with `retries: 1`; `storageState` from a setup project with `
   confirms a break with a second run after `up --fresh` (`broke` only at two of two, else `flaky`), and
   with `--slot <n>` writes a confirmed expectation break as slot `n`'s return holding one `regression`
   candidate that `repro <n>.<g>.1` reproduces two of two.
-- [ ] **Run** → FAIL. **Implement.** **Run**, then `npx vitest run` → PASS.
-- [ ] **Commit** `feat(sapu): argus-live paths — the DSL's path mode, the runner's PATH verdicts, the
+- [x] **Run** → FAIL. **Implement.** **Run**, then `npx vitest run` → PASS.
+- [x] **Commit** `feat(sapu): argus-live paths — the DSL's path mode, the runner's PATH verdicts, the
   lane's smoke pass`.
 
 
@@ -1018,3 +1018,69 @@ script), `-codegen` beside the instance before `-redtest`, then `-repro` → `-s
 - Line counts at 0.2: `-config` 747, `-repro` 750 (the cap; 0.3's move frees it), `-run` 748.
 - `-codegen.mjs` gets no stub (0.4 creates it); `-minimize.mjs` is not yet in the header (0.3 adds it).
 - Open for the lanes' owners: B2's "codegen writes `test.fixme`" lands in `-codegen.mjs`, which is C3's.
+
+### Task 0.3: path mode and the lane's pass
+
+**Locked for the lanes.**
+- `parseRepro(list, {accounts, live, path: true})` (`-steps`) reads a smoke path. Its refusals, each as
+  `refused: repro: step <n>: <reason>`: `a path has no final: it ends with an expect proving the journey's
+  goal`; `a path ends with an expect proving the journey's goal`; `an action's target in a path is {role,
+  name}, {label}, {placeholder} or {testId}` (`within` included); `a testId target needs live.json's
+  test_id_attribute` (any step); `within nests at most one level in a path`; `a path's trigger leads it and is
+  marked seed: true in live.triggers`. A trigger leads when no step of an account comes before it, so a
+  seed trigger's `system` proving expect may sit between two seed triggers. Every other §10 rule holds.
+- `suiteAccounts(live) → {"<role>.<k>": user | null}` (`-steps`) is the suite's numbering: a users role's
+  k-th user is `<role>.<k>`, and anon and a login-command role are `.1`. The suite's paths name accounts
+  this way. `smokeRun`, `runOnce`'s path mode and codegen parse against it. A return's path is checked
+  against its slot's allocation, so A2 renumbers it to the suite's accounts by user before staging.
+- `pathChecks({accounts, live, healMax}) → {parsePath, healTarget, healMax}` (`-steps`) is what
+  `validateReturn(obj, {journey, accounts, outFiles, checks})` (`-return`) reads, through `checks()`, only for
+  a return that holds `path` or `heal`. The return's new keys:
+  - `path`, kept as written;
+  - `heal: [{step, target}]`, at most `heal_max_steps`, `step` 1–100 and distinct. `target` is a locator
+    string, the explorer's own form, which `parseTarget` reads. It is stored as the DSL's target object, in
+    the selector order an action takes;
+  - `heal_reason` (`no-control|blocked|harness`), only beside `heal: []`.
+
+  `submit(main, {runId, slot, rec}, json, {checks})`. `pw` passes `returnChecks`: the slot's accounts,
+  live.json as the run expands it, and smoke.json's `heal_max_steps`. An unreadable live.json or smoke.json
+  refuses a return holding a path or heal (`… cannot be checked (…)`), and no other.
+- `runOnce(main, null, {path: {id, list}, dirty})` (`-repro`) is path mode. Exit 0 is `PATH held`. Exit 3
+  is `PATH broke step=<n> kind=target-missing|target-ambiguous|action-failed|expect-failed`, and an
+  expect-failed break shows what the page showed in its fence first. Exit 2 is `HARNESS: …`, which
+  includes a path that path mode refuses. `dirty: true` skips `up --fresh` and prints `dirty: instance
+  <id>`. Records go to `.argus/live/<run>/smoke/<id>/`: `path.json`, `run-<i>.json` (with `kind` and
+  `dirty`) and `steps-<i>.jsonl`.
+- `smokeRun(main, {ids, slot, perf, seed}, {once})` (`-smoke`). The first run of each path is dirty, and a
+  break is confirmed fresh. Lines:
+  - `seed: <n>`;
+  - `path <id>: held`;
+  - `path <id>: broke step=<n> kind=<k>`;
+  - `path <id>: flaky step=<n> kind=<k>`;
+  - `path <id>: harness: <reason>`;
+  - `regression <id>: step <n> written as <slot>.1.1 (repro <slot>.1.1)`, written only for the first
+    `expect-failed` break;
+  - `smoke run: <h> held, <b> broke, <f> flaky, <x> harness`.
+
+  Exit 3 when a path broke, else 2 when one was the harness's, else 0. `<run>/smoke/pass.jsonl` (0600)
+  holds `{id, verdict, step, kind, seed}` per path, for F1's report. `perf: true` still throws `refused:
+  smoke run --perf: not built yet`, for lane D to replace.
+- `-smoke` also exports `seededOrder(ids, seed)` (Fisher–Yates over mulberry32) and `readSuitePaths(main,
+  dir) → [{id, path, admitted}]`. A suite path file is `<dir>/journeys/<id>.json`: `{journey: <id>, path:
+  [...], admitted: {run, head, pathSha, seed}}`.
+- A regression candidate's slot in run.json is `{mode: "smoke", journey, generation: 1, tokenHash: null,
+  accounts, retired: [], submitted: true}`. Its accounts are only those the candidate acts as. Its repro is
+  the parsed context, then the path up to the broken expectation, which takes `final: "regression"`.
+
+**Deviations.**
+- The step templates read ambiguity. An action whose target matches several elements answers
+  `ambiguous-target`, and an expectation answers `ambiguous`. Candidate mode reports both as before (`failed
+  (error)`, `could not be judged`).
+- `-pw.mjs` (lane E's file) gains `returnChecks`, so the instance header orders `-steps.mjs → -pw.mjs`.
+  `-slots.mjs` (also lane E's): a `smoke` slot is skipped by the allocation clash check, because its
+  accounts browse only in slot `r`, and refused by `slot --handoff`.
+- Step 0 moved `minimize`, `redTestFile` and `savedValues` with their helpers (`liveOf`, `runRecords`);
+  `-repro` exports `nextRun` and `writePrivate` for them. The findings test imports `minimize` from
+  `-minimize`, and the DAG test pins `-minimize` (not `-repro`) as the RED test's writer. Spec §18's file
+  table still lists them under `-repro` (Z4).
+- Line counts at 0.3: `-repro` 594, `-steps` 630, `-minimize` 219, `-smoke` 222.

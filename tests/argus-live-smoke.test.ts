@@ -2,11 +2,25 @@
 // `.argus/smoke.json` schema and its defaults, and the CLI's dispatch of every new verb (each answers
 // through its lane's function; until a lane fills it, `refused: <verb>: not built yet`).
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
-import { ARGUS_LIVE, cleanTemps, committed, example, git } from "./helpers/argus-live";
+import { ARGUS_LIVE, cleanTemps, committed, example, git, liveRun } from "./helpers/argus-live";
+// @ts-expect-error — plain ESM script without types
+import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
+// @ts-expect-error — plain ESM script without types
+import { reproRef } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+// @ts-expect-error — plain ESM script without types
+import { validateReturn } from "../plugins/sapu/scripts/argus-live-return.mjs";
+// @ts-expect-error — plain ESM script without types
+import { down, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
+// @ts-expect-error — plain ESM script without types
+import { handoffSlot, mintSlot } from "../plugins/sapu/scripts/argus-live-slots.mjs";
+// @ts-expect-error — plain ESM script without types
+import { seededOrder, smokeRun } from "../plugins/sapu/scripts/argus-live-smoke.mjs";
+// @ts-expect-error — plain ESM script without types
+import { parseRepro, pathChecks, suiteAccounts } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loadSmoke, PERF_METRICS, SMOKE_BROWSERS, SMOKE_DEFAULTS, SMOKE_FILE, SMOKE_KEYS, validateLive, validateSmoke } from "../plugins/sapu/scripts/argus-live-config.mjs";
 
@@ -187,8 +201,7 @@ describe("argus-live CLI — phase 6's verbs", () => {
   const STUBS: [string[], string][] = [
     [["smoke", "plan"], "smoke plan"],
     [["smoke", "admit", "2.1"], "smoke admit"],
-    [["smoke", "run"], "smoke run"],
-    [["smoke", "run", "--ids", "checkout,refund", "--slot", "3", "--perf", "--seed", "4294967295"], "smoke run"],
+    [["smoke", "run", "--ids", "checkout,refund", "--slot", "3", "--perf", "--seed", "4294967295"], "smoke run --perf"],
     [["smoke", "heal", "2.1"], "smoke heal"],
     [["smoke", "propose"], "smoke propose"],
     [["smoke", "propose", "--dry-run"], "smoke propose"],
@@ -234,6 +247,8 @@ describe("argus-live CLI — phase 6's verbs", () => {
       expect(r.status, args.join(" ")).toBe(1);
       expect(r.stdout).toBe("");
     }
+    // The lane's own pass is built (Task 0.3): without a cycle it is refused as every runner is.
+    expect(cli(main, "smoke", "run").stderr).toBe("refused: no journey cycle is running\n");
   }, 60_000);
 
   it("a committed suite needs the repo's own contract with visible traces: every smoke verb but check is refused otherwise", () => {
@@ -294,4 +309,325 @@ describe("argus-live CLI — phase 6's verbs", () => {
     expect(cli(main, "slot", "1", "--seed").stderr).toMatch(/^refused: usage: /);
     expect(cli(main, "slot", "1", "--handoff", "--seed").stderr).toMatch(/^refused: usage: /);
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Task 0.3: the DSL's path mode, the return's path and heal, the lane's smoke pass (spec §19.4, §19.9).
+
+/** example()'s config with test ids and a seed trigger: what a smoke path may use. */
+const pathLive = (): Obj => ({
+  ...example(),
+  test_id_attribute: "data-testid",
+  triggers: { ...example().triggers, "seed-stock": { argv: ["npm", "run", "-s", "explore:seed", "--", "{1}"], args: ["^[A-Za-z0-9-]{1,64}$"], seed: true } },
+});
+const PATH_ACCOUNTS = { "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "anon.1": null };
+/** A path (spec §19.4): a leading seed trigger, actions by role, label and test id, the goal as the last expect. */
+const PATH = (): Obj[] => [
+  { context: { viewport: 1440 } },
+  { as: "system", do: "trigger", name: "seed-stock", values: ["{{marker}}"] },
+  { as: "system", expect: "fact-equals", marker: "{{marker}}", field: "stock", value: "5" },
+  { as: "customer", do: "goto", path: "/orders/new" },
+  { as: "customer", do: "fill", target: { label: "Quantity" }, value: "2" },
+  { as: "customer", do: "click", target: { role: "button", name: "Place order" } },
+  { as: "customer", do: "read", target: { testId: "order-number" }, save: "order" },
+  { as: "customer", expect: "visible", target: { text: "{{order}}" } },
+  { as: "sales", do: "goto", path: "/" },
+  { as: "sales", expect: "visible", target: { text: "{{order}}" } },
+];
+
+describe("the repro DSL's path mode (spec §19.4)", () => {
+  const P = () => ({ accounts: PATH_ACCOUNTS, live: pathLive(), path: true });
+  const refusal = (list: Obj[], opts: Obj = P()) => {
+    try {
+      parseRepro(list, opts);
+    } catch (e) {
+      return (e as Error).message;
+    }
+    return null;
+  };
+  const at = (n: number, step: Obj) => {
+    const l = PATH();
+    l[n] = step;
+    return l;
+  };
+
+  it("takes a list ending in an expect with no final", () => {
+    const { context, steps } = parseRepro(PATH(), P());
+    expect(context).toEqual({ viewport: 1440, locale: "en-US", timezone: "UTC" });
+    expect(steps).toHaveLength(9);
+    expect(steps.at(-1)).toEqual({ n: 9, as: "sales.1", expect: "visible", target: { by: "text", value: "{{order}}" } });
+    expect(steps.some((s: Obj) => s.final !== undefined)).toBe(false);
+  });
+
+  it("refuses a final anywhere, and a path that does not end with an expect", () => {
+    expect(refusal([...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }])).toBe("refused: repro: step 9: a path has no final: it ends with an expect proving the journey's goal");
+    expect(refusal(at(4, { as: "customer", expect: "visible", target: { label: "Quantity" }, final: "discoverability" }))).toBe("refused: repro: step 4: a path has no final: it ends with an expect proving the journey's goal");
+    expect(refusal(PATH().slice(0, -1).concat([{ as: "sales", do: "goto", path: "/x" }]))).toBe("refused: repro: step 9: a path ends with an expect proving the journey's goal");
+  });
+
+  it("an action's target is a named role, a label, a placeholder or a test id: never text", () => {
+    const ACTION_ONLY = "an action's target in a path is {role, name}, {label}, {placeholder} or {testId}";
+    expect(refusal(at(5, { as: "customer", do: "click", target: { text: "Place order" } }))).toBe(`refused: repro: step 5: ${ACTION_ONLY}`);
+    expect(refusal(at(5, { as: "customer", do: "click", target: { role: "button" } }))).toBe(`refused: repro: step 5: ${ACTION_ONLY}`);
+    expect(refusal(at(5, { as: "customer", do: "click", target: { role: "button", name: "Place order", within: { text: "Basket" } } }))).toBe(`refused: repro: step 5: ${ACTION_ONLY}`);
+    expect(refusal(at(4, { as: "customer", do: "fill", target: { placeholder: "How many" }, value: "2" }))).toBeNull();
+    expect(refusal(at(5, { as: "customer", do: "click", target: { role: "button", name: "Place order", within: { role: "form", name: "Basket" } } }))).toBeNull();
+    // An expectation may read text.
+    expect(refusal(PATH())).toBeNull();
+  });
+
+  it("refuses a testId without live.json's test_id_attribute, in an action or an expectation", () => {
+    const live = { ...pathLive() };
+    delete live.test_id_attribute;
+    expect(refusal(PATH(), { ...P(), live })).toBe("refused: repro: step 6: a testId target needs live.json's test_id_attribute");
+    const exp = at(7, { as: "customer", expect: "visible", target: { testId: "order-number" } });
+    exp[6] = { as: "customer", do: "read", target: { label: "Order" }, save: "order" };
+    expect(refusal(exp, { ...P(), live })).toBe("refused: repro: step 7: a testId target needs live.json's test_id_attribute");
+  });
+
+  it("within nests one level, never two", () => {
+    const twice = { role: "button", name: "Place order", within: { role: "form", name: "Basket", within: { role: "main", name: "Shop" } } };
+    expect(refusal(at(5, { as: "customer", do: "click", target: twice }))).toBe("refused: repro: step 5: within nests at most one level in a path");
+    expect(refusal(at(7, { as: "customer", expect: "visible", target: { text: "x", within: { label: "a", within: { label: "b" } } } }))).toBe("refused: repro: step 7: within nests at most one level in a path");
+  });
+
+  it("a trigger leads the path and is a seed trigger", () => {
+    const TRIGGER = "a path's trigger leads it and is marked seed: true in live.triggers";
+    expect(refusal(at(1, { as: "system", do: "trigger", name: "payment-settles", values: ["{{marker}}"] }))).toBe(`refused: repro: step 1: ${TRIGGER}`);
+    const late = PATH();
+    late.splice(8, 0, { as: "system", do: "trigger", name: "seed-stock", values: ["{{order}}"] }, { as: "sales", expect: "visible", target: { text: "{{order}}" } });
+    expect(refusal(late)).toBe(`refused: repro: step 8: ${TRIGGER}`);
+    // Two leading seed triggers, each proven.
+    const two = PATH();
+    two.splice(3, 0, { as: "system", do: "trigger", name: "seed-stock", values: ["second"] }, { as: "system", expect: "fact-equals", marker: "second", field: "stock", value: "5" });
+    expect(refusal(two)).toBeNull();
+  });
+
+  it("keeps every rule of §10", () => {
+    expect(refusal(at(5, { as: "customer", do: "click", target: { role: "button", name: "Place order" }, wait: 3 }))).toBe('refused: repro: step 5: unknown key "wait"');
+    expect(refusal(at(4, { as: "customer", do: "select", target: { label: "Quantity" }, value: "2" }))).toBe("refused: repro: step 4: select changes state: an expect as customer.1 must follow before its next action");
+    expect(refusal(at(4, { as: "customer", do: "fill", target: { label: "Quantity" }, value: "{{later}}" }))).toBe("refused: repro: step 4: {{later}} is used before a read saves it");
+    expect(refusal(at(3, { as: "nobody", do: "goto", path: "/orders/new" }))).toBe("refused: repro: step 3: nobody is not allocated to this slot");
+    expect(refusal(at(5, { as: "customer", do: "click", target: { css: "#place" } }))).toBe("refused: repro: step 5: a target names one of role, label, text, placeholder, testId");
+  });
+
+  it("candidate mode is unchanged: a text action target and a final are still its own", () => {
+    const list = [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }];
+    list[5] = { as: "customer", do: "click", target: { text: "Place order" } };
+    expect(refusal(list, { accounts: PATH_ACCOUNTS, live: pathLive() })).toBeNull();
+  });
+
+  it("suiteAccounts: a role's k-th user is <role>.<k>, a login-command role and anon are .1", () => {
+    expect(suiteAccounts(example())).toEqual({ "anon.1": null, "customer.1": "buyer1@example.test", "customer.2": "buyer2@example.test", "sales.1": "sales1@example.test", "admin.1": null });
+  });
+});
+
+describe("the explorer's return: path and heal (spec §19.4, §19.9)", () => {
+  const checks = pathChecks({ accounts: PATH_ACCOUNTS, live: pathLive(), healMax: 3 });
+  const opts = { journey: "j1", accounts: PATH_ACCOUNTS, outFiles: [], checks: () => checks };
+  const ret = (extra: Obj) => ({ journey: "j1", status: "done", ...extra });
+
+  it("takes a path parsed in path mode against the slot's accounts, kept as the explorer wrote it", () => {
+    const { value, errors } = validateReturn(ret({ path: PATH() }), opts);
+    expect(errors).toEqual([]);
+    expect(value.path).toEqual(PATH());
+    expect(validateReturn(ret({}), opts).value.path).toBeUndefined();
+  });
+
+  it("refuses a path the path mode refuses, naming the step", () => {
+    const bad = [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }];
+    expect(validateReturn(ret({ path: bad }), opts).errors).toEqual(["path: step 9: a path has no final: it ends with an expect proving the journey's goal"]);
+    expect(validateReturn(ret({ path: "x" }), opts).errors).toEqual(["path must be an array"]);
+    expect(validateReturn(ret({ path: [{ as: "customer", do: "goto", path: "/", deep: [[[[[[[[["x"]]]]]]]]] }] }), opts).errors).toEqual(["path[0].deep[0][0][0][0][0][0][0] nests deeper than 8 levels"]);
+  });
+
+  it("a path or a heal is refused where it cannot be checked", () => {
+    const none = { journey: "j1", accounts: PATH_ACCOUNTS, outFiles: [] };
+    expect(validateReturn(ret({ path: PATH() }), none).errors).toEqual(["path: cannot be checked (.argus/live.json or .argus/smoke.json is not readable)"]);
+    expect(validateReturn(ret({ heal: [], heal_reason: "blocked" }), { ...none, checks: () => null }).errors).toEqual(["heal: cannot be checked (.argus/live.json or .argus/smoke.json is not readable)"]);
+    // A return with neither never reads the checks: a bad live.json blocks no other return.
+    expect(validateReturn(ret({}), { ...none, checks: () => { throw new Error("never read"); } }).errors).toEqual([]);
+  });
+
+  it("takes a heal: each step's new target as a locator, parsed into the path's own target form", () => {
+    const { value, errors } = validateReturn(ret({ heal: [{ step: 5, target: "getByRole('button', { name: 'Submit order' })" }, { step: 4, target: "getByLabel('Amount', { exact: true })" }] }), opts);
+    expect(errors).toEqual([]);
+    expect(value.heal).toEqual([{ step: 5, target: { role: "button", name: "Submit order" } }, { step: 4, target: { label: "Amount", exact: true } }]);
+    expect(validateReturn(ret({ heal: [{ step: 5, target: "getByRole('form', { name: 'Basket' }).getByRole('button', { name: 'Go' }).first()" }] }), opts).value.heal).toEqual([{ step: 5, target: { role: "button", name: "Go", nth: 0, within: { role: "form", name: "Basket" } } }]);
+  });
+
+  it("refuses a heal past heal_max_steps, a step twice or out of range, and a target of another kind", () => {
+    const h = (step: number, target = "getByLabel('x')") => ({ step, target });
+    expect(validateReturn(ret({ heal: [h(1), h(2), h(3), h(4)] }), opts).errors).toEqual(["heal holds at most 3 entries"]);
+    expect(validateReturn(ret({ heal: [h(2), h(2)] }), opts).errors).toEqual(["heal[1].step names step 2 twice"]);
+    for (const step of [0, 101, 1.5, "2"]) expect(validateReturn(ret({ heal: [{ step, target: "getByLabel('x')" }] }), opts).errors, String(step)).toEqual(["heal[0].step must be a step number from 1 to 100"]);
+    for (const target of ["getByText('Pay')", "locator('#pay')", "getByTitle('Pay')", "e15", "getByRole('button')", "getByTestId('pay').getByLabel('a').getByLabel('b')", "page.goto('/')", 7]) {
+      expect(validateReturn(ret({ heal: [{ step: 2, target }] }), opts).errors[0], String(target)).toMatch(/^heal\[0\]\.target: /);
+    }
+    expect(validateReturn(ret({ heal: [{ step: 2, target: "getByLabel('x')", why: "moved" }] }), opts).errors).toEqual(['heal[0]: unknown key "why"']);
+  });
+
+  it("an empty heal names its reason: no-control, blocked or harness", () => {
+    for (const heal_reason of ["no-control", "blocked", "harness"]) expect(validateReturn(ret({ heal: [], heal_reason }), opts).errors, heal_reason).toEqual([]);
+    expect(validateReturn(ret({ heal: [] }), opts).errors).toEqual(["heal: [] needs heal_reason (no-control, blocked or harness)"]);
+    expect(validateReturn(ret({ heal: [], heal_reason: "gave-up" }), opts).errors).toEqual(["heal_reason must be one of no-control, blocked, harness"]);
+    expect(validateReturn(ret({ heal: [{ step: 2, target: "getByLabel('x')" }], heal_reason: "blocked" }), opts).errors).toEqual(["heal_reason goes only with heal: []"]);
+    expect(validateReturn(ret({ heal_reason: "blocked" }), opts).errors).toEqual(["heal_reason goes only with heal: []"]);
+  });
+});
+
+describe("smoke run — the lane's pass over the suite's paths (spec §19.5, §19.9)", () => {
+  const runs: { main: string; runId: string }[] = [];
+  afterEach(async () => {
+    for (const r of runs.splice(0)) await down(r.main, { runId: r.runId, graceMs: 1000 }).catch(() => {});
+  });
+  /** A live cycle (lock, run.json with an instance) whose repo holds the suite's `paths` as `<dir>/journeys/<id>.json`. */
+  const suiteRun = (paths: Record<string, Obj[]>, { slots = {} as Obj } = {}) => {
+    const t = liveRun();
+    writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(pathLive(), null, 2)}\n`);
+    writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
+    const ports = { api: 41001, web: 41002, pg: 41003, redis: 41004, smtp: 41005 };
+    writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: ["http://localhost:41002"], allowOrigins: [], groups: [], env: t.env, ports, instanceId: "0123456789abcdef", slots, internal: { proxy: 41009 }, browser: { channel: "chrome" } });
+    runs.push({ main: t.main, runId: t.runId });
+    const dir = join(t.main, "e2e/argus-smoke/journeys");
+    mkdirSync(dir, { recursive: true });
+    for (const [id, path] of Object.entries(paths)) writeFileSync(join(dir, `${id}.json`), `${JSON.stringify({ journey: id, path, admitted: { run: "r", head: "0".repeat(40), pathSha: "1".repeat(64), seed: 1 } }, null, 2)}\n`);
+    return t;
+  };
+  /** A runOnce stand-in: each path id's exits in turn (default 0), recording what each call was given. */
+  const stub = (exits: Record<string, number[]> = {}, broke = { step: 7, kind: "expect-failed" }) => {
+    const calls: Obj[] = [];
+    const once = async (_main: string, ref: string | null, opts: Obj) => {
+      calls.push({ ref, ...opts });
+      const id = opts.path.id;
+      const k = calls.filter((c) => c.path.id === id).length;
+      const code = (exits[id] ?? [])[k - 1] ?? 0;
+      const last = code === 0 ? "PATH held" : code === 3 ? `PATH broke step=${broke.step} kind=${broke.kind}` : "HARNESS: step 2 system trigger exited 1";
+      return { code, lines: [opts.dirty ? "dirty: instance 0123456789abcdef" : "fresh: instance 0123456789abcdef", last], result: { exit: code, step: code === 3 ? broke.step : null, kind: code === 3 ? broke.kind : null } };
+    };
+    return { once, calls };
+  };
+  const THREE = () => ({ checkout: PATH(), refund: PATH(), returns: PATH() });
+
+  it("seededOrder is a permutation fixed by its seed", () => {
+    const ids = ["a", "b", "c", "d", "e"];
+    expect([...seededOrder(ids, 7)].sort()).toEqual(ids);
+    expect(seededOrder(ids, 7)).toEqual(seededOrder(ids, 7));
+    expect(new Set(Array.from({ length: 20 }, (_, i) => seededOrder(ids, i).join(","))).size).toBeGreaterThan(1);
+    expect(ids).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  it("runs every path once, dirty, in the order the seed shuffles, and prints the seed", async () => {
+    const t = suiteRun(THREE());
+    const s = stub();
+    const r = await smokeRun(t.main, { ids: null, slot: null, perf: false, seed: 11 }, { once: s.once });
+    expect(r.code).toBe(0);
+    const order = seededOrder(["checkout", "refund", "returns"], 11);
+    expect(s.calls.map((c) => c.path.id)).toEqual(order);
+    for (const c of s.calls) expect(c).toMatchObject({ ref: null, dirty: true });
+    expect(s.calls[0].path.list).toEqual(PATH());
+    expect(r.lines).toEqual(["seed: 11", ...order.map((id: string) => `path ${id}: held`), "smoke run: 3 held, 0 broke, 0 flaky, 0 harness"]);
+    // Without a seed one is drawn, printed and used.
+    const u = stub();
+    const d = await smokeRun(t.main, { ids: null, slot: null, perf: false, seed: null }, { once: u.once });
+    const seed = Number(/^seed: (\d+)$/.exec(d.lines[0])![1]);
+    expect(seed).toBeLessThanOrEqual(4294967295);
+    expect(u.calls.map((c) => c.path.id)).toEqual(seededOrder(["checkout", "refund", "returns"], seed));
+    // --ids runs only those.
+    const v = stub();
+    await smokeRun(t.main, { ids: ["refund"], slot: null, perf: false, seed: 1 }, { once: v.once });
+    expect(v.calls.map((c) => c.path.id)).toEqual(["refund"]);
+  });
+
+  it("a break is confirmed after up --fresh: broke at two of two, else flaky", async () => {
+    const t = suiteRun(THREE());
+    const s = stub({ refund: [3, 3], returns: [3, 0] });
+    const r = await smokeRun(t.main, { ids: null, slot: null, perf: false, seed: 3 }, { once: s.once });
+    expect(r.code).toBe(3);
+    expect(r.lines).toContain("path refund: broke step=7 kind=expect-failed");
+    expect(r.lines).toContain("path returns: flaky step=7 kind=expect-failed");
+    expect(r.lines.at(-1)).toBe("smoke run: 1 held, 1 broke, 1 flaky, 0 harness");
+    const of = (id: string) => s.calls.filter((c) => c.path.id === id).map((c) => c.dirty);
+    expect(of("refund")).toEqual([true, false]);
+    expect(of("returns")).toEqual([true, false]);
+    expect(of("checkout")).toEqual([true]);
+    // Each verdict is recorded for the cycle's report.
+    const file = join(t.main, ".argus/live", t.runId, "smoke", "pass.jsonl");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    const recs = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(recs).toContainEqual({ id: "refund", verdict: "broke", step: 7, kind: "expect-failed", seed: 3 });
+    expect(recs).toContainEqual({ id: "returns", verdict: "flaky", step: 7, kind: "expect-failed", seed: 3 });
+    expect(recs).toContainEqual({ id: "checkout", verdict: "held", step: null, kind: null, seed: 3 });
+  });
+
+  it("a harness failure is the harness's, never a break", async () => {
+    const t = suiteRun(THREE());
+    const r = await smokeRun(t.main, { ids: ["checkout"], slot: null, perf: false, seed: 1 }, { once: stub({ checkout: [2] }).once });
+    expect(r.code).toBe(2);
+    expect(r.lines).toEqual(["seed: 1", "path checkout: harness: step 2 system trigger exited 1", "smoke run: 0 held, 0 broke, 0 flaky, 1 harness"]);
+  });
+
+  it("with --slot, a confirmed expectation break becomes that slot's return: one regression candidate, the path up to the broken expect", async () => {
+    const t = suiteRun({ checkout: PATH() });
+    const r = await smokeRun(t.main, { ids: null, slot: 4, perf: false, seed: 1 }, { once: stub({ checkout: [3, 3] }).once });
+    expect(r.code).toBe(3);
+    expect(r.lines).toContain("regression checkout: step 7 written as 4.1.1 (repro 4.1.1)");
+    const slot = readRun(t.main).slots["4"];
+    expect(slot).toEqual({ mode: "smoke", journey: "checkout", generation: 1, tokenHash: null, accounts: { "customer.1": "buyer1@example.test" }, retired: [], submitted: true });
+    const file = join(t.main, ".argus/live", t.runId, "returns", "4.1.json");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    const { candidate } = reproRef(t.main, "4.1.1");
+    expect(candidate.oracle).toBe("regression");
+    expect(candidate.repro).toEqual([{ context: { viewport: 1440, locale: "en-US", timezone: "UTC" } }, ...PATH().slice(1, 7), { ...PATH()[7], final: "regression" }]);
+    const { steps } = parseRepro(candidate.repro, { accounts: slot.accounts, live: pathLive() });
+    expect(steps.at(-1)).toMatchObject({ n: 7, expect: "visible", final: "regression" });
+    // No explorer takes the slot, and its accounts still serve an explorer's slot (they browse only in slot r).
+    await expect(handoffSlot(t.main, 4)).rejects.toThrow("refused: slot 4 holds the smoke pass's regression candidate: no explorer takes it");
+    expect((await mintSlot(t.main, { slot: 5, journey: "checkout", accounts: { "customer.1": "buyer1@example.test" } })).accounts).toEqual({ "customer.1": "buyer1@example.test" });
+  });
+
+  it("pw submit checks a return's path and heal against the slot's accounts, live.json and smoke.json", async () => {
+    const t = suiteRun({});
+    const { token } = await mintSlot(t.main, { slot: 1, journey: "checkout", accounts: { "customer.1": "buyer1@example.test", "sales.1": "sales1@example.test" } });
+    const submit = (ret: Obj) => pw(t.main, [token, "submit", JSON.stringify({ journey: "checkout", status: "done", ...ret })]);
+    const bad = [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }];
+    expect((await submit({ path: bad })).out).toEqual(["refused: return: path: step 9: a path has no final: it ends with an expect proving the journey's goal"]);
+    // heal_max_steps comes from smoke.json.
+    writeFileSync(join(t.main, ".argus/smoke.json"), JSON.stringify({ heal_max_steps: 1 }));
+    const two = [{ step: 4, target: "getByLabel('Amount')" }, { step: 5, target: "getByRole('button', { name: 'Pay' })" }];
+    expect((await submit({ heal: two })).out).toEqual(["refused: return: heal holds at most 1 entries"]);
+    // An unreadable smoke.json refuses a return that holds a path, never one that does not.
+    writeFileSync(join(t.main, ".argus/smoke.json"), "{");
+    expect((await submit({ path: PATH() })).out).toEqual(["refused: return: path: cannot be checked (.argus/live.json or .argus/smoke.json is not readable)"]);
+    writeFileSync(join(t.main, ".argus/smoke.json"), "{}");
+    expect((await submit({ path: PATH() })).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+    expect(JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", "1.1.json"), "utf8")).path).toEqual(PATH());
+  });
+
+  it("with --slot, a locator break or a flake writes nothing: a heal decides those", async () => {
+    for (const [exits, broke] of [[[3, 3], { step: 5, kind: "target-missing" }], [[3, 0], { step: 7, kind: "expect-failed" }]] as [number[], Obj][]) {
+      const t = suiteRun({ checkout: PATH() });
+      const r = await smokeRun(t.main, { ids: null, slot: 4, perf: false, seed: 1 }, { once: stub({ checkout: exits }, broke as { step: number; kind: string }).once });
+      expect(r.lines.some((l: string) => l.startsWith("regression "))).toBe(false);
+      expect(readRun(t.main).slots ?? {}).toEqual({});
+      expect(existsSync(join(t.main, ".argus/live", t.runId, "returns", "4.1.json"))).toBe(false);
+    }
+  });
+
+  it("refuses before any run: --perf (lane D), no cycle, a slot minted already, an unknown id, no path, a path its mode refuses", async () => {
+    const t = suiteRun({ checkout: PATH() }, { slots: { "4": { journey: "x", generation: 1, tokenHash: null, accounts: {}, retired: [], submitted: false } } });
+    const s = stub();
+    const run = (o: Obj) => smokeRun(t.main, { ids: null, slot: null, perf: false, seed: 1, ...o }, { once: s.once });
+    await expect(run({ perf: true })).rejects.toThrow("refused: smoke run --perf: not built yet");
+    await expect(run({ slot: 4 })).rejects.toThrow("refused: smoke run: slot 4 is minted already");
+    await expect(run({ ids: ["nope"] })).rejects.toThrow("refused: smoke run: the suite has no path nope");
+    writeFileSync(join(t.main, "e2e/argus-smoke/journeys/bad.json"), JSON.stringify({ journey: "bad", path: [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }] }));
+    await expect(run({})).rejects.toThrow("refused: smoke run: bad: step 9: a path has no final: it ends with an expect proving the journey's goal");
+    writeFileSync(join(t.main, "e2e/argus-smoke/journeys/bad.json"), JSON.stringify({ journey: "other", path: PATH() }));
+    await expect(run({})).rejects.toThrow("refused: smoke run: bad.json names journey other");
+    expect(s.calls).toEqual([]);
+    const empty = suiteRun({});
+    await expect(smokeRun(empty.main, { ids: null, slot: null, perf: false, seed: 1 }, { once: s.once })).rejects.toThrow("refused: smoke run: the suite has no paths (e2e/argus-smoke/journeys)");
+    await expect(smokeRun(committed(), { ids: null, slot: null, perf: false, seed: 1 }, { once: s.once })).rejects.toThrow("refused: no journey cycle is running");
+  });
 });

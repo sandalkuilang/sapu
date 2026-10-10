@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { slotDir } from "./argus-live-browser.mjs";
-import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
+import { expandConfig, loadLive, loadSmoke, ROLE_FREE, SMOKE_DEFAULTS } from "./argus-live-config.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
@@ -20,6 +20,7 @@ import { readRun } from "./argus-live-run.mjs";
 import { writeVerdict } from "./argus-live-scrub.mjs";
 import { configuredUser, maskSecrets, sessionDriver } from "./argus-live-session.mjs";
 import { accountOf, readSlotState, refuseNotLive, slotLockWaitMs, tokenSlot, withSlotLock, writeSlotState } from "./argus-live-slots.mjs";
+import { pathChecks } from "./argus-live-steps.mjs";
 import { explorerTarget } from "./argus-live-targets.mjs";
 
 /** The budget when `limits.explorer_pw_calls` is not set (spec §8's example). */
@@ -285,6 +286,20 @@ export async function pw(main, argv, { cli = null, now = Date.now, runner = run,
   }
 }
 
+/**
+ * What a return's `path` and `heal` are checked with (spec §19.4, §19.9): the slot's accounts, live.json as
+ * the run expands it, smoke.json's `heal_max_steps` → pathChecks, or null when either file cannot be read
+ * (a return holding neither never asks).
+ */
+function returnChecks(main, slotRec) {
+  const { config, errors, secrets } = loadLive(main);
+  const s = loadSmoke(main);
+  if (!config || errors.length || s.errors.length) return null;
+  const rec = readRun(main);
+  const live = expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
+  return pathChecks({ accounts: slotRec.accounts, live, healMax: (s.smoke ?? SMOKE_DEFAULTS).heal_max_steps });
+}
+
 /** The body of pw, under the slot's lock. */
 async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliRunner, setSecrets }) {
   // The token again, under the lock: a handoff may have retired it meanwhile.
@@ -294,7 +309,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
   if (word === "submit") {
     try {
-      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, parsePw(argv).positionals[0])] };
+      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, parsePw(argv).positionals[0], { checks: () => returnChecks(main, slotRec) })] };
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       return { code: 1, out: [e.message] };
