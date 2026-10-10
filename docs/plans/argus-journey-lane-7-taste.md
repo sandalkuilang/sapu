@@ -599,3 +599,168 @@ phase 6's axe rules; target size is phase 6's layout oracle; Web Vitals are phas
    screen key.
 5. **Bar drift between releases.** Mitigation: the version in every suite and report, `smoke plan`
    listing the upgrade, and D21's procedure.
+
+## As built (phase 7)
+
+### Lane 0 — Tasks 0.2, 0.4, 0.3
+
+Commits, in order: 0.2 shared surfaces, 0.4 verbs and stubs, 0.3 as two pieces (the codegen split, then the lane
+oracle). Line counts at the end of lane 0: `-steps` 692, `-instance` 684, `-codegen` 573 (was 736), `-browser` 544,
+`argus-live.mjs` 475, `-tastecfg` 419, `-codeproj` 186; the stubs `-taste` 38, `-ease` 44, `-tastejudge` 18,
+`-tastefile` 13.
+
+**Locked for the lanes: the verbs.** Each returns (or resolves to) `{code, lines, masked?}`, printed as phase 6's are.
+A stub throws `refused: <verb>: not built yet` (exit 1). The dispatch reads the line whole first and refuses a
+malformed one with the usage; run ids, rows, rules and keys reach the lane as typed, for it to validate. No taste verb
+passes a trace gate (they file as argus files); the guard refuses every one to every subagent (`taste` is a verb of
+the lane's script).
+
+| Verb | Function (module) |
+|---|---|
+| `taste judge [--run <runId>]` | `tasteJudge(main, {run})` (`-tastejudge`), `run` null: the lane picks the newest |
+| `taste confirm <row>` | `tasteConfirm(main, ref)` (`-tastejudge`) |
+| `taste file [--run <runId>]` | `tasteFile(main, {run, cap})` (`-tastefile`); the CLI passes `cap: null`, meaning taste.json's `cap` |
+| `taste accept <rule> <key>` | `tasteAccept(main, rule, key)` (`-tastefile`); `key` is the screen key the issue names |
+| `classify --oracle taste --class <implicit\|derived\|bar> [--cost]` | `classify({oracle: "taste", tasteClass, cost})` (`-classes`), built (below) |
+
+**Locked: the module exports.** Stubs throw `refused: <name>: not built yet`; each stub's pin is one `it` in the
+owning lane's own test file (`tests/argus-live-tasteprobe.test.ts`, `-ease.test.ts`, `-tastejudge.test.ts`,
+`-tastefile.test.ts`), for that lane to replace.
+
+| Module | Exports |
+|---|---|
+| `-taste.mjs` (leaf, T1) | `TASTE_SOURCE` (an in-page function's source `(arg) => result`, run as `(${TASTE_SOURCE})(arg)`), `TASTE_INIT` (the motion recorder of the init payload; `""` until built), `CHECKS` (`[]`), `censusOf(page)` (async), `rulesFor(screen, bar, cfg)`, `ruleExpression(rule)` |
+| `-ease.mjs` (leaf, T2) | `EASE_SOURCE`, `EASE_INIT` (the feedback clock; `""` until built), `CHECKS` (`[]`), `pathCost(steps, geometry)` → `{actions, typed, modals, fitts_bits, klm_s}`, `easeOf(page)` (async), `rulesFor(screen, bar, cfg)`, `ruleExpression(rule)` |
+| `-tastecfg.mjs` (leaf, lane 0, built) | `BAR_FILE`, `loadBar()` (validated once, frozen; a broken bar throws `failed: the taste bar …`), `validateBar(raw)` → `{value, errors}`, `RULE_CLASSES`, `FAMILIES`, `ARCHETYPES`; `TASTE_FILE`, `TASTE_KEYS`, `TASTE_DEFAULTS`, `validateTaste(raw, bar = loadBar())` → `{value, errors}`, `loadTaste(main)` → `{taste, errors, missing}`, `routeMatches(glob, route)`; `TASTE_STATE_FILE`, `ROW_STATES`, `SCREEN_KEY`, `titleKey(rule, screen)`, `readTasteState(main)`, `writeTasteState(main, state)`; `TASTE_BUFFER`, `TASTE_DRAIN`, `TASTE_EVENTS`, `TASTE_EVENTS_MAX`, `tasteEventFault(e)`, `RENDER_ATTRIBUTES`, `MEDIA_READ`, `explicitMedia(m)`, `TASTE_BUDGET_MS` |
+| `-tastejudge.mjs` (J) | `tasteJudge(main, {run})`, `tasteConfirm(main, ref)`; it imports both probes and `-tastecfg` already |
+| `-tastefile.mjs` (F) | `tasteFile(main, {run, cap})`, `tasteAccept(main, rule, key)` |
+| `-codeproj.mjs` (S, split from `-codegen`) | `suiteProjects`, `PROJECT_NAME`, `suiteChecks()` (the registry, read at each call), `checkSources()`, `projectChecks(projects)`, `smokeConfig`, `withHeader`, `headerDigest`, `literal`, `upTo`, `CODEGEN_VERSION`. `-codegen` re-exports `CODEGEN_VERSION`, `headerDigest`, `literal`, `smokeConfig` and `suiteProjects`, so its importers did not change. S1 adds the taste and ease `CHECKS` to `suiteChecks`. |
+| `-browser.mjs` (J's file, lane 0's seam) | `PAGE_INIT`: the session hook's init payload (below) |
+
+`rulesFor` is exported by both probe modules (each for its families); `ruleExpression(rule)` too: a page expression
+evaluating to that screen rule's rows on the current page. Which module measures a family is `FAMILIES[family].probe`;
+`FAMILIES[family].scope` is `screen` or `cycle` (`consistent`, `efficiency`: only the judge compares them).
+
+**Locked: the module order.** Leaves: `-taste`, `-ease`, `-tastecfg` (beside `-layout`, `-a11y`). `-codeproj` sits
+before `-codegen`. `-tastejudge` then `-tastefile` sit after `-baseline` and before `-report`; no module but
+`argus-live.mjs` and `-report` reaches them, and `-tastejudge` never reaches `-tastefile`. Allowed now, for lanes that
+cannot edit the DAG test: `-map` may import `-tastecfg` (J3 reads the state through it), `-steps` imports both probes
+and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may import `-layout`, `-a11y`, `-taste`,
+`-ease` and `-tastecfg`.
+
+**Locked: the shared record formats.**
+- *The bar* (`plugins/sapu/data/taste-bar.json`): `{version, probe, sources, rules, frames, archetypes}`. `version` 1
+  (K3 keeps 1: nothing ships between; the next calibration after a release is 2). `probe` null until K3 sets the
+  sha256 of the probe sources it measured with. `sources` maps each cited research id to its https URL. A rule is
+  `{id: "<family>.<name>", family, class, metric, threshold, cite, gate: false, info?: true, terms?: {<lang>:
+  [labels]}}`; a threshold is an object of `min`, `max` (fire past them), `range` (fires outside), `within` (fires
+  inside), `peer: [ratio, plus]` with `band: "p10"|"p50"|"p90"` (decision 19's count rule), `ratio`, `plus_s`,
+  `opacity_max`, `min_wait`. A frame is `{cite, historical?, spacing?, radius?, type?, durations?, layers?}`, each
+  metric `{values: [ascending]}` or `{range: [min, max], step?}`. A band is `archetypes.<archetype>.<metric> = {n,
+  sites, p10, p50, p90, urls}`, numbers, metric names and https URLs only (n ≥ sites, p10 ≤ p50 ≤ p90, at most n
+  URLs).
+- *The rule ids* (47 rules, 12 families): `scale.{spacing,type,weights,colours,radii,shadows,off-scale}`,
+  `hierarchy.{primary-actions,heading-order,alignment,section-gaps,shadow-layers,nested-radius}`,
+  `colour.{role,dark-contrast,dark-border,dark-surface}`, `contrast.headroom`,
+  `motion.{duration,layout-property,transition-all,reduced}`,
+  `feedback.{latency,busy,progress,loader-flash,skeleton-peers,skeleton-shift,optimistic}`,
+  `density.{control-heights,row-heights}`, `states.{error,empty-next,success,recovery,error-exit}`,
+  `copy.{broken,vague}`, `consistent.{action,footer-order,save-pattern,palette}`, `ai.{stop,error,regenerate}`,
+  `efficiency.{actions,klm}`. Information only (`info: true`, never filed or gated): `contrast.headroom`,
+  `motion.transition-all`, `feedback.latency`, `states.error-exit`.
+- *A finding* (what `rulesFor` and `ruleExpression` return, one per element or screen): `{rule, key, measured,
+  expected}`; `key` stable across visits (digit runs written `#`, as the layout keys are), at most 300 characters, no
+  newline; `measured` and `expected` a number or a short string (page text: fenced wherever printed).
+- *A screen key*: `<route template>|<viewport width>|<light|dark>` (`SCREEN_KEY`), e.g. `/orders/:id|1440|light`.
+  The issue's title key and the state's row key: `taste:<rule>:<screen key>` (`titleKey`). `accept[].key` and `taste
+  accept`'s key are screen keys.
+- *The judge's rows* (`<run>/taste/judge.json`, J writes; F, the Curator and the report read): `{version: 1, run, bar:
+  <bar version>, rows: [...], journeys: {<id>: {screens, efficiency}}}`; a row is `{row: "t<k>", journey, rule, class,
+  screen, key, measured, expected, witnesses: [{kind: "tokens"|"frame"|"peer"|"band", value, from}], cost: <klm_s
+  seconds>|null, confirmed: null|true|false}`. The plan's row lacked `journey` (debt is per journey) and `confirmed`
+  (two of two).
+- *Efficiency* (a journey's, judge.json and the scorecard): `{actions, best, klm_s, typed, fitts_bits, modals,
+  wait_ms, recovery}`, `pathCost`'s five plus `best` (the best path's actions), `wait_ms`, `recovery`.
+- *The scorecard row* (the report's per journey, F2): `{journey, screens, rows: {<family>: {confirmed, queued,
+  accepted}}, efficiency, walkthrough: {pass, total}, curator: {confirm, reject, polish}, bar}`.
+- *The Curator's return* (Z1's `validateCurator`; J and F read it): verdicts `{row, verdict:
+  "confirm"|"reject"|"polish", reason}` (a verdict naming no row of judge.json is dropped), leads `{rule, screen}`.
+- *`.argus/taste-state.json`* (0600, `readTasteState`/`writeTasteState` only, either refuses another shape): `{version:
+  1, journeys: {<id>: {judged: <runId>|null, best: {run, actions, klm_s, pathSha}|null, rows: {<title key>: {rule,
+  screen, class, severity: "S1".."S4", state: "queued"|"open"|"closed"|"accepted", issue: <url>|null, first: <runId>,
+  last: <runId>}}}}}`. Only confirmed rows are kept. For D18's debt S1 weighs as S2 (2).
+- *The suite's annotation*: type `argus-taste`, description JSON `{rule, step, key, measured, expected}`; a gated
+  rule's is `argus-violation` (phase 6's).
+- *The bar version stamp*: written `taste-bar <n>` wherever stamped or printed: the suite's header `Generated by sapu
+  (argus-live codegen <v>, taste-bar <n>, digest <sha>)`, `smoke plan`'s `taste-bar <from> → <to>`, the report and an
+  issue's `Measured:` line.
+- *The `taste` final* (0.3): `{as, expect: "taste", rule, key, final: "taste"}`. `rule` a screen rule of the bar
+  (`refused: repro: step <n>: taste takes a screen rule of the bar (rule) and a key`), `key` 1–300 characters; never a
+  path's (`a path has no taste expectation: the suite runs the taste checks after every step`) nor a regression's
+  final; the RED test refuses it. In the run-code, `P = {kind: "taste", rule, key, expr: ruleExpression(rule)}`; held
+  when no row of `rule` has `key`, else `observed: "rows:<k>"`, `shown: [{key, measured}]` (at most 20). For a
+  `derived` count rule the cross-screen threshold is J2's: it reads `shown`.
+- *classify*: `--oracle taste` needs `--class`; `implicit`/`derived` → `class taste labels bug,ux,argus,found-by:user
+  severity by outcome` (`at least S3` with `--cost`), `bar` → `labels ux,argus,found-by:user severity S4` (`S3` with
+  `--cost`). `--class`/`--cost` on another oracle: `refused: classify: --class and --cost are the taste oracle's`.
+
+**Post-probe decisions (Task 0.1's five, decided by the coordinator, built as seams here).**
+1. *The feedback clock (D10, T2.1).* Only rendering-relevant changes count: an added node passing `checkVisibility`,
+   or an attribute of `RENDER_ATTRIBUTES` (`class`, `style`, `hidden`, `aria-hidden`, `open`, `disabled`,
+   `aria-expanded`, `aria-selected`, `aria-busy`), never a `data-*` one. The observer is armed by the session hook's
+   init payload in every document (`EASE_INIT`), never by an ad hoc run-code.
+2. *Animations (D9, T1.3).* Finished animations leave `getAnimations()` within a second: the action's own run-code
+   reads `getAnimations()` (view transitions between `ready` and `finished`), and `TASTE_INIT` records
+   `transitionrun/start/end` and `animationstart/end` into the buffer.
+   *The seam for 1 and 2:* `PAGE_INIT` (`-browser`) = `SIGNAL_SCRIPT`, then `TASTE_BUFFER`, then `TASTE_INIT`, then
+   `EASE_INIT` (empty ones left out). The slot's init script file (`signals.js`) holds it, and the hook stage
+   evaluates it again at every domcontentloaded (in a perf pass, followed by `PERF_SCRIPT`). It lives in `-browser`,
+   not `-session` or `-hooks`: `writeSlotConfig` (in `-browser`) writes the file and `-session` (above it) passes it to
+   the hook, so `-browser` is the lowest module both reach; `-hooks` is live.json's argv hooks, not the browser's.
+   *The buffer:* once a document, `document.__argusTasteEvents` (at most `TASTE_EVENTS_MAX`, 1000), written only
+   through `document.__argusTastePush(record)`, which counts a record of an unknown kind, without a numeric `t`, or
+   past the cap in `document.__argusTasteDropped`. *The drain:* `page.evaluate(TASTE_DRAIN)` in the lane's own
+   run-code → `{url, timeOrigin, dropped, events}` (the events spliced out). *A record:* `{kind, t, …}`, `t` the
+   document's `performance.now()`: `input {type: click|dblclick|pointerdown|keydown|input|submit}`, `change {cause:
+   added|attribute|navigation, attr: <RENDER_ATTRIBUTES>|null}`, `busy {on, signal:
+   aria-busy|progressbar|disabled|spinner|skeleton}`, `transition` and `animation` `{phase:
+   run|start|end|cancel|iteration, name, duration_ms, delay_ms, easing, target}` (strings at most 120; `target` is
+   page text). `tasteEventFault(e)` checks one.
+3. *Cost per screen (J1, risk 4).* J1 records a screen's census, ease measurements, drain and screenshot in one
+   run-code per screen. The "under 300 ms" bound is dropped; the pass has a time budget a cycle instead,
+   `TASTE_BUDGET_MS` (15 minutes, a lane constant in `-tastecfg`: taste.json's keys are decision 5's and hold no
+   budget): recording, judging and confirmation replays together; past it no new screen is recorded and no new row
+   replayed.
+4. *Dark replay (D17, J2, T1.2).* The pass reads the page's media first (`MEDIA_READ` → explicit `{colorScheme:
+   light|dark, reducedMotion: reduce|no-preference}`) and restores exactly those after a dark or reduced-motion pass
+   through `explicitMedia(m)`, which refuses null (`failed: taste: emulateMedia takes explicit values …`).
+5. *Routed faults (D12, T2.2, J2).* The `page.route` fault is armed before the navigation to the screen and removed
+   after; a faulted request reaches neither the proxy nor the app.
+- The CLI's emulation commands stay off the explorer's `pw` allowlist (a test pins that no `pw` command names colour
+  scheme, reduced motion, emulation or media): emulation happens only in the lane's own run-code.
+
+**Deviations.**
+- *Frames.* The bar holds `atlassian`, `carbon`, `material`, `primer` and `polaris` (historical). `geist` and
+  `shadcn` are left out: the research read no spacing, radius, duration or type scale for them (shadcn's radii derive
+  from one `--radius` with no number read; Geist's type is named, not fully numbered), and the bar holds no unread
+  number. `taste.json` `frame` refuses them until a maintainer adds them with a read source (D21's procedure).
+- *Rule fields beyond the plan's six.* `info: true` marks the information-only rules, which `validateTaste` refuses
+  to gate; `terms` holds `copy.vague`'s English list (the plan's "the bar's English list").
+- *Classes.* Decision 4's three classes per rule; the bar's choices where a decision named none: the census counts and
+  `scale.off-scale` `derived`, `hierarchy.primary-actions` `bar`, `hierarchy.nested-radius` `implicit`,
+  `copy.broken` cites `nng-errors` (D12 named no source). The dark-mode rules are counts (`max: 0`); what counts as a
+  collapsed border or a light surface is T1.2's probe, not a bar number.
+- *loadTaste* returns every default when `.argus/taste.json` is missing (`missing: true`): the pass is on by
+  default, unlike `loadSmoke`'s null.
+- *The Curator's run* (guard): the lock's run, else the newest run directory, so a Curator dispatched after `down`
+  still reads its run's `taste/`. The guard knows it by `agent_type` (`(^|:)curator$`), with or without `agent_id`.
+- *The calibration refusal* covers the script as a program, an interpreter's first operand or preload, a glob it
+  matches, the real file behind a symlink, `-e` code naming it, and a shell-built name followed by `--network`,
+  `--corpus` or `--out` or in a command whose text names it; reading it, its tests and `node --check` stay allowed.
+  Not caught: a copy under another name, or a package script that runs it (CONTRACT.md says so).
+- *`-redtest.mjs`* (no lane's) refuses a taste expectation as it refuses layout.
+- *The golden test* (`tests/argus-live-codegen.test.ts`, "leaves every generated file byte-identical") pins the
+  generated suite's files by sha256 as the generator wrote them before the split. S1 changes the output on purpose
+  (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
+- *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
+  `tests/argus-live-pw.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
