@@ -28,6 +28,8 @@ import { changeDigest, readState, smokeAdmit, smokeCheck, smokePlan, smokeRetire
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 // @ts-expect-error — plain ESM script without types
+import { seededOrder } from "../plugins/sapu/scripts/argus-live-smoke.mjs";
+// @ts-expect-error — plain ESM script without types
 import { smokePropose, smokeWorkflow } from "../plugins/sapu/scripts/argus-live-propose.mjs";
 
 type Obj = Record<string, any>;
@@ -342,7 +344,7 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
    * A live cycle whose catalog holds checkout (capture) and whose slot 1, allocated customer.1 = buyer2 and
    * sales.1 = sales1, returned `path`; the run's ledger holds `cookie`.
    */
-  const admitRun = async (path: Obj[] = PATH(), { cookie = COOKIE(), members = [] as string[] } = {}) => {
+  const admitRun = async (path: Obj[] = PATH(), { cookie = COOKIE(), members = [] as string[], held = [] as string[], smoke = null as Obj | null } = {}) => {
     const t = liveRun();
     writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(pathLive(), null, 2)}\n`);
     writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
@@ -357,6 +359,12 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
       mkdirSync(join(t.main, "e2e/argus-smoke/journeys"), { recursive: true });
       writeFileSync(join(t.main, "e2e/argus-smoke/journeys", `${id}.json`), JSON.stringify({ journey: id, path: [], admitted: null }));
     }
+    // Suite members whose paths parse: the admission's dirty run comes after one pass over them.
+    for (const id of held) {
+      mkdirSync(join(t.main, "e2e/argus-smoke/journeys"), { recursive: true });
+      writeFileSync(join(t.main, "e2e/argus-smoke/journeys", `${id}.json`), JSON.stringify({ journey: id, path: SUITE_PATH(), admitted: null }));
+    }
+    if (smoke) writeFileSync(join(t.main, ".argus/smoke.json"), JSON.stringify(smoke));
     appendLedger(t.main, t.runId, [{ c: "cookie", v: cookie }]);
     const { token } = await mintSlot(t.main, { slot: 1, journey: "checkout", accounts: { "customer.1": "buyer2@example.test", "sales.1": "sales1@example.test" } });
     const r = await pw(t.main, [token, "submit", JSON.stringify({ journey: "checkout", status: "done", path })]);
@@ -376,17 +384,18 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
   };
   const admit = (main: string, ref: string, once: unknown, seed: number | null = 5) => smokeAdmit(main, ref, { once, seed, runner: ghStub().runner });
 
-  it("runs the return's path twice, fresh then dirty (up --fresh once), renumbered to the suite's accounts, and stages it", async () => {
+  it("runs the return's path fresh (up --fresh once), at every viewport width, then dirty, renumbered to the suite's accounts, and stages it", async () => {
     const t = await admitRun();
     const s = stub();
     const r = await admit(t.main, "1.1", s.once);
     expect(r.code).toBe(0);
-    expect(r.lines).toEqual(["seed: 5", "admit checkout: held fresh and dirty; staged for smoke propose"]);
-    expect(s.calls.map((c) => c.dirty)).toEqual([false, true]);
+    expect(r.lines).toEqual(["seed: 5", "admit checkout: widths 1440, 390; dirty after 0 suite path(s) in seed order", "admit checkout: held fresh and dirty; staged for smoke propose"]);
+    expect(s.calls.map((c) => c.dirty)).toEqual([false, true, true]);
     expect(s.calls.filter((c) => c.dirty === false)).toHaveLength(1);
     // The slot's customer.1 is buyer2, the suite's customer.2; sales1 is the suite's sales.1.
     const want = PATH().map((el) => (el.as && el.as !== "system" ? { ...el, as: el.as === "customer" ? "customer.2" : "sales.1" } : el));
-    for (const c of s.calls) expect(c.path).toEqual({ id: "checkout", list: want });
+    const at = (w: number) => [{ context: { viewport: w } }, ...want.slice(1)];
+    expect(s.calls.map((c) => c.path)).toEqual([{ id: "checkout", list: at(1440) }, { id: "checkout", list: at(390) }, { id: "checkout", list: at(1440) }]);
     const staged = readState(t.main).staged;
     expect(staged).toHaveLength(1);
     expect(staged[0]).toMatchObject({ kind: "add", id: "checkout", run: t.runId, changes: [{ kind: "add", id: "checkout", evidence: `held fresh and dirty in run ${t.runId} (seed 5)`, run: t.runId }], digest: changeDigest(staged[0]) });
@@ -412,14 +421,28 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
   it("a break in either run refuses with the run, the kind and the step, and stages nothing", async () => {
     const t = await admitRun();
     await expect(admit(t.main, "1.1", stub([3]).once)).rejects.toThrow("refused: admit checkout: fresh expect-failed at step 7");
-    const dirty = stub([0, 3], { step: 4, kind: "target-missing" });
+    await expect(admit(t.main, "1.1", stub([0, 3], { step: 4, kind: "target-missing" }).once)).rejects.toThrow("refused: admit checkout: width 390 target-missing at step 4");
+    const dirty = stub([0, 0, 3], { step: 4, kind: "target-missing" });
     await expect(admit(t.main, "1.1", dirty.once)).rejects.toThrow("refused: admit checkout: dirty target-missing at step 4");
-    expect(dirty.calls.map((c) => c.dirty)).toEqual([false, true]);
+    expect(dirty.calls.map((c) => c.dirty)).toEqual([false, true, true]);
     const harness = await admit(t.main, "1.1", stub([2]).once);
     expect(harness.code).toBe(2);
     expect(harness.lines.at(-1)).toBe("admit checkout: harness (fresh): step 2 system trigger exited 1");
     expect(readState(t.main).staged).toEqual([]);
     expect(existsSync(join(t.main, ".argus/smoke-state.json"))).toBe(false);
+  }, 30_000);
+
+  it("the dirty run comes after one pass over the suite's other paths in the recorded seed's order; a journey's own viewports narrow the widths", async () => {
+    const t = await admitRun(PATH(), { held: ["refund", "returns", "wishlist"], smoke: { journeys: { checkout: { viewports: [1440] } } } });
+    const s = stub();
+    const r = await admit(t.main, "1.1", s.once, 7);
+    expect(r.lines).toContain("admit checkout: widths 1440; dirty after 3 suite path(s) in seed order");
+    expect(s.calls.map((c) => [c.path.id, c.dirty])).toEqual([["checkout", false], ...seededOrder(["refund", "returns", "wishlist"], 7).map((id: string) => [id, true]), ["checkout", true]]);
+    // Another path's break is smoke run's to judge; its harness failure stops the admission.
+    const h = await admit(t.main, "1.1", stub([0, 2]).once, 7);
+    expect(h.code).toBe(2);
+    expect(h.lines.at(-1)).toBe(`admit checkout: harness (suite pass, ${seededOrder(["refund", "returns", "wishlist"], 7)[0]}): step 2 system trigger exited 1`);
+    expect((await admit(t.main, "1.1", stub([0, 3]).once, 7)).code).toBe(0);
   }, 30_000);
 
   it("refuses a journey smoke plan does not list as capture", async () => {

@@ -15,7 +15,7 @@ import { run, tempBeside } from "./argus-live-proc.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { scrubSecrets } from "./argus-live-scrub.mjs";
-import { quarantineIds, readSuitePaths, smokeEvent } from "./argus-live-smoke.mjs";
+import { quarantineIds, readSuitePaths, seededOrder, smokeEvent } from "./argus-live-smoke.mjs";
 import { parseRepro, suiteAccounts } from "./argus-live-steps.mjs";
 import { loadContract } from "./sapu-contract.mjs";
 
@@ -462,14 +462,29 @@ function secretPlaces(list, secrets) {
   return [...new Set(out)];
 }
 
+/** `list` with its context's viewport set to `width` (a context added when it has none). */
+const atWidth = (list, width) => (isObj(list[0]) && Object.hasOwn(list[0], "context") ? [{ context: { ...list[0].context, viewport: width } }, ...list.slice(1)] : [{ context: { viewport: width } }, ...list]);
+
+/**
+ * The widths a suite path runs at (the generated config's projects): live.json's first viewport (every engine's), then
+ * each further one smoke.json's `journeys.<id>.viewports` does not leave out.
+ */
+function widthsOf(live, smoke, id) {
+  const all = [...new Set(Array.isArray(live.viewports) && live.viewports.length ? live.viewports : [1440])];
+  const own = smoke.journeys && smoke.journeys[id] && smoke.journeys[id].viewports;
+  return [all[0], ...all.slice(1).filter((w) => !own || own.includes(w))];
+}
+
 /**
  * `smoke admit <slot>.<generation>` → `{code, lines}` (spec §19.4): the path slot `<slot>`'s return of that
  * generation holds, for a journey `smoke plan` lists as `capture`, renumbered to the suite's accounts and
  * parsed in path mode, checked against every secret scrub knows for the run (a hit refuses by step, field and
- * class), then run twice: once after `up --fresh`, once right after on the same, now dirty, instance (`seed:
- * <n>` printed and recorded). Held both times → staged as an `add` with its admission record `{run, head,
- * pathSha, seed}`; a break → `refused: admit <id>: <fresh|dirty> <kind> at step <n>`; the harness's failure →
- * exit 2, nothing staged. `once` is the one-run seam (runOnce), `runner` and `gh` smoke plan's.
+ * class), then run as the suite will: after `up --fresh` at the first width (`fresh`), on the same instance at
+ * every further width the suite runs it at (`width <w>`), then after one pass over the suite's other paths in
+ * the order seed `<n>` shuffles them (printed and recorded; another path's break is smoke run's to judge) at the
+ * first width again (`dirty`). Held every time → staged as an `add` with its admission record `{run, head,
+ * pathSha, seed}`; a break → `refused: admit <id>: <fresh|width <w>|dirty> <kind> at step <n>`; the harness's
+ * failure → exit 2, nothing staged. `once` is the one-run seam (runOnce), `runner` and `gh` smoke plan's.
  */
 export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runner = run, gh = "gh", env = process.env } = {}) {
   const m = ADMIT_REF.exec(String(ref));
@@ -508,16 +523,36 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
   if (places.length) throw new Error(`refused: admit ${id}: a secret in its values: ${places.join("; ")}`);
   const used = seed ?? randomInt(0, 4294967296);
   const lines = [`seed: ${used}`];
-  for (const dirty of [false, true]) {
-    const r = await once(main, null, { path: { id, list }, dirty });
-    const which = dirty ? "dirty" : "fresh";
+  const smoke = smokeOf(main, "smoke admit");
+  const widths = widthsOf(live, smoke, id);
+  const others = [];
+  for (const p of readSuitePaths(main, smoke.dir).filter((x) => x.id !== id)) {
+    try {
+      parseRepro(p.path, { accounts: suiteAccounts(live), live, path: true });
+      others.push(p);
+    } catch (e) {
+      if (!/^refused: /.test(e.message)) throw e;
+      lines.push(`admit ${id}: suite path ${p.id} skipped (its path does not parse)`);
+    }
+  }
+  const order = seededOrder(others.map((p) => p.id), used);
+  const runs = [
+    { which: "fresh", path: { id, list: atWidth(list, widths[0]) }, dirty: false },
+    ...widths.slice(1).map((w) => ({ which: `width ${w}`, path: { id, list: atWidth(list, w) }, dirty: true })),
+    ...order.map((o) => ({ which: `suite pass, ${o}`, path: { id: o, list: others.find((p) => p.id === o).path }, dirty: true, other: true })),
+    { which: "dirty", path: { id, list: atWidth(list, widths[0]) }, dirty: true },
+  ];
+  for (const { which, path: p, dirty, other } of runs) {
+    const r = await once(main, null, { path: p, dirty });
     const b = r.code === 3 ? BROKE.exec(r.lines.at(-1) ?? "") : null;
+    if (b && other) continue;
     if (b) throw new Error(`refused: admit ${id}: ${which} ${b[2]} at step ${b[1]}`);
     if (r.code !== 0) {
       const last = r.lines.at(-1) ?? "";
       return { code: 2, lines: [...lines, `admit ${id}: harness (${which}): ${last.startsWith("HARNESS: ") ? last.slice(9) : `exit ${r.code}`}`] };
     }
   }
+  lines.push(`admit ${id}: widths ${widths.join(", ")}; dirty after ${order.length} suite path(s) in seed order`);
   const admitted = { run: lock.runId, head: rec.worktreeHead ?? null, pathSha: sha256(JSON.stringify(list)), seed: used };
   const routes = mapRoutes(main, id);
   const evidence = `held fresh and dirty in run ${lock.runId} (seed ${used})`;

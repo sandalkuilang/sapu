@@ -1949,13 +1949,15 @@ verbatim in the suite, run by the lane through `run-code`), and the catalog (`.a
 ### 19.2 Files
 
 - **`.argus/smoke.json`** (tracked, like `live.json`; `/sapu:init` adds `!/.argus/smoke.json`):
-  `{dir, max, pin, exclude, browsers, journeys: {<id>: {browsers?, masks?, screens?, allow?}}, masks,
+  `{dir, max, pin, exclude, browsers, journeys: {<id>: {browsers?, viewports?, masks?, screens?, allow?}}, masks,
   workers, ci: {web_server: [{command, url, timeout_s?}], ports: {<name>: <port>}, workflow,
   artifact}, perf: {runs, thresholds: {<metric>: [<relative>, <absolute>]}}, heal_max_steps,
   form_cases_max, link_cap}`. Unknown keys are refused. Defaults: `dir` `e2e/argus-smoke`, `max` 20
   (at most 50), `browsers` `["chromium", "firefox", "webkit", "msedge"]`, `workers` unset (the
   generated config then uses 1 under CI, Playwright's default elsewhere), `perf.runs` 5, `heal_max_steps` 3, `form_cases_max` 6, `link_cap` 50. A `ci.web_server`
-  or `ci.ports` URL must name a loopback host.
+  or `ci.ports` URL must name a loopback host. A journey's own `browsers` and `viewports` leave its spec
+  out of the other engines' projects and the other further widths' `chromium-<w>` projects (`testIgnore`);
+  the first width, every engine's, always runs.
 - **`.argus/live.json`** gains four optional keys: `test_id_attribute` (the attribute the app already
   uses; Playwright's `testIdAttribute`; without it a `testId` target is refused in a smoke path),
   `pseudo_locales` (locale codes the owner states the app serves as pseudo-locales, e.g. `en-XA`),
@@ -2003,10 +2005,13 @@ expectations; `within` at most one level; `css`, `title`, `altText`, refs and XP
 
 The explorer submits a path in its return (`path`, optional) when its charter says `path: wanted`
 (the journey is `capture` in `smoke plan`) and it reached the goal. `smoke admit <slot>.<generation>`
-runs it twice in slot `r`: once after `up --fresh`, once right after on the same, now dirty, instance,
-in a random order among the other paths it admits (seed printed). Held both times → staged with its
-admission record `{run, head, pathSha, seed}`; else `refused: admit <id>: <run> <kind> at step <n>`.
-The second, dirty run is what proves a path independent of a clean store and of other tests.
+runs it as the suite will: after `up --fresh` at live.json's first viewport (`fresh`), on the same
+instance at every further width the suite runs it at (`width <w>`; `journeys.<id>.viewports` leaves a
+width out), then after one pass over the suite's other paths in the order the seed shuffles them (seed
+printed and recorded; another path's break is `smoke run`'s to judge) at the first width again (`dirty`).
+Held every time → staged with its admission record `{run, head, pathSha, seed}`; else `refused: admit
+<id>: <run> <kind> at step <n>`. The dirty run is what proves a path independent of a clean store and
+of the other tests.
 
 ### 19.5 Codegen rules (pinned)
 

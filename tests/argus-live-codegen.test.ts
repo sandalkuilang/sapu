@@ -338,6 +338,14 @@ describe("argus-live codegen — projects and browsers", () => {
     expect(proj.firefox).toBeUndefined();
   });
 
+  it("a journey's own viewports leave its spec out of the further widths' projects; the first width always runs", () => {
+    const smoke = validateSmoke({ journeys: { checkout: { viewports: [1440] }, refund: { viewports: [1440, 390], browsers: ["chromium"] } } }).value;
+    const ignore = Object.fromEntries(evalConfig(smokeConfig({ live: LIVE(), smoke })).config.projects.map((p: Obj) => [p.name, p.testIgnore]));
+    expect(ignore["chromium-390"]).toBe("/(?:^|[\\\\/])(?:checkout)\\.spec\\.ts$/");
+    for (const n of ["chromium", "a11y"]) expect(ignore[n], n).toBeUndefined();
+    expect(ignore.firefox).toBe("/(?:^|[\\\\/])(?:refund)\\.spec\\.ts$/");
+  });
+
   it("msedge is a project only where its executable exists, else the config says so", () => {
     const text = smokeConfig({ live: LIVE(), smoke: SMOKE() });
     const present = evalConfig(text, { edge: [process.execPath] });

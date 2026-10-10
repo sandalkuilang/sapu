@@ -71,7 +71,7 @@ Screenshots, ARIA snapshots and adopted violations (`known/<id>.json`) come only
 
 ## Requirements of admit and propose
 
-- `smoke admit` needs a cycle with an instance, the slot's submitted return holding `path`, `smoke plan` listing the journey `capture`, and no value the run's secret ledger knows (refused by step and field, never by value). It runs the path fresh, then dirty.
+- `smoke admit` needs a cycle with an instance, the slot's submitted return holding `path`, `smoke plan` listing the journey `capture`, and no value the run's secret ledger knows (refused by step and field, never by value). It runs the path fresh, at each further width, then dirty after one pass over the suite in seed order.
 - `smoke propose` needs gh, npm and the secret ledgers of the staged changes' own runs: one a later `up` dropped refuses until the journey is admitted again. A scrub hit (`<file>:<line>:<col> <class>`) pushes nothing.
 
 ## `.argus/smoke.json`
@@ -97,7 +97,7 @@ Tracked beside `live.json`; unknown keys are refused at every level; every absen
 
 - `dir` — the suite's directory, committed, never under `.git` or `.argus`. `max` — at most this many members (up to 50). `pin` — always members (a global or dropped journey is refused); `exclude` — never.
 - `browsers` — `chromium`, `firefox`, `webkit` (Playwright's own, in the pinned container; WebKit is not Safari) and `msedge` (only where the runner has Edge; no screenshots).
-- `journeys` — per journey id, its own `browsers`; `masks` hidden in its screenshots; `screens`, the step numbers whose screen is shot, ARIA-snapshotted and axe-checked (default: its last step acting on a page); `allow`, the `{check, key}` violations the owner accepts.
+- `journeys` — per journey id, its own `browsers` and `viewports` (widths it leaves out; the first always runs); `masks` hidden in its screenshots; `screens`, the step numbers whose screen is shot, ARIA-snapshotted and axe-checked (default: its last step acting on a page); `allow`, the `{check, key}` violations the owner accepts.
 - `masks` — locators hidden in every screenshot (time elements, the marker and saved values always are). `workers` — local workers, 1 to 64 or `"N%"`; CI runs one.
 - `ci` — `web_server`, how CI starts the app (`{command, url, timeout_s?}`, loopback URLs, ports written out); `ports`, the port each `{port:<name>}` of a live.json hook takes in CI; `workflow`, the file under `.github/workflows/`; `artifact`, the results artifacts' prefix.
 - `perf` — `runs` a batch; `thresholds`, `[relative, absolute]` per metric (`lcp_ms`, `inp_ms`, `cls`, `duration_ms`, `requests`, `bytes`), a regression exceeding both.

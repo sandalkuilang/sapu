@@ -136,6 +136,8 @@ describe("smoke.json — the suite's schema", () => {
     expect(validateSmoke({ browsers: ["chromium", "webkit"] }).value.browsers).toEqual(["chromium", "webkit"]);
     for (const b of [[], ["safari"], ["chromium", "chromium"], "chromium"]) expect(validateSmoke({ browsers: b }).errors, JSON.stringify(b)).toEqual(["browsers must be a non-empty array of distinct names from chromium, firefox, webkit, msedge"]);
     expect(validateSmoke({ journeys: { checkout: { browsers: ["edge"] } } }).errors).toEqual(["journeys.checkout.browsers must be a non-empty array of distinct names from chromium, firefox, webkit, msedge"]);
+    expect(validateSmoke({ journeys: { checkout: { viewports: [1440, 390] } } }).errors).toEqual([]);
+    for (const v of [[], [100], [1440, 1440], "1440"]) expect(validateSmoke({ journeys: { checkout: { viewports: v } } }).errors, JSON.stringify(v)).toEqual(["journeys.checkout.viewports must be a non-empty array of distinct widths from 200 to 4000"]);
   });
 
   it("journeys: kebab-case ids, masks as locators, screens as step numbers, allow as {check, key}", () => {

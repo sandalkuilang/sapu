@@ -89,8 +89,10 @@ export function validateSmoke(raw) {
         continue;
       }
       if (need(isObj(j), `${where} must be an object`) !== true) continue;
-      unknown(j, where, ["browsers", "masks", "screens", "allow"]);
+      unknown(j, where, ["browsers", "viewports", "masks", "screens", "allow"]);
       if ("browsers" in j) browsers(j.browsers, `${where}.browsers`);
+      // The owner's way out of a width the journey does not support: its spec leaves those chromium-<w> projects.
+      if ("viewports" in j) need(Array.isArray(j.viewports) && j.viewports.length > 0 && j.viewports.every((v) => isInt(v, 200, 4000)) && new Set(j.viewports).size === j.viewports.length, `${where}.viewports must be a non-empty array of distinct widths from 200 to 4000`);
       if ("masks" in j) masks(j.masks, `${where}.masks`);
       if ("screens" in j) need(Array.isArray(j.screens) && j.screens.every((n) => isInt(n, 1, 500)) && new Set(j.screens).size === j.screens.length, `${where}.screens must be an array of distinct step numbers from 1 to 500`);
       if ("allow" in j && need(Array.isArray(j.allow), `${where}.allow must be an array of {check, key}`) === true) {

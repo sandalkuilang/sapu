@@ -595,13 +595,15 @@ export function smokeConfig({ live, smoke }) {
     ...(live.test_id_attribute ? { testIdAttribute: live.test_id_attribute } : {}),
   };
   const servers = web.map((w) => ({ command: w.command, url: w.url, timeout: (w.timeout_s ?? 120) * 1000, reuseExistingServer: false, cwd: "REPO" }));
-  // A journey's own `browsers` leave its spec out of the projects of an engine it does not name (chromium-engine projects follow "chromium").
-  const ignore = (browser) => {
-    const ids = Object.entries(smoke.journeys || {}).filter(([, j]) => j.browsers && !j.browsers.includes(browser)).map(([id]) => id).sort();
+  // A journey's own `browsers` leave its spec out of the projects of an engine it does not name (chromium-engine projects
+  // follow "chromium"), and its own `viewports` out of each further width's project it does not name (the first width always runs).
+  const ignore = (p) => {
+    const out = (j) => (j.browsers && !j.browsers.includes(p.browser)) || (p.kind === "viewport" && j.viewports && !j.viewports.includes(p.width));
+    const ids = Object.entries(smoke.journeys || {}).filter(([, j]) => out(j)).map(([id]) => id).sort();
     return ids.length ? `, testIgnore: /(?:^|[\\\\/])(?:${ids.join("|")})\\.spec\\.ts$/` : "";
   };
   const projects = suiteProjects({ live, smoke }).flatMap((p) => {
-    const line = `{ name: ${JSON.stringify(p.name)}, testMatch: /\\.spec\\.ts$/${ignore(p.browser)}, use: ${literal({ browserName: p.browser === "msedge" ? "chromium" : p.browser, ...(p.browser === "msedge" ? { channel: "msedge" } : {}), ...(p.kind === "viewport" ? { viewport: { width: p.width, height: HEIGHT } } : {}) })}, dependencies: ["setup"] },`;
+    const line = `{ name: ${JSON.stringify(p.name)}, testMatch: /\\.spec\\.ts$/${ignore(p)}, use: ${literal({ browserName: p.browser === "msedge" ? "chromium" : p.browser, ...(p.browser === "msedge" ? { channel: "msedge" } : {}), ...(p.kind === "viewport" ? { viewport: { width: p.width, height: HEIGHT } } : {}) })}, dependencies: ["setup"] },`;
     if (p.name === "webkit") return ["// WebKit is the closest stand-in for Safari, not Safari.", line];
     if (p.name === "msedge") return ["// msedge runs the path and the checks and no screenshot: a branded channel moves with the machine, not with the pin.", `...(HAS_EDGE ? [${line.slice(0, -1)}] : []),`];
     return [line];
