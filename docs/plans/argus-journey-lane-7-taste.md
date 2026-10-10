@@ -848,3 +848,93 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
   (the taste project, the header's `taste-bar <n>`): it updates the digests in its own commit.
 - *Instance header and `-pw` test.* The DAG header in `-instance.mjs` (no lane's) names the new modules;
   `tests/argus-live-pw.test.ts`, `-perf.test.ts` and the findings test pin `PAGE_INIT` where they pinned `SIGNAL_SCRIPT`.
+
+### Lane K — calibration (K1 and K2 built; K3 not run)
+
+**K1, the script** (`scripts/taste-calibrate.mjs`, `tests/taste-calibrate.test.ts`). The CLI is lane 0's:
+`[--network] --corpus <file> --out <bar> [--diff]`. Without `--network` it validates the corpus and the bar and prints
+the plan; nothing is fetched or written (a test spawns it against a loopback port that counts connections: none).
+`--diff` without `--network` is refused (there is nothing new to compare). With `--network`:
+- *Probes.* It imports `censusOf` (`-taste`) and `easeOf` (`-ease`), the page-level wrappers of `TASTE_SOURCE` and
+  `EASE_SOURCE`, and installs `TASTE_BUFFER`, `TASTE_INIT` and `EASE_INIT` in every context as the session hook does.
+  No action, no fault, no dark or reduced-motion pass. `rulesFor` is not used: it returns findings, not the per-page
+  numbers a band needs. Before the first request it runs the probes on a blank local page (every request aborted);
+  if they throw, as lane 0's stubs do, it refuses with `the probes cannot measure a blank page (…): nothing was
+  fetched`. `probe` in the bar is `sha256(JSON.stringify([TASTE_SOURCE, EASE_SOURCE]))` (`probeDigest`).
+- *Metrics.* `metricsOf(screen, bar)` takes, for every rule whose family is `screen`-scoped, the first finite number
+  found under the rule's own `metric` name at any depth of the probes' plain objects. Strings, arrays and non-finite
+  numbers are never taken, so page text cannot reach a band.
+- *Bands.* Per archetype and metric `{n, sites, p10, p50, p90, urls}`, nearest-rank percentiles (always a measured
+  value), rounded to three decimals, URLs sorted. A band driven by one site is cut and printed: a single site, or one
+  site giving more than half its pages. `numbersOnly` refuses any key or value but the five archetypes, the bar's
+  metric names, numbers and the corpus's own URLs, naming where the stray value sits and never the value; the new bar
+  must also pass `validateBar` before anything is written.
+- *Conduct.* robots.txt is read once per origin and both groups bind: a page is fetched only when the `*` group and the
+  `sapu-taste-calibration` group allow it (longest match, Allow on a tie, `*` and `$`). A 4xx other than 429 means no
+  robots.txt; a 5xx, 429 or network error skips the origin. One request at a time; every request to a site, robots.txt
+  included, starts 10 s after the site's last one ended; sites are served round-robin, the one free soonest first. A
+  fresh browser context per page (nothing signed in), viewport 1440 × 900, light, no reduced motion, service workers
+  blocked, Chrome's own user agent plus ` sapu-taste-calibration`. A page is skipped when it answers non-2xx, redirects
+  to another origin, to a sign-in path or to a path robots.txt refuses, or yields no metric.
+- *Writing.* Only the bar's `"probe"` line and its `"archetypes"` block change (one band a line); the rest of the
+  shipped file stays byte for byte (tested). `version` is not raised: lane 0 fixed K3 at 1, and the script prints that a
+  calibration after a release raises it (decision 21). After the run it prints each cut band, `--diff`'s line per band
+  (changed, unchanged, new, gone), and per archetype the pages and sites measured with `a witness` or `thin`.
+- *Tests.* Offline: robots.txt rules, pacing on a fake clock, exact percentiles, the cut, numbers only (a page whose
+  census returns its own text holding a run-time secret leaks nothing), `--diff`, the plan, the refusals, and in the
+  pinned Chrome against a loopback fixture: disallowed pages never requested, every request carrying the agent token,
+  the blank-page check making no request. Chrome tests carry 60 000 ms timeouts.
+
+**K2, the corpus** (`scripts/taste-corpus.json`): `{coverage, sites, pages, skipped}`. `coverage` is the research's
+coverage statement; `sites.<site>` is `{terms, note}` (the terms page read and what it says); a page is the plan's
+`{url, site, archetype, source, terms_reviewed_by}`; `skipped` records each page the review left out with its reason,
+so it is not proposed again unread. Every page answered 200 at its own origin and passes its origin's robots.txt for
+both groups (read for every host; atlassian.design and checkout.stripe.dev have none).
+
+The terms review changed the corpus the research admitted:
+- *Excluded on their terms:* **Apple** (the site terms, which developer.apple.com links too, bar "any … robot, spider or
+  other automatic device" used to access, acquire, copy or monitor any portion of the site), **Figma** (AUP 2(j):
+  scraping, data mining, or accessing Figma content programmatically), **Raycast** (terms: "data mining, robots,
+  scraping or similar data gathering or extraction methods").
+- *Admitted:* Vercel (its AUP's scrape item binds customers; automation is barred only to get around limits), GitHub
+  (AUP: research use of public, non-personal information with open-access publication), Stripe (the services
+  agreement bars copying the website; nothing is copied), Linear (the AUP bars using the Services to scrape; the public
+  site is not named a Service), Atlassian (no terms linked; robots.txt absent), shadcn (open source, no terms).
+- *Admitted for the maintainer to confirm:* **Carbon**. IBM's terms allow a crawler "as permitted by this Web site's
+  robots.txt protocol" and also bar a robot that retrieves or data-mines the sites' presentation.
+- Carbon's pages are named at `www.carbondesignsystem.com`: the bare host redirects there, and the script skips a
+  page that redirects to another origin.
+
+| Archetype | Pages | Sites | Witness reachable (≥ 5 sites, ≥ 15 pages) |
+|---|---|---|---|
+| marketing | 15 | 3 (vercel, stripe, linear) | no: three of the research's six marketing sites are out on their terms |
+| docs | 21 | 6 (vercel, github, stripe, carbon, atlassian, shadcn) | yes, if every page measures (5 without Carbon) |
+| app | 8 | 3 (github, shadcn, carbon) | no |
+| form | 6 | 3 (shadcn, carbon, stripe) | no |
+| data | 8 | 3 (github, shadcn, carbon) | no |
+
+No site gives more than half of an archetype's pages, so no band is cut for one site's weight unless pages fail.
+
+**K3, not run.** `-taste` and `-ease` are still lane 0's stubs in this worktree, so the script refuses before any
+request, and its numbers would mean nothing. It also runs only from the maintainer's main session: the guard refuses it
+to every subagent, this lane's included. `archetypes` stays `{}` and `probe` null; no stand-in number is committed.
+
+**Needs coordinator.**
+1. *K3 after T1 and T2 merge,* from the maintainer's main session: `node scripts/taste-calibrate.mjs --network --diff
+   --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json`, then review each band and commit
+   `feat(sapu): taste bar v1 calibrated against the reference corpus`. Expected: docs a witness, the other four thin.
+2. *The metric seam (T1, T2).* `censusOf(page)` and `easeOf(page)` must carry each per-screen measurement as a finite
+   number under its bar rule's `metric` name (`distinct_spacing`, `primary_actions`, …), at any depth of plain objects.
+   Otherwise that metric gets no band. Check this before K3: a dry run's `measured … (<k> metrics)` lines show it.
+3. *Lane 0's pin* in `tests/argus-live-taste.test.ts` ("is version 1 with no archetype band yet … and no probe
+   digest") expects `archetypes` `{}` and `probe` null. K3's commit turns it red by design and must change it, for
+   example to: every band has at least 2 sites and passes `validateBar`, and `probe` is a sha256.
+4. *The coverage statement is now wrong for marketing.* The research, spec §20.3 and decision 16 say marketing is well
+   covered; after the terms review it has 3 sites and cannot be a witness. Lane Z (spec, docs) and the research doc
+   should say so, and should name the terms review as the reason Apple, Figma and Raycast left. The corpus's
+   `coverage` field must change in the same commit, because a test pins it to the research's text.
+5. *Owner decisions.* Confirm or overrule the terms reading per site, Carbon above all. `terms_reviewed_by` says the
+   review was this lane's agent's and that the maintainer confirms before a `--network` run. To lift marketing to a
+   witness, add sites through decision 21's procedure (a read justification and a terms review).
+6. *CI.* `tests/taste-calibrate.test.ts` launches Chrome twice (about 15 s together) and falls in the workflow's `rest`
+   job by default; no matrix change is needed.
