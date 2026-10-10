@@ -23,6 +23,8 @@ jobs:
       # needs one: without this every browser session fails to start. The lane keeps the sandbox on.
       - name: Let Chrome's sandbox create its user namespace
         run: |
+          ls -l /etc/apparmor.d/chrome || true
+          unshare -Ur true && echo "userns: allowed" || echo "userns: restricted"
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
