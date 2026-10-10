@@ -873,6 +873,8 @@ quoted. The research doc lists the URLs [wcag22] [u-2.1.1] [u-2.1.2] [u-2.4.3] [
 - **Covered:** intelligent prioritization is SELECT's score and the smoke rank; parallel execution
   is CI's project matrix, with locks for shared accounts.
 - **Follow-up:** generating the API-level RED test the hint suggests.
+- **Follow-up:** gate `sapu-merge.sh` on the `argus-smoke` check (decided out of this release: the check is advisory,
+  and as a required check it could deadlock a pull request that renames a control until the heal proposal merges).
 
 ## Open risks
 
