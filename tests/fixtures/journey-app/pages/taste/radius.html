@@ -14,6 +14,8 @@ body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(2
 <div class="box" style="padding: 24px"><div class="inner" style="border-radius: 16px">Inset child</div></div>
 <!-- the excluded twin: a circle is a shape, not a corner treatment -->
 <div class="box"><div class="inner" style="width: 40px; height: 40px; border-radius: 50%">AB</div></div>
+<!-- the excluded twin: a parent with a top border alone and no fill of its own shows no corner (a footer's rule) -->
+<div class="box" style="background: transparent; border-top: 1px solid rgb(200, 200, 200)"><div class="inner" style="border-radius: 16px">Footer child</div></div>
 <!-- the excluded twin: a smaller child radius -->
 <div class="box" style="border-radius: 12px; padding: 4px"><div class="inner" style="border-radius: 8px">Smaller child</div></div>
 </main>

@@ -278,15 +278,22 @@ export const TASTE_SOURCE = String.raw`(arg) => {
       }
     }
     // A corner a child shares with its nearest boxed ancestor (it sits inside that corner's curve), more rounded than it.
+    // A box shows a corner only where both its sides meeting there are bordered, or where its fill differs from what is
+    // behind it: a footer's top rule alone draws no corner.
     if (corners.some((r) => r && r !== "full") && boxed(el, s)) {
       let p = el.parentElement;
       while (p && p !== doc.body && p !== doc.documentElement && !boxed(p, cs(p))) p = p.parentElement;
       if (p && p !== doc.body && p !== doc.documentElement) {
         const ps = cs(p), a = el.getBoundingClientRect(), b = p.getBoundingClientRect();
         const gaps = [[a.left - b.left, a.top - b.top], [b.right - a.right, a.top - b.top], [b.right - a.right, b.bottom - a.bottom], [a.left - b.left, b.bottom - a.bottom]];
+        const MEET = [["top", "left"], ["top", "right"], ["bottom", "right"], ["bottom", "left"]];
+        const edged = (n, ns, d) => num(ns.getPropertyValue("border-" + d + "-width")) >= 1 && !/none|hidden/.test(ns.getPropertyValue("border-" + d + "-style")) && rgba(ns.getPropertyValue("border-" + d + "-color")).a > 0;
+        const filled = (n, ns) => { const f = rgba(ns.backgroundColor); if (f.a === 0) return false; const behind = n.parentElement ? surface(n.parentElement) : canvasBg; if (!behind) return true; const c = over(f, behind); return Math.abs(c.r - behind.r) + Math.abs(c.g - behind.g) + Math.abs(c.b - behind.b) > 6; };
+        const cornerShown = (n, ns, i) => filled(n, ns) || MEET[i].every((d) => edged(n, ns, d));
         for (let i = 0; i < 4; i++) {
           const cr = corners[i], pr = radius(p, ps, CORNERS[i]);
           if (!cr || cr === "full" || pr === "full" || cr <= (pr || 0) + 0.5) continue;
+          if (!cornerShown(p, ps, i) || !cornerShown(el, s, i)) continue;
           if (gaps[i][0] >= -0.5 && gaps[i][1] >= -0.5 && gaps[i][0] <= (pr || 0) + 0.5 && gaps[i][1] <= (pr || 0) + 0.5) {
             nested.push({ key: keyOf(el), child: cr, parent: pr || 0 });
             break;
