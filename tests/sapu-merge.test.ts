@@ -1144,7 +1144,8 @@ describe("sapu-merge.sh — the argus smoke check (gate.smokeCheck, opt-in)", ()
     put(h, "repos_owner_app_actions_workflows_argus-smoke.yml_runs", { workflow_runs: [{ id: 11, event: "pull_request", status, conclusion, head_sha: head(h), repository: { full_name: "owner/app" }, head_repository: { full_name: "owner/app" } }] });
     put(h, "repos_owner_app_actions_runs_11_jobs", { jobs: jobs.map(([name, c]) => ({ name, status: "completed", conclusion: c })) });
     put(h, "repos_owner_app_pulls_7_files", files.map((filename) => ({ filename })));
-    put(h, "repos_owner_app_issues_7", { number: 7, title: "issue 7" }); // the issue the PR closes, as REST shows it
+    // PR 7 as REST's issues endpoint shows it (its labels: the owner override is read there), and the issue it closes
+    put(h, "repos_owner_app_issues_7", { number: 7, title: "issue 7", state: "open", user: { login: "owner", id: 1 }, labels: [] });
     const art = join(h.dir, "api", "artifacts", "argus-smoke-results-chromium");
     mkdirSync(art, { recursive: true });
     const spec = (title: string) => ({ title, file: `${title}.spec.ts`, tags: [], tests: [{ projectName: "chromium", status: "unexpected", results: [] }] });
@@ -1192,6 +1193,7 @@ describe("sapu-merge.sh — the argus smoke check (gate.smokeCheck, opt-in)", ()
     expect(unwired.gh()).not.toMatch(/actions\/workflows/);
     const missing = harness({ main: WF, contract: SMOKE_ON });
     put(missing, "repos_owner_app_actions_workflows_argus-smoke.yml_runs", { workflow_runs: [] });
+    put(missing, "repos_owner_app_pulls_7_files", [{ filename: "src/change.txt" }]);
     const m = missing.run({}, ["--smoke-wait", "0"]);
     expect(m.status).toBe(0);
     expect(m.err).toMatch(/no argus-smoke run on [0-9a-f]{12}.*not a block/);
@@ -1209,18 +1211,33 @@ describe("sapu-merge.sh — the argus smoke check (gate.smokeCheck, opt-in)", ()
     expect(existsSync(h.WT)).toBe(true);
   });
 
-  it("the deadlock escapes merge a red smoke check: the PR changes the suite, or closes the failing journey's smoke-regression issue", { timeout: 60_000 }, () => {
-    const suite = harness({ main: WF, contract: SMOKE_ON, pr: { "e2e/argus-smoke/quarantine.json": "[]\n" } });
-    smokeRun(suite, { files: ["e2e/argus-smoke/quarantine.json"] });
+  it("the deadlock escapes merge a red smoke check: the PR changes the failing journey's spec, or closes its smoke-regression issue", { timeout: 60_000 }, () => {
+    const suite = harness({ main: WF, contract: SMOKE_ON, pr: { "e2e/argus-smoke/checkout.spec.ts": "// healed\n" } });
+    smokeRun(suite, { files: ["e2e/argus-smoke/checkout.spec.ts"] });
     const a = suite.run();
     expect(a.status).toBe(0);
-    expect(a.err).toMatch(/not a block: the PR changes the suite/);
+    expect(a.err).toMatch(/checkout \(the PR changes its spec\)/);
     const fix = harness({ main: WF, contract: SMOKE_ON });
     smokeRun(fix);
-    put(fix, "repos_owner_app_issues_7", { number: 7, title: "smoke-regression:checkout broke at step 2" });
+    put(fix, "repos_owner_app_issues_7", { number: 7, title: "smoke-regression:checkout broke at step 2", state: "open", user: { login: "owner", id: 1 }, labels: [{ name: "bug" }, { name: "regression" }] });
     const c = fix.run();
     expect(c.status).toBe(0);
     expect(c.err).toMatch(/checkout \(this PR closes #7, its smoke-regression issue\)/);
+  });
+
+  it("a PR that changes the smoke workflow is red (exit 5); the owner's smoke-override label lets it through, an outsider's does not", { timeout: 60_000 }, () => {
+    const wf = harness({ main: WF, contract: SMOKE_ON, pr: { ".github/workflows/argus-smoke.yml": "name: argus-smoke\non: push\n" } });
+    smokeRun(wf, { conclusion: "success", jobs: [["test (chromium)", "success"]], files: [".github/workflows/argus-smoke.yml"] });
+    const r = wf.run();
+    expect(r.status).toBe(5);
+    expect(r.err).toMatch(/changes the smoke workflow/);
+    put(wf, "repos_owner_app_issues_7", { number: 7, title: "issue 7", state: "open", user: { login: "owner", id: 1 }, labels: [{ name: "smoke-override" }] });
+    put(wf, "repos_owner_app_issues_7_events", [{ event: "labeled", label: { name: "smoke-override" }, actor: { login: "mallory", id: 66 } }]);
+    expect(wf.run().status).toBe(5);
+    put(wf, "repos_owner_app_issues_7_events", [{ event: "labeled", label: { name: "smoke-override" }, actor: { login: "owner", id: 1 } }]);
+    const o = wf.run();
+    expect(o.status).toBe(0);
+    expect(o.err).toMatch(/owner override: smoke-override applied by owner/);
   });
 
   it("a smoke check that cannot be judged fails closed: nothing merged", () => {

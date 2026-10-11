@@ -684,32 +684,54 @@ itself). Absent or `false`, `sapu-merge.sh` never asks GitHub about the smoke su
 argus smoke suite's CI run (the workflow `.argus/smoke.json` names, default `argus-smoke.yml`; the
 journey lane's [smoke suite](../../docs/usage.md#the-smoke-suite)) on the PR's head gates the merge.
 `sapu-smoke-gate.mjs` judges it from `origin/<base>` (the workflow file, `.argus/smoke.json`, the
-suite's `quarantine.json`) and GitHub (the newest `pull_request` run of that workflow on the head
-step 4 read, in this repository, and its jobs), never from the PR's tree:
+suite's `quarantine.json`) and GitHub (the PR's files and labels, the newest `pull_request` run of that
+workflow on the head step 4 read, in this repository, and its jobs); from the PR's tree it reads only
+its `quarantine.json`, and only for escape (a) of a journey it lists:
 
 | The run | Verdict |
 |---|---|
 | no workflow file on `origin/<base>`, or no run on the head | not a block (the suite is not set up, or did not run) |
+| the PR changes the smoke workflow itself (`.github/workflows/<ci.workflow>`, as `origin/<base>`'s `.argus/smoke.json` names it), or its file list may be cut short (3000 files) | red, whatever its run says (its own run cannot clear it), unless the owner override holds |
 | still running | judged again after the gate, waiting up to `--smoke-wait` minutes (default 90; `0` = no wait); still running then = stop, not merged |
 | every gating job passed (`test (<project>)`, `msedge`, `taste`; the `quarantine` jobs never gate) | green |
 | a gating job failed, cancelled or timed out | red = **exit 5**, not merged, the failing journeys named |
 | red, but an escape holds | not a block (the line says which) |
 
-**The escapes** keep a red suite from deadlocking the very PR that clears it:
+**The escapes** keep a red suite from deadlocking the very PR that clears it. Each excuses one failing
+journey:
 
-- **(a) the PR changes the suite** (a file under the suite's `dir`, default `e2e/argus-smoke/`): a heal,
-  baseline, quarantine or retire proposal from the lane must be able to land.
-- **(b) every failing journey is quarantined** in `origin/<base>`'s `quarantine.json` (a run that read
-  an older base, before the quarantine merged).
-- **(c) the PR closes the failing journey's regression issue**: an issue in its
-  `Closes/Fixes/Resolves` list holds `smoke-regression:<id>` in its title (the issue the smoke cycle files).
+- **(a) the PR proposes the journey's fix**: it changes the journey's own spec (`<dir>/<id>.spec.ts`,
+  default `dir` `e2e/argus-smoke`: a heal), or it changes `<dir>/quarantine.json` and that file, read at
+  the PR's head through GitHub, lists the journey (a quarantine proposal). Another journey's spec, the
+  suite's shared files (`support.ts`, `playwright.config.ts`, `auth.setup.ts`) or a quarantine.json that
+  does not list it excuse nothing.
+- **(b) the journey is quarantined** in `origin/<base>`'s `quarantine.json` (a run that read an older
+  base, before the quarantine merged).
+- **(c) the PR closes the journey's regression issue, as the smoke cycle filed it**: an issue in its
+  `Closes/Fixes/Resolves` list that is open, holds `smoke-regression:<id>` in its title, carries the
+  lane's `bug` and `regression` labels, and was opened by an id in the trusted set (`resolveTrusted`:
+  `ghUser` plus `trustedAuthors`, by id). An outsider's issue with that title is no escape.
 
-(b) and (c) may mix (one journey quarantined, another closed), but they cover journeys only: every
+The escapes may mix (one journey quarantined, another closed), but they cover journeys only: every
 failed job must be a journey job (`test (<project>)` or `msedge`) that failed (not cancelled or timed
 out) and whose results artifact names at least one failing journey and nothing else (a sign-in that
 failed, a test outside the suite). A red `taste` job, or a failure no journey explains (a broken
-`npm ci`), blocks unless (a) holds. A smoke check that cannot be judged (GitHub does not answer, an
-invalid `.argus/smoke.json` on `origin/<base>`) stops the merge: it fails closed.
+`npm ci`), blocks whatever the PR changes. A smoke check that cannot be judged (GitHub does not answer,
+an invalid `.argus/smoke.json` on `origin/<base>`) stops the merge: it fails closed.
+
+**The owner override** breaks a deadlock no escape clears (a red taste job, a broken workflow the PR
+repairs): any red is not a block when the PR carries the `smoke-override` label now, and the latest
+labeled or unlabeled event for it (GitHub's issue events API, which names the actor's id) applied it,
+by an id in the trusted set. A collaborator outside the set who applies or re-applies it overrides
+nothing. The label is read only for a red verdict, and the line names who applied it. It covers the
+PR as it is labelled, not one head: remove it once the merge is done, or before a push you have not
+judged.
+
+**What is judged, and when.** The smoke check reads the PR's head as step 4 read it, before the sync
+push of step 8: when the base moved and step 8 pushes a rebased or merged head, that new commit's own
+smoke run is not awaited, so the merge rests on the run of the head before the sync. A missing run (the
+workflow did not start on the head within the grace, 90 seconds at most, inside `--smoke-wait`) passes
+as not a block, like a repo with no workflow file.
 
 ## `.claude/sapu/<skill>.md` — the repo profile
 

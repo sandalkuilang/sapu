@@ -45,9 +45,12 @@
 #
 # SMOKE CHECK (opt-in: gate.smokeCheck true in origin/<base>'s contract; absent = off). The argus smoke suite's CI
 # run on the head the trust check read is judged by sapu-smoke-gate.mjs, from origin/<base> and GitHub only: red
-# blocks (exit 5) unless the PR changes the suite, or every failing journey is quarantined on origin/<base> or has its
-# smoke-regression issue closed by this PR. No workflow file or no run = not a block; a running one is judged again
-# after the gate, waiting up to --smoke-wait minutes; still running then = stop. Cannot judge = stop (fails closed).
+# blocks (exit 5) unless every failing journey is excused (the PR changes its spec or quarantines it, it is
+# quarantined on origin/<base>, or the PR closes the smoke-regression issue the smoke cycle filed for it), or a
+# trusted account applied the smoke-override label to the PR. A PR that changes the smoke workflow is red whatever
+# its run says. No workflow file or no run = not a block; a running one is judged again after the gate, waiting up
+# to --smoke-wait minutes; still running then = stop. Cannot judge = stop (fails closed). Judged on the PR's head,
+# before the sync push of step 8 (that commit's own run is not awaited).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
@@ -315,7 +318,7 @@ if [ "$SMOKE_CHECK" = true ]; then
     green|excused|no-wiring) SMOKE=done; smoke_say "$SV" ;;
     red)
       if [ "$DRY" = 1 ]; then check_fail "$(jq -r '.lines | join("; ")' <<<"$SV")"
-      else smoke_say "$SV"; say "SMOKE CHECK RED: not merged (gate.smokeCheck) — fix what it names, or let the smoke cycle quarantine it"; exit 5; fi ;;
+      else smoke_say "$SV"; say "SMOKE CHECK RED: not merged (gate.smokeCheck) — fix what it names, let the smoke cycle quarantine it, or (the owner only) label the PR smoke-override"; exit 5; fi ;;
     pending|missing) smoke_say "$SV"; plan "smoke check judged again after the gate (waits up to $SMOKE_WAIT min for a running one)" ;;
     *) check_fail "smoke check could not be judged (see above): gate.smokeCheck fails closed" ;;
   esac

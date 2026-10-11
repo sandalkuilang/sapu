@@ -206,13 +206,15 @@ By default sapu's merge script (`sapu-merge.sh`) ignores the smoke suite: "Gates
 - **Still running**: your merge gate runs first, then sapu-merge waits up to 90 minutes for the run (`--smoke-wait <minutes>` changes that; `0` does not wait). Still running after that, it stops without merging: run it again once the run is done.
 - **No run, or no workflow file on the base branch**: not a block. The suite is not set up, or did not run.
 
-A red run does not block when one of these escapes holds, so a red suite never locks out the pull request that fixes it:
+A red run does not block when every failing journey is excused by one of these escapes, so a red suite never locks out the pull request that fixes it:
 
-1. The PR changes the suite itself (a file under `e2e/argus-smoke/`, or your `dir`): the lane's heal, baseline, quarantine and retire proposals.
-2. Every failing journey is quarantined on the base branch (the run read an older base, before the quarantine merged).
-3. The PR closes the failing journey's regression issue: an issue it closes (`Closes #N`) has `smoke-regression:<id>` in its title.
+1. The PR proposes that journey's fix: it changes the journey's own spec (`e2e/argus-smoke/<id>.spec.ts`, or under your `dir`: a heal), or its `quarantine.json` lists the journey (a quarantine proposal).
+2. The journey is quarantined on the base branch (the run read an older base, before the quarantine merged).
+3. The PR closes the journey's regression issue as the smoke cycle filed it: an open issue it closes (`Closes #N`) with `smoke-regression:<id>` in its title, the `bug` and `regression` labels, opened by you or another trusted author.
 
-Escapes 2 and 3 cover journey failures only. A red `taste` job, a sign-in that failed, a cancelled job, or a failure no journey explains (a broken `npm ci`) still blocks, unless escape 1 holds. When sapu cannot read the run at all, it does not merge. The details are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md#the-smoke-check).
+The escapes cover journey failures only. A red `taste` job, a sign-in that failed, a cancelled job, or a failure no journey explains (a broken `npm ci`) still blocks, whatever the PR changes. A PR that changes the smoke workflow file itself is red whatever its own run says. When sapu cannot read the run at all, it does not merge.
+
+**The owner override.** When nothing else clears a red smoke check (a red `taste` job, a PR that repairs the workflow), label the PR `smoke-override` yourself. sapu-merge reads who applied the label from GitHub's issue events: it counts only when the last time it was applied, it was by you or another trusted author (by account id), and it is still on the PR. Remove it once the PR is merged. The smoke check reads the PR's head before sapu-merge pushes its sync commit, and a run that never appeared on the head passes after a short grace. The details are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md#the-smoke-check).
 
 #### A smoke cycle
 
