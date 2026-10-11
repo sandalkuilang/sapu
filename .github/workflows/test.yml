@@ -1,6 +1,6 @@
-# Runs the test suite on Linux for every push and pull request. The journey lane's live instance has
-# Linux-only paths (process start times from /proc, unix-socket peers from `ss -xp`) that a run on
-# macOS never takes, so its tests go first, on their own; then the rest of the suite.
+# Runs the test suite on Linux and on macOS for every push and pull request. The journey lane's live
+# instance takes different paths on each (process start times from /proc or ps, unix-socket peers from
+# `ss -xp` or lsof, dash or bash as /bin/sh, Chrome's socket paths), so each job runs on both.
 #
 # The suite is split into parallel jobs: a file that starts Chrome takes minutes, and one job running
 # them all outgrew its 30 minutes. Each matrix entry's `files:` line names its test files; the `rest`
@@ -14,12 +14,14 @@ permissions:
   contents: read
 jobs:
   test:
-    name: test (${{ matrix.job }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: test (${{ matrix.os }}, ${{ matrix.job }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
+        job: [repro, oracles, browser, paths-perf, generated-suite, rest]
         include:
           - job: repro
             files: tests/argus-live-repro.test.ts
