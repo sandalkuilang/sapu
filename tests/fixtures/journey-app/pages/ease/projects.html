@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Projects</title></head>
+<body>
+<header><button id="new" type="button">New project</button></header>
+<main>
+<!-- QA's projects page: the header's call to action beside the empty list's own; both create a project. -->
+<section aria-label="Projects">
+  <h2>Projects</h2>
+  <ul></ul>
+  <p>No projects yet.</p>
+  <button id="create" type="button">Create project</button>
+</section>
+</main>
+<script>
+  const create = () => fetch("/api/save", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "x" }) });
+  document.getElementById("new").addEventListener("click", create);
+  document.getElementById("create").addEventListener("click", create);
+</script>
+</body></html>

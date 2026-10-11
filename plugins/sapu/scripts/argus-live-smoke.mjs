@@ -88,7 +88,7 @@ export function smokeEvent(main, runId, event) {
 }
 
 /** A suite project's name (spec §19.6), as quarantine.json, smoke ci and the baselines name it. */
-export const PROJECT = /^(setup|chromium|firefox|webkit|msedge|a11y|i18n|chromium-[1-9][0-9]{1,3})$/;
+export const PROJECT = /^(setup|chromium|firefox|webkit|msedge|a11y|taste|i18n|chromium-[1-9][0-9]{1,3})$/;
 
 /**
  * The suite's `quarantine.json` (spec §19.9; smoke propose writes it) at the suite directory `at` → its entries `[{id,

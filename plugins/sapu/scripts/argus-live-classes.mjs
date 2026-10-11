@@ -58,17 +58,30 @@ export const CLASSES = {
     (f) => (f.money ? "regression on a money journey" : "regression, not on a money journey"),
     { owner: true },
   ),
+  // Spec §20.5: a taste row (measured, two of two) is `ux`; `bug` too when it is broken on its face or a
+  // self-contradiction (aesthetics.md §2), never for a `bar` row. Its severity is aesthetics.md §7's, a bar row S4,
+  // and a cost (a confirmed efficiency regression, or 10 s or more of klm_s a run) lifts it to S3.
+  taste: { kind: "taste" },
 };
+/** The bar's rule classes (argus-live-tastecfg.mjs RULE_CLASSES; this module is a leaf). */
+const TASTE_CLASSES = ["implicit", "derived", "bar"];
+const TASTE_WHY = { implicit: "broken on its face", derived: "the app contradicts itself or its tokens" };
 
 /**
- * A journey finding's class → `{cls, labels, severity, because}`: `cls` `A`, `B(a)` or `heuristic`; its
+ * A journey finding's class → `{cls, labels, severity, because}`: `cls` `A`, `B(a)`, `heuristic` or `taste`; its
  * labels ending `argus`, `found-by:user`; the starting severity `S1`-`S3`, `at most S3` or `by outcome`;
  * `because` the row's words. `needsOwner` is the contract's `labels.needsOwner`. Refused: an oracle the
  * table does not hold.
  */
-export function classify({ oracle, money = false, stock = false, movedTwice = false, actedOn = false, rule = false, needsOwner = "argus:needs-owner" }) {
+export function classify({ oracle, money = false, stock = false, movedTwice = false, actedOn = false, rule = false, tasteClass = null, cost = false, needsOwner = "argus:needs-owner" }) {
   if (typeof oracle !== "string" || !Object.hasOwn(CLASSES, oracle)) throw new Error(`refused: classify: ${typeof oracle === "string" && /^[a-z-]{1,40}$/.test(oracle) ? oracle : "that"} is not an oracle`);
   const row = CLASSES[oracle];
+  if (row.kind === "taste") {
+    if (!TASTE_CLASSES.includes(tasteClass)) throw new Error("refused: classify: --oracle taste takes --class implicit, derived or bar");
+    if (tasteClass === "bar") return { cls: "taste", labels: ["ux", ...ALWAYS], severity: cost ? "S3" : "S4", because: "taste row, bar: beyond the outside range, never a bug" };
+    return { cls: "taste", labels: ["bug", "ux", ...ALWAYS], severity: cost ? "at least S3" : "by outcome", because: `taste row, ${tasteClass}: ${TASTE_WHY[tasteClass]}, rated by what the user did (aesthetics.md §7)` };
+  }
+  if (tasteClass !== null || cost) throw new Error("refused: classify: --class and --cost are the taste oracle's");
   if (row.kind === "heuristic") {
     return rule
       ? { cls: "B(a)", labels: ["class:business", "workflow", ...ALWAYS], severity: "at most S3", because: `${row.name} with a written rule` }

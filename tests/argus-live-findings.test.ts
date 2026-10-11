@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { openSession, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { openSession, PAGE_INIT, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { sessionName, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -104,7 +104,7 @@ describe("argus-live modules — the DAG", () => {
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
     // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
     expect(g.has("argus-live-steps")).toBe(true);
-    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout"], d).toContain(d);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
     // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
@@ -114,7 +114,9 @@ describe("argus-live modules — the DAG", () => {
     expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-fence", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
     // The journey map reads the configuration and git, nothing of a run.
-    expect([...(g.get("argus-live-map") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-proc"]);
+    // SELECT's taste factor (phase 7) reads .argus/taste-state.json through -tastecfg, a leaf.
+    for (const d of g.get("argus-live-map") ?? []) expect(["argus-live-config", "argus-live-proc", "argus-live-tastecfg"], d).toContain(d);
+    expect(g.get("argus-live-map")).toEqual(expect.arrayContaining(["argus-live-config", "argus-live-proc"]));
     expect(g.get("argus-live-return")).toContain("argus-live-map");
     // Doc drift reads git's blame and nothing else.
     expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
@@ -128,7 +130,7 @@ describe("argus-live modules — the DAG", () => {
     // The in-page check sources are leaves: embedded verbatim in the suite, run by the lane through run-code.
     for (const leaf of ["argus-live-layout", "argus-live-a11y"]) expect(g.get(leaf), leaf).toEqual([]);
     // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
-    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
+    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login", "argus-live-codeproj"], d).toContain(d);
     // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
     const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-artifacts", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
     // CI's runs and artifacts are read through one module, below both verbs that read them.
@@ -141,6 +143,27 @@ describe("argus-live modules — the DAG", () => {
     // perf's in-page script is installed by the session hook beside the signal script, and seed's text is read by pw: both sit below them.
     for (const [low, above] of [["argus-live-perf", "argus-live-session"], ["argus-live-seed", "argus-live-pw"]]) expect(reach(g, low).has(above), `${low} reaches ${above}`).toBe(false);
     for (const m of [...PHASE6.slice(2), "argus-live-seed"]) expect(g.get("argus-live"), m).toContain(m);
+  });
+
+  it("admits phase 7's modules, each with the imports it may have (spec §20)", () => {
+    const g = graph();
+    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
+    for (const m of PHASE7) expect(g.has(m), m).toBe(true);
+    // The shapes, and the in-page probes the suite embeds verbatim (the AI probe is the lane's alone): leaves.
+    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The judge reads the probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
+    expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg"]));
+    expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg"]));
+    // The suite's projects, registry and config (split from the generator) read the in-page checks and the shapes only.
+    for (const d of g.get("argus-live-codeproj") ?? []) expect(["argus-live-layout", "argus-live-a11y", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
+    expect(g.get("argus-live-codegen")).toContain("argus-live-codeproj");
+    // The judge and filing sit above the runner, below the report and the CLI: nothing else reaches them.
+    for (const m of g.keys()) {
+      if (["argus-live", "argus-live-report", "argus-live-tastejudge", "argus-live-tastefile"].includes(m)) continue;
+      for (const u of ["argus-live-tastejudge", "argus-live-tastefile"]) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);
+    }
+    expect(reach(g, "argus-live-tastejudge").has("argus-live-tastefile")).toBe(false);
+    for (const m of ["argus-live-tastejudge", "argus-live-tastefile"]) expect(g.get("argus-live"), m).toContain(m);
   });
 
   it("caps every argus-live module at 750 lines", () => {
@@ -238,7 +261,10 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     // Opened and hooked (one hook stage: the run's origins, the signal script, the byte cap), never signed in by ensure: that is the caller's.
     expect(first.events).toEqual([]);
     expect(t.stages()).toHaveLength(1);
-    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: SIGNAL_SCRIPT, capBytes: 4 * 2 ** 20 })};`);
+    // The init payload with the slot's taste key in place of the mark (never the mark itself: the page must not know it).
+    const key = readFileSync(join(t.dir, ".playwright/taste.key"), "utf8").trim();
+    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT.split("@@argus-taste-key@@").join(key), capBytes: 4 * 2 ** 20 })};`);
+    expect(t.stages()[0].code).not.toContain("@@argus-taste-key@@");
     expect(t.stages()[0].code).toContain("ctx.__argus = {");
     const again = await t.driver().ensure();
     expect(again).toEqual({ record: first.record, opened: false, events: [] });
@@ -634,8 +660,8 @@ describe("argus-live repro DSL", () => {
   });
 
   it("the regression oracle (spec §19.9): the lane's own, its final any expectation kind", () => {
-    expect(ORACLES.at(-1)).toBe("regression");
-    expect(LANE_ORACLES).toEqual(["regression"]);
+    expect(ORACLES.at(-2)).toBe("regression");
+    expect(LANE_ORACLES).toContain("regression");
     expect(FINAL_KINDS.regression).toEqual(["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals", "count", "url", "fact-equals", "mail", "no-error"]);
     const last = EXAMPLE().at(-1);
     expect(parseRepro([...EXAMPLE().slice(0, -1), { ...last, final: "regression" }], at).steps.at(-1)).toMatchObject({ final: "regression" });
@@ -1903,6 +1929,26 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(t.g.calls().map((x) => x.argv.slice(0, 2).join(" "))).toEqual(["--version", "repo view", "issue create"]);
   }, 30_000);
 
+  it("a taste shot of the run (taste/shots/<32 hex>.png, its verdict beside it) is attached under the same conditions; another name there is not", async () => {
+    const t = filing();
+    const name = createHash("sha256").update("/orders/:id|1440|light").digest("hex").slice(0, 32);
+    const png = t.shot(`taste/shots/${name}.png`);
+    const { done } = t.file({ attach: [png] });
+    expect((await done).out).toContain(`attach: ${t.shown(`taste/shots/${name}.png`)}`);
+    expect(creates(t.g)[0].argv.slice(-2)).toEqual(["--attach", realpathSync(png)]);
+    // Its verdict decides as a slot's does; a name that is not a shot's, or a file deeper down, is no screenshot of the run.
+    for (const [rel, verdict, reason] of [
+      [`taste/shots/${name}.png`, { passed: false, reasons: ["secret"] }, "a secret on the page"],
+      ["taste/shots/page-1.png", { passed: true, reasons: [] }, "not a screenshot of this run"],
+      [`taste/shots/1/${name}.png`, { passed: true, reasons: [] }, "not a screenshot of this run"],
+      [`taste/${name}.png`, { passed: true, reasons: [] }, "not a screenshot of this run"],
+    ] as [string, Obj, string][]) {
+      const u = filing();
+      const r = await u.file({ attach: [u.shot(rel, verdict)] }).done;
+      expect(r.out, rel).toContain(`local: ${u.shown(rel)} (${reason})`);
+    }
+  }, 60_000);
+
   const reasons: [string, (t: ReturnType<typeof filing>) => { file: string; shown: string }][] = [
     ["gh older than 2.99", (t) => (t.g.set({ version: "gh version 2.98.1 (stable)" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
     ["public repository", (t) => (t.g.set({ visibility: "PUBLIC" }), { file: t.shot("1/out/page-1.png"), shown: t.shown("1/out/page-1.png") })],
@@ -2507,22 +2553,24 @@ describe("argus-live select", () => {
     writeFileSync(join(t.main, "README.md"), "not an anchor\n");
     commitAll(t.main, "readme");
     const r = selectJourneys(t.main, { cycle: 100 });
-    expect(r.picks.map((p: Obj) => [p.id, p.score])).toEqual([["b", 100], ["a", 60]]);
-    expect(selectJourneys(t.main, { cycle: 100, flagged: ["a"] }).picks.map((p: Obj) => [p.id, p.score])).toEqual([["a", 120], ["b", 100]]);
+    expect(r.picks.map((p: Obj) => [p.id, p.score])).toEqual([["b", 150], ["a", 90]]);
+    expect(selectJourneys(t.main, { cycle: 100, flagged: ["a"] }).picks.map((p: Obj) => [p.id, p.score])).toEqual([["a", 180], ["b", 150]]);
   }, 30_000);
 
   it("a global journey is selected alone, or waits", () => {
     const t = selectRepo([journey("g", [ANON], { global: true }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
     expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
-      picks: [{ id: "g", score: 100, accounts: { "anon.1": null } }],
-      waits: [{ id: "n", score: 50, why: "global journey selected alone" }, { id: "m", score: 40, why: "global journey selected alone" }, { id: "o", score: 30, why: "global journey selected alone" }],
+      picks: [{ id: "g", score: 150, accounts: { "anon.1": null } }],
+      waits: [{ id: "n", score: 75, why: "global journey selected alone" }, { id: "m", score: 60, why: "global journey selected alone" }, { id: "o", score: 45, why: "global journey selected alone" }],
       displaced: [],
+      warnings: [],
     });
     t.map([journey("g", [ANON], { global: true, lastCycle: 90 }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
     expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
-      picks: [{ id: "n", score: 50, accounts: { "anon.1": null } }, { id: "m", score: 40, accounts: { "anon.1": null } }],
-      waits: [{ id: "o", score: 30, why: "limit 2 reached" }, { id: "g", score: 10, why: "a global journey waits for a cycle of its own" }],
+      picks: [{ id: "n", score: 75, accounts: { "anon.1": null } }, { id: "m", score: 60, accounts: { "anon.1": null } }],
+      waits: [{ id: "o", score: 45, why: "limit 2 reached" }, { id: "g", score: 15, why: "a global journey waits for a cycle of its own" }],
       displaced: [],
+      warnings: [],
     });
   });
 
@@ -2530,33 +2578,33 @@ describe("argus-live select", () => {
     const t = selectRepo([journey("x", [BUY, APPROVE]), journey("y", [BUY, APPROVE])]);
     const r = t.cli("--cycle", "3");
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toEqual(["select x score 3 accounts buyer.1=buyer1@example.test,clerk.1=clerk1@example.test", "wait y score 3 (no free account for clerk)"]);
+    expect(r.out).toEqual(["select x score 4.5 accounts buyer.1=buyer1@example.test,clerk.1=clerk1@example.test", "wait y score 4.5 (no free account for clerk)"]);
   }, 30_000);
 
   it("a claim step gets a second account when one is free", () => {
     const claim = { ...BUY, claim: true };
     const t = selectRepo([journey("c", [claim, SETTLE, ANON]), journey("d", [BUY], { lastCycle: 1 })], { limits: { max_parallel_journeys: 3 } });
     const r = selectJourneys(t.main, { cycle: 3 });
-    expect(r.picks).toEqual([{ id: "c", score: 3, accounts: { "buyer.1": "buyer1@example.test", "buyer.2": "buyer2@example.test", "anon.1": null } }]);
-    expect(r.waits).toEqual([{ id: "d", score: 2, why: "no free account for buyer" }]);
+    expect(r.picks).toEqual([{ id: "c", score: 4.5, accounts: { "buyer.1": "buyer1@example.test", "buyer.2": "buyer2@example.test", "anon.1": null } }]);
+    expect(r.waits).toEqual([{ id: "d", score: 3, why: "no free account for buyer" }]);
     // Ranked after a journey holding buyer1, the claim journey gets the one buyer left.
     t.map([journey("c", [claim], { lastCycle: 1 }), journey("d", [BUY])]);
-    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 3, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 2, accounts: { "buyer.1": "buyer2@example.test" } }]);
+    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 4.5, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 3, accounts: { "buyer.1": "buyer2@example.test" } }]);
   });
 
   it("a login-command role serves one journey a cycle", () => {
     const ADMIN = { ...APPROVE, role: "admin" };
     const t = selectRepo([journey("p", [ADMIN]), journey("q", [ADMIN])]);
-    expect(t.cli("--cycle", "1").out).toEqual(["select p score 1 accounts admin.1", "wait q score 1 (no free account for admin)"]);
+    expect(t.cli("--cycle", "1").out).toEqual(["select p score 1.5 accounts admin.1", "wait q score 1.5 (no free account for admin)"]);
   }, 30_000);
 
   it("explicit ids print what they displaced", () => {
     const t = selectRepo([journey("a", [ANON]), journey("b", [ANON], { lastCycle: 1 }), journey("c", [ANON], { lastCycle: 2 })]);
     const r = t.cli("--cycle", "4", "--ids", "c,a");
     expect(r.code, r.err).toBe(0);
-    expect(r.out).toEqual(["select c score 2 accounts anon.1", "select a score 4 accounts anon.1", "displaced b score 3"]);
+    expect(r.out).toEqual(["select c score 3 accounts anon.1", "select a score 6 accounts anon.1", "displaced b score 4.5"]);
     expect(t.cli("--cycle", "4", "--ids", "zz").err).toBe("refused: select: no journey zz in .argus/journeys.json\n");
-    expect(t.cli("--cycle", "4", "--flagged", "b").out).toEqual(["select b score 6 accounts anon.1", "select a score 4 accounts anon.1", "wait c score 2 (limit 2 reached)"]);
+    expect(t.cli("--cycle", "4", "--flagged", "b").out).toEqual(["select b score 9 accounts anon.1", "select a score 6 accounts anon.1", "wait c score 3 (limit 2 reached)"]);
     for (const bad of [[], ["--cycle", "0"], ["--cycle", "x"], ["--cycle", "1", "--ids"]]) expect(t.cli(...bad).code, bad.join(" ")).toBe(1);
   }, 30_000);
 
@@ -2572,7 +2620,7 @@ describe("argus-live select", () => {
     const t = selectRepo([journey("x", [{ ...BUY, role: "auditor" }])]);
     const r = t.cli("--cycle", "1");
     expect(r.code).toBe(1);
-    expect(r.out).toEqual(["wait x score 1 (no free account for auditor)"]);
+    expect(r.out).toEqual(["wait x score 1.5 (no free account for auditor)"]);
     expect(r.err).toBe("refused: no journey is selectable\n");
   }, 30_000);
 
@@ -2756,6 +2804,18 @@ describe("argus-live check", () => {
     const r = check(main);
     expect(r).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\n", err: "" });
     expect(existsSync(join(main, ".argus/live"))).toBe(false);
+  }, 30_000);
+
+  it("check verifies .argus/taste.json when there is one: a broken file is refused before up, a good one named in a line", () => {
+    const main = commitContract(checkRepo());
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ frame: "primer", gate: ["copy.broken"], off: ["ai"] }));
+    expect(check(main)).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\ntaste: ok — frame primer, 1 rules gated, 3 rules off\n", err: "" });
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ off: ["*"] }));
+    expect(check(main).out).toContain("taste: ok — the taste pass is off for this repo");
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ cap: 0, gate: ["scale.spacing"] }));
+    expect(check(main)).toEqual({ code: 1, out: "", err: "refused: .argus/taste.json: gate: scale.spacing is the lane's alone (it compares the cycle's screens): the suite cannot measure it, so it cannot gate; cap must be an integer from 1 to 20\n" });
+    writeFileSync(join(main, ".argus/taste.json"), "{");
+    expect(check(main).err).toMatch(/^refused: \.argus\/taste\.json is not valid JSON/);
   }, 30_000);
 
   it("check passes live.md's own example as init would verify it", () => {

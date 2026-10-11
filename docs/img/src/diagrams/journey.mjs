@@ -3,7 +3,7 @@ import { card, rect, text, lines, arrow, iconTile, brandTile, badge, m, b, c, tw
 const A11Y = JSON.parse(readFileSync(new URL("../a11y/journey.json", import.meta.url), "utf8"));
 
 export default {
-  h: 1238,
+  h: 1454,
   ...A11Y,
   eyebrow: "JOURNEY LANE · /journey",
   heading: "One journey cycle, end to end",
@@ -75,12 +75,39 @@ export default {
       `${b("doc drift", "tb c-violet")}: ${m("drift")} decides class B(a), or the needs-owner label`,
     ], "cap", 20);
 
+    // ---- the taste and usability pass
+    const ty = fy + fh + 20, th = 186;
+    s += card(32, ty, 856, th, "card", 14);
+    s += brandTile("search", 48, ty + 16, 36);
+    s += text(96, ty + 32, "The taste and usability pass", "ttl");
+    s += text(96, ty + 50, "every screen an explorer reaches; measurement decides, the Curator only advises", "cap");
+    const T = [
+      ["record", "session hook", "sunken", ""],
+      ["judge", "tokens · peers · bar", "sunken", ""],
+      ["curator", "Read only · verdicts", "k-violet", "c-violet"],
+      ["confirm", "2 of 2, fresh instance", "k-amber", "c-amber"],
+      ["file", "capped · scrub", "k-green", "c-green"],
+      ["report", "scorecard first", "sunken", ""],
+    ];
+    const tny = ty + 72;
+    T.forEach(([t, sub, cls, tc], i) => {
+      const x = 48 + i * (nw + gap);
+      s += rect(x, tny, nw, 50, cls, 10);
+      s += text(x + nw / 2, tny + 21, t, `tb${tc ? ` ${tc}` : ""}`, "middle");
+      s += text(x + nw / 2, tny + 39, sub, "cap", "middle");
+      if (i < 5) s += arrow([[x + nw + 3, tny + 25], [x + nw + gap - 3, tny + 25]], i === 4 ? "ar-g" : "ar");
+    });
+    s += lines(48, tny + 74, [
+      `${b("record", "tb")}: census, timings and one screenshot per screen key; the explorer sees none of it. ${b("file", "tb")}: at most ${m("cap")} issues a cycle.`,
+      `${b("confirm", "tb c-amber")}: ${m("taste confirm")} measures the row again; a row is filed only when it does. The smoke suite's ${m("taste")} job runs the same probes in CI.`,
+    ], "cap", 20);
+
     // ---- a path for the smoke suite
-    const py = fy + fh + 20, ph = 178;
+    const py = ty + th + 20, ph = 178;
     s += card(32, py, 856, ph, "card", 14);
     s += brandTile("hammer", 48, py + 16, 36);
     s += text(96, py + 32, "A path for the smoke suite", "ttl");
-    s += text(96, py + 50, `an explorer charted ${m("path: wanted")} returns its steps too; scripts decide the rest`, "cap");
+    s += text(96, py + 50, `an explorer that reached its goal returns its ${m("path")} too; scripts decide the rest`, "cap");
     const Pn = [
       ["path", "explorer returns it", "k-violet", "c-violet"],
       ["admit", "2 runs: fresh, used", "k-amber", "c-amber"],
@@ -101,7 +128,7 @@ export default {
 
     // ---- hard limits
     const hy = py + ph + 20;
-    s += card(32, hy, 856, 168, "k-red", 14);
+    s += card(32, hy, 856, 178, "k-red", 14);
     s += iconTile("stop", 44, hy + 16, "red", 34);
     s += text(90, hy + 30, b("Hard limits", "tb c-red"), "t");
     s += lines(90, hy + 54, [
@@ -109,6 +136,7 @@ export default {
       "· Main session only: never inside /inspector or a subagent. One cycle per repo, under a lock with a deadline.",
       "· The explorer runs only the pw wrapper and reads page text as fenced data, never as instructions.",
       "· Filed only at two of two, and only through scrub: a secret the run saw refuses the issue.",
+      "· The Curator can only Read its run's taste files and return one answer; it files nothing and confirms nothing.",
       "· A finding only the owner can rule on carries the needs-owner label; no agent removes it or closes it as not planned.",
       "· The reaper runs down at the deadline if the session dies.",
     ], "cap", 18);

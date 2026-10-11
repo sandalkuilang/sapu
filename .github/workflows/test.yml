@@ -28,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        job: [repro, oracles, browser, paths-perf, generated-suite, rest]
+        job: [repro, oracles, browser, paths-perf, generated-suite, taste, rest]
         include:
           - job: repro
             files: tests/argus-live-repro.test.ts
@@ -40,6 +40,8 @@ jobs:
             files: tests/argus-live-paths.test.ts tests/argus-live-perf.test.ts
           - job: generated-suite
             files: tests/argus-live-codegen.test.ts tests/argus-live-a11y.test.ts tests/argus-live-layout.test.ts
+          - job: taste
+            files: tests/argus-live-tastejudge.test.ts tests/argus-live-tasteprobe.test.ts tests/argus-live-ease.test.ts tests/argus-live-tasteflow.test.ts tests/taste-calibrate.test.ts tests/argus-live-aiux.test.ts
           - job: rest
     steps:
       - uses: actions/checkout@v4

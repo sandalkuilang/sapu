@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Empty</title></head>
+<body>
+<main>
+<h1>Workspace</h1>
+<section aria-label="Orders">
+  <h2>Orders</h2>
+  <!-- empty, with a message and no way on: the finding -->
+  <table aria-label="Orders"><thead><tr><th>Order</th><th>Total</th></tr></thead><tbody></tbody></table>
+  <p>No orders yet.</p>
+</section>
+<section aria-label="Invoices">
+  <h2>Invoices</h2>
+  <!-- the twin: the same, with a control that leads on -->
+  <table aria-label="Invoices"><thead><tr><th>Invoice</th><th>Total</th></tr></thead><tbody></tbody></table>
+  <p>No invoices yet. <a href="/invoices/new">Create an invoice</a></p>
+</section>
+<section aria-label="Notes">
+  <h2>Notes</h2>
+  <!-- the message inside the table's only row, with its control there too: holds -->
+  <table aria-label="Notes"><thead><tr><th>Note</th><th>Author</th></tr></thead>
+    <tbody><tr><td colspan="2">No notes yet. <button>Add a note</button></td></tr></tbody></table>
+</section>
+<section aria-label="Tags">
+  <h2>Tags</h2>
+  <!-- the message inside the table's only row, with no control: the finding -->
+  <table aria-label="Tags"><thead><tr><th>Tag</th><th>Uses</th></tr></thead>
+    <tbody><tr><td colspan="2">No tags yet.</td></tr></tbody></table>
+</section>
+<section aria-label="Files">
+  <!-- no message at all: phase 6's empty check, not this rule -->
+  <ul aria-label="Files"></ul>
+</section>
+<section aria-label="People">
+  <h2>People</h2>
+  <!-- a list with rows: not empty -->
+  <ul><li>Ana</li><li>Budi</li></ul>
+  <p>Two people.</p>
+</section>
+</main>
+</body></html>

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Fluid type</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+h1 { font-weight: 700; font-size: clamp(20px, 3vw, 40px); line-height: 1.2; }
+.lead { font-size: 18px; }
+</style></head>
+<body>
+<main>
+<!-- fluid: a clamp() size is measured at each width, never off the type scale -->
+<h1>Pricing</h1>
+<p>Plans for every team.</p>
+<!-- the violation: a fixed 18 px is off a 12, 14, 16, 20, 24, 32 scale -->
+<p class="lead">Start free.</p>
+</main>
+</body></html>

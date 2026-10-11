@@ -8,7 +8,7 @@
 //   argus-live.mjs up --map      map mode (decision 20): the lock and a worktree at HEAD, nothing started (no
 //                                setup, store, app, proxy, HOME or logins); its summary {runId, mode, deadline,
 //                                worktree} last. up --fresh and renew refuse it
-//   argus-live.mjs check         verify .argus/live.json as up would before it touches anything (configProblems:
+//   argus-live.mjs check         verify .argus/live.json as up would before it touches anything, and .argus/taste.json when there is one (configProblems:
 //                                the schema, every unset ${NAME} by name, base URLs resolving to loopback only, a services
 //                                variable the instance env does not set, a protected store, a literal password or TOTP
 //                                secret, a tracked env_file), and that the contract's guard.envFiles
@@ -68,9 +68,10 @@
 //   argus-live.mjs repro <slot>.<generation>.<k> --saved
 //                                the values the candidate's reproducing run read (`save`), as scrub would let them
 //                                leave: saved <name>: <JSON string>, or *** (<class>) for one holding a secret
-//   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule]
-//                                a journey finding's class, labels and starting severity (spec §10's table):
-//                                class <A|B(a)|heuristic> labels <l>,… severity <…> because <words>
+//   argus-live.mjs classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <c>] [--cost]
+//                                a journey finding's class, labels and starting severity (spec §10's table; the taste
+//                                oracle's --class implicit|derived|bar and --cost, spec §20.5):
+//                                class <A|B(a)|heuristic|taste> labels <l>,… severity <…> because <words>
 //   argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…]
 //                   [--create [--label <l>…] | --comment <n>]
 //                                the last check before an issue is filed (spec §10 "Scrub"), against the run named
@@ -136,6 +137,17 @@
 //                                a seed map slot's source text (-seed.mjs seed)
 //   argus-live.mjs report [--run <runId>]
 //                                the cycle's scrubbed report (-report.mjs report)
+// The taste pass's verbs (spec §20.4, §20.5), all the orchestrator's; no trace gate (they file as argus files):
+//   argus-live.mjs taste judge [--run <runId>]
+//                                every recorded screen judged against its witnesses (-tastejudge.mjs tasteJudge)
+//   argus-live.mjs taste confirm <row>
+//                                a judge row replayed on a fresh instance and measured again (-tastejudge.mjs tasteConfirm)
+//   argus-live.mjs taste file [--run <runId>]
+//                                the confirmed rows filed, capped (-tastefile.mjs tasteFile)
+//   argus-live.mjs taste curator <file>
+//                                the Curator's return checked and stored with each verdict's row identity (-tastefile.mjs tasteCurator)
+//   argus-live.mjs taste accept <rule> <key>
+//                                the owner's ruling that a row is intended, staged only on their word (-tastefile.mjs tasteAccept)
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
@@ -166,6 +178,9 @@ import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { smokeRun } from "./argus-live-smoke.mjs";
 import { smokeAdmit, smokeCheck, smokePlan, smokeRetire } from "./argus-live-suite.mjs";
+import { tasteAccept, tasteCurator, tasteFile } from "./argus-live-tastefile.mjs";
+import { loadTaste, PASS_OFF, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
+import { tasteConfirm, tasteJudge } from "./argus-live-tastejudge.mjs";
 import { findMain, loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -181,9 +196,9 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>]";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste curator <file> | taste accept <rule> <key>";
 /** classify's flags → classify's facts. */
-const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule" };
+const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule", "--cost": "cost" };
 /** Journey ids, comma-separated. */
 const IDS = /^[a-z0-9]+(-[a-z0-9]+)*(,[a-z0-9]+(-[a-z0-9]+)*)*$/;
 const refuseUsage = () => {
@@ -221,10 +236,20 @@ function smokeGate() {
 }
 
 /**
- * `smoke <verb> …`, `seed …` or `report …` → its lane's `{code, lines[, masked]}`. The line is read whole
- * first: a malformed one is refused with the usage before the trace gate or any lane runs.
+ * `smoke <verb> …`, `seed …`, `report …` or `taste <verb> …` → its lane's `{code, lines[, masked]}`. The line is
+ * read whole first: a malformed one is refused with the usage before the trace gate or any lane runs. Run ids, rows,
+ * rules and keys reach the lane as typed, for it to validate.
  */
 async function laneCommand(cmd, args) {
+  if (cmd === "taste") {
+    const [verb, ...rest] = args;
+    if (verb === "judge") return tasteJudge(main, { run: options(rest, { "--run": "text" })["--run"] ?? null });
+    if (verb === "confirm" && rest.length === 1) return tasteConfirm(main, rest[0]);
+    if (verb === "file") return tasteFile(main, { run: options(rest, { "--run": "text" })["--run"] ?? null, cap: null });
+    if (verb === "accept" && rest.length === 2) return tasteAccept(main, rest[0], rest[1]);
+    if (verb === "curator" && rest.length === 1) return tasteCurator(main, rest[0]);
+    refuseUsage();
+  }
   if (cmd === "seed") {
     const f = options(args, { "--issue": "issue", "--doc": "text" });
     if ((f["--issue"] === undefined) === (f["--doc"] === undefined)) refuseUsage();
@@ -316,6 +341,7 @@ try {
     const facts = {};
     for (let i = 0; i < args.length; i++) {
       if (args[i] === "--oracle" && i + 1 < args.length && facts.oracle === undefined) facts.oracle = args[++i];
+      else if (args[i] === "--class" && i + 1 < args.length && facts.tasteClass === undefined) facts.tasteClass = args[++i];
       else if (Object.hasOwn(CLASSIFY_FLAGS, args[i]) && facts[CLASSIFY_FLAGS[args[i]]] === undefined) facts[CLASSIFY_FLAGS[args[i]]] = true;
       else throw new Error(`refused: ${usage}`);
     }
@@ -372,6 +398,7 @@ try {
     for (const p of r.picks) print(`select ${p.id} score ${p.score} accounts ${list(p.accounts)}`);
     for (const w of r.waits) print(`wait ${w.id} score ${w.score} (${w.why})`);
     for (const d of r.displaced) print(`displaced ${d.id} score ${d.score}`);
+    for (const w of r.warnings) print(w);
     if (!r.picks.length) throw new Error("refused: no journey is selectable");
   } else if (cmd === "visit" && args.length >= 1) {
     const opts = { filed: [] };
@@ -406,12 +433,16 @@ try {
     // up's own configuration checks, against the draft contract in the working tree (init runs check before committing it).
     const c = loadContract(main, { workingTree: true });
     const r = await configProblems(main, { contract: c.contract ?? (c.missing ? null : undefined) });
-    const problems = [...r.problems, ...(!c.contract && !c.missing ? [`refused: ${c.error}`] : [])];
+    // .argus/taste.json too, when there is one (none: every default): init verifies what it wrote, and a broken file is refused before up.
+    const taste = loadTaste(main);
+    const tasteFault = taste.errors.join("; ");
+    const problems = [...r.problems, ...(!c.contract && !c.missing ? [`refused: ${c.error}`] : []), ...(taste.taste ? [] : [`refused: ${tasteFault.startsWith(TASTE_FILE) ? tasteFault : `${TASTE_FILE}: ${tasteFault}`}`])];
     for (const p of problems) process.stderr.write(`${redact(p, secrets)}\n`);
     if (problems.length) process.exit(1);
     const roles = Object.values(r.config.roles);
     const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
     print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
+    if (!taste.missing) print(tasteOff(taste.taste) ? `taste: ok — ${PASS_OFF}` : `taste: ok — frame ${taste.taste.frame ?? "none"}, ${taste.taste.gate.length} rules gated, ${taste.taste.off.length} rules off`);
     // up reads the committed contract: until the draft is committed, up still refuses the env file.
     if (typeof r.config.env_file === "string" && !guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
 
@@ -435,7 +466,7 @@ try {
       for (const line of report) print(line);
       print(`cycle ${lock.runId} is down`);
     }
-  } else if (cmd === "smoke" || cmd === "seed" || cmd === "report") {
+  } else if (cmd === "smoke" || cmd === "seed" || cmd === "report" || cmd === "taste") {
     const r = await laneCommand(cmd, args);
     for (const line of r.lines) (r.masked === true ? printMasked : print)(line);
     process.exit(r.code);

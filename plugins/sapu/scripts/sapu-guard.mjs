@@ -100,7 +100,12 @@
 // worktree makes that folder unwritable for the session's subagents too. The journey lane's script
 // (argus-live.mjs) is known as an interpreter's first operand or a file its option loads (-r, --import),
 // by its name, the real file behind a path, or a shell-built name a verb of it or a built word follows:
-// a copy under another name, or an interpreter's own code importing it, is not. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
+// a copy under another name, or an interpreter's own code importing it, is not. The maintainer's taste
+// calibration script (taste-calibrate, outside the plugin; it fetches public pages) is refused to every
+// subagent as a program, an interpreter's operand or preload (by name, a glob, the real file behind a
+// path), code naming it (-e), or a shell-built name once --network follows or the command names it;
+// a copy under another name is not known. The Curator (`sapu:curator`) has only Read, confined to its
+// run's `taste/`, and StructuredOutput. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
 // clone`, `gh repo clone`, `gh extension install`, `gh release download`, `degit`/`tiged`, `gh api`
 // contents/tarball at a pull ref, `git am`, `git apply` (except --check/--stat), `patch` (bare or via
@@ -185,10 +190,18 @@ export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
+/** The journey lane's Curator (spec §20.4): Read (its run's `taste/` only) and StructuredOutput, nothing else. */
+export const CURATOR_AGENT = /^(sapu:)?curator$/;
 /** What any subagent may run of the journey lane's script (argus-live.mjs): its reads, which write nothing. */
 const LIVE_READS = [["status"], ["status", "--json"], ["check"], ["smoke", "check"]];
 /** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */
-const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy", "smoke", "seed", "report"]);
+const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy", "smoke", "seed", "report", "taste"]);
+/** The maintainer's taste calibration script (spec §20.3), by its file name: never a subagent's. */
+const CALIBRATE = /^taste-calibrate(\.[cm]?[jt]s)?$/i;
+/** A command's text naming the calibration script, its quotes and escapes dropped. */
+const CALIBRATE_TEXT = /taste-calibrate/i;
+/** A run id as the lane spells it (argus-live-lock.mjs RUN_ID). */
+const LIVE_RUN_ID = /^\d{14}-[0-9a-f]{8}$/;
 // The first character excludes `#` (comment) and `=` (zsh `=cmd` expansion); no `#` at all
 // (extendedglob operator) and no `==` (magicequalsubst). A leading `-` is harmless to the shell;
 // option filtering is the wrapper's job.
@@ -292,6 +305,53 @@ export function checkExplorerRead({ input, worktree, cwd }) {
     return BLOCK.explorerRead;
   }
   return null;
+}
+
+/**
+ * The real path of the Curator's run's `taste/` in checkout `main`: the lock's run, else the newest run directory
+ * (the Curator is dispatched before or after `down`); null when there is none.
+ */
+function curatorTaste(main) {
+  const live = path.join(main, ".argus", "live");
+  let run = null;
+  try {
+    const r = JSON.parse(fs.readFileSync(path.join(live, "lock.json"), "utf8")).runId;
+    if (typeof r === "string" && LIVE_RUN_ID.test(r)) run = r;
+  } catch {
+    run = null;
+  }
+  if (!run) {
+    try {
+      run = fs.readdirSync(live).filter((n) => LIVE_RUN_ID.test(n)).sort().pop() ?? null;
+    } catch {
+      run = null;
+    }
+  }
+  if (!run) return null;
+  try {
+    return fs.realpathSync.native(path.join(live, run, "taste"));
+  } catch {
+    return null;
+  }
+}
+
+/** The Curator's Read: only a file whose real path lies under its run's `taste/` (`taste`, curatorTaste's). */
+export function checkCuratorRead({ input, taste, cwd }) {
+  const raw = input.file_path;
+  if (!taste || typeof raw !== "string" || !raw) return BLOCK.curatorRead;
+  let real;
+  try {
+    real = fs.realpathSync.native(path.resolve(cwd, raw));
+  } catch {
+    return BLOCK.curatorRead;
+  }
+  const rel = path.relative(taste, real);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return BLOCK.curatorRead;
+  try {
+    return fs.statSync(real).isFile() ? null : BLOCK.curatorRead;
+  } catch {
+    return BLOCK.curatorRead;
+  }
 }
 
 /**
@@ -1332,6 +1392,57 @@ function liveCliRun(all, dir, explorer) {
   return LIVE_READS.some((r) => r.length === words.length && r.every((v, i) => v === words[i])) ? null : BLOCK.liveCli;
 }
 
+/** A glob word (`taste-cal*.mjs`) whose last segment may match `name`. */
+function globHits(word, name) {
+  const re = word.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, ".");
+  try {
+    return new RegExp(`^${re}$`, "i").test(name);
+  } catch {
+    return true;
+  }
+}
+
+/** A word's brace expansions (`a{b,c}d` → abd, acd; nested and several braces, at most 64 words), the word itself without one. */
+function braces(word) {
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!m) return [word];
+  const out = [];
+  for (const alt of m[1].split(",")) for (const x of braces(word.slice(0, m.index) + alt + word.slice(m.index + m[0].length))) if (out.length < 64) out.push(x);
+  return out;
+}
+
+/** A word naming the calibration script: by its name in any case, a glob or a brace expansion it matches, the real file behind a path, or a built word naming it. */
+function isCalibrate(w, dir) {
+  const b = bare(w.v);
+  if (braces(b).length > 1) return braces(b).some((x) => isCalibrate({ v: path.join(path.dirname(w.v), x), dyn: w.dyn }, dir));
+  if (CALIBRATE.test(b) || (w.dyn && CALIBRATE_TEXT.test(w.v))) return true;
+  if (/[*?[]/.test(b) && ["taste-calibrate.mjs", "taste-calibrate.js", "taste-calibrate.ts"].some((n) => globHits(b, n))) return true;
+  if (w.dyn || dir === UNKNOWN || !w.v) return false;
+  return CALIBRATE.test(path.basename(realpathOrSelf(path.resolve(dir, w.v))));
+}
+
+/**
+ * The calibration script (spec §20.3) run as a program, an interpreter's first operand or preload, or named by
+ * an interpreter's code (`-e`); a script name the shell builds counts when `--network`, `--corpus` or `--out`
+ * follows, or when the command's text (`named`) names the script: the refusal.
+ */
+function calibrationRun(all, dir, named) {
+  const argv = withoutRedirects(all);
+  if (!argv.length) return null;
+  if (isCalibrate(argv[0], dir)) return BLOCK.calibrate;
+  const prog = bare(argv[0].v);
+  if (!INTERPRETERS.has(prog)) return null;
+  const { op, values, args } = interpArgv(argv, prog);
+  if (values.some((w) => CALIBRATE_TEXT.test(w.v) || isCalibrate(w, dir))) return BLOCK.calibrate;
+  // An interpreter reading its program from stdin (`-`, or no operand and no code of its own: a pipe or a `<` redirect)
+  // in a command whose text names the script: its text fed in.
+  const evals = argv.some((w) => /^(-e|--eval|-p|--print|-c|--check)(=|$)/.test(w.v));
+  if (named && !evals && (op < 0 || argv[op].v === "-")) return BLOCK.calibrate;
+  if (op < 0) return null;
+  if (isCalibrate(argv[op], dir)) return BLOCK.calibrate;
+  return builtName(argv[op]) && (named || args.some((w) => ["--network", "--corpus", "--out"].includes(w.v))) ? BLOCK.calibrate : null;
+}
+
 /** GraphQL's inline enum; a variable counts only as exactly NOT_PLANNED. */
 const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
 /** "not planned" in any spelling gh and GitHub take: not_planned, NOT_PLANNED, "Not Planned", not-planned. */
@@ -1345,6 +1456,10 @@ const BLOCK = {
   explorerTool: "the journey explorer has only Bash (its wrapper), Read and StructuredOutput; it searches code through the wrapper's `code` command.",
   liveCli:
     "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`, `smoke check`), every word literal, and the journey explorer only `pw` through its wrapper.",
+  calibrate:
+    "the taste calibration script (taste-calibrate) is the maintainer's: it fetches public pages and writes the bar, so no subagent runs it in any form; run it from the main session, and its output reaches the plugin only through a reviewed pull request.",
+  curatorRead: "the Curator reads only its run's taste/ files (<MAIN>/.argus/live/<run>/taste/: the judge rows and the screenshots); everything else reaches it in its brief.",
+  curatorTool: "the Curator has only Read and StructuredOutput: it judges from the run's taste/ files and files nothing.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",
   deep: `command nesting too deep to check (more than ${MAX_DEPTH} levels of bash -c/eval/$( )/env -S): split it into simpler commands.`,
   stash: "bare `git stash`/pop/clear, an untagged push, or drop without a ref: the stash is shared by every worktree. Commit WIP instead, or `git stash push -m <tag>` and `apply <sha>`.",
@@ -2061,6 +2176,8 @@ function checkCommand(t, state, depth) {
   if (prog === "sapu-merge.sh") return a.includes("--dry-run") ? null : BLOCK.orchestrator;
   const live = liveCliRun(argv, here, state.explorer);
   if (live) return live;
+  const calibrate = calibrationRun(argv, here, state.namesCalibration);
+  if (calibrate) return calibrate;
 
   if (prog === "git") {
     let i = 1;
@@ -2570,7 +2687,7 @@ function checkText(text, dir, base, depth) {
   // fresh shell's `cd -` stays where it is (bash ignores an inherited OLDPWD, zsh starts it at $PWD).
   // POSIXLY_CORRECT anywhere in the text (an env prefix, an export) or inherited from the guard's own environment
   const posix = !!base.posix || "POSIXLY_CORRECT" in process.env || /\bPOSIXLY_CORRECT\b/.test(text);
-  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix, explorer: !!base.explorer };
+  const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix, explorer: !!base.explorer, namesCalibration: !!base.namesCalibration };
   const saved = [];
   const { cmds, nested } = tokenize(stripHeredocs(text));
   let fromPr = false; // the previous command pipes a PR's diff into this one
@@ -2637,7 +2754,8 @@ function checkText(text, dir, base, depth) {
  */
 export function check({ command, cwd, main = null, rules = ENGINE_ONLY, worker = true, resolve = null, explorer = false }) {
   if (typeof command !== "string" || !command.trim()) return null;
-  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve, explorer }, 0);
+  const namesCalibration = CALIBRATE_TEXT.test(command.replace(/['"\\]/g, ""));
+  return checkText(command, cwd, { main, rules: worker ? rules : { ...rules, worker: false }, resolve, explorer, namesCalibration }, 0);
 }
 
 const FILE_TOOLS = new Set(["Read", "Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -3194,13 +3312,21 @@ export function decide(input) {
           : BLOCK.explorerTool;
     if (why) return why;
   }
+  // The Curator: Read inside its run's taste/ and its StructuredOutput; no Bash, search, write or dispatch.
+  if (CURATOR_AGENT.test(input.agent_type || "")) {
+    if (tool === "StructuredOutput") return null;
+    if (tool !== "Read") return BLOCK.curatorTool;
+    const m = findMain(input.cwd || process.cwd());
+    const why = checkCuratorRead({ input: ti, taste: m ? curatorTaste(m) : null, cwd: input.cwd || process.cwd() });
+    if (why) return why;
+  }
   const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
   if (home || DISPATCH_TOOLS.has(tool)) return home;
   // A subagent's hook input carries agent_id ("present only when the hook fires inside a subagent
   // call", hooks reference); a main session started with --agent carries agent_type alone and is the
   // orchestrator. A ladder worker or the explorer is never a main session: their type alone keeps the
   // floor, so a host that dropped agent_id would not unguard them (and the worker canary still fires).
-  if (!(input.agent_id || SAPU_AGENT.test(input.agent_type || "") || EXPLORER_AGENT.test(input.agent_type || ""))) return null;
+  if (!(input.agent_id || [SAPU_AGENT, EXPLORER_AGENT, CURATOR_AGENT].some((re) => re.test(input.agent_type || "")))) return null;
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Hostile</title>
+<script>
+// The page's own script, before anything else of the page: it tries to forge records (a fast feedback, a slow wait
+// that never happened, a request) and to suppress the real ones (replace, delete, drain, quiet), with the public mark
+// as its best guess at the key. Mode `forge` stops there; mode `real` also has a real slow, silent action below.
+(() => {
+  const d = document;
+  const now = performance.now();
+  const forged = [{ kind: "input", t: now, type: "pointerdown" }, { kind: "input", t: now + 1, type: "click" }, { kind: "change", t: now + 3000, cause: "added", attr: null }];
+  for (const key of [undefined, "@@argus-taste-key@@", "0".repeat(32)]) for (const r of forged) try { d.__argusTastePush(r, key); } catch (e) {}
+  try { d.__argusTastePush = () => {}; } catch (e) {}
+  try { delete d.__argusTastePush; } catch (e) {}
+  try { d.__argusTasteEvents = []; } catch (e) {}
+  for (const key of [undefined, "@@argus-taste-key@@"]) try { d.__argusTasteDrain(key); } catch (e) {}
+  try { d.__argusEase.requests.push({ t: now, end: now + 3000, status: 200, method: "GET", route: "/api/wait", keys: [], same: true }); } catch (e) {}
+  try { d.__argusEase = { requests: [], actions: [], edits: [], shifts: 0 }; } catch (e) {}
+  try { d.__argusTasteQuiet = true; d.__argusTasteQuietSet(true, "@@argus-taste-key@@"); } catch (e) {}
+  try { d.__argusTasteMotion.length = 0; } catch (e) {}
+})();
+</script></head>
+<body>
+<main>
+<h1>Hostile</h1>
+<button id="silent">Silent</button>
+<div id="out" aria-live="polite"></div>
+</main>
+<script>
+document.getElementById("silent").addEventListener("click", async () => { await fetch("/api/wait?ms=1500").then((r) => r.json()); document.getElementById("out").textContent = "silent done"; });
+</script>
+</body></html>

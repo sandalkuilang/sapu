@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>On a 4 px scale</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+.card { padding: 16px; border-radius: 8px; background: rgb(245, 245, 245); }
+.card p { margin-top: 8px; }
+.tag { padding: 4px 12px; }
+h1 { font: 700 24px/32px sans-serif; }
+h2 { font: 600 16px/24px sans-serif; }
+</style></head>
+<body>
+<!-- every spacing value is on a 4 px scale: 24, 16, 8, 4, 12 (five distinct) -->
+<main style="padding: 24px; display: grid; gap: 16px">
+<h1>Orders</h1>
+<div class="card"><h2>Order</h2><p>Two items, ready to ship.</p><span class="tag">Ready</span></div>
+<div class="card"><h2>Invoice</h2><p>Due next week.</p></div>
+</main>
+</body></html>

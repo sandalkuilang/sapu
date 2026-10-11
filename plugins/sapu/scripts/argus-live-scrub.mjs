@@ -381,7 +381,9 @@ const ghAttaches = (version) => {
  * (`visibility` not PRIVATE or INTERNAL), `traces none` (the policy), `a trace, never attached` (any file
  * under a `traces/` directory), `not a screenshot of this run` (not a regular `.png` right in a slot's
  * `out/` of the run, by its real path), `no verdict recorded`, `the screenshot changed after its verdict`
- * (its bytes no longer hash to the verdict's sha256), then the verdict's own reason.
+ * (its bytes no longer hash to the verdict's sha256), then the verdict's own reason. A taste shot of the run
+ * (`taste/shots/<32 hex>.png`, argus-live-tastecfg.mjs shotName, its verdict written by the session's recorder) is
+ * a screenshot of the run too, under the same conditions.
  */
 export function attachVerdict(main, runId, file, { ghVersion, visibility, traces }) {
   const no = (reason) => ({ attach: false, reason });
@@ -399,7 +401,7 @@ export function attachVerdict(main, runId, file, { ghVersion, visibility, traces
   }
   if ([given, real].some((p) => p && p.split(path.sep).includes("traces"))) return no("a trace, never attached");
   const rel = real && root && within(root, real) ? path.relative(root, real).split(path.sep).join("/") : null;
-  if (!rel || !/^(?:[1-9][0-9]*|r|up)\/out\/[^/]+\.png$/.test(rel) || !fs.lstatSync(given).isFile()) return no("not a screenshot of this run");
+  if (!rel || !/^(?:(?:[1-9][0-9]*|r|up)\/out\/[^/]+|taste\/shots\/[0-9a-f]{32})\.png$/.test(rel) || !fs.lstatSync(given).isFile()) return no("not a screenshot of this run");
   let v = null;
   try {
     v = JSON.parse(fs.readFileSync(verdictFile(real), "utf8"));
