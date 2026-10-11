@@ -400,6 +400,20 @@ describe("the suite's taste core on the probe's pages (phase 7 integration)", ()
     await off.lib.tasteStep([(await open("dark.html")).context()], 0, 4, "j", true, []);
     expect(off.annotations.map((a) => a.description).join("\n")).not.toContain("dark-border");
   }, 120_000);
+
+  it("off takes a family name or *: a family's rules go unmeasured, and * turns the whole taste pass off in the suite", async () => {
+    const family = suiteEnv({ off: ["colour"] });
+    await family.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j", true, []);
+    const said = family.annotations.map((a) => a.description).join("\n");
+    expect(said).not.toMatch(/colour\./);
+    expect(said).toContain("contrast.headroom");
+    const none = suiteEnv({ off: ["*"] });
+    expect(await none.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j", true, [])).toEqual([]);
+    expect(none.annotations).toEqual([]);
+    // A word that is no rule id, family or * still fails the step.
+    const bad = suiteEnv({ off: ["Colour!"] });
+    await expect(bad.lib.tasteStep([(await open("dark.html")).context()], 0, 1, "j", true, [])).rejects.toThrow("argus-smoke: .argus/taste.json off must list rule ids of taste-bar 1, family names or *");
+  }, 120_000);
 });
 
 // ---------------------------------------------------------------------------------------------------

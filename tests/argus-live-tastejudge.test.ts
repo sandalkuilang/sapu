@@ -35,9 +35,11 @@ import { mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts
 // @ts-expect-error — plain ESM script without types
 import { makeHome, makeWorktree } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
-import { MEDIA_READ, readTasteState, shotName, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { MEDIA_READ, PASS_OFF, readTasteState, shotName, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { confirmSink, laneTokens, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
+// @ts-expect-error — plain ESM script without types
+import { tasteFile } from "../plugins/sapu/scripts/argus-live-tastefile.mjs";
 
 type Obj = Record<string, any>;
 
@@ -1110,11 +1112,31 @@ describe("argus-live SELECT weighs taste and usability debt (J3)", () => {
     // The owner accepts one of the debt rows: it weighs nothing (debt 2: ×1.5).
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ accept: [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }] }));
     expect(scores(main).debt).toBe(9);
+    // The whole pass off (off: *): no journey is lifted by taste debt.
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ off: ["*"] }));
+    expect(scores(main)).toEqual({ money: 12, debt: 6, clean: 6, never: 6 });
     // A taste.json the owner broke, or a state of another shape, stops SELECT rather than guess.
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ cap: 0 }));
     expect(() => selectJourneys(main, { cycle: 10 })).toThrow("refused: select: .argus/taste.json: cap must be an integer from 1 to 20");
     writeFileSync(join(main, ".argus/taste.json"), "{}");
     writeFileSync(join(main, ".argus/taste-state.json"), "{}");
     expect(() => selectJourneys(main, { cycle: 10 })).toThrow("failed: .argus/taste-state.json is not {version: 1, journeys}");
+  }, 30_000);
+
+  it("off: * turns the pass off in the lane: no recording, the judge and filing say so and write nothing, a confirmation is refused", async () => {
+    const t = judgeRepo();
+    t.taste({ off: ["*"] });
+    t.put(1, [t.screen("/a", [primary(3)])]);
+    const r = await t.judge();
+    expect(r).toEqual({ code: 0, lines: [`taste judge ${t.runId}: ${PASS_OFF}`], masked: false });
+    expect(existsSync(join(t.dir, "judge.json"))).toBe(false);
+    expect(recorderPayload({ main: t.main, runId: t.runId, slot: 1, slotRec: { journey: "j" }, prev: null, settleMs: 1000 })).toBeNull();
+    expect(await tasteFile(t.main, { run: t.runId, cap: null })).toEqual({ code: 0, lines: [`taste file: run ${t.runId}: ${PASS_OFF}`] });
+    // A family name turns only its rules off: the pass records again.
+    t.taste({ off: ["ai", "motion"] });
+    expect(recorderPayload({ main: t.main, runId: t.runId, slot: 1, slotRec: { journey: "j" }, prev: null, settleMs: 1000 })).not.toBeNull();
+    expect((await t.judge()).code).toBe(0);
+    t.taste({ off: ["*"] });
+    await expect(tasteConfirm(t.main, "t1")).rejects.toThrow(`refused: taste confirm: ${PASS_OFF}`);
   }, 30_000);
 });

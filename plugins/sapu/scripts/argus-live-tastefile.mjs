@@ -23,7 +23,7 @@ import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
 import { NO_MAJORITY } from "./argus-live-ease.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
-import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, PASS_OFF, tasteOff, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -246,6 +246,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
   if (!fs.existsSync(path.join(liveDir(main), runId))) refuse(`no run ${runId} here`);
   const { taste, errors } = loadTaste(main);
   if (!taste) refuse(`${TASTE_FILE}: ${errors.join("; ")}`);
+  if (tasteOff(taste)) return { code: 0, lines: [`taste file: run ${runId}: ${PASS_OFF}`] };
   const capN = cap ?? taste.cap;
   const bar = loadBar();
   const { judge, fault } = readJudge(main, runId);

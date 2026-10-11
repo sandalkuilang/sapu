@@ -322,7 +322,7 @@ The journey lane's first question is whether the UI is world-class: easy to use,
 
 **AI surfaces** are judged only on the routes the owner declares in `taste.json` `ai`: Stop while an answer streams, an error shown with a way on, regenerate once it ends. Provenance and uncertainty display have no rule: the Curator names them only in the `reason` of `ai.*` rows.
 
-**The owner's calibration** (`.argus/taste.json`, tracked): `frame`, `archetypes` (route globs), `accept` (rows ruled intended: never filed, never weighed), `gate` (rules the smoke suite enforces), `off`, `cap`, `optimistic`, `ai`, `copy.vague`. SELECT weighs each journey's open, unaccepted taste debt by `1 + min(1, debt / 4)`: at most as far as money lifts a journey.
+**The owner's calibration** (`.argus/taste.json`, tracked): `frame`, `archetypes` (route globs), `accept` (rows ruled intended: never filed, never weighed), `gate` (rules the smoke suite enforces), `off` (rule ids, family names, or `*`: the whole pass off), `cap`, `optimistic`, `ai`, `copy.vague`. SELECT weighs each journey's open, unaccepted taste debt by `1 + min(1, debt / 4)`: at most as far as money lifts a journey.
 
 Example `.argus/taste.json` (every key optional; unknown keys are refused):
 

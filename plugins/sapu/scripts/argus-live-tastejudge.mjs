@@ -17,7 +17,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -279,6 +279,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   const bar = loadBar();
   const { taste: cfg, errors } = loadTaste(main);
   if (!cfg) throw new Error(`refused: taste judge: ${TASTE_FILE}: ${errors[0]}`);
+  if (tasteOff(cfg, bar)) return { code: 0, lines: [`taste judge ${runId}: ${PASS_OFF}`], masked: false };
   const rules = new Map(bar.rules.map((r) => [r.id, r]));
   const off = new Set(cfg.off);
   const scale = { ...cfg, tokens: laneTokens(main) };
@@ -613,6 +614,7 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   const lock = readLock(main);
   if (!lock) throw new Error("refused: no journey cycle is running");
   const runId = lock.runId;
+  if (tasteOff(loadTaste(main).taste)) throw new Error(`refused: taste confirm: ${PASS_OFF}`);
   if (typeof ref !== "string" || !/^t[1-9][0-9]{0,4}$/.test(ref)) throw new Error(`refused: taste confirm: ${typeof ref === "string" && /^[\x21-\x7e]{1,20}$/.test(ref) ? ref : "that"} is not a judge row (t<k>)`);
   const judge = readJudge(main, runId);
   if (!judge) throw new Error(`refused: taste confirm: cycle ${runId} has no judge rows (taste judge first)`);

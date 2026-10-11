@@ -253,7 +253,8 @@ export function routeMatches(glob, route) {
 /**
  * `.argus/taste.json`'s content checked against `bar` (the plugin's) → `{value, errors}`: `value` with every default
  * filled in (null on any error). `frame` one of the bar's frames; `archetypes` route globs → one of ARCHETYPES; `accept`
- * `[{rule, key, why}]` (`key` the screen key the issue names); `gate` and `off` distinct rule ids of the bar, never both,
+ * `[{rule, key, why}]` (`key` the screen key the issue names); `gate` distinct rule ids of the bar, `off` distinct rule
+ * ids, family names or `*` (the value: the rule ids they name, sorted), no rule in both,
  * an information rule never gated, nor a rule the suite cannot measure (a cycle rule, or laneOnly's); `cap` 1-20; `optimistic` and `ai` route globs; `copy.vague` the owner's labels.
  */
 export function validateTaste(raw, bar = loadBar()) {
@@ -278,10 +279,19 @@ export function validateTaste(raw, bar = loadBar()) {
     if (need(Array.isArray(raw[k]) && raw[k].every((x) => typeof x === "string") && new Set(raw[k]).size === raw[k].length, `${k} must be an array of distinct rule ids`) !== true) return;
     for (const id of raw[k]) need(rules.has(id), `${k}: ${shown(id)} is not a rule of the bar`);
   };
-  for (const k of ["gate", "off"]) if (has(k)) ruleList(k);
+  if (has("gate")) ruleList("gate");
+  // off: rule ids, a family's name (its every rule) or `*` (the whole pass), each expanded to the rule ids it names.
+  let offIds = [];
+  if (has("off") && need(Array.isArray(raw.off) && raw.off.every((x) => typeof x === "string") && new Set(raw.off).size === raw.off.length, "off must be an array of distinct rule ids, family names or *") === true) {
+    for (const w of raw.off) {
+      const named = w === "*" ? bar.rules : rules.has(w) ? [rules.get(w)] : bar.rules.filter((r) => r.family === w);
+      if (need(named.length > 0, `off: ${shown(w)} is not a rule, a family or * of the bar`) === true) offIds.push(...named.map((r) => r.id));
+    }
+    offIds = [...new Set(offIds)].sort();
+  }
   if (Array.isArray(raw.gate)) {
     for (const id of raw.gate.filter((x) => rules.has(x))) {
-      if (Array.isArray(raw.off) && raw.off.includes(id)) errs.push(`gate and off both name ${id}`);
+      if (offIds.includes(id)) errs.push(`gate and off both name ${id}`);
       const rule = rules.get(id);
       const lane = FAMILIES[rule.family].scope === "cycle" ? "it compares the cycle's screens or paths" : laneOnly(rule);
       if (rule.info) errs.push(`gate: ${id} is information only: it cannot gate`);
@@ -306,7 +316,14 @@ export function validateTaste(raw, bar = loadBar()) {
   if (errs.length) return { value: null, errors: errs };
   const d = structuredClone(TASTE_DEFAULTS);
   const r = structuredClone(raw);
-  return { value: { ...d, ...r, copy: { ...d.copy, ...r.copy } }, errors: [] };
+  return { value: { ...d, ...r, copy: { ...d.copy, ...r.copy }, off: offIds }, errors: [] };
+}
+
+/** What a taste verb says when taste.json turns the pass off. */
+export const PASS_OFF = "the taste pass is off for this repo (.argus/taste.json's off covers every rule): nothing recorded, judged or filed";
+/** Whether taste.json's value `cfg` turns the whole pass off (`off: ["*"]`, or every rule of the bar named): nothing is recorded, judged or filed. */
+export function tasteOff(cfg, bar = loadBar()) {
+  return Boolean(cfg) && Array.isArray(cfg.off) && bar.rules.every((r) => cfg.off.includes(r.id));
 }
 
 /** `{taste, errors, missing}` from `<main>/.argus/taste.json`: every default when there is none (`missing`; the taste pass is on by default). Never throws. */

@@ -21,7 +21,7 @@ import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run
 import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 import { censusOf } from "./argus-live-taste.mjs";
-import { loadBar, loadTaste, MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault } from "./argus-live-tastecfg.mjs";
+import { loadBar, loadTaste, MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault, tasteOff } from "./argus-live-tastecfg.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
@@ -451,6 +451,8 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
   if (!Number.isInteger(slot) || slot < 1 || !isObj(slotRec) || typeof slotRec.journey !== "string" || slotRec.mode === "map") return null;
   try {
     if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) return null;
+    const taste = loadTaste(main).taste;
+    if (tasteOff(taste)) return null;
     const shots = path.join(tasteDir(main, runId), "shots");
     privateDir(shots);
     let routes = [];
@@ -464,7 +466,7 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
     const limitMs = Math.min(30_000, Math.max(5_000, 2 * settleMs));
     // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
     const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
-    const vague = (loadTaste(main).taste ?? { copy: { vague: [] } }).copy.vague;
+    const vague = (taste ?? { copy: { vague: [] } }).copy.vague;
     return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;

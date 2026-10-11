@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
-import { loadTaste, readTasteState, TASTE_FILE } from "./argus-live-tastecfg.mjs";
+import { loadTaste, readTasteState, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 
 export const JOURNEYS_FILE = ".argus/journeys.json";
 const NOT_A_MAP = `refused: ${JOURNEYS_FILE} is not a journey map`;
@@ -394,7 +394,7 @@ function selectTaste(main) {
   const state = readTasteState(main);
   const { taste, errors } = loadTaste(main);
   if (!taste) throw new Error(`refused: select: ${TASTE_FILE}: ${errors[0]}`);
-  return { state, accept: taste.accept };
+  return { state, accept: taste.accept, off: tasteOff(taste) };
 }
 
 /** The commits touching journey `j`'s anchor files in `lastHead..HEAD` (0 without lastHead, or when git cannot tell). */
@@ -476,7 +476,7 @@ export function selectJourneys(main, { cycle, flagged = [], ids = null, runner =
   const { roles, max } = selectRoles(main);
   const map = readJourneys(main);
   const t = selectTaste(main);
-  const all = (map ? map.journeys : []).map((j) => ({ j, score: score(j, { cycle, flagged, commits: commitsSince(main, j, runner), taste: tasteFactor(t.state, j.id, t.accept) }) }));
+  const all = (map ? map.journeys : []).map((j) => ({ j, score: score(j, { cycle, flagged, commits: commitsSince(main, j, runner), taste: t.off ? 1 : tasteFactor(t.state, j.id, t.accept) }) }));
   const ranked = [...all].sort((a, b) => b.score - a.score || (a.j.id < b.j.id ? -1 : a.j.id > b.j.id ? 1 : 0));
   const pass = (list) => {
     const picks = [];

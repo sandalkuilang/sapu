@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, CURATOR_FILE, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, CURATOR_FILE, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -199,7 +199,7 @@ describe(".argus/taste.json — the owner's calibration", () => {
 
   it("refuses a gate, off or accept rule id the bar lacks", () => {
     expect(errs({ gate: ["scale.vibes"] })).toEqual(["gate: scale.vibes is not a rule of the bar"]);
-    expect(errs({ off: ["nope"] })).toEqual(["off: nope is not a rule of the bar"]);
+    expect(errs({ off: ["nope"] })).toEqual(["off: nope is not a rule, a family or * of the bar"]);
     expect(errs({ accept: [{ rule: "scale.vibes", key: "k", why: "w" }] })).toEqual(["accept[0].rule: scale.vibes is not a rule of the bar"]);
     expect(errs({ gate: ["copy.broken", "copy.broken"] })).toEqual(["gate must be an array of distinct rule ids"]);
   });
@@ -207,6 +207,21 @@ describe(".argus/taste.json — the owner's calibration", () => {
   it("refuses a rule both gated and off, and a gated information rule", () => {
     expect(errs({ gate: ["copy.broken"], off: ["copy.broken"] })).toEqual(["gate and off both name copy.broken"]);
     expect(errs({ gate: ["contrast.headroom"] })).toEqual(["gate: contrast.headroom is information only: it cannot gate"]);
+  });
+
+  it("off takes rule ids, family names and *: the value lists the rule ids they name; * turns the whole pass off (tasteOff)", () => {
+    const bar = loadBar();
+    const ids = (f: string) => bar.rules.filter((r: Obj) => r.family === f).map((r: Obj) => r.id);
+    expect(validateTaste({ off: ["ai", "motion.duration"] }).value.off).toEqual([...ids("ai"), "motion.duration"].sort());
+    const all = validateTaste({ off: ["*"] }).value;
+    expect(all.off).toEqual(bar.rules.map((r: Obj) => r.id).sort());
+    expect(tasteOff(all)).toBe(true);
+    expect(tasteOff(validateTaste({ off: ["ai"] }).value)).toBe(false);
+    expect(tasteOff(validateTaste({}).value)).toBe(false);
+    expect(errs({ off: ["vibes"] })).toEqual(["off: vibes is not a rule, a family or * of the bar"]);
+    expect(errs({ off: ["ai", "ai"] })).toEqual(["off must be an array of distinct rule ids, family names or *"]);
+    expect(errs({ gate: ["copy.broken"], off: ["copy"] })).toEqual(["gate and off both name copy.broken"]);
+    expect(errs({ gate: ["copy.broken"], off: ["*"] })).toEqual(["gate and off both name copy.broken"]);
   });
 
   it("refuses to gate a rule the suite cannot measure: a lane-only rule (laneOnly) or a cycle rule, each with why", () => {

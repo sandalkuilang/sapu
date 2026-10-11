@@ -203,7 +203,7 @@ const TASTE_MEDIA = ${JSON.stringify(MEDIA_READ)};
 const TASTE_SETTLE = ${JSON.stringify(SETTLE)};
 const tasteArmed = new WeakSet<object>();
 const tasteSeen = new WeakMap<object, Set<string>>();
-type TasteConfig = { gate: string[]; off: string[]; frame: string | null; tokens: Record<string, number[]> | null };
+type TasteConfig = { gate: string[]; off: string[]; passOff: boolean; frame: string | null; tokens: Record<string, number[]> | null };
 let tasteConfigRead: Promise<TasteConfig> | null = null;
 /** live.json's tokens as the taste probe's scale in px (argus-live-tastecfg.mjs tokensPx): null without a source. */
 const tasteTokensPx = ${String(tokensPx)};
@@ -253,7 +253,7 @@ function tasteConfig(): Promise<TasteConfig> {
     const fs = await import("node:fs");
     const file = path.join(REPO, ".argus", "taste.json");
     const tokens = tasteTokens(fs);
-    if (!fs.existsSync(file)) return { gate: [], off: [], frame: null, tokens };
+    if (!fs.existsSync(file)) return { gate: [], off: [], passOff: false, frame: null, tokens };
     let raw: any;
     try {
       raw = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -264,14 +264,18 @@ function tasteConfig(): Promise<TasteConfig> {
     const list = (k: string): string[] => {
       const v = raw !== null && typeof raw === "object" ? raw[k] : undefined;
       if (v === undefined) return [];
-      if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !/^[a-z]+\\.[a-z0-9]+(-[a-z0-9]+)*$/.test(x))) throw new Error("argus-smoke: .argus/taste.json " + k + " must list rule ids of taste-bar " + TASTE_BAR_VERSION);
+      // off also takes a family's name and * (the whole pass).
+      const word = k === "off" ? /^(\\*|[a-z]+|[a-z]+\\.[a-z0-9]+(-[a-z0-9]+)*)$/ : /^[a-z]+\\.[a-z0-9]+(-[a-z0-9]+)*$/;
+      if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !word.test(x))) throw new Error("argus-smoke: .argus/taste.json " + k + " must list rule ids of taste-bar " + TASTE_BAR_VERSION + (k === "off" ? ", family names or *" : ""));
       return v;
     };
     // A gated rule this suite cannot measure (a lane-only rule, or one the bar lacks) is named, never ignored.
     const gate = list("gate");
     const lost = gate.filter((x) => !ids.has(x));
     if (lost.length) throw new Error("argus-smoke: .argus/taste.json gate names " + lost.join(", ") + ": no rule the suite measures in taste-bar " + TASTE_BAR_VERSION);
-    return { gate, off: list("off"), frame: typeof raw.frame === "string" ? raw.frame : null, tokens };
+    const off = list("off");
+    const named = (id: string) => off.includes("*") || off.includes(id) || off.includes(id.split(".")[0]);
+    return { gate, off: TASTE_RULES.map((r) => r.id).filter(named), passOff: off.includes("*"), frame: typeof raw.frame === "string" ? raw.frame : null, tokens };
   })();
   return tasteConfigRead;
 }
@@ -386,6 +390,8 @@ export async function tasteStep(opened: BrowserContext[], i: number, step: numbe
   if (test.info().project.name !== "taste" || !opened[i]) return [];
   const page = opened[i].pages()[0];
   if (!page) return [];
+  // taste.json's off: * turns the whole pass off: nothing measured, nothing said.
+  if ((await tasteConfig()).passOff) return [];
   if (!tasteArmed.has(opened[i])) {
     // A page open() did not make (fixtures.ts): its later documents get the recorders, this one now.
     await tasteArm(opened[i]);
