@@ -20,11 +20,12 @@ smoke suite's directory (`smoke.json` `dir`; its `.auth/` is ignored). Local sta
 pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
 (`smoke ci`'s triage), `.argus/perf.json` (perf baselines), `.argus/taste-state.json` (per journey the last taste
 judge, the best known path and each confirmed taste row with its state, 0600; a run's taste records are under
-`<runId>/taste/`) and `.argus/reports/<runId>.md` (`report`'s
+`<runId>/taste/`: each slot's `screens.jsonl`, the `shots/`, `judge.json`, and `curator.json`, the Curator's return,
+which the orchestrator writes) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
 smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
 `-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`; the taste pass's `-tastecfg` (`.argus/taste.json`, the bar,
-`.argus/taste-state.json`), `-taste` and `-ease` (the probes), `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
+`.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
 maintainer's calibration script (`taste-calibrate`) and its reference corpus live in sapu's own repository, never in
 the plugin.
 

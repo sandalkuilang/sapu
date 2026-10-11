@@ -1,6 +1,6 @@
 # ARGUS aesthetics — the Curator lane
 
-The visual lane for argus (SKILL.md in this skill's directory). Read §1–§3 whenever the charter touches a rendered surface; §4–§6 on a full sweep. The repo's UI rules, token source, themes, product halves, heavy content and last-verified marks: profile §Curator: … sections (the profile index says which file).
+The visual lane for argus (SKILL.md in this skill's directory). Read §1–§3 whenever the charter touches a rendered surface; §4–§6 on a full sweep; §9 in a journey cycle. The repo's UI rules, token source, themes, product halves, heavy content and last-verified marks: profile §Curator: … sections (the profile index says which file).
 
 `kept:` (reference.md §10) — it supplies an oracle class nothing else in ARGUS does: without it, a defect that lives in the pixels rather than the response (a money figure that reads wrong, a destructive button styled as the safe one, four card paddings on one screen) has no admissible oracle and never files.
 
@@ -303,3 +303,39 @@ Added to SKILL.md §4's council, the 🎨 Curator owes an output, not an opinion
 Filing follows reference.md §7's template unchanged, with three additions: **`Viewport:`** (width × theme × locale — a defect that only exists at 320px dark in the second locale is still a defect, but the reproduction is worthless without them), **`Measured:`** the before/after numbers, and a screenshot attached *after* the numbers, never instead of them.
 
 **Rails.** SKILL.md §7 — you measure, you never fix: no CSS or token edits, no "while I was in there".
+
+---
+
+## §9 The journey lane's taste pass
+
+The journey lane's first question is whether the UI is world-class: easy to use, elegant, modern, complete in its states. Functional correctness (its journey oracles) is the floor beneath that, not the goal. §1 holds unchanged: a script measures, the Curator judges what was measured, and nothing files on perception or for differing from a famous product.
+
+**The pass** (journeys.md step 6, every cycle, every journey walked). The session hook records each screen an explorer reaches under the run's `taste/` (the census, feedback timings, AI-surface signals, one screenshot per screen key `<route template>|<width>|<light|dark>`); the explorer never sees it. `taste judge` scores every rule of the bar against its witnesses (`judge.json`). `taste confirm <row>` replays the journey's path on a fresh instance, there switches to what the row's rule needs (the dark scheme, reduced motion, the routed 500, or on an AI route the drive that presses Stop and faults one send), and measures again: a row is real only two of two. The 🎨 Curator (`sapu:curator`: Read only, confined to the run's `taste/`) owes §8 per screen from those files: a verdict per row (`confirm`, `reject` with its reason, `polish`), the substitution test, leads the next cycle's judge measures first, and the walkthrough's answers. It files nothing and sets no severity. `taste file` rates the measured row by §7's outcome table (never above S3: S1/S2 owe SKILL.md §5's arithmetic), labels it `ux`, `argus`, `found-by:user` (`bug` too for `implicit` and `derived`, never for `bar`), files one issue per `taste:<rule>:<screen key>`, at most `.argus/taste.json` `cap` a cycle (the rest queued), and puts measured S4 items in §7's one `[polish]` roll-up.
+
+**Usability, split as ISO 9241-11 splits it.** Effectiveness is the goal reached (the journey oracles); efficiency is measured (below); satisfaction is a person's response and is never claimed. The cognitive walkthrough measures first-encounter discoverability, not learnability.
+
+**The bar** (the plugin's `data/taste-bar.json`, versioned: `taste-bar <n>` stands in every judge, suite header, issue and report). Families `scale`, `hierarchy`, `colour`, `contrast`, `motion`, `feedback`, `density`, `states`, `copy`, `consistent`, `ai`, `efficiency`; each rule cites its sources and carries a class: `implicit` (§2's broken on its face), `derived` (the app contradicts itself or its tokens), `bar` (beyond the outside range). No rule rewards a style or a CSS feature: modern is a measured outcome, never a checklist. **Frames** are the scales an owner may adopt as `taste.json` `frame` when the repo has no tokens: `atlassian`, `carbon`, `material`, `primer`, and `polaris` as a historical frame; a system whose scale numbers the bar has not read is no frame. **Bands** are per archetype (`marketing`, `docs`, `app`, `form`, `data`): percentiles calibrated by a maintainer-only script from public reference pages, numbers and URLs only. A band is a witness only with 5 sites or more and 15 pages or more, and only for an archetype the owner declared or a `main` holding a table of 10 rows or more (else `inferred`); otherwise it is `thin`, shown and never a witness. Of the corpus's archetypes only `docs` reaches that; a bar without bands files no `bar` row.
+
+**Witnesses**, at most three: the owner's tokens (live.json `tokens`) or frame, the app's own best peer screen of the same archetype (among three or more recorded that cycle), and the archetype's band. An `implicit` or `derived` row stands on its own measurement. A `bar` row needs the band agreeing **and** an internal witness (a peer screen that holds the rule, or the frame). A count rule fires beyond `max(best peer × 1.5, best peer + 3)` and, where the band is a witness, beyond its p90. Without tokens or a frame the census against peers decides ("this screen uses 11 spacing values where your best dashboard uses 5").
+
+**Efficiency**, per journey path (every explore charter asks for one): `actions`, `typed`, `modals`, `wait_ms`, `recovery` (fields lost after a rejected submit), `fitts_bits` (Σ log2(A/W + 1) between consecutive targets), and `klm_s`, the Keystroke-Level Model: K 0.28 s a character, P from Fitts bounded to 0.8–1.5 s, BB 0.2 s a click, H 0.4 s a hand move between pointer and keyboard, one M 1.2 s per goal step. The rule is fixed, never tuned, and compares a path only with the journey's own best. The best known path is the journey's held path with the fewest actions. A path at 3× its actions or more, or 10 s or more of `klm_s` beyond it, is a row, confirmed only when the best path's replay **no longer holds** with the same expectations; while it holds, the longer path was the explorer's detour, never a finding. A confirmed regression, or any row costing 10 s or more of `klm_s`, is S3.
+
+**AI surfaces** are judged only on the routes the owner declares in `taste.json` `ai`: Stop while an answer streams, an error shown with a way on, regenerate once it ends. Provenance and uncertainty display have no rule: the Curator names them only in the `reason` of `ai.*` rows.
+
+**The owner's calibration** (`.argus/taste.json`, tracked): `frame`, `archetypes` (route globs), `accept` (rows ruled intended: never filed, never weighed), `gate` (rules the smoke suite enforces), `off`, `cap`, `optimistic`, `ai`, `copy.vague`. SELECT weighs each journey's open, unaccepted taste debt by `1 + min(1, debt / 4)`: at most as far as money lifts a journey.
+
+Example `.argus/taste.json` (every key optional; unknown keys are refused):
+
+```json
+{
+  "frame": "primer",
+  "archetypes": { "/reports/**": "data", "/settings/**": "form" },
+  "accept": [{ "rule": "density.control-heights", "key": "/orders/:id|1440|light", "why": "the owner's ruling (taste accept)" }],
+  "gate": ["copy.broken"],
+  "off": ["feedback.optimistic"],
+  "cap": 5,
+  "optimistic": ["/cart"],
+  "ai": ["/assistant/**"],
+  "copy": { "vague": ["Go"] }
+}
+```
