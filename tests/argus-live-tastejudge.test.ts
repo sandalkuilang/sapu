@@ -4,7 +4,7 @@
 // these tests pin the pass, not the probes' own rules.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import { slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { runCli, sessionName } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
-import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
+import { liveDir, takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { loginCode } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -27,7 +27,9 @@ import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, updateRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
-import { activeConfirm, keepScreen, MAIN_ROWS, observeCode, RECORDER, routeTemplate, SETTLED, SHOT_READ, spendTaste, tasteDir, tasteSpent } from "../plugins/sapu/scripts/argus-live-session.mjs";
+import { activeConfirm, keepScreen, MAIN_ROWS, observeCode, RECORDER, recorderPayload, routeTemplate, SETTLED, SHOT_READ, spendTaste, tasteDir, tasteSpent } from "../plugins/sapu/scripts/argus-live-session.mjs";
+// @ts-expect-error — plain ESM script without types
+import { checkCuratorRead } from "../plugins/sapu/scripts/sapu-guard.mjs";
 // @ts-expect-error — plain ESM script without types
 import { mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -226,6 +228,12 @@ describe("argus-live taste recording — the session hook (J1)", () => {
   it("keepScreen: each new shot is made 0600 and gets scrub's verdict beside it; a name it did not write is ignored", () => {
     const main = committed();
     const runId = "20000101000000-0123abcd";
+    // scrub reads the run's secrets (live.json, its env file): without them it refuses, and every shot is held.
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify(example()));
+    writeFileSync(join(main, ".argus/live.env"), "PW=pw-Kx7q9-secret-value\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-pw-Kx7q\n");
+    mkdirSync(join(liveDir(main), runId, "logs"), { recursive: true });
+    writeFileSync(join(liveDir(main), runId, "logs", "secrets.jsonl"), "");
     const shots = join(tasteDir(main, runId), "shots");
     mkdirSync(shots, { recursive: true });
     const name = sha("/orders/:id|1440|light").slice(0, 32);
@@ -243,6 +251,41 @@ describe("argus-live taste recording — the session hook (J1)", () => {
     writeFileSync(join(shots, `${name}.png`), "png bytes");
     keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "j" }, recorded({ route: "/orders", shots: [{ theme: "light", name, verdict }] }));
     expect(lines(join(tasteDir(main, runId), "1", "screens.jsonl"))[1].shots).toEqual([]);
+  });
+
+  it("keepScreen: a shot scrub's verdict holds (a secret, a password or one-time-code field) leaves taste/ for held-shots/, which the Curator cannot read", () => {
+    const main = committed();
+    const runId = "20000101000000-0123abcd";
+    // scrub reads the run's secrets (live.json, its env file): without them it refuses, and every shot is held.
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    writeFileSync(join(main, ".argus/live.json"), JSON.stringify(example()));
+    writeFileSync(join(main, ".argus/live.env"), "PW=pw-Kx7q9-secret-value\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-pw-Kx7q\n");
+    mkdirSync(join(liveDir(main), runId, "logs"), { recursive: true });
+    writeFileSync(join(liveDir(main), runId, "logs", "secrets.jsonl"), "");
+    const shots = join(tasteDir(main, runId), "shots");
+    mkdirSync(shots, { recursive: true });
+    const at = { slot: 1, account: "buyer.1", journey: "j" };
+    const clean = { text: "Order ORD-1", password: false, otp: false, error: false, unread: false };
+    const cases: [string, Obj][] = [["/login", { ...clean, password: true }], ["/verify", { ...clean, otp: true }], ["/blank", { ...clean, unread: true }], ["/oops", { ...clean, error: true }], ["/orders", clean]];
+    for (const [route, verdict] of cases) {
+      const name = sha(`${route}|1440|light`).slice(0, 32);
+      writeFileSync(join(shots, `${name}.png`), `png of ${route}`);
+      keepScreen(main, runId, at, recorded({ route, shots: [{ theme: "light", name, verdict }] }));
+    }
+    const held = join(liveDir(main), runId, "held-shots");
+    const where = (route: string) => {
+      const name = sha(`${route}|1440|light`).slice(0, 32);
+      return { taste: existsSync(join(shots, `${name}.png`)), held: existsSync(join(held, `${name}.png`)), verdict: existsSync(join(held, `${name}.verdict.json`)) };
+    };
+    for (const r of ["/login", "/verify", "/blank"]) expect(where(r), r).toEqual({ taste: false, held: true, verdict: true });
+    // An error page or a clean screen stays the Curator's to judge.
+    for (const r of ["/oops", "/orders"]) expect(where(r), r).toEqual({ taste: true, held: false, verdict: false });
+    expect(mode(held)).toBe(0o700);
+    expect(lines(join(tasteDir(main, runId), "1", "screens.jsonl")).map((x: Obj) => [x.route, x.shots.length])).toEqual([["/login", 0], ["/verify", 0], ["/blank", 0], ["/oops", 1], ["/orders", 1]]);
+    // Outside the run's taste/, so the guard refuses it to the Curator; a held shot is never shot again in the run.
+    const name = sha("/login|1440|light").slice(0, 32);
+    expect(checkCuratorRead({ input: { file_path: join(held, `${name}.png`) }, taste: realpathSync(tasteDir(main, runId)), cwd: main })).toMatch(/the Curator reads only its run's taste/);
+    expect(recorderPayload({ main, runId, slot: 1, slotRec: { journey: "j" }, prev: null, settleMs: 1000 }).taken).toEqual(expect.arrayContaining([name]));
   });
 
   it("tasteSpent sums the pass's time, a torn line counting nothing; spendTaste ignores a time that is no time", () => {
@@ -505,7 +548,10 @@ describe("argus-live taste recording — through the browser CLI (J1)", () => {
       ["order-to-cash", "anon.1", "/|1440|light", false, "single", true],
       ["order-to-cash", "anon.1", "/login|1440|light", false, "single", true],
     ]);
-    for (const s of screens) {
+    // The sign-in page shows a password field: its shot is held outside taste/, never the Curator's.
+    expect(screens[1].shots).toEqual([]);
+    expect(existsSync(join(liveDir(b.main), b.runId, "held-shots", `${sha(screens[1].key).slice(0, 32)}.png`))).toBe(true);
+    for (const s of screens.slice(0, 1)) {
       const [shot] = s.shots;
       expect(shot).toEqual({ theme: "light", name: sha(s.key).slice(0, 32), key: s.key });
       const png = join(dir, "shots", `${shot.name}.png`);

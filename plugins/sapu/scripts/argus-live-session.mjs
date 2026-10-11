@@ -337,6 +337,10 @@ export function observeCode(payload, T = null) {
 /** Scrub's `shot` stage (the text a screenshot's verdict reads), run by the recorder on the page it just shot. */
 export const SHOT_READ = loginStageSource("shot");
 
+/** The scrub verdict reasons that keep a shot from the Curator, and where such a shot goes: beside the run's taste/, never in it. */
+const HELD = ["secret", "password-field", "one-time-code-field"];
+const heldDir = (main, runId) => path.join(liveDir(main), runId, "held-shots");
+
 /** The recorder's answers that are a harness event of the taste pass (in `<run>/taste/<slot>/harness.jsonl`, never the explorer's output). */
 const RECORD_FAULTS = ["timeout", "error", "too large", "no answer", "bad screen", "write failed"];
 
@@ -378,7 +382,14 @@ export function keepScreen(main, runId, at, answer) {
       const png = path.join(base, "shots", `${s.name}.png`);
       if (!fs.lstatSync(png, { throwIfNoEntry: false })?.isFile()) continue;
       fs.chmodSync(png, 0o600);
-      writeVerdict(main, runId, png, isObj(s.verdict) ? s.verdict : null, { drained: true });
+      const v = writeVerdict(main, runId, png, isObj(s.verdict) ? s.verdict : null, { drained: true });
+      // A shot scrub holds (a secret, a password or one-time-code field) leaves taste/: the Curator never reads it.
+      if (v.reasons.some((r) => HELD.includes(r))) {
+        const held = heldDir(main, runId);
+        privateDir(held);
+        for (const f of [png, png.replace(/\.png$/, ".verdict.json")]) fs.renameSync(f, path.join(held, path.basename(f)));
+        continue;
+      }
       shots.push({ theme: s.theme, name: s.name, key: `${answer.route}|${answer.width}|${s.theme}` });
     }
     const pick = (k) => (answer[k] === undefined ? null : answer[k]);
@@ -448,7 +459,8 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
     } catch {
       routes = [];
     }
-    const taken = fs.readdirSync(shots).filter((f) => /^[0-9a-f]{32}\.png$/.test(f)).map((f) => f.slice(0, 32));
+    const held = heldDir(main, runId);
+    const taken = [...fs.readdirSync(shots), ...(fs.existsSync(held) ? fs.readdirSync(held) : [])].filter((f) => /^[0-9a-f]{32}\.png$/.test(f)).map((f) => f.slice(0, 32));
     const limitMs = Math.min(30_000, Math.max(5_000, 2 * settleMs));
     // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
     const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
