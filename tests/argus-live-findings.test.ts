@@ -2801,6 +2801,18 @@ describe("argus-live check", () => {
     expect(existsSync(join(main, ".argus/live"))).toBe(false);
   }, 30_000);
 
+  it("check verifies .argus/taste.json when there is one: a broken file is refused before up, a good one named in a line", () => {
+    const main = commitContract(checkRepo());
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ frame: "primer", gate: ["copy.broken"], off: ["ai"] }));
+    expect(check(main)).toEqual({ code: 0, out: "live: ok — 4 roles, 4 accounts, 4 start entries\ntaste: ok — frame primer, 1 rules gated, 3 rules off\n", err: "" });
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ off: ["*"] }));
+    expect(check(main).out).toContain("taste: ok — the taste pass is off for this repo");
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ cap: 0, gate: ["scale.spacing"] }));
+    expect(check(main)).toEqual({ code: 1, out: "", err: "refused: .argus/taste.json: gate: scale.spacing is the lane's alone (it compares the cycle's screens): the suite cannot measure it, so it cannot gate; cap must be an integer from 1 to 20\n" });
+    writeFileSync(join(main, ".argus/taste.json"), "{");
+    expect(check(main).err).toMatch(/^refused: \.argus\/taste\.json is not valid JSON/);
+  }, 30_000);
+
   it("check passes live.md's own example as init would verify it", () => {
     const main = committed();
     const doc = readFileSync(join(__dirname, "../plugins/sapu/skills/journey/live.md"), "utf8");

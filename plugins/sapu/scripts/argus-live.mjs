@@ -8,7 +8,7 @@
 //   argus-live.mjs up --map      map mode (decision 20): the lock and a worktree at HEAD, nothing started (no
 //                                setup, store, app, proxy, HOME or logins); its summary {runId, mode, deadline,
 //                                worktree} last. up --fresh and renew refuse it
-//   argus-live.mjs check         verify .argus/live.json as up would before it touches anything (configProblems:
+//   argus-live.mjs check         verify .argus/live.json as up would before it touches anything, and .argus/taste.json when there is one (configProblems:
 //                                the schema, every unset ${NAME} by name, base URLs resolving to loopback only, a services
 //                                variable the instance env does not set, a protected store, a literal password or TOTP
 //                                secret, a tracked env_file), and that the contract's guard.envFiles
@@ -179,6 +179,7 @@ import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-
 import { smokeRun } from "./argus-live-smoke.mjs";
 import { smokeAdmit, smokeCheck, smokePlan, smokeRetire } from "./argus-live-suite.mjs";
 import { tasteAccept, tasteCurator, tasteFile } from "./argus-live-tastefile.mjs";
+import { loadTaste, PASS_OFF, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 import { tasteConfirm, tasteJudge } from "./argus-live-tastejudge.mjs";
 import { findMain, loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
@@ -431,12 +432,16 @@ try {
     // up's own configuration checks, against the draft contract in the working tree (init runs check before committing it).
     const c = loadContract(main, { workingTree: true });
     const r = await configProblems(main, { contract: c.contract ?? (c.missing ? null : undefined) });
-    const problems = [...r.problems, ...(!c.contract && !c.missing ? [`refused: ${c.error}`] : [])];
+    // .argus/taste.json too, when there is one (none: every default): init verifies what it wrote, and a broken file is refused before up.
+    const taste = loadTaste(main);
+    const tasteFault = taste.errors.join("; ");
+    const problems = [...r.problems, ...(!c.contract && !c.missing ? [`refused: ${c.error}`] : []), ...(taste.taste ? [] : [`refused: ${tasteFault.startsWith(TASTE_FILE) ? tasteFault : `${TASTE_FILE}: ${tasteFault}`}`])];
     for (const p of problems) process.stderr.write(`${redact(p, secrets)}\n`);
     if (problems.length) process.exit(1);
     const roles = Object.values(r.config.roles);
     const accounts = roles.reduce((n, role) => n + (role.login ? 1 : (role.users ?? []).length), 0);
     print(`live: ok — ${roles.length} roles, ${accounts} accounts, ${r.config.start.length} start entries`);
+    if (!taste.missing) print(tasteOff(taste.taste) ? `taste: ok — ${PASS_OFF}` : `taste: ok — frame ${taste.taste.frame ?? "none"}, ${taste.taste.gate.length} rules gated, ${taste.taste.off.length} rules off`);
     // up reads the committed contract: until the draft is committed, up still refuses the env file.
     if (typeof r.config.env_file === "string" && !guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
 

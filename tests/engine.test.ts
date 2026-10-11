@@ -1417,6 +1417,8 @@ describe("the journey lane's engine text", () => {
     expect(line, "init's taste.json item").toBeDefined();
     expect(line).toContain("The frame question");
     expect(line).toContain("`!/.argus/taste.json`");
+    // init verifies what it wrote: live check reads taste.json and refuses a broken one before up.
+    expect(line).toContain("Then `live check`, which reads it too: a broken one is refused there");
     const named = [...line.split("The frame question")[1].split("Then")[0].matchAll(/`([a-z]+)`/g)].map((m) => m[1]).filter((n) => n !== "tokens");
     expect(named.sort()).toEqual(Object.keys(loadBar().frames).sort());
   });
