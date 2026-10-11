@@ -818,7 +818,7 @@ describe("smoke run --perf on the fixture app", () => {
   });
   afterEach(browserLeftovers);
 
-  it("measures a path in a real browser: a baseline, then a second pass that moves only the newest batch", async () => {
+  it("measures a path in a real browser: a baseline, then a second pass that moves only the newest batch", async (ctx) => {
     browserTools();
     const c = appCycle({ mark: MARK, repro: true });
     const live = join(c.main, ".argus/live.json");
@@ -840,6 +840,8 @@ describe("smoke run --perf on the fixture app", () => {
     // A pass is up to two batches, each an up --fresh and four path runs: past the helper's 240 s on a loaded machine.
     const PASS = { timeoutMs: 600_000 };
     const first = c.cli("smoke", "run", "--perf", "--seed", "3", PASS);
+    // A hosted macOS runner can carry a load over the cap's 8 a core: sapu refuses to time it, as it should.
+    if (first.code !== 0 && /the machine is busy/.test(`${first.out}${first.err}`)) return ctx.skip();
     expect(first.code, `${first.out}\n${first.err}`).toBe(0);
     const lines = first.out.trimEnd().split("\n");
     expect(lines[0]).toBe("seed: 3");
