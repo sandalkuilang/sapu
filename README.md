@@ -221,7 +221,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 
 | Layer | What it enforces |
 |---|---|
-| **Merge script** | `sapu-merge.sh` is the only way sapu merges: only a PR that `sapu-contract.mjs pr-trust` passes, only after a green gate, pinned to the gated commit. |
+| **Merge script** | `sapu-merge.sh` is the only way sapu merges: only a PR that `sapu-contract.mjs pr-trust` passes, only after a green gate, pinned to the gated commit. A repo can opt in to gate on the argus smoke suite's CI run as well (`gate.smokeCheck`). |
 | **Guard hook** | Checks every subagent's shell, file, search and MCP tool calls: no direct push to the main branch, no merge, no touching the dev database or `.env` files, no writing into the main checkout or into the plugins they run under. |
 | **Scope lock** | `sapu-contract.mjs check` refuses to run in a checkout outside the roots the machine config allows, with the wrong account, or with a moved `HOME`; a second `/sapu` session on the same repo stops at its Step 0. |
 | **Trust checks** | In public repos, sapu works only issues and PRs from trusted authors (or accepted by a trusted account). |

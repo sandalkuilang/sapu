@@ -17,7 +17,7 @@ plugins/sapu/
   hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
   workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
-  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs;
+  scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh (and sapu-smoke-gate.mjs, its smoke check), sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
                                   the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report;
                                   the taste pass's -taste, -ease and -aiux probes, -tastecfg, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
@@ -59,7 +59,7 @@ Before the tests, the gate runs `node scripts/rule-guard.ts`. It compares the br
 - an agent's `tools:`, `model:`, or `effort:` changed, or its agent file was deleted;
 - one of the files that enforce the rules changed at all or was deleted — tightening changes included:
   - `plugins/sapu/hooks/hooks.json`
-  - `plugins/sapu/scripts/sapu-guard.mjs`, `sapu-merge.sh`, `sapu-contract.mjs`
+  - `plugins/sapu/scripts/sapu-guard.mjs`, `sapu-merge.sh`, `sapu-smoke-gate.mjs`, `sapu-contract.mjs`, `sapu-cleanup.mjs`
   - `plugins/sapu/workflows/sapu-wave.js`, `inspector.js`
   - `tests/engine.test.ts` (here a context budget that went up or vanished is also named on its own)
   - `scripts/rule-guard.ts` and `tests/rule-guard.test.ts`

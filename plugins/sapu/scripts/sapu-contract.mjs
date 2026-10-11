@@ -252,8 +252,10 @@ export function validate(c) {
   need(typeof c.gitEmail === "string" && /^[^@\s]+@[^@\s]+$/.test(c.gitEmail), "gitEmail must be an email");
   need(typeof c.baseBranch === "string" && /^[\w./-]+$/.test(c.baseBranch), "baseBranch must be a branch name");
   if (c.gate && typeof c.gate === "object") {
-    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra"]);
+    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck"]);
     need(!("infra" in c.gate) || c.gate.infra === null || isStr(c.gate.infra), "gate.infra must be a command or null");
+    // Opt-in: sapu-merge.sh gates on the argus smoke suite's CI run only when the base branch's contract says so.
+    need(!("smokeCheck" in c.gate) || typeof c.gate.smokeCheck === "boolean", "gate.smokeCheck must be true or false (omit it for false)");
     need(isStr(c.gate.fast), "gate.fast must be a command");
     need(isStr(c.gate.merge), "gate.merge must be a command");
     need(isRegex(c.gate.summaryStart), "gate.summaryStart must be a valid regex");

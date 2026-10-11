@@ -9,7 +9,7 @@
 # comment is still mandatory.
 #
 # USAGE (from the main checkout or any of its worktrees)
-#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--dry-run]
+#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]
 #
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
 #                          "Notes (recorded, not filed)". The gate summary is appended to a
@@ -17,8 +17,10 @@
 #   --workers N            passed to the gate as SAPU_WORKERS (default: this machine's gateWorkers
 #                          from `sapu-contract.mjs lanes`; pass its gateWorkersBeside while another
 #                          worker is running tests).
+#   --smoke-wait M         with the contract's gate.smokeCheck: the minutes to wait, after the gate, for an
+#                          argus smoke run on the PR's head that is still running (default 90; 0 = do not wait).
 #   --dry-run              run the read-only checks (contract, scope lock, comment
-#                          heading, PR lookup, trust, worktree resolution) and print the plan; no
+#                          heading, PR lookup, trust, smoke check, worktree resolution) and print the plan; no
 #                          side effects besides fetching origin/<base>, which the checks read.
 #
 # TRUST. A public repo takes PRs from anyone, and the gate runs the PR's code on this machine. So
@@ -31,7 +33,8 @@
 #
 # EXIT: 0 = merged (or dry-run plan clean); 2 = gate red; 3 = merged, but mergeAfter failed
 # (fix what it reported before the next merge); 4 = gate green, handed off for review (policy
-# merge: human — nothing merged); other non-zero = stopped, one-line reason on
+# merge: human — nothing merged); 5 = the argus smoke check is red (gate.smokeCheck; SMOKE CHECK
+# below); other non-zero = stopped, one-line reason on
 # stderr — including a gate that exits 75 (EX_TEMPFAIL: it could not even start, not a PR
 # defect). On a red gate the worktree is KEPT for diagnosis, and `mergeAfter` decides what else
 # it keeps. Every gate run is one line of <MAIN>/.git/sapu-gates.log; a red one names its failing
@@ -39,6 +42,12 @@
 # in another PR's gates, and nothing but tests failed; else `unknown`). `<MAIN>/.git` here and below
 # is the repository's git directory ($GITDIR: a file `.git` names it in a submodule or a
 # --separate-git-dir checkout). The merge method is the contract's `mergeMethod` (default squash).
+#
+# SMOKE CHECK (opt-in: gate.smokeCheck true in origin/<base>'s contract; absent = off). The argus smoke suite's CI
+# run on the head the trust check read is judged by sapu-smoke-gate.mjs, from origin/<base> and GitHub only: red
+# blocks (exit 5) unless the PR changes the suite, or every failing journey is quarantined on origin/<base> or has its
+# smoke-regression issue closed by this PR. No workflow file or no run = not a block; a running one is judged again
+# after the gate, waiting up to --smoke-wait minutes; still running then = stop. Cannot judge = stop (fails closed).
 #
 # SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
 # with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
@@ -57,18 +66,20 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
+    --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
   esac
 done
-[ -n "$PR" ] && [ -n "$COMMENT_FILE" ] || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--dry-run]"
+[ -n "$PR" ] && [ -n "$COMMENT_FILE" ] || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]"
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
+case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
 command -v jq >/dev/null || die "jq is required"
 # No --workers: the machine decides (its cores, fewer while it is already busy).
 if [ -z "$WORKERS" ]; then
@@ -121,6 +132,8 @@ L_IN_PROGRESS="$(cget .labels.inProgress)"; L_DONE="$(cget .labels.done)"
 P_MERGE="$(printf '%s' "$CONTRACT" | jq -r '.policy.merge // "sapu"')"
 P_TRACES="$(printf '%s' "$CONTRACT" | jq -r '.policy.traces // "visible"')"
 P_REVIEWERS="$(printf '%s' "$CONTRACT" | jq -r '(.policy.reviewers // []) | join(" ")')"
+# Gate on the argus smoke suite's CI run (SMOKE CHECK above): only when origin/<base>'s contract opts in.
+SMOKE_CHECK="$(printf '%s' "$CONTRACT" | jq -r '.gate.smokeCheck // false')"
 
 CONTRACT_FILE=".claude/sapu.json"
 
@@ -282,6 +295,31 @@ plan "trust OK: author $(jget .author.login) (id $(jget .author.id)), $(jget .co
 [ "$(jget .isDraft)" != "true" ] || check_fail "PR #$PR is a draft"
 [ "$PR_BASE" = "$BASE" ] || check_fail "PR #$PR base is '$PR_BASE', not $BASE (retarget/merge parent first)"
 case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; esac
+
+# --- 3c. the argus smoke check (SMOKE CHECK above) ----------------------------------------------
+# Judged on the head the trust check read, by sapu-smoke-gate.mjs (one JSON verdict; a reason on stderr when it
+# cannot judge). Read before the gate so a red run costs no gate; one still running (or not there yet) is judged
+# again after the gate, which is also the grace a run needs to appear. SMOKE = the settled verdict.
+SMOKE=""
+smoke_verdict() { # <wait minutes>: the verdict JSON
+  (cd "$MAIN" && node "$SCRIPT_DIR/sapu-smoke-gate.mjs" --main "$MAIN" --repo "$REPO" --base-ref "$BASE_SHA" \
+    --sha "$(jget .headRefOid)" --pr "$PR" --closes "$(printf '%s' "$ISSUES" | paste -sd, -)" --wait "$1")
+}
+smoke_say() { # <verdict JSON>: its lines, on stderr
+  local l
+  while IFS= read -r l; do [ -z "$l" ] || say "$l"; done < <(jq -r '.lines[]?' <<<"$1")
+}
+if [ "$SMOKE_CHECK" = true ]; then
+  SV="$(smoke_verdict 0)" || SV=""
+  case "$(jq -r '.verdict // empty' <<<"${SV:-null}" 2>/dev/null)" in
+    green|excused|no-wiring) SMOKE=done; smoke_say "$SV" ;;
+    red)
+      if [ "$DRY" = 1 ]; then check_fail "$(jq -r '.lines | join("; ")' <<<"$SV")"
+      else smoke_say "$SV"; say "SMOKE CHECK RED: not merged (gate.smokeCheck) — fix what it names, or let the smoke cycle quarantine it"; exit 5; fi ;;
+    pending|missing) smoke_say "$SV"; plan "smoke check judged again after the gate (waits up to $SMOKE_WAIT min for a running one)" ;;
+    *) check_fail "smoke check could not be judged (see above): gate.smokeCheck fails closed" ;;
+  esac
+fi
 
 # Children stacked on this head: retarget to the base BEFORE merging, else --delete-branch
 # closes them permanently (A5 step 0). Only a same-repo child by a trusted author is touched: a fork
@@ -617,6 +655,18 @@ if [ -n "$RED" ]; then
   exit 2
 fi
 gate_record green -
+
+# The smoke check not settled before the gate (SMOKE CHECK above): judged now, waiting for a running one.
+if [ "$SMOKE_CHECK" = true ] && [ -z "$SMOKE" ]; then
+  SV="$(smoke_verdict "$SMOKE_WAIT")" || die "smoke check could not be judged (see above): not merged, gate.smokeCheck fails closed — worktree $WT kept"
+  smoke_say "$SV"
+  case "$(jq -r '.verdict' <<<"$SV")" in
+    green|excused|no-wiring|missing) ;;
+    pending) die "smoke check still pending after $SMOKE_WAIT min: not merged — run again once it finishes (or pass --smoke-wait); worktree $WT kept" ;;
+    red) say "SMOKE CHECK RED: not merged (gate.smokeCheck) — worktree $WT kept"; exit 5 ;;
+    *) die "smoke check gave no verdict: not merged — worktree $WT kept" ;;
+  esac
+fi
 
 # --- 8. green: push the synced commit, comment, merge (pinned to the gated SHA), then clean up -------------------------------
 push_synced

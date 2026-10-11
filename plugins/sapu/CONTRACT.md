@@ -137,7 +137,8 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
     "merge": "scripts/sapu-hooks.sh gate", // the merge gate; sapu-merge.sh runs it IN the PR worktree
     "summaryStart": "^Gate summary",    // regex: the gate log from this line down = the summary in the merge comment
     "redIf": "^⊘.*(migration-drift)",   // optional, null = none: a matching summary line = red even on exit 0
-    "infra": "pg_isready -h localhost -p 5432" // optional key: a quick, read-only probe (no background process holding its output) that exits 0 when the test infrastructure is up; every wave-args runs it in <MAIN> and refuses a lane while it fails
+    "infra": "pg_isready -h localhost -p 5432", // optional key: a quick, read-only probe (no background process holding its output) that exits 0 when the test infrastructure is up; every wave-args runs it in <MAIN> and refuses a lane while it fails
+    "smokeCheck": true                  // OPTIONAL (default false): sapu-merge.sh also gates on the argus smoke suite's CI run (§The smoke check)
   },
 
   "redAreas": "node --import tsx scripts/red-area.ts", // null = no classifier (tier from the label only)
@@ -176,8 +177,8 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 ```
 
 **Version coupling.** `mergeMethod`, `host`, `tuning` and `guard.databases` need plugin
-**≥ 2.9.0**. An older plugin refuses them as unknown keys: the contract reads as broken, and the
-guard then blocks every subagent.
+**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**. An older plugin refuses them as unknown keys: the
+contract reads as broken, and the guard then blocks every subagent.
 
 ### Tuning
 
@@ -635,7 +636,8 @@ skipping none (each failure = non-zero exit + a one-line reason):
    committed locally there;
 4. trust: `sapu-contract.mjs pr-trust` (§Trusted authors), whose verdict also carries the PR
    facts used below;
-5. the PR is open, not a draft, based on `baseBranch`; child PRs based on its head branch are
+5. the PR is open, not a draft, based on `baseBranch`; with `gate.smokeCheck`, the smoke check of the
+   head step 4 read (§The smoke check): red = exit 5 before anything runs; child PRs based on its head branch are
    retargeted to `<base>` (otherwise `--delete-branch` closes them permanently) — a same-repo
    child by a trusted id only;
 6. the PR worktree: reuse the one holding that branch, else create `wt-pr-<N>`; dirty = refuse; local
@@ -655,21 +657,59 @@ skipping none (each failure = non-zero exit + a one-line reason):
    lock, `<run> deadline <epoch>` at each `renew`, `<run> end <epoch>` from `down` and from a failed
    `up`. A run lasts until its end line, else until its latest deadline. A `live=1` line never counts
    toward a flake proof, and a red verdict beside a journey cycle says so;
-10. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
+10. with `gate.smokeCheck`, a smoke check the first look left open (still running, or no run yet) is
+    judged now (§The smoke check), waiting up to `--smoke-wait` minutes (default 90) for a running one:
+    red = exit 5, still running then = stop, either way `mergeAfter` runs and the worktree stays;
+11. green: push the synced commit (`--force-with-lease` against the head fetched in step 7, only
     after a rebase), the gate summary pasted into the review comment, then `gh pr comment`, then
     `gh pr merge --<mergeMethod> --delete-branch --match-head-commit <gated SHA>` (commits landing during
     the gate are not merged untested; a refusal quotes GitHub's message, e.g. a method the repo does
     not allow);
-11. relabel the issues of the body's `Closes/Fixes/Resolves #X` list (`labels.inProgress` →
+12. relabel the issues of the body's `Closes/Fixes/Resolves #X` list (`labels.inProgress` →
     `labels.done`; `Refs #X` untouched);
-12. `fetch origin <base>` + `git -C <MAIN> merge --ff-only origin/<base>` ONLY when the main
+13. `fetch origin <base>` + `git -C <MAIN> merge --ff-only origin/<base>` ONLY when the main
     checkout is on `<base>` and `status --porcelain` is empty (unmet or ff failed = a warning,
     continue — the merge happened; never reset/stash/checkout/pull);
-13. `mergeAfter` — called exactly once on EVERY exit path after the gate starts, also when red —
+14. `mergeAfter` — called exactly once on EVERY exit path after the gate starts, also when red —
     and ONLY THEN, on the merge path, remove the worktree.
 
 It holds a lock (`<MAIN>/.git/sapu-merge.lock`): one run at a time. `--dry-run` runs steps 1–6
-read-only (a trust refusal stops it like a real run) and prints the plan; it changes nothing.
+read-only (a trust refusal stops it like a real run; a red smoke check is one of its refusals) and
+prints the plan; it changes nothing.
+
+### The smoke check
+
+Opt-in: `"gate": {"smokeCheck": true}` in the contract on `origin/<base>` (a PR cannot switch it off for
+itself). Absent or `false`, `sapu-merge.sh` never asks GitHub about the smoke suite. When on, the
+argus smoke suite's CI run (the workflow `.argus/smoke.json` names, default `argus-smoke.yml`; the
+journey lane's [smoke suite](../../docs/usage.md#the-smoke-suite)) on the PR's head gates the merge.
+`sapu-smoke-gate.mjs` judges it from `origin/<base>` (the workflow file, `.argus/smoke.json`, the
+suite's `quarantine.json`) and GitHub (the newest `pull_request` run of that workflow on the head
+step 4 read, in this repository, and its jobs), never from the PR's tree:
+
+| The run | Verdict |
+|---|---|
+| no workflow file on `origin/<base>`, or no run on the head | not a block (the suite is not set up, or did not run) |
+| still running | judged again after the gate, waiting up to `--smoke-wait` minutes (default 90; `0` = no wait); still running then = stop, not merged |
+| every gating job passed (`test (<project>)`, `msedge`, `taste`; the `quarantine` jobs never gate) | green |
+| a gating job failed, cancelled or timed out | red = **exit 5**, not merged, the failing journeys named |
+| red, but an escape holds | not a block (the line says which) |
+
+**The escapes** keep a red suite from deadlocking the very PR that clears it:
+
+- **(a) the PR changes the suite** (a file under the suite's `dir`, default `e2e/argus-smoke/`): a heal,
+  baseline, quarantine or retire proposal from the lane must be able to land.
+- **(b) every failing journey is quarantined** in `origin/<base>`'s `quarantine.json` (a run that read
+  an older base, before the quarantine merged).
+- **(c) the PR closes the failing journey's regression issue**: an issue in its
+  `Closes/Fixes/Resolves` list holds `smoke-regression:<id>` in its title (the issue the smoke cycle files).
+
+(b) and (c) may mix (one journey quarantined, another closed), but they cover journeys only: every
+failed job must be a journey job (`test (<project>)` or `msedge`) that failed (not cancelled or timed
+out) and whose results artifact names at least one failing journey and nothing else (a sign-in that
+failed, a test outside the suite). A red `taste` job, or a failure no journey explains (a broken
+`npm ci`), blocks unless (a) holds. A smoke check that cannot be judged (GitHub does not answer, an
+invalid `.argus/smoke.json` on `origin/<base>`) stops the merge: it fails closed.
 
 ## `.claude/sapu/<skill>.md` — the repo profile
 

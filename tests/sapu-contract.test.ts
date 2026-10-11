@@ -152,6 +152,7 @@ describe("validate", () => {
     ["a database entry with a string port", (c: any) => (c.guard.databases = [{ engine: "redis", ports: ["6379"], databases: [] }]), /guard\.databases\[0\] must be \{engine, ports: \[int\], databases: \[name\]\}/],
     ["a sqlite entry with a port", (c: any) => (c.guard.databases = [{ engine: "sqlite", ports: [1], databases: ["db/dev.sqlite3"] }]), /sqlite.*files, not ports/],
     ["databases that is not a list", (c: any) => (c.guard.databases = {}), /guard\.databases must be an array/],
+    ["a smoke check flag that is not a boolean", (c: any) => (c.gate.smokeCheck = "yes"), /gate\.smokeCheck must be true or false/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
     mutate(c);
@@ -184,6 +185,14 @@ describe("validate", () => {
     for (const m of ["squash", "merge", "rebase"]) expect(validate({ ...clone(), mergeMethod: m }), m).toEqual([]);
     expect(validate({ ...clone(), host: "ghe.example.com" })).toEqual([]);
     expect(validate({ ...clone(), host: "github.com" })).toEqual([]);
+  });
+
+  it("gate.smokeCheck is optional (absent = off: no repo changes behaviour) and takes true or false", () => {
+    for (const v of [true, false]) {
+      const c = clone();
+      c.gate.smokeCheck = v;
+      expect(validate(c), String(v)).toEqual([]);
+    }
   });
 });
 

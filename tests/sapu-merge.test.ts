@@ -129,6 +129,7 @@ case "$1 $2" in
   "repo view") echo owner/app ;;
   "pr list") [ -f "$HX_API/pr_list.json" ] && jq -r '.[].number' "$HX_API/pr_list.json" ;;
   "pr comment"|"pr edit"|"issue edit") ;;
+  "run download") d=""; while [ $# -gt 0 ]; do [ "$1" = --dir ] && d="$2"; shift; done; [ ! -d "$HX_API/artifacts" ] || cp -R "$HX_API/artifacts/." "$d/" ;;
   "pr merge") [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2; exit "\${HX_GH_MERGE_RC:-0}" ;;
   *) echo "gh stub: unexpected: $*" >&2; exit 1 ;;
 esac
@@ -1130,5 +1131,107 @@ describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and n
     live(h, "garbage line", "r1 start notanumber deadline x");
     expect(h.run().status).toBe(0);
     expect(gates(h).at(-1)).toMatch(/ green gate=\d+s /);
+  });
+});
+
+describe("sapu-merge.sh — the argus smoke check (gate.smokeCheck, opt-in)", () => {
+  const WF = { ".github/workflows/argus-smoke.yml": "name: argus-smoke\n" };
+  const SMOKE_ON = { gate: { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘", smokeCheck: true } };
+  const head = (h: ReturnType<typeof harness>) => execFileSync(REAL_GIT, ["--git-dir", h.bare, "rev-parse", "feat/x"], { encoding: "utf8" }).trim();
+  const put = (h: ReturnType<typeof harness>, name: string, v: unknown) => writeFileSync(join(h.dir, "api", `${name}.json`), JSON.stringify(v));
+  /** GitHub's answers for run 11 of the smoke workflow on the PR's head: `status`/`conclusion`, its jobs, the PR's files and run 11's results. */
+  function smokeRun(h: ReturnType<typeof harness>, { status = "completed", conclusion = "failure", jobs = [["test (chromium)", "failure"]], files = ["src/change.txt"], failing = ["checkout"] }: { status?: string; conclusion?: string | null; jobs?: string[][]; files?: string[]; failing?: string[] } = {}) {
+    put(h, "repos_owner_app_actions_workflows_argus-smoke.yml_runs", { workflow_runs: [{ id: 11, event: "pull_request", status, conclusion, head_sha: head(h), repository: { full_name: "owner/app" }, head_repository: { full_name: "owner/app" } }] });
+    put(h, "repos_owner_app_actions_runs_11_jobs", { jobs: jobs.map(([name, c]) => ({ name, status: "completed", conclusion: c })) });
+    put(h, "repos_owner_app_pulls_7_files", files.map((filename) => ({ filename })));
+    put(h, "repos_owner_app_issues_7", { number: 7, title: "issue 7" }); // the issue the PR closes, as REST shows it
+    const art = join(h.dir, "api", "artifacts", "argus-smoke-results-chromium");
+    mkdirSync(art, { recursive: true });
+    const spec = (title: string) => ({ title, file: `${title}.spec.ts`, tags: [], tests: [{ projectName: "chromium", status: "unexpected", results: [] }] });
+    writeFileSync(join(art, "results.json"), JSON.stringify({ suites: failing.map((t) => ({ file: `${t}.spec.ts`, specs: [spec(t)] })) }));
+  }
+
+  it("off by default: a contract without gate.smokeCheck never asks GitHub about the smoke run, even when it is red", () => {
+    const h = harness({ main: WF });
+    smokeRun(h);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).not.toMatch(/actions\/workflows/);
+    expect(r.err).not.toMatch(/smoke check/);
+  });
+
+  it("red smoke check: exit 5 before the gate runs, nothing merged, the failing journey named", () => {
+    const h = harness({ main: WF, contract: SMOKE_ON });
+    smokeRun(h);
+    const r = h.run();
+    expect(r.status).toBe(5);
+    expect(r.err).toMatch(/smoke check: run 11 red: test \(chromium\) failure — journey checkout failed/);
+    expect(h.gateLog()).not.toContain("gate ran:");
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("--dry-run reports a red smoke check as a refusal", () => {
+    const h = harness({ main: WF, contract: SMOKE_ON });
+    smokeRun(h);
+    const r = h.run({}, ["--dry-run"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/WOULD REFUSE: smoke check: run 11 red/);
+  });
+
+  it("green: merges (a failed quarantine job never gates)", () => {
+    const green = harness({ main: WF, contract: SMOKE_ON });
+    smokeRun(green, { conclusion: "success", jobs: [["test (chromium)", "success"], ["quarantine (chromium)", "failure"]] });
+    const g = green.run();
+    expect(g.status).toBe(0);
+    expect(g.err).toMatch(/smoke check: run 11 green/);
+  });
+
+  it("no CI wiring, or no run on the head: merges (a missing smoke check is not a block)", { timeout: 60_000 }, () => {
+    const unwired = harness({ contract: SMOKE_ON });
+    expect(unwired.run().status).toBe(0);
+    expect(unwired.gh()).not.toMatch(/actions\/workflows/);
+    const missing = harness({ main: WF, contract: SMOKE_ON });
+    put(missing, "repos_owner_app_actions_workflows_argus-smoke.yml_runs", { workflow_runs: [] });
+    const m = missing.run({}, ["--smoke-wait", "0"]);
+    expect(m.status).toBe(0);
+    expect(m.err).toMatch(/no argus-smoke run on [0-9a-f]{12}.*not a block/);
+  });
+
+  it("a pending smoke check is judged again after the gate; still pending once the wait is spent = stop, worktree kept, mergeAfter not-merged", () => {
+    const h = harness({ main: WF, contract: SMOKE_ON });
+    smokeRun(h, { status: "in_progress", conclusion: null });
+    const r = h.run({}, ["--smoke-wait", "0"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/smoke check still pending/);
+    expect(h.gateLog()).toContain("gate ran:");
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.after()).toEqual([`not-merged wt=present src=${h.MAIN}/scripts/after.sh`]);
+    expect(existsSync(h.WT)).toBe(true);
+  });
+
+  it("the deadlock escapes merge a red smoke check: the PR changes the suite, or closes the failing journey's smoke-regression issue", { timeout: 60_000 }, () => {
+    const suite = harness({ main: WF, contract: SMOKE_ON, pr: { "e2e/argus-smoke/quarantine.json": "[]\n" } });
+    smokeRun(suite, { files: ["e2e/argus-smoke/quarantine.json"] });
+    const a = suite.run();
+    expect(a.status).toBe(0);
+    expect(a.err).toMatch(/not a block: the PR changes the suite/);
+    const fix = harness({ main: WF, contract: SMOKE_ON });
+    smokeRun(fix);
+    put(fix, "repos_owner_app_issues_7", { number: 7, title: "smoke-regression:checkout broke at step 2" });
+    const c = fix.run();
+    expect(c.status).toBe(0);
+    expect(c.err).toMatch(/checkout \(this PR closes #7, its smoke-regression issue\)/);
+  });
+
+  it("a smoke check that cannot be judged fails closed: nothing merged", () => {
+    const h = harness({ main: WF, contract: SMOKE_ON });
+    const r = h.run(); // no runs fixture: gh api answers 404
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/smoke check could not be judged/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("--smoke-wait takes whole minutes", () => {
+    expect(harness().run({}, ["--smoke-wait", "x"]).err).toMatch(/--smoke-wait must be a number of minutes/);
   });
 });

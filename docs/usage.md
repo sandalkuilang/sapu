@@ -197,6 +197,23 @@ Its safety properties, each of which you can read in the file:
 
 The generated Playwright config retries a failing test once under CI (`retries: 1`) and runs one worker per job. It sets `forbidOnly`, `trace: "on-first-retry"` and `updateSnapshots: "none"`, so a CI run never writes a baseline. Outside CI it sets `ignoreSnapshots` (the baselines belong to the CI container) and `updateSnapshots: "missing"`. The base URL is `ARGUS_SMOKE_BASE_URL`, else the origin of `ci.web_server[0]`, and the config throws unless its host is loopback: the suite never drives a deployed environment.
 
+#### Gating sapu's merges on it
+
+By default sapu's merge script (`sapu-merge.sh`) ignores the smoke suite: "Gates a merge?" above is about your CI, and only your branch protection turns a red job into a merge block. To make sapu wait for the suite too, opt in on the base branch's contract with `"gate": {…, "smokeCheck": true}`. sapu-merge then reads the newest smoke run on the PR's head before it runs your merge gate:
+
+- **Green** (every `test`, `msedge` and `taste` job passed; the `quarantine` job never counts): it merges as before.
+- **Red**: it stops with exit 5 and names the failing journeys. Nothing is merged.
+- **Still running**: your merge gate runs first, then sapu-merge waits up to 90 minutes for the run (`--smoke-wait <minutes>` changes that; `0` does not wait). Still running after that, it stops without merging: run it again once the run is done.
+- **No run, or no workflow file on the base branch**: not a block. The suite is not set up, or did not run.
+
+A red run does not block when one of these escapes holds, so a red suite never locks out the pull request that fixes it:
+
+1. The PR changes the suite itself (a file under `e2e/argus-smoke/`, or your `dir`): the lane's heal, baseline, quarantine and retire proposals.
+2. Every failing journey is quarantined on the base branch (the run read an older base, before the quarantine merged).
+3. The PR closes the failing journey's regression issue: an issue it closes (`Closes #N`) has `smoke-regression:<id>` in its title.
+
+Escapes 2 and 3 cover journey failures only. A red `taste` job, a sign-in that failed, a cancelled job, or a failure no journey explains (a broken `npm ci`) still blocks, unless escape 1 holds. When sapu cannot read the run at all, it does not merge. The details are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md#the-smoke-check).
+
 #### A smoke cycle
 
 `/journey smoke` runs the commands below in this order. You rarely type them: they belong to the orchestrator, and the guard refuses all of them to a subagent except `smoke check`. Run one yourself as `node "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" <command>` from the main checkout.

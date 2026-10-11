@@ -39,7 +39,7 @@
 //     deleted (that is a change to what the agent may do);
 //   * the files that ENFORCE the rules, changed at all or deleted (ENFORCEMENT_FILES): the hook
 //     wiring (plugins/sapu/hooks/hooks.json), the Bash guard (sapu-guard.mjs), the merge path
-//     (sapu-merge.sh), the contract loader (sapu-contract.mjs), the wave runner (sapu-wave.js),
+//     (sapu-merge.sh, and sapu-smoke-gate.mjs, which judges its smoke check), the contract loader (sapu-contract.mjs), the wave runner (sapu-wave.js),
 //     the engine scan and context budgets (tests/engine.test.ts), and this guard with its own
 //     test. A rule an agent obeys is only as strong as the code that enforces it, and a small
 //     edit to that code weakens it as surely as deleting a "never" — so no diff of these files
@@ -80,6 +80,7 @@ export const ENFORCEMENT_FILES: Readonly<Record<string, string>> = {
   [HOOKS_FILE]: "it wires the plugin's guard hook",
   "plugins/sapu/scripts/sapu-guard.mjs": "it is the Bash guard of every sapu agent",
   "plugins/sapu/scripts/sapu-merge.sh": "it is the merge path of every PR",
+  "plugins/sapu/scripts/sapu-smoke-gate.mjs": "it decides whether a red smoke check blocks a merge",
   "plugins/sapu/scripts/sapu-contract.mjs": "it loads and enforces the repo contract",
   "plugins/sapu/workflows/sapu-wave.js": "it runs every wave: workers, reviews, fix cycles",
   "plugins/sapu/scripts/sapu-cleanup.mjs": "it deletes branches and worktrees",

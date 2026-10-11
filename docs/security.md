@@ -121,6 +121,8 @@ Known limits, in short: process groups bound every kill and listing, so a proces
 
 **Healing is reviewed.** A heal changes only how an action finds its control, at most `heal_max_steps` of them; it cannot add a step, change an expectation or a value, add a wait or skip a test. It is decided by re-running the unchanged expectations, never applied while a test runs, and arrives only as a pull request showing the old and new target.
 
+**The merge gate.** With `gate.smokeCheck` on, `sapu-merge.sh` reads the smoke run of the PR's head through `sapu-smoke-gate.mjs`. What decides comes from the base branch (the workflow file, `.argus/smoke.json`, `quarantine.json`) and from GitHub (the run and its jobs), never from the PR's tree, so a PR cannot widen its own escapes. Only runs of your repository from a pull request count, never a fork's or a baseline dispatch. Results artifacts are read by name and shape like `smoke ci` reads them, and only journey ids are printed. An issue title is tested inside `jq` for `smoke-regression:<id>`, never printed. The escapes have a known edge: a trusted PR that touches the suite directory is not blocked by a red run, whatever else it changes. Anything sapu cannot read stops the merge.
+
 **The commands.** The `smoke` verbs other than `check`, and `seed` and `report`, are the orchestrator's: the guard refuses them to every subagent. `smoke check` writes nothing and may be run by one. `smoke retire` records your ruling that a journey's break was intended, so the orchestrator runs it only on your word. The explorer's `pw` wrapper is unchanged; a seed token adds the read-only `source` command.
 
 Known limits, in short:

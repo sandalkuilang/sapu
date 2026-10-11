@@ -384,6 +384,7 @@ describe("what enforces the rules is ratcheted: any edit or deletion needs a tra
       "plugins/sapu/scripts/sapu-contract.mjs",
       "plugins/sapu/scripts/sapu-guard.mjs",
       "plugins/sapu/scripts/sapu-merge.sh",
+      "plugins/sapu/scripts/sapu-smoke-gate.mjs",
       "plugins/sapu/workflows/inspector.js",
       "plugins/sapu/workflows/sapu-wave.js",
       "scripts/rule-guard.ts",
