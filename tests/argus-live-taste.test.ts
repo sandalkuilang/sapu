@@ -469,6 +469,23 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     expect(last(repro({ ...TASTE, final: undefined }))).toMatch(/^refused: repro: step 2: the last step must be an expect naming its oracle/);
   });
 
+  it("the explorer's trail: one row a step, in short fixed fields the Curator's walkthrough reads; validated", () => {
+    const A = { "customer.1": "buyer1@example.test" };
+    const base = { journey: "order-to-cash", status: "done" };
+    const ok = { step: 1, goal: "place an order", clicks: 2, words_shown: "New order", new_state: "Order placed" };
+    const check = (trail: unknown) => validateReturn({ ...base, trail }, { journey: "order-to-cash", accounts: A, outFiles: [] });
+    expect(check([ok])).toEqual({ value: expect.objectContaining({ trail: [ok] }), errors: [] });
+    expect(validateReturn(base, { journey: "order-to-cash", accounts: A, outFiles: [] }).value.trail).toBeUndefined();
+    for (const [bad, why] of [
+      [{ ...ok, step: 0 }, "trail[0].step must be a step number from 1 to 100"],
+      [{ ...ok, clicks: "2" }, "trail[0].clicks must be a count from 0 to 99"],
+      [{ ...ok, words_shown: "x".repeat(121) }, "trail[0].words_shown must be a string of at most 120 characters"],
+      [{ ...ok, new_state: "line\nbreak" }, "trail[0].new_state must be a string of at most 120 characters"],
+      [{ ...ok, goal: undefined }, "trail[0].goal must be a string of at most 120 characters"],
+      [{ ...ok, why: "free text" }, 'trail[0]: unknown key "why"'],
+    ] as [Obj, string][]) expect(check([bad]).errors, why).toEqual([why]);
+  });
+
   it("validateCurator locks the Curator's return: verdicts, leads, substitutions per screen, and a walkthrough in fixed words", () => {
     const ok = {
       verdicts: [{ row: "t1", verdict: "confirm", reason: "" }, { row: "t12", verdict: "polish", reason: "minor" }],

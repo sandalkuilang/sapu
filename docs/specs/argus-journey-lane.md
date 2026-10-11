@@ -367,7 +367,8 @@ the budget and the deadline); its StructuredOutput is only `{status, slot}`. Sch
 `{ journey, status: "done"|"handoff"|"aborted", roles, steps: [{role, action, locator, saw,
 off_goal}], created: [markers], values: [{marker, field, role, value, from}], candidates: [{claim,
 oracle, measured, roles, observed, expected, repro, screenshots[], h2h3}], cw: [{step, q1, q2, q3,
-q4}], coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events, next, notes }`;
+q4}], trail?: [{step, goal, clicks, words_shown, new_state}] (phase 7: the Curator's walkthrough input,
+`clicks` a count, each text at most 120 characters), coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events, next, notes }`;
 a candidate's `repro` is the list §10 describes, at most 100 elements. A map slot's return is the map
 itself (§6, `validateMap`), answered `submitted: slot <n> generation <g> map journeys <k>`.
 The orchestrator reads it only through `argus-live.mjs intake <slot>`, which prints, per generation,

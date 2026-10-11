@@ -59,6 +59,8 @@ Each verdict is a measurement put in `measured`; `held` without its number count
 
 One `cw` row per step, re-walked on the trail's snapshots for the action that completed the goal, each question answered only by an observable: Q1 trying — this step's handoff signal held, or it is the first step; Q2 sees — the control is on the role's landing page or reached through visible navigation (clicks counted; reached first by a typed URL, a search or code knowledge = fail); Q3 recognises — the control's accessible name or section heading uses a term the app itself showed for this goal; Q4 feedback — within `settle_ms` the page names the new state. Reaching the goal is not evidence; code knowledge never answers a question.
 
+Beside it, one `trail` row per step reached, the Curator's walkthrough reads only these: `{step, goal, clicks, words_shown, new_state}`, `clicks` a number (from the role's landing page to the control), the three texts at most 120 characters each, `words_shown` the control's name or heading as the app showed it, `new_state` as the page named it (else `none`).
+
 ## Repro lists
 
 A candidate's `repro` is data the runner replays on a fresh instance: at most 100 elements. The first may be `{"context": {"viewport": <200–4000>, "locale": "<BCP 47>", "timezone": "<IANA>"}}`; every other is a step or `{"parallel": [steps…]}`.
@@ -132,6 +134,7 @@ Submit your trail as usual, plus `heal` (`step` the path's step number, `target`
 
 ```json
 { "journey": "order-to-cash", "status": "done", "roles": ["customer.1"],
+  "trail": [ { "step": 3, "goal": "submit the order", "clicks": 2, "words_shown": "Submit order", "new_state": "Order placed" } ],
   "heal": [ { "step": 3, "target": "getByRole('button', { name: 'Submit order' })" } ] }
 ```
 
@@ -143,7 +146,7 @@ Submit your trail as usual, plus `heal` (`step` the path's step number, `target`
 
 Submit once, with `pw '<token>' submit '<json>'` (the JSON on one line, at most 256 KB):
 
-`{journey, status: "done"|"handoff"|"aborted", roles: [<role>.<k>], steps: [{role, action, locator, saw, off_goal}], created: [<marker>], values: [{marker, field, role, value, from}], candidates: [{claim, oracle, measured, roles, observed, expected, repro, screenshots: [<file name the screenshot printed>], h2h3}], cw: [{step, q1, q2, q3, q4}], coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events: [<text>], next, notes, path?, heal?, heal_reason?}`
+`{journey, status: "done"|"handoff"|"aborted", roles: [<role>.<k>], steps: [{role, action, locator, saw, off_goal}], created: [<marker>], values: [{marker, field, role, value, from}], candidates: [{claim, oracle, measured, roles, observed, expected, repro, screenshots: [<file name the screenshot printed>], h2h3}], cw: [{step, q1, q2, q3, q4}], trail: [{step, goal, clicks, words_shown, new_state}], coverage: {<oracle>: "held"|"failed"|"not-tested"|"blocked"}, harness_events: [<text>], next, notes, path?, heal?, heal_reason?}`
 
 Free text is capped at 500 characters; at most 20 candidates. `values[].value`, `candidates[].measured` and every `cw` field are JSON strings (`"49.5"`, never `49.5`; `"yes"`, never `true`). A refused return names its fault and leaves your token live: fix it and submit again. `submitted: …` ends your work. Your final answer is only `{"status": "<status>", "slot": <n>}` (StructuredOutput when you have it).
 

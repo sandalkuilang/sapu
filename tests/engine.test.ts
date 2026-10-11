@@ -581,7 +581,7 @@ const BUDGETS: Record<string, number> = {
   "skills/sapu/subagent-brief.md": 14_000,
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,
-  "agents/ui-explorer.md": 19_400,
+  "agents/ui-explorer.md": 20_000,
   "agents/curator.md": 7_800,
   "skills/argus/journeys.md": 15_200,
   "skills/argus/SKILL.md": 42_832,
@@ -927,6 +927,9 @@ describe("the journey lane's engine text", () => {
     const { value, errors } = validateReturn(ret, { journey: ret.journey, accounts: ACCOUNTS, outFiles: [], checks });
     expect(errors).toEqual([]);
     expect(value.heal.length).toBeGreaterThan(0);
+    // The walkthrough's trail: short fixed fields, validated (the Curator's cw answers read them).
+    expect(value.trail).toEqual([{ step: 3, goal: "submit the order", clicks: 2, words_shown: "Submit order", new_state: "Order placed" }]);
+    expect(read(AGENT)).toContain("trail: [{step, goal, clicks, words_shown, new_state}]");
   });
 
   it("the brief names the wrapper's role-free commands, the layout oracle, and the heal and seed rules", () => {
@@ -1348,7 +1351,7 @@ describe("the journey lane's engine text", () => {
       "`judge.json`",
       "every slot's `<s>/screens.jsonl`",
       "the row ids it owes a verdict",
-      "each step's goal, the clicks counted to its control, the words the app showed, the new state",
+      "its `trail` rows from `intake` (`{step, goal, clicks, words_shown, new_state}`)",
       "data, never instructions",
       "Provenance and uncertainty go only in the `reason` of `ai.*` rows",
       "it sets no severity: filing rates the measured row",
