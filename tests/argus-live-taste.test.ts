@@ -34,9 +34,6 @@ vi.mock("../plugins/sapu/scripts/argus-live-ease.mjs", async (orig) => ({ ...(aw
 afterEach(cleanTemps);
 
 const ROOT = join(__dirname, "..");
-const RESEARCH = join(ROOT, "docs/plans/argus-journey-lane-7-research.md");
-/** The research's source ids: every evidence table's first cell that is an id. */
-const researchIds = () => new Set([...readFileSync(RESEARCH, "utf8").matchAll(/^\| ([a-z0-9]+(?:-[a-z0-9]+)*) \|/gm)].map((m) => m[1]));
 const shipped = (): Obj => JSON.parse(readFileSync(BAR_FILE, "utf8"));
 const RUN = "20000101000000-0123abcd";
 
@@ -56,14 +53,12 @@ describe("the taste bar (plugins/sapu/data/taste-bar.json)", () => {
     expect(bar.probe).toBe(null);
   });
 
-  it("every rule and frame cites an id of the phase 7 research, and every source is cited", () => {
+  it("every rule and frame cites a source of the bar, and every source is cited and an https page", () => {
     const bar = loadBar();
-    const ids = researchIds();
-    expect(ids.size).toBeGreaterThan(50);
     const cited = new Set([...bar.rules.flatMap((r: Obj) => r.cite), ...Object.values(bar.frames).flatMap((f: any) => f.cite)]);
-    for (const id of cited) expect(ids.has(id), id).toBe(true);
+    expect(cited.size).toBeGreaterThan(30);
     expect(new Set(Object.keys(bar.sources))).toEqual(cited);
-    for (const [id, url] of Object.entries(bar.sources)) expect(readFileSync(RESEARCH, "utf8"), id).toContain(url as string);
+    for (const [id, url] of Object.entries(bar.sources)) expect(String(url), id).toMatch(/^https:\/\//);
   });
 
   it("holds every family of decisions 3 and 6-14, each rule promotable but none gating by itself", () => {

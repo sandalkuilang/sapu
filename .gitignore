@@ -3,3 +3,7 @@ node_modules/
 .claude/worktrees/
 # local, per maintainer: names of the consumer repos this checkout must never mention (tests/engine.test.ts)
 .sapu-banned
+# internal design notes (plans, specs, research): kept local, never committed
+/docs/plans/
+/docs/specs/
+/.internal/
