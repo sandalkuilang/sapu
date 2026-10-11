@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Log in</title></head>
+<body>
+<main>
+<!-- QA's sign-in page: Continue on a form of credentials alone, and an informational dialog's lone OK. -->
+<h1>Log in to Acme</h1>
+<form onsubmit="return false"><label>Email <input type="email" name="email"></label><button>Continue</button></form>
+<dialog open aria-label="Session"><p>Your session has expired.</p><form method="dialog"><button>OK</button></form></dialog>
+</main>
+</body></html>

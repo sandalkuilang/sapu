@@ -330,7 +330,9 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     const at = rects.find((x) => Math.round(x.r.left) === ref).r;
     for (const { k, r } of rects) {
       const dx = Math.round(Math.abs(r.left - at.left) * 10) / 10;
-      if (dx >= 0.5 && dx <= 8 && Math.abs(r.left + r.width / 2 - (at.left + at.width / 2)) > 0.5) alignment.push({ key: keyOf(k), dx });
+      // Optical alignment: large type pulled left by its own negative margin, by at most max(3 px, 0.06em), is intended.
+      const optical = (typed(k, "margin-left") || 0) < 0 && dx <= Math.max(3, 0.06 * num(cs(k).fontSize));
+      if (dx >= 0.5 && dx <= 8 && !optical && Math.abs(r.left + r.width / 2 - (at.left + at.width / 2)) > 0.5) alignment.push({ key: keyOf(k), dx });
     }
   }
   // Section gaps: the vertical gaps between the main region's stacked children.

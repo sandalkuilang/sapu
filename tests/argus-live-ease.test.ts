@@ -493,6 +493,8 @@ describe("argus-live ease — copy", () => {
     const en = judged(await record(await open("vague.html?lang=en-GB")));
     expect(en.map((f: Obj) => [f.rule, f.key, f.measured])).toEqual([["copy.vague", "dialog|OK", "OK"], ["copy.vague", "form|Submit", "Submit"]]);
     expect(judged(await record(await open("vague.html?lang=de")))).toEqual([]);
+    // A sign-in step's Continue and an informational dialog's lone OK name no object to commit to: silent (QA's sign-in page).
+    expect(judged(await record(await open("vague-context.html")))).toEqual([]);
     expect(judged(await record(await open("vague.html?lang=en&submit=Save%20settings&confirm=Leave")))).toEqual([]);
     // The owner's own labels count in any language.
     const own = await record(await open("vague.html?lang=de&submit=Absenden&confirm=Leave"), { vague: ["Absenden"] });

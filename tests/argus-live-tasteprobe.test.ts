@@ -558,11 +558,11 @@ describe("argus-live-taste.mjs — motion (T1.3)", () => {
 });
 
 describe("argus-live-taste.mjs — density (T1.3)", () => {
-  it("three button heights on a screen and two tables' row heights are derived; a wrapped label, two field heights and a header row hold [cloudscape-density]", async () => {
+  it("four button heights on a screen and two tables' row heights are derived; three sizes (sm, md, lg), a wrapped label, two field heights and a header row hold [cloudscape-density]", async () => {
     for (const id of ["density.control-heights", "density.row-heights"]) expect(ruleOf(id).class, id).toBe("derived");
     const rows = (await rowsOf("density.html", null)).filter((r: Obj) => r.rule.startsWith("density."));
     expect(rows).toEqual([
-      { rule: "density.control-heights", key: "button", measured: "3 heights: 28, 36, 44 px", expected: "at most 2" },
+      { rule: "density.control-heights", key: "button", measured: "4 heights: 28, 36, 44, 56 px", expected: "at most 3" },
       { rule: "density.row-heights", key: "tables", measured: "2 row heights: 32, 48 px", expected: "one" },
     ]);
     expect((await rowsOf("density-twin.html", null)).filter((r: Obj) => r.rule.startsWith("density."))).toEqual([]);

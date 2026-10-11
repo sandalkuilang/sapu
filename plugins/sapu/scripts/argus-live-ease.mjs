@@ -364,8 +364,13 @@ export const EASE_SOURCE = String.raw`(arg) => {
       for (const c of [...list].filter((x) => !seen.has(x) && seen.add(x) && shown(x))) if (want.has(nameOf(c).toLowerCase()) && !out.some((o) => o.key === keyOf(where, nameOf(c)))) out.push({ key: keyOf(where, nameOf(c)), name: nameOf(c) });
     };
     if (!want.size) return out;
-    for (const d of doc.querySelectorAll(DIALOG)) if (shown(d)) pick("dialog", d.querySelectorAll("button, [role=button], input[type=button], input[type=submit]"));
-    for (const f of doc.querySelectorAll("form")) pick("form", f.querySelectorAll("button:not([type]), button[type=submit], input[type=submit]"));
+    // A vague label commits an action whose object the page names: never the one button of an informational dialog
+    // (an acknowledgement), nor a sign-in step's submit (Continue on a form of credentials alone).
+    const BUTTONS = "button, [role=button], input[type=button], input[type=submit]";
+    for (const d of doc.querySelectorAll(DIALOG)) if (shown(d) && [...d.querySelectorAll(BUTTONS)].filter(shown).length > 1) pick("dialog", d.querySelectorAll(BUTTONS));
+    const CREDENTIAL = "input[type=password], input[type=email], input[autocomplete~=username], input[autocomplete~=one-time-code], input[autocomplete~=email], input[name*=otp i]";
+    const signIn = (f) => { const fields = [...f.elements].filter((x) => /^(INPUT|SELECT|TEXTAREA)$/.test(x.tagName) && !/^(hidden|submit|button|reset|checkbox)$/i.test(x.type) && shown(x)); return fields.length > 0 && fields.every((x) => x.matches(CREDENTIAL)); };
+    for (const f of doc.querySelectorAll("form")) if (!signIn(f) && !f.closest(DIALOG)) pick("form", f.querySelectorAll("button:not([type]), button[type=submit], input[type=submit]"));
     return out;
   };
   const boxOf = (el) => el.closest("section, article, main, aside, form, [role=region], [role=main], [role=complementary], [role=form], [role=search]") || el.parentElement;
