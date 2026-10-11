@@ -99,11 +99,22 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   try {
     const vp = page.viewportSize();
     const width = vp && vp.width ? vp.width : await page.evaluate("innerWidth");
-    const at = width === S.width && routeOf(new URL(page.url()).pathname, S.routes) === S.route;
+    const here = routeOf(new URL(page.url()).pathname, S.routes);
+    const at = width === S.width && here === S.route;
     const P = S.probe;
-    const key = P ? routeOf(new URL(page.url()).pathname, S.routes) + "|" + width + "|" + (await ev(P.media)).colorScheme : null;
-    const firstHere = Boolean(P) && P.screens.includes(key) && !P.skip.includes(key);
-    if (at || firstHere) await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
+    // A recorded screen of the journey (its route and width): only there is the page's scheme read, and a read that
+    // fails (a page mid-navigation) measures nothing first, never costing the rows their measurement.
+    const recorded = Boolean(P) && P.screens.some((k) => k.startsWith(here + "|" + width + "|"));
+    if (at || recorded) await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
+    let key = null;
+    if (recorded) {
+      try {
+        key = here + "|" + width + "|" + (await ev(P.media)).colorScheme;
+      } catch (e) {
+        key = null;
+      }
+    }
+    const firstHere = key !== null && P.screens.includes(key) && !P.skip.includes(key);
     // The form case (RECOVERY_SOURCE) on the screen's first form with a submit: each field the refusal lost.
     const SUBMIT = "button:not([type]), button[type=submit], input[type=submit]";
     const recover = async () => {
