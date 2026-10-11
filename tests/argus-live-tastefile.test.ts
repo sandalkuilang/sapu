@@ -361,6 +361,25 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     expect(closed.created().map((c) => c.title)).toEqual([`[polish] cycle ${u.runId} — 1 coherence items`]);
   });
 
+  it("one issue per rule and route: the same rule at several viewports of a route is one finding, its viewports listed", async () => {
+    const t = cycle();
+    const SMALL = "/orders/:id|390|light";
+    const broken = (k: number, screen: string) => row(k, { rule: "copy.broken", class: "implicit", screen, measured: 1, expected: 0, witnesses: [] });
+    judged(t, [broken(1, ORDER), broken(2, SMALL)]);
+    const gh = fakeGh();
+    const r = await file(t, gh);
+    expect(gh.created().map((c) => c.title.split(" ")[0])).toEqual(["taste:copy.broken:/orders/:id"]);
+    expect(gh.created()[0].body).toContain("Viewport: 1440 × light; 390 × light");
+    expect(r.lines).toContain("filed: https://github.com/o/r/issues/101 taste:copy.broken:/orders/:id (S3)");
+    for (const sc of [ORDER, SMALL]) expect(rowsOf(t)[tk("copy.broken", sc)]).toMatchObject({ state: "open", issue: "https://github.com/o/r/issues/101" });
+    // Next time, a new viewport of that route finds the issue by the route's title key: never a second issue.
+    const u = cycle();
+    judged(u, [broken(1, "/orders/:id|768|light")]);
+    const again = fakeGh(gh.issues);
+    await file(u, again);
+    expect(again.created()).toEqual([]);
+  });
+
   it("a bar row is filed only with an internal witness", async () => {
     const t = cycle();
     judged(t, [

@@ -198,7 +198,7 @@ function bodyOf(g, { runId, judge, bar, earlier }) {
     `Taste and usability finding of run ${runId}: rule ${code(g.rule.id)} (${g.rule.metric}) on ${code(routeOf(g.screen))}, confirmed two of two: the taste pass measured it, and a replay on a fresh instance measured it again.`,
     "",
     `Journey: ${[...g.journeys].map(code).join(", ")}`,
-    `Viewport: ${viewportOf(g.screen)}`,
+    `Viewport: ${(g.viewports ?? [viewportOf(g.screen)]).join("; ")}`,
     `Measured: ${measured}; taste-bar ${judge.bar}`,
     `Class: ${g.rule.class} (${CLASS_WORDS[g.rule.class]})`,
     `Severity: ${g.severity} (${g.why})`,
@@ -236,7 +236,8 @@ function issueFor(g, issues, seen) {
   const urls = new Set(g.prior.map((p) => p.issue).filter(Boolean));
   const byUrl = issues.filter((i) => urls.has(i.url));
   if (byUrl.length) return byUrl.find((i) => i.state === "OPEN") ?? byUrl[0];
-  const keys = [g.key, defang(redactIds(g.key, seen).text).text];
+  // The screen's own key, and its route's (a row of the rule filed for several viewports of the route at once).
+  const keys = [g.key, titleKey(g.rule.id, routeOf(g.screen))].flatMap((k) => [k, defang(redactIds(k, seen).text).text]);
   const named = issues.filter((i) => keys.some((k) => i.title === k || i.title.startsWith(`${k} `)));
   return named.find((i) => i.state === "OPEN") ?? named.find((i) => i.stateReason === "NOT_PLANNED" || i.stateReason === "DUPLICATE") ?? named[0] ?? null;
 }
@@ -423,10 +424,22 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     return null;
   };
 
-  let stop = 0;
+  // One issue per rule and route: the same rule on one route at several viewports or themes is one finding (each
+  // member keeps its own state row, under its own screen's title key).
+  const byRoute = new Map();
   for (const g of single.sort(byRank)) {
+    const k = `${g.rule.id}\n${routeOf(g.screen)}`;
+    byRoute.set(k, [...(byRoute.get(k) ?? []), g]);
+  }
+  const clusters = [...byRoute.values()].map((ms) => {
+    if (ms.length === 1) return { ...ms[0], members: ms };
+    const [lead] = ms;
+    return { ...lead, members: ms, key: titleKey(lead.rule.id, routeOf(lead.screen)), viewports: ms.map((m) => viewportOf(m.screen)), rows: ms.flatMap((m) => m.rows), journeys: new Set(ms.flatMap((m) => [...m.journeys])), owner: [...new Set(ms.flatMap((m) => m.owner))] };
+  });
+  let stop = 0;
+  for (const g of clusters) {
     if (stop || budget <= 0) {
-      queue(g, stop ? "not filed: the filing stopped" : `over the cap of ${capN}`);
+      for (const m of g.members) queue(m, stop ? "not filed: the filing stopped" : `over the cap of ${capN}`);
       continue;
     }
     const cls = classify({ oracle: "taste", tasteClass: g.rule.class, cost: num(g.cost) && g.cost >= costS });
@@ -434,10 +447,10 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     const url = await fileThrough(g.rows[0].row, titleOf(g), bodyOf(g, { runId, judge, bar, earlier: g.earlier }), labels, shotOf(g.rows[0].screen));
     if (!url) {
       stop = 1;
-      queue(g, "not filed: scrub refused it");
+      for (const m of g.members) queue(m, "not filed: scrub refused it");
       continue;
     }
-    put(g, "open", url);
+    for (const m of g.members) put(m, "open", url);
     save();
     lines.push(`filed: ${url} ${g.key} (${g.severity}${g.owner.length ? ", needs-owner" : ""})`);
     count.filed += 1;
