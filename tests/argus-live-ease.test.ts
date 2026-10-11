@@ -457,7 +457,7 @@ describe("argus-live ease — states: the routed fault, success, recovery, empty
 });
 
 describe("argus-live ease — copy", () => {
-  it("copy.broken: every unrendered token fires once per line; code, prose and hidden twins hold", async () => {
+  it("copy.broken: every unrendered token fires once per line, a value word only where a value stands; code, prose, docs and hidden twins hold", async () => {
     const broken = judged(await record(await open("copy-broken.html")));
     expect(broken.map((f: Obj) => f.key)).toEqual([
       "undefined|Status undefined, quantity undefined",
@@ -467,10 +467,14 @@ describe("argus-live ease — copy", () => {
       "{{|Hello {{ user.name }}",
       "%s|Shipped to %s",
       "null|Coupon: null",
-      "undefined|Search undefined",
+      "undefined|undefined",
+      "NaN|Quantity",
     ]);
     expect(broken.every((f: Obj) => f.rule === "copy.broken" && f.expected === "no unrendered value")).toBe(true);
     expect(judged(await record(await open("copy-clean.html")))).toEqual([]);
+    // A value word counts only where a value stands: a reference page's prose, its table's Default column, a word
+    // part (NaN-safe) and template syntax explained in a paragraph hold.
+    expect(judged(await record(await open("copy-prose.html")))).toEqual([]);
   }, 60_000);
 
   it("copy.vague: a form's submit and a dialog's confirm named only from the list fire under a matching lang only", async () => {
@@ -598,6 +602,6 @@ describe("argus-live ease — easeOf", () => {
   it("answers the screen kind of the page it is given", async () => {
     const s = await easeOf(await open("copy-broken.html"));
     expect(s.route).toBe("/copy-broken.html");
-    expect(s.copy).toHaveLength(8);
+    expect(s.copy).toHaveLength(9);
   }, 60_000);
 });

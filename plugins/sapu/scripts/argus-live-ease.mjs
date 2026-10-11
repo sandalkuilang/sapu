@@ -297,14 +297,27 @@ export const EASE_SOURCE = String.raw`(arg) => {
   const CTRL = "a[href], button, input[type=button], input[type=submit], input[type=reset], [role=button], [role=link]";
   const controls = (root) => (root ? [...root.querySelectorAll(CTRL)].filter((c) => shown(c) && !c.disabled) : []);
   const DIALOG = "dialog, [role=dialog], [role=alertdialog]";
-  const TOKENS = [["undefined", /(^|[^\w-])undefined(?![\w-])/, /\b(is|are|was|were|be|been|remains|stays|left)\s+undefined\b/i], ["NaN", /\bNaN\b/], ["[object Object]", /\[object Object\]/], ["Invalid Date", /\bInvalid Date\b/], ["{{", /\{\{\s*[\w.$]+\s*\}\}/], ["%s", /(^|\s)%s(?=$|[\s.,:;!?)])/], ["null", /^\s*null\s*$|(^|[:=$\u20ac\u00a3\u00a5(])\s*null(?=\s*($|[),.;:!?\]]))/]];
+  // A value word (undefined, NaN, null) is broken copy only where a value stands: an element's whole text, a field's
+  // whole value, or right after a value's marker ("Total: NaN", "= null", "$undefined"); never inside prose, never in a
+  // reference table's value column (Default, Type, Returns...), never a word part ("NaN-safe"). A "{{ }}" is not broken
+  // inside a block about templates or syntax.
+  const TOKENS = [["undefined", /^\s*undefined\s*$|(^|[:=$€£¥(])\s*undefined(?![\w-])/, true], ["NaN", /^\s*NaN\s*$|(^|[:=$€£¥(])\s*NaN(?![\w-])/, true], ["[object Object]", /\[object Object\]/], ["Invalid Date", /\bInvalid Date\b/], ["{{", /\{\{\s*[\w.$]+\s*\}\}/], ["%s", /(^|\s)%s(?=$|[\s.,:;!?)])/], ["null", /^\s*null\s*$|(^|[:=$€£¥(])\s*null(?=\s*($|[),.;:!?\]]))/, true]];
+  const BLOCK = "p, li, td, th, dd, dt, h1, h2, h3, h4, h5, h6, label, button, a, figcaption, legend";
+  const valueColumn = (el) => {
+    const td = el.closest("td");
+    const table = td && td.closest("table");
+    const head = table && table.querySelector("thead tr");
+    const th = head ? head.children[[...td.parentElement.children].indexOf(td)] : null;
+    return Boolean(th) && /default|value|type|return|example/i.test(th.textContent || "");
+  };
   const copy = () => {
     const out = [];
     const SKIP = "script, style, noscript, template, code, pre, kbd, samp, var, textarea, [contenteditable]";
-    const check = (text, el, attr) => {
-      const hit = TOKENS.find(([, re, prose]) => re.test(text) && !(prose && prose.test(text)));
+    const check = (text, el, attr, name) => {
+      const block = norm((el.closest(BLOCK) || el).innerText || text);
+      const hit = TOKENS.find(([word, re, valueWord]) => re.test(text) && !(valueWord && !attr && valueColumn(el)) && !(word === "{{" && /template|syntax|interpolat|placeholder|mustache|handlebars/i.test(block)));
       if (!hit) return;
-      const ctx = norm(attr ? text : (el.closest("p, li, td, th, dd, dt, h1, h2, h3, h4, h5, h6, label, button, a, figcaption, legend") || el).innerText || text).slice(0, 80);
+      const ctx = (name || (attr ? text : block)).slice(0, 80);
       const key = keyOf(hit[0], ctx.slice(0, 60));
       if (out.length < 50 && !out.some((o) => o.key === key)) out.push({ key, text: ctx });
     };
@@ -313,6 +326,8 @@ export const EASE_SOURCE = String.raw`(arg) => {
     for (let n = w.nextNode(); n; n = w.nextNode()) if (n.parentElement && /\S/.test(n.data) && !n.parentElement.closest(SKIP) && shown(n.parentElement)) check(n.data, n.parentElement);
     for (const el of doc.querySelectorAll("input[placeholder], textarea[placeholder]")) if (shown(el)) check(el.getAttribute("placeholder"), el, true);
     for (const el of doc.querySelectorAll("input[type=button], input[type=submit]")) if (shown(el)) check(el.value, el, true);
+    // A field showing a value word as its whole value (read to compare, never kept: the key names the field's label).
+    for (const el of doc.querySelectorAll("input:not([type]), input[type=text], input[type=number], input[type=email], input[type=search], input[type=tel], input[type=url]")) if (shown(el) && /^\s*(undefined|NaN|null)\s*$/.test(el.value)) check(el.value, el, true, safeName(el));
     return out;
   };
   // The labels a vague one is named from: the owner's, and the bar's for the page's language (none: not measured).

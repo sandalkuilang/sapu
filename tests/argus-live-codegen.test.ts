@@ -335,7 +335,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
     "refund.spec.ts": "0125b0b69225d90ac7fb27f00883bf49d214bb65de27336bdda05514271344ec",
-    "support.ts": "44768e3f119daec4fce04fe3a62fed77fc5f85ac659e38dc7d1c17d81517dd69",
+    "support.ts": "e7b52e73b84b2d7d5f3b0d09b35acb7f8bc8ab5d1c1809910af704f202b613ca",
   };
 
   it("leaves every generated file byte-identical", () => {
