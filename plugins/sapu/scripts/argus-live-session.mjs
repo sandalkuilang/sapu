@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AIUX_SOURCE } from "./argus-live-aiux.mjs";
-import { openSession, PAGE_INIT, SIGNAL_SCRIPT, writeInitPayload } from "./argus-live-browser.mjs";
+import { openSession, PAGE_INIT, SIGNAL_SCRIPT, TASTE_WORLD, writeInitPayload } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { EASE_SOURCE } from "./argus-live-ease.mjs";
@@ -22,6 +22,7 @@ import { writeVerdict } from "./argus-live-scrub.mjs";
 import { readSlotState, stillLive } from "./argus-live-slots.mjs";
 import { censusOf } from "./argus-live-taste.mjs";
 import { loadBar, loadTaste, MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault, tasteOff } from "./argus-live-tastecfg.mjs";
+import { WORLD_EVAL } from "./argus-live-world.mjs";
 
 /** The CLI's answer when the session's browser is gone (0.1.22: "The browser '<name>' is not open, please run open first"). */
 const NOT_OPEN = /is not open, please run open first/;
@@ -206,9 +207,6 @@ export const MAIN_ROWS = `(() => {
   return most;
 })()`;
 
-/** A page expression → once the CSS transitions now running finished (a theme switch's), 0. */
-export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.then(() => 0, () => 0))).then(() => 0)`;
-
 /**
  * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the same
  * state as the last observation (`T.prev`, the sha256 of its URL and ARIA snapshot, as the loop rule hashes it) →
@@ -216,20 +214,21 @@ export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a ins
  * its change can fall in two observations). Else the ease probe's `screen` kind first (`T.ease` with `T.easeArg`:
  * the bar's vague terms and the owner's labels; no palette probe, which would type on the explorer's page), the AI
  * probe's `screen` kind (`T.ai`, when the payload names it: what the document's AI-surface recorder counted, read,
- * never acted), then
- * the taste events drained (TASTE_DRAIN). Then the screen: its route
- * template, width and theme (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
+ * never acted), then the taste events drained (TASTE_DRAIN). Then the screen: its route template, width and theme
+ * (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
  * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
  * stage body of `page`), a text past `T.maxText` unread), taken before anything else touches the page; the census
- * (`T.census`, the source of argus-live-taste.mjs censusOf: the page's own scheme, the other one and reduced motion,
- * the media put back as it read them, never null); the rows of `main`'s largest
- * table (`T.rows`); on a themed page (the census's `themes` `dual`) the other scheme's screenshot, once its
- * transitions settled (at most `T.settleMax`), the explicit media restored after; then the events the census and that
- * switch caused drained and dropped. A probe that throws is a `faults` entry, never a failure.
+ * (`T.census`, the source of argus-live-taste.mjs censusOf, with `other: false`: the page's own scheme only, its
+ * media never switched on the explorer's page, so `themed` is always false: the other scheme and reduced motion are
+ * the confirmation replay's to measure, on a fresh instance); the rows of `main`'s largest table (`T.rows`). Every read
+ * runs in the recorders' own world (`T.world`, argus-live-world.mjs WORLD_EVAL, which also hands the probes the
+ * requests the driver timed), the page's own only without it. A probe that throws is a `faults` entry, never a failure.
  */
 export const RECORDER = `async (page, o, T) => {
   const t0 = Date.now();
-  const ev = (expr) => page.evaluate(expr);
+  // Reads go to the recorders' own world (T.world, argus-live-world.mjs WORLD_EVAL); to the page's only for a payload without one.
+  const W = T.world ? new Function("return " + T.world)() : null;
+  const ev = (expr) => (W ? W(page, expr) : page.evaluate(expr));
   const hex = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))].map((b) => b.toString(16).padStart(2, "0")).join("");
   if ((await hex((o.url ?? "") + "\\n" + (o.aria ?? ""))) === T.prev) return { changed: false };
   const u = new URL(page.url());
@@ -278,7 +277,7 @@ export const RECORDER = `async (page, o, T) => {
   const shots = [await shoot(media.colorScheme)];
   let taste = null;
   try {
-    taste = await new Function("return " + T.census)()(page);
+    taste = await new Function("return " + T.census)()(page, { other: false, evaluate: ev });
   } catch (e) {
     faults.push("census");
   }
@@ -288,21 +287,7 @@ export const RECORDER = `async (page, o, T) => {
   } catch (e) {
     faults.push("rows");
   }
-  const themed = Boolean(taste && taste.themes === "dual");
-  if (themed) {
-    try {
-      await page.emulateMedia({ colorScheme: media.colorScheme === "dark" ? "light" : "dark", reducedMotion: media.reducedMotion });
-      await Promise.race([ev(T.settled), page.waitForTimeout(T.settleMax)]);
-      shots.push(await shoot(media.colorScheme === "dark" ? "light" : "dark"));
-    } finally {
-      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
-    }
-  }
-  await page.waitForTimeout(T.settle);
-  try {
-    await ev(T.drain);
-  } catch (e) {}
-  return { changed: true, route, width, theme: media.colorScheme, taste, ease, ai, rows, themed, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
+  return { changed: true, route, width, theme: media.colorScheme, taste, ease, ai, rows, themed: false, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
 }`;
 
 /**
@@ -338,9 +323,9 @@ export function observeCode(payload, T = null) {
 export const SHOT_READ = loginStageSource("shot");
 
 /**
- * The scripts a session hooks into every page: the lane's init payload (signals, the taste buffer and recorders), or in
- * a perf pass the signal script and the perf observers alone, so the taste recorders' observers and wrappers never
- * weigh on what the pass times (INP, long tasks).
+ * The scripts a session hooks into every page's own world: the lane's init payload (the signal script), with the
+ * perf observers in a perf pass. The taste recorders go in a world of their own (the hook's `world`), never in a perf
+ * pass, so their observers never weigh on what it times (INP, long tasks).
  */
 export const hookSignals = (perf) => (perf ? `${SIGNAL_SCRIPT};\n${PERF_SCRIPT}` : PAGE_INIT);
 
@@ -447,7 +432,7 @@ export async function confirming(sink, fn) {
 }
 
 /** How long the recorder may take after an observation, and how much it may answer (a shot's text past maxText is unread). */
-const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100, settleMax: 1000 };
+const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000 };
 
 /**
  * The driver's views of the taste pass: recording runs for an explorer's slot (a positive integer) of a journey,
@@ -474,7 +459,7 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
     // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
     const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
     const vague = (taste ?? { copy: { vague: [] } }).copy.vague;
-    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+    return { prev: prev ?? null, routes, world: WORLD_EVAL, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;
   }
@@ -558,7 +543,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     d.state = { signedIn: Boolean(storageState) };
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
     try {
-      await d.stage("hook", { runOrigins, signals: hookSignals(perf), capBytes });
+      await d.stage("hook", { runOrigins, signals: hookSignals(perf), world: perf ? null : TASTE_WORLD, capBytes });
       // A confirmation replay's routed fault is armed before the session's first navigation (Task 0.1).
       if (confirm && confirm.arm) await raw(confirm.arm);
       return [];

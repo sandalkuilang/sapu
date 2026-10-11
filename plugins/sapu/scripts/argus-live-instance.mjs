@@ -14,9 +14,12 @@
 // suite's generator) and -redtest.mjs →
 // -repro.mjs → -minimize.mjs (minimize, the RED test) → -smoke.mjs (the lane's smoke pass) → -suite.mjs
 // (membership) → -propose.mjs (proposals) and -artifacts.mjs (CI's runs and artifacts) → -heal.mjs and -ci.mjs →
-// -baseline.mjs (baselines from CI) → -tastejudge.mjs (the taste judge) → -tastefile.mjs (taste filing) → -report.mjs →
+// -baseline.mjs (baselines from CI) → -tastesink.mjs (the taste confirmation's sink) → -tastejudge.mjs (the taste judge) →
+// -tastefile.mjs (taste filing) → -report.mjs →
 // argus-live.mjs.
-// Leaves: -fence.mjs, -targets.mjs, -origin.mjs, -classes.mjs, -layout.mjs, -a11y.mjs, -taste.mjs, -ease.mjs, -aiux.mjs (the in-page checks), -tastecfg.mjs (the taste bar,
+// Leaves: -fence.mjs, -targets.mjs, -literal.mjs (literal secrets in live.json), -origin.mjs, -classes.mjs,
+// -layout.mjs, -a11y.mjs, -taste.mjs, -ease.mjs, -aiux.mjs (the in-page checks),
+// -world.mjs (the taste recorders' isolated world), -tastecfg.mjs (the taste bar,
 // taste.json, taste-state.json and the page-side buffer). `pw` never imports this module, and -start.mjs
 // never imports -browser.mjs (tests/argus-live-findings.test.ts pins both, and this order).
 import { randomBytes } from "node:crypto";

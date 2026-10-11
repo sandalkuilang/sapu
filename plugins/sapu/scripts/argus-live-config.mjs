@@ -4,11 +4,15 @@
 //
 // JSON, not YAML: the plugin has no dependencies. Unknown keys are errors at every level (a typo must
 // not silently drop a setting, as in the sapu contract). Secrets come only from `env_file`, never from
-// the process environment, and no error message ever holds a secret's value.
+// the process environment nor the file itself (a literal one is refused, argus-live-literal.mjs), and no
+// error message ever holds a secret's value.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { literalFindings } from "./argus-live-literal.mjs";
 import { parseTarget } from "./argus-live-targets.mjs";
+
+export { literalFindings, secretFinalName } from "./argus-live-literal.mjs";
 
 export const LIVE_FILE = ".argus/live.json";
 /** Role names: no `.` (`<role>.<n>` names an account). */
@@ -192,6 +196,7 @@ export function validateLive(c) {
   }
   placeholders(c, "", errs);
   shellFields(c, [], errs);
+  literals(c, errs);
   try {
     if (portNames(c).names.length && !has("port_range")) errs.push("port_range is required whenever a {port:<name>} is used");
   } catch (e) {
@@ -277,6 +282,22 @@ function shellFields(v, at, errs) {
     }
   } else if (Array.isArray(v)) v.forEach((x, i) => shellFields(x, [...at, i], errs));
   else if (isObj(v)) for (const [k, x] of Object.entries(v)) shellFields(x, [...at, k], errs);
+}
+
+/**
+ * A secret written into the file would be committed with it: one line per field holding any (literalFindings),
+ * naming each kind (a long random token only when nothing else is found there), never a value, and where the
+ * value goes instead.
+ */
+function literals(c, errs) {
+  const byField = new Map();
+  for (const f of literalFindings(c)) byField.set(f.where, [...(byField.get(f.where) ?? []), f.kind]);
+  const home = isStr(c.env_file) ? `env_file ${c.env_file}` : 'an env_file (a gitignored file such as .argus/live.env, named by "env_file")';
+  for (const [where, all] of byField) {
+    const named = [...new Set(all)].filter((k) => !k.startsWith("a long random token"));
+    const kinds = named.length ? named : [...new Set(all)];
+    errs.push(`${where}: ${kinds.join(", ")} written literally (${LIVE_FILE} may be committed); put the value in ${home} as NAME=value and write \${NAME} here`);
+  }
 }
 
 /** Every `{port:` in every string must be `{port:<name>}` or `{port:<name>=<port>}`, every `${` a `${NAME}`. */

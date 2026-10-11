@@ -40,6 +40,9 @@ const clock = () => {
   return { now: () => t, sleep: async (ms: number) => void (t += ms), advance: (ms: number) => void (t += ms) };
 };
 
+/** The day the CLI tests calibrate on (`today` for main): the bands' month is 2026-04. */
+const APRIL = Date.UTC(2026, 3, 15);
+
 /** A corpus page. */
 const pg = (url: string, site: string, archetype = "docs") => ({ url, site, archetype, source: "primer", terms_reviewed_by: "maintainer" });
 
@@ -158,19 +161,27 @@ describe("bands — percentiles, sites, the cut", () => {
     expect([percentile([7], 0.1), percentile([7], 0.9)]).toEqual([7, 7]);
   });
 
-  it("a band holds n, sites, p10/p50/p90 and the URLs measured, per archetype and metric", () => {
-    const m = (url: string, site: string, v: number, archetype = "docs") => ({ url, site, archetype, metrics: { distinct_spacing: v } });
-    const measured = [m("https://a.test/1", "a", 3), m("https://a.test/2", "a", 9), m("https://b.test/1", "b", 5), m("https://c.test/1", "c", 7), m("https://d.test/1", "d", 4, "marketing")];
-    const { archetypes, cut } = bandsOf(measured);
-    expect(archetypes).toEqual({ docs: { distinct_spacing: { n: 4, sites: 3, p10: 3, p50: 5, p90: 9, urls: ["https://a.test/1", "https://a.test/2", "https://b.test/1", "https://c.test/1"] } } });
-    expect(cut).toEqual([{ archetype: "marketing", metric: "distinct_spacing", why: "one site gives it all" }]);
+  it("a band holds n, sites, p10/p50/p90 and the URLs measured, per archetype, width bucket and metric, under the month calibrated", () => {
+    const m = (url: string, site: string, v: number, archetype = "docs", width = 1440) => ({ url, site, archetype, width, metrics: { distinct_spacing: v } });
+    const measured = [m("https://a.test/1", "a", 3), m("https://a.test/2", "a", 9), m("https://b.test/1", "b", 5), m("https://c.test/1", "c", 7), m("https://d.test/1", "d", 4, "marketing"), m("https://a.test/1", "a", 2, "docs", 390), m("https://b.test/1", "b", 4, "docs", 390)];
+    const { archetypes, cut } = bandsOf(measured, { calibrated: "2026-04" });
+    expect(archetypes).toEqual({
+      docs: {
+        calibrated: "2026-04",
+        widths: {
+          "390": { distinct_spacing: { n: 2, sites: 2, p10: 2, p50: 2, p90: 4, urls: ["https://a.test/1", "https://b.test/1"] } },
+          "1440": { distinct_spacing: { n: 4, sites: 3, p10: 3, p50: 5, p90: 9, urls: ["https://a.test/1", "https://a.test/2", "https://b.test/1", "https://c.test/1"] } },
+        },
+      },
+    });
+    expect(cut).toEqual([{ archetype: "marketing", width: "1440", metric: "distinct_spacing", why: "one site gives it all" }]);
   });
 
   it("a band driven by one site is cut: one site, or one site giving more than half the pages", () => {
-    const m = (i: number, site: string) => ({ url: `https://${site}.test/${i}`, site, archetype: "data", metrics: { distinct_spacing: i } });
-    const { archetypes, cut } = bandsOf([m(1, "a"), m(2, "a"), m(3, "a"), m(4, "b")]);
+    const m = (i: number, site: string) => ({ url: `https://${site}.test/${i}`, site, archetype: "data", width: 1440, metrics: { distinct_spacing: i } });
+    const { archetypes, cut } = bandsOf([m(1, "a"), m(2, "a"), m(3, "a"), m(4, "b")], { calibrated: "2026-04" });
     expect(archetypes).toEqual({});
-    expect(cut).toEqual([{ archetype: "data", metric: "distinct_spacing", why: "one site gives more than half its pages" }]);
+    expect(cut).toEqual([{ archetype: "data", width: "1440", metric: "distinct_spacing", why: "one site gives more than half its pages" }]);
   });
 
   it("metricsOf takes the metrics a band is read for as finite numbers wherever the probes put them, and nothing else", () => {
@@ -189,16 +200,20 @@ describe("bands — percentiles, sites, the cut", () => {
 describe("numbers only — no string but URLs and metric names reaches the output", () => {
   it("numbersOnly passes bands and refuses any other string, without echoing it", () => {
     const band = { n: 2, sites: 2, p10: 1, p50: 2, p90: 3, urls: ["https://a.test/1", "https://b.test/1"] };
-    expect(numbersOnly({ docs: { distinct_spacing: band } })).toBeNull();
+    const at = (bands: Obj, w = "1440", calibrated: unknown = "2026-04") => ({ calibrated, widths: { [w]: bands } });
+    expect(numbersOnly({ docs: at({ distinct_spacing: band }) })).toBeNull();
     const secret = ["sk", "live", "x".repeat(24)].join("_");
     for (const bad of [
-      { docs: { distinct_spacing: { ...band, p50: secret } } },
-      { docs: { distinct_spacing: { ...band, urls: [secret] } } },
-      { docs: { distinct_spacing: { ...band, note: secret } } },
-      { docs: { [secret]: band } },
-      { [secret]: { distinct_spacing: band } },
-      { docs: { distinct_spacing: { ...band, p90: [secret] } } },
-      { docs: { distinct_spacing: band }, form: secret },
+      { docs: at({ distinct_spacing: { ...band, p50: secret } }) },
+      { docs: at({ distinct_spacing: { ...band, urls: [secret] } }) },
+      { docs: at({ distinct_spacing: { ...band, note: secret } }) },
+      { docs: at({ [secret]: band }) },
+      { [secret]: at({ distinct_spacing: band }) },
+      { docs: at({ distinct_spacing: { ...band, p90: [secret] } }) },
+      { docs: at({ distinct_spacing: band }), form: secret },
+      { docs: at({ distinct_spacing: band }, secret) },
+      { docs: at({ distinct_spacing: band }, "1440", secret) },
+      { docs: { ...at({ distinct_spacing: band }), note: secret } },
     ]) {
       const why = numbersOnly(bad);
       expect(why).toMatch(/^archetypes/);
@@ -213,20 +228,24 @@ describe("numbers only — no string but URLs and metric names reaches the outpu
     const census = Object.fromEntries(pages.map((p) => [p.url, { distinct_spacing: 4, text: `token ${secret}`, scale: { distinct_type: secret } }]));
     const r = await calibrate({ pages, bar: BAR(), session: f.session, probes: standIn(census), now: f.c.now, sleep: f.c.sleep });
     expect(JSON.stringify(r)).not.toContain(secret);
-    expect(r.archetypes.docs.distinct_spacing).toMatchObject({ n: 2, sites: 2, p50: 4 });
+    expect(r.archetypes.docs.widths["1440"].distinct_spacing).toMatchObject({ n: 2, sites: 2, p50: 4 });
   });
 });
 
 describe("--diff — each band's change", () => {
   const band = (p: number[], n: number, sites: number) => ({ n, sites, p10: p[0], p50: p[1], p90: p[2], urls: ["https://a.test/1"] });
-  it("prints every band: changed, unchanged, new and gone", () => {
-    const before = { docs: { distinct_spacing: band([3, 5, 9], 16, 5), distinct_radii: band([1, 2, 3], 16, 5), distinct_type: band([2, 4, 6], 15, 5) } };
-    const after = { docs: { distinct_spacing: band([3, 6, 11], 18, 6), distinct_radii: band([1, 2, 3], 16, 5) }, marketing: { distinct_spacing: band([4, 8, 12], 15, 6) } };
+  const at = (widths: Obj, calibrated = "2026-04") => ({ calibrated, widths });
+  it("prints every band, by archetype, width bucket and metric: changed, unchanged, new and gone", () => {
+    const before = { docs: at({ "1440": { distinct_spacing: band([3, 5, 9], 16, 5), distinct_radii: band([1, 2, 3], 16, 5), distinct_type: band([2, 4, 6], 15, 5) } }, "2025-10") };
+    const after = { docs: at({ "1440": { distinct_spacing: band([3, 6, 11], 18, 6), distinct_radii: band([1, 2, 3], 16, 5) }, "390": { distinct_spacing: band([2, 4, 6], 15, 5) } }), marketing: at({ "1440": { distinct_spacing: band([4, 8, 12], 15, 6) } }) };
     expect(diffLines(before, after)).toEqual([
-      "docs.distinct_radii: unchanged 1/2/3 (n 16, sites 5)",
-      "docs.distinct_spacing: p10/p50/p90 3/5/9 → 3/6/11, n 16 → 18, sites 5 → 6",
-      "docs.distinct_type: gone (was 2/4/6, n 15, sites 5)",
-      "marketing.distinct_spacing: new 4/8/12 (n 15, sites 6)",
+      "docs: calibrated 2025-10 → 2026-04",
+      "docs.1440.distinct_radii: unchanged 1/2/3 (n 16, sites 5)",
+      "docs.1440.distinct_spacing: p10/p50/p90 3/5/9 → 3/6/11, n 16 → 18, sites 5 → 6",
+      "docs.1440.distinct_type: gone (was 2/4/6, n 15, sites 5)",
+      "docs.390.distinct_spacing: new 2/4/6 (n 15, sites 5)",
+      "marketing: calibrated 2026-04 (new)",
+      "marketing.1440.distinct_spacing: new 4/8/12 (n 15, sites 6)",
     ]);
   });
 });
@@ -311,13 +330,13 @@ describe("the CLI", () => {
   });
 
   it("with --network --diff: writes the bands and the probe digest into the bar, keeps everything else, prints the diff and the witness summary", async () => {
-    const old = { docs: { distinct_spacing: { n: 15, sites: 5, p10: 2, p50: 4, p90: 6, urls: ["https://old.test/1"] } } };
+    const old = { docs: { calibrated: "2025-10", widths: { "1440": { distinct_spacing: { n: 15, sites: 5, p10: 2, p50: 4, p90: 6, urls: ["https://old.test/1"] } } } } };
     const out = tmpBar(old);
     const sites = ["a", "b", "c", "d", "e"];
     const pages = sites.flatMap((s) => [1, 2, 3].map((i) => pg(`https://${s}.test/${i}`, s))).concat([pg("https://a.test/m", "a", "marketing"), pg("https://b.test/m", "b", "marketing")]);
     const census = Object.fromEntries(pages.map((p, i) => [p.url, { distinct_spacing: (i % 7) + 2 }]));
     const f = fakeSession({ visitMs: 1000 });
-    const r = await main(["--network", "--diff", "--corpus", tmpCorpus(pages), "--out", out], { openSession: async () => f.session, probes: standIn(census), now: f.c.now, sleep: f.c.sleep });
+    const r = await main(["--network", "--diff", "--corpus", tmpCorpus(pages), "--out", out], { openSession: async () => f.session, probes: standIn(census), now: f.c.now, sleep: f.c.sleep, today: () => APRIL });
     expect(r.code, r.lines.join("\n")).toBe(0);
     const written = JSON.parse(readFileSync(out, "utf8"));
     expect(validateBar(written).errors).toEqual([]);
@@ -326,11 +345,12 @@ describe("the CLI", () => {
     expect(rest).toEqual(was);
     expect(probe).toBe(probeDigest());
     expect(Object.keys(archetypes).sort()).toEqual(["docs", "marketing"]);
-    expect(archetypes.docs.distinct_spacing).toMatchObject({ n: 15, sites: 5 });
+    expect(archetypes.docs).toMatchObject({ calibrated: "2026-04", widths: { "1440": { distinct_spacing: { n: 15, sites: 5 } } } });
+    expect(Object.keys(archetypes.docs.widths)).toEqual(["1440"]);
     const text = r.lines.join("\n");
-    expect(text).toMatch(/^docs\.distinct_spacing: p10\/p50\/p90 2\/4\/6 → /m);
-    expect(text).toMatch(/^docs: 15 pages, 5 sites — a witness$/m);
-    expect(text).toMatch(/^marketing: 2 pages, 2 sites — thin \(a witness needs at least 5 sites and 15 pages\)$/m);
+    expect(text).toMatch(/^docs\.1440\.distinct_spacing: p10\/p50\/p90 2\/4\/6 → /m);
+    expect(text).toMatch(/^docs 1440: 15 pages, 5 sites — a witness$/m);
+    expect(text).toMatch(/^marketing 1440: 2 pages, 2 sites — thin \(a witness needs at least 5 sites and 15 pages\)$/m);
     expect(text).toMatch(/^form: no page measured — thin$/m);
     expect(text).toMatch(/taste-bar 1 stays: a calibration after a release raises it by one/);
   });
@@ -342,14 +362,34 @@ describe("the CLI", () => {
     writeFileSync(out, original);
     const pages = ["a", "b", "c"].map((s) => pg(`https://${s}.test/1`, s));
     const f = fakeSession({});
-    const r = await main(["--network", "--corpus", tmpCorpus(pages), "--out", out], { openSession: async () => f.session, probes: standIn({}), now: f.c.now, sleep: f.c.sleep });
+    const r = await main(["--network", "--corpus", tmpCorpus(pages), "--out", out], { openSession: async () => f.session, probes: standIn({}), now: f.c.now, sleep: f.c.sleep, today: () => APRIL });
     expect(r.code, r.lines.join("\n")).toBe(0);
     const written = readFileSync(out, "utf8");
     const head = (t: string) => t.slice(0, t.indexOf('\n  "archetypes": '));
     expect(head(written).replace(/^ {2}"probe": .*$/m, "")).toBe(head(original).replace(/^ {2}"probe": .*$/m, ""));
     expect(written).toMatch(/^ {2}"probe": "[0-9a-f]{64}",$/m);
-    expect(written).toContain('\n  "archetypes": {\n    "docs": {\n      "distinct_spacing": { "n": 3, "sites": 3, "p10": 1, "p50": 1, "p90": 1, "urls": ["https://a.test/1", "https://b.test/1", "https://c.test/1"] }\n    }\n  }\n}\n');
+    expect(written).toContain('\n  "archetypes": {\n    "docs": {\n      "calibrated": "2026-04",\n      "widths": {\n        "1440": {\n          "distinct_spacing": { "n": 3, "sites": 3, "p10": 1, "p50": 1, "p90": 1, "urls": ["https://a.test/1", "https://b.test/1", "https://c.test/1"] }\n        }\n      }\n    }\n  }\n}\n');
     expect(validateBar(JSON.parse(written)).errors).toEqual([]);
+  });
+
+  it("keeps an archetype the run did not measure while the bar's probes are the current ones, else drops it; a measured archetype is replaced whole", async () => {
+    const band = { n: 15, sites: 5, p10: 2, p50: 4, p90: 6, urls: ["https://old.test/1"] };
+    const before = { data: { calibrated: "2026-01", widths: { "390": { distinct_spacing: band } } }, docs: { calibrated: "2025-01", widths: { "390": { distinct_spacing: band } } } };
+    const pages = ["a", "b", "c"].map((s) => pg(`https://${s}.test/1`, s));
+    for (const [probe, keeps] of [[probeDigest(), true], ["0".repeat(64), false]] as [string, boolean][]) {
+      const out = join(temp(), "taste-bar.json");
+      writeFileSync(out, `${JSON.stringify({ ...BAR(), probe, archetypes: before }, null, 2)}\n`);
+      const f = fakeSession({});
+      const r = await main(["--network", "--corpus", tmpCorpus(pages), "--out", out], { openSession: async () => f.session, probes: standIn({}), now: f.c.now, sleep: f.c.sleep, today: () => APRIL });
+      expect(r.code, r.lines.join("\n")).toBe(0);
+      const written = JSON.parse(readFileSync(out, "utf8"));
+      expect(validateBar(written).errors).toEqual([]);
+      expect(Object.keys(written.archetypes).sort(), probe).toEqual(keeps ? ["data", "docs"] : ["docs"]);
+      expect(written.archetypes.docs.calibrated).toBe("2026-04");
+      expect(Object.keys(written.archetypes.docs.widths)).toEqual(["1440"]);
+      if (keeps) expect(written.archetypes.data).toEqual(before.data);
+      expect(r.lines).toContain(keeps ? "kept data (calibrated 2026-01): this run measured none of its pages" : "dropped data (calibrated 2026-01): measured by other probe sources than this run's");
+    }
   });
 
   it("probeDigest is the sha256 of the probe sources the run measured with", () => {
@@ -412,7 +452,7 @@ describe("in Chrome, against loopback fixture pages", () => {
     expect(paths.some((p) => p.startsWith("/private") || p.startsWith("/agent-only"))).toBe(false);
     expect(hits.every((h) => h.ua.includes(AGENT))).toBe(true);
     expect(r.skipped.map((s: Obj) => s.url).sort()).toEqual([`${base}/agent-only/y`, `${base}/private/x`]);
-    expect(r.archetypes.docs.distinct_spacing).toEqual({ n: 2, sites: 2, p10: 3, p50: 3, p90: 3, urls: [`${base}/a`, `${base}/b`] });
+    expect(r.archetypes.docs.widths["1440"].distinct_spacing).toEqual({ n: 2, sites: 2, p10: 3, p50: 3, p90: 3, urls: [`${base}/a`, `${base}/b`] });
     expect(JSON.stringify(r)).not.toContain(secret());
   }, 60_000);
 

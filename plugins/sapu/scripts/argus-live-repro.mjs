@@ -159,10 +159,13 @@ export const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text,
  * as the last run left it); an action with no match, several or failing → exit 3 `PATH broke step=<n>
  * kind=target-missing|target-ambiguous|action-failed`, an expectation that fails (several matches included)
  * → its fence and exit 3 `PATH broke step=<n> kind=expect-failed`, every step held → exit 0 `PATH held`; the
- * harness's failures as above. Records under `.argus/live/<run>/smoke/<id>/`: `path.json` (the list and its
- * parse) and the numbered `run-<i>.json` (with `kind` and `dirty`) and `steps-<i>.jsonl`.
+ * harness's failures as above. A prefix replay (`until`, a function asked before each step after the first): once it
+ * holds, the rest of the path is never run → exit 0 `PATH prefix held step=<n>`, `n` the last step run (the taste
+ * confirmation's, which measures one screen and needs nothing after it). Records under
+ * `.argus/live/<run>/smoke/<id>/`: `path.json` (the list and its parse) and the numbered `run-<i>.json` (with `kind`,
+ * `dirty` and a prefix replay's `prefix`) and `steps-<i>.jsonl`.
  */
-export async function runOnce(main, ref, { list = null, i = null, path: smoke = null, dirty = false, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
+export async function runOnce(main, ref, { list = null, i = null, path: smoke = null, until = null, dirty = false, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
   const { runId, candidate, slotRec, dir } = smoke ? pathRef(main, smoke) : reproRef(main, ref);
   const n = i ?? nextRun(dir);
   const started = Date.now();
@@ -385,6 +388,12 @@ export async function runOnce(main, ref, { list = null, i = null, path: smoke = 
 
         let idx = 0;
         while (idx < steps.length) {
+          // A prefix replay (the taste confirmation's): once `until` holds, the steps after the last one run are never run.
+          if (smoke && until && idx > 0 && until()) {
+            result.prefix = steps[idx - 1].n;
+            emit(`PATH prefix held step=${result.prefix}`);
+            return 0;
+          }
           const s0 = steps[idx];
           const batch = s0.group ? steps.filter((x) => x.group === s0.group) : [s0];
           idx += batch.length;

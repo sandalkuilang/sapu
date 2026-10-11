@@ -12,7 +12,9 @@ import { censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "..
 // @ts-expect-error — plain ESM script without types
 import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { TASTE_WORLD } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_NET, WORLD_EVAL, WORLD_INSTALL } from "../plugins/sapu/scripts/argus-live-world.mjs";
 // @ts-expect-error — plain ESM script without types
 import { EASE_INIT, easeOf, rulesFor as easeRulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -276,6 +278,26 @@ describe("argus-live-taste.mjs — colour roles, dark parity, contrast headroom 
     expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-")).length).toBe(4);
   }, 60_000);
 
+  it("censusOf(page, { other: false }), the walk's census: the page's own scheme only, its media never switched (no change event, no other census), themes unknown", async () => {
+    const page = await open("dark.html");
+    // The page as censusOf sees it, every media switch it asks for counted.
+    const switches: unknown[] = [];
+    const spied = new Proxy(page, { get: (t, k) => (k === "emulateMedia" ? (m: unknown) => (switches.push(m), t.emulateMedia(m)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) });
+    const screen = await censusOf(spied, { other: false });
+    expect(screen.media).toEqual({ colorScheme: "light", reducedMotion: "no-preference" });
+    expect([screen.dark, screen.reduce, screen.themes]).toEqual([null, null, null]);
+    expect(screen.light.media.dark).toBe(false);
+    expect(switches).toEqual([]);
+    // No dark parity from the walk: the replay measures it.
+    expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-"))).toEqual([]);
+    // Under reduced motion the page's own census is the reduced one too (motion.reduced reads it), still unswitched.
+    const reduced = await censusOf(await open("dark.html", { reducedMotion: "reduce" }), { other: false });
+    expect(reduced.reduce).toBe(reduced.light);
+    // The default switches both and puts the page's own media back, as the replay's census does.
+    expect((await censusOf(spied)).themes).toBe("dual");
+    expect(switches).toEqual([{ colorScheme: "dark", reducedMotion: "no-preference" }, { colorScheme: "light", reducedMotion: "reduce" }, { colorScheme: "light", reducedMotion: "no-preference" }]);
+  }, 60_000);
+
   it("a single-theme app is reported single theme, and no dark parity row is measured", async () => {
     const screen = await censusOf(await open("single.html"));
     expect(screen.themes).toBe("single");
@@ -374,17 +396,19 @@ describe("the suite's taste core on the probe's pages (phase 7 integration)", ()
     expect(await stepOne(false)).toEqual([]);
   }, 120_000);
 
-  it("the lane's init payload (PAGE_INIT) records step 1's motion: the hook installs it before the first document", async () => {
+  it("the lane's recorders (TASTE_WORLD) record step 1's motion in their own world: the hook installs them before the first document, the page's world never sees them", async () => {
     const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
     contexts.push(context);
-    await context.addInitScript({ content: PAGE_INIT });
     const page = await context.newPage();
+    await new Function(`return ${WORLD_INSTALL}`)()(context, TASTE_WORLD);
+    const world = (expr: string) => new Function(`return ${WORLD_EVAL}`)()(page, expr);
     await page.goto(`${origin}/motion.html`);
     await act(page, "b-slide");
-    const { events, dropped } = await page.evaluate(TASTE_DRAIN);
+    expect(await page.evaluate("[typeof document.__argusTasteMotion, typeof document.__argusTastePush]")).toEqual(["undefined", "undefined"]);
+    const { events, dropped } = await world(TASTE_DRAIN);
     expect(dropped).toBe(0);
     expect(events.filter((e: Obj) => e.kind === "transition" && e.phase === "end" && e.duration_ms === 900).map((e: Obj) => e.target)).toContain("div|Panel");
-    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration" && r.key === "transform|div|Panel")).toEqual([{ rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" }]);
+    expect(rulesFor(await censusOf(page, { evaluate: world }), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration" && r.key === "transform|div|Panel")).toEqual([{ rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" }]);
   }, 120_000);
 
   it("a rule the owner gates fails as phase 6's violation, unless adopted in known/<id>.json; off leaves it unmeasured", async () => {
@@ -438,10 +462,11 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
 
   it("censusOf and easeOf carry every bar-class rule's metric as a finite number, each as its rows count it; only feedback.latency's and motion.duration's need an action", async () => {
     const barRules = BAR.rules.filter((r: Obj) => r.class === "bar");
-    // As the calibration script opens a page: the taste buffer and both recorders in the context, no action.
+    // As the calibration script opens a page: the taste buffer and both recorders in the context, no action; and the
+    // suite's request wrappers (EASE_NET), which the latency after the action below needs in the page's own world.
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     contexts.push(context);
-    await context.addInitScript({ content: [TASTE_BUFFER, TASTE_INIT, EASE_INIT].join(";\n") });
+    await context.addInitScript({ content: [TASTE_BUFFER, TASTE_INIT, EASE_INIT, EASE_NET].join(";\n") });
     const page = await context.newPage();
     await page.goto(`${origin}/bar-metrics.html`);
     await page.waitForFunction(() => document.getElementById("slot")?.textContent === "Loaded." && document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });
@@ -567,5 +592,18 @@ describe("argus-live-taste.mjs — density (T1.3)", () => {
       { rule: "density.row-heights", key: "tables", measured: "2 row heights: 32, 48 px", expected: "one" },
     ]);
     expect((await rowsOf("density-twin.html", null)).filter((r: Obj) => r.rule.startsWith("density."))).toEqual([]);
+  }, 60_000);
+
+  it("with the owner's control-height tokens, heights are judged against that scale, not a fixed three: four sizes on it hold; one off it fires, wherever the count", async () => {
+    const heights = async (file: string, control: number[]) => (await rowsOf(file, "density.control-heights", cfgOf({ tokens: { control } }))) as Obj[];
+    // Four button sizes, every one a token: the owner's system has four (the fixed three would have fired).
+    expect(await heights("density.html", [28, 36, 44, 56])).toEqual([]);
+    // The owner's scale is 36 and 44: the two field heights sit on it; the 28 and 56 px buttons do not.
+    expect(await heights("density.html", [36, 44])).toEqual([{ rule: "density.control-heights", key: "button", measured: "4 heights: 28, 36, 44, 56 px (off the token scale: 28, 56)", expected: "the token control heights: 36, 44 px" }]);
+    // Three sizes, within the fixed three, but one off the owner's scale (36.6 px is 36 px a pixel off: on it).
+    expect(await heights("density-twin.html", [36, 44])).toEqual([{ rule: "density.control-heights", key: "button", measured: "3 heights: 28, 36, 44 px (off the token scale: 28)", expected: "the token control heights: 36, 44 px" }]);
+    // A scale with no control kind is no control scale: the fixed bound decides, as before.
+    expect(await heights("density-twin.html", [])).toEqual([]);
+    expect((await rowsOf("density.html", "density.control-heights", cfgOf({ tokens: { spacing: [4, 8] } }))).map((r: Obj) => r.expected)).toEqual(["at most 3"]);
   }, 60_000);
 });

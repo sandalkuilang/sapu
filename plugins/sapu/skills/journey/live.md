@@ -27,7 +27,6 @@
     "REDIS_URL": "redis://localhost:{port:redis}", "SMTP_URL": "smtp://localhost:{port:smtp}",
     "PG_PORT": "{port:pg}", "REDIS_PORT": "{port:redis}", "SMTP_PORT": "{port:smtp}"
   },
-  "pass_env": [],
   "store": "app_explore",
   "store_check": "npm run -s explore:which-db",
   "reset": "npm run -s db:reset:explore",
@@ -35,10 +34,8 @@
   "mail": { "argv": ["npm", "run", "-s", "explore:mail"] },
   "triggers": { "payment-settles": { "argv": ["npm", "run", "-s", "explore:settle", "--", "{1}"], "args": ["^[A-Za-z0-9-]{1,64}$"] } },
   "confirmed": { "mocks": true, "data": true },
-  "allow_origins": [],
   "port_range": [41000, 41999],
   "reserved_ports": [3000, 4000, 5432, 6379],
-  "login_spacing_ms": 0,
   "timezone": "UTC",
   "locale": "en-US",
   "fixtures": "test/fixtures/explore",
@@ -49,9 +46,7 @@
     "admin": { "code_role": "admin", "login": { "command": "npm run -s explore:login -- admin" } }
   },
   "viewports": [1440, 390],
-  "locales": [],
   "settle_ms": 10000,
-  "prohibited": [],
   "limits": { "max_cycle_minutes": 45, "max_parallel_journeys": 2, "live_health_timeout_s": 120, "explorer_pw_calls": 120, "minimize_runs": 12 }
 }
 ```
@@ -61,7 +56,7 @@
 Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`, `reset`, `confirmed`, `roles`, `limits`.
 
 - `setup` — argv lists (no shell), run in the worktree under the instance environment before anything starts; each bounded by the time left before the lock's deadline.
-- `services` — `{<name>: {"env": <VAR>}}`, one per backing service the app reads (database, cache, queue, object store, search engine, mail server): the variable holding its address. `up` refuses one that `env` (or a set `pass_env` name) does not set: the app would fall back to its default address, the owner's service.
+- `services` — `{<name>: {"env": <VAR>}}`, one per backing service the app reads (database, cache, queue, object store, search, mail): the variable holding its address. `up` refuses one that `env` (or a set `pass_env` name) does not set: the app would fall back to its default address, the owner's service.
 - `start` — a non-empty list of start entries (below), started in order, each in its own process group.
 - `base_url` — the app's URL: http(s), its host resolving to loopback only.
 - `login_url` — the sign-in page, a path on `base_url` or a full URL.
@@ -74,11 +69,11 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `confirmed` — `{"mocks": true, "data": true}`, the owner's two statements (below); anything else is refused.
 - `allow_origins` — full origins (`scheme://host:port`, never a bare host) pages may load from, such as a font CDN.
 - `port_range` — `[low, high]`, required whenever a `{port:<name>}` is used. `reserved_ports` — the repo's dev and E2E ports, never allocated.
-- `login_spacing_ms` — 0 to 60 000 between the proving logins. `timezone` — an IANA zone; `locale` — a BCP 47 tag.
+- `login_spacing_ms` — 0 to 60000 between the proving logins. `timezone` — an IANA zone; `locale` — a BCP 47 tag.
 - `fixtures` — a repo-relative directory (no absolute path, no `..`) holding the files `upload` may use.
 - `roles` — below. `viewports` — widths from 200 to 4000; the first is the explorers'. `locales` — the locales the viewport-and-locale oracle repeats a critical step in.
 - Smoke suite: `test_id_attribute` — the app's test-id attribute (`data-testid`); `pseudo_locales` — codes the app serves as pseudo-locales (`en-XA`); `tokens` — `{css|json: <tracked file>}`, its design tokens, read from the repo's root when the suite runs.
-- `settle_ms` — 0 to 120 000: how long anything judged missing is waited for.
+- `settle_ms` — 0 to 120000: how long anything judged missing is waited for.
 - `prohibited` — actions the explorer must never take, copied into its charter.
 - `limits` — below.
 - `compose_files` — the Compose files the instance uses (repo-relative, tracked, no `..` and no `:`), in Compose's `-f` order: only those are checked, and the run's `COMPOSE_FILE` names them. Without it, `up` checks the `COMPOSE_FILE` the instance environment (or a tracked `.env`) sets, else every Compose file of the worktree, and a refusal then asks for this list.
@@ -88,7 +83,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `max_cycle_minutes` (required, at most 1440) — the lock's deadline is the start plus this plus 15 minutes; `renew` moves it by this, never past the start plus three times this plus 15 minutes.
 - `max_parallel_journeys` — the journeys SELECT picks per cycle (2 when unset).
 - `live_health_timeout_s` — bounds each health wait and each `store_check`.
-- `explorer_pw_calls` — 1 to 10 000: an explorer token's `pw` budget; past it every call answers `BUDGET`.
+- `explorer_pw_calls` — 1 to 10000: an explorer token's `pw` budget; past it every call answers `BUDGET`.
 - `minimize_runs` — the runs `repro --minimize` may spend on one candidate.
 
 ## A start entry
@@ -106,7 +101,7 @@ A role may also set `code_role` (the role's name in the code's role → permissi
 ## Expansion
 
 - `{port:<name>}` takes a free port from `port_range` outside `reserved_ports`, the same for every use of the name; `{port:<name>=<n>}` fixes one (taken → refused, naming its holder; one port fixed for two names, or one name at two ports, refused). They expand in every string.
-- `${NAME}` expands in every string from `env_file`. An unset or empty name refuses `up`, naming it, never its value.
+- `${NAME}` expands in every string from `env_file`. An unset or empty name refuses `up`, naming it, never its value. Never write a secret literally: the schema refuses a key's shape, a URL's password, a secret-named value or a random token, encoded too.
 - In a field run by the shell (`store_check`, `reset`, a start entry's `cmd`, `stop` and `health.cmd`, `roles.<r>.login.command`), `${NAME}` becomes a reference to `ARGUS_SECRET_<NAME>`, which only that command's environment carries: the value is never written into the command text, a recorded command line or run.json, and the shell reads it as one word of data. `${NAME}` inside single quotes or a heredoc is refused (that shell would not expand it); a field handing the value to an inner shell writes `"$ARGUS_SECRET_<NAME>"` there, and passes it into a container by name (`-e ARGUS_SECRET_<NAME>`).
 - Argv lists (`setup`, `facts`, `mail`, `triggers`) and `env` values get the value itself: a secret in an argv list is visible in `ps` while that command runs, and so is one a shell command puts into another program's arguments. That is the owner's choice.
 
@@ -136,4 +131,4 @@ The checks of `up`, `renew` and `down` catch a misconfiguration or an app defaul
 
 ## Verifying it
 
-`live check` runs the checks `up` makes before it touches anything — the schema, every unset `${NAME}` (by name), the base URLs resolving to loopback only, a `services` variable the instance env does not set, a protected `store`, a literal password or TOTP secret, an `env_file` git tracks or does not ignore — and that the contract's `guard.envFiles` covers `env_file` (the draft's; `up` asks the committed contract, so a `note:` says when only the draft covers it). One `refused: …` line per fault (exit 1), else `live: ok — <r> roles, <a> accounts, <s> start entries`. It takes no lock, starts and writes nothing, and prints no value. The machine checks (a Chrome-family browser, `lsof` or `ss`, no `~/.playwright/cli.config.json`, the pinned browser CLI) run at `up`.
+`live check` runs the checks `up` makes before it touches anything — the schema, every unset `${NAME}` (by name), the base URLs resolving to loopback only, a `services` variable the instance env does not set, a protected `store`, a literal secret, an `env_file` git tracks or does not ignore — and that the contract's `guard.envFiles` covers `env_file` (the draft's; `up` asks the committed contract, so a `note:` says when only the draft covers it). One `refused: …` line per fault (exit 1), else `live: ok — <r> roles, <a> accounts, <s> start entries`. It takes no lock, starts and writes nothing, and prints no value. The machine checks (a Chrome-family browser, `lsof` or `ss`, no `~/.playwright/cli.config.json`, the pinned browser CLI) run at `up`.

@@ -10,8 +10,8 @@
 //                                worktree} last. up --fresh and renew refuse it
 //   argus-live.mjs check         verify .argus/live.json as up would before it touches anything, and .argus/taste.json when there is one (configProblems:
 //                                the schema, every unset ${NAME} by name, base URLs resolving to loopback only, a services
-//                                variable the instance env does not set, a protected store, a literal password or TOTP
-//                                secret, a tracked env_file), and that the contract's guard.envFiles
+//                                variable the instance env does not set, a protected store, a literal password, TOTP
+//                                secret or other secret, a tracked env_file), and that the contract's guard.envFiles
 //                                covers its env_file (as the guard matches it): one refused: … line per fault (exit
 //                                1), else live: ok — <r> roles, <a> accounts, <s> start entries. Reads the working
 //                                tree's contract (an init draft); takes no lock, starts and writes nothing, prints
@@ -141,7 +141,8 @@
 //   argus-live.mjs taste judge [--run <runId>]
 //                                every recorded screen judged against its witnesses (-tastejudge.mjs tasteJudge)
 //   argus-live.mjs taste confirm <row>
-//                                a judge row replayed on a fresh instance and measured again (-tastejudge.mjs tasteConfirm)
+//                                a judge row (t<k>) replayed on a fresh instance to its screen and measured again, or a
+//                                probe (p<k>) measuring first what the walk does not (-tastejudge.mjs tasteConfirm)
 //   argus-live.mjs taste file [--run <runId>]
 //                                the confirmed rows filed, capped (-tastefile.mjs tasteFile)
 //   argus-live.mjs taste curator <file>

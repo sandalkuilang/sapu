@@ -16,6 +16,7 @@ import { canonicalOrigin, exactHost } from "./argus-live-origin.mjs";
 import { redact, run, runAsync, sleep, tail, tempBeside, withFileLock } from "./argus-live-proc.mjs";
 import { logsDir, readRun, updateRun } from "./argus-live-run.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
+import { WORLD_INSTALL } from "./argus-live-world.mjs";
 
 // ---------------------------------------------------------------------------------------------------
 // TOTP (RFC 6238 over RFC 4226: HMAC-SHA1, 30 s steps).
@@ -278,7 +279,18 @@ const STAGES = {
   };
   ctx.pages().forEach(hookPage);
   ctx.on("page", hookPage);
-  return { installed: true };
+  // The taste recorders, in a world of their own in every page, and the page's requests timed from here
+  // (argus-live-world.mjs); a world that cannot be made leaves the recorders out, never the hook.
+  let world = null;
+  if (P.world) {
+    try {
+      await (${WORLD_INSTALL})(ctx, P.world);
+      world = true;
+    } catch (e) {
+      world = false;
+    }
+  }
+  return { installed: true, world };
 `,
   // Opens the login page fresh, clicks P.open when set, fills the user field (an email input, else the
   // text input before the password field, else the single text input), submits it first when no password
@@ -425,12 +437,13 @@ function targetFn(s) {
 /**
  * The code of login stage `stage` (`credentials`, `otp`, `probe`, `hook`, `observe`, `shot`) for `payload`
  * (`url`, `user`, `password`, `code`, `settleMs`, the hook's `runOrigins` (as `URL.origin` spells them),
- * `signals` and `capBytes`, and the target strings `loggedIn` and `open`): the text of an `async page =>
+ * `signals`, `world` (the taste recorders, or null) and `capBytes`, and the target strings `loggedIn` and `open`): the text of an `async page =>
  * {…}` function. The payload enters as `const P = <JSON>;` only; `loggedIn` and `open` also become `(pg)
  * => <targetCode>` functions. A stage returns plain JSON: credentials and otp `{state:
  * "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?}`, probe `{in, origins}`,
- * hook `{installed}` (false when the context had it), observe `{signals, loggedIn, url, aria, tabs,
- * secrets}` (`secrets` the drain), shot `{text, password, otp, error, unread}`.
+ * hook `{installed, world}` (false when the context had it; `world` null without `P.world`, else whether the taste
+ * recorders' world was made), observe `{signals, loggedIn, url, aria, tabs, secrets}` (`secrets` the drain), shot
+ * `{text, password, otp, error, unread}`.
  */
 export function loginCode(stage, payload) {
   if (!Object.hasOwn(STAGES, stage)) throw new Error(`failed: no login stage ${stage}`);

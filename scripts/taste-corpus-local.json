@@ -1,0 +1,83 @@
+{
+  "coverage": "OSI-licensed, actively maintained open-source SaaS apps, each fetched at its latest release, run on loopback by the journey lane's own instance runner, measured (numbers only) and deleted. It calibrates the app, form and data archetypes, which public pages cannot show without a login; marketing and docs stay with the public corpus (scripts/taste-corpus.json). Every app here is a candidate: none is run until a maintainer writes and checks its live config and its seven routes (3 app, 2 form, 2 data), and --refresh pins its latest release.",
+  "max_age_months": 12,
+  "apps": {
+    "twenty": {
+      "repo": "https://github.com/twentyhq/twenty",
+      "license": "AGPL-3.0",
+      "note": "Open-source CRM: record tables, kanban boards, settings forms. Its core is AGPL-3.0, but GitHub reads the repository's license as NOASSERTION (enterprise code under another license), so --refresh rejects it until GitHub confirms an OSI license.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "plane": {
+      "repo": "https://github.com/makeplane/plane",
+      "license": "AGPL-3.0",
+      "note": "Open-source project management: issue lists and boards, cycles, project and workspace settings forms. Self-hosted with Docker Compose.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "calcom": {
+      "repo": "https://github.com/calcom/cal.com",
+      "license": "MIT",
+      "note": "Open-source scheduling: the bookings list, event types, availability and profile forms.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "documenso": {
+      "repo": "https://github.com/documenso/documenso",
+      "license": "AGPL-3.0",
+      "note": "Open-source document signing: the documents table, templates, document and account settings forms.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "supabase-studio": {
+      "repo": "https://github.com/supabase/supabase",
+      "license": "Apache-2.0",
+      "note": "Supabase's dashboard (apps/studio): the table editor, the SQL editor, project settings forms. It runs with the self-hosted stack in the repository's docker/ directory.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "infisical": {
+      "repo": "https://github.com/Infisical/infisical",
+      "license": "MIT",
+      "note": "Open-source secrets manager: secrets tables, project and organization settings forms. Its core is MIT, but GitHub reads the repository's license as NOASSERTION (an ee directory under another license), so --refresh rejects it until GitHub confirms an OSI license.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    },
+    "shadcn-ui": {
+      "repo": "https://github.com/shadcn-ui/ui",
+      "license": "MIT",
+      "note": "shadcn/ui's own site (apps/v4): its examples are app, form and data screens (a dashboard, forms, a tasks table) built from the components many SaaS apps ship. No login.",
+      "source": "git",
+      "release": null,
+      "live": null,
+      "env": {},
+      "login": null,
+      "routes": []
+    }
+  }
+}

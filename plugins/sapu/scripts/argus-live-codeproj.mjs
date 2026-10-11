@@ -10,6 +10,7 @@ import * as easeProbe from "./argus-live-ease.mjs";
 import { CHECKS as LAYOUT } from "./argus-live-layout.mjs";
 import * as tasteProbe from "./argus-live-taste.mjs";
 import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN, TASTE_KEY_MARK, tokensPx } from "./argus-live-tastecfg.mjs";
+import { EASE_NET } from "./argus-live-world.mjs";
 
 /** The generator's version, in every file's header: a new one regenerates the suite. */
 export const CODEGEN_VERSION = "1";
@@ -180,8 +181,12 @@ export function tasteTable({ bar = loadBar(), expression = (rule, probe) => (pro
   return { version: bar.version, rules, probes, parity: parity.length ? { ...census, bar: { version: bar.version, rules: parity, frames: bar.frames } } : null };
 }
 
-/** The probes' recorders a document needs before its first action: the taste buffer, then each probe's init. */
-const tasteInit = () => [TASTE_BUFFER, tasteProbe.TASTE_INIT, easeProbe.EASE_INIT].filter((s) => typeof s === "string" && s.trim() !== "").join("\n");
+/**
+ * The probes' recorders a document needs before its first action, in the page's own world (the suite's): the taste
+ * buffer, then each probe's init, then the feedback clock's request wrappers (argus-live-world.mjs EASE_NET; the lane
+ * times requests from its driver instead).
+ */
+const tasteInit = () => [TASTE_BUFFER, tasteProbe.TASTE_INIT, easeProbe.EASE_INIT, EASE_NET].filter((s) => typeof s === "string" && s.trim() !== "").join("\n");
 /** A page expression waiting out the running animations that end within 5 s (after a media switch, before a census). */
 const SETTLE = `new Promise((r) => requestAnimationFrame(() => r(0))).then(() => Promise.all(document.getAnimations().filter((a) => { const t = a.effect ? a.effect.getComputedTiming() : null; return a.playState === "running" && t !== null && Number.isFinite(Number(t.endTime)) && Number(t.endTime) - Number(a.currentTime || 0) <= 5000; }).map((a) => a.finished.then(() => 0, () => 0)))).then(() => 0)`;
 

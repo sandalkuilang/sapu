@@ -1,15 +1,18 @@
 // tests/argus-live-tasteflow.test.ts — phase 7 integration: screens recorded as lane J's session hook records them (its
-// RECORDER and payload, PAGE_INIT in every document, the real probes of lanes T1 and T2, no stand-in) run through both
+// RECORDER and payload, the recorders in their own world of every document, the real probes of lanes T1 and T2, no
+// stand-in) run through both
 // probes' rules and T2's crossRules in the judge. The point is the seam: the shape J records (`taste`, `events`, `ease`,
 // the run's other screens) is the shape T1's and T2's rules read, so each probe's rows reach judge.json.
 import { createServer, type Server } from "node:http";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { browserTools, cleanTemps, committed } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { TASTE_WORLD } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { WORLD_INSTALL } from "../plugins/sapu/scripts/argus-live-world.mjs";
 // @ts-expect-error — plain ESM script without types
 import { NO_MAJORITY } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -24,6 +27,9 @@ import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 import { withTasteKey } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
+
+/** The session hook's install of the recorders, in a world of their own of every page of `context` (`key` the run's taste key in place of the mark, as the lane puts it). */
+const installWorld = (context: Obj, key: string | null = null) => new Function(`return ${WORLD_INSTALL}`)()(context, key ? withTasteKey(TASTE_WORLD, key) : TASTE_WORLD);
 
 afterEach(cleanTemps);
 
@@ -80,9 +86,9 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     const record = new Function(`return ${RECORDER}`)() as (page: Obj, o: Obj, T: Obj) => Promise<Obj>;
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
-      // The session hook's init payload, in every document from the first one on.
-      await context.addInitScript({ content: PAGE_INIT });
+      // The session hook's recorders, in their own world of every document from the first one on.
       const page = await context.newPage();
+      await installWorld(context);
       let n = 0;
       /** One observation's recording, kept as the driver keeps it (the payload made afresh, as each observation makes it). */
       const observe = async () => {
@@ -143,8 +149,8 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     const SECRETS = ["Hunter2-SuperSecret!", "sk_li\u0076e_51HxQ2eZvKYlo2C0aBcDeFgHiJkL", "buyer7@example.test", "my note 4417 private", "draft text 9031 private"];
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
-      await context.addInitScript({ content: PAGE_INIT });
       const page = await context.newPage();
+      await installWorld(context);
       await page.goto(`${origin}/ease/leak.html`);
       await page.fill("#e", SECRETS[2]);
       await page.fill("#p", SECRETS[0]);
@@ -177,35 +183,106 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     for (const v of SECRETS) for (const form of [v, v.replace(/[0-9]+/g, "#")]) expect(all, form).not.toContain(form);
   }, 240_000);
 
-  it("a page that overwrites, deletes, drains or forges the recorders' records can neither force nor suppress a row", async () => {
-    const judged = async (click: boolean) => {
+  it("in their own world the recorders are beyond the page: one that forges, replaces or drains records, patches the builtins they would call, plants recorder globals or sends through a frame no wrapper sees neither forces nor suppresses a row, and sees nothing", async () => {
+    const judged = async (file: string, click: boolean) => {
       const main = committed();
       const runId = takeLock(main, { maxCycleMinutes: 45 }).runId as string;
+      // A declared AI route: a forged AI failure would be a row if it were read.
+      mkdirSync(join(main, ".argus"), { recursive: true });
+      writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ ai: ["/ease/**"] }));
       const record = new Function(`return ${RECORDER}`)() as (page: Obj, o: Obj, T: Obj) => Promise<Obj>;
       // As the lane puts them in a page: the run's key in place of the mark, which the page only guesses.
       const key = "5e".repeat(16);
       const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      let seen: unknown = null;
       try {
-        await context.addInitScript({ content: withTasteKey(PAGE_INIT, key) });
         const page = await context.newPage();
-        await page.goto(`${origin}/ease/hostile.html`);
+        await installWorld(context, key);
+        await page.goto(`${origin}/ease/${file}`);
         if (click) {
           await page.click("#silent");
           await page.getByText("silent done").waitFor({ timeout: 30_000 });
         }
+        seen = await page.evaluate("typeof window.__seen === 'function' ? window.__seen() : null");
         const T = JSON.parse(withTasteKey(JSON.stringify(recorderPayload({ main, runId, slot: 1, slotRec: { journey: "notes" }, prev: null, settleMs: 1000 })), key));
-        keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "notes" }, await record(page, { url: page.url(), aria: "state 1" }, T));
+        const answer = await record(page, { url: page.url(), aria: "state 1" }, T);
+        expect(answer.faults).toEqual([]);
+        keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "notes" }, answer);
       } finally {
         await context.close();
       }
       expect((await tasteJudge(main, { run: runId })).code).toBe(0);
-      return (JSON.parse(readFileSync(join(tasteDir(main, runId), "judge.json"), "utf8")).rows as Obj[]).map((r) => r.rule);
+      return { rules: (JSON.parse(readFileSync(join(tasteDir(main, runId), "judge.json"), "utf8")).rows as Obj[]).map((r) => r.rule), seen };
     };
-    // Forged records alone: no feedback, success or latency row.
-    expect((await judged(false)).filter((r) => /^(feedback|states)\./.test(r))).toEqual([]);
+    const moved = (rules: string[]) => rules.filter((r) => /^(feedback|states|ai)\./.test(r));
+    // Forged, replaced, drained records alone: no feedback, success or latency row.
+    expect(moved((await judged("hostile.html", false)).rules)).toEqual([]);
     // A real 1.5 s silent wait after all that: still measured.
-    expect(await judged(true)).toContain("feedback.busy");
+    expect((await judged("hostile.html", true)).rules).toContain("feedback.busy");
+    // The page that patched the builtins, planted recorder globals and the driver's request list: nothing of it is read,
+    // and it sees none of the recorders' properties.
+    const planted = await judged("hostile-world.html", false);
+    expect(moved(planted.rules)).toEqual([]);
+    expect(planted.seen).toEqual(["undefined", "undefined", "undefined", "undefined"]);
+    // Its real silent wait, its request sent through a frame's fetch no wrapper of its window sees: the driver timed it.
+    expect(moved((await judged("hostile-world.html", true)).rules)).toEqual(["feedback.busy"]);
   }, 240_000);
+
+  it("the replay measures first what the walk never does: dark parity at a recorded screen not measured yet; at the target, a refused form and a failed load", async () => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    try {
+      const page = await context.newPage();
+      // The replay's session has its recorders' world, as the hook makes it in slot r.
+      await installWorld(context);
+      const go = (path: string) => `async page => {\n  await page.goto(${JSON.stringify(`${origin}${path}`)});\n  return { ok: true };\n}\n`;
+      const run = async (sink: Obj, path: string) => sink.take(await new Function(`return ${sink.wrap(go(path))}`)()(page));
+      const probe = (at: string, over: Obj = {}) => ({ at, screens: [at], skip: [], target: null, ...over });
+      // Dark parity: a probe of its own (no row), its screen the target; the census of both schemes, the media rules' rows.
+      const DARK = "/taste/dark.html|1280|light";
+      const dark = confirmSink([], { routes: [], settleMs: 5000, probe: probe(DARK) });
+      expect(await run(dark, "/taste/dark.html")).toEqual({ ok: true });
+      expect(dark.measured).toEqual({ rows: [] });
+      expect(dark.probes).toHaveLength(1);
+      expect(dark.probes[0]).toMatchObject({ key: DARK, themes: "dual" });
+      expect(dark.probes[0].rows).toEqual(expect.arrayContaining([expect.objectContaining({ rule: "colour.dark-border", key: "input|Display name" }), expect.objectContaining({ rule: "colour.dark-surface", key: "div|Legacy panel" })]));
+      expect(await page.evaluate("matchMedia('(prefers-color-scheme: dark)').matches")).toBe(false);
+      // Twins: measured already (skip), a screen the walk never recorded, a single-theme page (no row).
+      for (const p of [probe(DARK, { skip: [DARK] }), probe("/taste/other.html|1280|light", { screens: ["/taste/other.html|1280|light"] })]) {
+        const s = confirmSink([], { routes: [], settleMs: 5000, probe: p });
+        await run(s, "/taste/dark.html");
+        expect(s.probes).toEqual([]);
+      }
+      const single = confirmSink([], { routes: [], settleMs: 5000, probe: probe("/taste/single.html|1280|light") });
+      await run(single, "/taste/single.html");
+      expect(single.probes).toEqual([{ key: "/taste/single.html|1280|light", themes: "single", rows: [] }]);
+      // A failed load at the target: the page reloaded with its first JSON GET answered 500. Blank main is a row; a
+      // message with Retry holds.
+      const loads = async (mode: string) => {
+        const s = confirmSink([], { routes: [], settleMs: 5000, probe: probe("/ease/states.html|1280|light", { target: { error: true } }) });
+        await run(s, `/ease/states.html?mode=${mode}`);
+        return s.first;
+      };
+      expect(await loads("blank")).toEqual({ key: "/ease/states.html|1280|light", ran: ["states.error"], rows: [{ rule: "states.error", key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" }] });
+      expect(await loads("retry")).toEqual({ key: "/ease/states.html|1280|light", ran: ["states.error"], rows: [] });
+      // The route is off again: the page loads its data.
+      await page.reload();
+      await page.getByText("Order one").waitFor({ timeout: 30_000 });
+      // A refused form at the target, reached before the path typed anything: the case fills the empty fields first.
+      const forms = async (mode: string, prohibited: string[] = []) => {
+        const s = confirmSink([], { routes: [], settleMs: 5000, prohibited, probe: probe("/ease/recovery.html|1280|light", { target: { recovery: true } }) });
+        await run(s, `/ease/recovery.html?mode=${mode}`);
+        return s.first;
+      };
+      expect((await forms("clear"))!.rows.map((r: Obj) => [r.rule, r.key, r.measured])).toEqual([["states.recovery", "Email", "lost"], ["states.recovery", "Notes", "lost"]]);
+      // The form left as found: the values the case typed taken out again.
+      expect(await page.evaluate(() => { const f = (document.getElementById("f") as HTMLFormElement).elements as any; return [f.name.value, f.email.value, f.notes.value, f.vip.checked]; })).toEqual(["", "", "", false]);
+      expect((await forms("keep"))!.rows).toEqual([]);
+      // Never a form whose submit the owner prohibits.
+      expect(await forms("clear", ["Save contact"])).toEqual({ key: "/ease/recovery.html|1280|light", ran: ["states.recovery"], rows: [] });
+    } finally {
+      await context.close();
+    }
+  }, 180_000);
 
   it("a states.recovery row is measured in the replay by the ease probe's form case (RECOVERY_SOURCE): each field the refusal lost, the values put back", async () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });

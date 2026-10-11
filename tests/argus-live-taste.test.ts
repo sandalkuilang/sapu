@@ -8,7 +8,7 @@ import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ARGUS_LIVE, cleanTemps, committed, example, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, TASTE_WORLD, withRunKey, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, CURATOR_FILE, pruneTaste, TASTE_KEY_MARK, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, CURATOR_FILE, pruneTaste, TASTE_KEY_MARK, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, STALE_MONTHS, staleBands, WIDTH_BUCKETS, widthBucket, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -120,18 +120,50 @@ describe("the taste bar (plugins/sapu/data/taste-bar.json)", () => {
     expect(errs(bar({ rules: [rule({ threshold: { mood: 3 } })] }))).toContainEqual(expect.stringMatching(/^rules\[0\]\.threshold/));
   });
 
+  /** An archetype's entry as calibration writes it: its month, and its bands by width bucket. */
+  const entry = (bands: Obj, width = "1440", calibrated = "2026-04") => ({ calibrated, widths: { [width]: bands } });
+
   it("refuses a band whose n is under its sites, and a string beyond URLs and metric names in archetypes (numbers only)", () => {
-    expect(errs(bar({ archetypes: { docs: { distinct_spacing: BAND } } }))).toEqual([]);
-    expect(errs(bar({ archetypes: { docs: { distinct_spacing: { ...BAND, n: 5 } } } }))).toContainEqual(expect.stringMatching(/^archetypes\.docs\.distinct_spacing: n must be an integer of at least its sites/));
+    expect(errs(bar({ archetypes: { docs: entry({ distinct_spacing: BAND }) } }))).toEqual([]);
+    expect(errs(bar({ archetypes: { docs: entry({ distinct_spacing: { ...BAND, n: 5 } }) } }))).toContainEqual(expect.stringMatching(/^archetypes\.docs\.widths\.1440\.distinct_spacing: n must be an integer of at least its sites/));
     for (const [what, archetypes] of [
-      ["a note", { docs: { distinct_spacing: { ...BAND, note: "looks clean" } } }],
-      ["page text in place of a URL", { docs: { distinct_spacing: { ...BAND, urls: ["Buy now"] } } }],
-      ["a CSS value as a string", { docs: { distinct_spacing: { ...BAND, p50: "12px" } } }],
-      ["a text as a metric name", { docs: { "Buy now": BAND } }],
-      ["an archetype outside five", { dashboard: { distinct_spacing: BAND } }],
-      ["a string in place of a band", { docs: { distinct_spacing: "screenshot.png" } }],
+      ["a note", { docs: entry({ distinct_spacing: { ...BAND, note: "looks clean" } }) }],
+      ["page text in place of a URL", { docs: entry({ distinct_spacing: { ...BAND, urls: ["Buy now"] } }) }],
+      ["a CSS value as a string", { docs: entry({ distinct_spacing: { ...BAND, p50: "12px" } }) }],
+      ["a text as a metric name", { docs: entry({ "Buy now": BAND }) }],
+      ["an archetype outside five", { dashboard: entry({ distinct_spacing: BAND }) }],
+      ["a string in place of a band", { docs: entry({ distinct_spacing: "screenshot.png" }) }],
+      ["a band outside a width bucket (the old flat shape)", { docs: { distinct_spacing: BAND } }],
     ] as [string, Obj][]) expect(errs(bar({ archetypes })), what).not.toEqual([]);
-    expect(errs(bar({ archetypes: { docs: { distinct_spacing: { ...BAND, p10: 10 } } } }))).toContainEqual(expect.stringMatching(/p10 <= p50 <= p90/));
+    expect(errs(bar({ archetypes: { docs: entry({ distinct_spacing: { ...BAND, p10: 10 } }) } }))).toContainEqual(expect.stringMatching(/p10 <= p50 <= p90/));
+  });
+
+  it("an archetype's bands sit under the width buckets 390 and 1440, with the month they were calibrated (YYYY-MM, never a day)", () => {
+    expect(WIDTH_BUCKETS).toEqual(["390", "1440"]);
+    expect(errs(bar({ archetypes: { app: { calibrated: "2026-04", widths: { "390": { distinct_spacing: BAND }, "1440": { distinct_spacing: BAND } } } } }))).toEqual([]);
+    for (const [what, a] of [
+      ["no month", { widths: { "1440": { distinct_spacing: BAND } } }],
+      ["a day", entry({ distinct_spacing: BAND }, "1440", ["2026", "04", "11"].join("-"))],
+      ["a month out of range", entry({ distinct_spacing: BAND }, "1440", "2026-13")],
+      ["a width outside the buckets", entry({ distinct_spacing: BAND }, "768")],
+      ["no width at all", { calibrated: "2026-04", widths: {} }],
+      ["an unknown key", { ...entry({ distinct_spacing: BAND }), note: "x" }],
+    ] as [string, Obj][]) expect(errs(bar({ archetypes: { app: a } })), what).not.toEqual([]);
+    expect(errs(bar({ archetypes: { app: { widths: { "1440": {} } } } }))).toContainEqual("archetypes.app.calibrated must be the month it was calibrated (YYYY-MM)");
+  });
+
+  it("a screen reads the bucket of its width: narrower than 1024 px the 390 one, else the 1440 one", () => {
+    expect([320, 390, 768, 1023, 1024, 1280, 1440, 2560].map(widthBucket)).toEqual(["390", "390", "390", "390", "1440", "1440", "1440", "1440"]);
+  });
+
+  it(`staleBands names each archetype calibrated more than ${12} months before now, never one within it`, () => {
+    expect(STALE_MONTHS).toBe(12);
+    const at = (y: number, m: number) => Date.UTC(y, m - 1, 15);
+    const b = bar({ archetypes: { app: entry({ distinct_spacing: BAND }, "1440", "2025-10"), data: entry({ distinct_spacing: BAND }, "390", "2025-09"), form: entry({ distinct_spacing: BAND }, "1440", "2026-10") } });
+    expect(validateBar(b).errors).toEqual([]);
+    expect(staleBands(b, at(2026, 10))).toEqual([{ archetype: "data", calibrated: "2025-09" }]);
+    expect(staleBands(b, at(2026, 11))).toEqual([{ archetype: "app", calibrated: "2025-10" }, { archetype: "data", calibrated: "2025-09" }]);
+    expect(staleBands(shipped(), at(2030, 1))).toEqual([]);
   });
 
   it("refuses unknown top-level keys, a version under 1, and a probe that is not a sha256", () => {
@@ -215,9 +247,12 @@ describe(".argus/taste.json — the owner's calibration", () => {
     const sink = { pass: "perf" };
     expect(hookSignals(sink)).toBe(`${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`);
     for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(hookSignals(sink)).not.toContain(recorder.trim());
-    // Outside a perf pass, the lane's whole payload.
+    // Outside a perf pass, the page's own world gets the signal script alone: the recorders go in their own world.
     expect(hookSignals(null)).toBe(PAGE_INIT);
-    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(PAGE_INIT).toContain(recorder.trim());
+    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) {
+      expect(PAGE_INIT).not.toContain(recorder.trim());
+      expect(TASTE_WORLD).toContain(recorder.trim());
+    }
     // The slot's CLI init payload follows it at each open: signals.js holds the same.
     const dir = tempDir();
     const { writeInitPayload } = await import("../plugins/sapu/scripts/argus-live-browser.mjs");
@@ -485,22 +520,25 @@ describe("argus-live CLI — the taste verbs (spec §20.4, §20.5)", () => {
 });
 
 describe("the session hook's init payload (Task 0.1's post-probe seam)", () => {
-  it("is the signal script, then the taste buffer, then the taste and ease init scripts, in every document", () => {
-    expect(PAGE_INIT.startsWith(SIGNAL_SCRIPT)).toBe(true);
-    expect(PAGE_INIT).toContain(TASTE_BUFFER);
-    expect(PAGE_INIT.indexOf(TASTE_BUFFER)).toBeGreaterThan(PAGE_INIT.indexOf(SIGNAL_SCRIPT));
-    for (const s of [TASTE_INIT, EASE_INIT]) if (s) expect(PAGE_INIT.indexOf(s)).toBeGreaterThan(PAGE_INIT.indexOf(TASTE_BUFFER));
-    expect(() => new Function(PAGE_INIT)).not.toThrow();
+  it("is the signal script in the page's own world; the recorders' world holds the taste buffer, then the taste, ease and AI init scripts", () => {
+    expect(PAGE_INIT).toBe(SIGNAL_SCRIPT);
+    expect(TASTE_WORLD.startsWith(TASTE_BUFFER)).toBe(true);
+    for (const s of [TASTE_INIT, EASE_INIT]) if (s) expect(TASTE_WORLD.indexOf(s)).toBeGreaterThan(TASTE_WORLD.indexOf(TASTE_BUFFER));
+    expect(TASTE_WORLD).not.toContain(SIGNAL_SCRIPT);
+    for (const t of [PAGE_INIT, TASTE_WORLD]) expect(() => new Function(t)).not.toThrow();
   });
 
-  it("the slot's init script file holds it, with the slot's own taste key in place of the mark", () => {
+  it("the slot's init script file holds it; the recorders reach a page through run-code, with the slot's own taste key in place of the mark", () => {
     const dir = tempDir();
     writeSlotConfig(dir, slotConfig({ dir, origins: ["http://localhost:4100"], proxyPort: 4999, chrome: { channel: "chrome" } }));
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT);
+    // The hook stage's code carries them (withRunKey: the funnel every run-code file passes through).
+    expect(TASTE_WORLD).toContain(TASTE_KEY_MARK);
+    const keyed = withRunKey(TASTE_WORLD, dir);
     const key = readFileSync(join(dir, ".playwright/taste.key"), "utf8").trim();
     expect(key).toMatch(/^[0-9a-f]{32}$/);
     expect(statSync(join(dir, ".playwright/taste.key")).mode & 0o777).toBe(0o600);
-    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT.split(TASTE_KEY_MARK).join(key));
-    expect(PAGE_INIT).toContain(TASTE_KEY_MARK);
+    expect(keyed).toBe(TASTE_WORLD.split(TASTE_KEY_MARK).join(key));
   });
 
   it("emulation stays the lane's own: the explorer's pw has no media command", () => {
@@ -603,6 +641,11 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     const json = { spacing: { "1": { $value: "4px", $type: "dimension" }, "2": "8px", "3": 12 }, radius: { md: { value: "0.375rem" } }, font: { size: { sm: "0.875rem" } }, color: { text: "black" } };
     expect(tokensPx("json", JSON.stringify(json))).toEqual({ spacing: [4, 8, 12], radius: [6], type: [14] });
     for (const [kind, text] of [["css", "--color-ink: navy;"], ["json", "{not json"], ["json", "{}"], ["yaml", "space: 4px"]]) expect(tokensPx(kind, text), text).toBe(null);
+    // Control heights: a name that says a control's height or size (density.control-heights reads them); a control's
+    // padding stays spacing, its font size type.
+    const controls = "--control-height-sm: 32px; --button-size-lg: 2.75rem; --input-height: 40px; --size-control-md: 36px; --btn-padding: 12px; --button-font-size: 15px;";
+    expect(tokensPx("css", controls)).toEqual({ spacing: [12], type: [15], control: [32, 36, 40, 44] });
+    expect(tokensPx("json", JSON.stringify({ size: { control: { sm: "28px", md: "2.25rem" } } }))).toEqual({ control: [28, 36] });
     // Self-contained: the suite embeds its source.
     expect(new Function(`return ${String(tokensPx)}`)()("css", "--radius-md: 6px")).toEqual({ radius: [6] });
   });
@@ -638,7 +681,10 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     // Run against a stand-in page whose expression answers the mocked probe's rows.
     const run = async (key: string) => {
       const c = stepCode({ n: 2, as: "customer.1", expect: "taste", rule: "copy.broken", key, final: "taste" }, { settleMs: 300, runOrigins: [] });
-      const page = { waitForTimeout: async () => {}, evaluate: async (e: unknown) => (typeof e === "string" ? (0, eval)(e) : []), context: () => ({ cookies: async () => [], pages: () => [] }) };
+      // The recorders' world as a stand-in CDP session: the expression runs here (the lazy install and the requests are no-ops).
+      const cdp = { send: async (m: string, a: Obj = {}) => (m === "Page.getFrameTree" ? { frameTree: { frame: { id: "f" } } } : m === "Page.createIsolatedWorld" ? { executionContextId: 1 } : { result: { value: /performance\.timeOrigin|__argusNet = /.test(a.expression) ? 0 : (0, eval)(a.expression) } }) };
+      const world = { name: "argus-taste", payload: "", net: new Map(), attach: async () => cdp };
+      const page = { waitForTimeout: async () => {}, evaluate: async (e: unknown) => (typeof e === "string" ? (0, eval)(e) : []), context: () => ({ cookies: async () => [], pages: () => [], __argusWorld: world }) };
       const r = await new Function(`return (${c})`)()(page);
       return { held: r.held, observed: r.observed, shown: r.shown };
     };

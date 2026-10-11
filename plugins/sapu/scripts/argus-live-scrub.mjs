@@ -9,7 +9,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { expand, LIVE_FILE, loadLive } from "./argus-live-config.mjs";
+import { expand, LIVE_FILE, literalFindings, loadLive, secretFinalName } from "./argus-live-config.mjs";
 import { PatternError } from "./argus-live-fence.mjs";
 import { normHost, ownerEnvFiles } from "./argus-live-endpoints.mjs";
 import { highEntropy, MIN_SECRET, readLedger, readSeen, secretHits, secretName } from "./argus-live-ledger.mjs";
@@ -63,7 +63,8 @@ const secretLike = (name, v) => {
  * Every secret scrub refuses for run `runId` → `{secrets: [{cls, label, v}], refusal}` (decision 17;
  * `label` names the source, never the value; empty values dropped): `env file` (every value of
  * `env_file`, now and as `up` read it, but a switch word or a short plain number), `repo env file` (the owner's env files, secret-like only), `role
- * password` and `TOTP secret` (`.argus/live.json`'s roles, expanded), `environment variable <NAME>`
+ * password` and `TOTP secret` (`.argus/live.json`'s roles, expanded), `live.json value` (what the file holds
+ * literally that looks like a secret to literalFindings' looser test), `environment variable <NAME>`
  * (`env`, secret-like only) and the ledger's `cookie`, `header`, `storage` and `created password`.
  * `refusal` is the line that ends scrub instead: a ledger that is gone, damaged or incomplete (decision
  * 14), or a configuration or contract that cannot be read (its secrets would be unknown).
@@ -93,6 +94,13 @@ export function scrubSecrets(main, { runId, env = process.env } = {}) {
       if (u && typeof u.totp_secret === "string") add("TOTP secret", `${role}.${i + 1} totp_secret`, expanded(u.totp_secret));
     });
   }
+  // What live.json holds literally that may be a secret: validateLive refused the clear ones, so these are the
+  // values a looser test finds (a name secretName knows, a random token from 16 characters), which a run carries.
+  // A value only secretName's name found must look like one too (SESSION_DRIVER=redis is configuration): 6
+  // characters or more, and no plain word, number or absolute path.
+  const named = (n) => secretName(n) || secretFinalName(n);
+  const looks = (f) => f.name === undefined || secretFinalName(f.name) || (f.value.length >= MIN_SECRET && !/^(?:[A-Za-z]+|[0-9]+)$/.test(f.value) && !ABS_PATH.test(f.value));
+  for (const f of literalFindings(config, { named, minToken: 16 })) if (f.value.length >= MIXED_MIN && !plainValue(f.name ?? "", f.value) && looks(f)) add("live.json value", `live.json ${f.where}`, f.value);
   for (const [k, v] of Object.entries(env ?? {})) if (typeof v === "string" && secretLike(k, v)) add(`environment variable ${k}`, k, v);
   let ledger;
   try {

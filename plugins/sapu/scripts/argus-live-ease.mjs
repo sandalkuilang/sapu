@@ -1,7 +1,8 @@
 // argus-live-ease.mjs — the ease probes of the taste pass (spec §20.2: perceived performance, states and microcopy,
 // consistency, efficiency). A leaf module (it reads the plugin's bar file, no other argus-live module). EASE_INIT, in
-// the session hook's init payload, records each document's actions, first visible changes and busy signals into the
-// taste buffer, and its requests, clicked controls and edits beside it (`document.__argusEase`); EASE_SOURCE measures
+// the recorders' world, records each document's actions, first visible changes and busy signals into the taste buffer,
+// and its clicked controls, edits and change times beside it (`document.__argusEase`); its requests come from the
+// driver (argus-live-world.mjs), or in the page's own world from EASE_NET's wrappers (the suite's); EASE_SOURCE measures
 // a screen and judges a recorded one (`kind: "judge"`, no DOM, so Node runs it too); the Node exports price a path
 // (pathCost) and compare a cycle's screens (crossRules). A finding is `{rule, key, measured, expected}`, its key page
 // text (fenced wherever printed) with digit runs `#`. Precision first: a feedback rule measures only an action that
@@ -38,16 +39,19 @@ const LOADER_FNS = String.raw`const SKELETON = /(^|[-_])(skeleton|shimmer)([-_]|
   const looping = (a) => Boolean(a.effect && a.effect.target && !a.effect.pseudoElement && a.playState === "running" && a.effect.getComputedTiming().iterations === Infinity);`;
 
 /**
- * The feedback clock of the session hook's init payload (argus-live-browser.mjs PAGE_INIT), once a document after the
+ * The feedback clock of the taste recorders' world (argus-live-browser.mjs TASTE_WORLD), once a document after the
  * taste buffer: `input` records (pointerdown with the main button, click, dblclick, submit, keydown of Enter or Space,
  * and typing as `input`, one record per burst), the first rendering change after each (`change`: an added node or text
  * that passes checkVisibility (a text node's new text counts as added), a RENDER_ATTRIBUTES change on a shown node or
  * one that hides it, `focus` when focus moves to a shown element other than the action's own target, or `navigation`
  * at pagehide), and `busy` on/off per signal: `aria-busy`, `progressbar` (a
  * determinate one), `spinner` (an indeterminate progressbar or a rotating infinite animation), `skeleton`, `disabled`
- * (a control that went disabled). Beside the buffer, `document.__argusEase` keeps the page's fetch and XHR requests
- * (`{t, end, status, method, route, keys, same}`: body field names, never values), the clicked controls (`{t, role,
- * name, region}`), the edits in forms, and how many skeletons were replaced by a layout shift.
+ * (a control that went disabled). Beside the buffer, `document.__argusEase` keeps the clicked controls (`{t, role,
+ * name, region}`), the edits in forms, the times of the last 300 rendering changes that are no busy toggle (a frame
+ * apart at least: what names a write's new state once it answered), how many skeletons were replaced by a layout
+ * shift, and, where EASE_NET wraps them, the page's fetch and XHR requests (`{t, end, status, method, route, keys,
+ * same}`: body field names, never values). It observes every open shadow root it finds on an added element (in a world
+ * of its own it cannot wrap the page's attachShadow).
  */
 export const EASE_INIT = String.raw`(() => {
   const doc = document;
@@ -55,17 +59,16 @@ export const EASE_INIT = String.raw`(() => {
   const KEY = "${KEY_MARK}";
   const push = (rec) => doc.__argusTastePush(rec, KEY);
   const now = () => performance.now();
-  const S = { v: 1, requests: [], actions: [], edits: [], shifts: 0, pending: false };
+  const S = { v: 1, requests: [], actions: [], edits: [], changes: [], shifts: 0, pending: false };
   const roots = new Set();
   // Fixed properties a page cannot replace: what the probes read, as a copy (writing to it changes nothing), and the
   // live record only with the taste key (the request wrappers write to it).
   const fix = (name, desc) => Object.defineProperty(doc, name, { ...desc, configurable: false, enumerable: false });
-  fix("__argusEase", { get: () => ({ v: S.v, requests: S.requests.map((r) => Object.assign({}, r)), actions: S.actions.map((a) => Object.assign({}, a)), edits: S.edits.map((e) => Object.assign({}, e)), shifts: S.shifts, pending: S.pending, observe: S.observe }) });
+  fix("__argusEase", { get: () => ({ v: S.v, requests: S.requests.map((r) => Object.assign({}, r)), actions: S.actions.map((a) => Object.assign({}, a)), edits: S.edits.map((e) => Object.assign({}, e)), changes: S.changes.slice(), shifts: S.shifts, pending: S.pending, observe: S.observe }) });
   fix("__argusEaseLive", { value: (key) => (key === KEY ? S : null), writable: false });
   const V = { checkOpacity: true, checkVisibilityCSS: true };
   const shown = (el) => Boolean(el) && el.nodeType === 1 && el.isConnected && (typeof el.checkVisibility !== "function" || el.checkVisibility(V));
   const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
-  const routeOf = ${ROUTE_OF};
   const formKey = ${FORM_KEY};
   const cap = (list, n, x) => { list.push(x); if (list.length > n) list.shift(); return x; };
   ${LOADER_FNS}
@@ -133,6 +136,8 @@ export const EASE_INIT = String.raw`(() => {
   let since = null, timer = 0, last = -1e9;
   const mo = new MutationObserver((records) => {
     const t = now();
+    for (const m of records) for (const n of m.type === "childList" ? m.addedNodes : []) if (n.nodeType === 1) for (const el of [n, ...n.querySelectorAll("*")]) if (el.shadowRoot && !roots.has(el.shadowRoot)) S.observe(el.shadowRoot);
+    if (!S.changes.length || t - S.changes[S.changes.length - 1] > 16) for (const m of records) { const r = relevant(m); if (r && !(r[0] === "attribute" && /^(disabled|aria-busy)$/.test(r[1]))) { cap(S.changes, 300, t); break; } }
     for (const m of records) if (m.type === "attributes" && m.attributeName === "disabled") { if (m.oldValue === null && m.target.hasAttribute("disabled")) dis.add(m.target); else dis.delete(m.target); }
     if (S.pending) for (const m of records) { const r = relevant(m); if (r) { push({ kind: "change", t, cause: r[0], attr: r[1] }); S.pending = false; break; } }
     // After a write answered 2xx: the first change that can name the new state (a busy toggle cannot), for states.success.
@@ -152,36 +157,6 @@ export const EASE_INIT = String.raw`(() => {
     push({ kind: "change", t: now(), cause: "focus", attr: null });
     S.pending = false;
   }, true);
-  if (window.__argusEaseWrapped) return;
-  window.__argusEaseWrapped = true;
-  const attach = Element.prototype.attachShadow;
-  if (typeof attach === "function") Element.prototype.attachShadow = function () { const root = attach.apply(this, arguments); try { document.__argusEase.observe(root); } catch (e) {} return root; };
-  // A request body's field names (JSON, form-encoded, URLSearchParams, FormData), never its values.
-  const keysOf = (b) => {
-    let k = [];
-    try { k = typeof b === "string" ? (b.trim().charAt(0) === "{" ? Object.keys(JSON.parse(b)) : /^[^=&\s]+=/.test(b.trim()) ? [...new URLSearchParams(b.trim()).keys()] : []) : b instanceof URLSearchParams || b instanceof FormData ? [...b.keys()] : []; } catch (e) { k = []; }
-    return [...new Set(k)].map((x) => String(x).slice(0, 40)).sort().slice(0, 20);
-  };
-  // The current document's record of a request (null when it has none), and its end; the wrappers change nothing else.
-  const rec = (method, url, body) => {
-    try { const st = typeof document.__argusEaseLive === "function" ? document.__argusEaseLive(KEY) : null, u = new URL(String(url), location.href); return st ? cap(st.requests, 200, { t: performance.now(), end: null, status: 0, method: String(method || "GET").toUpperCase(), route: routeOf(u.pathname), keys: keysOf(body), same: u.origin === location.origin }) : null; } catch (e) { return null; }
-  };
-  const done = (r, status) => {
-    if (!r) return;
-    [r.end, r.status] = [performance.now(), status];
-    const live = typeof document.__argusEaseLive === "function" ? document.__argusEaseLive(KEY) : null;
-    if (live && r.same && !/^(GET|HEAD|OPTIONS)$/.test(r.method) && status >= 200 && status < 300) live.answered = true;
-  };
-  const native = window.fetch;
-  if (typeof native === "function") window.fetch = function (input, init) {
-    const q = typeof Request === "function" && input instanceof Request ? input : null;
-    const r = rec((init && init.method) || (q && q.method), q ? q.url : input, init && init.body), p = native.apply(this, arguments);
-    p.then((res) => done(r, res.status), () => done(r, 0));
-    return p;
-  };
-  const X = window.XMLHttpRequest && window.XMLHttpRequest.prototype, open = X && X.open, send = X && X.send;
-  if (X) X.open = function (m, u) { this.__argusEaseReq = [m, u]; return open.apply(this, arguments); };
-  if (X) X.send = function (b) { const r = this.__argusEaseReq ? rec(this.__argusEaseReq[0], this.__argusEaseReq[1], b) : null; if (r) this.addEventListener("loadend", () => done(r, this.status)); return send.apply(this, arguments); };
 })();
 `;
 
@@ -298,7 +273,7 @@ export const EASE_SOURCE = String.raw`(arg) => {
     const after = (w) => (w.a.first === null ? null : w.a.start + w.a.first);
     // The new state is named only by a change after the write answered, before the next input: a control disabled and
     // enabled again, or busy, names nothing, nor does text shown while the request ran.
-    const naming = (Array.isArray(s.events) ? s.events : []).filter((x) => x && x.kind === "change" && typeof x.t === "number" && !(x.cause === "attribute" && /^(disabled|aria-busy)$/.test(x.attr || "")));
+    const naming = (Array.isArray(s.events) ? s.events : []).filter((x) => x && x.kind === "change" && typeof x.t === "number" && !(x.cause === "attribute" && /^(disabled|aria-busy)$/.test(x.attr || ""))).concat((Array.isArray(e.changes) ? e.changes : []).filter((t) => typeof t === "number").map((t) => ({ kind: "change", t })));
     // On a route the owner declared optimistic, the change made before the answer is the naming (decision 10).
     const optimistic = ((cfg && cfg.optimistic) || []).some((g) => globMatch(g, route));
     const shownAfter = (w) => naming.filter((x) => x.t >= (optimistic ? w.a.start : w.end) && (w.a.end === null || x.t < w.a.end)).reduce((m, x) => (m === null || x.t < m ? x.t : m), null);
@@ -322,6 +297,8 @@ export const EASE_SOURCE = String.raw`(arg) => {
   if (A.kind === "feedback") return feedback(A.events, A.requests, A.now);
   const doc = document;
   const st = doc.__argusEase || null;
+  // The document's requests as the driver timed them, where the lane put them (argus-live-world.mjs WORLD_EVAL), else null.
+  const net = () => (Array.isArray(window.__argusNet) ? window.__argusNet.map((r) => { try { const u = new URL(String(r.url), location.href); return { t: r.t, end: r.end, status: r.status, method: String(r.method || "GET").toUpperCase(), route: routeOf(u.pathname), keys: Array.isArray(r.keys) ? r.keys : [], same: u.origin === location.origin }; } catch (e) { return null; } }).filter(Boolean) : null);
   // The document's buffered records (the taste key's), never drained here.
   const peek = () => (typeof doc.__argusTastePeek === "function" ? doc.__argusTastePeek("${KEY_MARK}") || [] : []);
   const V = { checkOpacity: true, checkVisibilityCSS: true };
@@ -481,7 +458,7 @@ export const EASE_SOURCE = String.raw`(arg) => {
     return m;
   };
   const screen = () => {
-    const s = { v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: st ? st.requests.map((r) => Object.assign({}, r)) : [], actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits(), footers: footers(), forms: forms() };
+    const s = { v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: net() || (st ? st.requests.map((r) => Object.assign({}, r)) : []), actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], changes: st && Array.isArray(st.changes) ? st.changes.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits(), footers: footers(), forms: forms() };
     s.metrics = metricsOf(s);
     return s;
   };
@@ -526,15 +503,27 @@ export const FAULT_SOURCE = String.raw`async (page, origin, when) => {
  * the first required field holding a value that the browser will not check itself (the form is novalidate, or the
  * field only aria-required) is emptied and the submit clicked; every other field whose value then changed is lost
  * (`[{key}]`, the field's label). Every value is put back. null when there is no such field or form, when a write was
- * accepted (phase 6's a11y case reports that), or when the form is gone.
+ * accepted (phase 6's a11y case reports that), or when the form is gone. With `fill` (a replay that reaches the form
+ * before its path types anything), each empty text field first gets a plain value of its type (never a date or time
+ * kind), so a value the refusal clears shows; those fields are emptied again at the end, the form left as found.
  */
-export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
+export const RECOVERY_SOURCE = String.raw`async (page, submit, ease, fill) => {
   if ((await submit.count()) !== 1) return null;
   const at = await submit.evaluate((b) => [...document.forms].indexOf(b.form || b.closest("form")));
-  const before = at < 0 ? null : await page.evaluate(ease, { kind: "fields", form: at });
-  const c = before && before.find((x) => x.need && x.filled && x.text);
-  if (!c) return null;
   const handle = async (i) => (await page.evaluateHandle((a) => document.forms[a[0]] && document.forms[a[0]].elements[a[1]], [at, i])).asElement();
+  const PLAIN = { email: "argus@example.test", url: "https://example.test", tel: "5550100", number: "1", text: "argus", search: "argus", textarea: "argus" };
+  const mine = [];
+  const fields = async () => { const v = at < 0 ? null : await page.evaluate(ease, { kind: "fields", form: at }); return Array.isArray(v) ? v : null; };
+  for (const x of fill ? (await fields()) || [] : []) {
+    if (!x.text || x.filled) continue;
+    const h = await handle(x.i);
+    const type = h ? await h.evaluate((el) => (el.tagName === "TEXTAREA" ? "textarea" : String(el.type || "text").toLowerCase())) : null;
+    if (h && Object.hasOwn(PLAIN, type) && (await h.fill(PLAIN[type]).then(() => true, () => false))) mine.push(x.i);
+  }
+  const before = await fields();
+  const c = before && before.find((x) => x.need && x.filled && x.text);
+  const empty = async () => { for (const i of mine) { const h = await handle(i); if (h) await h.fill("").catch(() => null); } };
+  if (!c) return (await empty(), null);
   const kept = before.filter((x) => x.filled), values = [];
   for (const x of kept) values.push(x.box ? null : await (await handle(x.i)).inputValue());
   let accepted = false;
@@ -545,7 +534,7 @@ export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
     await submit.click();
     try { await page.waitForResponse((r) => r.request().method() !== "GET", { timeout: 800 }); } catch (e) {}
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-    const after = accepted ? null : await page.evaluate(ease, { kind: "fields", form: at }).catch(() => null);
+    const after = accepted ? null : await fields().catch(() => null);
     if (!after) return null;
     const gone = kept.filter((x) => x.i !== c.i && !after.some((y) => y.i === x.i && y.digest === x.digest));
     for (let j = 0; j < kept.length; j++) {
@@ -557,6 +546,7 @@ export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
     return gone.map((x) => ({ key: x.key }));
   } finally {
     page.off("response", seen);
+    await empty();
   }
 }`;
 

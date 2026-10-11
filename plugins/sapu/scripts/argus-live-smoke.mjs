@@ -102,6 +102,10 @@ export function quarantineAt(at) {
   } catch {
     raw = null;
   }
+  return quarantineOf(raw);
+}
+/** quarantine.json's parsed content `raw` → quarantineAt's entries (sapu-smoke-gate.mjs reads the base commit's blob). */
+export function quarantineOf(raw) {
   return (Array.isArray(raw) ? raw : []).filter((q) => isObj(q) && typeof q.id === "string" && JOURNEY.test(q.id)).map((q) => ({
     id: q.id,
     issue: Number.isSafeInteger(q.issue) && q.issue > 0 ? q.issue : null,

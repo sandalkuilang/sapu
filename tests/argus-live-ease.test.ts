@@ -11,7 +11,9 @@ import { browserTools, cleanTemps, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { crossRules, EASE_INIT, EASE_RENDER, EASE_SOURCE, easeOf, FAULT_SOURCE, NO_MAJORITY, pathCost, RECOVERY_SOURCE, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loadBar, RENDER_ATTRIBUTES, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { loadBar, RENDER_ATTRIBUTES, TASTE_BUFFER, TASTE_DRAIN, TASTE_KEY_MARK, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_NET, ROUTE_OF } from "../plugins/sapu/scripts/argus-live-world.mjs";
 
 type Obj = Record<string, any>;
 const BAR = loadBar();
@@ -79,11 +81,11 @@ afterEach(async () => {
   for (const c of contexts.splice(0)) await c.close();
 }, 30_000);
 
-/** A fixture page in a fresh context whose documents run the taste buffer and the feedback clock, as the session hook's payload does. */
+/** A fixture page in a fresh context whose documents run the taste buffer and the feedback clock in the page's own world, as the suite installs them (its request wrappers, EASE_NET, after the clock). */
 async function open(file: string, { arm = true } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   contexts.push(context);
-  if (arm) await context.addInitScript(`${TASTE_BUFFER};\n${EASE_INIT}`);
+  if (arm) await context.addInitScript(`${TASTE_BUFFER};\n${EASE_INIT};\n${EASE_NET}`);
   const page = await context.newPage();
   await page.goto(`${origin}/${file}`);
   return page;
@@ -119,8 +121,15 @@ describe("argus-live-ease.mjs — the shapes it shares with lane 0", () => {
     expect(EASE_INIT).toContain('Object.prototype.hasOwnProperty.call(doc, "__argusEase") || typeof doc.__argusTastePush !== "function"');
     expect(() => new Function(EASE_INIT)).not.toThrow();
     expect(typeof ease).toBe("function");
+    // The clock wraps nothing: in the lane it lives in a world of its own, where the driver times the requests; the
+    // page's own world (the suite's) gets the wrappers from EASE_NET, behind it, with the same route template and mark.
+    expect(EASE_INIT).not.toMatch(/window\.fetch =|XMLHttpRequest|attachShadow =/);
+    expect(EASE_NET).toMatch(/window\.fetch = function/);
+    expect(EASE_NET).toContain(ROUTE_OF);
+    expect(EASE_SOURCE).toContain(ROUTE_OF);
+    expect(EASE_NET).toContain(TASTE_KEY_MARK);
     // The in-page sources never hold a template interpolation or a word the support file's scans refuse.
-    for (const src of [EASE_INIT, EASE_SOURCE, FAULT_SOURCE, RECOVERY_SOURCE]) {
+    for (const src of [EASE_INIT, EASE_NET, EASE_SOURCE, FAULT_SOURCE, RECOVERY_SOURCE]) {
       expect(src).not.toContain("${");
       expect(src).not.toMatch(/shell|\bexec\(|spawn\(/);
     }
@@ -468,6 +477,27 @@ describe("argus-live ease — states: the routed fault, success, recovery, empty
     expect(keep.values).toEqual(["Ana", "ana@example.test", "call after five", true]);
     // A form the browser validates itself never submits: the case is not run.
     expect((await run("native")).lost).toBeNull();
+    expect(hits.slice(posted).filter((h) => h === "POST /api/save")).toEqual([]);
+  }, 60_000);
+
+  it("states.recovery with `fill` (the replay's first measurement, at the moment the screen is reached): each empty text field gets a plain value first, so a refusal that clears it shows; the form is left as found", async () => {
+    const recover = fnOf(RECOVERY_SOURCE);
+    const posted = hits.length;
+    const run = async (mode: string, name = "") => {
+      const page = await open(`recovery.html?mode=${mode}`);
+      if (name) await page.getByLabel("Name").fill(name);
+      const lost = await recover(page, page.getByRole("button", { name: "Save contact" }), ease, true);
+      const values = await page.evaluate(() => { const f = (document.getElementById("f") as HTMLFormElement).elements as any; return [f.name.value, f.email.value, f.notes.value, f.vip.checked]; });
+      return { lost, values };
+    };
+    // Nothing typed yet: the case fills Name, Email and Notes, empties Name (the required field) and submits.
+    expect(await run("clear")).toEqual({ lost: [{ key: "Email" }, { key: "Notes" }], values: ["", "", "", false] });
+    expect(await run("keep")).toEqual({ lost: [], values: ["", "", "", false] });
+    // A value the path typed stays as typed.
+    expect(await run("clear", "Ana")).toEqual({ lost: [{ key: "Email" }, { key: "Notes" }], values: ["Ana", "", "", false] });
+    // Without `fill`, an empty form has no field to lose: the case is not run.
+    const page = await open("recovery.html?mode=clear");
+    expect(await recover(page, page.getByRole("button", { name: "Save contact" }), ease)).toBeNull();
     expect(hits.slice(posted).filter((h) => h === "POST /api/save")).toEqual([]);
   }, 60_000);
 

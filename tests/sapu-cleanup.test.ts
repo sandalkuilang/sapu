@@ -2,12 +2,12 @@
 // are proven merged (plan), the facts it reads from a real repository (gitFacts) and when a worktree
 // must stay (worktreeUnsafe).
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { gitFacts, parseArgs, plan, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
+import { gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
 
 type Step = { branch: string; action: string; why: string; worktree: string };
 const by = (steps: Step[]) => Object.fromEntries(steps.map((s) => [s.branch, `${s.action}: ${s.why}`]));
@@ -119,5 +119,58 @@ describe("sapu-cleanup — a real repository: no unmerged commit is ever proven 
     expect(worktreeUnsafe(wt, later, main)).toMatch(/env file/);
     writeFileSync(join(wt, "new.txt"), "x");
     expect(worktreeUnsafe(wt, later, main)).toMatch(/uncommitted or untracked/);
+  });
+});
+
+describe("sapu-cleanup — the agent-memory link Claude Code puts in a worktree (worktree.symlinkDirectories) is not work", () => {
+  const top = realpathSync(mkdtempSync(join(tmpdir(), "sapu-cleanup-link-")));
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const main = join(top, "main");
+  g(top, "init", "-q", "-b", "main", main);
+  // A pattern ending in `/` ignores <MAIN>'s real directory but not the link: the link shows as untracked.
+  writeFileSync(join(main, ".gitignore"), "/.claude/worktrees/\n/.claude/agent-memory/\n");
+  g(main, "add", ".gitignore");
+  g(main, "commit", "-q", "-m", "ignore");
+  mkdirSync(join(main, ".claude/agent-memory/reviewer"), { recursive: true });
+  writeFileSync(join(main, ".claude/agent-memory/reviewer/notes.md"), "keep me");
+  const later = Date.now() + 2 * 3600_000;
+  const add = (name: string) => {
+    const wt = join(main, ".claude/worktrees", name);
+    g(main, "worktree", "add", "-q", "-b", `worktree-wf_${name}`, wt);
+    mkdirSync(join(wt, ".claude"), { recursive: true });
+    return wt;
+  };
+
+  it("an untracked link at .claude/agent-memory(-local) leaves the worktree clean, and removing the worktree removes only the link", () => {
+    const wt = add("l1");
+    symlinkSync(join(main, ".claude/agent-memory"), join(wt, ".claude/agent-memory"));
+    symlinkSync(join(main, ".claude/agent-memory"), join(wt, ".claude/agent-memory-local"));
+    expect(g(wt, "status", "--porcelain", "--untracked-files=all")).toMatch(/\?\? \.claude\/agent-memory/);
+    expect(worktreeUnsafe(wt, later, main)).toBe("");
+    expect(removeWorktree(main, wt)).toBe(true);
+    expect(existsSync(wt)).toBe(false);
+    expect(readFileSync(join(main, ".claude/agent-memory/reviewer/notes.md"), "utf8")).toBe("keep me");
+  });
+
+  it("a worktree git refuses to remove (locked: an agent still runs in it) keeps its link", () => {
+    const wt = add("l4");
+    symlinkSync(join(main, ".claude/agent-memory"), join(wt, ".claude/agent-memory"));
+    g(main, "worktree", "lock", wt);
+    expect(removeWorktree(main, wt)).toBe(false);
+    expect(readFileSync(join(wt, ".claude/agent-memory/reviewer/notes.md"), "utf8")).toBe("keep me");
+  });
+
+  it("a real agent-memory directory in the worktree is work (notes written there, ignored or not), and so is any other untracked file", () => {
+    const wt = add("l2");
+    mkdirSync(join(wt, ".claude/agent-memory"));
+    writeFileSync(join(wt, ".claude/agent-memory/n.md"), "x");
+    expect(worktreeUnsafe(wt, later, main)).toMatch(/agent memory written inside it/);
+    mkdirSync(join(wt, ".claude/agent-memory-local"));
+    writeFileSync(join(wt, ".claude/agent-memory-local/n.md"), "x");
+    expect(worktreeUnsafe(wt, later, main)).toMatch(/uncommitted or untracked/);
+    const wt3 = add("l3");
+    symlinkSync(join(main, ".claude/agent-memory"), join(wt3, ".claude/agent-memory"));
+    writeFileSync(join(wt3, "new.txt"), "x");
+    expect(worktreeUnsafe(wt3, later, main)).toMatch(/uncommitted or untracked/);
   });
 });

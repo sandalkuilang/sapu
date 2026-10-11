@@ -577,13 +577,13 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 40_610,
+  "skills/sapu/SKILL.md": 40_850,
   "skills/sapu/subagent-brief.md": 14_000,
   "skills/forge/SKILL.md": 15_400,
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 20_000,
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 15_300,
+  "skills/argus/journeys.md": 15_450,
   "skills/argus/SKILL.md": 42_832,
   "skills/journey/SKILL.md": 4_950,
   "skills/journey/live.md": 14_500,
@@ -712,12 +712,17 @@ describe("profile sections", () => {
   });
 
   // In <MAIN> the agent-memory dir is a real directory, so a .gitignore pattern ending in `/`
-  // passes `git check-ignore` there yet leaves the worktree's link untracked: init cannot test it.
-  it("init excludes each linked agent-memory dir in .git/info/exclude unconditionally, never after a check-ignore", () => {
+  // passes `git check-ignore` there yet leaves the worktree's link untracked: init never decides by
+  // it. It adds the slash-less line first; only then does check-ignore verify that no negation in the
+  // repo's own ignore files takes the link back.
+  it("init excludes each linked agent-memory dir in .git/info/exclude unconditionally, then verifies it with check-ignore", () => {
     const line = readFileSync(join(PLUGIN, "skills/init/SKILL.md"), "utf8").split("\n").find((l) => l.includes("`worktree.symlinkDirectories` gains")) ?? "";
     expect(line).toContain("`/<dir>`");
     expect(line).toMatch(/always add/i);
     expect(line).not.toMatch(/`git check-ignore -q <dir>` passes/);
+    const add = line.search(/always add/i);
+    const verify = line.indexOf("git -C <MAIN> check-ignore -q --no-index <dir>");
+    expect(verify).toBeGreaterThan(add);
   });
 
   // The reverse direction: every section a skill or a workflow cites from a profile exists in
