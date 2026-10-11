@@ -22,12 +22,15 @@
 // double quotes), wrappers are peeled (`env`, `nice`, `time`, `exec`, `xargs`, `npx`, `bunx`,
 // `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, `stdbuf`, `watch`,
 // `busybox`/`toybox <applet>`, `setsid`, `unbuffer`, `ionice`, `taskset`, `chrt`, `flock`, `sudo`,
-// `doas`, coreutils' g-prefixed names, ...), `bash -c`/`sh -c` (any shell: ash, hush, mksh, fish too)/
-// `eval`/`env -S`/`npm exec -c`/`script -c`/`flock -c`/`watch`'s joined text/`bun exec`/`find -exec`/
-// `fd -x|-X`/`parallel`/`sem`/`rush` and heredocs fed to a shell are checked recursively, so are the
-// commands an interpreter's inline code or heredoc runs through its process calls (`python -c`, `perl
-// -e`, `ruby -e`, `node|bun|tsx -e|-p`, `deno eval`, `php -r`: a call's string, a list of literals as
-// its argv, perl/ruby/php backticks and `qx`/`%x`), the words xargs, find,
+// `doas`, coreutils' and findutils' g-prefixed names, ...), `bash -c`/`sh -c` (any shell: ash, hush,
+// mksh, fish too)/`eval`/`env -S`/`npm exec -c`/`script -c`/`flock -c`/`watch`'s joined text/`bun exec`/
+// `find -exec`/`fd -x|-X`/`parallel`/`sem`/`rush` and heredocs, herestrings and literal echo/printf
+// pipes fed to a shell are checked recursively, so are the commands an interpreter's inline code, or
+// the code it reads on stdin (no script operand: a heredoc, a herestring, a literal echo/printf pipe),
+// runs through its process calls (`python -c`, `perl -e`, `ruby -e`, `node|bun|tsx -e|-p`, `deno eval`,
+// `php -r`: a call's string, a list of literals as its argv, `__import__('os')` and python's import
+// aliases, perl's `q`/`qq`/`qw`, perl/ruby/php backticks and `qx`/`%x` — a backtick inside a perl regex is
+// a character), the words xargs, find,
 // fd, parallel and rush fill in at run
 // time counted as words the shell builds (nesting deeper than MAX_DEPTH is blocked, never waved
 // through), and `cd`/`pushd`/`env -C`/`git -C`/`--git-dir`/`--work-tree`/`GIT_DIR` are followed
@@ -145,7 +148,8 @@
 // above (`grep -r … ~/.config`), a tool whose own directory option moves where a relative path
 // resolves (`tar -C ~/.config -c gh`, `rsync`, `git -C` for a file read), an interpreter reading the
 // file (`python`, `node -e`, `perl`), the OS keychain read directly (`security
-// find-internet-password`, `secret-tool`), a script piped into a shell (`… | sh`), and a token
+// find-internet-password`, `secret-tool`), a script piped into a shell (`… | sh`) from anything but a
+// literal of the same command line (a file, a download, a variable), and a token
 // already in the environment (GH_TOKEN, GITHUB_TOKEN), which curl can send as it is.
 // The touched repo is known by a local path only: gh's -R/--repo and an MCP tool's remote fields name
 // a remote, so gh is judged by its cwd's repo and an MCP tool's branch and label fields by the
@@ -395,7 +399,10 @@ export function stripHeredocs(cmd, codes = null) {
         /(^|[|;&(]\s*)(\S+=\S*\s+)*(bash|sh|zsh|dash)\b(?![\w.-])/.test(line.slice(0, m.index)) ||
         /\|\s*(bash|sh|zsh|dash)\b/.test(line.slice(m.index)) ||
         tokenize(line.slice(m.index + m[0].length)).cmds.some((c) => c.pre === "|" && SHELLS.has(lastProgram(c.toks)));
-      lang = keep ? null : codeLang(prog);
+      // Code only when the interpreter reads its program from stdin (`python3 - <<EOF`, `cat <<EOF | node`);
+      // with a script operand (`perl scripts/fmt.pl <<EOF`) the body is that script's data.
+      const fedTo = [tokenize(line.slice(0, m.index)).cmds.filter((c) => c.toks.length).at(-1)?.toks ?? [], ...tokenize(line.slice(m.index + m[0].length)).cmds.filter((c) => c.pre === "|").map((c) => c.toks)];
+      lang = keep ? null : (fedTo.map(stdinLang).find((l) => l && l !== "shell") ?? null);
     }
   }
   if (end !== null) out.push(...body);
@@ -598,7 +605,7 @@ const RUNNERS = {
 /** watch's options that take no value (procps): any other option may take the next word (judged both ways). */
 const WATCH_FLAG = /^(-[bcCdeghprtvwx]+|-[bcCdeghprtvwx]*[nq].+|--(beep|colou?r|no-colou?r|differences(=.*)?|errexit|chgexit|precise|no-rerun|no-title|no-wrap|no-linewrap|exec|help|version|interval=.*|equexit=.*))$/;
 /** A wrapper's name, GNU coreutils' g-prefixed names (macOS Homebrew: gstdbuf, gtimeout, genv, …) read as the plain one. */
-const wrapperName = (v) => (/^g(env|nice|nohup|stdbuf|timeout|time|chroot)$/.test(v) ? v.slice(1) : v);
+const wrapperName = (v) => (/^g(env|nice|nohup|stdbuf|timeout|time|chroot|xargs|find|locate|updatedb)$/.test(v) ? v.slice(1) : v);
 /** A redirection operator word (the tokenizer splits them out): `>`, `2>>`, `&>`, `>&`, `<`, `<<`, `<<<`, … */
 const REDIRECT_OP = /^\d*(?:&>>?|<<<|<<-?|<>|<&|>>|>&|>\||<|>)$/;
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -2054,7 +2061,8 @@ function checkCommand(t, state, depth) {
   }
   const argv = t.slice(at);
   const a = argv.map((x) => x.v);
-  const prog = a.length ? bare(a[0]) : "";
+  // GNU's g-prefixed tools (macOS Homebrew: gfind, gxargs, …) are the tools they name.
+  const prog = a.length ? wrapperName(bare(a[0])) : "";
 
   // Values that are prose (commit messages, PR titles/bodies) are data, not targets.
   const skip = new Set();
@@ -2779,9 +2787,22 @@ function checkText(text, dir, base, depth) {
   }
   let fromPr = false; // the previous command pipes a PR's diff into this one
   let fromNet = false; // the previous command pipes a download into this one
+  let printed = null; // what the previous command, a literal echo or printf, pipes into this one
   for (const c of cmds) {
     if (c.pre === "(") saved.push(state.dir);
     const before = state.dir;
+    // Code a shell or an interpreter reads on stdin, written as a literal in this command line: a
+    // herestring (`python3 <<< "…"`, `bash <<< '…'`) or what echo/printf pipe in (`echo '…' | bash`).
+    const hs = c.toks.findIndex((x) => /^\d*<<<$/.test(x.v));
+    const fed = [...(hs >= 0 && c.toks[hs + 1] && !c.toks[hs + 1].dyn ? [c.toks[hs + 1].v] : []), ...(c.pre === "|" && printed ? printed : [])];
+    const lang = fed.length ? stdinLang(c.toks) : null;
+    for (const text of lang ? fed : []) {
+      for (const cmd of lang === "shell" ? [text] : codeCommands(text, lang)) {
+        const reason = checkText(cmd, state.dir, { ...base, posix }, depth + 1);
+        if (reason) return reason;
+      }
+    }
+    printed = c.post === "|" ? echoed(c.toks) : null;
     if (fromPr && c.pre === "|") {
       // patch itself, through busybox/toybox, or inside a shell's -c text
       const a = c.toks.slice(programIndex(c.toks)).map((x) => x.v);
@@ -2999,11 +3020,53 @@ const LIT = String.raw`[fr]?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\`(?:\\.|[^\`
 // `suite.run(` or python's builtin `exec("…")` are not commands.
 const SPAWN_ANY = String.raw`\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open|capture2e?|capture3|popen[23]e?)`;
 const SPAWN_GENERIC = String.raw`(?:exec|run|call|system|popen)`;
-const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp|IO|Kernel|Open3)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*)`;
+const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp|IO|Kernel|Open3)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*|\b__import__\(\s*["'](?:os|subprocess)["']\s*\)\s*\.\s*)`;
 const IMPORTS_PROCESS = /child_process|\bsubprocess\b|\bimport\s+os\b|\bfrom\s+os\s+import\b/;
-/** A process call's arguments: a list, or literals and lists after one another (`system("git", "push")`); perl and ruby also without parentheses. */
-const spawnCall = (bare, noParen) =>
-  new RegExp(String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""})${noParen ? String.raw`(?:\s*\(\s*|\s+)` : String.raw`\s*\(\s*`}(\[[^\]]*\]|${LIT}(?:\s*,\s*(?:\[[^\]]*\]|${LIT}))*)`, "g");
+/**
+ * A process call's arguments: a list, or literals and lists after one another (`system("git", "push")`), the
+ * first maybe a keyword argument (`run(args="…")`); perl and ruby also without parentheses. `aliases`: python's
+ * names for a process module (`import subprocess as s`) or one of its calls (`from os import system as sh`).
+ */
+const spawnCall = (bare, noParen, { modules = [], calls = [] } = {}) =>
+  new RegExp(
+    String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${modules.length ? String.raw`|(?<![\w.$])(?:${modules.join("|")})\s*\.\s*${SPAWN_GENERIC}` : ""}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""}${calls.length ? String.raw`|(?<![\w.$])(?:${calls.join("|")})` : ""})${noParen ? String.raw`(?:\s*\(\s*|\s+)` : String.raw`\s*\(\s*`}(?:(?:args|cmd|command)\s*=\s*)?(\[[^\]]*\]|${LIT}(?:\s*,\s*(?:\[[^\]]*\]|${LIT}))*)`,
+    "g",
+  );
+/** Python's aliases of a process module or call: `import subprocess as s`, `from os import system as sh`. */
+function processAliases(code) {
+  const modules = [...code.matchAll(/\bimport\s+(?:os|subprocess)\s+as\s+([A-Za-z_]\w*)/g)].map((m) => m[1]);
+  const calls = [...code.matchAll(/\bfrom\s+(?:os|subprocess)\s+import\s+[\w\s,()]*?\b\w+\s+as\s+([A-Za-z_]\w*)/g)].map((m) => m[1]);
+  return { modules, calls };
+}
+/** The pairs perl's quote-like operators may use as delimiters, besides one character repeated. */
+const PERL_PAIRS = [["{", "}"], ["(", ")"], ["[", "]"], ["<", ">"]];
+const reEsc = (c) => c.replace(/[\\^$.*+?()[\]{}|/-]/g, "\\$&");
+/** One delimited part of a perl quote-like (`{…}`, `(…)`, `/…/`, `#…#`): a source for each delimiter form, capturing the text. */
+const perlPart = (open, close) => String.raw`${reEsc(open)}((?:\\.|[^\\${reEsc(close)}])*)${reEsc(close)}`;
+const PERL_FORMS = [...PERL_PAIRS, ...["/", "|", "!", "#", ",", "~", "%", ":", "@", "'", '"']].map((p) => (Array.isArray(p) ? p : [p, p]));
+/**
+ * Perl code made plain for the process-call scan: `q(…)`, `qq{…}` as string literals and `qw(…)` as a list of
+ * them; regexes (`s///`, `tr///`, `y///`, `m//`, `qr//`, a `/…/` match after `=~`, `if`, `(` and the like)
+ * blanked, since a backtick inside one is a character, not a command — but `s///e` keeps its replacement,
+ * which is code.
+ */
+function perlPlain(code) {
+  let c = code;
+  const lead = String.raw`(?<![\w$@%&>-])`;
+  for (const [o, e] of PERL_FORMS) {
+    const one = perlPart(o, e);
+    const two = o === e ? String.raw`${reEsc(o)}((?:\\.|[^\\${reEsc(e)}])*)${reEsc(e)}((?:\\.|[^\\${reEsc(e)}])*)${reEsc(e)}` : String.raw`${one}\s*(?:${PERL_PAIRS.map(([a, b]) => perlPart(a, b)).join("|")}|${reEsc(o)}((?:\\.|[^\\${reEsc(e)}])*)${reEsc(e)})`;
+    c = c.replace(new RegExp(String.raw`${lead}(s|tr|y)\s*${two}([a-zA-Z]*)`, "g"), (...m) => {
+      const flags = m[m.length - 3];
+      const repl = m.slice(3, m.length - 3).find((x) => x !== undefined) ?? "";
+      return m[1] === "s" && flags.includes("e") ? ` ${repl} ` : " ";
+    });
+    c = c.replace(new RegExp(String.raw`${lead}(?:m|qr)\s*${one}[a-zA-Z]*`, "g"), " ");
+    c = c.replace(new RegExp(String.raw`${lead}qw\s*${one}`, "g"), (_, w) => `[${w.trim().split(/\s+/).filter(Boolean).map((x) => JSON.stringify(x)).join(", ")}]`);
+    c = c.replace(new RegExp(String.raw`${lead}qq?\s*${one}`, "g"), (_, w) => JSON.stringify(w));
+  }
+  return c.replace(/(^|=~|!~|[(,;!{]|\b(?:if|unless|and|or|not|split|grep|return|when))(\s*)\/(?:\\.|[^/\\\n])*\/[a-zA-Z]*/g, "$1$2 ");
+}
 const unquote = (l) => l.replace(/^[fr]?(["'`])([\s\S]*)\1$/, "$2");
 const literals = (t) => (t.match(new RegExp(LIT, "g")) || []).map(unquote);
 const shellQuote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
@@ -3018,10 +3081,10 @@ const PROCESS_BUILTINS = /^(perl|ruby|php)$/i;
 function codeCommands(code, lang = "") {
   const proc = PROCESS_BUILTINS.test(lang);
   const concat = new RegExp(String.raw`(${LIT})\s*${proc ? "[+.]" : "\\+"}\s*(${LIT})`); // "git push " + 'origin main'
-  let c = code;
+  let c = /^perl$/i.test(lang) ? perlPlain(code) : code;
   for (let i = 0; i < 50 && concat.test(c); i++) c = c.replace(concat, (_, a, b) => JSON.stringify(unquote(a) + unquote(b)));
   const out = [];
-  for (const s of c.matchAll(spawnCall(proc || IMPORTS_PROCESS.test(c), proc))) {
+  for (const s of c.matchAll(spawnCall(proc || IMPORTS_PROCESS.test(c), proc, processAliases(c)))) {
     const lits = literals(s[1]);
     out.push(lits.join(" "));
     if (lits.length > 1 || s[1].startsWith("[")) out.push(lits.map(shellQuote).join(" "));
@@ -3075,6 +3138,44 @@ function inlineCode(a, prog) {
     }
   }
   return { lang, codes };
+}
+
+/**
+ * What a shell or an interpreter makes of its stdin, by its words (redirections dropped): "shell" for a shell
+ * with no `-c` text and no script operand (or with `-s`), a code language for an interpreter with no inline
+ * code, no module (`python -m`) and no script operand but `-`; else null: stdin is a script's data.
+ */
+function stdinLang(t) {
+  const argv = withoutRedirects(t.slice(programIndex(t)));
+  const a = argv.map((x) => x.v);
+  if (!a.length) return null;
+  const prog = wrapperName(bare(a[0]));
+  if (SHELLS.has(prog)) {
+    if (a.some((v, i) => i > 0 && /^-[a-z]*c[a-z]*$/.test(v))) return null;
+    if (a.some((v, i) => i > 0 && /^-[a-z]*s[a-z]*$/.test(v))) return "shell";
+    return a.some((v, i) => i > 0 && !v.startsWith("-") && !/^[-+]o$/.test(a[i - 1])) ? null : "shell";
+  }
+  const lang = codeLang(prog);
+  if (!lang || inlineCode(a, prog).codes.length || (lang === "python" && a.some((v) => /^-[A-Za-z]*m/.test(v)))) return null;
+  const { op } = interpArgv(argv, prog);
+  return op < 0 || a[op] === "-" ? lang : null;
+}
+
+/** The text a literal `echo` or `printf` writes (its candidates: printf's format and its arguments), or null. */
+function echoed(t) {
+  const argv = withoutRedirects(t.slice(programIndex(t)));
+  if (!argv.length || argv.some((x) => x.dyn)) return null;
+  const prog = bare(argv[0].v);
+  let w = argv.slice(1).map((x) => x.v);
+  if (prog === "echo") {
+    while (w.length && /^-[neE]+$/.test(w[0])) w = w.slice(1);
+    return [w.join(" ")];
+  }
+  if (prog !== "printf") return null;
+  if (w[0] === "--") w = w.slice(1);
+  if (!w.length) return null;
+  const nl = (x) => x.replace(/\\n/g, "\n");
+  return [nl(w[0]), w.slice(1).join(" "), w.slice(1).join("")].filter((x) => x.trim());
 }
 
 /** context-mode's `commands`, as its coerceCommandsArray reads them: a JSON string, a bare string, strings or {command}. */
@@ -3458,10 +3559,12 @@ function checkHomeSafe(input) {
 /** A GitHub token written out: classic (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) or fine-grained (`github_pat_`). */
 const GH_TOKEN_LITERAL = /(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})/;
 
-/** The command lines a call runs (Bash, PowerShell, Monitor, context-mode's shell calls). */
+/** The command lines a call runs (Bash, PowerShell, Monitor, context-mode's shell calls), and a context-mode call's code in any language. */
 function commandLines(tool, ti) {
   if (tool === "Bash" || tool === "PowerShell" || tool === "Monitor") return typeof ti.command === "string" ? [ti.command] : [];
-  return (ctxCalls(tool, ti) || []).map((c) => c.command).filter((c) => typeof c === "string");
+  const lines = (ctxCalls(tool, ti) || []).map((c) => c.command).filter((c) => typeof c === "string");
+  if (CTX_TOOL.test(tool || "") && typeof ti.code === "string") lines.push(ti.code);
+  return lines;
 }
 
 export function decide(input) {

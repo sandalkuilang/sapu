@@ -3789,3 +3789,82 @@ describe("sapu-guard — a GitHub token written into a command line is refused i
     expect(at(cmd)).toBeNull();
   });
 });
+
+describe("sapu-guard — g-prefixed findutils, code an interpreter reads from a string or stdin, and what is not code", () => {
+  const reviewer = (command: string) => check({ command, cwd: wt, main, rules, worker: false });
+  const MERGE = /only the orchestrator merges/;
+  const STASH = /git stash/;
+  it.each([
+    ["gxargs -n1 gh pr merge <<< 1", MERGE],
+    ["echo 1 | gxargs gh pr merge", MERGE],
+    ["gfind . -maxdepth 0 -exec gh pr merge 1 \;", MERGE],
+    ["gfind . -maxdepth 0 -execdir git stash \;", STASH],
+    ["python3 -c \"__import__('os').system('gh pr merge 1')\"", MERGE],
+    ["python3 -c \"__import__('subprocess').run('gh pr merge 1', shell=True)\"", MERGE],
+    ["python3 -c \"import subprocess; subprocess.run('gh pr merge 1', shell=True)\"", MERGE],
+    ["python3 -c \"import subprocess as s; s.call('git stash', shell=True)\"", STASH],
+    ["perl -E 'system(qq{gh pr merge 1})'", MERGE],
+    ["perl -e 'system q(git stash)'", STASH],
+    ["perl -e 'exec(qq[gh pr merge 1])'", MERGE],
+    ["cat <<'EOF' | python3\nimport os\nos.system('gh pr merge 1')\nEOF", MERGE],
+    ["echo \"import os; os.system('gh pr merge 1')\" | python3", MERGE],
+    ["echo \"import os; os.system('gh pr merge 1')\" | python3 -", MERGE],
+    ["python3 <<< \"import os; os.system('gh pr merge 1')\"", MERGE],
+    ["printf '%s' \"require('child_process').execSync('git stash')\" | node", STASH],
+    ["echo 'gh pr merge 1' | bash", MERGE],
+    ["echo gh pr merge 1 | sh", MERGE],
+    ["bash <<< 'gh pr merge 1'", MERGE],
+    ["sh <<< \"git stash\"", STASH],
+    ["cd /tmp && bash <<< 'gh pr merge 1'", MERGE],
+    ["echo 'gh pr merge 1' | bash -s", MERGE],
+    ["printf 'gh pr merge 1\\n' | sh", MERGE],
+    ["perl -e 's/x/`gh pr merge 1`/e'", MERGE],
+    ["perl -e 'system qw(gh pr merge 1)'", MERGE],
+    ["python3 -c \"from os import system as sh; sh('gh pr merge 1')\"", MERGE],
+    ["python3 -c \"import subprocess; subprocess.run(args='gh pr merge 1', shell=True)\"", MERGE],
+  ])("blocks %s", (cmd, why) => {
+    expect(blocked(cmd)).toMatch(why);
+    expect(reviewer(cmd)).toMatch(why);
+  });
+
+  it.each([
+    ["perl -pi -e 's/`git stash`/`git worktree add`/g' docs/x.md"],
+    ["perl -ne 'print if /`gh pr merge`/' notes.md"],
+    ["perl -pe 's{`git stash`}{x}g' a.md"],
+    ["perl scripts/fmt.pl <<'EOF'\ngh pr merge 1\nEOF"],
+    ["node scripts/render.mjs <<'EOF'\nrequire('child_process').execSync('git stash')\nEOF"],
+    ["python3 tools/x.py <<'EOF'\nimport os\nos.system('gh pr merge 1')\nEOF"],
+    ["echo 'gh pr merge 1' | python3 scripts/count.py"],
+    ["echo 'gh pr merge 1' | node scripts/render.mjs"],
+    ["echo 'gh pr merge 1' | grep merge"],
+    ["python3 scripts/x.py <<< 'gh pr merge 1'"],
+    ["echo \"print('gh pr merge 1')\" | python3"],
+    ["gfind . -name '*.md'"],
+    ["gxargs --version"],
+    ["perl -ne 'print if m{`git stash`}' f"],
+    ["perl -pe 'tr/a-z/A-Z/' f"],
+    ["echo 'gh pr merge 1' | bash script.sh"],
+    ["python3 -m json.tool <<< '{\"a\": \"gh pr merge 1\"}'"],
+  ])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+    expect(reviewer(cmd)).toBeNull();
+  });
+});
+
+describe("sapu-guard — a GitHub token written into ctx_execute code of any language is refused", () => {
+  const classic = "gh" + "o_" + "x".repeat(36);
+  const ctx = (language: string, code: string) => decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_execute", tool_input: { language, code }, cwd: wt });
+  it.each([
+    ["javascript", `const t = "${classic}"; fetch("https://api.github.com/user", { headers: { authorization: "token " + t } })`],
+    ["python", `import urllib.request\nTOKEN = '${classic}'\n`],
+    ["shell", `export GH_TOKEN=${classic}`],
+  ])("refuses a literal token in %s code", (language, code) => {
+    expect(ctx(language, code)).toMatch(/GitHub token/);
+  });
+  it("lets code that reads the token from gh through", () => {
+    expect(ctx("javascript", "const t = require('child_process').execSync('gh auth token').toString()")).toBeNull();
+  });
+  it("and a literal in ctx_execute_file code", () => {
+    expect(decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_execute_file", tool_input: { path: "x.json", language: "python", code: `T = "${classic}"` }, cwd: wt })).toMatch(/GitHub token/);
+  });
+});
