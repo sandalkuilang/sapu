@@ -365,7 +365,7 @@ The journey lane's first question is whether your UI is good by the standard of 
 
 - **Your own design tokens,** or a reference scale (a *frame*) when the repo has none.
 - **Your app's own best screens** of the same kind (the *archetype*: `marketing`, `docs`, `app`, `form` or `data`).
-- **A calibrated bar** drawn from public pages of well-regarded sites ("The calibrated bar", below).
+- **An outside bar** drawn from public pages of well-regarded sites: built in, but with no calibrated band yet, so today every screen is judged against the first two alone ("The calibrated bar", below).
 
 The law of the pass is the lane's: taste proposes, measurement decides. A gap is filed only when it is measured beyond a threshold, measured again on a fresh instance, and, for a comparison with the outside bar, agreed by a second, internal witness. Nothing is filed on opinion, and nothing is filed because a screen differs from a famous one. A rule never requires or rewards a style or a CSS feature (`oklch()`, container queries, view transitions): "modern" means measured outcomes.
 
@@ -558,14 +558,11 @@ The *best known path* is the journey's path in your smoke suite that held (an ex
 
 The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 47 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.
 
-**The corpus.** A maintainer measured 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), with the same probes the lane runs: no login, no screenshot, text or CSS stored. The pages are grouped by archetype: `marketing` 15 pages on 3 sites, `docs` 18 on 5, `app` 6 on 2, `form` 2 on 2, `data` 2 on 2. Sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)).
+**No band yet.** The bar ships with its rules and frames but with no band. The corpus (`scripts/taste-corpus.json`) lists 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), and sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)). But an agent read those terms, and the calibration measures a site only once a maintainer confirms that reading in the corpus; none is confirmed, so nothing was measured. Until a maintainer confirms the sites' terms, or a local reference corpus is measured instead, the outside bar decides nothing:
+- Every screen, of every archetype, is judged against your tokens or frame, your own best peer screens, and the rules that stand on their own measurement.
+- A count rule compares a screen with its peers only. A `bar`-class rule has no band to agree with, so its findings count as `not rows` in the judge's output and never file.
 
-**Which archetypes are witnesses.** A band counts as a witness only with at least 5 sites and 15 pages, and only for an archetype you declared (or `data`, when a screen's `main` holds a table of 10 rows or more). Today that is `docs` alone. The other four bands are *thin*: they are shown (`bands shown only: <n>` in the judge's output) and decide nothing. A screen whose archetype is neither declared nor `data` is inferred as `app`, and an inferred archetype is never a witness.
-
-What that means in practice:
-- A screen you map to `docs` in `archetypes` is also held to the docs band: a count rule files only when the screen is beyond its peers and beyond the band's p90.
-- Outside docs, only internal witnesses file: your tokens or frame, your own best peer screens, and the rules that stand on their own measurement. The outside bar tells you where you stand; it does not file.
-- The bands cover the six census counts today. A `bar`-class rule needs a band for its own metric, and no such band exists yet, so no `bar` row can file; its findings count as `not rows` in the judge's output.
+**When bands exist.** Each `bar`-class rule's band reads its own per-screen number, which the probes already record: the primary actions in view, the lowest body-text contrast that passes AA, the median duration of the motion a screen ran, the vague labels, empty states with no next step, errors with no way on, the shortest loader shown, the slowest first change after an action, `transition: all` and motion that ignores reduced motion. A `bar` row then needs the screen's own number beyond the band and an internal witness. A band counts as a witness only with at least 5 sites and 15 pages, and only for an archetype you declared (or `data`, when a screen's `main` holds a table of 10 rows or more); otherwise it is *thin*, shown (`bands shown only: <n>`) and decides nothing. A screen whose archetype is neither declared nor `data` is inferred as `app`, and an inferred archetype is never a witness.
 
 #### Limits
 
@@ -658,7 +655,7 @@ What changes:
 - **The report starts with a new section,** `## Taste and usability`, when the cycle recorded screens.
 - **The smoke suite needs a regeneration.** It gains a `taste` project, and every generated file's header now records the bar version (`argus-live codegen 1, taste-bar <n>, digest <sha>`), so `smoke check` lists each generated file as `stale` until a proposal regenerates it. Run `/journey smoke`: the proposal is one pull request on an `argus/` branch. The project takes no screenshot, so no baseline run is needed for it. A journey cannot be named `taste`, as it cannot be named `webkit`.
 - **The workflow gains a `taste` job.** Print the file again with `smoke workflow` (or let `/sapu:init` write it, only if you agree; pushing a workflow file needs the `workflow` scope on your `gh` token). Until the new workflow is on your default branch, the `taste` project never runs in CI. The job is advisory: it fails only when `.argus/taste.json` gates a rule, and `sapu-merge.sh` does not read it.
-- **A new bar.** The plugin ships taste bar version 1, calibrated on public pages; only the `docs` archetype is a witness ("The calibrated bar"). A suite or report names the bar it was judged against.
+- **A new bar.** The plugin ships taste bar version 1 with its rules and frames and no band: the outside bar decides nothing until a maintainer confirms the reference sites' terms ("The calibrated bar"). A suite or report names the bar it was judged against.
 
 #### Upgrading from a version before 2.10.0
 

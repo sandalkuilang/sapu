@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { browserTools } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { AGENT, PACE_MS, WITNESS, bandsOf, calibrate, diffLines, main, metricsOf, numbersOnly, openSession, percentile, probeDigest, robotsAllows, validateCorpus } from "../scripts/taste-calibrate.mjs";
+import { AGENT, PACE_MS, WITNESS, bandsOf, calibrate, diffLines, main, metricsOf, numbersOnly, openSession, percentile, probeDigest, robotsAllows, unconfirmedSites, validateCorpus } from "../scripts/taste-calibrate.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, validateBar } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, loadBar, validateBar } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_SOURCE } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -242,7 +242,7 @@ describe("the CLI", () => {
   const tmpCorpus = (pages: Obj[], extra: Obj = {}) => {
     const d = temp();
     const file = join(d, "corpus.json");
-    const sites = Object.fromEntries([...new Set(pages.map((p) => p.site))].map((s) => [s, { terms: `https://${s}.test/terms`, note: "public pages, no login" }]));
+    const sites = Object.fromEntries([...new Set(pages.map((p) => p.site))].map((s) => [s, { terms: `https://${s}.test/terms`, note: "public pages, no login", confirmed: { by: "the maintainer", on: "taste-bar 1" } }]));
     writeFileSync(file, JSON.stringify({ coverage: "fixture", sites, pages, skipped: [], ...extra }));
     return file;
   };
@@ -280,6 +280,23 @@ describe("the CLI", () => {
     expect((await main(["--corpus", good, "--out", out, "--fast"])).code).toBe(1);
     expect((await main(["--corpus", good, "--out", out, "--diff"])).lines[0]).toBe("refused: taste-calibrate: --diff compares a new calibration with the bar, so it needs --network");
     expect((await main(["--corpus", good])).code).toBe(1);
+  });
+
+  it("with --network: refuses any site whose terms no maintainer confirmed, before any request; the shipped corpus confirms none", async () => {
+    const f = fakeSession({});
+    const out = tmpBar();
+    const corpus = JSON.parse(readFileSync(tmpCorpus([pg("https://a.test/1", "a"), pg("https://b.test/1", "b")]), "utf8"));
+    delete corpus.sites.b.confirmed;
+    const file = join(temp(), "corpus.json");
+    writeFileSync(file, JSON.stringify(corpus));
+    const before = readFileSync(out, "utf8");
+    const r = await main(["--network", "--corpus", file, "--out", out], { openSession: async () => f.session, probes: standIn({}), now: f.c.now, sleep: f.c.sleep });
+    expect(r).toEqual({ code: 1, lines: ["refused: taste-calibrate: no maintainer confirmed the terms of b (sites.<site>.confirmed {by, on}): nothing fetched"] });
+    expect(f.log).toEqual([]);
+    expect(readFileSync(out, "utf8")).toBe(before);
+    // The coordinator confirms no terms on the owner's behalf: the shipped corpus's sites are all unconfirmed.
+    const shipped = validateCorpus(JSON.parse(readFileSync(join(ROOT, "scripts/taste-corpus.json"), "utf8"))).value;
+    expect(unconfirmedSites(shipped)).toEqual([...new Set(shipped.pages.map((p: Obj) => p.site))].sort());
   });
 
   it("with --network: refuses before any request while the probes are not built, nothing written", async () => {
@@ -407,6 +424,16 @@ describe("in Chrome, against loopback fixture pages", () => {
   }, 60_000);
 });
 
+describe("the bar's probe digest", () => {
+  // A band is a number the probes measured: measured by other probe sources, it is stale. Whenever the shipped bar holds
+  // a band, its probe digest must be the current probes' own; with none (the terms gate: no site confirmed), it is null.
+  it("is the current probe sources' digest whenever the bar holds a band, else null (a stale bar fails here)", () => {
+    const bar = loadBar();
+    if (!Object.keys(bar.archetypes).length) expect(bar.probe, "a bar with no band names no probe digest").toBe(null);
+    else expect(bar.probe, "the bar's bands were measured by other probe sources: re-run the calibration from the maintainer's main session (node scripts/taste-calibrate.mjs --network --diff --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json) and review its --diff").toBe(probeDigest());
+  });
+});
+
 describe("the corpus validator", () => {
   it("the corpus validator refuses unknown keys, a duplicate or non-https URL, a site it does not describe, and a missing review", () => {
     const ok = { coverage: "x", sites: { a: { terms: "https://a.test/terms", note: "n" } }, pages: [pg("https://a.test/1", "a")], skipped: [] };
@@ -422,6 +449,8 @@ describe("the corpus validator", () => {
       ["page key", { ...ok, pages: [{ ...pg("https://a.test/1", "a"), title: "x" }] }],
       ["skipped reason", { ...ok, skipped: [{ url: "https://a.test/2", site: "a", archetype: "docs" }] }],
       ["no pages", { ...ok, pages: [] }],
+      ["a confirmation with a date", { ...ok, sites: { a: { ...ok.sites.a, confirmed: { by: "m", on: "20" + "26-10-11" } } } }],
+      ["a confirmation without who", { ...ok, sites: { a: { ...ok.sites.a, confirmed: { on: "taste-bar 1" } } } }],
     ] as [string, Obj][]) expect(validateCorpus(bad).errors, what).not.toEqual([]);
   });
 });

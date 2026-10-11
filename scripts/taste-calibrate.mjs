@@ -54,12 +54,18 @@ const CORPUS_KEYS = ["coverage", "sites", "pages", "skipped"];
 const PAGE_KEYS = ["url", "site", "archetype", "source", "terms_reviewed_by"];
 const SKIP_KEYS = ["url", "site", "archetype", "reason"];
 const text = (v, max) => typeof v === "string" && v.trim().length > 0 && v.length <= max;
+/** A site's terms confirmation names the bar version it was confirmed for, never a date. */
+const CONFIRMED_ON = /^taste-bar [1-9][0-9]{0,3}$/;
+/** The corpus's sites whose terms no maintainer confirmed (`sites.<s>.confirmed`), among those its pages name: a `--network` run refuses them. */
+export const unconfirmedSites = (corpus) => [...new Set(corpus.pages.map((p) => p.site))].filter((s) => !isObj(corpus.sites[s]?.confirmed)).sort();
 
 /**
- * The corpus checked → `{value, errors}`: `{coverage, sites: {<site>: {terms, note}}, pages: [{url, site, archetype,
- * source, terms_reviewed_by}], skipped: [{url, site, archetype, reason}]}`, unknown keys refused. `terms` is the https
- * page of the site's terms the reviewer read; `source` the research id or https page that admits the site; `skipped`
- * records the pages a review left out (robots.txt, a login) so they are not proposed again unread.
+ * The corpus checked → `{value, errors}`: `{coverage, sites: {<site>: {terms, note, confirmed?}}, pages: [{url, site,
+ * archetype, source, terms_reviewed_by}], skipped: [{url, site, archetype, reason}]}`, unknown keys refused. `terms` is
+ * the https page of the site's terms the reviewer read; `confirmed` `{by, on}` the maintainer who confirmed that reading
+ * (`on` the bar version it was confirmed for, `taste-bar <n>`, never a date): a `--network` run measures no site
+ * without it. `source` the research id or https page that admits the site; `skipped` records the pages a review left
+ * out (robots.txt, a login) so they are not proposed again unread.
  */
 export function validateCorpus(raw) {
   if (!isObj(raw)) return { value: null, errors: ["the corpus must be a JSON object"] };
@@ -71,7 +77,8 @@ export function validateCorpus(raw) {
   if (need(isObj(raw.sites) && Object.keys(raw.sites).length > 0, "sites must describe every site: {terms, note}") === true) {
     for (const [s, d] of Object.entries(raw.sites)) {
       const at = `sites.${KEBAB.test(s) ? s : "(not shown)"}`;
-      need(KEBAB.test(s) && isObj(d) && Object.keys(d).every((k) => k === "terms" || k === "note"), `${at} must be {terms, note} under a kebab-case name`);
+      need(KEBAB.test(s) && isObj(d) && Object.keys(d).every((k) => ["terms", "note", "confirmed"].includes(k)), `${at} must be {terms, note, confirmed?} under a kebab-case name`);
+      if (isObj(d) && "confirmed" in d) need(isObj(d.confirmed) && Object.keys(d.confirmed).length === 2 && text(d.confirmed.by, 80) && typeof d.confirmed.on === "string" && CONFIRMED_ON.test(d.confirmed.on), `${at}.confirmed must be {by: the maintainer, on: "taste-bar <n>"}`);
       need(isObj(d) && urlOk(d.terms), `${at}.terms must be the https page of the terms reviewed`);
       need(isObj(d) && text(d.note, 300), `${at}.note must say what the review found`);
     }
@@ -543,6 +550,9 @@ export async function main(argv, deps = {}) {
   const bar = validateBar(b.value);
   if (!bar.value) return { code: 1, lines: [refused(`the bar ${opts.out} is broken: ${bar.errors[0]}`)] };
   if (!opts.network) return { code: 0, lines: planLines(corpus.value) };
+  // The terms gate: an agent's reading of a site's terms is not the maintainer's. A site measured needs `confirmed`.
+  const unconfirmed = unconfirmedSites(corpus.value);
+  if (unconfirmed.length) return { code: 1, lines: [refused(`no maintainer confirmed the terms of ${unconfirmed.join(", ")} (sites.<site>.confirmed {by, on}): nothing fetched`)] };
 
   const probes = deps.probes || { census: censusOf, ease: easeOf };
   const lines = [];

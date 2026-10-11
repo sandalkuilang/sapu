@@ -115,10 +115,10 @@ Without `--network` it validates the corpus and the bar and prints the plan: how
 node scripts/taste-calibrate.mjs --network --diff --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json
 ```
 
-`--diff` prints each band as changed, unchanged, new or gone, and `--diff` without `--network` is refused. The script prints, per archetype, the pages and sites measured and whether the band is `a witness` (5 sites and 15 pages) or `thin`, and it cuts and names a band driven by one site. It does not raise the bar's `version`.
+`--network` measures a site only when a maintainer confirmed its terms in the corpus: `sites.<site>.confirmed` is `{by, on}`, `on` the bar version it was confirmed for (`"taste-bar 1"`, never a date). A site without it is refused before any request (`refused: taste-calibrate: no maintainer confirmed the terms of <sites> …`). No site is confirmed today, so the shipped bar holds no band and its `probe` is null; a test fails whenever the bar holds a band its `probe` digest no longer matches (the probes changed since: calibrate again). `--diff` prints each band as changed, unchanged, new or gone, and `--diff` without `--network` is refused. The script prints, per archetype, the pages and sites measured and whether the band is `a witness` (5 sites and 15 pages) or `thin`, and it cuts and names a band driven by one site. It does not raise the bar's `version`.
 
 Review the bar when a sapu minor version is released, at least twice a year, and whenever a researched design system publishes a new major version:
-1. Re-read the sources the bar cites (its `sources` map) and the corpus's site terms. A site joins the corpus only with a read justification and a terms review, recorded on each page (`terms_reviewed_by`); a site leaves when its terms bar robots or data mining.
+1. Re-read the sources the bar cites (its `sources` map) and the corpus's site terms. A site joins the corpus only with a read justification and a terms review, recorded on each page (`terms_reviewed_by`), and is measured only once you confirm that reading (`sites.<site>.confirmed`); a site leaves when its terms bar robots or data mining.
 2. Run the calibration with `--network --diff` and read every band for plausibility.
 3. Raise `version` in `plugins/sapu/data/taste-bar.json` by one, commit the new bands, and open a pull request that cites the sources and justifies each corpus change. A bar change is a change to the plugin: raise the plugin version too.
 

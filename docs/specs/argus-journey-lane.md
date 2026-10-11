@@ -2474,9 +2474,9 @@ services (the lane is loopback-only and reads no outside service). Covered: inte
 prioritization is SELECT's score (§6) and the smoke rank (§19.3); parallel execution is Playwright's
 workers and CI's project matrix.
 
-## 20. Phase 7 — world-class UI quality (not built yet)
+## 20. Phase 7 — world-class UI quality
 
-**Status: not built yet** (target 2.11.0). Plan: [argus-journey-lane-7-taste.md](../plans/argus-journey-lane-7-taste.md);
+**Status: built** (2.11.0). Plan: [argus-journey-lane-7-taste.md](../plans/argus-journey-lane-7-taste.md);
 evidence: [argus-journey-lane-7-research.md](../plans/argus-journey-lane-7-research.md) (the source ids in
 square brackets below). §1–§19 describe the lane as built through phase 6; this section is the design
 for phase 7.
@@ -2521,15 +2521,21 @@ measures first-encounter discoverability, with its `clicks` and `term` now recor
 
 - **`plugins/sapu/data/taste-bar.json`** (versioned): `{version, probe, sources, rules, frames,
   archetypes}`. Rules carry `{id, family, class, metric, threshold, cite, gate: false}`. Frames are the
-  scales of Carbon, Primer, Atlassian, Material, Geist and shadcn as their token files ship them (Polaris
-  historical only) [polaris]. Archetypes (`marketing`, `docs`, `app`, `form`, `data`) hold calibrated
-  distributions `{n, sites, p10, p50, p90}` with the URLs measured.
+  scales of Atlassian, Carbon, Material and Primer as their token files ship them, and Polaris as a
+  historical frame [polaris]: five. Geist and shadcn are out until their scale numbers are read. Archetypes
+  (`marketing`, `docs`, `app`, `form`, `data`) hold calibrated distributions `{n, sites, p10, p50, p90}`
+  with the URLs measured, one per metric a band is read for: the six `distinct_*` counts and each
+  `bar`-class rule's own per-screen number (`primary_actions`, `body_contrast_ratio`, `animation_ms`,
+  `transition_all`, `reduced_motion_transforms`, `first_change_ms`, `loader_shown_ms`,
+  `empty_states_without_control`, `errors_without_exit`, `vague_labels`), which the probes record on
+  every screen. The shipped bar holds no band yet (below).
 - **`.argus/taste.json`** (tracked, the owner's; unknown keys refused): `frame`, `archetypes` (route
   globs), `accept` (`{rule, key, why}`), `gate`, `off`, `cap` (default 5), `optimistic`, `ai`, `copy.vague`.
   Tokens stay `live.json` `tokens`.
 - **Witnesses.** The owner's tokens (or frame), the app's own best screen of the same archetype (among
   ≥ 3), and the archetype's corpus band. `implicit` and `derived` rows stand on their own measurement;
-  a `bar` row needs the band and one internal witness. A count rule fires beyond `max(best × 1.5,
+  a `bar` row needs the band agreeing with the screen's own number under the rule's metric, and one
+  internal witness. A count rule fires beyond `max(best × 1.5,
   best + 3)` and, where the band is a witness, beyond its p90. A band is a witness only with ≥ 5 sites
   and ≥ 15 pages (else `thin`, shown only), and only for an owner-declared archetype or a `main` holding
   a table of ≥ 10 rows (else `inferred`, shown only).
@@ -2538,12 +2544,16 @@ measures first-encounter discoverability, with its `clicks` and `term` now recor
   writing, or a verifiable award) — Apple, Vercel, GitHub, Stripe, Linear, IBM Carbon, Atlassian,
   shadcn/ui, Figma, Raycast; each grouped by archetype. A terms review per site left Apple, Figma,
   Raycast and IBM Carbon out (their terms bar robots or data mining, or are ambiguous about it): docs
-  reaches the witness threshold (18 pages, 5 sites); marketing (3 sites), app, form and data are thin
-  (real app chrome is mostly behind a login).
+  would reach the witness threshold (18 pages, 5 sites); marketing (3 sites), app, form and data are thin
+  (real app chrome is mostly behind a login). That review was an agent's: a site is measured only once
+  a maintainer confirms its terms in the corpus (`sites.<site>.confirmed {by, on}`, `on` a bar version),
+  and none is, so the shipped bar holds no band and no `bar` row files until one is (or a local
+  reference corpus is measured).
 - **Calibration** (`scripts/taste-calibrate.mjs`, maintainer-only, explicit `--network`): runs the same
   probes on the corpus, stores **numbers and URLs only** (no screenshot, text, asset or CSS; a test
   fails on any other string), honours `robots.txt` for `*` and `sapu-taste-calibration`, one page per
-  site every 10 s, a terms review per site. It is not part of the lane's runtime: the lane stays
+  site every 10 s, a terms review per site confirmed by a maintainer (`--network` refuses an
+  unconfirmed site). It is not part of the lane's runtime: the lane stays
   loopback-only and never fetches the internet; the guard refuses the script to every subagent; its
   output reaches sapu only through a reviewed sapu pull request.
 - **Freshness.** On each sapu minor release, at least twice a year, and when a researched system ships

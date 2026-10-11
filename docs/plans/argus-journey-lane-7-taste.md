@@ -30,7 +30,7 @@ calibration script, outside the plugin, measures the reference corpus and writes
 `@playwright/cli` install; the suite's `@playwright/test` and `@axe-core/playwright` pins. Zero new
 runtime dependencies for sapu or for the suite.
 
-Spec: [docs/specs/argus-journey-lane.md §20](../specs/argus-journey-lane.md#20-phase-7--world-class-ui-quality-not-built-yet).
+Spec: [docs/specs/argus-journey-lane.md §20](../specs/argus-journey-lane.md#20-phase-7--world-class-ui-quality).
 Roadmap: row 7, [argus-journey-lane-roadmap.md](argus-journey-lane-roadmap.md).
 **Evidence:** [argus-journey-lane-7-research.md](argus-journey-lane-7-research.md). Each decision
 carries its source ids in square brackets. `[probe]` is Task 0.1's measured result, which outranks
@@ -96,9 +96,10 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
      `implicit` (broken on its face), `derived` (the app contradicts itself or its tokens) or `bar`
      (beyond the outside range);
    - `frames`: the scales an owner may adopt as their expectation when the repo has no tokens:
-     `carbon`, `primer`, `atlassian`, `material`, `geist`, `shadcn` — each the numbers from its own
-     token files (spacing, radius, durations, type) [carbon] [primer] [atlassian] [m3-tokens]
-     [geist] [shadcn]; Polaris only as a historical frame (archived) [polaris];
+     `carbon`, `primer`, `atlassian`, `material` — each the numbers from its own token files
+     (spacing, radius, durations, type) [carbon] [primer] [atlassian] [m3-tokens]; Polaris only as a
+     historical frame (archived) [polaris]: five. `geist` and `shadcn` are out until their scale
+     numbers are read [geist] [shadcn] (as built: "Frames" in lane 0's notes);
    - `archetypes`: the calibrated per-archetype distributions (D16).
    No rule hard-codes a brand, and no rule rewards a style or a CSS feature (D15). *Rejected:* a
    single "house" design system as the bar (one brand's taste as everyone's law); a scraper that
@@ -290,6 +291,9 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
       <key>` only on their word (the guard refuses it to subagents), as `smoke retire` works.
     - Thresholds for count rules: beyond `max(best peer × 1.5, best peer + 3)` and, where the band
       is a witness, beyond its p90.
+    - *As built (Z4):* a `bar` row's band compares the screen's own per-screen number under the rule's
+      metric (every `bar` rule has one, recorded by the probes); the shipped bar holds no band until a
+      maintainer confirms the corpus sites' terms, so no `bar` row files yet.
     *Rejected:* filing every census divergence (spam); needs-owner on every taste issue (it would
     read as "probably not a bug").
 20. **The report leads with the scorecard.** `report` opens with `## Taste and usability`: per
@@ -843,7 +847,7 @@ and `-tastecfg`, `-browser` imports both probes and `-tastecfg`, `-codeproj` may
 - *The calibration refusal* covers the script as a program, an interpreter's first operand or preload, a glob it
   matches, the real file behind a symlink, `-e` code naming it, and a shell-built name followed by `--network`,
   `--corpus` or `--out` or in a command whose text names it; reading it, its tests and `node --check` stay allowed.
-  Not caught: a copy under another name, or a package script that runs it (CONTRACT.md says so).
+  Not caught: a copy under another name (CONTRACT.md §Engine floor says so).
 - *`-redtest.mjs`* (no lane's) refuses a taste expectation as it refuses layout.
 - *The golden test* (`tests/argus-live-codegen.test.ts`, "leaves every generated file byte-identical") pins the
   generated suite's files by sha256 as the generator wrote them before the split. S1 changes the output on purpose
