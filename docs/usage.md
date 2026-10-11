@@ -463,6 +463,7 @@ Optional, tracked, and yours. Without it every key takes its default and the pas
 
 | Key | Type | What it does |
 |---|---|---|
+| `version` | number | The file's version: `1`. Optional; `/sapu:init` writes it. |
 | `frame` | string | The reference scale to use when the repo has no tokens: one of `atlassian`, `carbon`, `material`, `polaris` (historical; the project is archived), `primer`. Your tokens outrank it. With neither, the off-scale rules measure nothing, and the count rules compare your screens with each other. |
 | `archetypes` | object | Route globs mapped to `marketing`, `docs`, `app`, `form` or `data`. A glob starts with `/`; `*` stands for one segment, `**` for any depth. An archetype you do not name is inferred ("The calibrated bar"). |
 | `gate` | list | Rule ids that fail the CI `taste` job ("Promoting a rule to gating"). |
@@ -477,6 +478,7 @@ A file that passes the real validator:
 
 ```json
 {
+  "version": 1,
   "frame": "primer",
   "archetypes": { "/docs/**": "docs", "/reports/**": "data", "/settings/*": "form" },
   "gate": ["hierarchy.heading-order", "copy.broken"],

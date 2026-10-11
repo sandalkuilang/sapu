@@ -163,13 +163,16 @@ describe(".argus/taste.json — the owner's calibration", () => {
 
   it("takes {} as every default", () => {
     expect(TASTE_FILE).toBe(".argus/taste.json");
-    expect(TASTE_KEYS).toEqual(["frame", "archetypes", "accept", "gate", "off", "cap", "optimistic", "ai", "copy"]);
+    expect(TASTE_KEYS).toEqual(["version", "frame", "archetypes", "accept", "gate", "off", "cap", "optimistic", "ai", "copy"]);
     expect(Object.isFrozen(TASTE_KEYS) && Object.isFrozen(TASTE_DEFAULTS)).toBe(true);
-    expect(validateTaste({})).toEqual({ value: { frame: null, archetypes: {}, accept: [], gate: [], off: [], cap: 5, optimistic: [], ai: [], copy: { vague: [] } }, errors: [] });
+    expect(validateTaste({})).toEqual({ value: { version: 1, frame: null, archetypes: {}, accept: [], gate: [], off: [], cap: 5, optimistic: [], ai: [], copy: { vague: [] } }, errors: [] });
+    expect(validateTaste({ version: 1 }).errors).toEqual([]);
+    expect(validateTaste({ version: 2 }).errors).toEqual(["version must be 1"]);
   });
 
   it("takes a full file", () => {
     const raw = {
+      version: 1,
       frame: "primer",
       archetypes: { "/": "marketing", "/docs/**": "docs", "/orders/*": "data", "/orders/:id": "app", "/checkout": "form" },
       accept: [{ rule: "scale.spacing", key: "/reports|1440|light", why: "the report is dense on purpose" }],

@@ -328,6 +328,7 @@ Example `.argus/taste.json` (every key optional; unknown keys are refused):
 
 ```json
 {
+  "version": 1,
   "frame": "primer",
   "archetypes": { "/reports/**": "data", "/settings/**": "form" },
   "accept": [{ "rule": "density.control-heights", "key": "/orders/:id|1440|light", "why": "the owner's ruling (taste accept)" }],

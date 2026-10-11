@@ -233,8 +233,8 @@ export function loadBar() {
 
 /** Tracked like smoke.json, the owner's: unknown keys are refused at every level, and every absent key takes its default. */
 export const TASTE_FILE = ".argus/taste.json";
-export const TASTE_KEYS = Object.freeze(["frame", "archetypes", "accept", "gate", "off", "cap", "optimistic", "ai", "copy"]);
-export const TASTE_DEFAULTS = deepFreeze({ frame: null, archetypes: {}, accept: [], gate: [], off: [], cap: 5, optimistic: [], ai: [], copy: { vague: [] } });
+export const TASTE_KEYS = Object.freeze(["version", "frame", "archetypes", "accept", "gate", "off", "cap", "optimistic", "ai", "copy"]);
+export const TASTE_DEFAULTS = deepFreeze({ version: 1, frame: null, archetypes: {}, accept: [], gate: [], off: [], cap: 5, optimistic: [], ai: [], copy: { vague: [] } });
 /** A route glob: a path from `/`, path characters, `*` (one segment) and `**` (any depth); `:param` is a literal segment; no `.` or `..` segment. */
 const ROUTE_GLOB = /^\/[A-Za-z0-9._~:@!$&'()+,;=*/-]{0,199}$/;
 const isGlob = (v) => typeof v === "string" && ROUTE_GLOB.test(v) && !v.split("/").some((s) => s === "." || s === "..");
@@ -268,6 +268,8 @@ export function validateTaste(raw, bar = loadBar()) {
   const frames = Object.keys(bar.frames).sort();
   const has = (k) => k in raw;
   for (const k of Object.keys(raw)) if (!TASTE_KEYS.includes(k)) errs.push(`unknown key "${shown(k)}"`);
+  // The file's own version: 1, the only one so far (a later shape names another, and an older plugin refuses it).
+  if (has("version")) need(raw.version === 1, "version must be 1");
   if (has("frame")) need(typeof raw.frame === "string" && frames.includes(raw.frame), `frame must be one of ${frames.join(", ")}`);
   if (has("archetypes") && need(isObj(raw.archetypes), "archetypes must map route globs to archetypes") === true) {
     for (const [glob, a] of Object.entries(raw.archetypes)) {
