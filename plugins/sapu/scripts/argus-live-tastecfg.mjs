@@ -254,7 +254,7 @@ export function routeMatches(glob, route) {
  * `.argus/taste.json`'s content checked against `bar` (the plugin's) → `{value, errors}`: `value` with every default
  * filled in (null on any error). `frame` one of the bar's frames; `archetypes` route globs → one of ARCHETYPES; `accept`
  * `[{rule, key, why}]` (`key` the screen key the issue names); `gate` and `off` distinct rule ids of the bar, never both,
- * an information rule never gated; `cap` 1-20; `optimistic` and `ai` route globs; `copy.vague` the owner's labels.
+ * an information rule never gated, nor a rule the suite cannot measure (a cycle rule, or laneOnly's); `cap` 1-20; `optimistic` and `ai` route globs; `copy.vague` the owner's labels.
  */
 export function validateTaste(raw, bar = loadBar()) {
   if (!isObj(raw)) return { value: null, errors: [`${TASTE_FILE} must be a JSON object`] };
@@ -282,7 +282,10 @@ export function validateTaste(raw, bar = loadBar()) {
   if (Array.isArray(raw.gate)) {
     for (const id of raw.gate.filter((x) => rules.has(x))) {
       if (Array.isArray(raw.off) && raw.off.includes(id)) errs.push(`gate and off both name ${id}`);
-      if (rules.get(id).info) errs.push(`gate: ${id} is information only: it cannot gate`);
+      const rule = rules.get(id);
+      const lane = FAMILIES[rule.family].scope === "cycle" ? "it compares the cycle's screens or paths" : laneOnly(rule);
+      if (rule.info) errs.push(`gate: ${id} is information only: it cannot gate`);
+      else if (lane) errs.push(`gate: ${id} is the lane's alone (${lane}): the suite cannot measure it, so it cannot gate`);
     }
   }
   if (has("accept") && need(Array.isArray(raw.accept), "accept must be an array of {rule, key, why}") === true) {

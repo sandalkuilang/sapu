@@ -209,6 +209,18 @@ describe(".argus/taste.json — the owner's calibration", () => {
     expect(errs({ gate: ["contrast.headroom"] })).toEqual(["gate: contrast.headroom is information only: it cannot gate"]);
   });
 
+  it("refuses to gate a rule the suite cannot measure: a lane-only rule (laneOnly) or a cycle rule, each with why", () => {
+    expect(errs({ gate: ["scale.spacing"] })).toEqual(["gate: scale.spacing is the lane's alone (it compares the cycle's screens): the suite cannot measure it, so it cannot gate"]);
+    expect(errs({ gate: ["states.error"] })).toEqual(["gate: states.error is the lane's alone (the routed fault: only the lane's confirmation arms it): the suite cannot measure it, so it cannot gate"]);
+    expect(errs({ gate: ["ai.stop"] })).toEqual(["gate: ai.stop is the lane's alone (it reads the owner's declared AI surfaces): the suite cannot measure it, so it cannot gate"]);
+    expect(errs({ gate: ["consistent.action"] })).toEqual(["gate: consistent.action is the lane's alone (it compares the cycle's screens or paths): the suite cannot measure it, so it cannot gate"]);
+    expect(errs({ gate: ["efficiency.klm"] })).toEqual(["gate: efficiency.klm is the lane's alone (it compares the cycle's screens or paths): the suite cannot measure it, so it cannot gate"]);
+    // Every rule the suite measures can gate (an information rule aside), and only those.
+    const suite = loadBar().rules.filter((r: Obj) => !r.info && FAMILIES[r.family].scope === "screen" && laneOnly(r) === null).map((r: Obj) => r.id);
+    expect(errs({ gate: suite })).toEqual([]);
+    expect(suite).toEqual(expect.arrayContaining(["copy.broken", "hierarchy.heading-order", "colour.dark-border"]));
+  });
+
   it("refuses a cap outside 1-20", () => {
     for (const cap of [0, 21, 2.5, "5", null]) expect(errs({ cap }), String(cap)).toEqual(["cap must be an integer from 1 to 20"]);
   });
