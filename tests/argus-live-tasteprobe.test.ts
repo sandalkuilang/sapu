@@ -436,7 +436,7 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     }
   }, 120_000);
 
-  it("censusOf and easeOf carry every bar-class rule's metric as a finite number, each as its rows count it; only feedback.latency's needs an action", async () => {
+  it("censusOf and easeOf carry every bar-class rule's metric as a finite number, each as its rows count it; only feedback.latency's and motion.duration's need an action", async () => {
     const barRules = BAR.rules.filter((r: Obj) => r.class === "bar");
     // As the calibration script opens a page: the taste buffer and both recorders in the context, no action.
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -447,12 +447,13 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     await page.waitForFunction(() => document.getElementById("slot")?.textContent === "Loaded." && document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });
     const screen = { census: await censusOf(page), ease: await easeOf(page) };
     const metrics = metricsOf(screen, BAR);
-    expect(barRules.filter((r: Obj) => !Number.isFinite(metrics[r.metric])).map((r: Obj) => r.id)).toEqual(["feedback.latency"]);
+    // Calibration does no action: the latency and an action's motion are what it cannot measure.
+    expect(barRules.filter((r: Obj) => !Number.isFinite(metrics[r.metric])).map((r: Obj) => r.id).sort()).toEqual(["feedback.latency", "motion.duration"]);
     // Each number is what the rule's own rows count on the same screen.
     const taste = rulesFor(screen.census, BAR, cfgOf()) as Obj[];
     const ease = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate(TASTE_PEEK), ease: screen.ease }, BAR, cfgOf()) as Obj[];
     const of = (rows: Obj[], id: string) => rows.filter((r) => r.rule === id);
-    expect(metrics).toMatchObject({ primary_actions: 2, body_contrast_ratio: 4.74, animation_ms: 300, transition_all: 1, reduced_motion_transforms: 1, vague_labels: 1, empty_states_without_control: 1, errors_without_exit: 1 });
+    expect(metrics).toMatchObject({ primary_actions: 2, body_contrast_ratio: 4.74, transition_all: 1, reduced_motion_transforms: 1, vague_labels: 1, empty_states_without_control: 1, errors_without_exit: 1 });
     expect(metrics.primary_actions).toBe(of(taste, "hierarchy.primary-actions")[0].measured);
     expect(metrics.body_contrast_ratio).toBe(Math.min(...of(taste, "contrast.headroom").map((r) => r.measured)));
     expect(metrics.transition_all).toBe(of(taste, "motion.transition-all").length);
@@ -470,6 +471,8 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     expect(barRules.filter((r: Obj) => !Number.isFinite(after[r.metric])).map((r: Obj) => r.id)).toEqual([]);
     const latency = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate(TASTE_PEEK), ease: acted.ease }, { rules: [{ ...BAR.rules.find((r: Obj) => r.id === "feedback.latency"), threshold: { max: -1 } }] }, cfgOf());
     expect(after.first_change_ms).toBe(latency[0].measured);
+    // The click's own 200 ms motion is the duration's number; the load's entrance never was.
+    expect(after.animation_ms).toBe(200);
   }, 120_000);
 });
 
@@ -496,7 +499,7 @@ describe("argus-live-taste.mjs — motion (T1.3)", () => {
     expect(events).toContainEqual(expect.objectContaining({ kind: "animation", phase: "start", name: "nudge-x", duration_ms: 1200, target: "div|Hint" }));
   }, 60_000);
 
-  it("duration: a 900 ms slide, a 900 ms pseudo-element underline, an 800 ms fade and a 900 ms view transition are bar rows; a 200 ms fade, a 600 ms opacity fade, a sub-frame snap and the loops hold [mdn-view-transition]", async () => {
+  it("duration: a 900 ms slide, a 900 ms pseudo-element underline, an 800 ms fade and a 900 ms view transition an action started are bar rows; a 200 ms fade, a 600 ms opacity fade, a sub-frame snap, the loops and an 800 ms entrance on load hold [mdn-view-transition]", async () => {
     expect(ruleOf("motion.duration").class).toBe("bar");
     const page = await open("motion.html");
     await act(page, "b-slide", "b-fade", "b-snap", "b-swap", "b-under");
@@ -511,11 +514,12 @@ describe("argus-live-taste.mjs — motion (T1.3)", () => {
     expect((await page.evaluate(ruleExpression("motion.duration"))).sort((a: Obj, b: Obj) => a.key.localeCompare(b.key))).toEqual(rows);
   }, 60_000);
 
-  it("layout property: a width transition that pushes its neighbour is implicit; a relative offset that moves nothing, and a box removed mid-transition, hold [webdev-animations] [webdev-cls]", async () => {
+  it("layout property: an unprompted height transition that pushes its neighbour is implicit; the same push the user's click started (an accordion), a relative offset and a box removed mid-transition hold [webdev-animations] [webdev-cls]", async () => {
     expect(ruleOf("motion.layout-property").class).toBe("implicit");
-    const page = await open("motion.html");
+    const page = await open("motion.html?auto");
     await act(page, "b-grow", "b-nudge", "b-gone");
-    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.layout-property")).toEqual([{ rule: "motion.layout-property", key: "width|div|Grow box", measured: 1, expected: "transform or opacity: no other box moves" }]);
+    await page.waitForFunction(() => document.getElementById("auto")!.classList.contains("on") && document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });
+    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.layout-property")).toEqual([{ rule: "motion.layout-property", key: "height|div|Auto box", measured: expect.any(Number), expected: "transform or opacity: no other box moves" }]);
   }, 60_000);
 
   it("transition: all is a row of an information rule [vercel-wig]", async () => {
@@ -536,7 +540,8 @@ describe("argus-live-taste.mjs — motion (T1.3)", () => {
     const page = await open("motion.html", { reducedMotion: "reduce" });
     await act(page, "b-slide", "b-calm-panel");
     const rows = rulesFor(await censusOf(page), BAR, cfgOf());
-    expect(rows.filter((r: Obj) => r.rule === "motion.reduced").map((r: Obj) => [r.key, r.measured])).toEqual([["nudge-x|div|Hint", "running"], ["transform|div|Panel", 900]]);
+    // The entrance that ignores the preference too; the spinner (a progress bar, essential motion) never.
+    expect(rows.filter((r: Obj) => r.rule === "motion.reduced").map((r: Obj) => [r.key, r.measured])).toEqual([["nudge-x|div|Hint", "running"], ["rise|div|Hero", 800], ["transform|div|Panel", 900]]);
     expect(rows.filter((r: Obj) => r.rule === "motion.duration")).toEqual([]);
     expect(await page.evaluate(ruleExpression("motion.reduced"))).toEqual(rows.filter((r: Obj) => r.rule === "motion.reduced"));
   }, 60_000);

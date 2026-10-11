@@ -16,6 +16,12 @@ button { padding: 4px 8px; background: rgb(229, 229, 229); }
 .nudge { position: relative; left: 0; width: 100px; transition: left 300ms; }
 .nudge.on { left: 40px; }
 .all { transition: all 200ms; }
+.auto { height: 20px; overflow: hidden; transition: height 900ms; background: rgb(229, 229, 229); width: 120px; }
+.auto.on { height: 80px; }
+@keyframes rise { from { transform: translateY(16px); } to { transform: translateY(0); } }
+.hero { animation: rise 800ms ease-out 1; width: 120px; }
+@keyframes turn { to { transform: rotate(360deg); } }
+.spin { width: 16px; height: 16px; border: 2px solid rgb(120, 120, 120); border-top-color: transparent; border-radius: 50%; animation: turn 800ms linear infinite; }
 .fade { transition: opacity 200ms; }
 .fade-slow { transition: opacity 600ms; }
 .fade-long { transition: opacity 800ms; }
@@ -45,9 +51,15 @@ button { padding: 4px 8px; background: rgb(229, 229, 229); }
 <section><button id="b-slide">Open panel</button><div id="slide" class="panel">Panel</div></section>
 <!-- the excluded twin: the same slide that honours reduced motion -->
 <section><button id="b-calm-panel">Open calm panel</button><div id="calm-panel" class="panel-calm">Calm panel</div></section>
-<!-- the violation: a width transition that pushes its neighbour -->
+<!-- the excluded twin: a width transition the user's own click started pushes its neighbour (an accordion opening) -->
 <section class="row"><div id="grow" class="grow">Grow box</div><div>Neighbour</div></section>
 <button id="b-grow">Grow</button>
+<!-- the violation (with ?auto): the same push, unprompted (a timer 2.5 s after load, no input): a 900 ms height shift -->
+<section><div id="auto" class="auto">Auto box</div><div>Pushed</div></section>
+<!-- the excluded twin: an 800 ms entrance on load is the page's own, never an action's motion -->
+<section><div class="hero">Hero</div></section>
+<!-- the excluded twin under reduced motion: a spinner, essential motion -->
+<section><div class="spin" role="progressbar" aria-label="Loading"></div></section>
 <!-- the excluded twin: a relative offset moves no other box -->
 <section><div id="nudge" class="nudge">Nudge box</div><div>Below</div></section>
 <button id="b-nudge">Nudge</button>
@@ -84,6 +96,7 @@ on("b-fade", "fade", "fade-slow", "fade-long");
 on("b-snap", "snap");
 on("b-under", "under");
 document.getElementById("b-gone").addEventListener("click", () => { document.getElementById("gone").classList.add("on"); setTimeout(() => document.getElementById("gone").remove(), 100); });
+if (new URLSearchParams(location.search).has("auto")) setTimeout(() => document.getElementById("auto").classList.add("on"), 2500);
 document.getElementById("b-swap").addEventListener("click", () => document.startViewTransition(() => { document.getElementById("swapped").textContent = "After"; }));
 </script>
 </body></html>

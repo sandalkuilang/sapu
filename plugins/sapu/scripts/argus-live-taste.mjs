@@ -89,19 +89,21 @@ export const TASTE_SOURCE = String.raw`(arg) => {
 
   // Motion: what the recorder (TASTE_INIT) kept this document, and what runs now.
   if (typeof doc.__argusTasteMotionNow === "function") doc.__argusTasteMotionNow();
-  const motion = (doc.__argusTasteMotion || []).slice(-100).map((m) => ({ name: m.name, duration: m.duration, infinite: m.infinite, layout: m.layout, moved: m.moved, transform: m.transform, opacityOnly: m.opacityOnly, reduce: m.reduce, quiet: m.quiet, target: m.target }));
+  const motion = (doc.__argusTasteMotion || []).slice(-100).map((m) => ({ name: m.name, duration: m.duration, infinite: m.infinite, layout: m.layout, moved: m.moved, transform: m.transform, opacityOnly: m.opacityOnly, reduce: m.reduce, quiet: m.quiet, caused: m.caused === true, essential: m.essential === true, target: m.target }));
   const running = [];
   for (const a of doc.getAnimations ? doc.getAnimations() : []) {
     if (a.playState !== "running" || !a.effect || !a.effect.target) continue;
     const props = a.transitionProperty ? [a.transitionProperty] : (a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k));
     const vt = String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0;
-    running.push({ name: a.transitionProperty || a.animationName || "animation", infinite: a.effect.getTiming().iterations === Infinity, transform: props.some((p) => /^(transform|translate|scale|rotate)$/.test(p)), target: vt ? "::view-transition" : keyOf(a.effect.target) });
+    const spin = (() => { try { return a.effect.getKeyframes().some((k) => /rotate/i.test(String(k.transform || "")) || (k.rotate !== undefined && k.rotate !== "none")); } catch (e) { return false; } })();
+    const essential = !vt && (Boolean(a.effect.target.closest('[role=progressbar], progress, [aria-busy="true"]')) || (a.effect.getTiming().iterations === Infinity && spin));
+    running.push({ name: a.transitionProperty || a.animationName || "animation", infinite: a.effect.getTiming().iterations === Infinity, transform: props.some((p) => /^(transform|translate|scale|rotate)$/.test(p)), essential, target: vt ? "::view-transition" : keyOf(a.effect.target) });
   }
   // The bar-class rules' own numbers (calibration's bands and the judge's witness read each by its metric name), as
   // rulesFor counts them: a motion shorter than a frame is none, one motion seen twice is one.
   const FRAME = 17;
   const latest = (list) => [...new Map(list.map((m) => [m.name + "|" + m.target, m])).values()];
-  const reduced = () => latest([...running.filter((a) => a.infinite && a.transform), ...motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && m.duration >= FRAME)]).length;
+  const reduced = () => latest([...running.filter((a) => a.infinite && a.transform && !a.essential), ...motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && !m.essential && m.duration >= FRAME)]).length;
   if (o.motionOnly) return { media, motion, running, metrics: media.reduce ? { reduced_motion_transforms: reduced() } : {} };
 
   // What renders: a box of some size, visible, not hidden from everyone (the visually-hidden pattern is 1x1).
@@ -344,7 +346,7 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   for (const b of buttons) if (b.loud >= 2) (loud.get(b.sig) || loud.set(b.sig, { loud: b.loud, names: new Set() }).get(b.sig)).names.add(b.name);
   const loudest = [...loud.values()].sort((a, b) => b.loud - a.loud)[0];
   const body = text.filter((x) => !x.large && x.ratio >= 4.5).map((x) => x.ratio);
-  const durations = latest(motion.filter((m) => !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME)).map((m) => m.duration).sort((a, b) => a - b);
+  const durations = latest(motion.filter((m) => m.caused && !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME)).map((m) => m.duration).sort((a, b) => a - b);
   const metrics = { primary_actions: loudest ? loudest.names.size : 0, transition_all: transitionAll.length };
   if (body.length) metrics.body_contrast_ratio = Math.min(...body);
   if (durations.length) metrics.animation_ms = durations[Math.floor((durations.length - 1) / 2)];
@@ -407,6 +409,14 @@ export const TASTE_INIT = String.raw`(() => {
   const MOVE = /^(transform|translate|scale|rotate)$/;
   const propsOf = (a) => [...new Set((a && a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k)).filter((p) => !/^(offset|easing|composite|computedOffset)$/.test(p)).map((p) => p.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())))];
   const reduce = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Motion the user caused: started within a second of their own input (a click, a key, a submit), as an accordion
+  // opening is. Essential motion: a busy indicator (a progress bar, a busy region, a rotating loop), which reduced
+  // motion exempts.
+  let input = -1e9;
+  for (const type of ["pointerdown", "click", "keydown", "submit"]) doc.addEventListener(type, (ev) => { if (ev.isTrusted && (type !== "keydown" || ev.key === "Enter" || ev.key === " ")) input = performance.now(); }, true);
+  const caused = () => performance.now() - input <= 1000;
+  const spins = (a) => { try { return a.effect.getKeyframes().some((k) => /rotate/i.test(String(k.transform || "")) || (k.rotate !== undefined && k.rotate !== "none")); } catch (err) { return false; } };
+  const essential = (el, a) => Boolean(el.closest('[role=progressbar], progress, [aria-busy="true"]')) || Boolean(a && a.effect && a.effect.getTiming().iterations === Infinity && spins(a));
   const push = (rec) => { if (typeof doc.__argusTastePush === "function") doc.__argusTastePush(rec, KEY); };
   const keep = (e) => { if (store.length >= 200) store.shift(); store.push(e); };
   const rects = (els) => els.map((x) => { const r = x.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
@@ -435,7 +445,7 @@ export const TASTE_INIT = String.raw`(() => {
       const a = el.getAnimations({ subtree: true }).find((x) => x.effect && x.effect.target === el && (kind === "transition" ? x.transitionProperty === name : x.animationName === name) && (x.effect.pseudoElement || "") === (ev.pseudoElement || ""));
       const tm = a && a.effect ? a.effect.getTiming() : {};
       const props = kind === "transition" ? [name] : propsOf(a);
-      e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet, target: keyOf(el), moved: null };
+      e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet, caused: caused(), essential: essential(el, a), target: keyOf(el), moved: null };
       mine.set(id, e);
       keep(e);
       if (e.layout) {
@@ -461,7 +471,7 @@ export const TASTE_INIT = String.raw`(() => {
         vt.ready.then(() => {
           let longest = 0;
           for (const a of doc.getAnimations()) if (a.effect && String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0) longest = Math.max(longest, Number(a.effect.getTiming().duration) || 0);
-          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet, target: "::view-transition", moved: null });
+          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet, caused: caused(), essential: false, target: "::view-transition", moved: null });
           push({ kind: "animation", t: performance.now(), phase: "start", name: "view-transition", duration_ms: longest, delay_ms: 0, easing: "", target: "::view-transition" });
         }, () => {});
       } catch (err) {}
@@ -561,16 +571,19 @@ export function rulesFor(screen, bar, cfg) {
     } else if (id === "motion.duration") {
       // Recorded motion the user's own action caused: not a loop, not under reduced motion (motion.reduced's), not the census's own.
       const band = (m) => (m.opacityOnly && t.opacity_max !== undefined ? [t.range[0], t.opacity_max] : t.range);
-      const list = once(base.motion.filter((m) => !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME && (m.duration < band(m)[0] || m.duration > band(m)[1])));
+      // Only motion the user's action caused (decision 9): an entrance on load is the page's own, never this rule's.
+      const list = once(base.motion.filter((m) => m.caused && !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME && (m.duration < band(m)[0] || m.duration > band(m)[1])));
       each(rule, list, (m) => ({ key: m.name + "|" + m.target, measured: m.duration, expected: band(m)[0] + "–" + band(m)[1] + " ms" + (band(m) === t.range ? "" : " (opacity only)") }));
     } else if (id === "motion.layout-property") {
-      each(rule, once(base.motion.filter((m) => m.layout && m.moved > 0 && !m.quiet)), (m) => ({ key: m.name + "|" + m.target, measured: m.moved, expected: "transform or opacity: no other box moves" }));
+      // A shift the user did not cause: motion that started within a second of their input (an accordion opening) is theirs.
+      each(rule, once(base.motion.filter((m) => m.layout && m.moved > 0 && !m.quiet && !m.caused)), (m) => ({ key: m.name + "|" + m.target, measured: m.moved, expected: "transform or opacity: no other box moves" }));
     } else if (id === "motion.transition-all") {
       each(rule, base.transitionAll, (k) => ({ key: k, measured: "transition: all", expected: "the properties it animates, named" }));
     } else if (id === "motion.reduced" && s.reduce) {
       // Under reduced motion: a transform loop still running, or a transform an action started while it was asked for.
       const r = s.reduce;
-      const list = once([...r.running.filter((a) => a.infinite && a.transform).map((a) => ({ ...a, duration: "running" })), ...r.motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && m.duration >= FRAME)]);
+      // Essential motion (a progress bar, a busy region, a spinner's rotation) is exempt (SC 2.3.3's "essential").
+      const list = once([...r.running.filter((a) => a.infinite && a.transform && !a.essential).map((a) => ({ ...a, duration: "running" })), ...r.motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && !m.essential && m.duration >= FRAME)]);
       each(rule, list, (m) => ({ key: m.name + "|" + m.target, measured: m.duration, expected: "no transform motion under reduced motion (WCAG 2.3.3, Level AAA)" }));
     } else if (id === "density.control-heights") {
       for (const kind of ["button", "field"]) {

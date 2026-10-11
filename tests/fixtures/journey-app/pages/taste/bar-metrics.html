@@ -13,11 +13,13 @@ section { margin: 12px 0; }
 @keyframes nudge-x { from { transform: translateX(0); } to { transform: translateX(8px); } }
 .hint { animation: nudge-x 1200ms infinite alternate; width: 120px; }
 .skeleton { width: 200px; height: 16px; background: rgb(229, 229, 229); }
+.moved { display: inline-block; transition: transform 200ms; }
+.moved.on { transform: translateX(8px); }
 </style></head>
 <body>
 <main>
 <!-- One page holding a number for every bar-class rule, as the calibration measures a page (no action): two
-     primaries, AA body text under 7:1, a 300 ms entrance, transition: all, a loop that ignores reduced motion, an
+     primaries, AA body text under 7:1, a 300 ms entrance (no action's motion), transition: all, a loop that ignores reduced motion, an
      empty list with no next step, an alert with no way on, a vague "OK", and a skeleton that flashes on load. -->
 <h1>Orders</h1>
 <p class="muted">Updated weekly</p>
@@ -28,7 +30,7 @@ section { margin: 12px 0; }
 <section><h2>Drafts</h2><ul></ul><p>No drafts yet.</p></section>
 <section><div role="alert">The report could not be loaded.</div></section>
 <form onsubmit="return false"><input name="q" aria-label="Search"><button>OK</button></form>
-<div><button id="b-load" type="button">Refresh</button> <span id="out"></span></div>
+<div><button id="b-load" type="button">Refresh</button> <span id="out" class="moved"></span></div>
 <div id="slot"></div>
 </main>
 <script>
@@ -39,6 +41,7 @@ addEventListener("DOMContentLoaded", () => {
   setTimeout(() => { sk.remove(); document.getElementById("slot").textContent = "Loaded."; }, 150);
 });
 document.getElementById("b-load").addEventListener("click", async () => {
+  document.getElementById("out").classList.add("on");
   await fetch(location.href);
   document.getElementById("out").textContent = "Refreshed.";
 });
