@@ -28,7 +28,7 @@ export const BAR_FILE = path.join(path.dirname(path.dirname(fileURLToPath(import
 export const RULE_CLASSES = Object.freeze(["implicit", "derived", "bar"]);
 /**
  * Each rule family (a rule id's prefix) → the probe module that measures it (`taste`: argus-live-taste.mjs, `ease`:
- * argus-live-ease.mjs) and its scope: `screen` rules are measured on one screen (the suite runs them, a replay's `taste`
+ * argus-live-ease.mjs, `aiux`: argus-live-aiux.mjs) and its scope: `screen` rules are measured on one screen (the suite runs them, a replay's `taste`
  * expectation re-runs them); `cycle` rules compare a cycle's screens or paths and run only in the lane's judge.
  */
 export const FAMILIES = deepFreeze({
@@ -41,7 +41,7 @@ export const FAMILIES = deepFreeze({
   feedback: { probe: "ease", scope: "screen" },
   states: { probe: "ease", scope: "screen" },
   copy: { probe: "ease", scope: "screen" },
-  ai: { probe: "ease", scope: "screen" },
+  ai: { probe: "aiux", scope: "screen" },
   consistent: { probe: "ease", scope: "cycle" },
   efficiency: { probe: "ease", scope: "cycle" },
 });

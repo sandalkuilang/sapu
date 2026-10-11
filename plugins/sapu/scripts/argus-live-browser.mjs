@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AIUX_INIT } from "./argus-live-aiux.mjs";
 import { cliEnv, closeSessions, runCli, sessionName, sweepSessions } from "./argus-live-cli.mjs";
 import { liveDir, runIdOk } from "./argus-live-lock.mjs";
 import { processTable, redact, run, runAsync, within } from "./argus-live-proc.mjs";
@@ -337,10 +338,11 @@ export const SIGNAL_SCRIPT = `(() => {
  * The session hook's init payload (spec §20.4; Task 0.1): every document of a slot's sessions runs it, from the
  * slot's init script file and again at each domcontentloaded (the hook stage): the signal script, then the taste
  * buffer (argus-live-tastecfg.mjs TASTE_BUFFER, once a document), then the taste and ease init scripts that write
- * into it (motion events, the feedback clock). An observer a run-code arms dies with its document; this one is
+ * into it (motion events, the feedback clock), then the AI-surface recorder (argus-live-aiux.mjs: streams and sends,
+ * counts and times only, beside the buffer). An observer a run-code arms dies with its document; this one is
  * armed in every document. The lane drains the buffer with TASTE_DRAIN in its own run-code.
  */
-export const PAGE_INIT = [SIGNAL_SCRIPT, TASTE_BUFFER, TASTE_INIT, EASE_INIT].filter((s) => s !== "").join(";\n");
+export const PAGE_INIT = [SIGNAL_SCRIPT, TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT].filter((s) => s !== "").join(";\n");
 
 /**
  * Chrome switches that keep its own background services off the network (probed with 0.1.22's Chrome:

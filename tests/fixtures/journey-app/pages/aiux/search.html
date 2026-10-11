@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Search</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; color: rgb(20, 20, 20); }
+  form button { min-height: 32px; min-width: 64px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Search orders</h1>
+  <form id="find">
+    <input id="q" type="search" aria-label="Search">
+    <button type="submit">Search</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <ul id="hits"></ul>
+</main>
+<script>
+// Not an AI surface: a search box and a live status that is written once per search (no answer streams into it).
+const status = document.getElementById("status");
+const hits = document.getElementById("hits");
+document.getElementById("find").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  status.textContent = "Searching";
+  const res = await fetch("/api/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ q: document.getElementById("q").value }) });
+  const list = await res.json();
+  hits.textContent = "";
+  for (const name of list) { const li = document.createElement("li"); li.textContent = name; hits.append(li); }
+  status.textContent = list.length + " orders found";
+});
+</script>
+</body>
+</html>

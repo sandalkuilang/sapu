@@ -537,8 +537,6 @@ const NOT_ON_A_PAGE = { "states.recovery": "a form case drives it", "feedback.sk
 
 /** A page expression → the findings `[{rule, key, measured, expected}]` of one screen rule of this module's families on the current page. */
 export function ruleExpression(rule) {
-  // Decision 14's AI-surface rules are the ease probe's family, but no task of phase 7 builds their probe.
-  if (BAR.rules.some((x) => x.id === rule && x.family === "ai")) throw new Error(`refused: ruleExpression: ${rule}: not built yet`);
   const r = MINE.find((x) => x.id === rule);
   if (!r || ["consistent", "efficiency"].includes(r.family)) throw new Error(`refused: ruleExpression: ${String(rule).slice(0, 60)} is not a screen rule of the ease probe`);
   if (NOT_ON_A_PAGE[rule]) throw new Error(`refused: ruleExpression: ${rule} has no page expression: ${NOT_ON_A_PAGE[rule]}`);
