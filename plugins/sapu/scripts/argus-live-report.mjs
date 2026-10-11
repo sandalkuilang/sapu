@@ -292,7 +292,7 @@ export function tasteScorecard(main, runId) {
   const { judge, fault } = readJudge(main, runId);
   if (fault) unread.push("taste/judge.json");
   if (!judge) return { bar: loadBar().version, judged: false, fault: Boolean(fault), rows: [], substitutions: null, unread };
-  const cur = readCurator(main, runId, new Set(judge.rows.map((r) => r.row)));
+  const cur = readCurator(main, runId, judge.rows);
   if (cur.fault) unread.push("taste/curator.json");
   let state = { journeys: {} };
   try {

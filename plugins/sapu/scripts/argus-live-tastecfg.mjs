@@ -521,10 +521,11 @@ const CURATOR_KEYS = ["verdicts", "leads", "substitutions", "cw"];
  * The Curator's return checked whole → `{value, errors}` (`value` null on any error): `{verdicts: [{row: "t<k>",
  * verdict: confirm|reject|polish, reason (at most 2000 characters)}], leads: [{rule: a screen rule of the bar, screen:
  * a screen key}], substitutions: [{screen, substitution: substitutable|partly|no}] (one a screen), cw: [{journey,
- * step: 1–100, q1, q2, q3, q4: pass|fail|n/a}]}`, every key present, none other. A verdict naming no judge row is the
- * reader's to drop (it knows the rows); everything else out of shape refuses the record.
+ * step: 1–100, q1, q2, q3, q4: pass|fail|n/a}]}`, every key present, none other. `stored` checks the file `taste
+ * curator` wrote: each verdict also names its row's journey, rule, screen and key (ROW_IDENTITY). A verdict naming no
+ * judge row is the reader's to drop (it knows the rows); everything else out of shape refuses the record.
  */
-export function validateCurator(raw, bar = loadBar()) {
+export function validateCurator(raw, bar = loadBar(), { stored = false } = {}) {
   const errors = [];
   const err = (e) => errors.length < 20 && errors.push(e);
   if (!isObj(raw)) return { value: null, errors: ["is not {verdicts, leads, substitutions, cw}"] };
@@ -537,9 +538,11 @@ export function validateCurator(raw, bar = loadBar()) {
     raw[k].slice(0, max).forEach((x, i) => (isObj(x) ? each(x, `${k}[${i}]`) : err(`${k}[${i}] is not an object`)));
   };
   const only = (x, at, keys) => Object.keys(x).filter((k) => !keys.includes(k)).forEach((k) => err(`${at}: unknown key ${shown(k)}`));
+  const rules = new Set(bar.rules.map((r) => r.id));
   list("verdicts", 500, (x, at) => {
-    only(x, at, ["row", "verdict", "reason"]);
-    if (typeof x.row !== "string" || !/^t[1-9][0-9]{0,4}$/.test(x.row) || !CURATOR_VERDICTS.includes(x.verdict) || typeof x.reason !== "string" || x.reason.length > 2000) err(`${at} is not {row, verdict: confirm|reject|polish, reason}`);
+    only(x, at, stored ? ["row", ...ROW_IDENTITY, "verdict", "reason"] : ["row", "verdict", "reason"]);
+    const named = !stored || (typeof x.journey === "string" && KEBAB.test(x.journey) && rules.has(x.rule) && typeof x.screen === "string" && SCREEN_KEY.test(x.screen) && typeof x.key === "string" && x.key.length <= 300);
+    if (typeof x.row !== "string" || !/^t[1-9][0-9]{0,4}$/.test(x.row) || !named || !CURATOR_VERDICTS.includes(x.verdict) || typeof x.reason !== "string" || x.reason.length > 2000) err(`${at} is not {row, ${stored ? "journey, rule, screen, key, " : ""}verdict: confirm|reject|polish, reason}`);
   });
   list("leads", 100, (x, at) => {
     only(x, at, ["rule", "screen"]);
@@ -559,7 +562,13 @@ export function validateCurator(raw, bar = loadBar()) {
   return errors.length ? { value: null, errors } : { value: { verdicts: raw.verdicts, leads: raw.leads, substitutions: raw.substitutions, cw: raw.cw }, errors: [] };
 }
 
-/** Run directory `runDir`'s Curator return → `{value, fault}`: none → `{value: null, fault: null}`; unreadable or out of shape → the fault's words. */
+/**
+ * What names a judge row across judges of one run: its journey, rule, screen and key. Row ids are renumbered by a
+ * second judge; `taste curator` stores each verdict with these, and filing matches a verdict to a row by them.
+ */
+export const ROW_IDENTITY = Object.freeze(["journey", "rule", "screen", "key"]);
+
+/** Run directory `runDir`'s Curator return (as `taste curator` stored it) → `{value, fault}`: none → `{value: null, fault: null}`; unreadable or out of shape → the fault's words. */
 export function readCuratorFile(runDir, bar = loadBar()) {
   let raw;
   try {
@@ -568,6 +577,6 @@ export function readCuratorFile(runDir, bar = loadBar()) {
     if (e && e.code === "ENOENT") return { value: null, fault: null };
     return { value: null, fault: `${CURATOR_FILE} ${e instanceof SyntaxError ? "is not valid JSON" : "cannot be read"}` };
   }
-  const { value, errors } = validateCurator(raw, bar);
+  const { value, errors } = validateCurator(raw, bar, { stored: true });
   return value ? { value, fault: null } : { value: null, fault: `${CURATOR_FILE} ${errors[0]}` };
 }

@@ -23,7 +23,7 @@ import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
 import { NO_MAJORITY } from "./argus-live-ease.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
-import { CURATOR_FILE, FAMILIES, PASS_OFF, tasteOff, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, PASS_OFF, ROW_IDENTITY, tasteOff, validateCurator, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -131,17 +131,65 @@ export function readJudge(main, runId) {
   return { judge: j, fault: null };
 }
 
+/** A judge row's identity across the judges of one run (ROW_IDENTITY): a second judge renumbers rows, never this. */
+const identity = (x) => ROW_IDENTITY.map((k) => x[k]).join("\n");
+
 /**
- * Run `runId`'s Curator return (`<run>/taste/curator.json`, checked whole by -tastecfg's validateCurator) →
- * `{verdicts: Map<row, {verdict, reason}>, substitutions, cw, fault}`, a verdict naming no row of `rows` (a Set of
- * judge row ids) dropped, the first of a row kept. None → empty; out of shape → empty with the fault's words.
+ * Run `runId`'s Curator return (`<run>/taste/curator.json`, as `taste curator` stored it) → `{verdicts: Map<row,
+ * {verdict, reason}>, substitutions, cw, fault}`: each verdict matched to the row of `rows` (judge.json's, as it is now)
+ * with its journey, rule, screen and key, never by the row id the Curator read (a later judge renumbers), a verdict
+ * matching no row dropped, the first of a row kept. None → empty; out of shape → empty with the fault's words.
  */
 export function readCurator(main, runId, rows) {
   const verdicts = new Map();
   const { value, fault } = readCuratorFile(path.join(liveDir(main), runId));
   if (!value) return { verdicts, substitutions: [], cw: [], fault };
-  for (const v of value.verdicts) if (rows.has(v.row) && !verdicts.has(v.row)) verdicts.set(v.row, { verdict: v.verdict, reason: v.reason.slice(0, 500) });
+  const byIdentity = new Map(rows.map((r) => [identity(r), r.row]));
+  for (const v of value.verdicts) {
+    const row = byIdentity.get(identity(v));
+    if (row && !verdicts.has(row)) verdicts.set(row, { verdict: v.verdict, reason: v.reason.slice(0, 500) });
+  }
   return { verdicts, substitutions: value.substitutions, cw: value.cw, fault: null };
+}
+
+/**
+ * `taste curator <file>` → `{code, lines}`: the Curator's return (the JSON in `file`, which the orchestrator saved from
+ * the agent's answer) checked whole by validateCurator, each verdict stored with its row's journey, rule, screen and key
+ * as the run's judge.json (the one the Curator read) names them, a verdict naming no row dropped and counted, written
+ * to `<run>/taste/curator.json` (0600, beside, then renamed). The run is the lock's, else the newest. Refused, nothing
+ * written: no run, no judge.json, a file that cannot be read or is not JSON, a return out of shape (its first faults,
+ * never its text).
+ */
+export function tasteCurator(main, file) {
+  const refuse = (why) => {
+    throw new Error(`refused: taste curator: ${why}`);
+  };
+  const runId = lastRun(main);
+  if (runId === null) refuse("no run here");
+  const { judge, fault } = readJudge(main, runId);
+  if (fault) refuse(fault);
+  if (!judge) refuse(`run ${runId} has no taste/judge.json (run taste judge first)`);
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.resolve(main, String(file)), "utf8"));
+  } catch (e) {
+    refuse(`the return ${e instanceof SyntaxError ? "is not valid JSON" : "cannot be read"}`);
+  }
+  const { value, errors } = validateCurator(raw);
+  if (!value) refuse(`the Curator's return is out of shape: ${errors.slice(0, 5).join("; ")}`);
+  const rows = new Map(judge.rows.map((r) => [r.row, r]));
+  const seen = new Set();
+  const verdicts = [];
+  for (const v of value.verdicts) {
+    const r = rows.get(v.row);
+    if (!r || seen.has(v.row)) continue;
+    seen.add(v.row);
+    verdicts.push({ row: v.row, ...Object.fromEntries(ROW_IDENTITY.map((k) => [k, r[k]])), verdict: v.verdict, reason: v.reason });
+  }
+  const out = path.join(liveDir(main), runId, CURATOR_FILE);
+  fs.renameSync(tempBeside(out, `${JSON.stringify({ ...value, verdicts })}\n`, 0o600), out);
+  const dropped = value.verdicts.length - verdicts.length;
+  return { code: 0, lines: [`taste curator: run ${runId}: ${verdicts.length} verdicts${dropped ? ` (${dropped} naming no judge row, or a row twice, dropped)` : ""}, ${value.leads.length} leads, ${value.substitutions.length} substitutions, ${value.cw.length} walkthrough answers → ${CURATOR_FILE}`] };
 }
 
 /** A row's severity and why → `{severity, why}` (OUTCOME, then the cost). */
@@ -252,7 +300,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
   const { judge, fault } = readJudge(main, runId);
   if (fault) refuse(fault);
   if (!judge) refuse(`run ${runId} has no taste/judge.json (run taste judge first)`);
-  const cur = readCurator(main, runId, new Set(judge.rows.map((r) => r.row)));
+  const cur = readCurator(main, runId, judge.rows);
   if (cur.fault) refuse(cur.fault);
   const state = readTasteState(main);
   const rules = new Map(bar.rules.map((r) => [r.id, r]));

@@ -86,7 +86,7 @@ It is the one place a screen is judged by taste rather than by a number, and its
 - **Leads:** a perception that names a rule and a screen, which the next judge pass measures first.
 - **The cognitive walkthrough,** per journey step: four questions, each `pass`, `fail` or `n/a`.
 
-Its return lives in `taste/curator.json` in the run, and the whole return is refused when it is out of shape. `taste judge`, `taste file` and `report` read it. A `confirm` verdict does not make a row fileable: only the replay does. A `reject`, or `polish` on an S3 row, sends the finding to you with the needs-owner label; a coherence note it rejects is held back instead.
+The orchestrator stores its return with `taste curator`, in `taste/curator.json` in the run; the whole return is refused when it is out of shape. `taste judge`, `taste file` and `report` read it. A `confirm` verdict does not make a row fileable: only the replay does. A `reject`, or `polish` on an S3 row, sends the finding to you with the needs-owner label; a coherence note it rejects is held back instead.
 
 ### /momus — release-readiness audit
 

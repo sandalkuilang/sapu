@@ -21,7 +21,7 @@ pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
 (`smoke ci`'s triage), `.argus/perf.json` (perf baselines), `.argus/taste-state.json` (per journey the last taste
 judge, the best known path and each confirmed taste row with its state, 0600; a run's taste records are under
 `<runId>/taste/`: each slot's `screens.jsonl`, the `shots/`, `judge.json`, and `curator.json`, the Curator's return,
-which the orchestrator writes; a shot whose scrub verdict found a secret, a password or a one-time-code field goes to
+which the orchestrator stores through `taste curator`; a shot whose scrub verdict found a secret, a password or a one-time-code field goes to
 `<runId>/held-shots/` instead, outside the Curator's reach) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
 smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,

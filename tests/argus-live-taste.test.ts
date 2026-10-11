@@ -496,8 +496,13 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     const run = tempDir();
     expect(readCuratorFile(run)).toEqual({ value: null, fault: null });
     mkdirSync(join(run, "taste"));
+    // The file holds the return as `taste curator` stored it: each verdict also names its row's journey, rule, screen and key.
     writeFileSync(join(run, CURATOR_FILE), JSON.stringify(ok));
-    expect(readCuratorFile(run)).toEqual({ value: ok, fault: null });
+    expect(readCuratorFile(run)).toEqual({ value: null, fault: "taste/curator.json verdicts[0] is not {row, journey, rule, screen, key, verdict: confirm|reject|polish, reason}" });
+    const stored = { ...ok, verdicts: ok.verdicts.map((v) => ({ ...v, journey: "order-to-cash", rule: "copy.broken", screen: "/orders/:id|1440|light", key: "main" })) };
+    writeFileSync(join(run, CURATOR_FILE), JSON.stringify(stored));
+    expect(readCuratorFile(run)).toEqual({ value: stored, fault: null });
+    expect(validateCurator(stored).errors[0]).toBe("verdicts[0]: unknown key journey");
     writeFileSync(join(run, CURATOR_FILE), "{");
     expect(readCuratorFile(run)).toEqual({ value: null, fault: "taste/curator.json is not valid JSON" });
   });

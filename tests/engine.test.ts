@@ -583,7 +583,7 @@ const BUDGETS: Record<string, number> = {
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 19_400,
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 15_000,
+  "skills/argus/journeys.md": 15_200,
   "skills/argus/SKILL.md": 42_832,
   "skills/journey/SKILL.md": 4_950,
   "skills/journey/live.md": 14_500,
@@ -1321,9 +1321,9 @@ describe("the journey lane's engine text", () => {
     expect(read(JOURNEYS)).toContain("`classify --oracle taste`");
   });
 
-  it("a journey cycle runs the taste pass in order: judge, confirm, the Curator's file, file, report; one judge a cycle", () => {
+  it("a journey cycle runs the taste pass in order: judge, confirm, the Curator's return stored, file, report", () => {
     const cycle = section(read(JOURNEYS), "## The cycle").join("\n");
-    const order = ["`live taste judge`", "`live taste confirm <row>`", `\`.argus/live/<runId>/${CURATOR_FILE}\``, "`live taste file`", "`live report`"];
+    const order = ["`live taste judge`", "`live taste confirm <row>`", "`live taste curator <that file>`", "`live taste file`", "`live report`"];
     const at = order.map((w) => cycle.indexOf(w));
     for (const [i, w] of order.entries()) expect(at[i], w).toBeGreaterThanOrEqual(0);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
@@ -1353,8 +1353,11 @@ describe("the journey lane's engine text", () => {
       "Provenance and uncertainty go only in the `reason` of `ai.*` rows",
       "it sets no severity: filing rates the measured row",
     ]) expect(charter, s).toContain(s);
-    // The Curator has no write tool: the orchestrator writes its return where filing and the report read it.
-    expect(text.replace(/\s+/g, " ")).toContain(`write its object to \`.argus/live/<runId>/${CURATOR_FILE}\` yourself (it has no write tool)`);
+    // The Curator has no write tool: the orchestrator stores its return through the verb that checks it.
+    expect(text.replace(/\s+/g, " ")).toContain("run `live taste curator <that file>`: it checks the return whole and stores it as `taste/curator.json`");
+    // A second judge is safe once the return is stored: filing matches verdicts by row identity (-tastecfg ROW_IDENTITY).
+    expect(text).toContain("filing matches a verdict to its row by journey, rule, screen and key, never by id");
+    expect(text).not.toContain("One judge a cycle");
     expect(read("skills/argus/SKILL.md")).toContain("In a journey cycle it is the `sapu:curator` agent");
   });
 

@@ -2651,6 +2651,7 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     ["taste judge", `node ${L} taste judge`],
     ["taste confirm", `node ${L} taste confirm t1`],
     ["taste file, which files issues", `node ${L} taste file --run r1`],
+    ["taste curator, which writes the Curator's file", `node ${L} taste curator .argus/live/r1/curator-return.json`],
     ["taste accept, the owner's ruling", `node ${L} taste accept scale.spacing '/orders|1440|light'`],
     ["a built script name and taste", `node "$S" taste accept scale.spacing x`],
     ["smoke check with a word more", `node ${L} smoke check --json`],
@@ -2735,7 +2736,7 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
 
   it("refuses the explorer every taste verb, taste accept included", () => {
     const explorer = (command: string) => decide({ agent_id: "a1", agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command }, cwd: wt });
-    for (const verb of ["taste judge", "taste confirm t1", "taste file", "taste accept scale.spacing x"]) expect(explorer(`node ${WRAPPER} ${verb}`), verb).toMatch(/journey explorer's shell runs only its wrapper/);
+    for (const verb of ["taste judge", "taste confirm t1", "taste file", "taste curator c.json", "taste accept scale.spacing x"]) expect(explorer(`node ${WRAPPER} ${verb}`), verb).toMatch(/journey explorer's shell runs only its wrapper/);
   });
 });
 

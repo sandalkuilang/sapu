@@ -144,6 +144,8 @@
 //                                a judge row replayed on a fresh instance and measured again (-tastejudge.mjs tasteConfirm)
 //   argus-live.mjs taste file [--run <runId>]
 //                                the confirmed rows filed, capped (-tastefile.mjs tasteFile)
+//   argus-live.mjs taste curator <file>
+//                                the Curator's return checked and stored with each verdict's row identity (-tastefile.mjs tasteCurator)
 //   argus-live.mjs taste accept <rule> <key>
 //                                the owner's ruling that a row is intended, staged only on their word (-tastefile.mjs tasteAccept)
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
@@ -176,7 +178,7 @@ import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { smokeRun } from "./argus-live-smoke.mjs";
 import { smokeAdmit, smokeCheck, smokePlan, smokeRetire } from "./argus-live-suite.mjs";
-import { tasteAccept, tasteFile } from "./argus-live-tastefile.mjs";
+import { tasteAccept, tasteCurator, tasteFile } from "./argus-live-tastefile.mjs";
 import { tasteConfirm, tasteJudge } from "./argus-live-tastejudge.mjs";
 import { findMain, loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
@@ -193,7 +195,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste accept <rule> <key>";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste curator <file> | taste accept <rule> <key>";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule", "--cost": "cost" };
 /** Journey ids, comma-separated. */
@@ -244,6 +246,7 @@ async function laneCommand(cmd, args) {
     if (verb === "confirm" && rest.length === 1) return tasteConfirm(main, rest[0]);
     if (verb === "file") return tasteFile(main, { run: options(rest, { "--run": "text" })["--run"] ?? null, cap: null });
     if (verb === "accept" && rest.length === 2) return tasteAccept(main, rest[0], rest[1]);
+    if (verb === "curator" && rest.length === 1) return tasteCurator(main, rest[0]);
     refuseUsage();
   }
   if (cmd === "seed") {
