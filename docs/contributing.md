@@ -12,24 +12,28 @@ plugins/sapu/
   .claude-plugin/plugin.json      version; dependencies: senior-dev-team
   CONTRACT.md                     the repo contract format
   skills/                         sapu, forge, argus, journey, momus, nemesis, inspector, dream, init
-  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, and ui-explorer (the journey lane's explorer)
+  agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, ui-explorer (the journey lane's explorer) and curator (its taste judge, tools Read and StructuredOutput)
+  data/taste-bar.json             the taste bar: rules, thresholds, sources, reference frames, calibrated bands (versioned)
   hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
   workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh, sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
-                                  the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report)
+                                  the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report;
+                                  the taste pass's -taste, -ease and -aiux probes, -tastecfg, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
   scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
 scripts/rule-guard.ts             gate: a weakened engine rule needs a Rule-Change trailer (not shipped)
+scripts/taste-calibrate.mjs       the maintainer's calibration of the taste bar (not shipped; never run by an agent)
+scripts/taste-corpus.json         the reference corpus it measures: public pages, their sites' terms review, what was left out (not shipped)
 tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, the journey lane (argus-live*), and "the engine is clean of repos"
-.github/workflows/                test.yml runs the suite on Linux for every push and PR; tag-release.yml tags a released version
+.github/workflows/                test.yml runs the suite on Linux for every push and PR, in parallel jobs (a `taste` job runs the taste pass's Chrome test files); tag-release.yml tags a released version
 ```
 
 The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`. The journey lane's browser CLI is the one exception, and it is not installed with the plugin: `scripts/pw/` pins it, and the lane installs it into the user's cache with `npm ci --ignore-scripts` the first time it needs it.
 
-The journey lane's browser tests (`tests/argus-live-browser.test.ts`, `-repro`, `-codegen`, `-layout`, `-a11y` and `-perf`) drive a real Chrome or Edge, through that CLI or through the pinned runner: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI. The generated smoke suite imports `@playwright/test`, which the pinned CLI install does not hold, so the codegen, layout and a11y tests run it against the install's own runner through a scratch `node_modules/@playwright/test` stub; no test runs `npm install` for it.
+The journey lane's browser tests (`tests/argus-live-browser.test.ts`, `-repro`, `-codegen`, `-layout`, `-a11y`, `-perf`, and the taste pass's `-tasteprobe`, `-ease`, `-tasteflow`, `-tastejudge`, `-aiux` and `tests/taste-calibrate.test.ts`) drive a real Chrome or Edge, through that CLI or through the pinned runner: a machine without one fails them rather than skipping them, and their first run needs the network or a warm npm cache to install the CLI. The generated smoke suite imports `@playwright/test`, which the pinned CLI install does not hold, so the codegen, layout and a11y tests run it against the install's own runner through a scratch `node_modules/@playwright/test` stub; no test runs `npm install` for it.
 
 ## Changing the plugin
 
@@ -78,6 +82,47 @@ The smoke suite is not in this repo: the journey lane generates it into a consum
 - `CODEGEN_VERSION` is written into every generated file's header. Raise it when the generator's output changes for the same inputs: `smoke check` reports every older file as `stale`.
 
 Generated code uses only Playwright APIs that exist in both the pinned CLI's runner and the suite's `@playwright/test`. A test scans the generated output and bans hard waits, template literals that hold path data, serial tests, shared state and `fixme`.
+
+## The taste bar and its calibration
+
+The journey lane's taste and usability pass ([Install and use](usage.md#the-taste-and-usability-pass)) is made of leaf modules under `plugins/sapu/scripts/`, each owned by one concern. A module is capped at 750 lines, and a test pins the module order (leaves first, `-tastejudge` before `-tastefile`, nothing but `argus-live.mjs` and `-report` reaching them).
+
+| Module | Holds |
+|---|---|
+| `argus-live-taste.mjs` | The visual probes: `TASTE_SOURCE` and the page-level `censusOf`, `rulesFor` and `ruleExpression` for the scale, hierarchy, colour, contrast, motion and density rules, and `TASTE_INIT`, the motion recorder. |
+| `argus-live-ease.mjs` | The interaction probes: feedback, states, copy, consistency, `pathCost` for efficiency, and `EASE_INIT`, the feedback clock. |
+| `argus-live-aiux.mjs` | The AI-surface rules (`ai.*`), their recorder `AIUX_INIT` and the drive a confirmation uses. |
+| `argus-live-tastecfg.mjs` | The shared leaf: loaders and validators for `.argus/taste.json` and the bar, the record shapes (judge rows, the Curator's return, `.argus/taste-state.json`), and the page-side constants the recorders and the lane share. |
+| `argus-live-tastejudge.mjs` | `taste judge` and `taste confirm`: witnesses, peers, bands, the replay and the state. |
+| `argus-live-tastefile.mjs` | `taste file` and `taste accept`: filing, the cap, deduplication, accepted rows. |
+| `argus-live-codeproj.mjs` | Split from `-codegen`: the suite's projects and check registry, including the `taste` project and its single reporter. |
+| `argus-live-browser.mjs`, `-session.mjs` | `PAGE_INIT`, the init payload the session hook installs in every lane document, and the recorder that writes `<run>/taste/`. |
+| `argus-live-propose.mjs` | The workflow's `taste` job and `TASTE_SUMMARY`, the scorecard it writes. |
+
+A probe is one in-page function, so the lane (through `run-code`) and the suite (embedded verbatim in `support.ts`) run the same source. Each rule's fixture has a twin that differs only by the defect: a rule that fires on one must hold on the other. The bar's `probe` digest is the sha256 of `TASTE_SOURCE` and `EASE_SOURCE` as they were when the bands were measured. When you change how a probe measures a banded metric, calibrate again: no test compares the shipped digest with the current sources, so a stale one fails nothing.
+
+**The CI `taste` job.** The test workflow runs the Chrome-driving taste test files (`-tastejudge`, `-tasteprobe`, `-ease`, `-tasteflow`, `-aiux` and `taste-calibrate`) in their own matrix job, named on one `files:` line, so they do not pile into `rest`. Add a new Chrome-driving taste test to that line. Do not confuse it with the `taste` job of the *generated* smoke workflow, which runs in a consumer's CI ([Install and use](usage.md#the-taste-job-in-ci)).
+
+**Calibrating the bar.** `scripts/taste-calibrate.mjs` is the maintainer's: it runs the probes on the public pages in `scripts/taste-corpus.json` and writes only the bar's `probe` digest and its `archetypes` bands (one band a line; the rest of the file stays byte for byte). Run it from your own session, never from an agent: the guard refuses it to every subagent ([Safety and trust](security.md#the-calibration-is-maintainer-only)).
+
+```bash
+node scripts/taste-calibrate.mjs --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json
+```
+
+Without `--network` it validates the corpus and the bar and prints the plan: how many pages and sites, and when robots.txt and the pace allow it to finish. Nothing is fetched or written. To measure:
+
+```bash
+node scripts/taste-calibrate.mjs --network --diff --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json
+```
+
+`--diff` prints each band as changed, unchanged, new or gone, and `--diff` without `--network` is refused. The script prints, per archetype, the pages and sites measured and whether the band is `a witness` (5 sites and 15 pages) or `thin`, and it cuts and names a band driven by one site. It does not raise the bar's `version`.
+
+Review the bar when a sapu minor version is released, at least twice a year, and whenever a researched design system publishes a new major version:
+1. Re-read the sources the bar cites (its `sources` map) and the corpus's site terms. A site joins the corpus only with a read justification and a terms review, recorded on each page (`terms_reviewed_by`); a site leaves when its terms bar robots or data mining.
+2. Run the calibration with `--network --diff` and read every band for plausibility.
+3. Raise `version` in `plugins/sapu/data/taste-bar.json` by one, commit the new bands, and open a pull request that cites the sources and justifies each corpus change. A bar change is a change to the plugin: raise the plugin version too.
+
+A suite records the bar version it was judged against in its header (`taste-bar <n>`), so `smoke check` names a suite generated against an older bar `stale`, and a report names the version it used.
 
 Diagrams are generated, not hand-edited: change `docs/img/src/diagrams/<name>.mjs` (or the shared `lib.mjs`), then run `node docs/img/src/build.mjs <name>`; it writes `docs/img/<name>.svg` and `<name>-dark.svg` (set `OUT=<dir>` to write elsewhere, e.g. to compare). A diagram's title, description and label sit in its module or in `docs/img/src/a11y/<name>.json`; when they change, change the `alt` of its `<picture>` in the README and `docs/` with them. The logo, badges and icons are hand-made SVGs, edited directly. The README shows each through `<picture>`, so GitHub picks the file matching the reader's theme.
 

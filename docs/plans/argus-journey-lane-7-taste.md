@@ -1611,3 +1611,57 @@ and the composer's send. Each was removed from a scratch copy, and its silent fi
    (buttons only, never a link) during a confirmation.
 5. *Shadow DOM*: the recorder observes the document, not shadow roots, so a web component's streamed answer is no
    stream (silent). T2's `attachShadow` hook could feed it.
+
+### Lane Z3 — docs and diagrams
+
+Files: `README.md`, `docs/usage.md`, `docs/security.md`, `docs/agents.md`, `docs/contributing.md`, the `journey` and `smoke`
+diagrams (`docs/img/src/diagrams/{journey,smoke}.mjs`, `docs/img/src/a11y/{journey,smoke}.json`, then
+`node docs/img/src/build.mjs journey smoke`; the `<picture>` alts follow the new labels). Nothing under `plugins/`, `docs/specs`
+or `tests/` changed.
+
+**Where each thing lives.**
+- usage.md: `### The taste and usability pass` (what it measures, where it runs, the commands, a finding's way to an issue, the
+  scorecard, `.argus/taste.json` with an example that passes `validateTaste`, promoting a rule, the CI job, the AI-surface rules,
+  efficiency, the calibrated bar, limits); the `/journey` row and tips, the workflow job table, the checks table, the files table,
+  the enforced list; `#### Upgrading from a version before 2.11.0`; one Common-problems row per `refused:` or `failed:` family
+  the taste verbs, `select`, `classify` and the suite can print.
+- security.md: `## The taste and usability pass` with `### The Curator`, `### What the recorders keep` and
+  `### The calibration is maintainer-only`.
+- agents.md: `### The Curator`, and a taste paragraph under `/journey`. contributing.md: `## The taste bar and its calibration`
+  (the modules, the CI `taste` job, the calibration commands and D21's procedure).
+- Diagrams: `journey` gains a "The taste and usability pass" card and a Curator line in its hard limits; `smoke` gains the
+  advisory `taste` job under the CI jobs. Both rendered in both themes and checked for overlaps.
+
+**Verified.** The four `taste` verbs in a scratch repository (`taste judge`, `confirm`, `file`, `accept`: every refusal quoted in
+Common problems that can print without a cycle, and `accept`'s write and its repeat), `taste-calibrate`'s dry run (the plan and
+the corpus counts), the example `taste.json` through `validateTaste`, every other string against the modules.
+
+**Version.** The upgrade notes are headed 2.11.0 (D23). `plugin.json` is 2.10.0, and the remote's tags stop before 2.9.0, so if Z4
+folds phase 7 into 2.10.0 (D23's fallback), move the notes into the 2.10.0 section and fix the README's two anchors.
+
+**Needs coordinator.**
+1. *`gate` accepts what the suite cannot run.* `validateTaste` accepts any non-information rule in `gate`, but the suite fails
+   the step for a rule it does not measure (`argus-smoke: .argus/taste.json gate names …: no rule the suite measures in
+   taste-bar <n>`): the count rules, `consistent.*`, `efficiency.*`, `ai.*`, `feedback.skeleton-peers`, `feedback.optimistic`,
+   `states.error`, `states.recovery`. usage.md says so; the better fix is for `validateTaste` to refuse `laneOnly` rules in `gate`.
+2. *No `bar` row can file today.* `bandOf` needs `archetypes.<a>.<rule.metric>`, and the bands hold only the six `distinct_*`
+   census counts, which belong to `derived` rules. Spec §20.3 and decision 19 read as if bar rows file; usage.md says none do yet
+   (the judge counts them under `not rows`). The decision's own "left for later" item is the fix.
+3. *Frames.* Decision 4 and spec §20.3 name six frames; the bar holds five (no `geist`, no `shadcn`), and `taste.json` `frame`
+   refuses them. usage.md lists the five. The spec's sentence is Z4's.
+4. *The Curator's file.* Nothing in the code writes `taste/curator.json` (only readers exist). agents.md and usage.md say the
+   return "lives" there; Z2's orchestrator text must say who saves it, and the Curator text (Z1) must match the shape
+   `validateCurator` checks (`verdicts`, `leads`, `substitutions`, `cw`, every key).
+5. *Init and the gitignore exception.* usage.md tells the owner to add `!/.argus/taste.json`. Plan Z2 has `/sapu:init` offer the
+   file; `skills/init/SKILL.md` has no such text at this tip. Reword to "init adds it" once Z2 lands.
+6. *Unpinned digest.* No test compares the shipped bar's `probe` digest with the current probe sources (they match today).
+   contributing.md says a stale digest fails nothing.
+7. *The calibration refusal's limits.* The plan's K note says the guard misses "a package script that runs it"; CONTRACT.md
+   §Engine floor names only a renamed copy. security.md follows CONTRACT.md.
+8. *The Curator reads every file under `taste/`,* including a screenshot whose scrub verdict says it shows a secret or a
+   password field (the verdict gates attaching, not reading). Architect: confirm it is acceptable.
+9. *No whole-pass switch.* Decision 1 rejects an opt-in, so the upgrade note says tune with `off` and `cap`. Product: confirm
+   there is no repo-level escape hatch to add.
+10. *`states.error` and `ai.*` rows exist only if the walk produces them.* A confirmation replays a row the walk made, so the
+    explorer charter (Z2) must make an explorer reach a failure and press Stop; usage.md describes the rules and the drive as
+    built.
