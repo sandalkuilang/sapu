@@ -264,6 +264,25 @@ function frameWitness(rule, m, cfg, bar) {
 /** The screen key a row of `rule` names on record `s`: a dark-parity rule the dark screen (when the page is themed), any other the screen's own. */
 const rowScreen = (s, rule) => (rule.family === "colour" && rule.id.startsWith("colour.dark-") && s.themed ? `${s.route}|${s.width}|dark` : s.key);
 
+/**
+ * Explorer path `list` priced as the best path `best` types (decision 3: the UI's cost, never the data's): each `fill`
+ * of a field the best path also fills takes the best path's value, the k-th fill of a field its k-th; a field the best
+ * path never fills keeps its own. A copy: the explorer's return is never changed.
+ */
+function pricedLike(list, best) {
+  const field = (s) => JSON.stringify(s.target, (k, v) => (isObj(v) ? Object.fromEntries(Object.keys(v).sort().map((x) => [x, v[x]])) : v));
+  const values = new Map();
+  for (const s of best) if (isObj(s) && s.do === "fill") values.set(field(s), [...(values.get(field(s)) ?? []), s.value]);
+  const used = new Map();
+  return list.map((s) => {
+    if (!isObj(s) || s.do !== "fill" || !values.has(field(s))) return s;
+    const k = used.get(field(s)) ?? 0;
+    used.set(field(s), k + 1);
+    const own = values.get(field(s));
+    return { ...s, value: own[Math.min(k, own.length - 1)] };
+  });
+}
+
 /** The time from each recorded input to the first change after it, summed over records `list` (decision 3's `wait_ms`), or null with no input. */
 function waitOf(list) {
   let ms = 0;
@@ -291,7 +310,8 @@ function waitOf(list) {
  * needs the band (5 sites, 15 pages, an archetype not inferred) agreeing, and an internal witness: a peer screen of its
  * archetype that holds the rule, or the owner's frame (durations); `implicit` and `derived` rows stand on their
  * measurement. A cross-screen (`consistent`) row the previous run's judge also reported is confirmed: two cycles are
- * its two visits. Efficiency (decision 3): each journey's explorer path costed (pathCost); the best known path is
+ * its two visits. Efficiency (decision 3): each journey's explorer path costed (pathCost), its fills priced with the
+ * best path's values (pricedLike); the best known path is
  * the suite's admitted path for the journey when it is shorter than the state's (a held path only), and a path at the
  * rule's ratio of its actions, or its seconds of KLM more, is a row the best path's replay confirms. taste-state.json
  * gets each judged journey's `judged` and `best`. Rows carry over a confirmation from an earlier judge of the run.
@@ -452,7 +472,8 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     const heldCost = heldList ? costOf(heldList, id) : null;
     if (heldCost && (!entry.best || heldCost.actions < entry.best.actions || pathSha(heldList) === entry.best.pathSha)) entry.best = { run: runId, actions: heldCost.actions, klm_s: round(heldCost.klm_s), pathSha: pathSha(heldList) };
     const list = paths.get(id);
-    const cost = list ? costOf(list, id) : null;
+    const bestList = entry.best && heldList && pathSha(heldList) === entry.best.pathSha ? heldList : null;
+    const cost = list ? costOf(bestList ? pricedLike(list, bestList) : list, id) : null;
     // A figure nothing measured is null (the scorecard prints `-`), never 0: recovery counts the fields lost (one
     // states.recovery row each) only where a form case ran; Fitts' bits need the replay's target boxes.
     const recovery = mine.some((s) => isObj(s.ease) && Array.isArray(s.ease.recovery)) ? rows.filter((r) => r.journey === id && r.rule === "states.recovery").length : null;

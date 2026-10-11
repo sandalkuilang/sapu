@@ -90,7 +90,8 @@ const STAND_IN = vi.hoisted(() => ({
   pathCost: (steps: Record<string, any>[], geometry: unknown) => {
     STAND_IN.geometry.push(geometry);
     const actions = steps.filter((x) => x && typeof x.do === "string").length;
-    return { actions, typed: 0, modals: 0, fitts_bits: 0, klm_s: actions * 2 };
+    const typed = steps.reduce((n, x) => n + (x && x.do === "fill" ? String(x.value ?? "").length : 0), 0);
+    return { actions, typed, modals: 0, fitts_bits: 0, klm_s: actions * 2 };
   },
   geometry: [] as unknown[],
   /** crossRules' stand-in: the findings a test put in a recorded screen's `ease.cross`, each naming that screen. */
@@ -879,6 +880,26 @@ describe("argus-live taste judge (J2)", () => {
     t.ret(1, "j", pathOf(7));
     await t.judge();
     expect(t.file().rows).toEqual([]);
+  }, 30_000);
+
+  it("an explorer's fills are priced with the best path's values for the same field, so a longer test string is no cost of the UI; a field the best path never fills keeps its own", async () => {
+    const t = judgeRepo();
+    t.put(1, [t.screen("/orders/new")]);
+    const fill = (label: string, value: string) => ({ as: "buyer.1", do: "fill", target: { label }, value });
+    const explorer = [...pathOf(2), fill("Quantity", "123456789"), fill("Note", "abc"), fill("Quantity", "42")];
+    t.ret(1, "j", explorer);
+    // No held path: the explorer's own values (9 + 3 + 2 characters).
+    await t.judge();
+    expect(t.file().journeys.j.efficiency.typed).toBe(14);
+    // The suite holds the best path: its Quantity is "1", then "7" (the second fill of the same field, in order).
+    writeFileSync(join(t.main, ".argus/smoke.json"), "{}");
+    mkdirSync(join(t.main, "e2e/argus-smoke/journeys"), { recursive: true });
+    writeFileSync(join(t.main, "e2e/argus-smoke/journeys/j.json"), JSON.stringify({ journey: "j", path: [...pathOf(2), fill("Quantity", "1"), { as: "buyer.1", do: "click", target: { role: "button", name: "More" } }, fill("Quantity", "7")] }));
+    await t.judge();
+    expect(t.file().journeys.j.efficiency.typed).toBe(1 + 3 + 1);
+    // The best path itself is priced with its own values, and the explorer's return on disk is unchanged.
+    expect(readTasteState(t.main).journeys.j.best).toMatchObject({ actions: 5 });
+    expect(JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", "1.1.json"), "utf8")).path).toEqual(explorer);
   }, 30_000);
 
   it("wait_ms sums each input's time to the first change after it; recovery counts the fields lost where a form case ran, else is unmeasured (null, never 0)", async () => {

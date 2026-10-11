@@ -567,7 +567,7 @@ Efficiency is measured per journey, from the lane's deterministic paths. Every e
 | Figure | Meaning |
 |---|---|
 | `actions` | Steps the user takes: clicks, fills, selects, ticks, hovers, key presses and going back. Navigation, reads and expectations are not counted, nor are system steps such as signing in. |
-| `typed` | Characters typed. |
+| `typed` | Characters typed. Where the best known path fills the same field, the explorer's fill is priced with the best path's value (the k-th fill of a field with its k-th), so a longer test string is never a cost of the UI. |
 | `modals` | Dialogs opened and closed with no field filled. |
 | `wait_ms` | Each recorded input's time to the first visible change, summed. |
 | `recovery` | Fields lost after a rejected submit. |
@@ -577,7 +577,7 @@ Efficiency is measured per journey, from the lane's deterministic paths. Every e
 
 The *best known path* is the journey's path in your smoke suite that held (an explorer's own path never replaces it). An explorer path with at least three times the best path's actions, or at least 10 s more `klm_s`, is an efficiency row, but only a candidate: it is confirmed only when the best path no longer holds with the same expectations. While the best path holds, a longer explorer path is a detour and not a finding. A journey with no path in the suite has nothing to compare with, so it has figures but no efficiency rows.
 
-**Information only, for now.** `efficiency.actions` and `efficiency.klm` ship as information rules: the judge computes and the scorecard shows the figures, but makes no row and files nothing, and neither can gate. An explorer's path is not yet minimized before it is compared, nor its typed values priced by the best path's, so a longer path could still be the explorer's detour; the rules become findings once that proof is wired.
+**Information only, for now.** `efficiency.actions` and `efficiency.klm` ship as information rules: the judge computes and the scorecard shows the figures, but makes no row and files nothing, and neither can gate. An explorer's typed values are priced by the best path's, but its path is not yet minimized before it is compared, so a longer path could still be the explorer's detour; the rules become findings once that proof is wired.
 
 #### The calibrated bar
 
