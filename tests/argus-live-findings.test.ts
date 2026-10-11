@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { alive, ARGUS_LIVE, cleanTemps, committed, example, fakeGh, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { openSession, PAGE_INIT, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { openSession, PAGE_INIT, SIGNAL_SCRIPT, slotDir, TASTE_WORLD } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { sessionName, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -104,7 +104,7 @@ describe("argus-live modules — the DAG", () => {
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
     // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
     expect(g.has("argus-live-steps")).toBe(true);
-    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg", "argus-live-world"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
     // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
     expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
@@ -262,12 +262,12 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     expect(first.record).toMatchObject({ name: `${t.runId}-1-buyer.1`, slot: 1, account: "buyer.1", daemon: { pid: expect.any(Number) } });
     const opens = () => t.calls().filter((x) => x.argv[1] === "open");
     expect(opens().map((x) => [x.argv[0], x.cwd])).toEqual([[`-s=${t.runId}-1-buyer.1`, realpathSync(t.dir)]]);
-    // Opened and hooked (one hook stage: the run's origins, the signal script, the byte cap), never signed in by ensure: that is the caller's.
+    // Opened and hooked (one hook stage: the run's origins, the signal script, the taste recorders for their own world, the byte cap), never signed in by ensure: that is the caller's.
     expect(first.events).toEqual([]);
     expect(t.stages()).toHaveLength(1);
-    // The init payload with the slot's taste key in place of the mark (never the mark itself: the page must not know it).
+    // The recorders with the slot's taste key in place of the mark (never the mark itself: the page must not know it).
     const key = readFileSync(join(t.dir, ".playwright/taste.key"), "utf8").trim();
-    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT.split("@@argus-taste-key@@").join(key), capBytes: 4 * 2 ** 20 })};`);
+    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT, world: TASTE_WORLD.split("@@argus-taste-key@@").join(key), capBytes: 4 * 2 ** 20 })};`);
     expect(t.stages()[0].code).not.toContain("@@argus-taste-key@@");
     expect(t.stages()[0].code).toContain("ctx.__argus = {");
     const again = await t.driver().ensure();

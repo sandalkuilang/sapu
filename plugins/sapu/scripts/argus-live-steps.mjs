@@ -601,7 +601,7 @@ const EXPECT = `  const layout = async () => {
   };
   // Its rule's expression reads the taste recorders, which live in their own world (argus-live-world.mjs).
   const taste = async () => {
-    const found = await (${WORLD_EVAL})(page, P.expr);
+    const found = await (${WORLD_EVAL.replace(/\n/g, "\n    ")})(page, P.expr);
     const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.rule === P.rule && f.key === P.key);
     return rows.length === 0 ? { held: true } : { held: false, observed: "rows:" + rows.length, shown: rows.slice(0, 20).map((f) => ({ key: f.key, measured: f.measured })) };
   };
