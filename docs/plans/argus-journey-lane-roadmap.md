@@ -25,4 +25,4 @@ Rules for every phase:
 - The suite runs on the release machine; browser tests need a local Chrome and fail without one.
 - Commits carry no assistant attribution. One feature branch, `feat/argus-journey-lane`, one PR at
   the end of phase 5, carrying the backlog of phase 4b too; nothing is merged, tagged or released
-  until the owner says so; phase 6 is built on the release branch and ships as a PR of its own on top of the held 2.9.0 PR, as 2.10.0, held like it; phase 7 is built on `feat/argus-p7` from phase 6's tip and ships as 2.11.0 (or rides in an untagged 2.10.0), held like it; the pilot (phase 8) runs on the released plugin.
+  until the owner says so; phase 6 is built on the release branch and ships as a PR of its own on top of the held 2.9.0 PR, as 2.10.0, held like it; phase 7 is built on `feat/argus-p7` from phase 6's tip and ships as 2.11.0, a PR stacked on the 2.10.0 one, held like it; the pilot (phase 8) runs on the released plugin.
