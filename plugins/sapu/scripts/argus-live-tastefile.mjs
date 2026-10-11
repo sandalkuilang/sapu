@@ -11,7 +11,7 @@
 // - never a row taste.json `accept`s or the state holds `accepted`, never one an open issue already names (by the
 //   state's issue, else by its title key in the title of any issue gh lists), never one whose issue the owner closed
 //   as not planned (their ruling: `taste accept` is staged on their word only).
-// Severity is aesthetics.md §7's by outcome, as a fixed table per rule (OUTCOME), plus the efficiency cost: a row
+// Severity is aesthetics.md §7's by outcome, as a fixed table per rule (-tastecfg TASTE_OUTCOME), plus the efficiency cost: a row
 // costing 10 s or more of klm_s a run is S3. No row is rated above S3 here: §7's S1/S2 owe the money arithmetic
 // (SKILL.md §5), which only an orchestrator can write. needs-owner goes on a consistency split with no majority and
 // on a row the Curator's verdict disputes (reject, or polish on an S3 row); an S4 row the Curator rejects is held.
@@ -23,7 +23,7 @@ import { lastRun, liveDir, RUN_ID } from "./argus-live-lock.mjs";
 import { run as spawnRun, tempBeside } from "./argus-live-proc.mjs";
 import { NO_MAJORITY } from "./argus-live-ease.mjs";
 import { defang, filedFile, redactIds, scrub, scrubRun, scrubSecrets } from "./argus-live-scrub.mjs";
-import { CURATOR_FILE, FAMILIES, PASS_OFF, tasteOff, validateCurator, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { CURATOR_FILE, FAMILIES, PASS_OFF, tasteOff, tasteSeverity, validateCurator, loadBar, loadTaste, readCuratorFile, readTasteState, RULE_CLASSES, SCREEN_KEY, shotName, TASTE_FILE, TASTE_STATE_FILE, titleKey, validateTaste, writeTasteState } from "./argus-live-tastecfg.mjs";
 import { loadContract, needsOwnerLabel, resolvePolicy } from "./sapu-contract.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -52,19 +52,6 @@ const COST_S = 10;
  * user does on a journey's screen are S3, each with its reason; every other rule is coherence without an action
  * consequence, S4.
  */
-const OUTCOME = {
-  "colour.role": "one status shown in two colours: SC 3.2.4 (AA) on a journey's screen (aesthetics.md §4)",
-  "colour.dark-contrast": "text under its WCAG 2.2 contrast minimum in the dark theme only (SC 1.4.3, AA)",
-  "feedback.busy": "a wait over 1 s with no busy signal: the user cannot tell the action is working",
-  "feedback.progress": "a wait over 10 s with no determinate progress",
-  "states.error": "a failed data request leaves the screen with no way to retry or leave",
-  "states.success": "a successful write the page never names: the user cannot tell it happened",
-  "states.recovery": "fields lost after a rejected submit: the user types them again",
-  "copy.broken": "a value rendered as broken copy where the user reads it",
-  "ai.error": "an AI surface's error leaves no way on",
-  "efficiency.actions": "an efficiency regression: the best known path no longer holds and this one costs 3× its actions",
-  "efficiency.klm": "an efficiency regression: the best known path no longer holds and this one costs 10 s or more of klm_s",
-};
 const CLASS_WORDS = { implicit: "broken on its face", derived: "the app contradicts itself or its tokens", bar: "beyond the outside range, with an internal witness; never a bug" };
 
 /** Where the judge's record of run `runId` lies. */
@@ -176,13 +163,6 @@ export function tasteCurator(main, file) {
   fs.renameSync(tempBeside(out, `${JSON.stringify({ ...value, verdicts })}\n`, 0o600), out);
   const dropped = value.verdicts.length - verdicts.length;
   return { code: 0, lines: [`taste curator: run ${runId}: ${verdicts.length} verdicts${dropped ? ` (${dropped} naming no title of the judge dropped)` : ""}, ${value.leads.length} leads, ${value.substitutions.length} substitutions, ${value.cw.length} walkthrough answers → ${CURATOR_FILE}`] };
-}
-
-/** A row's severity and why → `{severity, why}` (OUTCOME, then the cost). */
-function severityOf(r, costS) {
-  if (num(r.cost) && r.cost >= costS) return { severity: "S3", why: `it costs ${r.cost} s of klm_s a run (${costS} s or more is S3)` };
-  if (Object.hasOwn(OUTCOME, r.rule)) return { severity: "S3", why: OUTCOME[r.rule] };
-  return { severity: "S4", why: "coherence without an action consequence (aesthetics.md §7)" };
 }
 
 /** `s` as a code span its own backticks cannot close (CommonMark). */
@@ -308,7 +288,7 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     if (!rule || rule.class !== r.class) return held.set(key, `the bar's rule ${r.rule} is not the one judged (taste-bar ${judge.bar}, now ${bar.version})`);
     if (rule.info || taste.off.includes(r.rule)) return;
     if (r.class === "bar" && !r.witnesses.some((w) => INTERNAL.includes(w.kind))) return held.set(key, "a bar row without an internal witness");
-    const { severity, why } = severityOf(r, costS);
+    const { severity, why } = tasteSeverity(r, costS);
     const v = cur.verdicts.get(key);
     const owner = [];
     if (rule.family === "consistent" && r.expected === NO_MAJORITY) owner.push("a consistency split with no majority: two ways, neither the app's own rule");

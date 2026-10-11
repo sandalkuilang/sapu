@@ -467,6 +467,30 @@ export function explicitMedia(m) {
 }
 
 // ---------------------------------------------------------------------------------------------------
+/**
+ * aesthetics.md §7's outcome table (the one severity of the pass, the judge's ranking and filing's alike): each rule
+ * whose confirmed row is S3, and why. Any other row is S4, coherence without an action consequence, unless it costs
+ * `costS` seconds of klm_s a run or more. A colour role split is coherence (aesthetics.md §4): S4.
+ */
+export const TASTE_OUTCOME = Object.freeze({
+  "colour.dark-contrast": "text under its WCAG 2.2 contrast minimum in the dark theme only (SC 1.4.3, AA)",
+  "feedback.busy": "a wait over 1 s with no busy signal: the user cannot tell the action is working",
+  "feedback.progress": "a wait over 10 s with no determinate progress",
+  "states.error": "a failed data request leaves the screen with no way to retry or leave",
+  "states.success": "a successful write the page never names: the user cannot tell it happened",
+  "states.recovery": "fields lost after a rejected submit: the user types them again",
+  "copy.broken": "a value rendered as broken copy where the user reads it",
+  "ai.error": "an AI surface's error leaves no way on",
+  "efficiency.actions": "an efficiency regression: the best known path no longer holds and this one costs 3× its actions",
+  "efficiency.klm": "an efficiency regression: the best known path no longer holds and this one costs 10 s or more of klm_s",
+});
+/** A row's severity and why → `{severity, why}` (the cost, then TASTE_OUTCOME). */
+export function tasteSeverity(r, costS = 10) {
+  if (isNum(r.cost) && r.cost >= costS) return { severity: "S3", why: `it costs ${r.cost} s of klm_s a run (${costS} s or more is S3)` };
+  if (Object.hasOwn(TASTE_OUTCOME, r.rule)) return { severity: "S3", why: TASTE_OUTCOME[r.rule] };
+  return { severity: "S4", why: "coherence without an action consequence (aesthetics.md §7)" };
+}
+
 // `.argus/taste-state.json` (local state, 0600): per journey, the last judge, the best known path and each confirmed row.
 
 export const TASTE_STATE_FILE = ".argus/taste-state.json";

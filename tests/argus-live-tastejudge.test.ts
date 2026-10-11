@@ -769,9 +769,10 @@ describe("argus-live taste judge (J2)", () => {
     t.put(1, [t.screen("/a", findings, { themed: true })]);
     const r = await t.judge();
     expect(t.file().rows.map((x: Obj) => [x.rule, x.class, x.screen, x.witnesses.map((w: Obj) => `${w.kind}:${w.value}`)])).toEqual([
-      ["colour.dark-surface", "implicit", "/a|1440|dark", []],
+      // The light screen's group holds an S3 row (copy.broken, by the pass's one severity table): it comes first, whole.
       ["copy.broken", "implicit", "/a|1440|light", []],
       ["motion.duration", "bar", "/a|1440|light", ["band:100-400", "frame:70-700"]],
+      ["colour.dark-surface", "implicit", "/a|1440|dark", []],
     ]);
     expect(r.lines).toContain("information: 1 findings of information rules (never rows)");
   }, 30_000);

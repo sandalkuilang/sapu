@@ -17,7 +17,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { BRIEF_FILE, CURATOR_FILE, curatorBrief, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { BRIEF_FILE, CURATOR_FILE, curatorBrief, tasteSeverity, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -32,7 +32,8 @@ const WITNESS_BAND = { sites: 5, n: 15 };
 /** A count compares a screen with at least this many other peer screens (decision 19, as the phase-end review set it). */
 const PEERS_AT_LEAST = 3;
 /** The starting severity of a confirmed row (aesthetics.md §7; F's filing may raise it): broken on its face S3, coherence and the bar S4, a cost of 10 s or more S3. */
-const severityOf = (row) => (row.rule.startsWith("efficiency.") || (isNum(row.cost) && row.cost >= 10) || row.class === "implicit" ? "S3" : "S4");
+/** A row's severity: the pass's one table (-tastecfg tasteSeverity), as filing rates it. */
+const severityOf = (row) => tasteSeverity(row).severity;
 
 // ---------------------------------------------------------------------------------------------------
 // The run's records.
