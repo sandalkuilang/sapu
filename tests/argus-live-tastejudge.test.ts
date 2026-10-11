@@ -615,39 +615,63 @@ const primary = (n: number) => ({ rule: "hierarchy.primary-actions", key: "main|
 const pathOf = (n: number): Obj[] => [{ as: "buyer.1", do: "goto", path: "/orders/new" }, ...Array.from({ length: n - 1 }, (_, i) => ({ as: "buyer.1", do: "click", target: { role: "button", name: `Next ${i}` } }))];
 
 describe("argus-live taste judge (J2)", () => {
-  it("a peer-count row needs 3 screens of the archetype and a value beyond max(best × 1.5, best + 3); its twins are silent", async () => {
+  /** A screen of `n` spacing values and `elements` elements in its census (the peer size check). */
+  const sized = (t: Obj, route: string, n: number, elements = 200, over: Obj = {}) => t.screen(route, [spacing(n)], { taste: { findings: [spacing(n)], light: { elements } }, ...over });
+  const PEERS = "the median of 3 peer screens";
+
+  it("a peer-count row: beyond max(median × 2, median + 3) of at least 3 other screens of its declared archetype, same width and theme, of a similar size; twins silent", async () => {
     const t = judgeRepo();
     t.taste({ archetypes: { "/**": "app" } });
-    t.put(1, [t.screen("/a", [spacing(11)]), t.screen("/b", [spacing(4)]), t.screen("/c", [spacing(5)])]);
-    const r = await t.judge();
-    expect(r.code).toBe(0);
-    expect(t.file().rows).toEqual([{ row: "t1", journey: "j", rule: "scale.spacing", class: "derived", screen: "/a|1440|light", key: "screen", measured: 11, expected: 7, witnesses: [{ kind: "peer", value: 4, from: "/b|1440|light" }], cost: null, confirmed: null }]);
-    // Twins: exactly at the threshold; two screens of the archetype only.
-    t.put(1, [t.screen("/a", [spacing(7)]), t.screen("/b", [spacing(4)]), t.screen("/c", [spacing(5)])]);
+    t.put(1, [sized(t, "/a", 21), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6)]);
+    expect((await t.judge()).code).toBe(0);
+    expect(t.file().rows).toEqual([{ row: "t1", journey: "j", rule: "scale.spacing", class: "derived", screen: "/a|1440|light", key: "screen", measured: 21, expected: 10, witnesses: [{ kind: "peer", value: 5, from: PEERS }], cost: null, confirmed: null }]);
+    const quiet = async (screens: Obj[], cfg: Obj = { archetypes: { "/**": "app" } }) => {
+      t.taste(cfg);
+      t.put(1, screens);
+      await t.judge();
+      return t.file().rows;
+    };
+    // Twins: exactly at the threshold; two other peers only; a peer at another width or in dark is no peer; a screen ten
+    // times its peers' size is no peer of them; an archetype inferred (not declared, no table) compares with nobody.
+    expect(await quiet([sized(t, "/a", 10), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6)])).toEqual([]);
+    expect(await quiet([sized(t, "/a", 21), sized(t, "/b", 4), sized(t, "/c", 5)])).toEqual([]);
+    expect(await quiet([sized(t, "/a", 21), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6, 200, { key: "/d|390|light", width: 390 })])).toEqual([]);
+    expect(await quiet([sized(t, "/a", 21), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6, 200, { key: "/d|1440|dark", theme: "dark" })])).toEqual([]);
+    expect(await quiet([sized(t, "/a", 21, 2000), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6)])).toEqual([]);
+    expect(await quiet([sized(t, "/a", 21), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 6)], {})).toEqual([]);
+    // A data screen (12 rows in main) is no peer of the app screens.
+    expect(await quiet([sized(t, "/a", 21, 200, { rows: 12 }), sized(t, "/b", 4, 200, { rows: 12 }), sized(t, "/c", 4), sized(t, "/d", 4)], {})).toEqual([]);
+  }, 30_000);
+
+  it("a world-class page is no row against a lean peer: the corpus's p90 against its p10 (app spacing 10 → 18, type 7 → 13), and a dense dashboard against sign-in pages", async () => {
+    const t = judgeRepo();
+    t.taste({ archetypes: { "/**": "app" } });
+    t.put(1, [sized(t, "/a", 18), sized(t, "/b", 10), sized(t, "/c", 10), sized(t, "/d", 10)]);
     expect((await t.judge(), t.file().rows)).toEqual([]);
-    t.put(1, [t.screen("/a", [spacing(30)]), t.screen("/b", [spacing(4)])]);
+    const type = (n: number) => ({ rule: "scale.type", key: "screen", measured: n, expected: null });
+    t.put(1, ["/a", "/b", "/c", "/d"].map((r, i) => t.screen(r, [type(i ? 7 : 13)], { taste: { findings: [type(i ? 7 : 13)], light: { elements: 200 } } })));
     expect((await t.judge(), t.file().rows)).toEqual([]);
-    // Peers are of the same archetype: a data screen (12 rows in main) is no peer of the app screens.
-    t.taste({});
-    t.put(1, [t.screen("/a", [spacing(11)], { rows: 12 }), t.screen("/b", [spacing(4)], { rows: 12 }), t.screen("/c", [spacing(4)])]);
+    // QA's case: a shadcn-style dashboard with 9 spacing values against three sign-in pages with 6, far smaller.
+    t.put(1, [sized(t, "/dashboard", 9, 900), sized(t, "/login", 6, 120), sized(t, "/signup", 6, 140), sized(t, "/reset", 6, 110)]);
     expect((await t.judge(), t.file().rows)).toEqual([]);
   }, 30_000);
 
-  it("where the archetype's band is a witness, a peer-count row must be beyond its p90 too; a thin or inferred band is shown only", async () => {
+  it("a band of the archetype bounds a peer-count row: beyond its p50 always, beyond its p90 where it is a witness; a thin band is shown only", async () => {
     const t = judgeRepo();
     t.taste({ archetypes: { "/**": "app" } });
-    const screens = [t.screen("/a", [spacing(11)]), t.screen("/b", [spacing(4)]), t.screen("/c", [spacing(5)])];
-    t.put(1, screens);
+    t.put(1, [sized(t, "/a", 11), sized(t, "/b", 4), sized(t, "/c", 5), sized(t, "/d", 5)]);
     barWith({ app: { distinct_spacing: band(4, 6, 12) } });
     expect((await t.judge(), t.file().rows)).toEqual([]);
     barWith({ app: { distinct_spacing: band(4, 6, 9) } });
     await t.judge();
-    expect(t.file().rows.map((r: Obj) => [r.expected, r.witnesses])).toEqual([[9, [{ kind: "peer", value: 4, from: "/b|1440|light" }, { kind: "band", value: 9, from: "app p90" }]]]);
-    // A thin band (4 sites) does not raise the threshold: the peer alone decides, and the band is shown.
-    barWith({ app: { distinct_spacing: band(4, 6, 12, { sites: 4 }) } });
+    expect(t.file().rows.map((r: Obj) => [r.expected, r.witnesses])).toEqual([[10, [{ kind: "peer", value: 5, from: PEERS }, { kind: "band", value: 9, from: "app p90" }]]]);
+    // A thin band (4 sites) does not raise the threshold to its p90, but a screen within its p50 is no row.
+    barWith({ app: { distinct_spacing: band(4, 6, 30, { sites: 4 }) } });
     const thin = await t.judge();
-    expect(t.file().rows.map((r: Obj) => [r.expected, r.witnesses.map((w: Obj) => w.kind)])).toEqual([[7, ["peer"]]]);
+    expect(t.file().rows.map((r: Obj) => [r.expected, r.witnesses.map((w: Obj) => w.kind)])).toEqual([[10, ["peer"]]]);
     expect(thin.lines).toContain("bands shown only: 1");
+    barWith({ app: { distinct_spacing: band(4, 12, 30, { sites: 4 }) } });
+    expect((await t.judge(), t.file().rows)).toEqual([]);
   }, 30_000);
 
   it("a bar row needs the band agreeing and an internal witness: the band alone, a thin or an inferred band is not a row", async () => {
@@ -963,12 +987,13 @@ describe("argus-live taste confirm (J2)", () => {
   it("a peer-count row is confirmed only when the screen is beyond the row's expected again", async () => {
     const t = judgeRepo();
     t.taste({ archetypes: { "/**": "app" } });
-    t.put(1, [t.screen("/a", [spacing(11)]), t.screen("/b", [spacing(4)]), t.screen("/c", [spacing(5)])]);
+    t.put(1, [t.screen("/a", [spacing(21)]), t.screen("/b", [spacing(4)]), t.screen("/c", [spacing(5)]), t.screen("/d", [spacing(6)])]);
     t.ret(1, "j", pathOf(2));
     await t.judge();
+    expect(t.file().rows.map((r: Obj) => r.expected)).toEqual([10]);
     const once = (measured: number) => async () => (activeConfirm().take({ __taste: { rows: [{ key: "screen", measured }] } }), { code: 0 });
-    expect((await tasteConfirm(t.main, "t1", { once: once(7) })).lines[0]).toBe("taste confirm t1: not confirmed (not measured again: the screen holds the rule)");
-    expect((await tasteConfirm(t.main, "t1", { once: once(8) })).lines[0]).toBe("taste confirm t1: confirmed (measured again)");
+    expect((await tasteConfirm(t.main, "t1", { once: once(10) })).lines[0]).toBe("taste confirm t1: not confirmed (not measured again: the screen holds the rule)");
+    expect((await tasteConfirm(t.main, "t1", { once: once(11) })).lines[0]).toBe("taste confirm t1: confirmed (measured again)");
   }, 30_000);
 
   it("a media-bound row is measured by the census and rulesFor (their sources), any other by its rule expression; states.error arms the routed fault", async () => {

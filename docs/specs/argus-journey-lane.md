@@ -2535,8 +2535,9 @@ measures first-encounter discoverability, with its `clicks` and `term` now recor
 - **Witnesses.** The owner's tokens (or frame), the app's own best screen of the same archetype (among
   ≥ 3), and the archetype's corpus band. `implicit` and `derived` rows stand on their own measurement;
   a `bar` row needs the band agreeing with the screen's own number under the rule's metric, and one
-  internal witness. A count rule fires beyond `max(best × 1.5,
-  best + 3)` and, where the band is a witness, beyond its p90. A band is a witness only with ≥ 5 sites
+  internal witness. A count rule fires beyond `max(median × 2,
+  median + 3)` of at least three other peers (same declared archetype, width and theme, elements within
+  ×2), beyond any band's p50, and, where the band is a witness, beyond its p90. A band is a witness only with ≥ 5 sites
   and ≥ 15 pages (else `thin`, shown only), and only for an owner-declared archetype or a `main` holding
   a table of ≥ 10 rows (else `inferred`, shown only).
 - **Reference corpus** (`scripts/taste-corpus.json`, sapu's repository, not the plugin): public pages of

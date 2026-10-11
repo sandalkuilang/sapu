@@ -85,7 +85,8 @@ describe("the taste bar (plugins/sapu/data/taste-bar.json)", () => {
     expect(byId["copy.vague"].terms.en).toEqual(["OK", "Submit", "Continue", "Click here", "Yes", "No"]);
     expect(byId["efficiency.actions"]).toMatchObject({ class: "derived", threshold: { ratio: 3 } });
     expect(byId["efficiency.klm"]).toMatchObject({ class: "derived", threshold: { plus_s: 10 } });
-    expect(byId["scale.spacing"]).toMatchObject({ class: "derived", threshold: { peer: [1.5, 3], band: "p90" } });
+    // max(median of the peers × 2, median + 3): a p90 page of the corpus is no row against a p10 peer.
+    expect(byId["scale.spacing"]).toMatchObject({ class: "derived", threshold: { peer: [2, 3], band: "p90" } });
     // Decision 15: no rule asks for a CSS feature or a style.
     expect(JSON.stringify(bar.rules)).not.toMatch(/oklch|container|view-transition|anchor|animation-timeline|content-visibility/i);
   });

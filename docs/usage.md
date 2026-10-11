@@ -396,7 +396,7 @@ Each rule has a class that decides what it takes to file it:
 | Class | Meaning | What it takes to file |
 |---|---|---|
 | `implicit` | Broken on its face (a lost field, a blank error state). | Its own measurement, confirmed on a replay. |
-| `derived` | The app contradicts itself or your tokens. | Its own measurement, confirmed on a replay. The count rules (`scale.spacing` and its siblings) also compare with your best peer screen ("A finding's way to an issue"). |
+| `derived` | The app contradicts itself or your tokens. | Its own measurement, confirmed on a replay. The count rules (`scale.spacing` and its siblings) also compare with the median of your peer screens ("A finding's way to an issue"). |
 | `bar` | Beyond the range the outside bar shows. | The corpus band for that metric, an internal witness (a peer that holds the rule, or your frame) and a replay. |
 
 #### Where it runs
@@ -431,7 +431,7 @@ A row is *confirmed* only when the replay measures it again: the two-of-two rule
 
 #### A finding's way to an issue
 
-1. **Judge.** A rule that is `implicit`, or `derived` and not a count, is a row on its own measurement. A count rule is a row when the screen is beyond `max(best peer × 1.5, best peer + 3)` of the best other screen of its archetype (the peers must number three or more this cycle) and, where the archetype's band is a witness, beyond the band's p90. A `bar` rule needs the band agreeing and an internal witness. Rows you switched off with `off` and information rules are never rows.
+1. **Judge.** A rule that is `implicit`, or `derived` and not a count, is a row on its own measurement. A count rule is a row when the screen is beyond `max(median × 2, median + 3)` of its peers: at least three other screens this cycle of its archetype (declared, or `data` for a table; an inferred archetype has no peers), at the same width and theme, of a similar size (no more than twice as many elements, or half). It must also be beyond the band's p50 whenever the archetype has a band, and beyond its p90 where that band is a witness. A page at the corpus's p90 is no row against one at its p10. A `bar` rule needs the band agreeing and an internal witness. Rows you switched off with `off` and information rules are never rows.
 2. **Curator.** One dispatch a cycle: a verdict per row (`confirm`, `reject` with a reason, or `polish`) and leads, which the next judge pass measures first.
 3. **Confirm.** The replay measures the row again. Only a confirmed row goes on.
 4. **File.** `ux`, `argus` and `found-by:user`, plus `bug` for an `implicit` or `derived` row (never for a `bar` row), `severity:s<n>`, and the agent-filed label that `scrub` adds. The title key is `taste:<rule>:<screen key>`, so a screen's rows of one rule share one issue, and an open or closed issue with that key is never filed twice. The body holds `Viewport:`, `Measured:` (the value against the expected one, the witnesses and `taste-bar <n>`), the rule's source, and the screenshot only through `scrub`'s screenshot verdict.

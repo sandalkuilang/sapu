@@ -29,6 +29,7 @@ const judgeFile = (main, runId) => path.join(tasteDir(main, runId), "judge.json"
 /** A band is a witness only with this many sites and pages (decision 16); below, it is `thin` and shown only. */
 const WITNESS_BAND = { sites: 5, n: 15 };
 /** A peer comparison needs this many screens of the archetype in the cycle, the judged one included (decision 19). */
+/** A count compares a screen with at least this many other peer screens (decision 19, as the phase-end review set it). */
 const PEERS_AT_LEAST = 3;
 /** The starting severity of a confirmed row (aesthetics.md §7; F's filing may raise it): broken on its face S3, coherence and the bar S4, a cost of 10 s or more S3. */
 const severityOf = (row) => (row.rule.startsWith("efficiency.") || (isNum(row.cost) && row.cost >= 10) || row.class === "implicit" ? "S3" : "S4");
@@ -239,6 +240,13 @@ function screenMetric(s, metric) {
   return null;
 }
 
+/** Recorded screen `s`'s element count (the census of its scheme), or null. */
+function elementsOf(s) {
+  const t = isObj(s.taste) ? s.taste : {};
+  const own = t.media && t.media.colorScheme === "dark" ? t.dark : t.light;
+  return isObj(own) && isNum(own.elements) ? own.elements : null;
+}
+
 /** The owner's frame as a witness of a duration (decision 5): `motion.duration` outside the frame's durations. */
 function frameWitness(rule, m, cfg, bar) {
   const f = cfg.frame ? bar.frames[cfg.frame] : null;
@@ -342,7 +350,12 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     m.set(s.key, Math.max(m.get(s.key) ?? -Infinity, f.measured));
     values.set(rule.id, m);
   }
-  const groupOf = (s) => [...arch.entries()].filter(([, a]) => a.name === arch.get(s.key).name).map(([k]) => k);
+  // A screen's peers: other recorded screens of its archetype (declared, or a table's `data`: an inferred one has
+  // none), at the same width and theme; for a count, also of a similar size (elements within ×2, when both counted).
+  const [widthOf, themeOf] = [(k) => k.split("|")[1], (k) => k.split("|")[2]];
+  const groupOf = (s) => (arch.get(s.key).inferred ? [s.key] : [...arch.entries()].filter(([k, a]) => !a.inferred && a.name === arch.get(s.key).name && widthOf(k) === widthOf(s.key) && themeOf(k) === themeOf(s.key)).map(([k]) => k));
+  const sizes = new Map(screens.map((s) => [s.key, elementsOf(s)]));
+  const similar = (a, b) => !isNum(sizes.get(a)) || !isNum(sizes.get(b)) || (Math.max(sizes.get(a), sizes.get(b)) <= 2 * Math.min(sizes.get(a), sizes.get(b)));
   const shown = new Set();
   let unwitnessed = 0;
   const rows = [];
@@ -359,14 +372,18 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     const base = { journey: s.journey, rule: rule.id, class: rule.class, screen: rowScreen(s, rule), key: f.key, measured: f.measured, cost: null, confirmed: null };
     if (rule.threshold.peer) {
       const mine = values.get(rule.id) ?? new Map();
-      const others = group.filter((k) => k !== s.key && mine.has(k));
-      if (group.length < PEERS_AT_LEAST || !others.length || !isNum(f.measured)) continue;
-      const bestKey = others.reduce((x, y) => (mine.get(y) < mine.get(x) ? y : x));
-      const best = mine.get(bestKey);
+      const others = group.filter((k) => k !== s.key && mine.has(k) && similar(k, s.key));
+      if (others.length < PEERS_AT_LEAST || !isNum(f.measured)) continue;
+      // The median of the peers (the lower middle: a value one of them measured), never the leanest one.
+      const sorted = others.map((k) => mine.get(k)).sort((x, y) => x - y);
+      const best = sorted[Math.floor((sorted.length - 1) / 2)];
       const [ratio, plus] = rule.threshold.peer;
       let expected = round(Math.max(best * ratio, best + plus));
       if (!(f.measured > expected)) continue;
-      const witnesses = [{ kind: "peer", value: best, from: bestKey }];
+      // Any band of the archetype, thin too: a screen within the outside median is never a row.
+      const any = (bar.archetypes[a.name] ?? {})[rule.metric];
+      if (any && !(f.measured > any.p50)) continue;
+      const witnesses = [{ kind: "peer", value: best, from: `the median of ${others.length} peer screens` }];
       if (band) {
         const limit = band[rule.threshold.band ?? "p90"];
         if (!(f.measured > limit)) continue;

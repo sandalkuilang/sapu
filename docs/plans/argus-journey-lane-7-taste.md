@@ -290,7 +290,9 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
       a taste issue as not planned is their ruling: the orchestrator stages `taste accept <rule>
       <key>` only on their word (the guard refuses it to subagents), as `smoke retire` works.
     - Thresholds for count rules: beyond `max(best peer × 1.5, best peer + 3)` and, where the band
-      is a witness, beyond its p90.
+      is a witness, beyond its p90. *As built (Z4):* `max(median × 2, median + 3)` of at least three
+      other peers of the same declared archetype, width and theme and a similar size, and beyond any
+      band's p50 (the phase-end review: a corpus p90 page must hold against a p10 peer).
     - *As built (Z4):* a `bar` row's band compares the screen's own per-screen number under the rule's
       metric (every `bar` rule has one, recorded by the probes); the shipped bar holds no band until a
       maintainer confirms the corpus sites' terms, so no `bar` row files yet.

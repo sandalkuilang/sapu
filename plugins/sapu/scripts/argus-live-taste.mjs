@@ -343,6 +343,7 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   return {
     media,
     vw: win.innerWidth,
+    elements: all.length,
     truncated: all.length >= MAX,
     counts: { spacing: spacing.size, type: types.size, weights: weights.size, colours: colours.size, radii: radii.size, shadows: shadows.size },
     // Per screen, under the bar's metric names (calibration's bands read a metric by its rule's metric name): the six

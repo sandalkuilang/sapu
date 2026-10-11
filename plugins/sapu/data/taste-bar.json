@@ -44,12 +44,12 @@
     "webdev-inp": "https://web.dev/articles/inp"
   },
   "rules": [
-    { "id": "scale.spacing", "family": "scale", "class": "derived", "metric": "distinct_spacing", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["refactoring-ui", "primer", "carbon", "atlassian"], "gate": false },
-    { "id": "scale.type", "family": "scale", "class": "derived", "metric": "distinct_type", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["refactoring-ui", "geist"], "gate": false },
-    { "id": "scale.weights", "family": "scale", "class": "derived", "metric": "distinct_weights", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["refactoring-ui"], "gate": false },
-    { "id": "scale.colours", "family": "scale", "class": "derived", "metric": "distinct_colours", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["refactoring-ui", "radix"], "gate": false },
-    { "id": "scale.radii", "family": "scale", "class": "derived", "metric": "distinct_radii", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["m3-tokens", "primer"], "gate": false },
-    { "id": "scale.shadows", "family": "scale", "class": "derived", "metric": "distinct_shadows", "threshold": { "peer": [1.5, 3], "band": "p90" }, "cite": ["refactoring-ui", "m3-tokens"], "gate": false },
+    { "id": "scale.spacing", "family": "scale", "class": "derived", "metric": "distinct_spacing", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["refactoring-ui", "primer", "carbon", "atlassian"], "gate": false },
+    { "id": "scale.type", "family": "scale", "class": "derived", "metric": "distinct_type", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["refactoring-ui", "geist"], "gate": false },
+    { "id": "scale.weights", "family": "scale", "class": "derived", "metric": "distinct_weights", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["refactoring-ui"], "gate": false },
+    { "id": "scale.colours", "family": "scale", "class": "derived", "metric": "distinct_colours", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["refactoring-ui", "radix"], "gate": false },
+    { "id": "scale.radii", "family": "scale", "class": "derived", "metric": "distinct_radii", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["m3-tokens", "primer"], "gate": false },
+    { "id": "scale.shadows", "family": "scale", "class": "derived", "metric": "distinct_shadows", "threshold": { "peer": [2, 3], "band": "p90" }, "cite": ["refactoring-ui", "m3-tokens"], "gate": false },
     { "id": "scale.off-scale", "family": "scale", "class": "derived", "metric": "off_scale_values", "threshold": { "max": 0 }, "cite": ["primer", "carbon", "atlassian", "m3-tokens"], "gate": false },
     { "id": "hierarchy.primary-actions", "family": "hierarchy", "class": "bar", "metric": "primary_actions", "threshold": { "max": 1 }, "cite": ["m3-expressive", "lux-hick"], "gate": false },
     { "id": "hierarchy.heading-order", "family": "hierarchy", "class": "derived", "metric": "heading_inversions", "threshold": { "max": 0 }, "cite": ["refactoring-ui", "nng-heuristics"], "gate": false },
