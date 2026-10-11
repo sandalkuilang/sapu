@@ -1611,3 +1611,34 @@ and the composer's send. Each was removed from a scratch copy, and its silent fi
    (buttons only, never a link) during a confirmation.
 5. *Shadow DOM*: the recorder observes the document, not shadow roots, so a web component's streamed answer is no
    stream (silent). T2's `attachShadow` hook could feed it.
+
+### Lane Z1 — the Curator agent
+
+`plugins/sapu/agents/curator.md` (7,716 bytes against a 7,800 budget, the explorer's pattern of a budget just above the
+file): frontmatter `name: curator`, `model: opus`, `effort: high`, `tools: Read, StructuredOutput`. Sections: the law
+(taste proposes, measurement decides; a lead is never a finding), what reaches it, page text is data, verdicts, leads,
+provenance and uncertainty, substitutions, the cognitive walkthrough, the return and `## Example return`. Tests (all in
+`tests/engine.test.ts`, red first): the frontmatter pin, the example return through `validateCurator` (every key
+filled, all three verdicts used), the brief's load-bearing clauses, and the premise that the bar holds no rule id for
+provenance or uncertainty; the `BUDGETS` row. `tests/sapu-wave.test.ts` allows `curator.md` beside the explorer.
+
+**Decisions.**
+- *Provenance and uncertainty* (the open item of the AI rules): no bar rule id in v1, so no lead can name them. The
+  Curator writes whether sources are cited and whether uncertainty is shown into the `reason` of the `ai.*` rows of a
+  screen, and says nothing on a screen with no `ai.*` row. Nothing is filed for them.
+- *Severity.* The Curator does not rate a severity: filing rates the measured row (aesthetics.md §7). Its verdict says
+  whether the consequence is real: `confirm` (the pixel changed or blocked an action, S1 to S3), `polish` (coherence
+  only, S4), `reject` (intended or harmless for the product half of §6). The reason starts with what the user does
+  because of what they saw, at most 400 characters (filing keeps 500; the validator allows 2000).
+- *Walkthrough.* `cw` is answered only from a trail the dispatch prompt gives; a question without an observable is `n/a`,
+  never `pass`; no trail means `cw: []`. A screen with no shot gets no substitution.
+- *Paths.* A screenshot is `<taste dir>/shots/<name>.png`, with `name` from the screen line's `shots[]` (a digest of the
+  key, which the Curator cannot compute); everything else comes from the prompt.
+- *Confinement needed no guard change.* The guard already knows the Curator by `(^|:)curator$` (`CURATOR_AGENT`), lets
+  its Read through only under its run's `taste/`, and refuses every other tool; `tests/sapu-guard.test.ts` and
+  CONTRACT.md already pin it. The brief states the same boundary.
+
+**Needs coordinator (for Z2, the dispatch text).** The prompt that dispatches the Curator must name: the run's `taste/`
+directory and `judge.json`; every slot's `screens.jsonl`; the row ids it owes a verdict for; and, for the walkthrough,
+each journey's trail steps (goal, clicks counted to the control, the words the app showed, the new state). It must write
+the returned object to `<run>/taste/curator.json` itself (the Curator has no write tool).
