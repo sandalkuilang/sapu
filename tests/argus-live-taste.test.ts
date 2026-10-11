@@ -2,7 +2,7 @@
 // (`plugins/sapu/data/taste-bar.json`) and its validator, `.argus/taste.json` and its defaults,
 // `.argus/taste-state.json`'s one reader and writer, and the contract's rows for both files.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, CURATOR_FILE, TASTE_KEY_MARK, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, CURATOR_FILE, pruneTaste, TASTE_KEY_MARK, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -378,6 +378,18 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
     expect(vm.runInContext("stolen", ctx)).toEqual([null, null, null]);
     // The recorders' own record is there, alone.
     expect(drain(ctx).events).toEqual([CHANGE]);
+  });
+
+  it("down prunes a run's taste records to what the report and the next judge read: shots, held shots, screens and the brief go", () => {
+    const run = tempDir();
+    const put = (rel: string) => (mkdirSync(join(run, rel, ".."), { recursive: true }), writeFileSync(join(run, rel), "x"));
+    for (const f of ["taste/judge.json", "taste/curator.json", "taste/spent.jsonl", "taste/brief.json", "taste/shots/a.png", "taste/shots/a.verdict.json", "taste/1/screens.jsonl", "taste/1/harness.jsonl", "held-shots/b.png", "repro/x.json"]) put(f);
+    pruneTaste(run);
+    const left = (rel: string) => existsSync(join(run, rel));
+    expect(["taste/judge.json", "taste/curator.json", "taste/spent.jsonl", "taste/1/harness.jsonl", "repro/x.json"].filter(left)).toHaveLength(5);
+    expect(["taste/brief.json", "taste/shots", "taste/1/screens.jsonl", "held-shots"].filter(left)).toEqual([]);
+    expect(() => pruneTaste(join(run, "none"))).not.toThrow();
+    expect(readFileSync(join(__dirname, "../plugins/sapu/scripts/argus-live-run.mjs"), "utf8")).toMatch(/guarded\("the taste records", t\.note, \(\) => pruneTaste\(/);
   });
 
   it("a title key passes only a safe charset of the page-made route: no markup, mention, backtick or space reaches an issue title", () => {

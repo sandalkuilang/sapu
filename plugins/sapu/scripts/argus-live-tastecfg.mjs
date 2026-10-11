@@ -491,6 +491,29 @@ export function tasteSeverity(r, costS = 10) {
   return { severity: "S4", why: "coherence without an action consequence (aesthetics.md §7)" };
 }
 
+/**
+ * A run's taste records pruned to what outlives the cycle (`down` and the reaper call it): the judge's rows, the
+ * Curator's verdicts and the time spent stay (the report, `taste file --run` and the next cycle's judge read them);
+ * the screenshots, held ones included, each slot's recorded screens (page text) and the Curator's brief go. Never throws.
+ */
+export function pruneTaste(runDir) {
+  const rm = (p) => {
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+    } catch {
+      // gone, or not ours to remove
+    }
+  };
+  for (const p of ["taste/shots", "held-shots", "taste/brief.json"]) rm(path.join(runDir, p));
+  let slots = [];
+  try {
+    slots = fs.readdirSync(path.join(runDir, "taste"), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    slots = [];
+  }
+  for (const s of slots) rm(path.join(runDir, "taste", s, "screens.jsonl"));
+}
+
 // `.argus/taste-state.json` (local state, 0600): per journey, the last judge, the best known path and each confirmed row.
 
 export const TASTE_STATE_FILE = ".argus/taste-state.json";

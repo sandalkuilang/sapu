@@ -11,6 +11,7 @@ import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
 import { gitCommonDir } from "./sapu-contract.mjs";
 import { processTable, readFrom, redact, refreshGroups, run, runAsync, sleep, sleepSync, stopRecordedGroups, tail, tempBeside, withFileLock, within } from "./argus-live-proc.mjs";
+import { pruneTaste } from "./argus-live-tastecfg.mjs";
 
 // ---------------------------------------------------------------------------------------------------
 // Run files, reaper, down and recovery (spec §8 steps 1 and 11, `down`). `run.json` is the record every
@@ -606,6 +607,7 @@ const TEARDOWN = [
     removeRunDirs(t.main, t.runId, t.rec?.worktree, { runner: t.runner, note: t.note });
     await removeRunSecrets(t.main, t.runId, t.note, t.slotWaitMs ?? 10_000);
     await guarded("the repro traces", t.note, () => pruneTraces(t.main, t.runId));
+    await guarded("the taste records", t.note, () => pruneTaste(path.join(liveDir(t.main), t.runId)));
   }],
   // Last of the processes: the reaper, unless it is this process (its own `down`).
   ["the reaper", (t) => (t.rec ? stopReaper(t.rec.reaper, t.runId, t.runner, t.note) : undefined)],
