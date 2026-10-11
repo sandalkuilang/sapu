@@ -131,3 +131,51 @@ Known limits, in short:
 - Every check exclusion has a fixture that pins it, and a result a script cannot decide is `manual`, not red. A check that still misfires is yours to silence with an `allow` entry, which sits in `.argus/smoke.json` for reviewers to see.
 - `smoke perf` state (`.argus/perf.json`) is local, and a baseline measured on one machine is void on another.
 - The full list for the lane the suite shares is in [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md#known-limits), and the guard's rules are in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Engine floor.
+
+
+## The taste and usability pass
+
+`/journey` also judges whether your UI is good, in every cycle ([Install and use](usage.md#the-taste-and-usability-pass)). That adds three things to the boundary: an agent that reads screenshots and page text, recorders that run inside the pages the lane drives, and a maintainer's script that does touch the public internet. The lane's stance is unchanged: `.argus/live.json`, `.argus/taste.json` and the repo are yours and trusted; pages, and everything recorded from them, are not. The lane stays loopback-only, and a finding still leaves only after a script measured it again on a fresh instance and `scrub` found no secret the run saw.
+
+### The Curator
+
+`sapu:curator` judges each cycle's screens from the judge's rows and the screenshots. It is built to be able to do almost nothing else.
+
+- **Two tools.** Its frontmatter lists `Read` and `StructuredOutput`. The guard enforces the same list: it refuses the Curator every other tool it sees (Bash, Grep, Glob, every write and every dispatch included), whether or not the hook input carries an `agent_id`.
+- **One folder.** Its `Read` is allowed only for a file whose real path lies under the run's `taste/` directory (`.argus/live/<runId>/taste/` in your main checkout): the judge rows and the screenshots. The run is the lock's, else the newest run directory, so a Curator dispatched after `down` still reads its own run. Symlinks are resolved first, so a link out of the folder reads nothing. The run's secret ledger, another run's records and your repo are out of reach; everything else it needs arrives in its brief.
+- **Screenshots and page text are data.** Judge rows hold page text (accessible names, labels), and a screenshot is a picture of your app. The Curator treats both as evidence to describe, never as instructions, and wherever the lane prints a row it does so inside a fence.
+- **It cannot file or confirm.** It returns verdicts (`confirm`, `reject` with a reason, `polish`), leads for the next pass, a substitution verdict per screen and the cognitive walkthrough's answers, in a fixed shape: every key present and none other, or the whole return is refused. A verdict that names no row of the judge is dropped. A `confirm` verdict does not make a row fileable; only the replay does.
+- **What a fooled Curator can do.** The fence is hygiene, not the boundary. A page that talks the Curator into a verdict can at worst hold back an S4 coherence note, send an S3 finding to you with the needs-owner label, or move a lead up the queue. It cannot file, cannot confirm, and cannot read or write anything outside `taste/`.
+
+Its reads go to the model like any agent's, so the statement you confirm in `.argus/live.json` applies: the data the instance resets is synthetic.
+
+### What the recorders keep
+
+To judge a screen, the session hook installs recorders in **every document of every lane session**, the explorer's included: the hook installs one payload for all. They run inside the page, wrap `fetch`, `XMLHttpRequest` and `attachShadow`, and change nothing else. What they record:
+
+| Recorder | Keeps | Never keeps |
+|---|---|---|
+| Motion | Each transition and animation: phase, name, duration, delay, easing, the target's key (page text, at most 120 characters). | Anything the animation shows. |
+| Feedback clock | The kind of each input (click, key, typing, submit) and the time of the first visible change after it; busy signals (`aria-busy`, a progress bar, a disabled control, a spinner, a skeleton). | The key pressed, the text typed. |
+| Requests | For the page's own `fetch` and XHR calls: time, status, method, the route with its ids templated (the path, no query string), whether it was same-origin, and the **names** of the body's fields. | A body's values, headers, cookies, a response. |
+| Clicked controls and form edits | The role, accessible name and region of a clicked control; which fields were edited. | A field's value. |
+| AI surface | Counts, times and flags. | Any page text. |
+
+Records stay in the page until the lane's own browser call drains them (at most 1000 events a document, the rest counted and dropped), and reach disk only in the run's `taste/<slot>/screens.jsonl`, mode 0600, next to the screenshots (`taste/shots/<name>.png`, mode 0600). Control names and field names are page text: fenced wherever printed, and the report passes through the same secret matcher as every issue. A form field's *name* is data about your app, not about a person; a value never reaches a record.
+
+The recorders live in page globals, so a page's own scripts can read them or forge them. The records are therefore untrusted, like the page: a forged row still has to be measured again on a fresh instance before anything is filed.
+
+Taste issues carry a screenshot only through `scrub`'s verdict, under the rules the lane already has: a private or internal repository, traces visible and gh 2.99 or later. Otherwise the picture stays on your machine and a `Local evidence:` line says so. On a declared AI surface a confirmation drive acts on your app: it sends two prompts and presses buttons ([Install and use](usage.md#the-ai-surface-rules)); it never follows a link.
+
+### The calibration is maintainer-only
+
+The bar the pass compares you with was measured on public pages by a script that lives in sapu's own repository, `scripts/taste-calibrate.mjs`. It is not in the plugin, so no consumer installs it, and it is nothing a cycle runs.
+
+- **It is the one thing here that fetches the internet,** and only with `--network`. Without that flag it validates the corpus and prints a plan. The lane never does it: a cycle stays on loopback.
+- **It honours the sites.** `robots.txt` is read once per origin, and a page is fetched only when both the `*` group and the script's own agent, `sapu-taste-calibration`, allow it. One request at a time, and at least 10 seconds between two requests to one site. No login, no form, a fresh browser context for every page, service workers blocked, and a user agent that says what it is.
+- **It stores numbers only.** For each archetype and metric: the page count, the site count, three percentiles and the URLs measured. No screenshot, text, asset or CSS is kept, and the script refuses to write a bar holding any other string, naming where it sits and never the value. A band driven by one site is cut.
+- **Sites are excluded for their terms.** Each page in the corpus records who reviewed its site's terms. Apple, Figma and Raycast are out: their terms bar robots, scraping or automatic access. IBM Carbon is out too: its terms allow a crawler as `robots.txt` permits but also bar a robot that retrieves or data-mines the presentation of its sites, which is ambiguous for these pages. Its published numbers stay in the bar as a reference scale, read and not crawled.
+- **The guard refuses it to every subagent,** in any form: as a program, as an interpreter's first operand or preload, by a glob that matches it, through a symlink, in `node -e` code that names it, or as a name the shell builds when `--network`, `--corpus` or `--out` follows. Reading it, its tests and `node --check` stay allowed. Not caught, and named as a limit in [`CONTRACT.md`](../plugins/sapu/CONTRACT.md) §Engine floor: a copy of it under another name.
+- **Its output reaches sapu only through a reviewed pull request.** A maintainer runs it from the main session, reads each band, and reviews `--diff`'s before and after; a band that looks driven by one site does not ship. [Contributing](contributing.md#the-taste-bar-and-its-calibration) has the procedure.
+
+Known limits, in short: a hostile page can shape the records it is measured by, and the replay is the check; the Curator reads your pages' text and pictures and can be talked into a verdict, though not into an action; the guard cannot see a copy of the calibration script under another name; and, as everywhere in this lane, the guard binds subagents only.
