@@ -49,7 +49,7 @@ All three can touch the same running dev app and the same database. Running them
 ## The order, and why it's this order
 
 1. **momus (`/sapu:momus`) first.** Safest phase — mostly reading code and running non-destructive commands. Establishes a clean baseline: is config sane, are migrations fine, nothing structurally broken. Its Area B business-process map — every state-changing endpoint in every domain — goes to argus and nemesis as priority targets: breadth from source first, then live proof straight at the API.
-2. **argus (`/sapu:argus`) second.** Hunts for bugs on top of a now-known-good baseline.
+2. **argus (`/sapu:argus`) second.** Hunts for bugs on top of a now-known-good baseline. It never selects the journey lane: that lane runs only from the main session, as `/sapu:journey`.
 3. **nemesis (`/sapu:nemesis`) last.** The most aggressive phase — it actually tries to break in. Going last means any mess it makes isn't confused with a pre-existing bug the first two phases should already have surfaced.
 
 ## Security bar — every phase, every run

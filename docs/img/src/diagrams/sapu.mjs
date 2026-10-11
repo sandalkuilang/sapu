@@ -13,7 +13,7 @@ const box = (x, y, w, h, title, subs, cls = "card", { mono = [] } = {}) =>
   subs.map((s, i) => text(x + w / 2, y + 47 + i * 17, s, mono.includes(i) ? "cap mono" : "cap", "middle")).join("");
 
 export default {
-  h: 1700,
+  h: 1714,
   title: A11Y.title,
   desc: A11Y.desc,
   label: A11Y.label,
@@ -25,14 +25,15 @@ export default {
     s += legend(32, 140, [["flow", "flow"], ["loop", "fix / retry loop"], ["produces", "produces"], ["limit", "hard limit"], ["tier:green", ""], ["tier:yellow", ""], ["tier:red", "risk tier"]]);
 
     // spine
-    const ys = { s0: 196, a: 300, b: 560, sess: 1262, fin: 1414 };
+    const ys = { s0: 196, a: 314, b: 574, sess: 1276, fin: 1428 };
     s += `<line x1="46" y1="${ys.s0}" x2="46" y2="${ys.fin - 10}" class="rule" stroke-dasharray="2 5"/>`;
 
     // ---- Step 0
     s += sectionHead(ys.s0, "0", "Step 0 · Scope lock");
-    s += card(X, ys.s0 + 16, W, 52, "k-blue", 12);
-    s += iconTile("lock", X + 12, ys.s0 + 25, "blue", 34);
-    s += text(X + 58, ys.s0 + 47, `${m("sapu-contract.mjs check")}  ·  gh account · git email · origin · allowed roots  ·  then read profile + policy`, "t");
+    s += card(X, ys.s0 + 16, W, 66, "k-blue", 12);
+    s += iconTile("lock", X + 12, ys.s0 + 32, "blue", 34);
+    s += text(X + 58, ys.s0 + 42, `${m("sapu-contract.mjs check")}  ·  gh account · git email · origin · allowed roots · HOME`, "t");
+    s += text(X + 58, ys.s0 + 63, `then ${m("sweep hold")}: one /sapu session per repo, a second one stops here  ·  then read profile + policy`, "cap");
 
     // ---- Phase A
     const ay = ys.a;
@@ -57,7 +58,7 @@ export default {
     s += card(cols[2][0] + 100, ry + rh + 20, R - (cols[2][0] + 100), 50, "sunken", 12);
     s += text(cols[2][0] + 116, ry + rh + 41, `${b("not merged")}  STALE: closed at classify`, "cap");
     s += text(cols[2][0] + 116, ry + rh + 59, "blocked (with the reason) when its fix cycles run out", "cap");
-    s += text(R, ry + rh + 96, "then Phase B, in the same session while context is under 600k, else in a fresh one", "cap", "end");
+    s += text(R, ry + rh + 96, "then Phase B, in the same session while context is under the Phase A limit, else in a fresh one", "cap", "end");
 
     // ---- Phase B
     const by = ys.b;
@@ -97,7 +98,7 @@ export default {
       "each review reports fewer findings than the one before, and no",
       "finding is reported by three reviews in a row; else blocked (reason)",
       `${b("ESCALATE", "tb")} → one step up the ladder, once; then blocked`,
-      `past ${b("120 tool calls")} → handoff: WIP commit, then a fresh worker`,
+      `past its ${b("step budget")} → handoff: WIP commit, then a fresh worker`,
       "of the same tier continues from its note (≤ 2 handoffs per step)",
     ], "cap", 19);
     ry2 += 5 * 19 + 14;
@@ -140,7 +141,7 @@ export default {
 
     // ---- end of session
     const sy = ys.sess;
-    s += sectionHead(sy, "↻", "End of each session", "context past 750k (600k when Phase A ends)");
+    s += sectionHead(sy, "↻", "End of each session", "context past its limit, a share of the model's window (contract tuning)");
     const sw = (W - 3 * 24) / 4, scy = sy + 20, sh = 92;
     const sess = [
       ["session limit reached", ["checked between waves,", "never inside a lane"], "card", []],
@@ -162,7 +163,7 @@ export default {
       ["nothing left to work", ["no WORK, no open PR;", "only SKIP / BLOCKED"], "card"],
       ["cleanup per policy", ["finish (default) · never: skip"], "card"],
       ["final full gate", ["on origin/&lt;base&gt;"], "k-red"],
-      ["final report", ["PR + issue tables, metrics"], "k-green"],
+      ["final report", ["PR + issue tables, metrics", "engine defects → plugin repo"], "k-green"],
     ];
     fin.forEach(([t, l, cls], i) => {
       const x = X + i * (sw + 24);
@@ -179,8 +180,8 @@ export default {
     s += card(32, gy2, 856, 86, "k-red", 14);
     s += iconTile("shield", 48, gy2 + 16, "red", 34);
     s += text(96, gy2 + 30, `${b("Guard hook", "tb c-red")}  checks every subagent's shell, file, search and MCP tool calls — never the orchestrator's.`, "t");
-    s += text(96, gy2 + 51, "Workers never merge or touch the main checkout, the repo's protected DBs (contract guard), or real env files.", "cap");
-    s += text(96, gy2 + 70, "Past 120 tool calls it reminds a worker to hand off. It stops honest mistakes; it is not a sandbox.", "cap");
+    s += text(96, gy2 + 51, "Workers never merge or touch the main checkout, protected DBs (contract guard) or env files. No subagent writes the plugins it runs under.", "cap");
+    s += text(96, gy2 + 70, "Past its step budget it reminds a worker to hand off. It stops honest mistakes; it is not a sandbox.", "cap");
     return s;
   },
 };

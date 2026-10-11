@@ -13,11 +13,11 @@ The plugin is the **engine** — skills, the worker agents, a guard hook and a m
 
 ### /sapu — sweep the backlog
 
-Locks its scope first (Step 0), drains open PRs (Phase A), then works open issues in parallel lanes (Phase B): each issue is one Workflow call running a **forge** worker in its own worktree, up to as many lanes as the machine carries, and a new lane starts as soon as one returns. Every PR is reviewed by the `qa` specialist (`senior-dev-team:senior-qa-reviewer` unless the repo maps its own) at Opus/high, or by an adversarial Opus pair on 🔴 and on any diff that touches a red area. 🟢/🟡 findings get at most two fix cycles; 🔴 may go on up to five, but past the second only while it converges (each review reports fewer findings than the one before, and no finding is reported by three reviews in a row), else it is blocked with the reason; a worker past its step budget hands off to a fresh one of the same tier. Workers never merge: the orchestrator queues ready PRs through `sapu-merge.sh` (gate, flake ledger, merge, `mergeAfter`), one at a time. Each session ends by rewriting the `sapu-sweep-state` memory page (and cleans up merged branches when the repo's policy says `session`); the last one runs the cleanup the policy asks for, the final gate, and the report.
+Locks its scope first (Step 0) and holds the repo's sweep marker, so a second /sapu session on the same repo stops there; drains open PRs (Phase A), then works open issues in parallel lanes (Phase B): each issue is one Workflow call running a **forge** worker in its own worktree, up to as many lanes as the machine carries, and a new lane starts as soon as one returns. Every PR is reviewed by the `qa` specialist (`senior-dev-team:senior-qa-reviewer` unless the repo maps its own) at Opus/high, or by an adversarial Opus pair on 🔴 and on any diff that touches a red area. 🟢/🟡 findings get at most two fix cycles; 🔴 may go on up to five, but past the second only while it converges (each review reports fewer findings than the one before, and no finding is reported by three reviews in a row), else it is blocked with the reason; a worker past its step budget hands off to a fresh one of the same tier. Workers never merge: the orchestrator queues ready PRs through `sapu-merge.sh` (gate, flake ledger, merge, `mergeAfter`), one at a time. Each session ends by rewriting the `sapu-sweep-state` memory page (and cleans up merged branches when the repo's policy says `session`); the last one runs the cleanup the policy asks for, the final gate, and the report. A defect of the engine itself is never patched around in the repo: the orchestrator files it on the plugin's own repository, and the report lists it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/sapu-dark.svg">
-  <img src="img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge), a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report" width="100%">
+  <img src="img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock and one sweep per repo, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge) and a handoff past the step budget, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report, engine defects filed on the plugin's repo" width="100%">
 </picture>
 
 ### The specialists — senior-dev-team
@@ -31,7 +31,7 @@ Reviewers and advisers are called by role. By default each role is an agent of t
 
 ### /inspector — full sweep before release
 
-Runs momus, then argus, then nemesis — one phase finished before the next starts, each on its own model and effort. momus's business-process gap rows become priority targets for the other two; a scoped run adds a read-only team review. One combined summary and a security roll-up at the end.
+Runs momus, then argus, then nemesis — one phase finished before the next starts, each on its own model and effort. momus's business-process gap rows become priority targets for the other two; a scoped run adds a read-only team review. One combined summary and a security roll-up at the end. Its argus phase never runs the journey lane, which runs only from the main session.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/inspector-dark.svg">
@@ -54,6 +54,15 @@ One bounded cycle of eleven phases (ORIENT → ROTATE), applying five review len
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/argus-dark.svg">
   <img src="img/argus.svg" alt="argus runs one eleven-phase QA cycle with five lenses and evidence tiers, filing de-duplicated issues; it tests but never fixes" width="100%">
+</picture>
+
+### /journey — the user's side of the workflows
+
+argus's journey lane, with its own door. One bounded cycle walks the app's business journeys through the real UI, as every role each one needs, on an isolated instance argus starts itself (its own worktree, ports, data and HOME), never on your servers. The journey catalog is generated from the code, every step anchored in a line at HEAD, and rebuilt by a map-mode explorer when it is stale (files added, deleted or renamed under its roots, a newer momus report, a journey that no longer anchors); SELECT picks the top journeys and allocates their accounts; one `sapu:ui-explorer` agent per journey walks it through the lane's browser wrapper and only suspects. A script then replays every candidate on a fresh instance, and only one that reproduces two of two is minimized, turned into a Playwright RED test, classified, checked by `scrub` for any secret the run saw, and filed. `down` stops what `up` started; PERSIST records each journey's visit and the next picks.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/journey-dark.svg">
+  <img src="img/journey.svg" alt="One journey cycle: argus's journey lane checks the catalog, brings up an isolated instance of its own, picks the top journeys, walks each with a ui-explorer agent through the browser wrapper only, reproduces every candidate two of two on a fresh instance, minimizes it into a RED test, classifies it, files it only after scrub finds no secret the run saw, tears the instance down and records the visit." width="100%">
 </picture>
 
 ### /momus — release-readiness audit
