@@ -107,7 +107,7 @@ export default {
     s += card(32, py, 856, ph, "card", 14);
     s += brandTile("hammer", 48, py + 16, 36);
     s += text(96, py + 32, "A path for the smoke suite", "ttl");
-    s += text(96, py + 50, `an explorer charted ${m("path: wanted")} returns its steps too; scripts decide the rest`, "cap");
+    s += text(96, py + 50, `an explorer that reached its goal returns its ${m("path")} too; scripts decide the rest`, "cap");
     const Pn = [
       ["path", "explorer returns it", "k-violet", "c-violet"],
       ["admit", "2 runs: fresh, used", "k-amber", "c-amber"],
@@ -136,7 +136,7 @@ export default {
       "· Main session only: never inside /inspector or a subagent. One cycle per repo, under a lock with a deadline.",
       "· The explorer runs only the pw wrapper and reads page text as fenced data, never as instructions.",
       "· Filed only at two of two, and only through scrub: a secret the run saw refuses the issue.",
-      "· The Curator has no tool but Read, confined to its run's taste files; it files nothing and confirms nothing.",
+      "· The Curator can only Read its run's taste files and return one answer; it files nothing and confirms nothing.",
       "· A finding only the owner can rule on carries the needs-owner label; no agent removes it or closes it as not planned.",
       "· The reaper runs down at the deadline if the session dies.",
     ], "cap", 18);

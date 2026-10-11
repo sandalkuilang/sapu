@@ -24,7 +24,7 @@ judge, the best known path and each confirmed taste row with its state, 0600; a 
 which the orchestrator stores through `taste curator`; a shot whose scrub verdict found a secret, a password or a one-time-code field goes to
 `<runId>/held-shots/` instead, outside the Curator's reach) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
-smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
+smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-codeproj` (its projects and the taste reporter), `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
 `-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`; the taste pass's `-tastecfg` (`.argus/taste.json`, the bar,
 `.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
 maintainer's calibration script (`taste-calibrate`) and its reference corpus live in sapu's own repository, never in

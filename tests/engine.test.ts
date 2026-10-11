@@ -1367,7 +1367,7 @@ describe("the journey lane's engine text", () => {
   it("the explorer walks a declared AI route so Stop and regenerate show, and never fails a request on purpose", () => {
     expect(read(JOURNEYS)).toContain("`ai`, `.argus/taste.json`'s `ai` route globs, when it has any");
     const text = read(AGENT).replace(/\s+/g, " ");
-    expect(text).toContain("On a route the charter's `ai` globs match, send a message, press Stop once while it streams, then send again and wait for that answer to finish. Never make a request fail on purpose");
+    expect(text).toContain("On a route the charter's `ai` globs match, send a message, press Stop once while it streams, then send again and wait for that answer to finish. These steps are `off_goal: true` and never in your `path`. Never make a request fail on purpose");
   });
 
   const AESTHETICS = "skills/argus/aesthetics.md";

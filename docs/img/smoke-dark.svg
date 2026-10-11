@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1564" width="920" height="1564" role="img" aria-label="The smoke cycle: the journey lane captures a path from an explorer, admits it once it held at every width and on a used instance, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request, with a separate taste job whose scorecard is advisory unless the owner promotes a rule to gating, and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request.">
   <title>/journey smoke — one smoke cycle</title>
-  <desc>One smoke cycle of /journey smoke has three places. In the lane, run from the main session on an instance of its own, smoke plan ranks the catalog and marks the journeys that need a path; a ui-explorer charted with path: wanted returns a path; smoke admit runs it twice, on a fresh and then a used instance, and stages it; smoke run re-runs the suite's paths in a seeded order, and with --perf measures them on Chrome; smoke propose checks every file and the pull request body with scrub and opens one pull request on an argus branch. In your repo, you review that pull request: merging accepts it, closing rejects it and the same change is never proposed again. In CI, the generated workflow runs the suite on every pull request: a matrix of browser projects in the pinned Playwright container (chromium, firefox, webkit, further viewports, a11y and i18n), msedge on the plain runner without screenshots, a non-gating quarantine job, a taste job that runs the taste and usability rules in Chromium at the first width and writes a scorecard to the job summary, advisory unless the owner's taste file gates a rule, and a baseline job that only a dispatch starts; each uploads its results for seven days. Back in the lane, smoke ci triages the run: a flake on the base branch is quarantined, never hidden; a moved control is healed after the unchanged expectations hold twice; a lost control or a failed expectation becomes a regression candidate that is replayed two of two and filed only after scrub finds no secret; a screenshot or ARIA difference is the owner's call; a missing baseline starts the baseline run, whose files smoke baseline adopts into a pull request that the owner reviews in the image view. Nothing is applied at run time, and sapu never merges a proposal.</desc>
+  <desc>One smoke cycle of /journey smoke has three places. In the lane, run from the main session on an instance of its own, smoke plan ranks the catalog and marks the journeys that need a path; a ui-explorer that reaches its goal returns a path, as every explore charter asks; smoke admit runs it twice, on a fresh and then a used instance, and stages it; smoke run re-runs the suite's paths in a seeded order, and with --perf measures them on Chrome; smoke propose checks every file and the pull request body with scrub and opens one pull request on an argus branch. In your repo, you review that pull request: merging accepts it, closing rejects it and the same change is never proposed again. In CI, the generated workflow runs the suite on every pull request: a matrix of browser projects in the pinned Playwright container (chromium, firefox, webkit, further viewports, a11y and i18n), msedge on the plain runner without screenshots, a non-gating quarantine job, a taste job, in parallel, that runs the taste and usability rules in Chromium at the first width and writes a scorecard to the job summary, red only when a rule the owner's taste file gates fails, and a baseline job that only a dispatch starts; each uploads its results for seven days. Back in the lane, smoke ci triages the run: a flake on the base branch is quarantined, never hidden; a moved control is healed after the unchanged expectations hold twice; a lost control or a failed expectation becomes a regression candidate that is replayed two of two and filed only after scrub finds no secret; a screenshot or ARIA difference is the owner's call; a missing baseline starts the baseline run, whose files smoke baseline adopts into a pull request that the owner reviews in the image view. Nothing is applied at run time, and sapu never merges a proposal.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -73,7 +73,7 @@
   <rect x="384" y="234" width="152" height="62" rx="10" class="k-violet" />
   <text x="460" y="255" class="tb c-violet" text-anchor="middle">capture</text>
   <text x="460" y="273" class="cap" text-anchor="middle"><tspan class="mono">ui-explorer</tspan></text>
-  <text x="460" y="289" class="cap" text-anchor="middle"><tspan class="mono">path: wanted</tspan></text>
+  <text x="460" y="289" class="cap" text-anchor="middle">returns its <tspan class="mono">path</tspan></text>
   <path d="M538,265 L550,265" class="ar" marker-end="url(#mn)"/>
   <rect x="552" y="234" width="152" height="62" rx="10" class="sunken" />
   <text x="628" y="255" class="tb" text-anchor="middle">admit</text>
@@ -144,8 +144,8 @@
 <text x="706" y="674" class="cap">(missing | changed)</text>
   <rect x="48" y="718" width="824" height="54" rx="10" class="k-violet" />
   <text x="62" y="740" class="tb c-violet">taste</text>
-  <text x="110" y="740" class="cap">its own job · Chromium, first width · the per-screen taste rules, then under dark mode and reduced motion</text>
-  <text x="62" y="759" class="cap">scorecard in the job summary · advisory: green unless <tspan class="mono">.argus/taste.json</tspan> gates a rule</text>
+  <text x="110" y="740" class="cap">its own job, in parallel · Chromium, first width · the per-screen taste rules, then under dark mode and reduced motion</text>
+  <text x="62" y="759" class="cap">scorecard in the job summary · advisory: red only when a rule <tspan class="mono">.argus/taste.json</tspan> gates fails</text>
   <text x="48" y="802" class="cap">Every job uploads <tspan class="mono">test-results/</tspan> for 7 days. The suite runs <tspan class="mono">--shuffle</tspan>, retries once, and writes no baseline.</text>
   <path d="M200,504 L200,526" class="ar" marker-end="url(#mn)"/>
   <text x="212" y="520" class="cap">runs on every pull request</text>
@@ -185,7 +185,7 @@
   <path d="M496,1046 L516,1046" class="ar" marker-end="url(#mn)"/>
   <text x="526" y="1051" class="t">regression candidate · 2 of 2 · scrub · issue</text>
   <rect x="48" y="1068" width="824" height="32" rx="8" class="sunken" />
-  <text x="62" y="1089" class="t">failed on every attempt in CI, holds on Chrome</text>
+  <text x="62" y="1089" class="t">failed on every attempt in CI, holds in the lane's Chrome</text>
   <rect x="330" y="1073" width="70" height="22" rx="11" class="k-red"/>
   <circle cx="342" cy="1084" r="4" class="f-red"/>
   <text x="351" y="1088" class="chipt c-red">ci-only</text>

@@ -29,7 +29,7 @@ export default {
     const A = [
       ["plan", [m("smoke plan"), "rank · capture · keep"], "sunken", ""],
       ["re-run", [m("smoke run"), "seeded order · --perf"], "sunken", ""],
-      ["capture", [m("ui-explorer"), `${m("path: wanted")}`], "k-violet", "c-violet"],
+      ["capture", [m("ui-explorer"), `returns its ${m("path")}`], "k-violet", "c-violet"],
       ["admit", [m("smoke admit"), "every width, then used"], "sunken", ""],
       ["propose", [m("smoke propose"), "scrub every file first"], "k-green", "c-green"],
     ];
@@ -79,8 +79,8 @@ export default {
     const tj = jy + jh + 12;
     s += rect(48, tj, 824, 54, "k-violet", 10);
     s += text(62, tj + 22, "taste", "tb c-violet");
-    s += text(110, tj + 22, `its own job · Chromium, first width · the per-screen taste rules, then under dark mode and reduced motion`, "cap");
-    s += text(62, tj + 41, `scorecard in the job summary · advisory: green unless ${m(".argus/taste.json")} gates a rule`, "cap");
+    s += text(110, tj + 22, `its own job, in parallel · Chromium, first width · the per-screen taste rules, then under dark mode and reduced motion`, "cap");
+    s += text(62, tj + 41, `scorecard in the job summary · advisory: red only when a rule ${m(".argus/taste.json")} gates fails`, "cap");
     s += text(48, y3 + h3 - 18, `Every job uploads ${m("test-results/")} for 7 days. The suite runs ${m("--shuffle")}, retries once, and writes no baseline.`, "cap");
 
     s += arrow([[200, y2 + h2 + 2], [200, y3 - 2]]);
@@ -98,7 +98,7 @@ export default {
       ["flaky only on a pull request's head", "flaky-new", "amber", "a comment there · never quarantined"],
       ["a target matches nothing or several", "UI changed", "green", "heal-mode explorer · expectations hold twice · heal PR"],
       ["an expectation or an action fails twice", "bug · behaviour changed", "red", "regression candidate · 2 of 2 · scrub · issue"],
-      ["failed on every attempt in CI, holds on Chrome", "ci-only", "red", "needs-owner issue with the run's link"],
+      ["failed on every attempt in CI, holds in the lane's Chrome", "ci-only", "red", "needs-owner issue with the run's link"],
       ["a screenshot or ARIA snapshot differs", "your call", "violet", `${m("smoke ci")} shows the diff · ${m("--ids")} re-baselines`],
       ["a baseline is missing", "not reviewed", "blue", "the baseline run (below)"],
     ];
