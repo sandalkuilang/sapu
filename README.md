@@ -159,6 +159,24 @@ A new install also installs its dependency [senior-dev-team](#senior-dev-team) a
 
 Short aliases (`/sapu`, `/forge`, …) are created by `/sapu:init`. A picture tour of every skill: [How the agents work](docs/agents.md).
 
+## The journey lane
+
+`/sapu:journey` walks your app's journeys through the real UI on an instance of its own, judges every screen it reaches for taste and usability, and files only what a script reproduced twice.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/journey-dark.svg">
+  <img src="docs/img/journey.svg" alt="One journey cycle: argus's journey lane checks the catalog, brings up an isolated instance of its own, picks the top journeys, walks each with a ui-explorer agent through the browser wrapper only, reproduces every candidate two of two on a fresh instance, minimizes it into a RED test, classifies it, files it only after scrub finds no secret the run saw, tears the instance down and records the visit; an explorer that reached the goal of a journey charted for the smoke suite also returns a path, which the lane admits, once it held at every width and on a used instance, before it is proposed as a pull request; the lane also judges the taste and usability of every screen the explorers reached, with the Curator agent, which can only Read the run's taste files and return one answer, giving verdicts, replays each row on a fresh instance and files only what it measures again, at most a capped number of issues, and its report opens with a scorecard." width="100%">
+</picture>
+
+`/sapu:journey smoke` turns the walked journeys into a Playwright suite your CI runs with no LLM; every change to it reaches you as a pull request.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/smoke-dark.svg">
+  <img src="docs/img/smoke.svg" alt="The smoke cycle: the journey lane captures a path from an explorer, admits it once it held at every width and on a used instance, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request, with a separate taste job whose scorecard is advisory unless the owner promotes a rule to gating, and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request." width="100%">
+</picture>
+
+The whole lane, step by step: [How the agents work](docs/agents.md#journey--the-users-side-of-the-workflows).
+
 ## senior-dev-team
 
 [senior-dev-team](plugins/senior-dev-team/README.md) is a second plugin in this marketplace: eight senior specialist agents (product manager, architect, full-stack developer, database engineer, UI/UX designer, QA analyst and QA reviewer, technical writer). sapu depends on it, so installing sapu installs it too.
