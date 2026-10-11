@@ -867,8 +867,8 @@ could use them.
   screenshots, never the run's ledger or another run's records. It files nothing.
 - The taste calibration script (`taste-calibrate`, in sapu's own repository; it fetches the reference corpus's
   public pages) is the maintainer's: every subagent is refused it as a program, an interpreter's first operand
-  or preload (by its name in any case, a glob it matches, or the real file behind a path), in an interpreter's
-  code (`node -e`), behind env prefixes, wrappers and `sh -c`, and as a script name the shell builds when
+  or preload (by its name in any case, a glob or a brace expansion it matches, or the real file behind a path), as an
+  interpreter's stdin (`-` or no operand, fed by `<` or a pipe), in an interpreter's code (`node -e`), behind env prefixes, wrappers and `sh -c`, and as a script name the shell builds when
   `--network`, `--corpus` or `--out` follows or the command names the script. Its tests and reads of it stay
   allowed. Not caught (a guard LIMIT): a copy of it under another name. Its output reaches the plugin only
   through a reviewed pull request.

@@ -1402,9 +1402,19 @@ function globHits(word, name) {
   }
 }
 
-/** A word naming the calibration script: by its name in any case, a glob it matches, the real file behind a path, or a built word naming it. */
+/** A word's brace expansions (`a{b,c}d` → abd, acd; nested and several braces, at most 64 words), the word itself without one. */
+function braces(word) {
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(word);
+  if (!m) return [word];
+  const out = [];
+  for (const alt of m[1].split(",")) for (const x of braces(word.slice(0, m.index) + alt + word.slice(m.index + m[0].length))) if (out.length < 64) out.push(x);
+  return out;
+}
+
+/** A word naming the calibration script: by its name in any case, a glob or a brace expansion it matches, the real file behind a path, or a built word naming it. */
 function isCalibrate(w, dir) {
   const b = bare(w.v);
+  if (braces(b).length > 1) return braces(b).some((x) => isCalibrate({ v: path.join(path.dirname(w.v), x), dyn: w.dyn }, dir));
   if (CALIBRATE.test(b) || (w.dyn && CALIBRATE_TEXT.test(w.v))) return true;
   if (/[*?[]/.test(b) && ["taste-calibrate.mjs", "taste-calibrate.js", "taste-calibrate.ts"].some((n) => globHits(b, n))) return true;
   if (w.dyn || dir === UNKNOWN || !w.v) return false;
@@ -1424,6 +1434,10 @@ function calibrationRun(all, dir, named) {
   if (!INTERPRETERS.has(prog)) return null;
   const { op, values, args } = interpArgv(argv, prog);
   if (values.some((w) => CALIBRATE_TEXT.test(w.v) || isCalibrate(w, dir))) return BLOCK.calibrate;
+  // An interpreter reading its program from stdin (`-`, or no operand and no code of its own: a pipe or a `<` redirect)
+  // in a command whose text names the script: its text fed in.
+  const evals = argv.some((w) => /^(-e|--eval|-p|--print|-c|--check)(=|$)/.test(w.v));
+  if (named && !evals && (op < 0 || argv[op].v === "-")) return BLOCK.calibrate;
   if (op < 0) return null;
   if (isCalibrate(argv[op], dir)) return BLOCK.calibrate;
   return builtName(argv[op]) && (named || args.some((w) => ["--network", "--corpus", "--out"].includes(w.v))) ? BLOCK.calibrate : null;

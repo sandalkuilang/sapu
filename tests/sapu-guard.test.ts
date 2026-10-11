@@ -2774,6 +2774,15 @@ describe("sapu-guard — the taste calibration script is the maintainer's: no su
     ["a script name the shell builds, with --network", 'node "$S" --network --corpus c.json --out b.json'],
     ["a name xargs fills in", "echo scripts/taste-calibrate.mjs | xargs node"],
     ["a name a substitution builds", "node $(echo scripts/taste-calibrate.mjs)"],
+    ["a brace expansion that resolves to it", "node scripts/taste-{calibrate,x}.mjs --network"],
+    ["a brace inside its name", "node scripts/taste-cal{ibrate,}.mjs"],
+    ["a character-class glob", "node scripts/taste-calibrat[e].mjs"],
+    ["its text fed to node on stdin", "node - < scripts/taste-calibrate.mjs"],
+    ["its text fed to node with no operand", "node < scripts/taste-calibrate.mjs"],
+    ["its text piped into node", "cat scripts/taste-calibrate.mjs | node -"],
+    ["its text piped into node --input-type", "cat scripts/taste-calibrate.mjs | node --input-type=module"],
+    ["zsh -c", "zsh -c 'node scripts/taste-calibrate.mjs'"],
+    ["dash -c", "dash -c 'node scripts/taste-calibrate.mjs'"],
   ])("refuses a subagent %s", (_what, cmd) => {
     expect(sub(cmd)).toMatch(REFUSED);
     expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
