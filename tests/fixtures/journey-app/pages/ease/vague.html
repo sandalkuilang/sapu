@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="__LANG__"><head><meta charset="utf-8"><title>Settings</title></head>
+<body>
+<main>
+<h1>Settings</h1>
+<!-- A form whose submit says only __SUBMIT__, a dialog whose confirm says only __CONFIRM__; the other controls are named. -->
+<form onsubmit="return false">
+  <label>Display name <input name="display"></label>
+  <button type="button">Reset display name</button>
+  <button>__SUBMIT__</button>
+</form>
+<dialog open aria-label="Leave">
+  <p>Leave without saving?</p>
+  <button>Cancel</button>
+  <button>__CONFIRM__</button>
+</dialog>
+<button>OK</button>
+</main>
+</body></html>

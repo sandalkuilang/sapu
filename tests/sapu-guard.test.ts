@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -2648,6 +2648,12 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
     ["smoke workflow", `node ${L} smoke workflow`],
     ["seed", `node ${L} seed --issue 12`],
     ["report", `node ${L} report`],
+    ["taste judge", `node ${L} taste judge`],
+    ["taste confirm", `node ${L} taste confirm t1`],
+    ["taste file, which files issues", `node ${L} taste file --run r1`],
+    ["taste curator, which writes the Curator's file", `node ${L} taste curator .argus/live/r1/curator-return.json`],
+    ["taste accept, the owner's ruling", `node ${L} taste accept scale.spacing '/orders|1440|light'`],
+    ["a built script name and taste", `node "$S" taste accept scale.spacing x`],
     ["smoke check with a word more", `node ${L} smoke check --json`],
     ["smoke alone", `node ${L} smoke`],
     ["a smoke verb the shell builds", `node ${L} smoke $VERB`],
@@ -2726,6 +2732,156 @@ describe("sapu-guard — a subagent runs only the journey lane script's reads", 
 
   it("leaves the main session alone", () => {
     expect(decide({ tool_name: "Bash", tool_input: { command: `node ${L} up` }, cwd: wt })).toBeNull();
+  });
+
+  it("refuses the explorer every taste verb, taste accept included", () => {
+    const explorer = (command: string) => decide({ agent_id: "a1", agent_type: "sapu:ui-explorer", tool_name: "Bash", tool_input: { command }, cwd: wt });
+    for (const verb of ["taste judge", "taste confirm t1", "taste file", "taste curator c.json", "taste accept scale.spacing x"]) expect(explorer(`node ${WRAPPER} ${verb}`), verb).toMatch(/journey explorer's shell runs only its wrapper/);
+  });
+});
+
+describe("sapu-guard — the taste calibration script is the maintainer's: no subagent runs it", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "taste-cal-")));
+  mkdirSync(join(repo, "scripts"));
+  const S = join(repo, "scripts/taste-calibrate.mjs");
+  writeFileSync(S, "// the maintainer's calibration\n");
+  symlinkSync(S, join(repo, "cal.mjs"));
+  afterAll(() => rmSync(repo, { recursive: true, force: true }));
+  const sub = (command: string, agent_type = "senior-dev-team:senior-qa-analyst") => decide({ agent_id: "a1", agent_type, tool_name: "Bash", tool_input: { command }, cwd: repo });
+  const REFUSED = /the taste calibration script \(taste-calibrate\) is the maintainer's/;
+
+  it.each([
+    ["with --network", "node scripts/taste-calibrate.mjs --network --corpus scripts/taste-corpus.json --out plugins/sapu/data/taste-bar.json"],
+    ["without --network (its plan only)", "node scripts/taste-calibrate.mjs --corpus scripts/taste-corpus.json --out x.json"],
+    ["run by its path", "./scripts/taste-calibrate.mjs --network"],
+    ["by an absolute path", `node ${S}`],
+    ["another letter case and a dot-dot path", "node ./scripts/../scripts/TASTE-CALIBRATE.mjs"],
+    ["a symlink of another name", `node ${join(repo, "cal.mjs")} --network`],
+    ["after a cd", "cd scripts && node taste-calibrate.mjs"],
+    ["sh -c", "sh -c 'node scripts/taste-calibrate.mjs --network'"],
+    ["bash -lc", 'bash -lc "node scripts/taste-calibrate.mjs"'],
+    ["an environment prefix", "FOO=1 node scripts/taste-calibrate.mjs"],
+    ["env", "env FOO=1 node scripts/taste-calibrate.mjs"],
+    ["as an --import preload", "node --import ./scripts/taste-calibrate.mjs x.mjs"],
+    ["as a -r preload", "node -r ./scripts/taste-calibrate.mjs x.mjs"],
+    ["imported by -e code", "node -e \"import('./scripts/taste-calibrate.mjs')\""],
+    ["imported by --input-type code", "node --input-type=module -e \"await import('./scripts/taste-calibrate.mjs')\""],
+    ["bun", "bun scripts/taste-calibrate.mjs"],
+    ["bun run", "bun run scripts/taste-calibrate.mjs"],
+    ["deno run", "deno run -A scripts/taste-calibrate.mjs"],
+    ["tsx", "tsx scripts/taste-calibrate.mjs"],
+    ["a glob that names it", "node scripts/taste-cal*.mjs --network"],
+    ["a script name the shell builds, with --network", 'node "$S" --network --corpus c.json --out b.json'],
+    ["a name xargs fills in", "echo scripts/taste-calibrate.mjs | xargs node"],
+    ["a name a substitution builds", "node $(echo scripts/taste-calibrate.mjs)"],
+    ["a brace expansion that resolves to it", "node scripts/taste-{calibrate,x}.mjs --network"],
+    ["a brace inside its name", "node scripts/taste-cal{ibrate,}.mjs"],
+    ["a character-class glob", "node scripts/taste-calibrat[e].mjs"],
+    ["its text fed to node on stdin", "node - < scripts/taste-calibrate.mjs"],
+    ["its text fed to node with no operand", "node < scripts/taste-calibrate.mjs"],
+    ["its text piped into node", "cat scripts/taste-calibrate.mjs | node -"],
+    ["its text piped into node --input-type", "cat scripts/taste-calibrate.mjs | node --input-type=module"],
+    ["zsh -c", "zsh -c 'node scripts/taste-calibrate.mjs'"],
+    ["dash -c", "dash -c 'node scripts/taste-calibrate.mjs'"],
+  ])("refuses a subagent %s", (_what, cmd) => {
+    expect(sub(cmd)).toMatch(REFUSED);
+    expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
+  });
+
+  it.each([
+    ["its test file", "npx vitest run tests/taste-calibrate.test.ts"],
+    ["reading it", "cat scripts/taste-calibrate.mjs"],
+    ["a syntax check, which runs nothing", "node --check scripts/taste-calibrate.mjs"],
+    ["its diff", "git diff scripts/taste-calibrate.mjs"],
+    ["another script", "node scripts/rule-guard.ts"],
+    ["the corpus file", "node -e \"JSON.parse(require('fs').readFileSync('scripts/taste-corpus.json','utf8'))\""],
+  ])("lets a subagent %s", (_what, cmd) => {
+    expect(sub(cmd)).toBeNull();
+  });
+
+  it("names the refusal and leaves the main session alone", () => {
+    expect(sub("node scripts/taste-calibrate.mjs")).toContain("run it from the main session");
+    expect(decide({ tool_name: "Bash", tool_input: { command: "node scripts/taste-calibrate.mjs --network --corpus c.json --out b.json" }, cwd: repo })).toBeNull();
+  });
+});
+
+describe("sapu-guard — the Curator reads only its run's taste/ files", () => {
+  const RUN_A = "20000101000000-0123abcd";
+  const RUN_B = "20000102000000-0123abcd";
+  const m = realpathSync(mkdtempSync(join(tmpdir(), "curator-main-")));
+  execFileSync("git", ["init", "-q", m]);
+  for (const r of [RUN_A, RUN_B]) {
+    mkdirSync(join(m, `.argus/live/${r}/taste/shots`), { recursive: true });
+    writeFileSync(join(m, `.argus/live/${r}/taste/judge.json`), "{}\n");
+    writeFileSync(join(m, `.argus/live/${r}/taste/shots/a.png`), "png\n");
+    writeFileSync(join(m, `.argus/live/${r}/ledger.jsonl`), "secret\n");
+  }
+  const outside = join(tmpdir(), "curator-outside.txt");
+  writeFileSync(outside, "x\n");
+  symlinkSync(outside, join(m, `.argus/live/${RUN_B}/taste/link.txt`));
+  writeFileSync(join(m, ".argus/live/lock.json"), JSON.stringify({ runId: RUN_A }));
+  afterAll(() => rmSync(m, { recursive: true, force: true }));
+  const CURATOR = "sapu:curator";
+  const d = (tool_name: string, tool_input: Record<string, unknown>, cwd = m) => decide({ agent_id: "c1", agent_type: CURATOR, tool_name, tool_input, cwd });
+  const OUT = /the Curator reads only its run's taste\//;
+
+  it("is sapu's Curator by its exact name (bare or `sapu:`), never another plugin's agent of that name", () => {
+    for (const t of ["curator", "sapu:curator"]) expect(CURATOR_AGENT.test(t), t).toBe(true);
+    for (const t of ["other:curator", "sapu:curator2", "precurator", "sapu:sub:curator"]) expect(CURATOR_AGENT.test(t), t).toBe(false);
+  });
+
+  it("reads the lock's run's taste/ files", () => {
+    expect(d("Read", { file_path: join(m, `.argus/live/${RUN_A}/taste/judge.json`) })).toBeNull();
+    expect(d("Read", { file_path: `.argus/live/${RUN_A}/taste/shots/a.png` })).toBeNull();
+  });
+
+  it.each([
+    ["another run's taste/", () => join(m, `.argus/live/${RUN_B}/taste/judge.json`)],
+    ["its run's ledger", () => join(m, `.argus/live/${RUN_A}/ledger.jsonl`)],
+    ["a dot-dot path out of taste/", () => join(m, `.argus/live/${RUN_A}/taste/../ledger.jsonl`)],
+    ["the taste/ directory itself", () => join(m, `.argus/live/${RUN_A}/taste`)],
+    ["a missing file", () => join(m, `.argus/live/${RUN_A}/taste/none.json`)],
+    ["a file of the repo", () => join(m, ".git/config")],
+    ["a file outside the repo", () => outside],
+  ])("refuses %s", (_what, f) => {
+    expect(d("Read", { file_path: f() })).toMatch(OUT);
+  });
+
+  it("without a lock reads the newest run's taste/ only, and refuses a symlink leaving it", () => {
+    const n = realpathSync(mkdtempSync(join(tmpdir(), "curator-nolock-")));
+    try {
+      execFileSync("git", ["init", "-q", n]);
+      for (const r of [RUN_A, RUN_B]) {
+        mkdirSync(join(n, `.argus/live/${r}/taste`), { recursive: true });
+        writeFileSync(join(n, `.argus/live/${r}/taste/judge.json`), "{}\n");
+      }
+      symlinkSync(outside, join(n, `.argus/live/${RUN_B}/taste/link.txt`));
+      expect(d("Read", { file_path: join(n, `.argus/live/${RUN_B}/taste/judge.json`) }, n)).toBeNull();
+      expect(d("Read", { file_path: join(n, `.argus/live/${RUN_A}/taste/judge.json`) }, n)).toMatch(OUT);
+      expect(d("Read", { file_path: join(n, `.argus/live/${RUN_B}/taste/link.txt`) }, n)).toMatch(OUT);
+    } finally {
+      rmSync(n, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses every read where no run exists", () => {
+    const n = realpathSync(mkdtempSync(join(tmpdir(), "curator-norun-")));
+    try {
+      execFileSync("git", ["init", "-q", n]);
+      writeFileSync(join(n, "a.txt"), "a\n");
+      expect(d("Read", { file_path: join(n, "a.txt") }, n)).toMatch(OUT);
+    } finally {
+      rmSync(n, { recursive: true, force: true });
+    }
+  });
+
+  it.each([["Bash", { command: "ls" }], ["Write", { file_path: "/tmp/x", content: "x" }], ["Grep", { pattern: "x", path: m }], ["Glob", { pattern: "**/*" }], ["Agent", { prompt: "x", subagent_type: "general-purpose" }], ["WebFetch", { url: "https://x.test" }]])("refuses the Curator %s", (tool_name, tool_input) => {
+    expect(d(tool_name, tool_input)).toMatch(/the Curator has only Read and StructuredOutput/);
+  });
+
+  it("lets the Curator return its StructuredOutput, and knows it by its type alone", () => {
+    expect(d("StructuredOutput", { verdicts: [] })).toBeNull();
+    expect(decide({ agent_type: CURATOR, tool_name: "Bash", tool_input: { command: "ls" }, cwd: m })).toMatch(/the Curator has only Read/);
   });
 });
 

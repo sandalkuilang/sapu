@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { alive, cleanTemps, committed, example, freePort, git, liveContract, liveRun, longSecret, makeShim, now, partsIn, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, openFailure, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { CHROME_QUIET, CLI_PACKAGE, CLI_VERSION, cliCacheRoot, cliInstallDir, ensureCli, findChrome, openFailure, PAGE_INIT, slotConfig, slotDir, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { cliEnv, closeSessions, runCli, sessionName, SOCKETS_ROOT, socketsDir, tmpLink } from "../plugins/sapu/scripts/argus-live-cli.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1494,7 +1494,9 @@ describe("argus-live per-slot config", () => {
     const dir = join(tempDir(), "1");
     writeSlotConfig(dir, slotConfig({ ...fixture(), dir }));
     expect(JSON.parse(readFileSync(join(dir, ".playwright/cli.config.json"), "utf8")).outputDir).toBe(join(dir, "out"));
-    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(SIGNAL_SCRIPT);
+    // The init payload with the slot's own taste key in place of the recorders' mark.
+    const key = readFileSync(join(dir, ".playwright/taste.key"), "utf8").trim();
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT.split("@@argus-taste-key@@").join(key));
     for (const f of [".playwright/cli.config.json", ".playwright/signals.js"]) expect(statSync(join(dir, f)).mode & 0o777).toBe(0o600);
     for (const d of ["", ".playwright", "out", "files"]) expect(statSync(join(dir, d)).mode & 0o777).toBe(0o700);
   });

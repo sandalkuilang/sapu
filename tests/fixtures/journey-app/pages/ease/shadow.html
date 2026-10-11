@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Draft</title></head>
+<body>
+<main><save-box></save-box></main>
+<script>
+  // A web component: everything it renders lives in its shadow root. In mode "signal" it shows "Saving" and a
+  // determinate progressbar at once, for the 1.5 s the save takes; in mode "silent" it shows nothing until done.
+  const mode = "__MODE__";
+  customElements.define("save-box", class extends HTMLElement {
+    constructor() {
+      super();
+      const root = this.attachShadow({ mode: "open" });
+      root.innerHTML = '<style>:host { display: block; width: 300px; }</style><button>Save draft</button><p></p><div></div>';
+      const [button, line, slot] = [root.querySelector("button"), root.querySelector("p"), root.querySelector("div")];
+      button.addEventListener("click", async () => {
+        if (mode === "signal") {
+          line.textContent = "Saving";
+          slot.innerHTML = '<div role="progressbar" aria-label="Saving" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" style="width: 100px; height: 8px; background: gray"></div>';
+        }
+        await fetch("/api/wait?ms=1500");
+        slot.innerHTML = "";
+        line.textContent = "Draft saved";
+      });
+    }
+  });
+</script>
+</body></html>

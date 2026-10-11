@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
+import { loadTaste, readTasteState, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 
 export const JOURNEYS_FILE = ".argus/journeys.json";
 const NOT_A_MAP = `refused: ${JOURNEYS_FILE} is not a journey map`;
@@ -358,14 +359,52 @@ export function catalog(main) {
 const MAX_PARALLEL = 2;
 
 /**
- * A journey's SELECT score (spec §6, decision 22): `cycles_since_visit × exposure × (1 + commits)`, with
- * `cycles_since_visit = cycle − lastCycle` (`cycle` when never visited) and at least 1, exposure 2 for a
- * money journey, doubled again when the momus report flagged it (`flagged`, ids), `commits` the commits
- * touching its anchor files since its last visit.
+ * A journey's SELECT score (spec §6, decision 22; spec §20.4): `cycles_since_visit × exposure × taste × (1 +
+ * commits)`, with `cycles_since_visit = cycle − lastCycle` (`cycle` when never visited) and at least 1, exposure 2
+ * for a money journey, doubled again when the momus report flagged it (`flagged`, ids), `taste` its taste factor
+ * (tasteFactor; 1 when not given), `commits` the commits touching its anchor files since its last visit.
  */
-export function score(j, { cycle, flagged = [], commits = 0 }) {
+export function score(j, { cycle, flagged = [], commits = 0, taste = 1 }) {
   const since = Math.max(1, cycle - (Number.isInteger(j.lastCycle) ? j.lastCycle : 0));
-  return since * (j.money ? 2 : 1) * (flagged.includes(j.id) ? 2 : 1) * (1 + commits);
+  return since * (j.money ? 2 : 1) * (flagged.includes(j.id) ? 2 : 1) * taste * (1 + commits);
+}
+
+/** A confirmed taste row's weight in its journey's debt (phase 7 decision 18): S1 weighs as S2. */
+const DEBT = { S1: 2, S2: 2, S3: 1, S4: 0.5 };
+
+/**
+ * Journey `id`'s taste factor (phase 7 decision 18): `1 + min(1, debt / 4)`, `debt` the weight of its rows in `state`
+ * (`.argus/taste-state.json`: confirmed rows only) that are still queued (a filed row's debt is its issue's, which the
+ * filing reconciles) and not accepted — neither in state `accepted` nor named by one of `accept` (taste.json's `{rule,
+ * key}`, `key` the row's screen key). S4 rows together weigh at most 1 (×1.25): coherence alone never lifts a journey
+ * far. A journey never judged has debt 2 (×1.5). The cap at ×2 is money's doubling: a journey's UI debt lifts it as far
+ * as handling money does, never further.
+ */
+export function tasteFactor(state, id, accept = []) {
+  const j = state && isObj(state.journeys) && Object.hasOwn(state.journeys, id) ? state.journeys[id] : null;
+  if (!j || j.judged === null) return 1.5;
+  let debt = 0;
+  let polish = 0;
+  for (const r of Object.values(j.rows)) {
+    if (r.state !== "queued" || accept.some((a) => a.rule === r.rule && a.key === r.screen)) continue;
+    if (r.severity === "S4") polish += DEBT.S4;
+    else debt += DEBT[r.severity] ?? 0;
+  }
+  return 1 + Math.min(1, (debt + Math.min(1, polish)) / 4);
+}
+
+/**
+ * What SELECT reads of the taste pass: the state and the owner's accept rows. A broken taste.json or state never stops
+ * the cycle: no journey weighs taste debt (`off`, so every factor is 1) and `warning` says why.
+ */
+function selectTaste(main) {
+  const { taste, errors } = loadTaste(main);
+  if (!taste) return { state: null, accept: [], off: true, warning: `taste: ${TASTE_FILE}: ${errors[0]}: no taste debt weighed this cycle` };
+  try {
+    return { state: readTasteState(main), accept: taste.accept, off: tasteOff(taste), warning: null };
+  } catch (e) {
+    return { state: null, accept: [], off: true, warning: `taste: ${String(e.message).replace(/^failed: /, "")}: no taste debt weighed this cycle` };
+  }
 }
 
 /** The commits touching journey `j`'s anchor files in `lastHead..HEAD` (0 without lastHead, or when git cannot tell). */
@@ -434,7 +473,8 @@ function allocate(j, roles, used) {
 }
 
 /**
- * SELECT (spec §6, decision 22): the map's journeys scored (score) and taken in rank order (score, then id),
+ * SELECT (spec §6, decision 22): the map's journeys scored (score, with each one's tasteFactor from taste-state.json
+ * and taste.json's accept rows) and taken in rank order (score, then id),
  * or in the order of `ids` when given → `{picks: [{id, score, accounts}], waits: [{id, score, why}], displaced:
  * [{id, score}]}`. A global journey first is selected alone (the rest wait: `global journey selected alone`);
  * a later one waits (`a global journey waits for a cycle of its own`); otherwise up to
@@ -445,7 +485,8 @@ function allocate(j, roles, used) {
 export function selectJourneys(main, { cycle, flagged = [], ids = null, runner = run }) {
   const { roles, max } = selectRoles(main);
   const map = readJourneys(main);
-  const all = (map ? map.journeys : []).map((j) => ({ j, score: score(j, { cycle, flagged, commits: commitsSince(main, j, runner) }) }));
+  const t = selectTaste(main);
+  const all = (map ? map.journeys : []).map((j) => ({ j, score: score(j, { cycle, flagged, commits: commitsSince(main, j, runner), taste: t.off ? 1 : tasteFactor(t.state, j.id, t.accept) }) }));
   const ranked = [...all].sort((a, b) => b.score - a.score || (a.j.id < b.j.id ? -1 : a.j.id > b.j.id ? 1 : 0));
   const pass = (list) => {
     const picks = [];
@@ -468,7 +509,8 @@ export function selectJourneys(main, { cycle, flagged = [], ids = null, runner =
     }
     return { picks, waits };
   };
-  if (ids === null) return { ...pass(ranked), displaced: [] };
+  const warnings = t.warning ? [t.warning] : [];
+  if (ids === null) return { ...pass(ranked), displaced: [], warnings };
   const chosen = ids.map((id) => {
     const x = all.find((y) => y.j.id === id);
     if (!x) throw new Error(`refused: select: no journey ${id} in ${JOURNEYS_FILE}`);
@@ -476,5 +518,5 @@ export function selectJourneys(main, { cycle, flagged = [], ids = null, runner =
   });
   const mine = pass(chosen);
   const picked = new Set(mine.picks.map((p) => p.id));
-  return { ...mine, displaced: pass(ranked).picks.filter((p) => !picked.has(p.id)).map(({ id, score: s }) => ({ id, score: s })) };
+  return { ...mine, displaced: pass(ranked).picks.filter((p) => !picked.has(p.id)).map(({ id, score: s }) => ({ id, score: s })), warnings };
 }

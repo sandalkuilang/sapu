@@ -13,12 +13,13 @@ import { readRun, updateRun, worktreeHeadFile } from "./argus-live-run.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
 
 /** The oracles a candidate may name and coverage may judge (spec §7, §10, §19.9). */
-export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale", "regression"];
+export const ORACLES = ["handoff", "status-coherence", "dead-end", "reversal", "orphaned-work", "claim-race", "stale-view", "unreachable-step", "re-entry", "discoverability", "interrupted-flow", "viewport-locale", "regression", "taste"];
 /**
- * The oracles only the lane's own pass names (spec §19.9): a regression is decided by re-running the suite's
- * unchanged expectations, never by an explorer's word, so an explorer's return never names one.
+ * The oracles only the lane's own pass names: a regression is decided by re-running the suite's unchanged
+ * expectations (spec §19.9), a taste row by the taste pass's measurement on a second visit (spec §20.4), never by an
+ * explorer's word, so an explorer's return never names one.
  */
-export const LANE_ORACLES = ["regression"];
+export const LANE_ORACLES = ["regression", "taste"];
 const EXPLORER_ORACLES = ORACLES.filter((o) => !LANE_ORACLES.includes(o));
 /** Why a heal-mode explorer found no new target (spec §19.9): no control for the step's goal, a page that blocked it, the harness. */
 const HEAL_REASONS = ["no-control", "blocked", "harness"];
@@ -33,6 +34,9 @@ const JSON_CAP = 256 * 1024;
 /** How deep a repro step's objects and arrays may nest (the step itself is level 1), and the shape of its keys. */
 const REPRO_DEPTH = 8;
 const REPRO_KEY = /^[A-Za-z0-9_-]{1,40}$/;
+
+/** The longest text of a trail row's field (`goal`, `words_shown`, `new_state`): short and fixed, never prose. */
+const TRAIL_TEXT = 120;
 
 /** A free-text string capped at 500 characters (`…` appended; a surrogate pair never split). */
 const cap = (s) => {
@@ -123,7 +127,7 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
     return null;
   };
 
-  keys(obj, ["journey", "status", "roles", "steps", "created", "values", "candidates", "cw", "coverage", "harness_events", "next", "notes", "path", "heal", "heal_reason"], "the return");
+  keys(obj, ["journey", "status", "roles", "steps", "created", "values", "candidates", "cw", "trail", "coverage", "harness_events", "next", "notes", "path", "heal", "heal_reason"], "the return");
   const v = {};
   if (obj.journey !== journey) err(`journey must be ${journey}, the slot's`);
   v.journey = journey;
@@ -168,6 +172,18 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
     };
   });
   v.cw = objects(obj.cw, "cw", 100, ["step", "q1", "q2", "q3", "q4"], (x, at) => Object.fromEntries(["step", "q1", "q2", "q3", "q4"].map((k) => [k, text(x[k], `${at}.${k}`)])));
+  // The walkthrough's trail, one row a journey step, in short fixed fields: what the Curator answers its walkthrough from.
+  const short = (x, where) => {
+    if (typeof x === "string" && x.length <= TRAIL_TEXT && !/[\u0000-\u001f\u007f]/.test(x)) return x;
+    err(`${where} must be a string of at most ${TRAIL_TEXT} characters`);
+    return undefined;
+  };
+  if (obj.trail !== undefined)
+    v.trail = objects(obj.trail, "trail", 100, ["step", "goal", "clicks", "words_shown", "new_state"], (x, at) => {
+      if (!Number.isInteger(x.step) || x.step < 1 || x.step > 100) err(`${at}.step must be a step number from 1 to 100`);
+      if (!Number.isInteger(x.clicks) || x.clicks < 0 || x.clicks > 99) err(`${at}.clicks must be a count from 0 to 99`);
+      return { step: x.step, goal: short(x.goal, `${at}.goal`), clicks: x.clicks, words_shown: short(x.words_shown, `${at}.words_shown`), new_state: short(x.new_state, `${at}.new_state`) };
+    });
   v.coverage = {};
   if (obj.coverage !== undefined) {
     if (!isObj(obj.coverage)) err("coverage must be an object");

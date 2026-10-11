@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Assistant</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; color: rgb(20, 20, 20); }
+  #log { min-height: 120px; border: 1px solid rgb(200, 200, 200); padding: 8px; margin-bottom: 12px; }
+  .msg { margin: 6px 0; }
+  .actions button, form button, #rename { min-height: 32px; min-width: 64px; margin-right: 6px; }
+  textarea { width: 360px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Assistant</h1>
+  <div id="log"></div>
+  <div id="notes"></div>
+  <form id="composer">
+    <textarea id="box" aria-label="Message" rows="2"></textarea>
+    <button id="send" type="submit">Send</button>
+    <button id="stop" type="button" hidden>Stop</button>
+  </form>
+  <p><button id="rename" type="button">Rename chat</button></p>
+</main>
+<script>
+// One assistant page, every variant by query (the test server fills each mark): stop (swap: the send button turns
+// into Stop; button: a separate Stop; none: the send button is only disabled; broken: a Stop that does nothing;
+// discard: a separate stop named "Discard"), regen (yes: Copy and Regenerate after the answer; copy: Copy only; delete:
+// Copy and "Delete answer", which removes it; none), error (retry: an alert with Retry;
+// endless: busy for ever; stuck: a message but no way on; silent: nothing shown), stream (yes: the answer read chunk
+// by chunk; once: read whole), live (log: the answer region is a live log; busy: only aria-busy while it answers; bare:
+// neither), dots (yes: a thinking indicator before the first word), cite (yes: a Source chip inside the answer once it
+// starts), n (the answer's chunks). The server fails a message that says "please fail".
+const MODE = { stop: "__STOP__", regen: "__REGEN__", error: "__ERROR__", stream: "__STREAM__", live: "__LIVE__", dots: "__DOTS__", cite: "__CITE__", n: "__N__" };
+const log = document.getElementById("log");
+const notes = document.getElementById("notes");
+const box = document.getElementById("box");
+const send = document.getElementById("send");
+const stop = document.getElementById("stop");
+if (MODE.live === "log") { log.setAttribute("role", "log"); log.setAttribute("aria-live", "polite"); }
+let ctrl = null;
+let busyNow = false;
+
+function busy(on) {
+  busyNow = on;
+  if (MODE.live !== "bare") log.setAttribute("aria-busy", on ? "true" : "false");
+  if (MODE.stop === "swap") { send.textContent = on ? "Stop" : "Send"; send.type = on ? "button" : "submit"; }
+  else { send.disabled = on; stop.hidden = !(on && (MODE.stop === "button" || MODE.stop === "broken" || MODE.stop === "discard")); }
+}
+send.addEventListener("click", (e) => { if (busyNow && MODE.stop === "swap") { e.preventDefault(); ctrl && ctrl.abort(); } });
+if (MODE.stop === "discard") stop.textContent = "Discard";
+stop.addEventListener("click", () => { if (MODE.stop === "button" || MODE.stop === "discard") ctrl && ctrl.abort(); });
+document.getElementById("rename").addEventListener("click", () => { fetch("/api/rename", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Chat" }) }).catch(() => {}); });
+
+function actions(ans, text) {
+  if (MODE.regen === "none") return;
+  const bar = document.createElement("div");
+  bar.className = "actions";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", () => { copy.textContent = "Copied"; });
+  bar.append(copy);
+  if (MODE.regen === "yes") {
+    const again = document.createElement("button");
+    again.type = "button";
+    again.textContent = "Regenerate";
+    again.addEventListener("click", () => { bar.remove(); ans.textContent = ""; answer(ans, text); });
+    bar.append(again);
+  }
+  if (MODE.regen === "delete") {
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete answer";
+    del.addEventListener("click", () => ans.remove());
+    bar.append(del);
+  }
+  ans.append(bar);
+}
+
+function failed(ans, text) {
+  if (MODE.error === "endless") return;
+  busy(false);
+  ans.remove();
+  if (MODE.error === "silent") return;
+  if (MODE.error === "stuck") { box.disabled = true; send.disabled = true; notes.textContent = "Something went wrong."; return; }
+  const alert = document.createElement("div");
+  alert.setAttribute("role", "alert");
+  alert.textContent = "The answer failed. ";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry";
+  retry.addEventListener("click", () => { alert.remove(); const a = document.createElement("div"); a.className = "msg"; log.append(a); answer(a, text); });
+  alert.append(retry);
+  notes.append(alert);
+}
+
+async function answer(ans, text) {
+  busy(true);
+  let dots = null;
+  if (MODE.dots === "yes") { let k = 0; dots = setInterval(() => { k = (k % 3) + 1; ans.textContent = ".".repeat(k); }, 120); }
+  const quiet = () => { if (dots) { clearInterval(dots); dots = null; ans.textContent = ""; } };
+  ctrl = new AbortController();
+  try {
+    const q = new URLSearchParams({ n: MODE.n, wait: MODE.dots === "yes" ? "700" : "0" });
+    const res = await fetch("/api/chat?" + q, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }), signal: ctrl.signal });
+    if (!res.ok) throw new Error("status " + res.status);
+    if (MODE.stream === "once") { const all = await res.text(); quiet(); ans.append(all); }
+    else {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        quiet();
+        ans.append(dec.decode(value));
+        if (MODE.cite === "yes" && !ans.querySelector(".cite")) { const c = document.createElement("button"); c.type = "button"; c.className = "cite"; c.textContent = "Source"; ans.append(c, " "); }
+      }
+    }
+    busy(false);
+    actions(ans, text);
+  } catch (e) {
+    quiet();
+    if (e && e.name === "AbortError") { busy(false); return; }
+    failed(ans, text);
+  }
+}
+
+document.getElementById("composer").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = box.value.trim();
+  if (!text || busyNow) return;
+  box.value = "";
+  const you = document.createElement("div");
+  you.className = "msg";
+  you.textContent = "You: " + text;
+  const ans = document.createElement("div");
+  ans.className = "msg answer";
+  log.append(you, ans);
+  answer(ans, text);
+});
+</script>
+</body>
+</html>

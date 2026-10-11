@@ -11,17 +11,24 @@ The contract has three layers:
 |---|---|---|
 | Engine facts | `.claude/sapu.json` | the scripts (`sapu-contract.mjs`, `sapu-merge.sh`, `sapu-guard.mjs`) and the `sapu-wave.js` workflow |
 | Per-skill profile | `.claude/sapu/<skill>.md` (`sapu`, `worker`, `forge`, `argus`, `momus`, `nemesis`, `dream`) | the skill concerned, as its first step |
-| Existing QA configuration | `.argus/config.yml`, `.argus/live.json` (the journey lane's instance; format: `skills/journey/live.md`), `.argus/smoke.json` (the journey lane's smoke suite: its members, browsers, CI wiring and budgets; format: `skills/journey/smoke.md`), `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged); `argus-live.mjs` |
+| Existing QA configuration | `.argus/config.yml`, `.argus/live.json` (the journey lane's instance; format: `skills/journey/live.md`), `.argus/smoke.json` (the journey lane's smoke suite: its members, browsers, CI wiring and budgets; format: `skills/journey/smoke.md`), `.argus/taste.json` (the journey lane's taste calibration: its reference frame, route archetypes, accepted rows, gated and silenced rules and issue cap, checked against the plugin's `data/taste-bar.json`), `.momus/config.yml`, `.nemesis/config.yml` | argus / momus / nemesis (unchanged); `argus-live.mjs` |
 
-**The journey lane's files.** Tracked in a repo home: `.argus/live.json`, `.argus/smoke.json` and the
+**The journey lane's files.** Tracked in a repo home: `.argus/live.json`, `.argus/smoke.json`, `.argus/taste.json` and the
 smoke suite's directory (`smoke.json` `dir`; its `.auth/` is ignored). Local state, ignored under `.argus/`:
 `.argus/live/<runId>/` (a run's records; its `filed.jsonl` lists each issue or comment `scrub` filed),
 `.argus/smoke-state.json` (staged suite changes, rejected digests, quarantine streaks, a closed heal's
 pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
-(`smoke ci`'s triage), `.argus/perf.json` (perf baselines) and `.argus/reports/<runId>.md` (`report`'s
+(`smoke ci`'s triage), `.argus/perf.json` (perf baselines), `.argus/taste-state.json` (per journey the last taste
+judge, the best known path and each confirmed taste row with its state, 0600; a run's taste records are under
+`<runId>/taste/`: each slot's `screens.jsonl`, the `shots/`, `judge.json`, `brief.json` (the Curator's brief), and `curator.json`, the Curator's return,
+which the orchestrator stores through `taste curator`; a shot whose scrub verdict found a secret, a password or a one-time-code field goes to
+`<runId>/held-shots/` instead, outside the Curator's reach) and `.argus/reports/<runId>.md` (`report`'s
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
-smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
-`-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`) run only under its verbs.
+smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-codeproj` (its projects and the taste reporter), `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
+`-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`; the taste pass's `-tastecfg` (`.argus/taste.json`, the bar,
+`.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
+maintainer's calibration script (`taste-calibrate`) and its reference corpus live in sapu's own repository, never in
+the plugin.
 
 **Where it lives: in the repo, or local.** By default the contract and profiles are committed in
 the repo (the table above). A repo that must not show sapu at all (someone else's repo, an
@@ -843,7 +850,8 @@ could use them.
   `status`, `status --json`, `check` and `smoke check` (which writes nothing), every word after the
   script literal; the explorer also its `pw` (above). Every other verb (`up`, `down`, `renew`, `slot`,
   `repro`, `scrub`, `intake`, `select`, `visit`, `map-check` with or without `--list` or `--merge`,
-  which rewrites the map, every other `smoke` verb, `seed`, `report`, …) is refused, by
+  which rewrites the map, every other `smoke` verb, `seed`, `report`, every `taste` verb — `taste accept`, the
+  owner's ruling, included —, …) is refused, by
   the script's name in any case or the real file behind a path, run by its path or by an interpreter
   as its first operand past its options and their values, or loaded by an option (`-r`, `--import`),
   behind env prefixes, wrappers and `sh -c`; a script name or a loaded file the shell builds whole
@@ -852,6 +860,18 @@ could use them.
   `node --check` runs nothing. Not caught (a guard LIMIT): a copy of the script under another name, or
   an interpreter's own code that imports it (`node -e`); either reaches every verb, the ones that push a
   branch or dispatch a workflow (`smoke propose`, `smoke baseline`) included.
+- `sapu:curator` (the journey lane's Curator): its tools are limited by its frontmatter (`tools: Read,
+  StructuredOutput`) and by the guard, which refuses every other tool it sees (Bash, Grep, Glob, writes and
+  dispatches included). Its Read is only of a file whose real path lies under its run's `taste/`
+  (`<MAIN>/.argus/live/<run>/taste/`: the lock's run, else the newest run directory): the judge rows and the
+  screenshots, never the run's ledger or another run's records. It files nothing.
+- The taste calibration script (`taste-calibrate`, in sapu's own repository; it fetches the reference corpus's
+  public pages) is the maintainer's: every subagent is refused it as a program, an interpreter's first operand
+  or preload (by its name in any case, a glob or a brace expansion it matches, or the real file behind a path), as an
+  interpreter's stdin (`-` or no operand, fed by `<` or a pipe), in an interpreter's code (`node -e`), behind env prefixes, wrappers and `sh -c`, and as a script name the shell builds when
+  `--network`, `--corpus` or `--out` follows or the command names the script. Its tests and reads of it stay
+  allowed. Not caught (a guard LIMIT): a copy of it under another name. Its output reaches the plugin only
+  through a reviewed pull request.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area
   diff, and "the classifier did not run" = red.
 - No subagent writes git's own files: a `.git` file or directory (and its content,

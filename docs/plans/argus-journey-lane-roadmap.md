@@ -1,6 +1,6 @@
 # Argus journey lane — implementation roadmap
 
-Spec: [docs/specs/argus-journey-lane.md](../specs/argus-journey-lane.md). Target release: sapu 2.9.0 (phases 1 to 5), then 2.10.0 (phase 6).
+Spec: [docs/specs/argus-journey-lane.md](../specs/argus-journey-lane.md). Target release: sapu 2.9.0 (phases 1 to 5), then 2.10.0 (phase 6), then 2.11.0 (phase 7).
 
 The spec covers several subsystems that can each be built and tested on their own, so it is
 implemented in phases, each with its own plan. A phase starts only when the one before it is
@@ -17,11 +17,12 @@ proxy's mechanics in phase 3 depend on the instance lifecycle of phase 2).
 | 4b | Backlog | every open backlog issue of this repo, fixed or (where the fix is a design limit) documented and closed with its reason, each commit carrying `Closes #N`; order: safety first (agent cwd and memory, the guard following the touched repo, writes into the active plugin folder, machine and git config write paths, a second sweep stopping early, the step budget proof), then portability and generic defaults, then trust-rule refinements and dogfooding | per issue |
 | 5 | Engine text and release | `journeys.md`, the `/sapu:journey` skill, the `sapu:ui-explorer` agent, argus SKILL.md, reference.md and standards.md edits, `/sapu:init`, sapu B2, the inspector exclusion, CONTRACT.md, docs and diagram, engine tests (including one pinning the `ui-explorer` frontmatter to `tools: Bash, Read, StructuredOutput`), the upgrade note (the skills question, the new label, and stricter owner labels: a 2.8.x label with spaces or `, = " ' / [ ] { } ( ) %` must be renamed), the release checklist; the lane prompt runs `argus-live.mjs up` with a long timeout or in the background, so a harness timeout cannot cut it mid-setup (an `up` cut short leaves a run that only `down` accepts) | §4, §5, §7, §16 |
 | 6 | [Smoke](argus-journey-lane-6-smoke.md) | the smoke suite generated from admitted paths and committed in the consumer repo (CI, Chromium, Firefox, WebKit, Edge when installed), screenshot, ARIA and check baselines adopted from CI, the layout, locale, accessibility, contrast, token, form, link and dynamic-state checks, reviewable healing and CI triage with quarantine, performance baselines, journeys seeded from issues and docs, the per-cycle report | §3, §19 |
-| 7 | Pilot | repo-side prep in the repo argus has run on longest (explore datastore, `store_check`, `reset`, `facts`, `mail`, `triggers`, `live` block, `env_file`), three journeys, the scorecard, the smoke suite on its CI | §15 |
+| 7 | [Taste](argus-journey-lane-7-taste.md) | world-class UI quality as the lane's first purpose: the taste bar (versioned rules, reference frames, per-archetype ranges calibrated on the best public sites by a maintainer-only script that stores numbers only), `.argus/taste.json`, visual and ease probes (scale, restraint, hierarchy, colour roles, dark parity, motion, feedback and loaders, density, states, microcopy, consistency, KLM and Fitts efficiency), the hook's screen recording, `taste judge`/`confirm`/`file`/`accept`, the `sapu:curator` agent, SELECT's taste factor, the suite's advisory `taste` project and job, the report led by the scorecard | §20 |
+| 8 | Pilot | repo-side prep in the repo argus has run on longest (explore datastore, `store_check`, `reset`, `facts`, `mail`, `triggers`, `live` block, `env_file`), three journeys, the scorecard, the smoke suite on its CI | §15 |
 
 Rules for every phase:
 - TDD: the failing test first, then the code, then the whole suite (`npx vitest run`).
 - The suite runs on the release machine; browser tests need a local Chrome and fail without one.
 - Commits carry no assistant attribution. One feature branch, `feat/argus-journey-lane`, one PR at
   the end of phase 5, carrying the backlog of phase 4b too; nothing is merged, tagged or released
-  until the owner says so; phase 6 is built on the release branch and ships as a PR of its own on top of the held 2.9.0 PR, as 2.10.0, held like it; the pilot (phase 7) runs on the released plugin.
+  until the owner says so; phase 6 is built on the release branch and ships as a PR of its own on top of the held 2.9.0 PR, as 2.10.0, held like it; phase 7 is built on `feat/argus-p7` from phase 6's tip and ships as 2.11.0, a PR stacked on the 2.10.0 one, held like it; the pilot (phase 8) runs on the released plugin.

@@ -72,7 +72,7 @@ A repo without tests can only use `/dream`.
 | Clean up every open PR and issue | `/sapu` | **Phase A:** every open PR is reviewed, fixed, or closed. **Phase B:** each issue is one Workflow call (a *lane*), up to `lanes` in flight, from the machine's cores, memory and current load. Every PR is reviewed by an agent that is not its author, and merged one at a time through `sapu-merge.sh`, only after a green gate. Every issue ends *merged*, *skipped* (with a reason), or *blocked* (with a reason). |
 | Work one issue through to a merged PR | `/forge 123` | Creates a branch, implements + tests, opens a PR, has it reviewed by an agent that is not its author, then gates and merges it through `sapu-merge.sh` when its risk tier allows (🔴 only through the `needs-ai` protocol). Under `/sapu`, a worker stops at the open PR instead. |
 | Hunt bugs, fraud gaps and UI defects in the running dev app | `/argus` | Needs the dev app running and `.argus/config.yml`. Findings are filed as deduplicated issues. Run from the main session with `.argus/live.json` in place, a cycle may pick the journey lane instead (next row). |
-| Walk the app's business journeys through the real UI, as every role they need | `/journey` | One bounded cycle on an isolated instance argus starts itself (its own worktree, ports, data and HOME), never on your servers: the journey catalog refreshed from the code when it is stale, the top journeys walked by `sapu:ui-explorer` agents, every candidate reproduced two of two by a script before anything is filed. `/journey list` prints the catalog and starts no app; when the catalog is stale it first rebuilds it with one map-mode explorer (`list --rebuild` always does); `/journey <id> …` walks the journeys named. Needs `argus` and `journey` both allowed in `policy.skills`, argus's profile and `.argus/config.yml`, `.argus/live.json` from `/sapu:init`, a Chrome-family browser (Google Chrome or Microsoft Edge), macOS or Linux with `lsof` or `ss`, and Docker only when the instance uses Compose. Run it from the main session, never inside `/inspector`. |
+| Walk the app's business journeys through the real UI, as every role they need | `/journey` | One bounded cycle on an isolated instance argus starts itself (its own worktree, ports, data and HOME), never on your servers: the journey catalog refreshed from the code when it is stale, the top journeys walked by `sapu:ui-explorer` agents, every candidate reproduced two of two by a script before anything is filed. The same cycle judges every screen it walked for ease, elegance and modernity, and its report opens with a taste and usability scorecard ("The taste and usability pass"). `/journey list` prints the catalog and starts no app; when the catalog is stale it first rebuilds it with one map-mode explorer (`list --rebuild` always does); `/journey <id> …` walks the journeys named. Needs `argus` and `journey` both allowed in `policy.skills`, argus's profile and `.argus/config.yml`, `.argus/live.json` from `/sapu:init`, a Chrome-family browser (Google Chrome or Microsoft Edge), macOS or Linux with `lsof` or `ss`, and Docker only when the instance uses Compose. Run it from the main session, never inside `/inspector`. |
 | Leave a regression net behind: a generated Playwright suite of the critical journeys, run by your CI on every pull request | `/journey smoke` | One smoke cycle (the journey lane's `smoke` mode): the lane plans which journeys the suite should hold, captures and admits their paths, re-runs the suite's paths, reads CI's last run, heals or reports what broke, and proposes every change to the suite as a pull request on an `argus/` branch that you merge or close. No LLM runs when the suite runs. Needs everything `/journey` needs, a committed contract and `traces: "visible"`; details in "The smoke suite", below. |
 | Add journeys an issue or a doc describes to the catalog | `/journey seed --issue <n>` or `/journey seed --doc <file>:<a>-<b>` | One map-mode explorer on an instance of its own reads issue `<n>` (only when `sapu-contract.mjs issue-trust` passes for it) or lines `a` to `b` of a file tracked at HEAD, as data, and the journeys it names that your code anchors join the catalog, marked `seeded`; then the catalog prints as `/journey list` does. Needs what `/journey list` needs. Details in "Journeys from issues and docs", below. |
 | Release-readiness audit | `/momus` | Produces a report per area. Issues are filed only when you ask for it. |
@@ -86,6 +86,7 @@ Without the aliases, the full names are `/sapu:sapu`, `/sapu:forge`, and so on. 
 - **One invocation is one bounded cycle**, within `limits.max_cycle_minutes`, on up to `limits.max_parallel_journeys` journeys; a pass over the whole catalog is that many invocations. The report ends with the next picks.
 - **To watch,** run the `argus-live.mjs show` command the cycle prints, in a terminal of your own: it opens the browser CLI's dashboard on the cycle's sessions and blocks until Ctrl-C (closing the terminal or a `kill` ends it and its dashboard too). It starts with `cd` to your main checkout, since it reads the lock there. The cycle never runs it itself.
 - **A finding only you can rule on** (a doc that contradicts coherent behaviour, a usability heuristic with no written rule) carries the needs-owner label (`labels.needsOwner`, default `argus:needs-owner`), and `/sapu` and `/forge` skip it. Remove the label to accept the finding, or close the issue as not planned to rule the behaviour intended. No agent does either: the guard refuses both to every subagent.
+- **A taste finding only you can rule on** (two screens that do one thing two ways with no majority, or a row the Curator rejected) carries the needs-owner label too. Close a taste issue as not planned to say the design is intended; the orchestrator then runs `taste accept` on your word, and the finding never files or weighs in SELECT again.
 - **A cycle running beside a sweep** shares the machine's CPU with the sweep's gates: a gate that overlapped a cycle is logged with ` live=1` in `.git/sapu-gates.log` and never counts toward a flake proof.
 
 `/sapu` tips:
@@ -124,6 +125,7 @@ What is enforced, and by what:
 - **The cleanup script** (`sapu-cleanup.mjs`) deletes only what the next section describes, and only with `--apply` (without it, it still fetches with `--prune` and prunes stale worktree records).
 - **The journey lane's script** (`argus-live.mjs`) builds the isolated instance and refuses to start one that would touch your servers, services or data; the guard keeps its explorer to that script's browser wrapper and to files committed in the run's worktree; and `scrub`, the only way the lane files, refuses an issue holding a secret the run saw. What each layer does, and its known limits: [Safety and trust](security.md#the-journey-lane).
 - **The smoke commands** are the orchestrator's: the guard refuses `smoke plan|admit|run|heal|propose|ci|baseline|perf|workflow`, `seed` and `report` to every subagent (`smoke check` is a read). The suite is generated from data by the generator alone, every proposed file and pull request body passes `scrub`'s secret matcher, nothing reaches the repo but as a pull request you merge, and the workflow runs with read-only permissions and pinned actions. What each does, and its known limits: [Safety and trust](security.md#the-smoke-suite).
+- **The taste commands** are the orchestrator's as well: the guard refuses `taste judge|confirm|file|curator|accept` to every subagent, and `taste accept` runs only on your word. The Curator, which judges the lane's screenshots, can only Read its own run's `taste/` files and return one answer. The maintainer's calibration script is refused to every subagent in any form. What each does, and its known limits: [Safety and trust](security.md#the-taste-and-usability-pass).
 - Everything else in the skills — what to read, what counts as instructions — is a rule for the agents, not a lock.
 
 ### The smoke suite
@@ -132,7 +134,7 @@ The journey lane can leave a regression net in your repo. The **smoke suite** is
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/smoke-dark.svg">
-  <img src="img/smoke.svg" alt="The smoke cycle: the journey lane captures a path from an explorer, admits it once it held at every width and on a used instance, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request." width="100%">
+  <img src="img/smoke.svg" alt="The smoke cycle: the journey lane captures a path from an explorer, admits it once it held at every width and on a used instance, and proposes it as a generated suite in a pull request that the owner reviews and merges; CI runs the suite per browser project on every pull request, with a separate taste job whose scorecard is advisory unless the owner promotes a rule to gating, and uploads its results; the lane reads those results, decides whether a break is a flake, a UI change or a bug, and proposes a quarantine, a heal or a baseline, or files a regression, again as a pull request." width="100%">
 </picture>
 
 #### What you get
@@ -180,6 +182,7 @@ The journey lane can leave a regression net in your repo. The **smoke suite** is
 | `test` | One matrix job per project, in the pinned container (`mcr.microsoft.com/playwright:v<version>-noble`, pinned by its digest, with `--ipc=host --init`): `chromium`, `firefox`, `webkit`, `chromium-<width>` for each further viewport width, `a11y`, and `i18n` when `live.json` lists `locales` or `pseudo_locales`. Each runs `npm ci --ignore-scripts`, then `npx playwright test --shuffle --grep-invert @quarantine`, and prints the shuffle seed. | Yes |
 | `msedge` | The path and the checks on the runner's own Edge, no screenshots. Present only when `msedge` is among the suite's browsers. | Yes |
 | `quarantine` | The tests tagged `@quarantine`, as the same matrix: a flake is judged on the projects it flaked on. | No (`continue-on-error`) |
+| `taste` | The `taste` project in the same container, Chromium at the first width: the per-screen taste rules, with their scorecard in the job summary ("The taste job in CI"). Present when Chromium is among the suite's browsers. | Only when `.argus/taste.json` gates a rule |
 | `baseline` | Only by `workflow_dispatch`, from `smoke baseline`: writes screenshot and ARIA baselines (see "Baselines"). | No |
 
 Its safety properties, each of which you can read in the file:
@@ -189,7 +192,7 @@ Its safety properties, each of which you can read in the file:
 - Every step after the checkout waits for the suite (`hashFiles('<dir>/package.json') != ''`), so the workflow stays green on a branch without one.
 - A pull request from a fork runs no job, because a fork gets no secrets.
 - The dispatch inputs (`baseline`: `missing` or `changed`; `grep`: journey ids joined by `|`, none empty) reach the shell only through `env:` and are checked against fixed shapes first. The ids are anchored to a whole test title (`(^| )(<ids>)( |$)`), so `cart` never matches `add-to-cart`; a journey may not be named as a project.
-- Each job uploads `test-results/` as `<ci.artifact>-<project>` (default `argus-smoke-results-<project>`; `-msedge`, `-quarantine-<project>`) for 7 days. The baseline job also uploads what it wrote as `argus-smoke-baselines-<project>`. `.auth/` is never uploaded.
+- Each job uploads `test-results/` as `<ci.artifact>-<project>` (default `argus-smoke-results-<project>`; `-msedge`, `-quarantine-<project>`) for 7 days. The `taste` job uploads as `taste-<ci.artifact>`. The baseline job also uploads what it wrote as `argus-smoke-baselines-<project>`. `.auth/` is never uploaded.
 - `HOME` is `/root` in the container jobs, which Firefox needs. The jobs time out at 70 minutes, above the config's own global timeout of 60.
 
 The generated Playwright config retries a failing test once under CI (`retries: 1`) and runs one worker per job. It sets `forbidOnly`, `trace: "on-first-retry"` and `updateSnapshots: "none"`, so a CI run never writes a baseline. Outside CI it sets `ignoreSnapshots` (the baselines belong to the CI container) and `updateSnapshots: "missing"`. The base URL is `ARGUS_SMOKE_BASE_URL`, else the origin of `ci.web_server[0]`, and the config throws unless its host is loopback: the suite never drives a deployed environment.
@@ -305,6 +308,7 @@ Soft assertions, so one run reports every violation. Each violation has a stable
 | Links | the engine projects and each `chromium-<w>` | The same-origin `href`s of each page (up to `link_cap`) answer: a 404, 410 or 5xx fails, a loop of more than five redirects fails, and any other 4xx (a link offered to a role that cannot open it) or a failed request is `manual`. Each CTA route the map names for the role must have been visited. |
 | Loading, empty, toast | the engine projects and each `chromium-<w>` | No `aria-busy` loader or indeterminate progress bar left after the step settles; an empty table or list has text near it; a fixed toast sits in a live region, does not cover the next target and is dismissible or leaves by itself. |
 | Screenshots | the engine projects and each `chromium-<w>`, never `msedge`, `a11y` or `i18n` | One viewport screenshot per screen. |
+| Taste | `taste` | The per-screen rules of the taste and usability pass, at every screen and after each step that acts, then under reduced motion and dark mode; advisory unless `.argus/taste.json` gates a rule. See "The taste and usability pass". |
 
 The screens a journey's ARIA, axe, token and screenshot checks look at are the path's last step that acts on a page, unless `journeys.<id>.screens` lists step numbers.
 
@@ -325,20 +329,21 @@ The first two batches of a path, each on a fresh instance, set its baseline in `
 
 #### The report
 
-`report [--run <runId>]` writes `.argus/reports/<runId>.md` (mode 0600; the lock is not needed, so it works after `down`) from the cycle's records alone and prints the path. Its sections: journeys walked, candidates, issues filed (from the run's `filed.jsonl`, which `scrub --create` and `--comment` append), smoke (held, broke, flaky; healed, admitted, quarantined), performance (each batch beside its baseline), visual and checks (from the newest `smoke ci` triage), proposals, harness events, and any record it could not read. Free text is capped at 200 characters an item, defanged, and the whole file passes the secret matcher; a secret it still finds is replaced by `*** (<class>)`.
+`report [--run <runId>]` writes `.argus/reports/<runId>.md` (mode 0600; the lock is not needed, so it works after `down`) from the cycle's records alone and prints the path. Its sections: the taste and usability scorecard (first, when the cycle recorded screens; "The per-cycle scorecard"), journeys walked, candidates, issues filed (from the run's `filed.jsonl`, which `scrub --create` and `--comment` append), smoke (held, broke, flaky; healed, admitted, quarantined), performance (each batch beside its baseline), visual and checks (from the newest `smoke ci` triage), proposals, harness events, and any record it could not read. Free text is capped at 200 characters an item, defanged, and the whole file passes the secret matcher; a secret it still finds is replaced by `*** (<class>)`.
 
 #### Files and keys
 
 | File | Where | Holds |
 |---|---|---|
 | `.argus/smoke.json` | tracked | Membership (`max`, `pin`, `exclude`), browsers, per-journey `browsers`, `viewports`, `masks`, `screens` and `allow`, `workers`, `ci`, `perf`, `heal_max_steps`, `form_cases_max`, `link_cap`. Unknown keys are refused. Format: [`skills/journey/smoke.md`](../plugins/sapu/skills/journey/smoke.md). |
+| `.argus/taste.json` | tracked | The taste pass's calibration: `frame`, `archetypes`, `gate`, `off`, `accept`, `cap`, `optimistic`, `ai`, `copy`. Optional. Unknown keys are refused. See "`.argus/taste.json`". |
 | `.argus/live.json` | tracked | Gains `test_id_attribute`, `pseudo_locales`, `tokens` and a trigger's `seed`. Format: [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md). |
 | `<dir>/journeys/<id>.json`, `<id>.spec.ts`, `auth.setup.ts`, `support.ts`, `playwright.config.ts`, `package.json`, `package-lock.json`, `.gitignore` | committed | The suite. Everything but the paths and the lockfile is generated; the suite's own `.gitignore` keeps out the three ignored entries below. |
 | `<dir>/quarantine.json`, `known/<id>.json`, `changes.jsonl` | committed | Quarantined journeys, adopted check violations, the visible log of every change. |
 | `<dir>/__screenshots__/…`, `<dir>/__aria__/…` | committed | Baselines, per project and platform. |
 | `<dir>/fixtures.ts` | committed | Exists only when a role signs in through a `login.command`: your `signedIn`, created once as a stub that throws, never overwritten. |
 | `<dir>/.auth/`, `test-results/`, `playwright-report/` | ignored | Signed-in states (session cookies, mode 0600), results. |
-| `.argus/smoke-state.json`, `.argus/perf.json`, `.argus/smoke-ci/`, `.argus/reports/` | local | The lane's state; under the ignored `.argus/`. |
+| `.argus/smoke-state.json`, `.argus/perf.json`, `.argus/smoke-ci/`, `.argus/reports/`, `.argus/taste-state.json` | local | The lane's state; under the ignored `.argus/`. |
 
 #### Limits
 
@@ -354,9 +359,230 @@ The first two batches of a path, each on a fresh instance, set its baseline in `
 - **`@axe-core/playwright` is MPL-2.0.** It is a dev dependency of your suite only, never of sapu, and you see it in the proposal's `package.json`.
 - **The guard binds subagents only.** The smoke commands are the orchestrator's by the guard's rule, and a skill you run yourself is unguarded ([Safety and trust](security.md#the-smoke-suite)).
 
+### The taste and usability pass
+
+The journey lane's first question is whether your UI is good by the standard of world-class products: easy to use, elegant, modern, complete in its states. Whether it works is the second question. In every journey cycle, with no switch to turn on, the lane measures every screen its explorers reached against three yardsticks, and the smoke suite runs the same probes in CI.
+
+- **Your own design tokens,** or a reference scale (a *frame*) when the repo has none.
+- **Your app's own best screens** of the same kind (the *archetype*: `marketing`, `docs`, `app`, `form` or `data`).
+- **An outside bar** drawn from public pages of well-regarded sites: built in, but with no calibrated band yet, so today every screen is judged against the first two alone ("The calibrated bar", below).
+
+The law of the pass is the lane's: taste proposes, measurement decides. A gap is filed only when it is measured beyond a threshold, measured again on a fresh instance, and, for a comparison with the outside bar, agreed by a second, internal witness. Nothing is filed on opinion, and nothing is filed because a screen differs from a famous one. A rule never requires or rewards a style or a CSS feature (`oklch()`, container queries, view transitions): "modern" means measured outcomes.
+
+Usability is split the way ISO 9241-11 splits it. *Effectiveness* (the goal reached) is what the functional oracles judge. *Efficiency* (the resources spent) is measured here ("Efficiency"). *Satisfaction* is a person's response, which no script measures, so the pass never claims it. *Learnability* proper is a curve over repeated trials; the pass measures only first-encounter discoverability, through the cognitive walkthrough.
+
+#### What it measures
+
+48 rules in 12 families. The rule ids are the bar's (`plugins/sapu/data/taste-bar.json`), and the names you put in `.argus/taste.json`.
+
+| Family | What it looks at |
+|---|---|
+| `scale` | Per screen, the distinct spacing, type (size and weight), weights, non-neutral colours, radii and shadows; values that are off your tokens or frame. |
+| `hierarchy` | More than one primary action in a view; heading sizes out of step with heading levels; sibling left edges 1 to 3 px apart (large type pulled left by its own negative margin, an optical alignment of at most 0.06em, is intended); section gaps off the scale; more shadows than layers; a child radius larger than its parent's. |
+| `colour` | One status shown in two colours; in dark mode, a contrast failure that exists only there, a border that collapses, a surface left light on a dark page. An app that does not theme is reported `single theme`, never filed. |
+| `contrast` | `contrast.headroom`: body text between 4.5:1 and 7:1. Information only; WCAG 2.2 through axe stays the gate. |
+| `motion` | An animation an action started (within a second of the user's input) outside 50 to 500 ms (700 ms for an opacity-only backdrop), never an entrance on load; an animation of a layout property that moves another box when the user did not cause it (an accordion they opened is theirs); a transform still running under reduced motion (WCAG 2.3.3, level AAA), a spinner or progress bar exempt as essential; `transition: all` (information). |
+| `feedback` | Time from an action to its first visible change: over 100 ms is information, over 1 s with no busy signal and over 10 s with no determinate progress are findings. A loader that flashes (information); a loader still shown 10 s after its request answered, or 10 s into a request that never did (an endless loader); a spinner on a route whose peers use a skeleton; a skeleton that shifts the layout; the routes you list under `optimistic`. |
+| `density` | More than three control heights of one kind on a screen (small, medium and large are one system's sizes); table row heights that differ between tables. |
+| `states`, `copy` | An error state with no way on (a routed 500 on the first data request, in the confirmation replay only); an empty state with no next step; a success the page does not name after the write answered (a button disabled and enabled again names nothing); fields lost after a rejected submit; `undefined`, `NaN` or `null` where a value stands (never in prose or a reference table's value column), `[object Object]` in visible text; vague labels such as `OK` on a control that commits an action (never a sign-in step's Continue, never an informational dialog's lone OK). |
+| `consistent` | Across the cycle's screens: one action reached by controls of different roles or names, each way on two routes at least (the same control in a header and a dialog is one way, and an empty state's own call to action is left out); the primary button first in one footer and last in another; autosave and an explicit submit in one form; a command palette that opens on some screens only. |
+| `ai` | On the routes you declare as AI surfaces: Stop while an answer streams, an error state, regenerate ("The AI-surface rules"). |
+| `efficiency` | Per journey, the explorer's path against the best known path ("Efficiency"). |
+
+The feedback rules measure only an action that started a same-origin request within 100 ms and showed a change before the user's next input. Four rules are information only and are never filed or gated: `contrast.headroom`, `motion.transition-all`, `feedback.latency` and `states.error-exit`.
+
+Each rule has a class that decides what it takes to file it:
+
+| Class | Meaning | What it takes to file |
+|---|---|---|
+| `implicit` | Broken on its face (a lost field, a blank error state). | Its own measurement, confirmed on a replay. |
+| `derived` | The app contradicts itself or your tokens. | Its own measurement, confirmed on a replay. The count rules (`scale.spacing` and its siblings) also compare with the median of your peer screens ("A finding's way to an issue"). |
+| `bar` | Beyond the range the outside bar shows. | The corpus band for that metric, an internal witness (a peer that holds the rule, or your frame) and a replay. |
+
+#### Where it runs
+
+| Where | When | What |
+|---|---|---|
+| The journey lane | Every cycle, every journey. | The session hook records each screen an explorer reaches; scripts judge, replay and file ("The commands"). The explorer sees none of it, and its output is byte for byte the same with and without the recording. |
+| The smoke suite, in CI | Every pull request, once the workflow has the `taste` job. | The per-screen rules, advisory until you promote a rule ("The taste job in CI"). The rules that compare screens run in the lane only. |
+| SELECT | Every cycle. | A journey with confirmed, unaccepted taste findings still queued (not yet filed) is picked sooner, at most as far as a money journey is lifted, and coherence (S4) findings alone at most ×1.25; a journey never judged counts as having some debt, so it is looked at within a few cycles. A filed finding weighs nothing more: its issue holds it, and `taste file` marks a row closed once its issue is. |
+
+For each screen (a *screen key* is `<route template>|<viewport width>|<light or dark>`, such as `/orders/:id|1440|light`) the hook records the census, the ease measurements and one viewport screenshot, mode 0600, under `.argus/live/<runId>/taste/`. A screen is recorded when its state changed. Nothing is recorded in a map or seed slot, in the reproduction slot, in a performance pass or in a confirmation. The pass has a fixed time budget a cycle (15 minutes) for recording, judging and replays together; past it no new screen is recorded and `taste confirm` refuses.
+
+The agent that judges the screens is the **Curator** ([How the agents work](agents.md#the-curator)). It files nothing: it gives a verdict per title key (a rule on a screen) and leads for the next pass.
+
+#### The commands
+
+The taste verbs belong to the orchestrator, like the smoke commands: the guard refuses all four to every subagent. Run one yourself as `node "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs" taste <verb>` from the main checkout.
+
+| Command | What it does |
+|---|---|
+| `taste judge [--run <runId>]` | Judges every screen the run recorded (the newest run that recorded any, without `--run`) against the witnesses, and writes `taste/judge.json`. Prints `taste judge <runId>: <n> screens recorded, <k> rows (implicit <a>, derived <b>, bar <c>), taste-bar <v>`, optional lines (`not rows: …`, `information: …`, `bands shown only: …`, `leads: …`, `harness: …`), then the rows in a fence, one per line: `t<k> <journey> <rule> <class> <screen> key=… measured=… expected=… witnesses=…`, then `brief: taste/brief.json: <n> screens, <k> title keys, <s> shots to read` (the Curator's input). |
+| `taste confirm <row>` | Replays the journey's path to the row's screen on a fresh instance, in the lane's reproduction slot (`r`), and measures again, in the media the rule needs (dark mode, reduced motion) and, for `states.error`, with a routed 500 on the screen's first same-origin JSON request. One replay measures every undecided row of the same journey and screen (not a `states.error`, AI or efficiency row, which replay alone), and the judge numbers those rows together, the groups with an S3 row first. Prints `taste confirm t3: confirmed (measured again)`, a line per other row of its group (`…, in t3's replay`), `not confirmed (not measured again: the screen holds the rule)` or `not decided (…)`, which exits 2 and is never a finding. Needs a running cycle. |
+| `taste file [--run <runId>]` | Files the confirmed rows, capped and deduplicated, through `scrub`. First `taste file: run <runId>, taste-bar <n>, cap <c>`, then one line per decision: `filed: <url> <title key> (<severity>[, needs-owner])`, `polish: <url> <k> item(s)`, `queued: …`, `open: …`, `closed: …`, `accepted: …`, `held: …`, then `taste file: filed <a>, polish <b> item(s), queued <c>, open <d>, closed <e>, accepted <f>, held <g>` (or `nothing to file`, with no `gh` call). |
+| `taste curator <file>` | Stores the Curator's return (the orchestrator saves the agent's answer to `<file>`): checked whole and stored in `taste/curator.json` (0600). A verdict names a title key (`taste:<rule>:<screen key>`, one rule on one screen), which no judge renumbers, so a second `taste judge` in the run is safe; one naming no title of the judge is dropped and counted. Refused, nothing written: no judge record, a file that is not JSON, a return out of shape (`refused: taste curator: the Curator's return is out of shape: …`, its first faults). |
+| `taste accept <rule> <key>` | Records your ruling that a finding is intended: adds `{rule, key, why}` to `.argus/taste.json` in your working tree (commit it) and marks the finding `accepted`. Prints `taste accept: taste:<rule>:<key> added to .argus/taste.json (commit it); <n> row(s) of .argus/taste-state.json accepted`. Its `why` reads `the owner's ruling (taste accept), on <the issue's URL>`. The orchestrator runs it only on your word, after you close a taste issue as not planned. |
+
+*Accepted* means one thing everywhere in the pass: ruled intended by you (`taste accept`, or an `accept` row of `.argus/taste.json`). An accepted finding is still measured, but never files and never weighs in SELECT.
+
+A row is *confirmed* only when the replay measures it again: the two-of-two rule, applied to pixels. The rules that compare the cycle's screens (`consistent.*`, `feedback.skeleton-peers`) have no replay: `taste confirm` refuses them, and the next cycle's judge reporting the same row again is the second visit.
+
+`taste judge` and `taste file` read `.argus/taste.json`, and so do `select` and `check`. A file that does not validate refuses `taste judge`, `taste file` and `check`, naming each fault, so `check` catches it before `up`; `select` never stops a cycle for it: it weighs no taste debt that cycle and prints `taste: .argus/taste.json: <fault>: no taste debt weighed this cycle` (a broken `.argus/taste-state.json` the same).
+
+#### A finding's way to an issue
+
+1. **Judge.** A rule that is `implicit`, or `derived` and not a count, is a row on its own measurement. A count rule is a row when the screen is beyond `max(median × 2, median + 3)` of its peers: at least three other screens this cycle of its archetype (declared, or `data` for a table; an inferred archetype has no peers), at the same width and theme, of a similar size (no more than twice as many elements, or half). It must also be beyond the band's p50 whenever the archetype has a band, and beyond its p90 where that band is a witness. A page at the corpus's p90 is no row against one at its p10. A `bar` rule needs the band agreeing and an internal witness. Rows you switched off with `off` and information rules are never rows.
+2. **Curator.** One dispatch a cycle, reading the judge's brief (`taste/brief.json`: each screen's rows by title key, at most 1.5 KB a screen, and the screenshots to read): a verdict per title key (`confirm`, `reject` with a reason, or `polish`) and leads, which the next judge pass measures first.
+3. **Confirm.** The replay measures the row again. Only a confirmed row goes on.
+4. **File.** `ux`, `argus` and `found-by:user`, plus `bug` for an `implicit` or `derived` row (never for a `bar` row), `severity:s<n>`, and the agent-filed label that `scrub` adds. The title key is `taste:<rule>:<screen key>`, so a screen's rows of one rule share one issue, and an open or closed issue with that key is never filed twice. The same rule on one route at several viewports or themes is one issue, `taste:<rule>:<route>`, its `Viewport:` line listing each. The body holds `Viewport:`, `Measured:` (the value against the expected one, the witnesses and `taste-bar <n>`), the rule's source, and the screenshot only through `scrub`'s screenshot verdict.
+
+Severity follows what a user does because of what they see. A confirmed `colour.dark-contrast`, `feedback.busy`, `feedback.progress`, `states.error`, `states.success`, `states.recovery`, `copy.broken` or `ai.error` row is S3, as is any row costing 10 s or more of `klm_s` a run; the rest are S4. A status shown in two colours (`colour.role`) is coherence (aesthetics.md §4): S4, in the polish roll-up. The judge ranks its confirmation groups by the same table. Nothing here is filed above S3, since S1 and S2 owe the money arithmetic that only the orchestrator writes.
+
+- **The cap.** At most `cap` issues a cycle (default 5), ranked by severity, then cost, then witnesses. The rest stay `queued` and rank again next cycle; calling `taste file` twice never exceeds the cap. S4 coherence items go to the cycle's one `[polish] cycle <runId> — <n> coherence items` roll-up, which does not count against the cap; while an earlier cycle's roll-up is still open, the items are a comment on it instead (one roll-up open at a time).
+- **The needs-owner label** goes on a finding only when it takes your judgment: a `consistent.*` split with no majority (two screens, two ways), a row the Curator rejected, or an S3 row the Curator rated `polish`. Remove the label when you agree the finding stands; close the issue as not planned to rule it intended (accepted). A coherence nit the Curator rejects is held, not sent to you.
+- **A closed issue is your ruling.** Closed as not planned or as a duplicate, it is never refiled, and the line `closed: …` names the `taste accept` command to run on your word. An issue closed as completed is filed anew if the row comes back, and its body names the earlier one.
+- **An accepted row** never files and never weighs in SELECT.
+
+#### The per-cycle scorecard
+
+`report` opens with `## Taste and usability` whenever the cycle recorded screens, ahead of the functional sections. Without a `taste/` directory in the run the report is unchanged. It prints counts, figures, rule families and journey ids only, never page text or the Curator's words.
+
+```
+- taste-bar 1; confirmed: measured two of two this run; queued and accepted: the journey's standing rows in .argus/taste-state.json; satisfaction is never measured, discoverability only through the walkthrough
+- journey checkout: screens 6; efficiency actions 9 (best 5), klm_s 31.4, typed 24, fitts_bits 11.2, modals 1, wait_ms 2300, recovery 0; walkthrough 4 of 5 step(s) fail no question; Curator confirm 2, reject 0, polish 1
+  - hierarchy: confirmed 1, queued 0, accepted 0
+  - states: confirmed 0, queued 1, accepted 0
+- Curator substitution test: substitutable 1, partly 2, no 3 screen(s)
+```
+
+The numbers above only show the shape. Per journey: the screens judged; the efficiency figures (`-` for one not measured, or `efficiency not measured`); the walkthrough's pass rate (a step passes when none of its four questions fails); the Curator's verdict counts; and, per rule family, rows `confirmed` this cycle, `queued` and `accepted` across cycles. The *substitution test* line counts the screens the Curator judged substitutable (could belong to any product), `partly` or `no`. The same report names the bar version.
+
+#### `.argus/taste.json`
+
+Optional, tracked, and yours. Without it every key takes its default and the pass still runs. Your design tokens stay where they are, in `.argus/live.json`'s `tokens` (`{"css": <file>}` or `{"json": <file>}`); `taste.json` holds the rest. Unknown keys are refused at every level.
+
+| Key | Type | What it does |
+|---|---|---|
+| `version` | number | The file's version: `1`. Optional; `/sapu:init` writes it. |
+| `frame` | string | The reference scale to use when the repo has no tokens: one of `atlassian`, `carbon`, `material`, `polaris` (historical; the project is archived), `primer`. Your tokens outrank it. With neither, the off-scale rules measure nothing, and the count rules compare your screens with each other. |
+| `archetypes` | object | Route globs mapped to `marketing`, `docs`, `app`, `form` or `data`. A glob starts with `/`; `*` stands for one segment, `**` for any depth. An archetype you do not name is inferred ("The calibrated bar"). |
+| `gate` | list | Rule ids that fail the CI `taste` job ("Promoting a rule to gating"). |
+| `off` | list | What to silence, in the lane and in CI: a rule id, a family's name (`ai`, `motion`: its every rule) or `*`, which turns the whole taste pass off for the repo (nothing recorded, judged, filed or measured in CI; SELECT weighs no taste debt). A rule cannot be in both `gate` and `off`. |
+| `accept` | list | `{rule, key, why}`: findings you ruled intended. `key` is a screen key; `why` is your reason, up to 500 characters. `taste accept` writes these. |
+| `cap` | integer | Issues a cycle, 1 to 20; default 5. |
+| `optimistic` | list | Route globs where the UI must change before the response arrives (`feedback.optimistic`). It is your declaration, so a broken one is `derived`. |
+| `ai` | list | Route globs of AI surfaces ("The AI-surface rules"). |
+| `copy.vague` | list | Your own vague labels, up to 50 of 1 to 60 characters, added to the bar's English list (`OK`, `Submit`, `Continue`, `Click here`, `Yes`, `No`). Yours count in any language; the built-in list only under a matching `<html lang="en">`. |
+
+A file that passes the real validator:
+
+```json
+{
+  "version": 1,
+  "frame": "primer",
+  "archetypes": { "/docs/**": "docs", "/reports/**": "data", "/settings/*": "form" },
+  "gate": ["hierarchy.heading-order", "copy.broken"],
+  "off": ["density.row-heights"],
+  "accept": [
+    { "rule": "scale.colours", "key": "/reports/:id|1440|light", "why": "the chart palette is deliberate" }
+  ],
+  "cap": 3,
+  "optimistic": ["/todos/**"],
+  "ai": ["/assistant"],
+  "copy": { "vague": ["Go", "Proceed"] }
+}
+```
+
+The file is tracked, and `.argus/` is otherwise ignored: `/sapu:init` adds the exception `!/.argus/taste.json` beside the ones for `live.json` and `smoke.json` when it writes the file (in a `repo` home); written by hand, add it yourself, or `git add` skips it. `check` verifies the file and prints `taste: ok — frame <f>, <g> rules gated, <o> rules off`. The lane's own state, `.argus/taste-state.json` (mode 0600, local), holds each journey's best known path and every confirmed finding with its state (`queued`, `open`, `closed`, `accepted`); the lane writes it and refuses a copy that is out of shape, so do not edit it by hand.
+
+#### Promoting a rule to gating
+
+By default the CI `taste` job is advisory: it reports and stays green. Promote a rule when your app is clean on it and you want it to stay that way:
+
+1. Read the job summary of a few runs ("The taste job in CI") and pick a rule that never fires, or whose findings you have fixed.
+2. Add its id to `gate` in `.argus/taste.json` and merge the change. `gate` is read when the suite runs, so you do not regenerate the suite.
+3. From the next run, a violation of that rule fails the step and the `taste` job, as the suite's other check violations do ("What the suite checks"): one listed in `known/<id>.json` or in the journey's `allow` in `.argus/smoke.json` does not. To adopt the violations a run already sees, dispatch the workflow's `baseline` job yourself (it runs the taste project too), then, once it ended, run `smoke baseline --from-run <that run's id> --known`; it opens an `argus/baselines-<runId>` pull request that lists each new row.
+4. To demote a rule, remove it from `gate`.
+
+`gate` takes only rules the suite measures: `.argus/taste.json` is refused when `gate` names another (`gate: <rule> is the lane's alone (<why>): the suite cannot measure it, so it cannot gate`), and a suite generated against an older bar still fails the step with `argus-smoke: .argus/taste.json gate names <rules>: no rule the suite measures in taste-bar <n>`. The rules that run in the lane only are the count rules (`scale.spacing`, `scale.type`, `scale.weights`, `scale.colours`, `scale.radii`, `scale.shadows`, which compare screens), `consistent.*`, `efficiency.*`, `ai.*`, `feedback.skeleton-peers`, `feedback.optimistic`, `states.error` and `states.recovery`. An information rule cannot be gated.
+
+#### The taste job in CI
+
+When the suite has the `taste` project (on by default whenever Chromium is among the suite's browsers), `smoke workflow` adds a `taste` job beside `test`, in the same pinned container, with the same read-only token and `npm ci --ignore-scripts`. It runs `npx playwright test --grep-invert @quarantine --project setup --project taste` with `continue-on-error: true`, then writes the scorecard to the job summary. Its results upload as `taste-<ci.artifact>` for 7 days, outside the prefix `smoke ci` reads. The `test` and `quarantine` matrices do not run the `taste` project; the `baseline` job does, so a dispatch's results hold the gated rules' violations for adoption.
+
+The project runs in Chromium at the suite's first width. At every screen of a path, and after each step that acts, it runs the per-screen rules, then again under reduced motion and under dark mode. Each finding is an `argus-taste` annotation `{rule, step, key, measured, expected}`; an information rule is an `argus-info` line; a gated rule is an `argus-violation` named `taste-<family>-<name>`.
+
+The job summary starts with `## Taste and usability`, then `taste-bar <n> · advisory: .argus/taste.json gates no rule, so this job stays green` (or `gating:` and the rule ids), the counts of findings, a table per family, the findings (journey, step, rule, key, measured, expected, gate), the information lines and any test that did not pass. Every word that came from a page sits in a code span, one line, at most 200 characters.
+
+The job exits 1 only when `taste.json` gates a rule and a taste test did not pass (a violation, a skipped or missing test, no results), or when `taste.json` is not JSON with a list of rule ids under `gate`. Otherwise it passes, whatever it found. The suite does not run the routed 500 (`states.error`) or the driven form case: they are lane-only.
+
+#### The AI-surface rules
+
+`ai.stop`, `ai.error` and `ai.regenerate` apply only on routes you list under `ai`. The lane never detects an AI surface by itself: a stream on a route you did not declare is silent.
+
+**What counts as an AI surface.** On a declared route, the probe finds the surface by what the page does, never by a name:
+- a *stream*: an answer that grows in steps into a live or busy region (`aria-live` other than `off`, `role="log"` or `"status"`, or `aria-busy="true"`), in at least three steps over at least 150 ms, after a user action in the previous 30 seconds;
+- a *composer*: the nearest ancestor of a text box (four levels at most) that holds a control, no live or busy region, and at most eight controls.
+
+No stream on a declared screen means no AI row. A search box with a live status, a thinking indicator alone and an answer read whole are not AI surfaces.
+
+| Rule | Row (key) | It fires when |
+|---|---|---|
+| `ai.stop` | `stream` | A stream of 1 s or more offers no new or renamed control to stop it (`no stop control while it streamed`), or it kept growing 1 s past a stop that was pressed. A control inside the answer itself (a source chip, a code block's Copy) is not a stop. |
+| `ai.regenerate` | `answer` | The latest answer ended, was neither stopped nor regenerated, and no new control appeared outside the composer and any dialog (`no control once the answer was complete`). |
+| `ai.error` | `failed-stream` | A send from the composer, made after the document had streamed, was answered with no 2xx or 3xx status, and two seconds later the page shows an endless loader, nothing, or no way on (no writable text box and no new control outside the composer, such as a Retry). |
+
+Provenance and uncertainty display are judgment: the Curator may mention them, but no rule measures or files them.
+
+**What a confirmation does to your app.** The walk only records what the explorer happens to do, so each AI row is confirmed by a *drive* on the fresh instance in slot `r`. The drive acts on your app:
+- it presses up to three stop candidates and up to four regenerate candidates, buttons only, never a link, and never one named for a destructive action (delete, remove, send, pay, publish, approve, deploy and the like, in a few languages) or one your `.argus/live.json` `prohibited` names: such a candidate leaves the row undecided, never pressed;
+- it types `argus-taste-check` into the composer and sends it, then waits for its stream. This request is real: it reaches your app and whatever model the app calls, so use a dev setup whose model calls are mocked or cheap;
+- it then sends `argus-taste-probe`, which the lane answers with a 500 inside the browser, so it never reaches your app. Only a request whose body holds that marker is faulted.
+
+A drive that cannot decide (the answer never ended, the fault was keyed to another prompt, a pressed control left the route) is `not decided`, never a row.
+
+#### Efficiency
+
+Efficiency is measured per journey, from the lane's deterministic paths. Every explorer charter asks for a `path`, so each journey that reaches its goal yields a replayable list of actions, and the scorecard prints:
+
+| Figure | Meaning |
+|---|---|
+| `actions` | Steps the user takes: clicks, fills, selects, ticks, hovers, key presses and going back. Navigation, reads and expectations are not counted, nor are system steps such as signing in. |
+| `typed` | Characters typed. |
+| `modals` | Dialogs opened and closed with no field filled. |
+| `wait_ms` | Each recorded input's time to the first visible change, summed. |
+| `recovery` | Fields lost after a rejected submit. |
+| `fitts_bits` | The sum of log2(A / W + 1) over consecutive pointer targets, where A is the distance between their centres and W the smaller side of the target. |
+| `klm_s` | A Keystroke-Level estimate in seconds: 0.28 s per character typed, a pointing time from Fitts' law (bounded to 0.8 to 1.5 s), 0.2 s per click, 0.4 s per move between pointer and keyboard, and 1.2 s of thinking per goal step of the journey's map. The rule is fixed, never tuned. |
+| `best` | The fewest actions of the journey's best known path. |
+
+The *best known path* is the journey's path in your smoke suite that held (an explorer's own path never replaces it). An explorer path with at least three times the best path's actions, or at least 10 s more `klm_s`, is an efficiency row, but only a candidate: it is confirmed only when the best path no longer holds with the same expectations. While the best path holds, a longer explorer path is a detour and not a finding. A journey with no path in the suite has nothing to compare with, so it has figures but no efficiency rows.
+
+**Information only, for now.** `efficiency.actions` and `efficiency.klm` ship as information rules: the judge computes and the scorecard shows the figures, but makes no row and files nothing, and neither can gate. An explorer's path is not yet minimized before it is compared, nor its typed values priced by the best path's, so a longer path could still be the explorer's detour; the rules become findings once that proof is wired.
+
+#### The calibrated bar
+
+The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 48 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.
+
+**No band yet.** The bar ships with its rules and frames but with no band. The corpus (`scripts/taste-corpus.json`) lists 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), and sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)). But an agent read those terms, and the calibration measures a site only once a maintainer confirms that reading in the corpus; none is confirmed, so nothing was measured. Until a maintainer confirms the sites' terms, or a local reference corpus is measured instead, the outside bar decides nothing:
+- Every screen, of every archetype, is judged against your tokens or frame, your own best peer screens, and the rules that stand on their own measurement.
+- A count rule compares a screen with its peers only. A `bar`-class rule has no band to agree with, so its findings count as `not rows` in the judge's output and never file.
+
+**When bands exist.** Each `bar`-class rule's band reads its own per-screen number, which the probes already record: the primary actions in view, the lowest body-text contrast that passes AA, the median duration of the motion a screen ran, the vague labels, empty states with no next step, errors with no way on, the shortest loader shown, the slowest first change after an action, `transition: all` and motion that ignores reduced motion. A `bar` row then needs the screen's own number beyond the band and an internal witness. A band counts as a witness only with at least 5 sites and 15 pages, and only for an archetype you declared (or `data`, when a screen's `main` holds a table of 10 rows or more); otherwise it is *thin*, shown (`bands shown only: <n>`) and decides nothing. A screen whose archetype is neither declared nor `data` is inferred as `app`, and an inferred archetype is never a witness.
+
+#### Limits
+
+- **A measurement is not a verdict on taste.** A finding says a number is beyond a threshold and was measured twice. A call about intent is yours: accept the row, or close its issue as not planned.
+- **No bands yet.** Until a maintainer confirms the reference sites' terms (or a local reference corpus is measured), every screen is judged against your tokens and your own best screens alone.
+- **Colours that come from data.** A chart's series, a user's label colour or an avatar's chip are counted like any other colour: `scale.colours` and `colour.role` cannot tell them from a palette choice. Accept such a row (`taste accept`), or turn the rule off for the repo.
+- **Archetypes are yours to declare.** Without `archetypes`, nearly every screen is an inferred `app`, which has no peers: the count rules compare only screens of a declared archetype (or `data`), four of them in one cycle at the same width and theme.
+- **The shadow DOM.** The AI-surface recorder watches the document, not the shadow roots of web components, so a streamed answer inside a web component is not seen as a stream and its rules stay silent.
+- **Dark parity is judged only where the page answers `prefers-color-scheme`.** An app that does not theme is reported `single theme`.
+- **Cross-screen rules need a second cycle** to confirm, since they are not replayed.
+
 ### Specialist agents
 
-Reviewers and advisers (the 🔴 review pair, forge's QA, the `/inspector` team review) are called by role. By default each role is an agent of the senior-dev-team plugin, which is installed with sapu; sapu itself ships only the worker ladder (`sapu-sonnet-medium` … `sapu-opus-high`) and the journey lane's explorer (`sapu:ui-explorer`, dispatched only by a journey cycle, never by hand):
+Reviewers and advisers (the 🔴 review pair, forge's QA, the `/inspector` team review) are called by role. By default each role is an agent of the senior-dev-team plugin, which is installed with sapu; sapu itself ships only the worker ladder (`sapu-sonnet-medium` … `sapu-opus-high`) and the journey lane's two agents: the explorer (`sapu:ui-explorer`) and the Curator (`sapu:curator`), both dispatched only by a journey cycle, never by hand:
 
 | Role | Default agent |
 |---|---|
@@ -421,6 +647,24 @@ claude plugin list --json
 ```
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
+
+#### Upgrading from a version before 2.11.0
+
+The journey lane now judges ease, elegance and modernity in every cycle ("The taste and usability pass"). Nothing is written to your repo until you ask. After updating, start a new session.
+
+What changes:
+- **The pass is on by default** wherever the journey lane runs. It needs no file: tune it with `.argus/taste.json` (`off` silences a rule or a family, `cap` limits the issues a cycle, 5 by default), or turn the whole pass off with `"off": ["*"]`. The first cycles can file `ux` issues about screens that were never judged before, up to the cap a cycle; the rest stay queued.
+- **A cycle costs more.** The hook records each screen an explorer reaches (extra browser calls and one screenshot per screen key, under `.argus/live/<runId>/taste/`, mode 0600), one Curator dispatch (Opus, high effort) judges them, and each screen with rows is replayed once on a fresh instance. Every explore charter now asks the explorer for its `path` and a `trail` of the steps, so each explorer's return is longer (more tokens a cycle).
+- **What a run keeps.** `down` (or the reaper) removes the screenshots, the recorded screens and the Curator's brief; the judge's rows, the Curator's verdicts and the time spent stay, for the report and the next cycle. The pass has a fixed budget of 15 minutes a cycle. A journey never judged is ranked higher by SELECT until it has been, so `select` can print fractional scores such as `score 4.5`.
+- **A new agent, `sapu:curator`,** with the tools Read and StructuredOutput only, dispatched by the cycle ([How the agents work](agents.md#the-curator)). It files nothing.
+- **Recorders run in every lane session,** the explorer's included: the hook installs them in every document. They keep counts, timings, route templates and request field names, never values; control names stay in the page except for the clicked controls the ease record keeps ([Safety and trust](security.md#what-the-recorders-keep)).
+- **New commands.** `taste judge|confirm|file|curator|accept` belong to the orchestrator, and the guard refuses them to every subagent. `classify` takes `--oracle taste --class <implicit|derived|bar> [--cost]`, and `taste` joins `regression` as an oracle only the lane may name: an explorer's return that names it is refused.
+- **Two files appear, both optional.** `.argus/taste.json` is tracked: `/sapu:init` adds the gitignore exception `!/.argus/taste.json` beside the others when it writes the file. `.argus/taste-state.json` is local. An older plugin does not read either; a broken `taste.json` refuses `check`, `taste judge` and `taste file`, and makes `select` weigh no taste debt.
+- **The report starts with a new section,** `## Taste and usability`, when the cycle recorded screens.
+- **The smoke suite needs a regeneration.** It gains a `taste` project, and every generated file's header now records the bar version (`argus-live codegen 1, taste-bar <n>, digest <sha>`), so `smoke check` lists each generated file as `stale` until a proposal regenerates it. Run `/journey smoke`: the proposal is one pull request on an `argus/` branch. The project takes no screenshot, so no baseline run is needed for it. A journey cannot be named `taste`, as it cannot be named `webkit`.
+- **The workflow gains a `taste` job.** Print the file again with `smoke workflow` (or let `/sapu:init` write it, only if you agree; pushing a workflow file needs the `workflow` scope on your `gh` token). Until the new workflow is on your default branch, the `taste` project never runs in CI. The job is advisory: it fails only when `.argus/taste.json` gates a rule, and `sapu-merge.sh` does not read it.
+- **Rolling back to 2.10.** A suite generated by 2.11 names the taste bar in each file's header, which 2.10 does not parse: 2.10's `smoke check` lists every such file as `hand-edited` until its own `smoke propose` regenerates the suite (one pull request; merge it, or revert the 2.11 suite's merge). The lane's own files are ignored by 2.10: `.argus/taste.json`, `.argus/taste-state.json` and each run's `taste/`.
+- **A new bar.** The plugin ships taste bar version 1 with its rules and frames and no band: the outside bar decides nothing until a maintainer confirms the reference sites' terms ("The calibrated bar"). A suite or report names the bar it was judged against.
 
 #### Upgrading from a version before 2.10.0
 
@@ -557,9 +801,9 @@ Then check one repo: in a session there, `/sapu:init`'s preflight reports the ac
 | `refused: smoke: a committed suite would leave a trace` | The smoke suite is committed to your repo, so it needs the repo's own committed contract with `traces: "visible"`. A local contract, `traces: "none"` or a broken contract refuses every `smoke` command except `smoke check`. Change the policy with `/sapu:init`, or leave the suite off. |
 | `refused: smoke <verb>: .argus/smoke.json: …` (an unknown key, a range, `ci.web_server[0].url must be an http(s) URL on a loopback host …`) | `.argus/smoke.json` is checked whole, and every fault is listed. Fix the named key: a CI start URL must be `localhost`, `127.x.x.x` or `[::1]`, because CI resolves no name for the suite. Format: [`skills/journey/smoke.md`](../plugins/sapu/skills/journey/smoke.md). |
 | `refused: smoke plan: no journey catalog (.argus/journeys.json): run map-check first` | There is no catalog to rank. Run `/journey list`, which rebuilds it. `… <id> is global` and `… is dropped from the catalog` mean a `pin` names a journey that can never be in the suite; `… pin names <id>, which the catalog does not hold` means it is mistyped. |
-| `refused: no journey cycle is running` or `refused: cycle <run> has no instance (its up did not finish)` | `smoke admit`, `run` and `heal` run on a cycle's instance, and `seed` needs a cycle that has at least a worktree (`up --map` or `up`). Start the cycle first; if `up` never finished, run `down` and start again. |
+| `refused: no journey cycle is running` or `refused: cycle <run> has no instance (its up did not finish)` | `smoke admit`, `run` and `heal`, and `taste confirm`, run on a cycle's instance, and `seed` needs a cycle that has at least a worktree (`up --map` or `up`). Start the cycle first; if `up` never finished, run `down` and start again. |
 | `refused: admit <id>: …` | `smoke plan` does not list the journey as `capture` (it is already in the suite, pending in an open `argus/` pull request, or excluded); or the path broke on a fresh or a used instance (`<fresh\|dirty> <kind> at step <n>`), which means it is not stable enough to keep; or a value in it holds a secret the run saw (`a secret in its values: step <n> <field> <class>`, which names where, never what); or the run's secret ledger is gone or incomplete, so the values cannot be checked. Nothing is staged in any of these cases. |
-| `refused: smoke admit: slot … returned no path` (or `has not submitted`) | The explorer did not return a `path`. Only a journey listed as `capture`, in a repo with `.argus/smoke.json`, is charted with `path: wanted`, and the explorer returns a path only when it reached the goal. |
+| `refused: smoke admit: slot … returned no path` (or `has not submitted`) | The explorer did not return a `path`. Every explore charter asks for a path, but the explorer returns one only when it reached the goal; only a journey `smoke plan` lists as `capture`, in a repo with `.argus/smoke.json`, goes on to `smoke admit`. |
 | `refused: smoke run: the suite has no paths (<dir>/journeys)` (also from `smoke ci` and `smoke baseline`) | Nothing has been admitted and merged yet. Merge the first proposal. |
 | `refused: smoke run --perf: <n> other slot(s) live` or `… it writes no regression, so it takes no --slot` | A performance pass needs a quiet machine and writes no regression candidate. Wait for the other explorers to return (or run `down`), and drop `--slot`. |
 | `refused: smoke run --perf: the machine is busy (load …)` | The load average is over `perf.max_load` of each core (0.5 by default): other work would be measured as your app's. Run it when the machine is quiet; raise `perf.max_load` in `.argus/smoke.json` only knowing the timings carry that load. |
@@ -591,5 +835,22 @@ Then check one repo: in a session there, `/sapu:init`'s preflight reports the ac
 | `refused: .argus/live.json: …` naming `test_id_attribute`, `pseudo_locales`, `tokens` or `triggers.<name>.seed` | The key has the wrong shape: `test_id_attribute` an attribute name such as `data-testid`; `pseudo_locales` language tags such as `en-XA`; `tokens` exactly `{"css": <file>}` or `{"json": <file>}` with one repo-relative file; `seed` true or false. |
 | `failed: codegen: …` | The suite cannot be generated from the inputs: `<account>'s password is not a ${NAME} reference` (a committed suite holds no secret), a hook names `{port:<name>}` that `ci.ports` lacks, `journeys.<id>.screens` names a step that does not act on a page, a check names a project the suite does not define, a journey is named as a project (`journey id webkit is a project's name`), or `login_url` is neither a URL nor a path. Fix the named input and run `smoke check`. |
 | `smoke check` lists `hand-edited`, `drift`, `stale` or `missing` | A generated file no longer matches its inputs. Do not edit generated files: change `.argus/smoke.json`, `.argus/live.json` or the path, and let the next `smoke propose` regenerate them. `drift` names a `live.json` change since the file was generated. |
+| `refused: taste judge: .argus/taste.json: …` (also from `taste file`; from `check` as `refused: .argus/taste.json: …`, exit 1; `select` prints it as a `taste: …: no taste debt weighed this cycle` line and goes on) | `.argus/taste.json` is checked whole before the pass uses it. `taste judge` and `select` show the first fault, `taste file` lists them all joined by `;`: `unknown key "x"`, `frame must be one of atlassian, carbon, material, polaris, primer`, `gate: <rule> is information only: it cannot gate`, `gate: <rule> is the lane's alone (<why>): the suite cannot measure it, so it cannot gate`, `gate and off both name <rule>`, `cap must be an integer from 1 to 20`, `<key> must be an array of distinct route globs`, `<rule> is not a rule of the bar`. `.argus/taste.json is not valid JSON` or `cannot be read` means the file itself. Fix the named key. |
+| `refused: taste judge: no run recorded a screen` (or `run <id> recorded no screen`, `--run takes a run id`) | No cycle recorded a screen, or the one you named did not. Recording happens in an explorer's walk; it does not run in a map or seed slot, in a performance pass or in a confirmation, and it stops once the cycle's 15-minute taste budget is spent. Run a journey cycle, then judge. |
+| `refused: taste file: no run here` (or `no run <id> here`, `run <id> has no taste/judge.json (run taste judge first)`) | `taste file` reads the judge's record. Run `taste judge` for that run first. A judge or Curator record out of its shape is refused by name: delete the file and judge again. |
+| `refused: taste confirm: <row> is not a judge row (t<k>)`, `cycle <run> has no judge rows (taste judge first)` or `no row <row> in cycle <run>'s judge` | `taste confirm` takes a row id from the current cycle's judge output (`t1`, `t2`, …). Judge first, in the cycle that is running. |
+| `refused: taste confirm: <rule> compares the cycle's screens: the next cycle's judge confirms it, not a replay` | `consistent.*` and `feedback.skeleton-peers` compare screens, so no replay re-measures them. The next cycle's judge reporting the same row again is its second visit. |
+| `refused: taste confirm: the taste pass's time this cycle is spent` | Recording, judging and replays together reached the cycle's 15-minute budget. The rows stay unconfirmed and are judged again next cycle. |
+| `refused: taste confirm: the best path of <journey> is not in the suite` or `journey <journey> returned no path to replay` | An efficiency row replays the journey's best path from the suite, and any other row the path its explorer returned. Merge the journey's suite path, or wait for a cycle in which the explorer reaches the goal. |
+| `taste confirm t<k>: not decided (…)` (exit 2, followed by a `HARNESS:` line) | The replay failed before it reached the screen, or the rule's expression threw. Nothing is decided and nothing is filed; the row stays unconfirmed. Run `taste confirm` again, or leave it to the next cycle. |
+| `refused: taste file: the committed sapu contract cannot be read (…): nothing is filed` or `the contract's policy.fileIssues is false: nothing is filed` | Filing needs a readable contract that lets agents file issues. Fix the contract, or change `policy.fileIssues` with `/sapu:init`. |
+| `failed: taste file: gh's issue listing exited … without a list; nothing is filed` (exit 2) | The filing compares every issue's title to avoid duplicates, so it will not file when `gh` cannot list them. Check `gh auth status` and the network, then run `taste file` again. |
+| `closed: <key> <url> (closed as not planned: the owner's ruling; stage taste accept …)` | Not an error: you closed that finding as not planned or as a duplicate, so it is never filed again. To stop it weighing in SELECT as well, have the orchestrator run the `taste accept <rule> <key>` the line names, and commit `.argus/taste.json`. |
+| `refused: taste accept: …` | The rule is not in the bar (`<rule> is not a rule of the bar`), is information only (`it never files`), the key is not a screen key (`<route template>|<viewport width>|<light or dark>`), or `.argus/taste.json` does not parse or validate (the message lists why). Running it twice is harmless: `… is already in .argus/taste.json`. |
+| `harness: a probe's rules failed <n> times` or `harness: <n> recorded screens of another shape skipped` (in `taste judge`'s output) | A probe threw on some screens, or some recorded lines were not in their shape. The other screens are judged. If it repeats on every cycle, file it on the plugin's repository. |
+| `refused: classify: --oracle taste takes --class implicit, derived or bar` or `--class and --cost are the taste oracle's` | `--class` and `--cost` belong to `classify --oracle taste`, and the taste oracle needs a class. The orchestrator writes this command, not you. |
+| `refused: repro: step <n>: taste takes a screen rule of the bar (rule) and a key`, `taste: <rule> is the lane's alone (…): a replay's page cannot measure it`, or `a path has no taste expectation: the suite runs the taste checks after every step` | A candidate or a path named a taste expectation that cannot be replayed. Only screen rules the suite or a replay can measure are replayable; the cross-screen, routed-fault and AI rules are the pass's own. The orchestrator drops such a candidate. |
+| A `taste` step fails in CI with `argus-smoke: .argus/taste.json gate names <rules>: no rule the suite measures in taste-bar <n>` (or `… is not valid JSON`, `… <key> must list rule ids of taste-bar <n>`) | `gate` and `off` are read when the suite runs, and `gate` may name only rules the suite measures ("Promoting a rule to gating"). Remove the lane-only rule from `gate`, or fix the JSON. |
+| The `taste` job summary says `.argus/taste.json is not JSON with a list of rule ids under gate: the taste job cannot tell what gates, so it fails.` | The job cannot tell what is promoted, so it fails closed. Fix the file. |
 | A CI run is red on `baseline-missing` right after a proposal that adds a journey | Expected: a journey has no visual check until its baselines are accepted. See "Baselines". |
 

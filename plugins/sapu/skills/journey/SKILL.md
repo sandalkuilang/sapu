@@ -5,7 +5,7 @@ description: Use when walking the repo's web app through its real UI as every ro
 
 # JOURNEY — argus's journey lane
 
-A door, not a methodology: a journey cycle is an argus cycle ([SKILL.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/SKILL.md)) with the lane fixed to `journey`, its phases run per [journeys.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/journeys.md). Every argus gate holds; this file adds none and loosens none.
+A door, not a methodology: a journey cycle is an argus cycle ([SKILL.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/SKILL.md)) with the lane fixed to `journey`, its phases run per [journeys.md](${CLAUDE_PLUGIN_ROOT}/skills/argus/journeys.md). Its first question is whether the UI is world-class (easy to use, elegant, modern); working correctly is its floor. Every argus gate holds; this file adds none and loosens none.
 
 **Policy.** First `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed argus`, then `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" allowed journey` (exit 1 on either = stop and quote it). When the policy has `fileIssues: false` or `traces: "none"`, `${CLAUDE_PLUGIN_ROOT}/skills/sapu/policy.md` governs filing and every GitHub write, as it does for argus.
 
@@ -25,7 +25,7 @@ Run it from the main session only, never inside `/sapu:inspector` or a subagent:
 | `seed --doc <file>:<a>-<b>` | the same from lines a to b of a file tracked at HEAD (`live seed --doc <file>:<a>-<b>`) |
 | no argument | one journey cycle, autonomous, never stopping to ask: journeys.md's steps 1 to 10, SELECT picking up to `limits.max_parallel_journeys` within `limits.max_cycle_minutes` |
 | `<id> [<id>…]` | one cycle on the named journeys: step 3 runs `live select --cycle <n> --ids <id>,…` and prints the journeys they displaced |
-| `smoke` | one smoke cycle, autonomous, per [smoke.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/smoke.md): the committed suite's pass, CI triage, heals, admissions, proposals and baselines |
+| `smoke` | one smoke cycle, autonomous, per [smoke.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/smoke.md): the committed suite's pass, CI triage, heals, admissions, proposals and baselines; its advisory `taste` project and job |
 
 One invocation = one bounded cycle; a pass over the whole catalog is that many invocations. The report's catalog line is `map-check`'s own (`catalog: <k> journeys, <d> dropped`).
 
@@ -33,4 +33,4 @@ One invocation = one bounded cycle; a pass over the whole catalog is that many i
 
 ## The report
 
-argus's report (SKILL.md §5, §6), plus: the catalog line; `select`'s `select`, `wait` and `displaced` lines; per explored journey its status, coverage and candidates; per candidate its verdict (`REPRODUCED`, `runs=1/2`, harness), its class and severity, and the URL `scrub` filed or the reason it was not filed; the `down` report. It ends with the next picks: `select`'s `wait` lines, as ROTATE pins them.
+argus's report (SKILL.md §5, §6), led by the taste and usability scorecard (`live report`'s first section), plus: the catalog line; `taste file`'s lines; `select`'s `select`, `wait` and `displaced` lines; per explored journey its status, coverage and candidates; per candidate its verdict (`REPRODUCED`, `runs=1/2`, harness), its class and severity, and the URL `scrub` filed or the reason it was not filed; the `down` report. It ends with the next picks: `select`'s `wait` lines, as ROTATE pins them.

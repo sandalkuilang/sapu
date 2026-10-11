@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Post</title></head>
+<body>
+<main>
+<h1>Post</h1>
+<!-- Each control posts to /api/save?ms=<n> (answered 200 after n ms). -->
+<button id="quiet">Save quietly</button>
+<button id="named">Save</button>
+<button id="like-early">Like</button>
+<button id="like-late">Like later</button>
+<button id="disable-only">Publish</button>
+<button id="disable-toast">Archive</button>
+<button id="early-text">Send</button>
+<p>Likes: <span id="likes">0</span></p>
+<p id="status" role="status"></p>
+</main>
+<script>
+  const save = (ms) => fetch("/api/save?ms=" + ms, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "x" }) });
+  const on = (id, fn) => document.getElementById(id).addEventListener("click", fn);
+  const likes = document.getElementById("likes");
+  // a 2xx write and nothing shown: the new state is never named
+  on("quiet", () => { save(100); });
+  // the same write, named in a status region when it answers
+  on("named", async () => { await save(30); document.getElementById("status").textContent = "Saved."; });
+  // the control disables while the write runs and comes back: a busy signal, never the new state's name
+  on("disable-only", async (e) => { const b = e.currentTarget; b.disabled = true; await save(300); b.disabled = false; });
+  // the same, then a message once the write answered: named
+  on("disable-toast", async (e) => { const b = e.currentTarget; b.disabled = true; await save(300); b.disabled = false; document.getElementById("status").textContent = "Archived."; });
+  // text shown while the write runs ("Sending..."), nothing after it answered: not named
+  on("early-text", async () => { document.getElementById("status").textContent = "Sending..."; await save(300); });
+  // optimistic: the count moves before the answer
+  on("like-early", () => { likes.textContent = String(Number(likes.textContent) + 1); save(300); });
+  // the count moves only after the answer
+  on("like-late", async () => { await save(300); likes.textContent = String(Number(likes.textContent) + 1); });
+</script>
+</body></html>

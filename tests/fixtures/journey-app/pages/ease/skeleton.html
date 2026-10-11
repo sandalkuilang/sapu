@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Skeleton</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  .skeleton { width: 300px; height: 40px; background: lightgray; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.5; } }
+  .row { height: 40px; }
+</style></head>
+<body>
+<main>
+<h1>Orders</h1>
+<!-- A skeleton one row high, replaced by four rows: everything below it moves. -->
+<div id="list"><div class="skeleton"></div></div>
+<p>Totals are shown below the list.</p>
+</main>
+<script>
+  fetch("/api/wait?ms=1500").then((r) => r.json()).then(() => {
+    const rows = __ROWS__;
+    document.getElementById("list").innerHTML = Array.from({ length: rows }, (_, i) => '<div class="row">Order ' + (i + 1) + "</div>").join("");
+  });
+</script>
+</body></html>

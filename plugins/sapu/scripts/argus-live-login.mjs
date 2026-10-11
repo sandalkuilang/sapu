@@ -6,7 +6,7 @@
 import { createHash, createHmac } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { openSession, SIGNAL_SCRIPT, slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
+import { openSession, SIGNAL_SCRIPT, slotConfig, slotDir, withRunKey, writeSlotConfig } from "./argus-live-browser.mjs";
 import { closeSessions, removeSockets, runCli } from "./argus-live-cli.mjs";
 import { secretEnv } from "./argus-live-config.mjs";
 import { clean, nonce } from "./argus-live-fence.mjs";
@@ -470,7 +470,7 @@ function resultOf(r) {
  */
 export async function runCode({ js, session, cwd, home, code, timeoutMs = 120_000, runner = runAsync }) {
   const file = path.join(cwd, ".playwright", `run-${nonce()}.js`);
-  fs.writeFileSync(file, code, { mode: 0o600, flag: "wx" });
+  fs.writeFileSync(file, withRunKey(code, cwd), { mode: 0o600, flag: "wx" });
   try {
     return resultOf(await runCli({ js, session, args: ["run-code", `--filename=${file}`], cwd, home, timeoutMs, runner }));
   } finally {

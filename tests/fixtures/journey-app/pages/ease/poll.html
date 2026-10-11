@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Poll</title></head>
+<body>
+<main>
+<h1>Activity</h1>
+<!-- The twin of a wait: a page that changes by itself. Clicking into the field sends nothing, so a later
+     change is never that click's feedback. -->
+<label>Search <input id="q"></label>
+<p id="clock">refreshed 0 times</p>
+</main>
+<script>
+  let n = 0;
+  const clock = document.getElementById("clock");
+  setInterval(() => { n += 1; clock.textContent = "refreshed " + n + " times"; }, 300);
+</script>
+</body></html>

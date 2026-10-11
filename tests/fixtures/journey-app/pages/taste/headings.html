@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Heading sizes</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style></head>
+<body>
+<main>
+<h2 class="sr" style="font: 700 40px/48px sans-serif">Hidden section</h2>
+<h1 style="font: 700 24px/32px sans-serif">Account</h1>
+<!-- the violation: an h2 larger than the h1 above it -->
+<h2 style="font: 700 32px/40px sans-serif">Profile</h2>
+<h3 style="font: 600 20px/28px sans-serif">Contact</h3>
+<!-- the excluded twin: an h4 as large as the h3 (sizes may stay equal down the levels) -->
+<h4 style="font: 600 20px/28px sans-serif">Email</h4>
+<!-- the excluded twin: a later level-2 heading smaller than the h3 above it; it is not that h3's parent -->
+<div role="heading" aria-level="2" style="font: 600 18px/24px sans-serif">Billing</div>
+</main>
+</body></html>

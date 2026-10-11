@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Settings</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+main { padding: 24px; }
+p { margin: 8px 0; }
+.muted { color: rgb(115, 115, 115); }
+.faint { color: rgb(187, 187, 187); }
+.glow { background-image: linear-gradient(rgb(255, 255, 255), rgb(240, 240, 240)); padding: 8px; color: rgb(115, 115, 115); }
+input { border: 1px solid rgb(212, 212, 212); background: transparent; padding: 8px; color: inherit; }
+.card { border: 1px solid rgb(229, 229, 229); background: rgb(255, 255, 255); padding: 16px; margin: 16px 0; width: 400px; height: 80px; }
+.legacy { background: rgb(255, 255, 255); padding: 16px; width: 400px; height: 80px; }
+button { padding: 8px 16px; color: rgb(255, 255, 255); background: rgb(23, 23, 23); }
+button:disabled { color: rgb(160, 160, 160); background: rgb(245, 245, 245); }
+@media (prefers-color-scheme: dark) {
+  body { color: rgb(237, 237, 237); background: rgb(10, 10, 10); }
+  .muted { color: rgb(64, 64, 64); }
+  .faint { color: rgb(51, 51, 51); }
+  .glow { background-image: linear-gradient(rgb(20, 20, 20), rgb(10, 10, 10)); color: rgb(40, 40, 40); }
+  input { border-color: rgb(10, 10, 10); }
+  .card { border-color: rgb(64, 64, 64); background: rgb(23, 23, 23); }
+  button { color: rgb(23, 23, 23); background: rgb(250, 250, 250); }
+  button:disabled { color: rgb(30, 30, 30); background: rgb(20, 20, 20); }
+}
+</style></head>
+<body>
+<main>
+<h1>Settings</h1>
+<p>Your account is active.</p>
+<!-- the violation: passes in light (4.7:1), fails only in dark -->
+<p class="muted">Last signed in yesterday</p>
+<!-- the excluded twin: fails in both themes, which is axe's contrast failure, not a dark-only one -->
+<p class="faint">Version note</p>
+<!-- the excluded twin: text over a gradient has no single background colour to measure -->
+<p class="glow">Over a gradient</p>
+<!-- the excluded twin: a disabled control's text is exempt -->
+<button disabled>Archive</button>
+<!-- the violation: the field's border, its only edge, vanishes into the dark page -->
+<p><input aria-label="Display name" value="Ada"></p>
+<!-- the excluded twin: a card whose border stays visible in dark -->
+<div class="card">Profile card</div>
+<!-- the violation: a surface left light on the dark page -->
+<div class="legacy">Legacy panel</div>
+<!-- the excluded twin: an island that declares color-scheme: light is light by design -->
+<div class="legacy" style="color-scheme: light; color: rgb(23, 23, 23)">Print preview</div>
+<!-- the excluded twin: a QR code's quiet zone, a white box whose content is an image (QA's two-factor page) -->
+<div class="legacy" style="width: 200px; height: 200px; padding: 16px"><img alt="QR code" width="168" height="168" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='5' height='5'/%3E%3C/svg%3E"></div>
+<!-- the excluded twin: a document preview, white paper raised by a shadow, stays white in a dark app -->
+<div class="legacy" style="box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); color: rgb(17, 17, 17)">Document preview</div>
+<!-- the excluded twin: a light primary button on a dark page is a control, not a surface -->
+<button>Save changes</button>
+</main>
+</body></html>
