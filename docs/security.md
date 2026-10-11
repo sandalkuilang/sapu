@@ -151,7 +151,7 @@ Its reads go to the model like any agent's, so the statement you confirm in `.ar
 
 ### What the recorders keep
 
-To judge a screen, the session hook installs recorders in **every document of every lane session**, the explorer's included: the hook installs one payload for all. They run inside the page, wrap `fetch`, `XMLHttpRequest` and `attachShadow`, and change nothing else. What they record:
+To judge a screen, the session hook installs recorders in **every document of every lane session**, the explorer's included: the hook installs one payload for all, but for a perf pass, which hooks only the signal script and its own observers so that nothing of the taste pass weighs on what it times. They run inside the page, wrap `fetch`, `XMLHttpRequest` and `attachShadow`, and change nothing else. What they record:
 
 | Recorder | Keeps | Never keeps |
 |---|---|---|

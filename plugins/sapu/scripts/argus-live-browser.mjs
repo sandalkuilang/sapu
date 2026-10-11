@@ -405,6 +405,14 @@ export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = 
   };
 }
 
+/** Writes a slot's init payload (`<dir>/.playwright/signals.js`, 0600, beside then renamed), the script its CLI config loads in every page. */
+export function writeInitPayload(dir, text = PAGE_INIT) {
+  const file = path.join(dir, ".playwright", "signals.js");
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
 /** Writes a slot's CLI config and init payload (PAGE_INIT, as signals.js; 0600) under `<dir>/.playwright/`, and creates `out/` and `files/` (all 0700). */
 export function writeSlotConfig(dir, cfg) {
   for (const d of [dir, path.join(dir, ".playwright"), path.join(dir, "out"), path.join(dir, "files")]) {
@@ -418,7 +426,7 @@ export function writeSlotConfig(dir, cfg) {
     fs.renameSync(tmp, file);
   };
   put("cli.config.json", `${JSON.stringify(cfg, null, 2)}\n`);
-  put("signals.js", PAGE_INIT);
+  writeInitPayload(dir, PAGE_INIT);
 }
 
 /** `{pid, pgid, started}` of a process-table row. */

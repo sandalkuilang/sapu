@@ -206,6 +206,25 @@ describe(".argus/taste.json — the owner's calibration", () => {
     expect(errs({ gate: ["contrast.headroom"] })).toEqual(["gate: contrast.headroom is information only: it cannot gate"]);
   });
 
+  it("a perf pass hooks the signal script and the perf observers alone: no taste buffer or recorder weighs on what it times", async () => {
+    const { hookSignals } = await import("../plugins/sapu/scripts/argus-live-session.mjs");
+    const { PERF_SCRIPT } = await import("../plugins/sapu/scripts/argus-live-perf.mjs");
+    const { AIUX_INIT } = await import("../plugins/sapu/scripts/argus-live-aiux.mjs");
+    const sink = { pass: "perf" };
+    expect(hookSignals(sink)).toBe(`${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`);
+    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(hookSignals(sink)).not.toContain(recorder.trim());
+    // Outside a perf pass, the lane's whole payload.
+    expect(hookSignals(null)).toBe(PAGE_INIT);
+    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(PAGE_INIT).toContain(recorder.trim());
+    // The slot's CLI init payload follows it at each open: signals.js holds the same.
+    const dir = tempDir();
+    const { writeInitPayload } = await import("../plugins/sapu/scripts/argus-live-browser.mjs");
+    mkdirSync(join(dir, ".playwright"), { recursive: true });
+    writeInitPayload(dir, SIGNAL_SCRIPT);
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(SIGNAL_SCRIPT);
+    expect(statSync(join(dir, ".playwright/signals.js")).mode & 0o777).toBe(0o600);
+  });
+
   it("off takes rule ids, family names and *: the value lists the rule ids they name; * turns the whole pass off (tasteOff)", () => {
     const bar = loadBar();
     const ids = (f: string) => bar.rules.filter((r: Obj) => r.family === f).map((r: Obj) => r.id);

@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { AIUX_SOURCE } from "./argus-live-aiux.mjs";
-import { openSession, PAGE_INIT } from "./argus-live-browser.mjs";
+import { openSession, PAGE_INIT, SIGNAL_SCRIPT, writeInitPayload } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { EASE_SOURCE } from "./argus-live-ease.mjs";
@@ -337,6 +337,13 @@ export function observeCode(payload, T = null) {
 /** Scrub's `shot` stage (the text a screenshot's verdict reads), run by the recorder on the page it just shot. */
 export const SHOT_READ = loginStageSource("shot");
 
+/**
+ * The scripts a session hooks into every page: the lane's init payload (signals, the taste buffer and recorders), or in
+ * a perf pass the signal script and the perf observers alone, so the taste recorders' observers and wrappers never
+ * weigh on what the pass times (INP, long tasks).
+ */
+export const hookSignals = (perf) => (perf ? `${SIGNAL_SCRIPT};\n${PERF_SCRIPT}` : PAGE_INIT);
+
 /** The scrub verdict reasons that keep a shot from the Curator, and where such a shot goes: beside the run's taste/, never in it. */
 const HELD = ["secret", "password-field", "one-time-code-field"];
 const heldDir = (main, runId) => path.join(liveDir(main), runId, "held-shots");
@@ -543,13 +550,15 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   /** Opens the session (a login-command role's with a fresh storage state, which signs it in) and hooks it → the hook's events. */
   const open = async () => {
     stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
+    // The page's init payload as this session needs it (a perf pass measures the app alone: no taste recorder).
+    writeInitPayload(dir, perf ? SIGNAL_SCRIPT : PAGE_INIT);
     let storageState = null;
     if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
     record = await openSession({ main, runId, slot, account, js, home: home(), storageState, runner, cliRunner });
     d.state = { signedIn: Boolean(storageState) };
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
     try {
-      await d.stage("hook", { runOrigins, signals: perf ? `${PAGE_INIT};\n${PERF_SCRIPT}` : PAGE_INIT, capBytes });
+      await d.stage("hook", { runOrigins, signals: hookSignals(perf), capBytes });
       // A confirmation replay's routed fault is armed before the session's first navigation (Task 0.1).
       if (confirm && confirm.arm) await raw(confirm.arm);
       return [];
