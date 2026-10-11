@@ -548,7 +548,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (bad) lines.push(`harness: ${bad} recorded screens of another shape skipped`);
   const secrets = loadLive(main).secrets ?? {};
   if (out.length) lines.push(fence(out.map(rowLine).join("\n"), { secrets }).body);
-  if (probes.length) lines.push(`probes: ${probes.map((p) => `${p.ref} ${p.journey}`).join(", ")}: each replays its journey once to measure first what the walk does not (dark parity, reduced motion)`);
+  if (probes.length) lines.push(`probes: ${probes.map((p) => `${p.ref} ${p.journey}`).join(", ")}: each replays its journey once to measure first what the walk does not (dark parity, reduced motion, a refused form, a failed load)`);
   lines.push(`brief: ${BRIEF_FILE}: ${brief.screens.length} screens, ${brief.screens.reduce((n, x) => n + x.titles.length, 0)} title keys, ${brief.read.length} shots to read`);
   return { code: 0, lines, masked: true };
 }

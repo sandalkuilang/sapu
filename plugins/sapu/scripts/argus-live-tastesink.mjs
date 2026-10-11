@@ -33,8 +33,8 @@ function faultCode(S) {
  */
 export const MEDIA_RULES = Object.freeze(["colour.dark-contrast", "colour.dark-border", "colour.dark-surface", "motion.reduced"]);
 
-/** The rules the replay measures first (the walk never switches the explorer's media): dark parity and reduced motion. */
-export const FIRST_RULES = Object.freeze([...MEDIA_RULES]);
+/** The rules the replay measures first (the walk never can): dark parity and reduced motion, a refused form, a failed load. */
+export const FIRST_RULES = Object.freeze([...MEDIA_RULES, "states.recovery", "states.error"]);
 
 /**
  * The replay's sink for the rows `rows` of one screen (the session driver's, slot `r`, while confirming): `arm` (the
@@ -46,11 +46,14 @@ export const FIRST_RULES = Object.freeze([...MEDIA_RULES]);
  * form case, any other through its probe's ruleExpression; `take(answer)` keeps that measurement (`measured`: `{rows}`,
  * at most 50 a rule, or `{rows: null}` when it failed) and removes it from the step's answer.
  *
- * With `probe` `{at, screens, skip}` the replay also measures first what the walk never measures (FIRST_RULES): at
- * each step whose screen key (route template, width, the page's own scheme) is one of `screens` (the journey's recorded
- * screens) and not in `skip` (measured already), the census of both schemes and reduced motion and the media rules'
- * rows (`probes`: `[{key, themes, rows}]`, rows null when the census failed). With no rows, reaching the probe's screen
- * `at` is the measurement (`{rows: []}`).
+ * With `probe` `{at, screens, skip, target}` the replay also measures first what the walk never measures (FIRST_RULES):
+ * at each step whose screen key (route template, width, the page's own scheme) is one of `screens` (the journey's
+ * recorded screens) and not in `skip` (measured already), the census of both schemes and reduced motion and the media
+ * rules' rows (`probes`: `[{key, themes, rows}]`, rows null when the census failed); and at the target screen `at` (the
+ * rows' screen, or with no rows the probe's own), after the rows' measurement and only once, `target.recovery`'s form
+ * case (each empty text field filled first; never a form whose submit `prohibited` names) and `target.error`'s routed
+ * fault (armed, the page reloaded, the first same-origin JSON GET answered 500, its error state read; the route taken off
+ * again) → `first` `{key, rows, ran: [what ran whole]}`. With no rows, reaching `at` is the measurement (`{rows: []}`).
  */
 export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [], probe = null }) {
   const group = Array.isArray(rows) ? rows : [rows];
@@ -69,12 +72,14 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   // A group (rows of one screen): the media rules through one census, every other rule through its expression.
   const more = group.length > 1 ? { ids, exprs: ids.filter((id) => !MEDIA_RULES.includes(id) && (media || id !== row.rule)).map(exprOf) } : {};
   const mode = !row ? {} : media ? {} : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : row.rule === "states.recovery" ? {} : { expr: exprOf(row.rule) };
-  const P = probe ? { screens: probe.screens, media: MEDIA_READ } : null;
-  const S = { rule: row ? row.rule : null, route, width: Number(width), routes, settleMs, media, ...(needCensus ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id) || firstMedia.includes(r.id)), frames: bar.frames }, cfg: frame, mediaIds, firstMedia } : {}), ...(row && row.rule === "states.recovery" ? { recover: RECOVERY_SOURCE, ease: EASE_SOURCE } : {}), ...mode, ...more, probe: P };
+  const target = probe && probe.target ? { recovery: Boolean(probe.target.recovery) && !off.has("states.recovery"), error: Boolean(probe.target.error) && !off.has("states.error") } : null;
+  const P = probe ? { screens: probe.screens, media: MEDIA_READ, target, errorExpr: target && target.error ? easeExpression("states.error") : null, fault: target && target.error ? FAULT_SOURCE : null, prohibited: (Array.isArray(prohibited) ? prohibited : []).filter((x) => typeof x === "string" && x.trim() !== "").map((x) => x.toLowerCase()).slice(0, 50) } : null;
+  const S = { rule: row ? row.rule : null, route, width: Number(width), routes, settleMs, media, ...(needCensus ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id) || firstMedia.includes(r.id)), frames: bar.frames }, cfg: frame, mediaIds, firstMedia } : {}), ...((row && row.rule === "states.recovery") || (target && target.recovery) ? { recover: RECOVERY_SOURCE, ease: EASE_SOURCE } : {}), ...mode, ...more, probe: P };
   if (row && row.rule === "states.recovery") S.recovering = true;
   const sink = {
     measured: null,
     probes: [],
+    first: null,
     arm: row && row.rule === "states.error" ? faultCode(S) : row && row.rule === "ai.error" ? faultArm() : null,
     wrap: (text) =>
       sink.measured
@@ -96,7 +101,11 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
     const SUBMIT = "button:not([type]), button[type=submit], input[type=submit]";
     const recover = async () => {
       const submit = page.locator("form").filter({ has: page.locator(SUBMIT) }).first().locator(SUBMIT).first();
-      const lost = await fn(S.recover)(page, submit, fn(S.ease));
+      if (P && P.prohibited.length && (await submit.count()) === 1) {
+        const name = String(await submit.evaluate((b) => b.getAttribute("aria-label") || b.value || b.innerText || "")).replace(/\\s+/g, " ").trim().toLowerCase();
+        if (name && P.prohibited.some((q) => q.includes(name) || name.includes(q))) return null;
+      }
+      const lost = await fn(S.recover)(page, submit, fn(S.ease), true);
       return Array.isArray(lost) ? lost.map((x) => ({ rule: "states.recovery", key: x.key, measured: "lost", expected: "the value typed before the rejected submit" })) : null;
     };
     let census = null;
@@ -125,6 +134,35 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
       const cut = (r) => ({ rule: r.rule, key: String(r.key).slice(0, 300), measured: typeof r.measured === "number" ? r.measured : String(r.measured).slice(0, 200), expected: r.expected == null ? null : typeof r.expected === "number" ? r.expected : String(r.expected).slice(0, 200) });
       answer.__probe = { key, themes, rows: rows ? rows.slice(0, 50).map(cut) : null };
     }
+    // And at the target, last (they act on the page): the refused form, then the failed load.
+    if (at && P && P.target) {
+      const rows = [], ran = [];
+      if (P.target.recovery) {
+        try {
+          const lost = await recover();
+          if (Array.isArray(lost)) rows.push(...lost);
+          ran.push("states.recovery");
+        } catch (e) {}
+      }
+      if (P.target.error && routeOf(new URL(page.url()).pathname, S.routes) === S.route) {
+        try {
+          const f = await fn(P.fault)(page, null, (q) => { try { return routeOf(new URL(q.frame().page().url()).pathname, S.routes) === S.route; } catch (e) { return false; } });
+          try {
+            await page.reload({ timeout: S.settleMs }).catch(() => {});
+            for (const end = Date.now() + S.settleMs; f.faulted() === null && Date.now() < end; ) await page.waitForTimeout(100);
+            if (f.faulted() !== null) {
+              await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
+              const found = await page.evaluate(P.errorExpr);
+              if (Array.isArray(found)) rows.push(...found.filter((r) => r && r.rule === "states.error"));
+            }
+            ran.push("states.error");
+          } finally {
+            await f.off();
+          }
+        } catch (e) {}
+      }
+      answer.__first = { key: S.route + "|" + S.width + "|" + (await page.evaluate(P.media).catch(() => ({ colorScheme: "light" }))).colorScheme, ran, rows: rows.slice(0, 50).map((r) => ({ rule: r.rule, key: String(r.key).slice(0, 300), measured: String(r.measured).slice(0, 200), expected: r.expected == null ? null : String(r.expected).slice(0, 200) })) };
+    }
   } catch (e) {}
   return answer;
 }
@@ -133,6 +171,10 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
       if (isObj(answer) && Object.hasOwn(answer, "__probe")) {
         if (isObj(answer.__probe) && typeof answer.__probe.key === "string" && !sink.probes.some((x) => x.key === answer.__probe.key)) sink.probes.push({ key: answer.__probe.key, themes: answer.__probe.themes ?? null, rows: Array.isArray(answer.__probe.rows) ? answer.__probe.rows : null });
         delete answer.__probe;
+      }
+      if (isObj(answer) && Object.hasOwn(answer, "__first")) {
+        if (!sink.first && isObj(answer.__first) && Array.isArray(answer.__first.rows)) sink.first = { key: String(answer.__first.key), ran: Array.isArray(answer.__first.ran) ? answer.__first.ran : [], rows: answer.__first.rows };
+        delete answer.__first;
       }
       if (isObj(answer) && Object.hasOwn(answer, "__taste")) {
         if (!sink.measured) sink.measured = isObj(answer.__taste) ? answer.__taste : { rows: null };
@@ -154,25 +196,36 @@ const ownKey = (screen, records) => {
 /**
  * What a replay of journey `journey` measures first (confirmSink's `probe`), or null when nothing is left: `records`
  * the journey's recorded screens, `at` the screen it replays to (a row's, which may be its dark twin, or a probe's),
- * `judge` the run's judge.json (its `probed`: `{media: [screen key]}`). A screen is measured already when an earlier
- * replay of the run measured it, or when its walk record holds the other scheme's census (a record from before the walk
- * stopped switching).
+ * `judge` the run's judge.json (its rows and `probed`: `{media: [screen key], states: ["<screen key> <rule>"]}`).
+ * A screen is measured already when an earlier replay of the run measured it, or when its walk record holds the other
+ * scheme's census (a record from before the walk stopped switching). The target's form case runs where the walk saw a
+ * form with a submit, its routed fault where it saw a same-origin GET, each once a run and never for a rule the screen
+ * already has a row of, nor one `cfg.off` turns off.
  */
-export function probePlan({ journey, at, records, judge }) {
+export function probePlan({ journey, at, records, judge, cfg = null }) {
   const mine = records.filter((s) => s.journey === journey);
   const probed = isObj(judge && judge.probed) ? judge.probed : {};
+  const off = new Set(cfg && Array.isArray(cfg.off) ? cfg.off : []);
   const screens = [...new Set(mine.map((s) => s.key))];
-  const walked = mine.filter((s) => isObj(s.taste) && (s.taste.themes || (s.taste.dark && s.taste.light))).map((s) => s.key);
+  const walked = mine.filter((s) => isObj(s.taste) && (s.taste.themes || s.taste.dark && s.taste.light)).map((s) => s.key);
   const skip = [...new Set([...(Array.isArray(probed.media) ? probed.media : []), ...walked])];
-  if (!screens.some((k) => !skip.includes(k))) return null;
-  return { at: ownKey(at, mine), screens, skip };
+  const own = ownKey(at, mine);
+  const recs = mine.filter((s) => s.key === own);
+  const rows = (judge && Array.isArray(judge.rows) ? judge.rows : []).filter((r) => r.journey === journey && ownKey(r.screen, mine) === own);
+  const open = (rule) => !off.has(rule) && !(Array.isArray(probed.states) && probed.states.includes(`${own} ${rule}`)) && !rows.some((r) => r.rule === rule);
+  const form = recs.some((s) => isObj(s.ease) && Array.isArray(s.ease.forms) && s.ease.forms.some((f) => isObj(f) && f.submit === true));
+  const get = recs.some((s) => isObj(s.ease) && Array.isArray(s.ease.requests) && s.ease.requests.some((r) => isObj(r) && r.same !== false && r.method === "GET"));
+  const target = { recovery: form && open("states.recovery"), error: get && open("states.error") };
+  const left = screens.filter((k) => !skip.includes(k));
+  if (!left.length && !target.recovery && !target.error) return null;
+  return { at: own, screens, skip, target: target.recovery || target.error ? target : null };
 }
 
 /**
  * The rows sink `sink` measured first in replay `ref` of journey `journey` → `{rows, probed}`: each a judge row without
  * its number (`probe: ref` says where it was first measured; it stands on that measurement, `witnesses` empty), a dark
  * rule's on the screen's dark key; never a rule `cfg.off` turns off, an information rule, nor a `bar` rule (a bar row
- * needs the corpus band and an internal witness); `probed` the screen keys now measured.
+ * needs the corpus band and an internal witness); `probed` the screen keys and `<key> <rule>` pairs now measured.
  */
 export function firstRows({ ref, journey, sink, bar = loadBar(), cfg = null }) {
   const rules = new Map(bar.rules.map((r) => [r.id, r]));
@@ -191,6 +244,10 @@ export function firstRows({ ref, journey, sink, bar = loadBar(), cfg = null }) {
     probed.media.push(p.key);
     const [route, width] = p.key.split("|");
     for (const f of p.rows) add(String(f.rule).startsWith("colour.dark-") && p.themes === "dual" ? `${route}|${width}|dark` : p.key, f);
+  }
+  if (sink.first) {
+    for (const rule of sink.first.ran) probed.states.push(`${sink.first.key} ${rule}`);
+    for (const f of sink.first.rows) add(sink.first.key, f);
   }
   return { rows, probed };
 }

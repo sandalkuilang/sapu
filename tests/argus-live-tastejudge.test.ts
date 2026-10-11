@@ -1027,7 +1027,7 @@ describe("argus-live taste confirm (J2)", () => {
     expect(S).toMatchObject({ rule: "copy.broken", route: "/orders/:id", width: 1440, routes: [], settleMs: 10000, media: false });
     expect(typeof S.expr).toBe("string");
     // The walk measured only the page's own scheme: the replay measures the journey's recorded screen first in both.
-    expect(S.probe).toMatchObject({ screens: ["/orders/:id|1440|light"], skip: [] });
+    expect(S.probe).toMatchObject({ screens: ["/orders/:id|1440|light"], skip: [], target: null });
     expect(t.runs[0].arm).toBeNull();
     expect(t.file().rows[0].confirmed).toBe(true);
     expect(readTasteState(t.main).journeys.j.rows["taste:copy.broken:/orders/:id|1440|light"]).toEqual({ rule: "copy.broken", screen: "/orders/:id|1440|light", class: "implicit", severity: "S3", state: "queued", issue: null, first: t.runId, last: t.runId });
@@ -1057,27 +1057,30 @@ describe("argus-live taste confirm (J2)", () => {
   }, 30_000);
 
   it("a screen group's replay measures first what the walk does not: each row found takes the next number and `probe`, a candidate until its own replay; a re-judge keeps it; nothing is measured first twice", async () => {
-    const t = await confirmRepo([broken]);
+    // The walk saw a form with a submit and a same-origin GET on the screen.
+    const t = await confirmRepo([broken], { ease: { findings: [], forms: [{ key: "Order", submit: true, fields: ["qty"] }], requests: [{ t: 1, end: 9, status: 200, method: "GET", route: "/api/orders/:id", keys: [], same: true }] } });
     const ROUTE = "/orders/:id|1440";
     const first = {
       __probe: { key: `${ROUTE}|light`, themes: "dual", rows: [{ rule: "colour.dark-border", key: "card", measured: 1, expected: "an edge" }, { rule: "motion.reduced", key: "hero", measured: 900, expected: "none" }] },
+      __first: { key: `${ROUTE}|light`, ran: ["states.recovery", "states.error"], rows: [{ rule: "states.error", key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" }] },
     };
     const r = await t.confirm("t1", { rows: [{ key: "facts|undefined", measured: "undefined" }] }, 3, first);
     const S = JSON.parse(/const S = (.*);\n/.exec(t.runs[0].wrapped)![1]);
-    expect(S.probe).toMatchObject({ screens: [`${ROUTE}|light`], skip: [] });
+    expect(S.probe).toMatchObject({ screens: [`${ROUTE}|light`], skip: [], target: { recovery: true, error: true } });
     expect(r.code).toBe(0);
-    expect(r.lines.slice(0, 2)).toEqual(["taste confirm t1: confirmed (measured again)", "first measured in t1's replay: t2 (candidates: each confirmed by its own taste confirm)"]);
+    expect(r.lines.slice(0, 2)).toEqual(["taste confirm t1: confirmed (measured again)", "first measured in t1's replay: t2, t3 (candidates: each confirmed by its own taste confirm)"]);
     expect(r.lines[2]).toMatch(/\nt2 j colour\.dark-border implicit \/orders\/:id\|1440\|dark key=card .* first-measured-in=t1\n/);
     // motion.reduced is a bar rule (it needs the corpus band and an internal witness): never a row of its own.
     const file = t.file();
     expect(file.rows.map((x: Obj) => [x.row, x.rule, x.screen, x.confirmed, x.probe ?? null])).toEqual([
       ["t1", "copy.broken", `${ROUTE}|light`, true, null],
       ["t2", "colour.dark-border", `${ROUTE}|dark`, null, "t1"],
+      ["t3", "states.error", `${ROUTE}|light`, null, "t1"],
     ]);
-    expect(file.probed).toEqual({ media: [`${ROUTE}|light`], states: [] });
+    expect(file.probed).toEqual({ media: [`${ROUTE}|light`], states: [`${ROUTE}|light states.recovery`, `${ROUTE}|light states.error`] });
     // A re-judge keeps them (no recorded screen holds them) and what was measured.
     await t.judge();
-    expect(t.file().rows.filter((x: Obj) => x.probe === "t1").map((x: Obj) => x.rule)).toEqual(["colour.dark-border"]);
+    expect(t.file().rows.filter((x: Obj) => x.probe === "t1").map((x: Obj) => x.rule).sort()).toEqual(["colour.dark-border", "states.error"]);
     expect(t.file().probed).toEqual(file.probed);
     const dark = t.file().rows.find((x: Obj) => x.rule === "colour.dark-border");
     // Its own replay measures it again (the media census), and measures nothing first: all of it was measured.
@@ -1094,7 +1097,7 @@ describe("argus-live taste confirm (J2)", () => {
     t.put(1, [t.screen("/a"), t.screen("/b")]);
     t.ret(1, "j", pathOf(3));
     const judged = await t.judge();
-    expect(judged.lines).toContain("probes: p1 j: each replays its journey once to measure first what the walk does not (dark parity, reduced motion)");
+    expect(judged.lines).toContain("probes: p1 j: each replays its journey once to measure first what the walk does not (dark parity, reduced motion, a refused form, a failed load)");
     expect(t.file().probes).toEqual([{ ref: "p1", journey: "j", at: "/b|1440|light" }]);
     const runs: Obj[] = [];
     const once = (reach: boolean) => async (_m: string, _r: null, opts: Obj) => {
@@ -1109,7 +1112,7 @@ describe("argus-live taste confirm (J2)", () => {
     const r = await tasteConfirm(t.main, "p1", { once: once(true) });
     expect(runs[1].opts.path.id).toBe("taste-p1");
     expect(typeof runs[1].opts.until).toBe("function");
-    expect(runs[1].S).toMatchObject({ rule: null, route: "/b", width: 1440, probe: { screens: ["/a|1440|light", "/b|1440|light"], skip: [] } });
+    expect(runs[1].S).toMatchObject({ rule: null, route: "/b", width: 1440, probe: { screens: ["/a|1440|light", "/b|1440|light"], skip: [], target: null } });
     expect(r.code).toBe(0);
     expect(r.lines.slice(0, 2)).toEqual(["taste confirm p1: measured first (j: 1 new row(s))", "first measured in p1's replay: t1 (candidates: each confirmed by its own taste confirm)"]);
     expect(t.file().rows.map((x: Obj) => [x.row, x.rule, x.screen, x.probe])).toEqual([["t1", "colour.dark-contrast", "/a|1440|dark", "p1"]]);
@@ -1261,11 +1264,13 @@ describe("argus-live taste confirm — the replay in slot r (J2)", () => {
     expect(plain.lines[0]).toBe("taste confirm t2: not confirmed (not measured again: the screen holds the rule)");
     expect(JSON.parse(readFileSync(join(live, "taste", "judge.json"), "utf8")).rows.map((r: Obj) => r.confirmed)).toEqual([true, false]);
     // t2's replay measured both recorded screens first in the other scheme, in the daemon, on its way (t1's, armed,
-    // measures nothing first).
+    // measures nothing first); the order page's failed load is t1's row already, so its target had nothing to act on.
     expect(JSON.parse(readFileSync(join(live, "taste", "judge.json"), "utf8")).probed).toEqual({ media: ["/orders/new|1440|light", "/orders/:id|1440|light"], states: [] });
-    // The journey's probe: nothing left to measure first, so no replay.
-    expect((await tasteConfirm(c.main, "p1")).lines).toEqual(["taste confirm p1: nothing to measure first (each recorded screen of order-to-cash was measured)"]);
-    expect(existsSync(join(live, "smoke", "taste-p1"))).toBe(false);
+    // The journey's probe: nothing left in the other scheme, but the form at its screen; the replay stops there.
+    const probe = await tasteConfirm(c.main, "p1");
+    expect(probe.lines[0]).toBe("taste confirm p1: measured first (order-to-cash: 0 new row(s))");
+    expect(JSON.parse(readFileSync(join(live, "taste", "judge.json"), "utf8")).probed.states).toEqual(["/orders/new|1440|light states.recovery"]);
+    expect(JSON.parse(readFileSync(join(live, "smoke", "taste-p1", "run-1.json"), "utf8"))).toMatchObject({ exit: 0, prefix: 1 });
     expect(Object.keys(readTasteState(c.main).journeys["order-to-cash"].rows)).toEqual(["taste:states.error:/orders/:id|1440|light"]);
     // Each replay ran on a fresh instance, as a path of its own, and only its prefix: the screen is reached and measured
     // at step 3, so step 4 (the path's final) never ran.

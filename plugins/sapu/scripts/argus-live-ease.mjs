@@ -526,15 +526,27 @@ export const FAULT_SOURCE = String.raw`async (page, origin, when) => {
  * the first required field holding a value that the browser will not check itself (the form is novalidate, or the
  * field only aria-required) is emptied and the submit clicked; every other field whose value then changed is lost
  * (`[{key}]`, the field's label). Every value is put back. null when there is no such field or form, when a write was
- * accepted (phase 6's a11y case reports that), or when the form is gone.
+ * accepted (phase 6's a11y case reports that), or when the form is gone. With `fill` (a replay that reaches the form
+ * before its path types anything), each empty text field first gets a plain value of its type (never a date or time
+ * kind), so a value the refusal clears shows; those fields are emptied again at the end, the form left as found.
  */
-export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
+export const RECOVERY_SOURCE = String.raw`async (page, submit, ease, fill) => {
   if ((await submit.count()) !== 1) return null;
   const at = await submit.evaluate((b) => [...document.forms].indexOf(b.form || b.closest("form")));
-  const before = at < 0 ? null : await page.evaluate(ease, { kind: "fields", form: at });
-  const c = before && before.find((x) => x.need && x.filled && x.text);
-  if (!c) return null;
   const handle = async (i) => (await page.evaluateHandle((a) => document.forms[a[0]] && document.forms[a[0]].elements[a[1]], [at, i])).asElement();
+  const PLAIN = { email: "argus@example.test", url: "https://example.test", tel: "5550100", number: "1", text: "argus", search: "argus", textarea: "argus" };
+  const mine = [];
+  const fields = async () => { const v = at < 0 ? null : await page.evaluate(ease, { kind: "fields", form: at }); return Array.isArray(v) ? v : null; };
+  for (const x of fill ? (await fields()) || [] : []) {
+    if (!x.text || x.filled) continue;
+    const h = await handle(x.i);
+    const type = h ? await h.evaluate((el) => (el.tagName === "TEXTAREA" ? "textarea" : String(el.type || "text").toLowerCase())) : null;
+    if (h && Object.hasOwn(PLAIN, type) && (await h.fill(PLAIN[type]).then(() => true, () => false))) mine.push(x.i);
+  }
+  const before = await fields();
+  const c = before && before.find((x) => x.need && x.filled && x.text);
+  const empty = async () => { for (const i of mine) { const h = await handle(i); if (h) await h.fill("").catch(() => null); } };
+  if (!c) return (await empty(), null);
   const kept = before.filter((x) => x.filled), values = [];
   for (const x of kept) values.push(x.box ? null : await (await handle(x.i)).inputValue());
   let accepted = false;
@@ -545,7 +557,7 @@ export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
     await submit.click();
     try { await page.waitForResponse((r) => r.request().method() !== "GET", { timeout: 800 }); } catch (e) {}
     await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
-    const after = accepted ? null : await page.evaluate(ease, { kind: "fields", form: at }).catch(() => null);
+    const after = accepted ? null : await fields().catch(() => null);
     if (!after) return null;
     const gone = kept.filter((x) => x.i !== c.i && !after.some((y) => y.i === x.i && y.digest === x.digest));
     for (let j = 0; j < kept.length; j++) {
@@ -557,6 +569,7 @@ export const RECOVERY_SOURCE = String.raw`async (page, submit, ease) => {
     return gone.map((x) => ({ key: x.key }));
   } finally {
     page.off("response", seen);
+    await empty();
   }
 }`;
 

@@ -207,7 +207,7 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     expect(await judged(true)).toContain("feedback.busy");
   }, 240_000);
 
-  it("the replay measures first what the walk never does: dark parity and reduced motion at a recorded screen not measured yet", async () => {
+  it("the replay measures first what the walk never does: dark parity at a recorded screen not measured yet; at the target, a refused form and a failed load", async () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {
       const page = await context.newPage();
@@ -232,6 +232,30 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
       const single = confirmSink([], { routes: [], settleMs: 5000, probe: probe("/taste/single.html|1280|light") });
       await run(single, "/taste/single.html");
       expect(single.probes).toEqual([{ key: "/taste/single.html|1280|light", themes: "single", rows: [] }]);
+      // A failed load at the target: the page reloaded with its first JSON GET answered 500. Blank main is a row; a
+      // message with Retry holds.
+      const loads = async (mode: string) => {
+        const s = confirmSink([], { routes: [], settleMs: 5000, probe: probe("/ease/states.html|1280|light", { target: { error: true } }) });
+        await run(s, `/ease/states.html?mode=${mode}`);
+        return s.first;
+      };
+      expect(await loads("blank")).toEqual({ key: "/ease/states.html|1280|light", ran: ["states.error"], rows: [{ rule: "states.error", key: "error-state", measured: "blank main", expected: "an error state with a way to retry or leave" }] });
+      expect(await loads("retry")).toEqual({ key: "/ease/states.html|1280|light", ran: ["states.error"], rows: [] });
+      // The route is off again: the page loads its data.
+      await page.reload();
+      await page.getByText("Order one").waitFor({ timeout: 30_000 });
+      // A refused form at the target, reached before the path typed anything: the case fills the empty fields first.
+      const forms = async (mode: string, prohibited: string[] = []) => {
+        const s = confirmSink([], { routes: [], settleMs: 5000, prohibited, probe: probe("/ease/recovery.html|1280|light", { target: { recovery: true } }) });
+        await run(s, `/ease/recovery.html?mode=${mode}`);
+        return s.first;
+      };
+      expect((await forms("clear"))!.rows.map((r: Obj) => [r.rule, r.key, r.measured])).toEqual([["states.recovery", "Email", "lost"], ["states.recovery", "Notes", "lost"]]);
+      // The form left as found: the values the case typed taken out again.
+      expect(await page.evaluate(() => { const f = (document.getElementById("f") as HTMLFormElement).elements as any; return [f.name.value, f.email.value, f.notes.value, f.vip.checked]; })).toEqual(["", "", "", false]);
+      expect((await forms("keep"))!.rows).toEqual([]);
+      // Never a form whose submit the owner prohibits.
+      expect(await forms("clear", ["Save contact"])).toEqual({ key: "/ease/recovery.html|1280|light", ran: ["states.recovery"], rows: [] });
     } finally {
       await context.close();
     }

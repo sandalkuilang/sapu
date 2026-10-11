@@ -471,6 +471,27 @@ describe("argus-live ease — states: the routed fault, success, recovery, empty
     expect(hits.slice(posted).filter((h) => h === "POST /api/save")).toEqual([]);
   }, 60_000);
 
+  it("states.recovery with `fill` (the replay's first measurement, at the moment the screen is reached): each empty text field gets a plain value first, so a refusal that clears it shows; the form is left as found", async () => {
+    const recover = fnOf(RECOVERY_SOURCE);
+    const posted = hits.length;
+    const run = async (mode: string, name = "") => {
+      const page = await open(`recovery.html?mode=${mode}`);
+      if (name) await page.getByLabel("Name").fill(name);
+      const lost = await recover(page, page.getByRole("button", { name: "Save contact" }), ease, true);
+      const values = await page.evaluate(() => { const f = (document.getElementById("f") as HTMLFormElement).elements as any; return [f.name.value, f.email.value, f.notes.value, f.vip.checked]; });
+      return { lost, values };
+    };
+    // Nothing typed yet: the case fills Name, Email and Notes, empties Name (the required field) and submits.
+    expect(await run("clear")).toEqual({ lost: [{ key: "Email" }, { key: "Notes" }], values: ["", "", "", false] });
+    expect(await run("keep")).toEqual({ lost: [], values: ["", "", "", false] });
+    // A value the path typed stays as typed.
+    expect(await run("clear", "Ana")).toEqual({ lost: [{ key: "Email" }, { key: "Notes" }], values: ["Ana", "", "", false] });
+    // Without `fill`, an empty form has no field to lose: the case is not run.
+    const page = await open("recovery.html?mode=clear");
+    expect(await recover(page, page.getByRole("button", { name: "Save contact" }), ease)).toBeNull();
+    expect(hits.slice(posted).filter((h) => h === "POST /api/save")).toEqual([]);
+  }, 60_000);
+
   it("states.empty-next: an empty state with a message and no way on fires; with a control, or no message at all, it holds", async () => {
     const s = await record(await open("empty.html"));
     expect(judged(s).filter((f: Obj) => f.rule === "states.empty-next").map((f: Obj) => f.key)).toEqual(["table|Orders", "table|Tags"]);
