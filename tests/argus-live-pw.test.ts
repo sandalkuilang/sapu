@@ -904,7 +904,7 @@ describe("argus-live fences and targets", () => {
       const wide = "\u{1f600}é%".repeat(Math.ceil(n / 3)).slice(0, n);
       expect(clean(`x ${wide} y`, { secrets: { W: wide } })).toBe("x *** y");
     }
-  });
+  }, 30_000); // CPU-bound: about 10 s on a hosted macOS runner
 
   it("a secret is masked case-folded, in hex, inside base64 at any byte offset, and URL-decoded", () => {
     const PW = "Ab3xYz9Qw2Lm";
