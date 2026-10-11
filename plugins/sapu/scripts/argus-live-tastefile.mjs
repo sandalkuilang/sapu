@@ -410,13 +410,14 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
     return fs.lstatSync(png, { throwIfNoEntry: false })?.isFile() ? [png] : [];
   };
   /** Files one issue through scrub (`attach` its screen's shot) → its URL, or null after pushing scrub's lines (the filing stops). */
-  const fileThrough = async (name, title, body, labels, attach = []) => {
+  const fileThrough = async (name, title, body, labels, attach = [], comment = null) => {
     const dir = path.join(liveDir(main), runId, "taste", "filing");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const bodyFile = path.join(dir, `${name}.md`);
     fs.renameSync(tempBeside(bodyFile, body, 0o600), bodyFile);
-    const r = await scrub(main, { run: runId, title, bodyFile, attach, create: true, labels }, { env, gh, runner });
-    const url = r.code === 0 ? (r.out.find((l) => l.startsWith("filed: ")) ?? "").slice(7) : "";
+    const r = await scrub(main, { run: runId, title, bodyFile, attach, ...(comment ? { comment } : { create: true, labels }) }, { env, gh, runner });
+    const said = comment ? "commented: " : "filed: ";
+    const url = r.code === 0 ? (r.out.find((l) => l.startsWith(said)) ?? "").slice(said.length) : "";
     if (url) return url;
     lines.push(...r.out.filter((l) => !l.startsWith("title: ")));
     return null;
@@ -445,11 +446,14 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
   const items = polish.sort(byRank);
   const take = stop || rolledUp ? [] : items.slice(0, POLISH_MAX);
   for (const g of items.filter((x) => !take.includes(x))) queue(g, stop ? "not filed: the filing stopped" : rolledUp ? "this run's roll-up is filed" : `over the roll-up's ${POLISH_MAX}`);
+  // One roll-up at a time: an earlier cycle's still open takes this cycle's items as a comment.
+  const open = issues.find((i) => i.state === "OPEN" && /^\[polish\] cycle /.test(i.title) && Number.isInteger(i.number));
   if (take.length) {
-    const url = await fileThrough("polish", `[polish] cycle ${runId} — ${take.length} coherence items`, polishBody(take, { runId, judge }), ["ux", "argus", "found-by:user", "severity:s4", "priority:p3"]);
+    const url = await fileThrough("polish", `[polish] cycle ${runId} — ${take.length} coherence items`, polishBody(take, { runId, judge }), ["ux", "argus", "found-by:user", "severity:s4", "priority:p3"], [], open ? open.number : null);
     if (url) {
-      for (const g of take) put(g, "open", url);
-      lines.push(`polish: ${url} ${take.length} item(s)`);
+      const issue = open ? open.url : url;
+      for (const g of take) put(g, "open", issue);
+      lines.push(`polish: ${issue} ${take.length} item(s)${open ? " (a comment on the open roll-up)" : ""}`);
       count.polish = take.length;
     } else {
       stop = 1;

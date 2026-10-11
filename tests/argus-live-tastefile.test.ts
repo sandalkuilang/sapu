@@ -90,6 +90,7 @@ const fakeGh = (issues: Obj[] = [], beyond: Obj[] = [], { attaches = false } = {
       const i = [...issues, ...beyond].find((x) => x.url === a[2]);
       return i ? { status: 0, stdout: JSON.stringify(i) } : { status: 1, stdout: "" };
     }
+    if (a[0] === "issue" && a[1] === "comment") return { status: 0, stdout: `https://github.com/o/r/issues/${a[2]}#issuecomment-1\n` };
     if (a[0] === "issue" && a[1] === "create") {
       n += 1;
       const url = `https://github.com/o/r/issues/${n}`;
@@ -338,6 +339,26 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     const again = fakeGh(gh.issues);
     await file(t, again);
     expect(again.created()).toEqual([]);
+  });
+
+  it("one roll-up open at a time: an earlier cycle's open [polish] issue takes this cycle's items as a comment", async () => {
+    const t = cycle();
+    judged(t, [row(1), row(2, { rule: "hierarchy.alignment", class: "derived", key: "nav > a", measured: 2, expected: 0, witnesses: [] })]);
+    const earlier = { number: 77, title: "[polish] cycle 20000101000000-0123abcd — 4 coherence items", url: "https://github.com/o/r/issues/77", state: "OPEN", stateReason: null };
+    const gh = fakeGh([earlier]);
+    const r = await file(t, gh);
+    expect(gh.created()).toEqual([]);
+    const comment = gh.calls.find((c) => c.argv[0] === "issue" && c.argv[1] === "comment")!;
+    expect(comment.argv[2]).toBe("77");
+    expect(comment.body).toContain(tk("hierarchy.alignment", ORDER));
+    expect(r.lines).toContain("polish: https://github.com/o/r/issues/77 2 item(s) (a comment on the open roll-up)");
+    expect(rowsOf(t)[tk("hierarchy.alignment", ORDER)]).toMatchObject({ state: "open", issue: "https://github.com/o/r/issues/77" });
+    // A closed roll-up is no home: a new one is filed.
+    const u = cycle();
+    judged(u, [row(1)]);
+    const closed = fakeGh([{ ...earlier, state: "CLOSED", stateReason: "COMPLETED" }]);
+    await file(u, closed);
+    expect(closed.created().map((c) => c.title)).toEqual([`[polish] cycle ${u.runId} — 1 coherence items`]);
   });
 
   it("a bar row is filed only with an internal witness", async () => {
