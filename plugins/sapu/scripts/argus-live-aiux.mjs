@@ -283,6 +283,12 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
     if (c.length > 1) await c[1].click({ timeout: 5000 }); else await first[0].press("Enter");
     return true;
   };
+  // Never a destructive control (the lexicon) or one the owner's live.json prohibits: such a candidate leaves the drive undecided.
+  const RISK = new RegExp(A.refuse, "iu");
+  const risky = async (el) => {
+    const n = String(await el.evaluate((e) => e.getAttribute("aria-label") || (e.tagName === "INPUT" ? e.value : e.innerText || e.textContent) || e.getAttribute("title") || "").catch(() => "")).replace(/\s+/g, " ").trim().toLowerCase();
+    return RISK.test(n) || (n !== "" && (A.prohibited || []).some((p) => { const q = String(p).toLowerCase(); return q.includes(n) || n.includes(q); }));
+  };
   if (!(await page.evaluate("Boolean(document.__argusAi)"))) await page.evaluate(INIT);
   let before = await read();
   if (!(await send(A.rule === "ai.error" ? A.plain : A.marker))) return [];
@@ -302,6 +308,7 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
       for (const el of (await handles("document.__argusAi.stops()")).slice(0, 3)) {
         const at = await read(), m = mine(at);
         if (!m || at.now - m.last >= A.stopMs) break;
+        if (await risky(el)) return null;
         await el.click({ timeout: 2000 }).catch(() => null);
         await wait(A.stopMs + 500);
         const after = await read(), n = mine(after);
@@ -318,6 +325,7 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
   const tried = (await handles("document.__argusAi.regens()")).slice(0, 4);
   for (const el of tried) {
     const at = await read(), size = mine(at) ? mine(at).size : 0;
+    if (await risky(el)) return null;
     await el.click({ timeout: 2000 }).catch(() => null);
     const again = await until((x) => x.seen > at.seen, 3000);
     if (page.url() !== url) return null;
@@ -375,10 +383,19 @@ export function ruleExpression(rule) {
   return `(${AIUX_SOURCE})(${JSON.stringify({ kind: "rule", rule, rules: MINE })})`;
 }
 
-/** AIUX_DRIVE's argument for `rule`: the bar's AI rules, the prompt, and its bounds (start of the answer, its end, a stop, an error's settle). */
-export function driveArg(rule) {
+/**
+ * The words that name a control the drive never presses, whatever rule it measures: what deletes, removes, sends, pays,
+ * publishes, approves, deploys or transfers (English, then a few other languages' words for the same), as a whole word.
+ */
+export const DESTRUCTIVE = String.raw`(^|[^\p{L}])(delete|remove|destroy|erase|purge|discard|send|submit|pay|payment|purchase|buy|checkout|order|publish|post|approve|deploy|transfer|withdraw|revoke|unsubscribe|hapus|kirim|bayar|terbitkan|setujui|löschen|senden|bezahlen|veröffentlichen|supprimer|envoyer|payer|publier|eliminar|borrar|enviar|pagar|publicar|aprobar)($|[^\p{L}])`;
+
+/**
+ * AIUX_DRIVE's argument for `rule`: the bar's AI rules, the prompt, its bounds (start of the answer, its end, a stop, an
+ * error's settle), and what it never presses: DESTRUCTIVE's words and `prohibited` (live.json's, matched by words).
+ */
+export function driveArg(rule, prohibited = []) {
   if (!MINE.some((x) => x.id === rule)) throw new Error(`refused: driveArg: ${String(rule).slice(0, 60)} is not an AI rule of the bar`);
-  return { rule, rules: MINE, marker: AI_MARKER, plain: AI_PLAIN, startMs: 15_000, endMs: 45_000, stopMs: STOP_MS, settleMs: SETTLE_MS + 1000, expected: AI_EXPECTED[rule] };
+  return { rule, rules: MINE, marker: AI_MARKER, plain: AI_PLAIN, startMs: 15_000, endMs: 45_000, stopMs: STOP_MS, settleMs: SETTLE_MS + 1000, expected: AI_EXPECTED[rule], refuse: DESTRUCTIVE, prohibited: (Array.isArray(prohibited) ? prohibited : []).filter((p) => typeof p === "string" && p.trim() !== "").slice(0, 50) };
 }
 
 /** The confirmation's arm for an `ai.error` row (the session driver runs it right after its hook, before any navigation). */

@@ -165,7 +165,7 @@ Records stay in the page until the lane's own browser call drains them (at most 
 
 The recorders live in page globals, so a page's own scripts can read them or forge them. The records are therefore untrusted, like the page: a forged row still has to be measured again on a fresh instance before anything is filed.
 
-Taste issues carry a screenshot only through `scrub`'s verdict, under the rules the lane already has: a private or internal repository, traces visible and gh 2.99 or later. Otherwise the picture stays on your machine and a `Local evidence:` line says so. On a declared AI surface a confirmation drive acts on your app: it sends two prompts and presses buttons ([Install and use](usage.md#the-ai-surface-rules)); it never follows a link.
+Taste issues carry a screenshot only through `scrub`'s verdict, under the rules the lane already has: a private or internal repository, traces visible and gh 2.99 or later. Otherwise the picture stays on your machine and a `Local evidence:` line says so. On a declared AI surface a confirmation drive acts on your app: it sends two prompts and presses buttons ([Install and use](usage.md#the-ai-surface-rules)); it never follows a link, and never presses a button named for a destructive action or one your `live.json` `prohibited` names (the row stays undecided instead).
 
 ### The calibration is maintainer-only
 

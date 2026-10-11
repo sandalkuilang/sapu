@@ -533,7 +533,7 @@ No stream on a declared screen means no AI row. A search box with a live status,
 Provenance and uncertainty display are judgment: the Curator may mention them, but no rule measures or files them.
 
 **What a confirmation does to your app.** The walk only records what the explorer happens to do, so each AI row is confirmed by a *drive* on the fresh instance in slot `r`. The drive acts on your app:
-- it presses up to three stop candidates and up to four regenerate candidates, buttons only, never a link;
+- it presses up to three stop candidates and up to four regenerate candidates, buttons only, never a link, and never one named for a destructive action (delete, remove, send, pay, publish, approve, deploy and the like, in a few languages) or one your `.argus/live.json` `prohibited` names: such a candidate leaves the row undecided, never pressed;
 - it types `argus-taste-check` into the composer and sends it, then waits for its stream. This request is real: it reaches your app and whatever model the app calls, so use a dev setup whose model calls are mocked or cheap;
 - it then sends `argus-taste-probe`, which the lane answers with a 500 inside the browser, so it never reaches your app. Only a request whose body holds that marker is faulted.
 

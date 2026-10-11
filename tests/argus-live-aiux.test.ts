@@ -391,6 +391,22 @@ describe("argus-live aiux — the confirmation's drive (Chrome)", () => {
     expect(good.armed.faulted()).toBe("/api/chat");
   }, SLOW);
 
+  it("never presses a destructive or prohibited control: such a candidate leaves the drive undecided (null); twins hold", async () => {
+    // A stop candidate named from the destructive lexicon (Discard), and its twin, a plain Stop.
+    expect(await drive(await open("stop=discard"), "ai.stop")).toBe(null);
+    expect(await drive(await open("stop=button"), "ai.stop")).toEqual([]);
+    // After the answer: Copy, then "Delete answer" (never pressed: the answer stays); its twin, Regenerate, holds.
+    const del = await open("regen=delete");
+    expect(await drive(del, "ai.regenerate")).toBe(null);
+    expect(await del.locator(".actions").count()).toBe(1);
+    expect(await drive(await open("regen=yes"), "ai.regenerate")).toEqual([]);
+    // A control the owner's live.json prohibited (by its words), and its twin with nothing prohibited.
+    const prohibited = await open("regen=yes");
+    expect(await fnOf(AIUX_DRIVE)(prohibited, driveArg("ai.regenerate", ["never regenerate an answer"]))).toBe(null);
+    expect(await prohibited.locator(".actions").count()).toBe(1);
+    expect(driveArg("ai.stop", ["delete any order"])).toMatchObject({ prohibited: ["delete any order"] });
+  }, SLOW);
+
   it("exclusion, undecided: no failure came (the fault keyed to another prompt) → null; no AI surface → no row", async () => {
     const other = await open("error=endless", { fault: "another-prompt" });
     expect(await drive(other, "ai.error", 4000)).toBe(null);

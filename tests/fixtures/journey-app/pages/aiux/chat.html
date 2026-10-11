@@ -25,8 +25,9 @@
 </main>
 <script>
 // One assistant page, every variant by query (the test server fills each mark): stop (swap: the send button turns
-// into Stop; button: a separate Stop; none: the send button is only disabled; broken: a Stop that does nothing),
-// regen (yes: Copy and Regenerate after the answer; copy: Copy only; none), error (retry: an alert with Retry;
+// into Stop; button: a separate Stop; none: the send button is only disabled; broken: a Stop that does nothing;
+// discard: a separate stop named "Discard"), regen (yes: Copy and Regenerate after the answer; copy: Copy only; delete:
+// Copy and "Delete answer", which removes it; none), error (retry: an alert with Retry;
 // endless: busy for ever; stuck: a message but no way on; silent: nothing shown), stream (yes: the answer read chunk
 // by chunk; once: read whole), live (log: the answer region is a live log; busy: only aria-busy while it answers; bare:
 // neither), dots (yes: a thinking indicator before the first word), cite (yes: a Source chip inside the answer once it
@@ -45,10 +46,11 @@ function busy(on) {
   busyNow = on;
   if (MODE.live !== "bare") log.setAttribute("aria-busy", on ? "true" : "false");
   if (MODE.stop === "swap") { send.textContent = on ? "Stop" : "Send"; send.type = on ? "button" : "submit"; }
-  else { send.disabled = on; stop.hidden = !(on && (MODE.stop === "button" || MODE.stop === "broken")); }
+  else { send.disabled = on; stop.hidden = !(on && (MODE.stop === "button" || MODE.stop === "broken" || MODE.stop === "discard")); }
 }
 send.addEventListener("click", (e) => { if (busyNow && MODE.stop === "swap") { e.preventDefault(); ctrl && ctrl.abort(); } });
-stop.addEventListener("click", () => { if (MODE.stop === "button") ctrl && ctrl.abort(); });
+if (MODE.stop === "discard") stop.textContent = "Discard";
+stop.addEventListener("click", () => { if (MODE.stop === "button" || MODE.stop === "discard") ctrl && ctrl.abort(); });
 document.getElementById("rename").addEventListener("click", () => { fetch("/api/rename", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Chat" }) }).catch(() => {}); });
 
 function actions(ans, text) {
@@ -66,6 +68,13 @@ function actions(ans, text) {
     again.textContent = "Regenerate";
     again.addEventListener("click", () => { bar.remove(); ans.textContent = ""; answer(ans, text); });
     bar.append(again);
+  }
+  if (MODE.regen === "delete") {
+    const del = document.createElement("button");
+    del.type = "button";
+    del.textContent = "Delete answer";
+    del.addEventListener("click", () => ans.remove());
+    bar.append(del);
   }
   ans.append(bar);
 }

@@ -548,13 +548,13 @@ export const MEDIA_RULES = Object.freeze(["colour.dark-contrast", "colour.dark-b
  * follows), any other through its probe's ruleExpression; `take(answer)` keeps that measurement (`measured`: `{rows}` of
  * the rule, at most 50, or `{rows: null}` when it failed) and removes it from the step's answer.
  */
-export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null }) {
+export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [] }) {
   const [route, width] = row.screen.split("|");
   const family = row.rule.split(".")[0];
   const frame = cfg ? { frame: cfg.frame ?? null, tokens: cfg.tokens ?? null } : {};
   const media = MEDIA_RULES.includes(row.rule);
   const ai = family === "ai";
-  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule) } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
+  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
   const sink = {
     measured: null,
     arm: row.rule === "states.error" ? faultCode(S) : row.rule === "ai.error" ? faultArm() : null,
@@ -649,7 +649,8 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
       } catch {
         routes = [];
       }
-      const sink = confirmSink(row, { routes, settleMs: (loadLive(main).config ?? {}).settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) } });
+      const live = loadLive(main).config ?? {};
+      const sink = confirmSink(row, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) }, prohibited: live.prohibited ?? [] });
       const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list } })));
       if (!sink.measured) said = r.code === 2 && !sink.measured ? "harness: the replay failed before the screen" : "harness: the replay never reached the screen";
       else if (sink.measured.rows === null) said = "harness: the rule's expression failed on the screen";
