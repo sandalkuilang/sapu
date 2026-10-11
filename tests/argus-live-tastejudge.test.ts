@@ -583,11 +583,14 @@ const provenEfficiency = () => {
   const real = JSON.parse(readFileSync(join(__dirname, "../plugins/sapu/data/taste-bar.json"), "utf8"));
   STAND_IN.bar.current = { ...real, rules: real.rules.map((r: Obj) => (r.family === "efficiency" ? Object.fromEntries(Object.entries(r).filter(([k]) => k !== "info")) : r)) };
 };
-/** The plugin's bar with `archetypes` in place (lane K's calibration, stood in). */
-const barWith = (archetypes: Obj) => {
+/**
+ * The plugin's bar with `archetypes` (`{<archetype>: {<metric>: band}}`) in place, as lane K's calibration writes them: each
+ * archetype's bands under width bucket `width`, calibrated in month `calibrated` (stood in).
+ */
+const barWith = (archetypes: Obj, { width = "1440", calibrated = "2026-04" } = {}) => {
   STAND_IN.bar.current = null;
   const real = JSON.parse(readFileSync(join(__dirname, "../plugins/sapu/data/taste-bar.json"), "utf8"));
-  STAND_IN.bar.current = { ...real, archetypes };
+  STAND_IN.bar.current = { ...real, archetypes: Object.fromEntries(Object.entries(archetypes).map(([a, bands]) => [a, { calibrated, widths: { [width]: bands } }])) };
 };
 
 /**
@@ -705,6 +708,34 @@ describe("argus-live taste judge (J2)", () => {
       await t.judge();
       expect(t.file().rows, JSON.stringify([archetypes, cfg])).toEqual([]);
     }
+  }, 30_000);
+
+  it("a screen reads the band of its own width bucket: a 1440 screen never takes a band calibrated at 390, and the reverse", async () => {
+    const t = judgeRepo();
+    t.taste({ archetypes: { "/**": "app" } });
+    t.put(1, [t.screen("/a", [primary(3)]), t.screen("/b"), t.screen("/c")]);
+    barWith({ app: { primary_actions: band(1, 1, 2) } }, { width: "390" });
+    const other = await t.judge();
+    expect(t.file().rows).toEqual([]);
+    expect(other.lines).toContain("not rows: 1 beyond the bar without the corpus band and an internal witness");
+    // The same screens at 390: the 390 band agrees.
+    const narrow = (route: string, findings: Obj[] = []) => t.screen(route, findings, { key: `${route}|390|light`, width: 390 });
+    t.put(1, [narrow("/a", [primary(3)]), narrow("/b"), narrow("/c")]);
+    await t.judge();
+    expect(t.file().rows.map((r: Obj) => [r.screen, r.witnesses[0]])).toEqual([["/a|390|light", { kind: "band", value: 2, from: "app primary_actions" }]]);
+  }, 30_000);
+
+  it(`warns when the bar's bands were calibrated more than ${12} months ago, and still judges with them`, async () => {
+    const t = judgeRepo();
+    t.taste({ archetypes: { "/**": "app" } });
+    t.put(1, [t.screen("/a", [primary(3)]), t.screen("/b"), t.screen("/c")]);
+    barWith({ app: { primary_actions: band(1, 1, 2) }, data: { distinct_spacing: band(4, 6, 9) } }, { calibrated: "2025-09" });
+    const at = (y: number, m: number) => () => Date.UTC(y, m - 1, 15);
+    const fresh = await tasteJudge(t.main, { run: null }, { now: at(2026, 9) });
+    expect(fresh.lines.some((l: string) => /stale/.test(l))).toBe(false);
+    const stale = await tasteJudge(t.main, { run: null }, { now: at(2026, 10) });
+    expect(stale.lines).toContain("stale bands: app (calibrated 2025-09), data (calibrated 2025-09): over 12 months old; they still witness, and a later sapu release recalibrates them");
+    expect(t.file().rows.map((r: Obj) => r.rule)).toEqual(["hierarchy.primary-actions"]);
   }, 30_000);
 
   it("a bar row's band compares the screen's own number under the rule's metric, as calibration measured each page, not one element's value", async () => {

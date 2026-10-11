@@ -104,6 +104,15 @@ export function tokensPx(kind, text) {
 }
 /** Decision 16's archetypes: a screen is compared only with its own. */
 export const ARCHETYPES = Object.freeze(["marketing", "docs", "app", "form", "data"]);
+/** The widths a band is calibrated at: a screen narrower than 1024 px reads the 390 bucket, any other the 1440 one. */
+export const WIDTH_BUCKETS = Object.freeze(["390", "1440"]);
+export const widthBucket = (width) => (Number(width) < 1024 ? "390" : "1440");
+/** An archetype's bands carry the month they were calibrated (`YYYY-MM`); older than this many months, they are stale. */
+export const STALE_MONTHS = 12;
+const MONTH = /^(20[0-9]{2})-(0[1-9]|1[0-2])$/;
+const months = (d) => d.getUTCFullYear() * 12 + d.getUTCMonth();
+/** The archetypes of `bar` calibrated more than STALE_MONTHS months before `now` (ms) → [{archetype, calibrated}]. */
+export const staleBands = (bar, now = Date.now()) => Object.entries(bar.archetypes).filter(([, e]) => MONTH.test(e.calibrated) && months(new Date(now)) - months(new Date(`${e.calibrated}-01T00:00:00Z`)) > STALE_MONTHS).map(([archetype, e]) => ({ archetype, calibrated: e.calibrated }));
 const BAR_KEYS = ["version", "probe", "sources", "rules", "frames", "archetypes"];
 const RULE_KEYS = ["id", "family", "class", "metric", "threshold", "cite", "gate", "info", "terms"];
 /** A threshold's words: bounds (`min`, `max`, `range` outside fires, `within` inside fires), the peer and band tests, ratios. */
@@ -136,8 +145,8 @@ const httpsUrl = (v) => {
  * archetypes}`, unknown keys refused at every level. `sources` maps a research id to its https URL; each rule is
  * `{id: <family>.<name>, family, class, metric, threshold, cite: [source ids], gate: false, info?: true, terms?:
  * {<lang>: [labels]}}`; each frame `{cite, historical?, spacing?, radius?, type?, durations?, layers?}`, a metric
- * `{values: [ascending]}` or `{range: [min, max], step?}`; `archetypes.<archetype>.<metric>` is a band `{n, sites, p10,
- * p50, p90, urls}` — numbers, metric names and https URLs only, never another string (decision 16).
+ * `{values: [ascending]}` or `{range: [min, max], step?}`; `archetypes.<archetype>` is `{calibrated: "YYYY-MM", widths:
+ * {<bucket>: {<metric>: {n, sites, p10, p50, p90, urls}}}}` — numbers, metric names and https URLs only (decision 16).
  */
 export function validateBar(raw) {
   if (!isObj(raw)) return { value: null, errors: ["taste-bar.json must be a JSON object"] };
@@ -196,11 +205,14 @@ export function validateBar(raw) {
     }
   }
   if (need(isObj(raw.archetypes), "archetypes must be an object") === true) {
-    for (const [a, metrics] of Object.entries(raw.archetypes)) {
+    for (const [a, e] of Object.entries(raw.archetypes)) {
       const at = `archetypes.${shown(a)}`;
-      if (need(ARCHETYPES.includes(a) && isObj(metrics), `${at}: an archetype is one of ${ARCHETYPES.join(", ")}, holding bands by metric`) !== true) continue;
-      for (const [metric, b] of Object.entries(metrics)) {
-        const bt = `${at}.${shown(metric)}`;
+      if (need(ARCHETYPES.includes(a) && isObj(e) && Object.keys(e).every((k) => k === "calibrated" || k === "widths"), `${at}: an archetype is one of ${ARCHETYPES.join(", ")}, holding {calibrated, widths}`) !== true) continue;
+      need(typeof e.calibrated === "string" && MONTH.test(e.calibrated), `${at}.calibrated must be the month it was calibrated (YYYY-MM)`);
+      const widths = isObj(e.widths) ? Object.entries(e.widths) : [];
+      if (need(widths.length > 0 && widths.every(([w, m]) => WIDTH_BUCKETS.includes(w) && isObj(m)), `${at}.widths must hold bands by metric under a width bucket (${WIDTH_BUCKETS.join(", ")})`) !== true) continue;
+      for (const [metric, b, w] of widths.flatMap(([w, m]) => Object.entries(m).map(([k, v]) => [k, v, w]))) {
+        const bt = `${at}.widths.${w}.${shown(metric)}`;
         if (need(METRIC.test(metric) && isObj(b), `${bt}: a band is {n, sites, p10, p50, p90, urls} under a metric name`) !== true) continue;
         unknown(b, bt, ["n", "sites", "p10", "p50", "p90", "urls"]);
         need(isInt(b.sites, 1) && isInt(b.n, 1) && b.n >= b.sites, `${bt}: n must be an integer of at least its sites (a site gives a page at least)`);

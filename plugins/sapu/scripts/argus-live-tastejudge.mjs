@@ -17,7 +17,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { BRIEF_FILE, CURATOR_FILE, curatorBrief, tasteSeverity, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { BRIEF_FILE, CURATOR_FILE, curatorBrief, tasteSeverity, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, STALE_MONTHS, staleBands, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, widthBucket, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -212,11 +212,13 @@ const crossScreen = (rule) => rule.family === "consistent" || rule.id === "feedb
 const groupable = (rule) => Boolean(rule) && !crossScreen(rule) && rule.family !== "efficiency" && rule.family !== "ai" && rule.id !== "states.error" && rule.id !== "states.recovery";
 const groupOfRow = (r, rule) => (groupable(rule) ? `${r.journey}\n${r.screen}` : `${r.journey}\n${r.screen}\n${r.rule}\n${r.key}`);
 
-/** The band of `metric` for archetype `a`, when it is a witness: enough sites and pages, an archetype not inferred. */
-function bandOf(bar, a, metric) {
-  const b = (bar.archetypes[a.name] ?? {})[metric];
+/** Any band of `metric` for archetype `a` at a screen of `width` (its width bucket), thin or not, else undefined. */
+const anyBand = (bar, a, metric, width) => bar.archetypes[a.name]?.widths?.[widthBucket(width)]?.[metric];
+/** The band of `metric` for archetype `a` at `width`, when it is a witness: enough sites and pages, an archetype not inferred. */
+function bandOf(bar, a, metric, width) {
+  const b = anyBand(bar, a, metric, width);
   if (!b) return { band: null, shown: null };
-  if (a.inferred || b.sites < WITNESS_BAND.sites || b.n < WITNESS_BAND.n) return { band: null, shown: `${a.name} ${metric} ${a.inferred ? "inferred" : "thin"}` };
+  if (a.inferred || b.sites < WITNESS_BAND.sites || b.n < WITNESS_BAND.n) return { band: null, shown: `${a.name} ${widthBucket(width)} ${metric} ${a.inferred ? "inferred" : "thin"}` };
   return { band: b, shown: null };
 }
 
@@ -281,7 +283,8 @@ function waitOf(list) {
  * probes' rulesFor (the record with `cycle`, the run's other records, so a cross-screen rule can compare), less the
  * owner's `off` rules and the information rules. A rule with a `peer` threshold (decision 19's counts) is a row only
  * when the screen's archetype has 3 screens or more this cycle and its value is beyond max(best × ratio, best + plus) of
- * the best other one — and, where the archetype's band is a witness, beyond the band's percentile too. A `bar` row
+ * the best other one — and, where the archetype's band is a witness, beyond the band's percentile too. A screen reads the
+ * bands of its width bucket (widthBucket), and a line names the bands calibrated over STALE_MONTHS ago. A `bar` row
  * needs the band (5 sites, 15 pages, an archetype not inferred) agreeing, and an internal witness: a peer screen of its
  * archetype that holds the rule, or the owner's frame (durations); `implicit` and `derived` rows stand on their
  * measurement. A cross-screen (`consistent`) row the previous run's judge also reported is confirmed: two cycles are
@@ -368,7 +371,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   for (const { s, rule, f } of found) {
     const a = arch.get(s.key);
     const group = groupOf(s);
-    const { band, shown: why } = bandOf(bar, a, rule.metric);
+    const { band, shown: why } = bandOf(bar, a, rule.metric, s.width);
     if (why) shown.add(why);
     const base = { journey: s.journey, rule: rule.id, class: rule.class, screen: rowScreen(s, rule), key: f.key, measured: f.measured, cost: null, confirmed: null };
     if (rule.threshold.peer) {
@@ -382,7 +385,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
       let expected = round(Math.max(best * ratio, best + plus));
       if (!(f.measured > expected)) continue;
       // Any band of the archetype, thin too: a screen within the outside median is never a row.
-      const any = (bar.archetypes[a.name] ?? {})[rule.metric];
+      const any = anyBand(bar, a, rule.metric, s.width);
       if (any && !(f.measured > any.p50)) continue;
       const witnesses = [{ kind: "peer", value: best, from: `the median of ${others.length} peer screens` }];
       if (band) {
@@ -508,6 +511,8 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (unwitnessed) lines.push(`not rows: ${unwitnessed} beyond the bar without the corpus band and an internal witness`);
   if (info) lines.push(`information: ${info} findings of information rules (never rows)`);
   if (shown.size) lines.push(`bands shown only: ${shown.size}`);
+  const stale = staleBands(bar, now());
+  if (stale.length) lines.push(`stale bands: ${stale.map((x) => `${x.archetype} (calibrated ${x.calibrated})`).join(", ")}: over ${STALE_MONTHS} months old; they still witness, and a later sapu release recalibrates them`);
   if (lead.fault) lines.push(`leads: the Curator's return of ${lead.run} is out of shape: its leads are not used`);
   else if (lead.leads.length) lines.push(`leads: ${out.filter(led).length} row(s) named by the ${lead.leads.length} lead(s) of ${lead.run}'s Curator come first`);
   if (failed) lines.push(`harness: a probe's rules failed ${failed} times`);

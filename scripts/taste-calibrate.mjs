@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { ensureCli, findChrome } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 import { EASE_INIT, EASE_SOURCE, easeOf } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 import { TASTE_INIT, TASTE_SOURCE, censusOf } from "../plugins/sapu/scripts/argus-live-taste.mjs";
-import { ARCHETYPES, FAMILIES, TASTE_BUFFER, loadBar, validateBar } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, FAMILIES, TASTE_BUFFER, WIDTH_BUCKETS, loadBar, validateBar, widthBucket } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 /** The product token robots.txt names this script by; it rides at the end of the browser's own user agent. */
 export const AGENT = "sapu-taste-calibration";
@@ -34,6 +34,10 @@ const refused = (why) => `refused: taste-calibrate: ${why}`;
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 const METRIC = /^[a-z][a-z0-9_]{0,63}$/;
+/** A calibration month, as the bar records it per archetype: `YYYY-MM`, never a day. */
+const MONTH = /^20[0-9]{2}-(0[1-9]|1[0-2])$/;
+/** The month (UTC) of time `ms` → `YYYY-MM`. */
+export const monthOf = (ms) => new Date(ms).toISOString().slice(0, 7);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /** A corpus or band URL: https (http only where a test hands calibrate loopback pages), no credentials, no fragment. */
@@ -176,7 +180,7 @@ export const robotsAllows = (txt, url, agent = AGENT) => robotsRefusal(txt, url,
  * witness make its row) and every count with a `band` threshold. A cycle family compares paths or screens: only the
  * judge has those; an implicit or derived rule stands on its own measurement and needs no band.
  */
-const screenMetrics = (bar) => [...new Set(bar.rules.filter((r) => FAMILIES[r.family] && FAMILIES[r.family].scope === "screen" && (r.class === "bar" || "band" in r.threshold)).map((r) => r.metric))];
+export const screenMetrics = (bar) => [...new Set(bar.rules.filter((r) => FAMILIES[r.family] && FAMILIES[r.family].scope === "screen" && (r.class === "bar" || "band" in r.threshold)).map((r) => r.metric))];
 
 /**
  * A measured screen (`{census, ease}`, whatever shape the probes give) → `{<metric>: number}` for the band metrics
@@ -207,40 +211,63 @@ export function percentile(sorted, q) {
 const round = (v) => Math.round(v * 1000) / 1000;
 
 /**
- * The measured pages `[{url, site, archetype, metrics}]` → `{archetypes, cut}`: a band per archetype and metric,
- * `{n, sites, p10, p50, p90, urls}`. A band driven by one site is cut (one site only, or one site giving more than half
- * its pages): a single brand's numbers never stand for the corpus.
+ * The measured pages `[{url, site, archetype, width, metrics}]` → `{archetypes, cut}`: per archetype `{calibrated,
+ * widths}`, a band per width bucket (widthBucket of the page's width) and metric, `{n, sites, p10, p50, p90, urls}`. A
+ * band driven by one site is cut (one site only, or one site giving more than half its pages): a single brand's numbers
+ * never stand for the corpus.
  */
-export function bandsOf(measured) {
+export function bandsOf(measured, { calibrated }) {
   const archetypes = {};
   const cut = [];
   for (const a of ARCHETYPES) {
-    const rows = measured.filter((m) => m.archetype === a);
-    const metrics = [...new Set(rows.flatMap((r) => Object.keys(r.metrics)))].sort();
-    for (const metric of metrics) {
-      const hits = rows.filter((r) => typeof r.metrics[metric] === "number");
-      const perSite = new Map();
-      for (const h of hits) perSite.set(h.site, (perSite.get(h.site) || 0) + 1);
-      if (perSite.size < 2) {
-        cut.push({ archetype: a, metric, why: "one site gives it all" });
-        continue;
+    for (const width of WIDTH_BUCKETS) {
+      const rows = measured.filter((m) => m.archetype === a && widthBucket(m.width) === width);
+      const metrics = [...new Set(rows.flatMap((r) => Object.keys(r.metrics)))].sort();
+      for (const metric of metrics) {
+        const hits = rows.filter((r) => typeof r.metrics[metric] === "number");
+        const perSite = new Map();
+        for (const h of hits) perSite.set(h.site, (perSite.get(h.site) || 0) + 1);
+        if (perSite.size < 2) {
+          cut.push({ archetype: a, width, metric, why: "one site gives it all" });
+          continue;
+        }
+        if (Math.max(...perSite.values()) * 2 > hits.length) {
+          cut.push({ archetype: a, width, metric, why: "one site gives more than half its pages" });
+          continue;
+        }
+        const sorted = hits.map((h) => h.metrics[metric]).sort((x, y) => x - y);
+        ((archetypes[a] ||= { calibrated, widths: {} }).widths[width] ||= {})[metric] = {
+          n: hits.length,
+          sites: perSite.size,
+          p10: round(percentile(sorted, 0.1)),
+          p50: round(percentile(sorted, 0.5)),
+          p90: round(percentile(sorted, 0.9)),
+          urls: [...new Set(hits.map((h) => h.url))].sort(),
+        };
       }
-      if (Math.max(...perSite.values()) * 2 > hits.length) {
-        cut.push({ archetype: a, metric, why: "one site gives more than half its pages" });
-        continue;
-      }
-      const sorted = hits.map((h) => h.metrics[metric]).sort((x, y) => x - y);
-      (archetypes[a] ||= {})[metric] = {
-        n: hits.length,
-        sites: perSite.size,
-        p10: round(percentile(sorted, 0.1)),
-        p50: round(percentile(sorted, 0.5)),
-        p90: round(percentile(sorted, 0.9)),
-        urls: [...new Set(hits.map((h) => h.url))].sort(),
-      };
     }
   }
   return { archetypes, cut };
+}
+
+/**
+ * The bar's next `archetypes`: each archetype measured now (`fresh`) replaces its entry whole; one the run had no page
+ * of (`attempted` holds the run's archetypes) keeps its entry while the bar's probe digest is the current probes' (the
+ * same measure), else it is dropped → `{archetypes, lines}`, a line per archetype kept or dropped.
+ */
+export function mergeArchetypes(bar, fresh, attempted) {
+  const archetypes = {};
+  const lines = [];
+  const same = bar.probe === probeDigest();
+  for (const a of ARCHETYPES) {
+    const old = bar.archetypes[a];
+    if (fresh[a]) archetypes[a] = fresh[a];
+    else if (old && !attempted.has(a) && same) {
+      archetypes[a] = old;
+      lines.push(`kept ${a} (calibrated ${old.calibrated}): this run measured none of its pages`);
+    } else if (old && !attempted.has(a)) lines.push(`dropped ${a} (calibrated ${old.calibrated}): measured by other probe sources than this run's`);
+  }
+  return { archetypes, lines };
 }
 
 /**
@@ -250,18 +277,25 @@ export function bandsOf(measured) {
 export function numbersOnly(archetypes, metrics = screenMetrics(loadBar()), urls = null) {
   if (!isObj(archetypes)) return "archetypes: not an object";
   const allowed = new Set(metrics);
-  for (const [a, bands] of Object.entries(archetypes)) {
+  for (const [a, e] of Object.entries(archetypes)) {
     if (!ARCHETYPES.includes(a)) return "archetypes: a key that is not one of the five archetypes";
-    if (!isObj(bands)) return `archetypes.${a}: not an object of bands`;
-    for (const [m, b] of Object.entries(bands)) {
-      if (!allowed.has(m) || !METRIC.test(m)) return `archetypes.${a}: a key that is not a metric of the bar`;
-      const at = `archetypes.${a}.${m}`;
-      if (!isObj(b)) return `${at}: not a band`;
-      for (const [k, v] of Object.entries(b)) {
-        if (k === "urls") {
-          if (!Array.isArray(v) || !v.every((u) => urlOk(u, ["https:", "http:"]) && (!urls || urls.has(u)))) return `${at}.urls: a value that is not a measured URL`;
-        } else if (!["n", "sites", "p10", "p50", "p90"].includes(k)) return `${at}: a key that is not part of a band`;
-        else if (typeof v !== "number" || !Number.isFinite(v)) return `${at}.${k}: not a number`;
+    if (!isObj(e)) return `archetypes.${a}: not an object`;
+    if (!Object.keys(e).every((k) => k === "calibrated" || k === "widths")) return `archetypes.${a}: a key that is not calibrated or widths`;
+    if (typeof e.calibrated !== "string" || !MONTH.test(e.calibrated)) return `archetypes.${a}.calibrated: not a month`;
+    if (!isObj(e.widths)) return `archetypes.${a}.widths: not an object of width buckets`;
+    for (const [w, bands] of Object.entries(e.widths)) {
+      if (!WIDTH_BUCKETS.includes(w)) return `archetypes.${a}.widths: a key that is not a width bucket`;
+      if (!isObj(bands)) return `archetypes.${a}.widths.${w}: not an object of bands`;
+      for (const [m, b] of Object.entries(bands)) {
+        if (!allowed.has(m) || !METRIC.test(m)) return `archetypes.${a}.widths.${w}: a key that is not a metric of the bar`;
+        const at = `archetypes.${a}.widths.${w}.${m}`;
+        if (!isObj(b)) return `${at}: not a band`;
+        for (const [k, v] of Object.entries(b)) {
+          if (k === "urls") {
+            if (!Array.isArray(v) || !v.every((u) => urlOk(u, ["https:", "http:"]) && (!urls || urls.has(u)))) return `${at}.urls: a value that is not a measured URL`;
+          } else if (!["n", "sites", "p10", "p50", "p90"].includes(k)) return `${at}: a key that is not part of a band`;
+          else if (typeof v !== "number" || !Number.isFinite(v)) return `${at}.${k}: not a number`;
+        }
       }
     }
   }
@@ -274,20 +308,34 @@ export function probeDigest(sources = [TASTE_SOURCE, EASE_SOURCE]) {
 }
 
 const ps = (b) => `${b.p10}/${b.p50}/${b.p90}`;
-/** Each band's change from `before` to `after` (bar `archetypes`), one line a band, sorted by archetype and metric. */
+/**
+ * Each archetype's month and each band's change from `before` to `after` (bar `archetypes`): per archetype (sorted) its
+ * `calibrated` line, then one line a band, by width bucket and metric (`<archetype>.<width>.<metric>`, sorted).
+ */
 export function diffLines(before, after) {
-  const keys = new Set();
-  for (const side of [before, after]) for (const [a, bands] of Object.entries(side || {})) for (const m of Object.keys(bands)) keys.add(`${a}.${m}`);
-  return [...keys].sort().map((key) => {
-    const [a, m] = key.split(".");
-    const o = before?.[a]?.[m];
-    const n = after?.[a]?.[m];
-    if (!o) return `${key}: new ${ps(n)} (n ${n.n}, sites ${n.sites})`;
-    if (!n) return `${key}: gone (was ${ps(o)}, n ${o.n}, sites ${o.sites})`;
-    if (ps(o) === ps(n) && o.n === n.n && o.sites === n.sites) return `${key}: unchanged ${ps(n)} (n ${n.n}, sites ${n.sites})`;
-    const part = (label, x, y) => (x === y ? `${label} ${x}` : `${label} ${x} → ${y}`);
-    return `${key}: ${part("p10/p50/p90", ps(o), ps(n))}, ${part("n", o.n, n.n)}, ${part("sites", o.sites, n.sites)}`;
-  });
+  const out = [];
+  for (const a of [...new Set([...Object.keys(before || {}), ...Object.keys(after || {})])].sort()) {
+    const [o, n] = [before?.[a], after?.[a]];
+    if (!o) out.push(`${a}: calibrated ${n.calibrated} (new)`);
+    else if (!n) out.push(`${a}: gone (was calibrated ${o.calibrated})`);
+    else out.push(o.calibrated === n.calibrated ? `${a}: calibrated ${n.calibrated} (unchanged)` : `${a}: calibrated ${o.calibrated} → ${n.calibrated}`);
+    const keys = new Set();
+    for (const e of [o, n]) for (const [w, bands] of Object.entries(e?.widths || {})) for (const m of Object.keys(bands)) keys.add(`${w}.${m}`);
+    for (const k of [...keys].sort()) {
+      const [w, m] = k.split(".");
+      out.push(bandLine(`${a}.${k}`, o?.widths?.[w]?.[m], n?.widths?.[w]?.[m]));
+    }
+  }
+  return out;
+}
+
+/** One band's change: new, gone, unchanged, or its percentiles, n and sites before → after. */
+function bandLine(key, o, n) {
+  if (!o) return `${key}: new ${ps(n)} (n ${n.n}, sites ${n.sites})`;
+  if (!n) return `${key}: gone (was ${ps(o)}, n ${o.n}, sites ${o.sites})`;
+  if (ps(o) === ps(n) && o.n === n.n && o.sites === n.sites) return `${key}: unchanged ${ps(n)} (n ${n.n}, sites ${n.sites})`;
+  const part = (label, x, y) => (x === y ? `${label} ${x}` : `${label} ${x} → ${y}`);
+  return `${key}: ${part("p10/p50/p90", ps(o), ps(n))}, ${part("n", o.n, n.n)}, ${part("sites", o.sites, n.sites)}`;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -316,9 +364,10 @@ const SIGN_IN = /(^|\/)(log-?in|sign-?in|signin|sign_in|session|auth|sso|oauth)(
  * (robots.txt included) starts PACE_MS after its last one ended. robots.txt is read once per origin: a page it refuses
  * for `*` or for AGENT is never requested; an origin whose robots.txt cannot be read (5xx, 429, a network error) is
  * skipped whole; a 4xx other than 429 means no robots.txt (RFC 9309). A page that redirects off its origin or to a
- * sign-in path, answers non-2xx, or yields no metric is skipped. Only numbers of the bar's metrics are kept.
+ * sign-in path, answers non-2xx, or yields no metric is skipped. Only numbers of the bar's metrics are kept, under the
+ * 1440 width bucket (VIEWPORT) and the month of `today()`.
  */
-export async function calibrate({ pages, bar, session, probes, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = () => {} }) {
+export async function calibrate({ pages, bar, session, probes, now = Date.now, today = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = () => {} }) {
   const queues = interleave(pages);
   const order = [...queues.keys()];
   const last = new Map();
@@ -391,12 +440,12 @@ export async function calibrate({ pages, bar, session, probes, now = Date.now, s
       const metrics = metricsOf(v.result.screen, bar);
       if (!Object.keys(metrics).length) skip(page.url, "the probes measured no metric of the bar");
       else {
-        measured.push({ url: page.url, site: page.site, archetype: page.archetype, metrics });
+        measured.push({ url: page.url, site: page.site, archetype: page.archetype, width: VIEWPORT.width, metrics });
         log(`measured ${page.url} (${page.archetype}, ${plural(Object.keys(metrics).length, "metric")})`);
       }
     }
   }
-  const { archetypes, cut } = bandsOf(measured);
+  const { archetypes, cut } = bandsOf(measured, { calibrated: monthOf(today()) });
   const why = numbersOnly(archetypes, screenMetrics(bar), new Set(pages.map((p) => p.url)));
   if (why) throw new Error(`failed: taste-calibrate: the output would hold a string that is not a URL or a metric name (${why}): nothing written`);
   return { measured, skipped, archetypes, cut };
@@ -471,12 +520,14 @@ export async function openSession({ cli = ensureCli(), chrome = findChrome() } =
 // ---------------------------------------------------------------------------------------------------
 // The CLI.
 
-/** The new bar's text: `probe` and `archetypes` replaced in place (the rest of the file byte for byte), else re-written. */
-function barText(old, bar) {
+/** The new bar's text: `probe` and `archetypes` replaced in place (the rest of the file byte for byte, one band a line), else re-written. */
+export function barText(old, bar) {
   const lines = [];
+  const band = (b) => JSON.stringify(b).replace(/,"/g, ', "').replace(/":/g, '": ').replace(/^\{/, "{ ").replace(/\}$/, " }");
   for (const a of ARCHETYPES.filter((x) => bar.archetypes[x])) {
-    const bands = Object.entries(bar.archetypes[a]).map(([m, b]) => `      ${JSON.stringify(m)}: ${JSON.stringify(b).replace(/,"/g, ', "').replace(/":/g, '": ').replace(/^\{/, "{ ").replace(/\}$/, " }")}`);
-    lines.push(`    ${JSON.stringify(a)}: {\n${bands.join(",\n")}\n    }`);
+    const e = bar.archetypes[a];
+    const widths = Object.entries(e.widths).map(([w, bands]) => `        ${JSON.stringify(w)}: {\n${Object.entries(bands).map(([m, b]) => `          ${JSON.stringify(m)}: ${band(b)}`).join(",\n")}\n        }`);
+    lines.push(`    ${JSON.stringify(a)}: {\n      "calibrated": ${JSON.stringify(e.calibrated)},\n      "widths": {\n${widths.join(",\n")}\n      }\n    }`);
   }
   const archetypes = lines.length ? `{\n${lines.join(",\n")}\n  }` : "{}";
   const spliced = old.replace(/^ {2}"probe": (null|"[0-9a-f]{64}"),$/m, () => `  "probe": ${JSON.stringify(bar.probe)},`).replace(/^ {2}"archetypes": [\s\S]*\n\}\s*$/m, () => `  "archetypes": ${archetypes}\n}\n`);
@@ -507,14 +558,16 @@ function planLines(corpus) {
   return out;
 }
 
-/** Per archetype: pages and sites measured, and whether that reaches decision 16's witness threshold. */
-function summaryLines(measured) {
-  return ARCHETYPES.map((a) => {
-    const rows = measured.filter((m) => m.archetype === a);
-    if (!rows.length) return `${a}: no page measured — thin`;
-    const sites = new Set(rows.map((r) => r.site)).size;
-    const witness = sites >= WITNESS.sites && rows.length >= WITNESS.pages;
-    return `${a}: ${plural(rows.length, "page")}, ${plural(sites, "site")} — ${witness ? "a witness" : `thin (a witness needs at least ${WITNESS.sites} sites and ${WITNESS.pages} pages)`}`;
+/** Per archetype and width bucket: pages (or `unit`s) and sites measured, and whether that reaches decision 16's witness threshold. */
+export function summaryLines(measured, unit = "page") {
+  return ARCHETYPES.flatMap((a) => {
+    const all = measured.filter((m) => m.archetype === a);
+    if (!all.length) return [`${a}: no page measured — thin`];
+    return WIDTH_BUCKETS.map((w) => [w, all.filter((m) => widthBucket(m.width) === w)]).filter(([, rows]) => rows.length).map(([w, rows]) => {
+      const sites = new Set(rows.map((r) => r.site)).size;
+      const witness = sites >= WITNESS.sites && rows.length >= WITNESS.pages;
+      return `${a} ${w}: ${plural(rows.length, unit)}, ${plural(sites, "site")} — ${witness ? "a witness" : `thin (a witness needs at least ${WITNESS.sites} sites and ${WITNESS.pages} pages)`}`;
+    });
   });
 }
 
@@ -527,8 +580,9 @@ const readJson = (file, what) => {
 };
 
 /**
- * `argv` → `{code, lines}`. `deps` replaces the browser, the probes and the clock (the tests' seams; the CLI passes
- * none). Without --network: the corpus validated and the plan printed, nothing fetched or written.
+ * `argv` → `{code, lines}`. `deps` replaces the browser, the probes and the clocks (`now` paces, `today` dates the
+ * bands): the tests' seams; the CLI passes none. Without --network: the corpus validated and the plan printed, nothing
+ * fetched or written.
  */
 export async function main(argv, deps = {}) {
   const opts = { network: false, diff: false, corpus: null, out: null };
@@ -565,24 +619,38 @@ export async function main(argv, deps = {}) {
       const m = e && e.message ? String(e.message).split("\n")[0].slice(0, 160) : "an error";
       return { code: 1, lines: [refused(`the probes cannot measure a blank page (${m}): nothing was fetched`)] };
     }
-    result = await calibrate({ pages: corpus.value.pages, bar: bar.value, session, probes, now: deps.now, sleep: deps.sleep, log: (l) => lines.push(l) });
+    result = await calibrate({ pages: corpus.value.pages, bar: bar.value, session, probes, now: deps.now, today: deps.today, sleep: deps.sleep, log: (l) => lines.push(l) });
   } catch (e) {
     return { code: 1, lines: [...lines, e && e.message && /^(refused|failed): /.test(e.message) ? e.message : refused(`the run stopped (${loadError(e)}): nothing written`)] };
   } finally {
     await session.close();
   }
-  if (!Object.keys(result.archetypes).length) return { code: 1, lines: [...lines, refused("no band was measured: the bar is unchanged")] };
-  const next = { ...bar.value, probe: probeDigest(), archetypes: result.archetypes };
+  const written = writeBands({ out: opts.out, bar: bar.value, result, attempted: new Set(corpus.value.pages.map((p) => p.archetype)), diff: opts.diff });
+  return { code: written.code, lines: [...lines, ...written.lines] };
+}
+
+/**
+ * A run's `result` (calibrate's, or the local corpus's) written into the bar at `out`: `probe` the current probes'
+ * digest, `archetypes` merged (mergeArchetypes: `attempted` the run's archetypes), validated, then renamed into place
+ * → `{code, lines}`: each cut band, the kept or dropped archetypes, `diff`'s lines, the summary per archetype and width.
+ * No band measured, or a bar that would not validate: refused, nothing written.
+ */
+export function writeBands({ out, bar, result, attempted, diff = false, unit = "page" }) {
+  const cuts = result.cut.map((k) => `cut ${k.archetype}.${k.width}.${k.metric}: ${k.why}`);
+  if (!Object.keys(result.archetypes).length) return { code: 1, lines: [...cuts, refused("no band was measured: the bar is unchanged")] };
+  const lines = [...cuts];
+  const merged = mergeArchetypes(bar, result.archetypes, attempted);
+  const next = { ...bar, probe: probeDigest(), archetypes: merged.archetypes };
   const checked = validateBar(next);
-  if (!checked.value) return { code: 1, lines: [...lines, refused(`the new bar would not validate (${checked.errors[0]}): nothing written`)] };
-  const tmp = `${opts.out}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, barText(fs.readFileSync(opts.out, "utf8"), next));
-  fs.renameSync(tmp, opts.out);
-  for (const k of result.cut) lines.push(`cut ${k.archetype}.${k.metric}: ${k.why}`);
-  if (opts.diff) lines.push(...diffLines(bar.value.archetypes, result.archetypes));
-  lines.push(...summaryLines(result.measured));
-  lines.push(`taste-bar ${bar.value.version} stays: a calibration after a release raises it by one (decision 21); probe ${next.probe.slice(0, 12)}`);
-  lines.push(`wrote ${opts.out}: ${plural(result.measured.length, "page")} measured, ${plural(result.skipped.length, "page")} skipped`);
+  if (!checked.value) return { code: 1, lines: [refused(`the new bar would not validate (${checked.errors[0]}): nothing written`)] };
+  const tmp = `${out}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, barText(fs.readFileSync(out, "utf8"), next));
+  fs.renameSync(tmp, out);
+  lines.push(...merged.lines);
+  if (diff) lines.push(...diffLines(bar.archetypes, next.archetypes));
+  lines.push(...summaryLines(result.measured, unit));
+  lines.push(`taste-bar ${bar.version} stays: a calibration after a release raises it by one (decision 21); probe ${next.probe.slice(0, 12)}`);
+  lines.push(`wrote ${out}: ${plural(result.measured.length, unit)} measured, ${plural(result.skipped.length, "page")} skipped`);
   return { code: 0, lines };
 }
 
