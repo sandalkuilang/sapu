@@ -186,7 +186,7 @@ const MAX_DEPTH = 6;
 /** The plugin's own worker ladder: the only subagents that never run without a contract. */
 export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
 
-/** The argus journey lane's explorer (docs/specs/argus-journey-lane.md §11). */
+/** The argus journey lane's explorer. */
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
