@@ -11,8 +11,10 @@
 // Never touched: the base, the main checkout's branch, an open PR's head, a --keep name, a branch
 // outside sapu's own names (`<type>/issue-<N>-…`, `worktree-wf_*`, `worktree-agent-*`, `sapu-*`;
 // --all lifts this). A worktree is removed only when it has no uncommitted or untracked change, no
-// ignored env file, is not this process's cwd and saw no git activity for an hour; else the branch
-// stays too. Policy `cleanup: "never"` refuses to run.
+// ignored env file, no agent memory written inside it, is not this process's cwd and saw no git
+// activity for an hour; else the branch stays too. The agent-memory link Claude Code puts in a worktree
+// (MEMORY_LINKS) is not a change: only the link is removed, never the main checkout's memory behind
+// it. Policy `cleanup: "never"` refuses to run.
 //
 // USAGE (from the main checkout or any of its worktrees):
 //   node sapu-cleanup.mjs [--apply] [--all] [--keep <branch>]...
@@ -66,19 +68,49 @@ const tryRun = (...a) => {
   }
 };
 
-/** Why a worktree must stay, or "": changes, an ignored env file, this process's cwd, recent git activity. */
+/**
+ * Where Claude Code links <MAIN>'s agent memory into a new worktree (`worktree.symlinkDirectories`,
+ * written by /sapu:init). The link holds no work of its own: removing the worktree removes only it.
+ */
+export const MEMORY_LINKS = [".claude/agent-memory", ".claude/agent-memory-local"];
+const isLink = (p) => {
+  try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+};
+/** The untracked memory links of a worktree (a tracked path is the repo's, never touched). */
+const memoryLinks = (wt) => MEMORY_LINKS.map((d) => path.join(wt, d)).filter((p) => isLink(p) && tryRun("git", ["-C", wt, "ls-files", "--", path.relative(wt, p)], wt) === "");
+
+/** Why a worktree must stay, or "": changes, an ignored env file, agent memory written in it, this process's cwd, recent git activity. */
 export function worktreeUnsafe(wt, now = Date.now(), cwd = process.cwd()) {
   const rel = path.relative(wt, fs.realpathSync(cwd));
   if (!rel.startsWith("..") && !path.isAbsolute(rel)) return "is this process's working directory";
   const status = tryRun("git", ["-C", wt, "status", "--porcelain", "--ignored", "--untracked-files=all"], wt);
   if (status === null) return "could not be read";
-  const lines = status.split("\n").filter(Boolean);
+  // A memory link a repo does not ignore shows as untracked; it is not work.
+  const lines = status.split("\n").filter((l) => l && !(l.startsWith("?? ") && MEMORY_LINKS.includes(l.slice(3)) && isLink(path.join(wt, l.slice(3)))));
   if (lines.some((l) => !l.startsWith("!!"))) return "has uncommitted or untracked changes";
   if (lines.some((l) => /(^|\/)\.env[^/]*$/.test(l.slice(3).replace(/\/$/, "")))) return "holds an ignored env file";
+  // A real memory directory (no link) in the worktree holds notes written there, often ignored: they would be lost.
+  if (lines.some((l) => MEMORY_LINKS.some((d) => l.slice(3).startsWith(d + "/")))) return "holds agent memory written inside it (move it to the main checkout's)";
   const gitDir = tryRun("git", ["-C", wt, "rev-parse", "--absolute-git-dir"], wt);
   const touched = gitDir ? Math.max(...["index", "HEAD", "logs/HEAD"].map((f) => { try { return fs.statSync(path.join(gitDir, f)).mtimeMs; } catch { return 0; } })) : now;
   if (now - touched < ACTIVE_MS) return "saw git activity in the last hour (a session may still use it)";
   return "";
+}
+
+/**
+ * `git worktree remove` for a worktree worktreeUnsafe passed: its untracked memory links go first (git
+ * counts them as untracked files and refuses), and come back when git still refuses (a lock).
+ */
+export function removeWorktree(main, wt) {
+  const links = memoryLinks(wt).map((p) => ({ p, to: fs.readlinkSync(p) }));
+  for (const { p } of links) fs.unlinkSync(p);
+  if (tryRun("git", ["-C", main, "worktree", "remove", wt], main) !== null) return true;
+  for (const { p, to } of links) if (!isLink(p)) fs.symlinkSync(to, p);
+  return false;
 }
 
 /** The git facts of `main` (a checkout whose origin/<base> is fresh), given the heads of PRs merged into <base>. */
@@ -163,7 +195,7 @@ function main(argv) {
       continue;
     }
     if (s.worktree) {
-      if (tryRun("git", ["-C", MAIN, "worktree", "remove", s.worktree], MAIN) === null) {
+      if (!removeWorktree(MAIN, s.worktree)) {
         console.log(`KEEP   ${s.branch} — its worktree could not be removed (${s.worktree})`);
         continue;
       }
