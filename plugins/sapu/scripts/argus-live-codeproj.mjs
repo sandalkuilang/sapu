@@ -297,17 +297,26 @@ const tasteLine = (v: unknown, n: number): string => {
 };
 const tasteValue = (v: unknown): boolean => (typeof v === "number" && Number.isFinite(v)) || (typeof v === "string" && v.length <= 200);
 
-/** Each rule of \`rules\` on \`page\`, alone: a probe that throws is named in \`notes\`, a row not in the finding shape dropped and counted; the step's events drained after. */
+/** One page expression measuring every rule of a pass: each rule's own expression in its own try, the answers in order (\`{rows}\` or \`{error}\`). */
+const TASTE_PART = "\\n/*argus-taste-part*/\\n";
+const tasteBatch = (rules: TasteRule[], cfg: TasteConfig): string =>
+  "(async () => {\\n  const out = [];" + rules.map((r) => TASTE_PART + "try { out.push({ rows: await (" + tasteExpr(r, cfg) + ") }); } catch (e) { out.push({ error: String(e && e.message ? e.message : e).split(\\"\\\\n\\")[0] }); }").join("") + TASTE_PART + "return out;\\n})()";
+
+/** Every rule of \`rules\` on \`page\`, in one evaluate (each alone in it): a probe that throws is named in \`notes\`, a row not in the finding shape dropped and counted; the step's events drained after. */
 async function tasteMeasure(page: Page, rules: TasteRule[], cfg: TasteConfig, notes: string[]): Promise<TasteFinding[]> {
   const found: TasteFinding[] = [];
-  for (const r of rules) {
-    let rows: unknown;
-    try {
-      rows = await page.evaluate(tasteExpr(r, cfg));
-    } catch (e) {
-      notes.push("taste " + r.id + ": the probe failed (" + tasteLine(e instanceof Error ? e.message.split("\\n")[0] : e, 200) + ")");
-      continue;
-    }
+  if (!rules.length) return found;
+  let answers: unknown;
+  try {
+    answers = await page.evaluate(tasteBatch(rules, cfg));
+  } catch (e) {
+    notes.push("taste: the pass's probes failed (" + tasteLine(e instanceof Error ? e.message.split("\\n")[0] : e, 200) + ")");
+    return found;
+  }
+  rules.forEach((r, i) => {
+    const a = Array.isArray(answers) ? answers[i] : null;
+    if (a && typeof a.error === "string") return void notes.push("taste " + r.id + ": the probe failed (" + tasteLine(a.error, 200) + ")");
+    const rows = a ? a.rows : null;
     let bad = Array.isArray(rows) ? 0 : 1;
     for (const f of Array.isArray(rows) ? rows : []) {
       const ok = f !== null && typeof f === "object" && f.rule === r.id && typeof f.key === "string" && f.key !== "" && f.key.length <= 300 && !/[\\r\\n]/.test(f.key) && tasteValue(f.measured) && tasteValue(f.expected);
@@ -315,7 +324,7 @@ async function tasteMeasure(page: Page, rules: TasteRule[], cfg: TasteConfig, no
       else bad += 1;
     }
     if (bad) notes.push("taste " + r.id + ": " + bad + " result(s) not in the finding shape, dropped");
-  }
+  });
   try {
     if (rules.length) await page.evaluate(TASTE_DRAIN);
   } catch (e) {

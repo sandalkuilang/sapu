@@ -335,7 +335,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
     "refund.spec.ts": "0125b0b69225d90ac7fb27f00883bf49d214bb65de27336bdda05514271344ec",
-    "support.ts": "6ec89c69e3c755db1156747458e0f16f470d39a896150fe24348e89c156734ef",
+    "support.ts": "44768e3f119daec4fce04fe3a62fed77fc5f85ac659e38dc7d1c17d81517dd69",
   };
 
   it("leaves every generated file byte-identical", () => {
@@ -687,7 +687,17 @@ const standInTable = () => tasteTable({ expression: standIn, sources: { taste: T
 /** A Playwright page and its context stood in: each rule's expression answered by `answers(rule, media)`, the media emulated, the drains, inits and settles counted. */
 function fakePage(answers: (rule: string, media: Obj) => unknown, start: Obj = { colorScheme: "light", reducedMotion: "no-preference" }) {
   const media = { ...start };
-  const calls = { emulate: [] as Obj[], drains: 0, settles: 0, armed: 0, initRuns: 0, evaluated: [] as string[], scales: [] as string[] };
+  const calls = { emulate: [] as Obj[], drains: 0, settles: 0, armed: 0, initRuns: 0, batches: 0, evaluated: [] as string[], scales: [] as string[] };
+  /** One stand-in rule expression answered. */
+  const single = (expr: string) => {
+    const m = /^\((.*)\)\("([a-z]+\.[a-z0-9-]+)"(?:, (\{.*\}))?\)$/s.exec(expr);
+    if (!m || ![TSRC, ESRC].includes(m[1])) throw new Error(`not a stand-in expression: ${expr.slice(0, 80)}`);
+    if (m[3] !== undefined) calls.scales.push(m[3]);
+    calls.evaluated.push(`${m[2]}@${media.colorScheme}/${media.reducedMotion}`);
+    const a = answers(m[2], { ...media });
+    if (a instanceof Error) throw a;
+    return a;
+  };
   const page = {
     evaluate: async (expr: string) => {
       // Every source reaches the page with the suite's own random key, never the mark (the app's scripts would know it).
@@ -696,13 +706,20 @@ function fakePage(answers: (rule: string, media: Obj) => unknown, start: Obj = {
       if (expr === MEDIA_READ) return { ...media };
       if (expr.includes("__argusTastePush")) return void (calls.initRuns += 1);
       if (expr.includes("getAnimations")) return void (calls.settles += 1);
-      const m = /^\((.*)\)\("([a-z]+\.[a-z0-9-]+)"(?:, (\{.*\}))?\)$/s.exec(expr);
-      if (!m || ![TSRC, ESRC].includes(m[1])) throw new Error(`not a stand-in expression: ${expr.slice(0, 80)}`);
-      if (m[3] !== undefined) calls.scales.push(m[3]);
-      calls.evaluated.push(`${m[2]}@${media.colorScheme}/${media.reducedMotion}`);
-      const a = answers(m[2], { ...media });
-      if (a instanceof Error) throw a;
-      return a;
+      // A pass's rules in one evaluate (support.ts tasteBatch): each part is one rule's expression in its own try.
+      const PART = "\n/*argus-taste-part*/\n";
+      if (expr.startsWith("(async () => {\n  const out = [];")) {
+        calls.batches += 1;
+        return expr.split(PART).slice(1, -1).map((p) => {
+          const one = p.slice("try { out.push({ rows: await (".length, p.lastIndexOf(") }); } catch (e)"));
+          try {
+            return { rows: single(one) };
+          } catch (e) {
+            return { error: (e instanceof Error ? e.message : String(e)).split("\n")[0] }; // as the page's own catch keeps it
+          }
+        });
+      }
+      return single(expr);
     },
     emulateMedia: async (m: Obj) => {
       calls.emulate.push(m);
@@ -843,6 +860,8 @@ describe("argus-live codegen — the taste project (phase 7, S1)", () => {
     const ids = (pass: string) => t.rules.filter((r: Obj) => r.passes.includes(pass)).map((r: Obj) => r.id);
     expect(f.calls.evaluated).toEqual(ids("action").map((id: string) => `${id}@light/no-preference`));
     expect([f.calls.emulate, f.calls.drains, f.calls.armed, f.calls.initRuns]).toEqual([[], 1, 1, 1]);
+    // The action pass's rules in one evaluate, not one a rule.
+    expect(f.calls.batches).toBe(1);
     expect(core.notes("argus-taste")).toEqual([{ rule: "copy.broken", step: 3, key: "text|undefined", measured: "undefined", expected: "no broken copy" }]);
     expect(core.notes("argus-info")).toEqual(["taste states.success: the probe failed (the stand-in broke)"]);
     f.calls.evaluated.length = 0;
