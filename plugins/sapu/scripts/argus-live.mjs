@@ -141,7 +141,8 @@
 //   argus-live.mjs taste judge [--run <runId>]
 //                                every recorded screen judged against its witnesses (-tastejudge.mjs tasteJudge)
 //   argus-live.mjs taste confirm <row>
-//                                a judge row replayed on a fresh instance and measured again (-tastejudge.mjs tasteConfirm)
+//                                a judge row (t<k>) replayed on a fresh instance to its screen and measured again, or a
+//                                probe (p<k>) measuring first what the walk does not (-tastejudge.mjs tasteConfirm)
 //   argus-live.mjs taste file [--run <runId>]
 //                                the confirmed rows filed, capped (-tastefile.mjs tasteFile)
 //   argus-live.mjs taste curator <file>
