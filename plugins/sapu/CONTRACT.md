@@ -27,8 +27,8 @@ per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its module
 smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-codeproj` (its projects and the taste reporter), `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
 `-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`; the taste pass's `-tastecfg` (`.argus/taste.json`, the bar,
 `.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
-maintainer's calibration script (`taste-calibrate`) and its reference corpus live in sapu's own repository, never in
-the plugin.
+maintainer's calibration script (`taste-calibrate`) and its reference corpora (public pages, and the local corpus of
+OSS apps) live in sapu's own repository, never in the plugin.
 
 **Where it lives: in the repo, or local.** By default the contract and profiles are committed in
 the repo (the table above). A repo that must not show sapu at all (someone else's repo, an
@@ -907,11 +907,12 @@ could use them.
   dispatches included). Its Read is only of a file whose real path lies under its run's `taste/`
   (`<MAIN>/.argus/live/<run>/taste/`: the lock's run, else the newest run directory): the judge rows and the
   screenshots, never the run's ledger or another run's records. It files nothing.
-- The taste calibration script (`taste-calibrate`, in sapu's own repository; it fetches the reference corpus's
-  public pages) is the maintainer's: every subagent is refused it as a program, an interpreter's first operand
+- The taste calibration script (`taste-calibrate` and its local corpus's library `taste-calibrate-local`, in sapu's
+  own repository; it fetches the reference corpus's public pages, or runs the local corpus's OSS apps on loopback)
+  is the maintainer's: every subagent is refused it as a program, an interpreter's first operand
   or preload (by its name in any case, a glob or a brace expansion it matches, or the real file behind a path), as an
   interpreter's stdin (`-` or no operand, fed by `<` or a pipe), in an interpreter's code (`node -e`), behind env prefixes, wrappers and `sh -c`, and as a script name the shell builds when
-  `--network`, `--corpus` or `--out` follows or the command names the script. Its tests and reads of it stay
+  `--network`, `--corpus`, `--out`, `--local` or `--refresh` follows or the command names the script. Its tests and reads of it stay
   allowed. Not caught (a guard LIMIT): a copy of it under another name. Its output reaches the plugin only
   through a reviewed pull request.
 - Author ≠ reviewer; the reviewer is not weaker than the strongest author; the 🔴 pair on a red-area

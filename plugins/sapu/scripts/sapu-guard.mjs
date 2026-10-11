@@ -110,9 +110,10 @@
 // (argus-live.mjs) is known as an interpreter's first operand or a file its option loads (-r, --import),
 // by its name, the real file behind a path, or a shell-built name a verb of it or a built word follows:
 // a copy under another name, or an interpreter's own code importing it, is not. The maintainer's taste
-// calibration script (taste-calibrate, outside the plugin; it fetches public pages) is refused to every
-// subagent as a program, an interpreter's operand or preload (by name, a glob, the real file behind a
-// path), code naming it (-e), or a shell-built name once --network follows or the command names it;
+// calibration script (taste-calibrate and its taste-calibrate-local library, outside the plugin; it fetches
+// public pages or runs OSS apps) is refused to every subagent as a program, an interpreter's operand or
+// preload (by name, a glob, the real file behind a path), code naming it (-e), or a shell-built name once
+// --network, --local or --refresh follows or the command names it;
 // a copy under another name is not known. The Curator (`sapu:curator`) has only Read, confined to its
 // run's `taste/`, and StructuredOutput. A PR's or a fork's code: BLOCKED are `gh pr checkout` (also as `gh co`), fetch/pull of a
 // `pull/*` ref, a raw SHA, a ref glob outside refs/heads|refs/tags, another remote or a URL, `git
@@ -205,8 +206,8 @@ export const CURATOR_AGENT = /^(sapu:)?curator$/;
 const LIVE_READS = [["status"], ["status", "--json"], ["check"], ["smoke", "check"]];
 /** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */
 const LIVE_VERBS = new Set(["up", "down", "renew", "slot", "pw", "intake", "repro", "classify", "scrub", "map-check", "select", "visit", "drift", "show", "reap", "proxy", "smoke", "seed", "report", "taste"]);
-/** The maintainer's taste calibration script (spec §20.3), by its file name: never a subagent's. */
-const CALIBRATE = /^taste-calibrate(\.[cm]?[jt]s)?$/i;
+/** The maintainer's taste calibration script (spec §20.3) and its local corpus's library, by file name: never a subagent's. */
+const CALIBRATE = /^taste-calibrate(-local)?(\.[cm]?[jt]s)?$/i;
 /** A command's text naming the calibration script, its quotes and escapes dropped. */
 const CALIBRATE_TEXT = /taste-calibrate/i;
 /** A run id as the lane spells it (argus-live-lock.mjs RUN_ID). */
@@ -1480,15 +1481,15 @@ function isCalibrate(w, dir) {
   const b = bare(w.v);
   if (braces(b).length > 1) return braces(b).some((x) => isCalibrate({ v: path.join(path.dirname(w.v), x), dyn: w.dyn }, dir));
   if (CALIBRATE.test(b) || (w.dyn && CALIBRATE_TEXT.test(w.v))) return true;
-  if (/[*?[]/.test(b) && ["taste-calibrate.mjs", "taste-calibrate.js", "taste-calibrate.ts"].some((n) => globHits(b, n))) return true;
+  if (/[*?[]/.test(b) && ["taste-calibrate.mjs", "taste-calibrate.js", "taste-calibrate.ts", "taste-calibrate-local.mjs"].some((n) => globHits(b, n))) return true;
   if (w.dyn || dir === UNKNOWN || !w.v) return false;
   return CALIBRATE.test(path.basename(realpathOrSelf(path.resolve(dir, w.v))));
 }
 
 /**
  * The calibration script (spec §20.3) run as a program, an interpreter's first operand or preload, or named by
- * an interpreter's code (`-e`); a script name the shell builds counts when `--network`, `--corpus` or `--out`
- * follows, or when the command's text (`named`) names the script: the refusal.
+ * an interpreter's code (`-e`); a script name the shell builds counts when `--network`, `--corpus`, `--out`, `--local`
+ * or `--refresh` follows, or when the command's text (`named`) names the script: the refusal.
  */
 function calibrationRun(all, dir, named) {
   const argv = withoutRedirects(all);
@@ -1504,7 +1505,7 @@ function calibrationRun(all, dir, named) {
   if (named && !evals && (op < 0 || argv[op].v === "-")) return BLOCK.calibrate;
   if (op < 0) return null;
   if (isCalibrate(argv[op], dir)) return BLOCK.calibrate;
-  return builtName(argv[op]) && (named || args.some((w) => ["--network", "--corpus", "--out"].includes(w.v))) ? BLOCK.calibrate : null;
+  return builtName(argv[op]) && (named || args.some((w) => ["--network", "--corpus", "--out", "--local", "--refresh"].includes(w.v))) ? BLOCK.calibrate : null;
 }
 
 /** GraphQL's inline enum; a variable counts only as exactly NOT_PLANNED. */
@@ -1521,7 +1522,7 @@ const BLOCK = {
   liveCli:
     "the journey lane's script (argus-live.mjs) is the orchestrator's: a subagent runs only its reads (`status`, `status --json`, `check`, `smoke check`), every word literal, and the journey explorer only `pw` through its wrapper.",
   calibrate:
-    "the taste calibration script (taste-calibrate) is the maintainer's: it fetches public pages and writes the bar, so no subagent runs it in any form; run it from the main session, and its output reaches the plugin only through a reviewed pull request.",
+    "the taste calibration script (taste-calibrate) is the maintainer's: it fetches public pages or runs OSS apps and writes the bar, so no subagent runs it in any form; run it from the main session, and its output reaches the plugin only through a reviewed pull request.",
   curatorRead: "the Curator reads only its run's taste/ files (<MAIN>/.argus/live/<run>/taste/: the judge rows and the screenshots); everything else reaches it in its brief.",
   curatorTool: "the Curator has only Read and StructuredOutput: it judges from the run's taste/ files and files nothing.",
   canary: "canary: the guard hook is live (this block is the expected answer; report guard_active: true).",

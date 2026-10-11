@@ -28,8 +28,8 @@ export const PACE_MS = 10_000;
 export const WITNESS = Object.freeze({ sites: 5, pages: 15 });
 /** The viewport every corpus page is measured at (one width: the bands compare screens, not breakpoints). */
 export const VIEWPORT = Object.freeze({ width: 1440, height: 900 });
-const usage = "usage: taste-calibrate.mjs [--network] --corpus <file> --out <bar> [--diff]";
-const refused = (why) => `refused: taste-calibrate: ${why}`;
+const usage = "usage: taste-calibrate.mjs [--network] --corpus <file> --out <bar> [--diff]\n       taste-calibrate.mjs --local <manifest> --refresh\n       taste-calibrate.mjs --local <manifest> [--network] --out <bar> [--diff]";
+export const refused = (why) => `refused: taste-calibrate: ${why}`;
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -458,10 +458,13 @@ export async function calibrate({ pages, bar, session, probes, now = Date.now, t
 const BLANK = `<!doctype html><html lang="en"><head><title>blank</title></head><body><main><h1>Blank</h1><p>A local page.</p><button type="button">Go</button></main></body></html>`;
 
 /**
- * A browser session → `{blank(measure), robots(origin), visit(url, measure), close()}`. Each visit gets a fresh context
- * (no cookie or storage carried over: never signed in), the taste buffer and both probes' init scripts as the lane's
- * session hook installs them, light colour scheme and no reduced motion, service workers blocked, and the user agent
- * Chrome reports plus AGENT.
+ * A browser session → `{blank(measure), robots(origin), visit(url, measure, opts?), signIn(code, opts?), close()}`. Each
+ * visit gets a fresh context (no cookie or storage carried over: never signed in), the taste buffer and both probes'
+ * init scripts as the lane's session hook installs them, light colour scheme and no reduced motion, service workers
+ * blocked, and the user agent Chrome reports plus AGENT. The local corpus's `opts`: `viewport` (VIEWPORT by default),
+ * `storageState` (a signed-in context), and `origins`: every request to another origin is aborted (the lane's loopback
+ * instance only). `signIn(code)` runs `code` (an `async page => …` source, the lane's own login stage) on a fresh
+ * page → `{result, storageState}`, the storage state only when the stage answered `in`.
  */
 export async function openSession({ cli = ensureCli(), chrome = findChrome() } = {}) {
   if (!chrome) throw new Error("failed: taste-calibrate: no Chrome-family browser found");
@@ -472,8 +475,20 @@ export async function openSession({ cli = ensureCli(), chrome = findChrome() } =
     const ua = `${await probe.evaluate(() => navigator.userAgent)} ${AGENT}`;
     await probe.close();
     const init = [TASTE_BUFFER, TASTE_INIT, EASE_INIT].filter((s) => s !== "").join(";\n");
-    const context = async () => {
-      const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1, userAgent: ua, colorScheme: "light", reducedMotion: "no-preference", locale: "en-US", serviceWorkers: "block" });
+    const context = async ({ viewport = VIEWPORT, storageState = null, origins = null } = {}) => {
+      const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, userAgent: ua, colorScheme: "light", reducedMotion: "no-preference", locale: "en-US", serviceWorkers: "block", ...(storageState ? { storageState } : {}) });
+      if (origins) {
+        const allowed = new Set(origins.map((o) => new URL(o).origin));
+        await ctx.route("**/*", (r) => {
+          let origin = null;
+          try {
+            origin = new URL(r.request().url()).origin;
+          } catch {
+            origin = null;
+          }
+          return allowed.has(origin) ? r.continue() : r.abort("blockedbyclient");
+        });
+      }
       await ctx.addInitScript({ content: init });
       return ctx;
     };
@@ -494,8 +509,18 @@ export async function openSession({ cli = ensureCli(), chrome = findChrome() } =
         const r = await request.get(`${origin}/robots.txt`, { maxRedirects: 5, failOnStatusCode: false });
         return { status: r.status(), text: r.ok() ? await r.text() : "" };
       },
-      async visit(url, measure) {
-        const ctx = await context();
+      async signIn(code, opts = {}) {
+        const ctx = await context(opts);
+        try {
+          const page = await ctx.newPage();
+          const result = await new Function(`return (${code})`)()(page);
+          return { result, storageState: result && result.state === "in" ? await ctx.storageState() : null };
+        } finally {
+          await ctx.close();
+        }
+      },
+      async visit(url, measure, opts = {}) {
+        const ctx = await context(opts);
         try {
           const page = await ctx.newPage();
           const resp = await page.goto(url, { waitUntil: "load", timeout: 45_000 });
@@ -571,7 +596,7 @@ export function summaryLines(measured, unit = "page") {
   });
 }
 
-const readJson = (file, what) => {
+export const readJson = (file, what) => {
   try {
     return { value: JSON.parse(fs.readFileSync(file, "utf8")) };
   } catch (e) {
@@ -580,21 +605,28 @@ const readJson = (file, what) => {
 };
 
 /**
- * `argv` → `{code, lines}`. `deps` replaces the browser, the probes and the clocks (`now` paces, `today` dates the
- * bands): the tests' seams; the CLI passes none. Without --network: the corpus validated and the plan printed, nothing
- * fetched or written.
+ * `argv` → `{code, lines}`. `deps` replaces the browser, the probes, the clocks (`now` paces, `today` dates the bands),
+ * and for --local GitHub, git, docker and the lane's CLI (the tests' seams; the CLI passes none). Without --network: the
+ * corpus validated and the plan printed, nothing fetched or written. `--local <manifest>` measures the local reference
+ * corpus instead (taste-calibrate-local.mjs): `--refresh` pins each app to its latest release.
  */
 export async function main(argv, deps = {}) {
-  const opts = { network: false, diff: false, corpus: null, out: null };
+  const opts = { network: false, diff: false, refresh: false, corpus: null, out: null, local: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--network") opts.network = true;
     else if (a === "--diff") opts.diff = true;
-    else if ((a === "--corpus" || a === "--out") && typeof argv[i + 1] === "string" && !argv[i + 1].startsWith("--")) opts[a.slice(2)] = argv[++i];
+    else if (a === "--refresh") opts.refresh = true;
+    else if ((a === "--corpus" || a === "--out" || a === "--local") && typeof argv[i + 1] === "string" && !argv[i + 1].startsWith("--")) opts[a.slice(2)] = argv[++i];
     else return { code: 1, lines: [refused(`unknown argument ${JSON.stringify(a).slice(0, 60)}`), usage] };
   }
-  if (!opts.corpus || !opts.out) return { code: 1, lines: [refused("--corpus and --out are required"), usage] };
+  if (opts.local && opts.corpus) return { code: 1, lines: [refused("--local and --corpus are two corpora: name one"), usage] };
+  if (opts.refresh && !opts.local) return { code: 1, lines: [refused("--refresh needs --local <manifest>"), usage] };
+  if (opts.refresh && (opts.network || opts.out || opts.diff)) return { code: 1, lines: [refused("--refresh only rewrites the manifest's pins: run it alone, then --network"), usage] };
+  if (opts.local && !opts.refresh && !opts.out) return { code: 1, lines: [refused("--out is required (the bar the bands go into)"), usage] };
+  if (!opts.local && (!opts.corpus || !opts.out)) return { code: 1, lines: [refused("--corpus and --out are required"), usage] };
   if (opts.diff && !opts.network) return { code: 1, lines: [refused("--diff compares a new calibration with the bar, so it needs --network"), usage] };
+  if (opts.local) return (await import("./taste-calibrate-local.mjs")).mainLocal(opts, deps);
   const c = readJson(opts.corpus, "the corpus");
   if (c.error) return { code: 1, lines: [c.error] };
   const corpus = validateCorpus(c.value);

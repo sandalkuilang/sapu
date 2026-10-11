@@ -2783,6 +2783,12 @@ describe("sapu-guard — the taste calibration script is the maintainer's: no su
     ["its text piped into node --input-type", "cat scripts/taste-calibrate.mjs | node --input-type=module"],
     ["zsh -c", "zsh -c 'node scripts/taste-calibrate.mjs'"],
     ["dash -c", "dash -c 'node scripts/taste-calibrate.mjs'"],
+    ["--local, its local corpus", "node scripts/taste-calibrate.mjs --local scripts/taste-corpus-local.json --network --out b.json"],
+    ["--local --refresh", "node scripts/taste-calibrate.mjs --local scripts/taste-corpus-local.json --refresh"],
+    ["a script name the shell builds, with --local", 'node "$S" --local m.json --refresh'],
+    ["the local corpus's library, run", "node scripts/taste-calibrate-local.mjs"],
+    ["the local corpus's library, imported by -e code", "node -e \"import('./scripts/taste-calibrate-local.mjs').then((m) => m.mainLocal({}))\""],
+    ["the local corpus's library as a preload", "node --import ./scripts/taste-calibrate-local.mjs x.mjs"],
   ])("refuses a subagent %s", (_what, cmd) => {
     expect(sub(cmd)).toMatch(REFUSED);
     expect(sub(cmd, "sapu:sapu-opus-high")).toMatch(REFUSED);
@@ -2795,6 +2801,8 @@ describe("sapu-guard — the taste calibration script is the maintainer's: no su
     ["its diff", "git diff scripts/taste-calibrate.mjs"],
     ["another script", "node scripts/rule-guard.ts"],
     ["the corpus file", "node -e \"JSON.parse(require('fs').readFileSync('scripts/taste-corpus.json','utf8'))\""],
+    ["the local corpus's test file", "npx vitest run tests/taste-calibrate-local.test.ts"],
+    ["the local corpus's manifest", "node -e \"JSON.parse(require('fs').readFileSync('scripts/taste-corpus-local.json','utf8'))\""],
   ])("lets a subagent %s", (_what, cmd) => {
     expect(sub(cmd)).toBeNull();
   });

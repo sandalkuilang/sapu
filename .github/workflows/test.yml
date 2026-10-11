@@ -41,7 +41,7 @@ jobs:
           - job: generated-suite
             files: tests/argus-live-codegen.test.ts tests/argus-live-a11y.test.ts tests/argus-live-layout.test.ts
           - job: taste
-            files: tests/argus-live-tastejudge.test.ts tests/argus-live-tasteprobe.test.ts tests/argus-live-ease.test.ts tests/argus-live-tasteflow.test.ts tests/taste-calibrate.test.ts tests/argus-live-aiux.test.ts
+            files: tests/argus-live-tastejudge.test.ts tests/argus-live-tasteprobe.test.ts tests/argus-live-ease.test.ts tests/argus-live-tasteflow.test.ts tests/taste-calibrate.test.ts tests/taste-calibrate-local.test.ts tests/argus-live-aiux.test.ts
           - job: rest
     steps:
       - uses: actions/checkout@v4
