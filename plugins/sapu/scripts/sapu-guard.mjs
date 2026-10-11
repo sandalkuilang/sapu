@@ -191,7 +191,7 @@ export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
 /** The only program the explorer's Bash may run: this plugin's own wrapper, never a path from a prompt. */
 export const WRAPPER = path.join(path.dirname(fileURLToPath(import.meta.url)), "argus-live.mjs");
 /** The journey lane's Curator (spec §20.4): Read (its run's `taste/` only) and StructuredOutput, nothing else. */
-export const CURATOR_AGENT = /(^|:)curator$/;
+export const CURATOR_AGENT = /^(sapu:)?curator$/;
 /** What any subagent may run of the journey lane's script (argus-live.mjs): its reads, which write nothing. */
 const LIVE_READS = [["status"], ["status", "--json"], ["check"], ["smoke", "check"]];
 /** The script's other verbs: after a script name the shell builds whole, one of them reads as the script. */

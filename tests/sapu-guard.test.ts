@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -2815,6 +2815,11 @@ describe("sapu-guard — the Curator reads only its run's taste/ files", () => {
   const CURATOR = "sapu:curator";
   const d = (tool_name: string, tool_input: Record<string, unknown>, cwd = m) => decide({ agent_id: "c1", agent_type: CURATOR, tool_name, tool_input, cwd });
   const OUT = /the Curator reads only its run's taste\//;
+
+  it("is sapu's Curator by its exact name (bare or `sapu:`), never another plugin's agent of that name", () => {
+    for (const t of ["curator", "sapu:curator"]) expect(CURATOR_AGENT.test(t), t).toBe(true);
+    for (const t of ["other:curator", "sapu:curator2", "precurator", "sapu:sub:curator"]) expect(CURATOR_AGENT.test(t), t).toBe(false);
+  });
 
   it("reads the lock's run's taste/ files", () => {
     expect(d("Read", { file_path: join(m, `.argus/live/${RUN_A}/taste/judge.json`) })).toBeNull();
