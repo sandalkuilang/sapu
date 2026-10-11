@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { AIUX_DRIVE, driveArg, faultArm, rulesFor as aiRules } from "./argus-live-aiux.mjs";
 import { loadLive } from "./argus-live-config.mjs";
-import { crossRules, pathCost, rulesFor as easeRules, ruleExpression as easeExpression } from "./argus-live-ease.mjs";
+import { crossRules, EASE_SOURCE, FAULT_SOURCE, pathCost, RECOVERY_SOURCE, rulesFor as easeRules, ruleExpression as easeExpression } from "./argus-live-ease.mjs";
 import { fence } from "./argus-live-fence.mjs";
 import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";
@@ -209,7 +209,7 @@ const crossScreen = (rule) => rule.family === "consistent" || rule.id === "feedb
  * (not `states.error`, not `ai.*`), never a cross-screen or an efficiency row. Such rows of one journey's screen are one
  * confirmation group: `taste confirm` replays the path once and measures every rule of the group.
  */
-const groupable = (rule) => Boolean(rule) && !crossScreen(rule) && rule.family !== "efficiency" && rule.family !== "ai" && rule.id !== "states.error";
+const groupable = (rule) => Boolean(rule) && !crossScreen(rule) && rule.family !== "efficiency" && rule.family !== "ai" && rule.id !== "states.error" && rule.id !== "states.recovery";
 const groupOfRow = (r, rule) => (groupable(rule) ? `${r.journey}\n${r.screen}` : `${r.journey}\n${r.screen}\n${r.rule}\n${r.key}`);
 
 /** The band of `metric` for archetype `a`, when it is a witness: enough sites and pages, an archetype not inferred. */
@@ -549,33 +549,16 @@ function keepConfirmed(state, r, runId) {
 // The confirmation replay.
 
 /**
- * The in-daemon code the replay arms before its first navigation for a `states.error` row (decision 12, Task 0.1):
- * the first same-origin JSON GET (fetch or XHR) made while the page is at the row's route template is answered 500;
- * every other request goes on. The route lives with the session, which the replay closes at its end.
+ * The in-daemon code the replay arms before its first navigation for a `states.error` row (decision 12, Task 0.1): the
+ * ease probe's FAULT_SOURCE, held to the row's screen: the first same-origin JSON GET made while the page is at the
+ * row's route template is answered 500; every other request goes on.
  */
 function faultCode(S) {
   return `async page => {
   const S = ${JSON.stringify(S)};
   const routeOf = ${routeTemplate.toString()};
-  let done = false;
-  await page.context().route("**/*", async (route) => {
-    const req = route.request();
-    try {
-      if (done || req.method() !== "GET" || !["fetch", "xhr"].includes(req.resourceType())) return await route.fallback();
-      const at = new URL(req.frame().page().url());
-      if (new URL(req.url()).origin !== at.origin || routeOf(at.pathname, S.routes) !== S.route) return await route.fallback();
-      const response = await route.fetch();
-      if (!done && /json/i.test(response.headers()["content-type"] || "")) {
-        done = true;
-        return await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "argus taste: routed fault" }) });
-      }
-      return await route.fulfill({ response });
-    } catch (e) {
-      try {
-        await route.fallback();
-      } catch (e2) {}
-    }
-  });
+  const F = ${FAULT_SOURCE};
+  await F(page, null, (q) => routeOf(new URL(q.frame().page().url()).pathname, S.routes) === S.route);
   return { armed: true };
 }
 `;
@@ -610,7 +593,7 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   const ai = family === "ai";
   // A group (rows of one screen): the media rules through one census, every other rule through its expression.
   const more = group.length > 1 ? { ids, exprs: ids.filter((id) => !MEDIA_RULES.includes(id) && (media || id !== row.rule)).map(exprOf) } : {};
-  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id)), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : { expr: exprOf(row.rule) }), ...more };
+  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id)), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : row.rule === "states.recovery" ? { recover: RECOVERY_SOURCE, ease: EASE_SOURCE } : { expr: exprOf(row.rule) }), ...more };
   const sink = {
     measured: null,
     arm: row.rule === "states.error" ? faultCode(S) : row.rule === "ai.error" ? faultArm() : null,
@@ -627,7 +610,13 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
       await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
       let rows = null;
       try {
-        rows = S.media ? new Function("return " + S.rules)()(await new Function("return " + S.census)()(page), S.bar, S.cfg) : S.drive ? await new Function("return " + S.drive)()(page, S.driveArg) : await page.evaluate(S.expr);
+        // states.recovery: the ease probe's form case (RECOVERY_SOURCE) on the screen's first form with a submit.
+        const recover = async () => {
+          const SUBMIT = "button:not([type]), button[type=submit], input[type=submit]";
+          const lost = await new Function("return " + S.recover)()(page, page.locator("form").filter({ has: page.locator(SUBMIT) }).first().locator(SUBMIT).first(), new Function("return " + S.ease)());
+          return Array.isArray(lost) ? lost.map((x) => ({ rule: "states.recovery", key: x.key, measured: "lost" })) : null;
+        };
+        rows = S.media ? new Function("return " + S.rules)()(await new Function("return " + S.census)()(page), S.bar, S.cfg) : S.drive ? await new Function("return " + S.drive)()(page, S.driveArg) : S.recover ? await recover() : await page.evaluate(S.expr);
         for (const e of S.exprs || []) if (Array.isArray(rows)) rows = rows.concat(await page.evaluate(e));
       } catch (e) {
         rows = null;

@@ -23,6 +23,7 @@
 <button id="delayed">Delayed</button>
 <button id="quick-loader">Quick loader</button>
 <button id="local">Local</button>
+<button id="endless">Export</button>
 <label>Note <input id="note"></label>
 <div id="out" aria-live="polite"></div>
 <div id="slot"></div>
@@ -41,6 +42,8 @@
     slot.appendChild(s);
     return s;
   };
+  // a request that fails (404) under a spinner that never goes: an endless loader (QA's export page)
+  on("endless", async () => { spinner(); await fetch("/api/fail", { method: "POST", body: "{}" }); });
   // under 100 ms: no busy signal needed
   on("quick", async () => show("quick " + (await wait(50)).ms));
   // 150 ms: past the instant limit (information only)

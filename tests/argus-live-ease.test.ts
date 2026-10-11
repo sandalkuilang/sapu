@@ -185,11 +185,22 @@ describe("argus-live ease — D10's feedback clock, each side of each threshold"
     expect(one(flash, "feedback.loader-flash")).toEqual({ rule: "feedback.loader-flash", key: "action|spinner", measured: 120, expected: "shown at least 300 ms, and none for a wait under 1000 ms" });
     expect(one(clock([busy(1200, true, "spinner"), change(1200), busy(1600, false, "spinner")], [req(1002, 1598)]), "feedback.loader-flash").measured).toBe(400);
     expect(filed(clock([busy(1200, true, "spinner"), change(1200), busy(2500, false, "spinner")], [req(1002, 2498)]))).toEqual([]);
-    // A loader that never goes is not a flash (a decoration, or the progress rule's).
-    expect(ids(clock([busy(1004, true, "skeleton"), change(1004)], [req(1002, 1300)]))).toEqual([]);
+    // A loader that never goes is not a flash: 58 s after its request answered, it is an endless loader.
+    expect(ids(clock([busy(1004, true, "skeleton"), change(1004)], [req(1002, 1300)]))).toEqual(["feedback.endless"]);
     // At load (before any input): its wait is the document's time to the loader's end.
     expect(ids(judged({ route: "/", events: [busy(100, true, "skeleton"), busy(1500, false, "skeleton")], ease: { now: 9000, requests: [] } }))).toEqual([]);
     expect(one(judged({ route: "/", events: [busy(100, true, "skeleton"), busy(700, false, "skeleton")], ease: { now: 9000, requests: [] } }), "feedback.loader-flash").key).toBe("load|skeleton");
+  });
+
+  it("endless: a loader still shown 10 s after its request answered, or 10 s into a request that never did, fires; one gone, or younger, holds", () => {
+    // A 500 at 1300, the spinner never goes: 20 s on at the screen's time.
+    expect(one(clock([busy(1004, true, "spinner"), change(1004)], [req(1002, 1300, "POST", 500)], 21_300), "feedback.endless")).toMatchObject({ key: "action", measured: 20_000 });
+    // A request that hangs (no end), the spinner on 12 s into it.
+    expect(one(clock([busy(1004, true, "spinner"), change(1004)], [req(1002, null, "POST")], 13_000), "feedback.endless")).toMatchObject({ measured: 12_005 });
+    // Twins: the loader went; only 9 s after the answer; no loader at all.
+    expect(ids(clock([busy(1004, true, "spinner"), change(1004), busy(1400, false, "spinner")], [req(1002, 1300, "POST", 500)], 21_300))).not.toContain("feedback.endless");
+    expect(ids(clock([busy(1004, true, "spinner"), change(1004)], [req(1002, 1300, "POST", 500)], 10_300))).not.toContain("feedback.endless");
+    expect(ids(clock([change(1004)], [req(1002, 1300, "POST", 500)], 21_300))).not.toContain("feedback.endless");
   });
 
   it("skeleton-shift: a skeleton replaced by content that moved others fires; none holds", () => {
@@ -386,6 +397,13 @@ describe("argus-live ease — states: the routed fault, success, recovery, empty
     const ok = await open("states.html?mode=retry", { arm: false });
     await ok.getByText("Order one").waitFor({ timeout: 30_000 });
     expect(await ok.evaluate(ruleExpression("states.error"))).toEqual([]);
+  }, 60_000);
+
+  it("feedback.endless in a walk: a spinner left on after its request failed is a row 10 s on", async () => {
+    const page = await open("feedback.html");
+    await page.click("#endless");
+    await sleep(10_600);
+    expect(filed(judged(await record(page)))).toContain("feedback.endless");
   }, 60_000);
 
   it("states.success: a 2xx write with nothing named within 1 s fires; one named in a status region holds", async () => {

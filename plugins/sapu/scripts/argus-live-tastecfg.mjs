@@ -478,6 +478,7 @@ export const TASTE_OUTCOME = Object.freeze({
   "colour.dark-contrast": "text under its WCAG 2.2 contrast minimum in the dark theme only (SC 1.4.3, AA)",
   "feedback.busy": "a wait over 1 s with no busy signal: the user cannot tell the action is working",
   "feedback.progress": "a wait over 10 s with no determinate progress",
+  "feedback.endless": "a loader that never ends: the user waits for a result that is not coming",
   "states.error": "a failed data request leaves the screen with no way to retry or leave",
   "states.success": "a successful write the page never names: the user cannot tell it happened",
   "states.recovery": "fields lost after a rejected submit: the user types them again",

@@ -17,7 +17,7 @@ import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { keepScreen, RECORDER, recorderPayload, tasteDir } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
-import { tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
+import { confirmSink, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -45,7 +45,7 @@ beforeAll(async () => {
     if (page) {
       // A page seen on a second route of the journey (the consistency rules count routes).
       let text = readFileSync(join(PAGES, page[1], page[2].replace(/^consist-(a|b)\1\.html$/, "consist-$1.html")), "utf8");
-      for (const [mark, value] of Object.entries(FILL)) text = text.split(mark).join(value);
+      for (const [mark, value] of Object.entries(FILL)) text = text.split(mark).join(mark === "__MODE__" ? (url.searchParams.get("mode") || value).replace(/[^a-z]/g, "") : value);
       res.setHeader("content-type", "text/html");
       res.end(text);
       return;
@@ -206,4 +206,19 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     // A real 1.5 s silent wait after all that: still measured.
     expect(await judged(true)).toContain("feedback.busy");
   }, 240_000);
+
+  it("a states.recovery row is measured in the replay by the ease probe's form case (RECOVERY_SOURCE): each field the refusal lost, the values put back", async () => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    try {
+      const page = await context.newPage();
+      const sink = confirmSink({ row: "t1", journey: "j", rule: "states.recovery", class: "implicit", screen: "/ease/recovery.html|1280|light", key: "Email", measured: "lost", expected: null }, { routes: [], settleMs: 5000 });
+      expect(sink.arm).toBeNull();
+      const step = `async page => {\n  await page.goto(${JSON.stringify(`${origin}/ease/recovery.html?mode=clear`)});\n  await page.fill("input[name=name]", "Ada");\n  await page.fill("input[name=email]", "ada@example.test");\n  await page.fill("textarea[name=notes]", "call back");\n  return { ok: true };\n}\n`;
+      expect(sink.take(await new Function(`return ${sink.wrap(step)}`)()(page))).toEqual({ ok: true });
+      expect(sink.measured).toEqual({ rows: [{ key: "Email", measured: "lost" }, { key: "Notes", measured: "lost" }] });
+      expect(await page.inputValue("input[name=email]")).toBe("ada@example.test");
+    } finally {
+      await context.close();
+    }
+  }, 120_000);
 });

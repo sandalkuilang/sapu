@@ -2,7 +2,7 @@
 // (`plugins/sapu/data/taste-bar.json`) and its validator, `.argus/taste.json` and its defaults,
 // `.argus/taste-state.json`'s one reader and writer, and the contract's rows for both files.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -381,6 +381,20 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
     expect(vm.runInContext("stolen", ctx)).toEqual([null, null, null]);
     // The recorders' own record is there, alone.
     expect(drain(ctx).events).toEqual([CHANGE]);
+  });
+
+  it("every in-page source the probes export has a caller in the plugin (a source no code runs measures nothing)", () => {
+    const dir = join(__dirname, "../plugins/sapu/scripts");
+    const files = readdirSync(dir).filter((f) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(f));
+    const text = Object.fromEntries(files.map((f) => [f, readFileSync(join(dir, f), "utf8")]));
+    const lonely: string[] = [];
+    for (const probe of ["argus-live-taste.mjs", "argus-live-ease.mjs", "argus-live-aiux.mjs"]) {
+      for (const [, name] of text[probe].matchAll(/^export const ([A-Z_]+_(?:SOURCE|INIT|DRIVE|FAULT))\b/gm)) {
+        const used = files.some((f) => f !== probe && new RegExp(`\\b${name}\\b`).test(text[f])) || new RegExp(`[^\\n]*\\$\\{${name}\\}`).test(text[probe].split(`export const ${name}`)[1] ?? "");
+        if (!used) lonely.push(`${probe} ${name}`);
+      }
+    }
+    expect(lonely).toEqual([]);
   });
 
   it("down prunes a run's taste records to what the report and the next judge read: shots, held shots, screens and the brief go", () => {

@@ -250,7 +250,13 @@ export const EASE_SOURCE = String.raw`(arg) => {
         }
       }
     }
-    return { acts, loaders };
+    // The loaders still on at the horizon, each with the time it came on.
+    const still = [];
+    for (const sig of [...LOADERS, "aria-busy"]) {
+      const last = busy.filter((b) => b.signal === sig).pop();
+      if (last && last.on) still.push({ signal: sig, since: last.t });
+    }
+    return { acts, loaders, still };
   };
   const judge = (screen, rules, cfg) => {
     const R = new Map((Array.isArray(rules) ? rules : []).map((r) => [r.id, r]));
@@ -275,6 +281,17 @@ export const EASE_SOURCE = String.raw`(arg) => {
     if (ind > th("feedback.progress").max) add("feedback.progress", "action", ind, "a determinate progress bar for a wait past " + th("feedback.progress").max + " ms");
     const fl = th("feedback.loader-flash");
     for (const l of fb.loaders.slice().sort((x, y) => x.shown - y.shown)) if (l.shown < fl.min || (l.wait !== null && l.wait < fl.min_wait)) add("feedback.loader-flash", l.phase + "|" + l.signal, l.shown, "shown at least " + fl.min + " ms, and none for a wait under " + fl.min_wait + " ms");
+    // A loader that never ends: still shown past the bound after its action's requests answered, or into one that never did.
+    const endless = th("feedback.endless").max;
+    if (endless !== undefined) {
+      const stuck = (a) => {
+        if (!fb.still.some((x) => x.since >= a.start && (a.end === null || x.since < a.end)) || !a.reqs.length) return -Infinity;
+        if (a.reqEnd !== null) return a.horizon - a.reqEnd;
+        return a.reqs.some((r) => typeof r.end !== "number") ? a.horizon - a.start : -Infinity;
+      };
+      const m = worst(fb.acts, stuck);
+      if (m > endless) add("feedback.endless", "action", m, "the loader gone once its request answered, and a request that does not answer shown as failed");
+    }
     if (e.shifts > th("feedback.skeleton-shift").max) add("feedback.skeleton-shift", "skeleton", e.shifts, "content that keeps its skeleton's place");
     const writes = fb.acts.map((a) => ({ a, end: Math.max(...a.reqs.filter(WRITE).map((r) => r.end)) })).filter((w) => w.end > -Infinity);
     const named = th("states.success").max;
@@ -482,17 +499,19 @@ export const EASE_SOURCE = String.raw`(arg) => {
 }`;
 
 /**
- * D12's routed fault, `async (page, origin) => {faulted(), off()}`: armed BEFORE the navigation to the screen (Task 0.1),
- * it answers the screen's first same-origin JSON GET (fetch or XHR) with a 500. A request whose Accept names JSON is
+ * D12's routed fault, `async (page, origin, when?) => {faulted(), off()}`: armed BEFORE the navigation to the screen (Task
+ * 0.1), it answers the screen's first same-origin JSON GET (fetch or XHR) with a 500 (`origin` null: the page's own;
+ * `when(request)`, when given, must also hold: the confirmation's own screen only). A request whose Accept names JSON is
  * answered without reaching the app or the proxy; another is fetched once (a GET) to read its content-type, and passes
  * unless that says JSON. `faulted()` is the path answered (null: none), `off()` removes the route.
  */
-export const FAULT_SOURCE = String.raw`async (page, origin) => {
+export const FAULT_SOURCE = String.raw`async (page, origin, when) => {
   let faulted = null;
   const fault = (route, url) => (faulted = new URL(url).pathname) && route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "argus: a routed fault" }) });
+  const own = (q) => { try { return new URL(q.frame().page().url()).origin; } catch (e) { return null; } };
   const handler = async (route) => {
     const q = route.request();
-    if (faulted !== null || q.method() !== "GET" || !/^(fetch|xhr)$/.test(q.resourceType()) || new URL(q.url()).origin !== origin) return route.fallback();
+    if (faulted !== null || q.method() !== "GET" || !/^(fetch|xhr)$/.test(q.resourceType()) || new URL(q.url()).origin !== (origin || own(q)) || (when && !when(q))) return route.fallback();
     if (/json/i.test(q.headers()["accept"] || "")) return fault(route, q.url());
     let res;
     try { res = await route.fetch(); } catch (e) { return route.fallback(); }
