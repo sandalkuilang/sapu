@@ -20,9 +20,14 @@
 // HOW. A Bash command is tokenized like a shell would (quotes, `$'…'`, escapes, `;` `&&` `||` `|`
 // `&`, redirection operators as words of their own, subshells, `$( )` and backticks — also inside
 // double quotes), wrappers are peeled (`env`, `nice`, `time`, `exec`, `xargs`, `npx`, `bunx`,
-// `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, ...),
-// `bash -c`/`sh -c`/`eval`/`env -S`/`npm exec -c`/`script -c`/`bun exec`/`find -exec`/`fd -x|-X`/
-// `parallel`/`sem`/`rush` and heredocs fed to a shell are checked recursively, the words xargs, find,
+// `bun x`, `corepack`, `npm exec`, `pnpm dlx`, `caffeinate`, `arch`, `script`, `do`, `stdbuf`, `watch`,
+// `busybox`/`toybox <applet>`, `setsid`, `unbuffer`, `ionice`, `taskset`, `chrt`, `flock`, `sudo`,
+// `doas`, coreutils' g-prefixed names, ...), `bash -c`/`sh -c` (any shell: ash, hush, mksh, fish too)/
+// `eval`/`env -S`/`npm exec -c`/`script -c`/`flock -c`/`watch`'s joined text/`bun exec`/`find -exec`/
+// `fd -x|-X`/`parallel`/`sem`/`rush` and heredocs fed to a shell are checked recursively, so are the
+// commands an interpreter's inline code or heredoc runs through its process calls (`python -c`, `perl
+// -e`, `ruby -e`, `node|bun|tsx -e|-p`, `deno eval`, `php -r`: a call's string, a list of literals as
+// its argv, perl/ruby/php backticks and `qx`/`%x`), the words xargs, find,
 // fd, parallel and rush fill in at run
 // time counted as words the shell builds (nesting deeper than MAX_DEPTH is blocked, never waved
 // through), and `cd`/`pushd`/`env -C`/`git -C`/`--git-dir`/`--work-tree`/`GIT_DIR` are followed
@@ -63,7 +68,9 @@
 // (a subagent, a subagent's subagent, ...; a ladder worker or the explorer by its `agent_type`
 // alone too); the orchestrator — the main session, also one started with `--agent`, which merges,
 // runs the merge gate and fast-forwards <MAIN> through sapu-merge.sh — only for where it dispatches
-// agents from (HOME CHECKOUT below: checkHome). Two tiers:
+// agents from (HOME CHECKOUT below: checkHome) and for a GitHub token written into a command line
+// (`ghp_…`, `gho_…`, `github_pat_…`: `ps`, the shell snapshot and the transcript would keep it): a
+// Bash, PowerShell, Monitor or context-mode shell call holding one is refused in every session. Two tiers:
 // a sapu worker (`sapu:sapu-*` on the ladder: SAPU_AGENT) gets the whole floor; any other subagent
 // (a reviewer, a specialist — the senior-dev-team agents included —,
 // argus/momus/nemesis and their helpers) gets the same floor EXCEPT that it may run
@@ -74,9 +81,11 @@
 // like any other: an `Agent` call is not a way around the guard. The wave workflow proves the
 // hook is live with a canary command (`sapu-guard-canary`) before trusting a worker.
 //
-// LIMITS (deliberate, known — see THREAT MODEL): an interpreter running its own code (`node -e`,
-// `python -c`, a script, `expect`, `tmux send-keys`, commands `parallel` reads from stdin or a file,
-// `watch`, a pty wrapper such as `script` fed through stdin) is not parsed, nor is a command held in
+// LIMITS (deliberate, known — see THREAT MODEL): an interpreter's own code beyond the process calls
+// above (a script file, a command it builds from variables, another process API such as `os.execvp`
+// or `Deno.Command`), `expect`, `tmux send-keys`, commands `parallel` reads from stdin or a file,
+// a pty wrapper such as `script` fed through stdin, and a wrapper the guard does not know (an unknown
+// option of a known one that takes a value, too) are not parsed, nor is a command held in
 // a variable (`$CMD`, `eval "$CMD"`, `bash -c "$CMD"`); shell variables are not expanded (except a leading
 // `$HOME`/`${HOME}`, read like `~`) — a mutating git command whose target is a variable is
 // BLOCKED, but a Bash write whose target is another variable (`> "$M/x"`) or comes from stdin
@@ -358,15 +367,17 @@ export function checkCuratorRead({ input, taste, cwd }) {
  * Drop heredoc bodies (PR bodies, review files) — unless the heredoc feeds a shell, or its
  * terminator never comes (then the "body" is really more commands).
  */
-export function stripHeredocs(cmd) {
+export function stripHeredocs(cmd, codes = null) {
   const out = [];
   let end = null;
   let keep = false;
+  let lang = null;
   let body = [];
   for (const line of cmd.split("\n")) {
     if (end !== null) {
       if (line.trim() === end) {
         if (keep) out.push(...body);
+        else if (lang && codes) codes.push({ lang, code: body.join("\n") });
         end = null;
         body = [];
       } else body.push(line);
@@ -376,13 +387,25 @@ export function stripHeredocs(cmd) {
     const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/);
     if (m) {
       end = m[2];
+      // The program the body is fed to, wrappers peeled (`env bash <<EOF`, `busybox sh <<EOF`), or a shell it is piped into.
+      const prog = lastProgram(line.slice(0, m.index));
       keep =
+        SHELLS.has(prog) ||
         /(^|[|;&(]\s*)(\S+=\S*\s+)*(bash|sh|zsh|dash)\b(?![\w.-])/.test(line.slice(0, m.index)) ||
-        /\|\s*(bash|sh|zsh|dash)\b/.test(line.slice(m.index));
+        /\|\s*(bash|sh|zsh|dash)\b/.test(line.slice(m.index)) ||
+        tokenize(line.slice(m.index + m[0].length)).cmds.some((c) => c.pre === "|" && SHELLS.has(lastProgram(c.toks)));
+      lang = keep ? null : codeLang(prog);
     }
   }
   if (end !== null) out.push(...body);
   return out.join("\n");
+}
+
+/** The program of the last command in `text` (a string or one command's words), wrappers peeled; "" for none. */
+function lastProgram(text) {
+  const t = typeof text === "string" ? tokenize(text).cmds.filter((c) => c.toks.length).at(-1)?.toks ?? [] : text;
+  const at = programIndex(t);
+  return at < t.length ? wrapperName(bare(t[at].v)) : "";
 }
 
 /** Index of the `)` closing the `(` at `open`, or src.length. */
@@ -552,7 +575,29 @@ export function tokenize(src) {
   return { cmds, nested };
 }
 
-const KEYWORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time", "command", "builtin", "nohup", "sudo"]);
+const KEYWORDS = new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "command", "builtin", "nohup"]);
+/**
+ * Programs that run the command after their options and a fixed number of operands (`taskset <mask>`,
+ * `chrt <prio>`, `flock <file>`): name → [the options that take the next word as their value, operands].
+ * An option glued to its value (`-oL`, `--output=L`) is one word.
+ */
+const RUNNERS = {
+  stdbuf: [/^(-[ioe]|--(input|output|error))$/, 0],
+  setsid: [null, 0],
+  unbuffer: [null, 0],
+  ionice: [/^(-[cnp]|--(class|classdata|pid|pgid|uid))$/, 0],
+  taskset: [null, 1],
+  chrt: [/^(-[TPD]|--sched-(runtime|period|deadline))$/, 1],
+  flock: [/^(-[wE]|--(timeout|wait|conflict-exit-code))$/, 1],
+  sudo: [/^(-[ugpChrtUDRT]|--(user|group|prompt|close-from|host|role|type|other-user|chdir|chroot|command-timeout))$/, 0],
+  doas: [/^-[uC]$/, 0],
+  time: [/^(-[of]|--(output|format))$/, 0],
+  watch: [/^(-[nq]|--(interval|equexit))$/, 0],
+};
+/** watch's options that take no value (procps): any other option may take the next word (judged both ways). */
+const WATCH_FLAG = /^(-[bcCdeghprtvwx]+|-[bcCdeghprtvwx]*[nq].+|--(beep|colou?r|no-colou?r|differences(=.*)?|errexit|chgexit|precise|no-rerun|no-title|no-wrap|no-linewrap|exec|help|version|interval=.*|equexit=.*))$/;
+/** A wrapper's name, GNU coreutils' g-prefixed names (macOS Homebrew: gstdbuf, gtimeout, genv, …) read as the plain one. */
+const wrapperName = (v) => (/^g(env|nice|nohup|stdbuf|timeout|time|chroot)$/.test(v) ? v.slice(1) : v);
 /** A redirection operator word (the tokenizer splits them out): `>`, `2>>`, `&>`, `>&`, `<`, `<<`, `<<<`, … */
 const REDIRECT_OP = /^\d*(?:&>>?|<<<|<<-?|<>|<&|>>|>&|>\||<|>)$/;
 const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -597,10 +642,29 @@ const PARALLEL_LONG_FLAG = new Set(["fg", "bg", "wait", "semaphore", "bar", "dry
 function programIndex(t, alts = null, out = null) {
   let i = 0;
   while (i < t.length) {
-    const v = path.basename(t[i].v);
+    const v = wrapperName(path.basename(t[i].v));
     if (REDIRECT_OP.test(t[i].v)) i += 2; // a redirection before the program (`>/dev/null cmd`)
     else if (ASSIGN.test(t[i].v) || KEYWORDS.has(v)) i++;
-    else if (v === "exec") {
+    else if ((v === "busybox" || v === "toybox") && t[i + 1] && !t[i + 1].v.startsWith("-")) i++; // `busybox <applet> …` runs the applet
+    else if (Object.hasOwn(RUNNERS, v)) {
+      const [takes, operands] = RUNNERS[v];
+      i++;
+      while (i < t.length && t[i].v.startsWith("-") && t[i].v !== "-") {
+        if (t[i].v === "--") {
+          i++;
+          break;
+        }
+        if (v === "flock" && EXEC_CALL.test(t[i].v)) return i; // `flock -c '<cmd>' <file>`: checked as a command
+        if (v === "watch" && !takes.test(t[i].v) && !WATCH_FLAG.test(t[i].v)) alts?.push(i);
+        i += takes?.test(t[i].v) ? 2 : 1;
+      }
+      i += operands;
+      // `flock <file> -c '<cmd>'`: its options may follow the file
+      while (v === "flock" && i < t.length && t[i].v.startsWith("-")) {
+        if (EXEC_CALL.test(t[i].v)) return i;
+        i += takes.test(t[i].v) ? 2 : 1;
+      }
+    } else if (v === "exec") {
       i++;
       while (i < t.length && t[i].v.startsWith("-")) i += t[i].v === "-a" ? 2 : 1;
     } else if (v === "caffeinate" || v === "arch") {
@@ -844,7 +908,7 @@ function grepArgs(prog, a) {
   return { pattern: fromOption ? -1 : first, values };
 }
 const ENV_FLOOR = [".env", ".env.local"];
-const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+const SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "hush", "fish"]);
 /** Programs whose arguments name code they execute (`source`/`.` included: sourcing runs a script). */
 const INTERPRETERS = new Set([...SHELLS, "node", "tsx", "ts-node", "deno", "bun", "python", "python3", "ruby", "perl", "source", "."]);
 const PKG_MANAGERS = new Set(["npm", "pnpm", "yarn"]);
@@ -1475,6 +1539,8 @@ const BLOCK = {
     "the acceptance label, the needs-owner label and the agent-filed label are the owner's own acts: no agent applies, removes, creates, renames, deletes or clones them (an agent only files a new issue with the agent-filed or needs-owner label) — every agent works under the owner's token, so GitHub would record the change as the owner's decision. Report the issue instead.",
   ghToken:
     "gh's auth token (`gh auth token`, `gh auth status --show-token`/`-t`, `gh auth git-credential`, `gh config get oauth_token`, `git credential …`/`git-credential-*`, gh's hosts.yml, git's ~/.git-credentials or ~/.config/git/credentials) is the owner's credential: with it `curl` reaches the GitHub API around every rule the guard keeps on gh. Use gh itself (`gh api`, `gh issue …`); `gh auth status` without -t shows who is signed in.",
+  literalToken:
+    "a GitHub token written into a command line leaks: every process on the machine sees it in `ps`, and the shell snapshot and the transcript keep it. Let the shell fetch it at run time instead — `GH_TOKEN=$(gh auth token --user <name>) gh …` (the main session; a subagent's gh uses the signed-in account) — and revoke a token that was written out.",
   ownerRuling:
     "closing an issue as not planned is the owner's ruling that the finding is intended; no agent makes it under the owner's token. Report it instead.",
   issueBody:
@@ -1516,11 +1582,11 @@ function mainWrittenOf(real, mains, worker) {
   return mains.find((m) => m && inMain(real, m) && !(!worker && inStateDir(real, m))) || null;
 }
 
-/** The text a wrapper runs as a command of its own — `env -S '<cmd>'`, `npx -c`/`npm exec -c '<cmd>'` — or null. */
+/** The text a wrapper runs as a command of its own — `env -S '<cmd>'`, `npx -c`/`npm exec -c '<cmd>'`, `flock -c` — or null. */
 function innerCommand(t, at) {
   if (at >= t.length) return null;
-  const wrappers = t.slice(0, at).map((x) => bare(x.v));
-  const m = (wrappers.includes("env") && ENV_SPLIT.exec(t[at].v)) || (wrappers.some((w) => w === "npx" || w === "bunx" || w === "script" || PKG_MANAGERS.has(w)) && EXEC_CALL.exec(t[at].v));
+  const wrappers = t.slice(0, at).map((x) => wrapperName(bare(x.v)));
+  const m = (wrappers.includes("env") && ENV_SPLIT.exec(t[at].v)) || (wrappers.some((w) => w === "npx" || w === "bunx" || w === "script" || w === "flock" || PKG_MANAGERS.has(w)) && EXEC_CALL.exec(t[at].v));
   if (!m) return null;
   const inline = m[1] !== "";
   return [inline ? m[1] : (t[at + 1]?.v ?? ""), ...t.slice(at + (inline ? 1 : 2)).map((x) => x.v)].join(" ");
@@ -1952,7 +2018,7 @@ function envChdir(t, at, dir) {
   let out = null;
   for (let k = 1; k < at; k++) {
     const m = /^(?:-C|--chdir)(?:=(.*))?$/.exec(t[k].v);
-    if (!m || !t.slice(0, k).some((x) => path.basename(x.v) === "env")) continue;
+    if (!m || !t.slice(0, k).some((x) => wrapperName(path.basename(x.v)) === "env")) continue;
     const target = m[1] !== undefined ? { v: m[1], dyn: t[k].dyn } : t[k + 1];
     out = !target || target.dyn || dir === UNKNOWN ? UNKNOWN : path.resolve(dir, target.v);
   }
@@ -1980,6 +2046,11 @@ function checkCommand(t, state, depth) {
   const { rules, main } = scope;
   const inner = innerCommand(t, at);
   if (inner !== null) return checkText(inner, here, state, depth + 1);
+  // watch joins its words into one text for `sh -c` (without -x): judged as that text too.
+  if (at < t.length && t.slice(0, at).some((x) => wrapperName(bare(x.v)) === "watch")) {
+    const r = checkText(t.slice(at).map((x) => x.v).join(" "), here, state, depth + 1);
+    if (r) return r;
+  }
   const argv = t.slice(at);
   const a = argv.map((x) => x.v);
   const prog = a.length ? bare(a[0]) : "";
@@ -2051,6 +2122,14 @@ function checkCommand(t, state, depth) {
     return script > 0 ? checkCommand(argv.slice(script), { ...state, dir: here }, depth + 1) : null;
   }
   if (prog === "eval") return checkText(a.slice(1).join(" "), here, state, depth + 1);
+  // An interpreter's inline code (`python -c`, `perl -e`, `node -e`, …): the commands its process calls run.
+  const inline = inlineCode(a, prog);
+  for (const code of inline ? inline.codes : []) {
+    for (const cmd of codeCommands(code, inline.lang)) {
+      const r = checkText(cmd, here, state, depth + 1);
+      if (r) return r;
+    }
+  }
   if (prog === "find") {
     for (let i = 1; i < argv.length; i++) {
       if (!/^-(exec|execdir|ok|okdir)$/.test(a[i])) continue;
@@ -2689,7 +2768,14 @@ function checkText(text, dir, base, depth) {
   const posix = !!base.posix || "POSIXLY_CORRECT" in process.env || /\bPOSIXLY_CORRECT\b/.test(text);
   const state = { dir, prev: dir, main: base.main, rules: base.rules, resolve: base.resolve, posix, explorer: !!base.explorer, namesCalibration: !!base.namesCalibration };
   const saved = [];
-  const { cmds, nested } = tokenize(stripHeredocs(text));
+  const codes = []; // heredoc bodies fed to an interpreter (`python3 - <<EOF`)
+  const { cmds, nested } = tokenize(stripHeredocs(text, codes));
+  for (const { lang, code } of codes) {
+    for (const cmd of codeCommands(code, lang)) {
+      const reason = checkText(cmd, dir, { ...base, posix }, depth + 1);
+      if (reason) return reason;
+    }
+  }
   let fromPr = false; // the previous command pipes a PR's diff into this one
   let fromNet = false; // the previous command pipes a download into this one
   for (const c of cmds) {
@@ -2900,21 +2986,95 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
 // tells subagents to prefer them, so an honest worker would bypass every rule above. Each call is
 // checked as the Bash/Read calls it amounts to: batch commands (in every shape context-mode coerces),
-// shell code, paths, and in other languages the command a spawn call runs — a string, a list of
-// literal strings, or literals joined by `+`. They are judged where they run (see decide()). ponytail: an interpreter's own code beyond that (built strings, ruby backticks,
-// other languages' process APIs) is the LIMITS case above, as with `node -e`.
+// shell code, paths, and in other languages the command a spawn call runs (codeCommands, also what an
+// interpreter's inline code runs: `python -c`, `node -e`, `perl -e`, …). They are judged where they run
+// (see decide()). ponytail: an interpreter's own code beyond that (built strings, other process APIs)
+// is the LIMITS case above.
 const CTX_TOOL = /__ctx_(execute|execute_file|batch_execute|index)$/;
 const LIT = String.raw`[fr]?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\`(?:\\.|[^\`\\])*\`)`;
 // Unambiguous process APIs anywhere; generic names (exec, run, call, system, popen) on a process module
-// or `require("child_process")`, or bare when the code imports child_process/subprocess/os — so
-// `db.exec("… > 2")`, a regex `.exec`, `suite.run(` or python's builtin `exec("…")` are not commands.
-const SPAWN_ANY = String.raw`\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open)`;
+// or `require("child_process")`, or bare when the code imports child_process/subprocess/os or the
+// language has them as builtins (perl, ruby, php) — so `db.exec("… > 2")`, a regex `.exec`,
+// `suite.run(` or python's builtin `exec("…")` are not commands.
+const SPAWN_ANY = String.raw`\b(?:execSync|execFileSync|execFile|spawnSync|spawn|check_output|check_call|Popen|shell_exec|passthru|proc_open|capture2e?|capture3|popen[23]e?)`;
 const SPAWN_GENERIC = String.raw`(?:exec|run|call|system|popen)`;
-const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*)`;
+const SPAWN_MODULE = String.raw`(?:\b(?:subprocess|os|child_process|childProcess|child_proc|cp|sp|IO|Kernel|Open3)\s*\.\s*|require\(\s*["'\`](?:node:)?child_process["'\`]\s*\)\s*\.\s*)`;
 const IMPORTS_PROCESS = /child_process|\bsubprocess\b|\bimport\s+os\b|\bfrom\s+os\s+import\b/;
-const spawnCall = (bare) => new RegExp(String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""})\s*\(\s*(\[[^\]]*\]|${LIT}(?:\s*,\s*\[[^\]]*\])?)`, "g");
+/** A process call's arguments: a list, or literals and lists after one another (`system("git", "push")`); perl and ruby also without parentheses. */
+const spawnCall = (bare, noParen) =>
+  new RegExp(String.raw`(?:${SPAWN_ANY}|${SPAWN_MODULE}${SPAWN_GENERIC}${bare ? String.raw`|(?<![\w.$])${SPAWN_GENERIC}` : ""})${noParen ? String.raw`(?:\s*\(\s*|\s+)` : String.raw`\s*\(\s*`}(\[[^\]]*\]|${LIT}(?:\s*,\s*(?:\[[^\]]*\]|${LIT}))*)`, "g");
 const unquote = (l) => l.replace(/^[fr]?(["'`])([\s\S]*)\1$/, "$2");
 const literals = (t) => (t.match(new RegExp(LIT, "g")) || []).map(unquote);
+const shellQuote = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+/** Languages whose process calls are builtins (`system`, `exec`), and whose backticks and `qx`/`%x` run a shell command. */
+const PROCESS_BUILTINS = /^(perl|ruby|php)$/i;
+
+/**
+ * The shell commands code in another language runs through its process calls: a call's string (shell
+ * text), and a list of literals also as the argv it is (`["sh", "-c", "…"]`); literals joined by `+`
+ * (perl and php: `.`) first folded into one. In perl, ruby and php also backticks, `qx(…)` and `%x(…)`.
+ */
+function codeCommands(code, lang = "") {
+  const proc = PROCESS_BUILTINS.test(lang);
+  const concat = new RegExp(String.raw`(${LIT})\s*${proc ? "[+.]" : "\\+"}\s*(${LIT})`); // "git push " + 'origin main'
+  let c = code;
+  for (let i = 0; i < 50 && concat.test(c); i++) c = c.replace(concat, (_, a, b) => JSON.stringify(unquote(a) + unquote(b)));
+  const out = [];
+  for (const s of c.matchAll(spawnCall(proc || IMPORTS_PROCESS.test(c), proc))) {
+    const lits = literals(s[1]);
+    out.push(lits.join(" "));
+    if (lits.length > 1 || s[1].startsWith("[")) out.push(lits.map(shellQuote).join(" "));
+  }
+  if (proc) {
+    for (const m of c.matchAll(/`((?:\\.|[^`\\])*)`/g)) out.push(m[1]);
+    for (const m of c.matchAll(/(?:\bqx|%x)\s*(?:\(([^)]*)\)|\{([^}]*)\}|\[([^\]]*)\]|<([^>]*)>|([^\w\s])([\s\S]*?)\5)/g)) out.push(m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[6]);
+  }
+  return out.filter((x) => x.trim());
+}
+
+/** The language of an interpreter that takes inline code, or null. */
+function codeLang(prog) {
+  if (/^(python|pypy)(\d+(\.\d+)*)?$/.test(prog)) return "python";
+  if (prog === "perl" || prog === "ruby" || prog === "php") return prog;
+  return ["node", "bun", "tsx", "ts-node", "deno"].includes(prog) ? "javascript" : null;
+}
+/** Per language: the short options whose value is inline code, and those whose value is anything else (they end a bundle like `-Ic`). */
+const CODE_OPTS = { python: ["c", "WXm"], perl: ["eE", "IMmxdDCVi"], ruby: ["e", "ICEFKTWrx0"], php: ["r", "cdzDf"] };
+
+/**
+ * The inline code an interpreter runs (`python -c`, `-Ic<code>`; `perl -e|-E`, `-le`; `ruby -e`; `php -r`;
+ * node, bun, tsx and ts-node `-e|-p|-pe|--eval|--print`; `deno eval`) with its language, or null. Every
+ * word is read so: a word after the script read as an option only adds a check.
+ */
+function inlineCode(a, prog) {
+  const lang = codeLang(prog);
+  if (!lang) return null;
+  const codes = [];
+  if (prog === "deno") {
+    const k = a[1] === "eval" ? a.findIndex((v, i) => i > 1 && !v.startsWith("-")) : -1;
+    return { lang, codes: k > 0 ? [a[k]] : [] };
+  }
+  for (let i = 1; i < a.length; i++) {
+    const v = a[i];
+    if (lang === "javascript") {
+      const long = /^--(eval|print)(?:=([\s\S]*))?$/.exec(v);
+      const c = long ? (long[2] ?? a[i + 1]) : /^-(e|p|pe|ep)$/.test(v) ? a[i + 1] : undefined;
+      if (c !== undefined) codes.push(c);
+      continue;
+    }
+    if (!/^-[A-Za-z]/.test(v)) continue;
+    const [code, valued] = CODE_OPTS[lang];
+    for (let k = 1; k < v.length; k++) {
+      if (code.includes(v[k])) {
+        const c = k + 1 < v.length ? v.slice(k + 1) : a[i + 1];
+        if (c !== undefined) codes.push(c);
+        break;
+      }
+      if (valued.includes(v[k])) break;
+    }
+  }
+  return { lang, codes };
+}
 
 /** context-mode's `commands`, as its coerceCommandsArray reads them: a JSON string, a bare string, strings or {command}. */
 function ctxCommands(v) {
@@ -2938,12 +3098,7 @@ export function ctxCalls(tool, ti) {
   if (typeof ti.path === "string" && ti.path) out.push({ filePath: ti.path });
   if (typeof ti.code === "string") {
     if (/^(shell|bash|sh|zsh)$/i.test(ti.language || "")) out.push({ command: ti.code });
-    else {
-      let code = ti.code;
-      const concat = new RegExp(String.raw`(${LIT})\s*\+\s*(${LIT})`); // "git push " + 'origin main'
-      for (let i = 0; i < 50 && concat.test(code); i++) code = code.replace(concat, (_, a, b) => JSON.stringify(unquote(a) + unquote(b)));
-      for (const s of code.matchAll(spawnCall(IMPORTS_PROCESS.test(code)))) out.push({ command: literals(s[1]).join(" ") });
-    }
+    else for (const command of codeCommands(ti.code, ti.language || "")) out.push({ command });
   }
   return out;
 }
@@ -3115,13 +3270,16 @@ const DISPATCH_TOOLS = new Set(["Agent", "Task", "Workflow"]);
 // .git/info/exclude). A session
 // whose project directory is a worktree (a desktop worktree session) is left alone. Subagents never
 // carry a cd over, and dispatch only from their own place, so (1) and (2) are the main session's alone.
-// From the hooks and tools references, not probed live: agent_id marks a subagent and agent_type
-// alone a `--agent` main session; a main-session cd carries over inside the project directory, a
-// subagent's never. Still to probe live: CLAUDE_PROJECT_DIR in a `claude --worktree` session and
-// after EnterWorktree (homeIsMain also trusts a transcript filed under a worktree slug); whether a
-// run_in_background command's cd carries over (rule (1) skips those); whether a Workflow's
-// `agent({isolation: 'worktree'})` worktree honours worktree.symlinkDirectories (rule (3) keeps
-// memory writes in <MAIN> either way).
+// From the hooks, tools and worktrees references, not probed live: agent_id marks a subagent (or an
+// in-process teammate) and agent_type alone a `--agent` main session; a main-session cd carries over
+// inside the project directory, a subagent's never; after EnterWorktree CLAUDE_PROJECT_DIR stays at
+// the directory the session started in while the transcript moves under the worktree's slug, so
+// homeIsMain reads that session as a worktree session and leaves it to the memory link and rule (3).
+// Still to probe live, each answer covered: CLAUDE_PROJECT_DIR in a `claude --worktree` session (the
+// worktree: not <MAIN>; <MAIN>: its transcript is filed under the worktree's slug, read first);
+// whether a run_in_background command's cd carries over (rule (1) skips those; the cwd reset init
+// writes covers them either way); whether a Workflow's `agent({isolation: 'worktree'})` worktree
+// honours worktree.symlinkDirectories (rule (3) keeps memory writes in <MAIN> either way).
 
 /** The project slug Claude Code files a session under: every non-alphanumeric char → "-". */
 const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "-");
@@ -3296,10 +3454,21 @@ function checkHomeSafe(input) {
   }
 }
 
+/** A GitHub token written out: classic (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) or fine-grained (`github_pat_`). */
+const GH_TOKEN_LITERAL = /(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{50,})/;
+
+/** The command lines a call runs (Bash, PowerShell, Monitor, context-mode's shell calls). */
+function commandLines(tool, ti) {
+  if (tool === "Bash" || tool === "PowerShell" || tool === "Monitor") return typeof ti.command === "string" ? [ti.command] : [];
+  return (ctxCalls(tool, ti) || []).map((c) => c.command).filter((c) => typeof c === "string");
+}
+
 export function decide(input) {
   if (!input) return null;
   const tool = input.tool_name;
   const ti = input.tool_input || {};
+  // Every session, the main one too: a token in a command line leaks whoever runs it.
+  if (commandLines(tool, ti).some((c) => GH_TOKEN_LITERAL.test(c))) return BLOCK.literalToken;
   // The explorer first: it dispatches nothing, so Agent/Task/Workflow are refused here too.
   if (EXPLORER_AGENT.test(input.agent_type || "")) {
     if (tool === "StructuredOutput") return null;

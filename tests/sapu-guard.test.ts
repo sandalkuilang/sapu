@@ -3669,3 +3669,115 @@ describe("sapu-guard — gh config's token, brace and default forms of the hosts
     expect(reviewer(cmd)).toBeNull();
   });
 });
+
+describe("sapu-guard — wrappers that hide the real command are peeled: stdbuf, watch, busybox/toybox, runners, an interpreter's process calls", () => {
+  const reviewer = (command: string) => check({ command, cwd: wt, main, rules, worker: false });
+  const MERGE = /only the orchestrator merges/;
+  const FORCE = /plain force push/;
+  const STASH = /git stash/;
+  it.each([
+    ["stdbuf -oL git push --force origin x", FORCE],
+    ["stdbuf -o L gh pr merge 1", MERGE],
+    ["stdbuf --output=L -eL gh pr merge 1", MERGE],
+    ["stdbuf --input 0 gh pr merge 1", MERGE],
+    ["gstdbuf -oL gh pr merge 1", MERGE],
+    ["gtimeout 60 gh pr merge 1", MERGE],
+    ["gnice -n 5 gh pr merge 1", MERGE],
+    ["genv -S 'gh pr merge 1'", MERGE],
+    ["watch -n 5 gh pr merge 1", MERGE],
+    ["watch -n5 'git push --force origin x'", FORCE],
+    ["watch -x sh -c 'gh pr merge 1'", MERGE],
+    ["watch --interval=2 -d git stash", STASH],
+    ["watch -q 3 'gh pr merge 1'", MERGE],
+    ["watch --some-new-option 1 gh pr merge 1", MERGE],
+    ["busybox sh -c 'gh pr merge 1'", MERGE],
+    ["busybox ash -c 'git stash'", STASH],
+    ["toybox sh -c \"gh pr merge 1\"", MERGE],
+    ["busybox env gh pr merge 1", MERGE],
+    ["/bin/busybox timeout 9 gh pr merge 1", MERGE],
+    ["setsid gh pr merge 1", MERGE],
+    ["unbuffer gh pr merge 1", MERGE],
+    ["taskset -c 0 gh pr merge 1", MERGE],
+    ["ionice -c 3 gh pr merge 1", MERGE],
+    ["chrt -f 10 gh pr merge 1", MERGE],
+    ["flock /tmp/l gh pr merge 1", MERGE],
+    ["flock -n /tmp/l -c 'gh pr merge 1'", MERGE],
+    ["sudo -u me gh pr merge 1", MERGE],
+    ["doas -u me gh pr merge 1", MERGE],
+    ["time -p gh pr merge 1", MERGE],
+    ["hush -c 'git stash'", STASH],
+    ["python3 -c \"import os; os.system('gh pr merge 1')\"", MERGE],
+    ["python -c 'import subprocess; subprocess.run([\"git\", \"push\", \"--force\", \"origin\", \"x\"])'", FORCE],
+    ["python3 -c 'import subprocess; subprocess.run([\"sh\", \"-c\", \"gh pr merge 1\"])'", MERGE],
+    ["python3.12 -Ic \"import os; os.system('git stash')\"", STASH],
+    ["perl -e 'system(\"gh pr merge 1\")'", MERGE],
+    ["perl -le 'system \"git\", \"push\", \"-f\"'", FORCE],
+    ["perl -e 'print `gh pr merge 1`'", MERGE],
+    ["perl -e 'my $x = qx(git stash)'", STASH],
+    ["ruby -e 'system(\"gh\", \"pr\", \"merge\", \"1\")'", MERGE],
+    ["ruby -e 'puts %x(git stash)'", STASH],
+    ["node -e \"require('child_process').execSync('gh pr merge 1')\"", MERGE],
+    ["node -e \"require('child_process').execFileSync('gh', ['pr', 'merge', '1'])\"", MERGE],
+    ["node --eval=\"require('child_process').execSync('git stash')\"", STASH],
+    ["node -pe \"require('child_process').execSync('git stash').toString()\"", STASH],
+    ["bun -e \"Bun.spawnSync(['gh', 'pr', 'merge', '1'])\"", MERGE],
+    ["php -r 'system(\"gh pr merge 1\");'", MERGE],
+    ["python3 - <<'EOF'\nimport os\nos.system('gh pr merge 1')\nEOF", MERGE],
+    ["node <<'EOF'\nrequire('child_process').execSync('git stash')\nEOF", STASH],
+    ["env bash <<'EOF'\ngh pr merge 1\nEOF", MERGE],
+    ["busybox sh <<'EOF'\ngit stash\nEOF", STASH],
+    ["cat <<'EOF' | env bash\ngh pr merge 1\nEOF", MERGE],
+  ])("blocks %s", (cmd, why) => {
+    expect(blocked(cmd)).toMatch(why);
+    expect(reviewer(cmd)).toMatch(why);
+  });
+
+  it.each([
+    ["stdbuf -oL npx vitest run"],
+    ["watch -n 5 git status"],
+    ["watch -d 'ls -la'"],
+    ["busybox ls -la"],
+    ["busybox --list"],
+    ["timeout 60 npx vitest run"],
+    ["python3 -c \"import json,sys; print(json.load(sys.stdin)['title'])\""],
+    ["node -e \"console.log(require('./package.json').version)\""],
+    ["node -pe \"process.versions.node\""],
+    ["python3 -c \"import subprocess; print(subprocess.run(['git', 'status'], capture_output=True).stdout)\""],
+    ["perl -ne 'print if /system/' notes.txt"],
+    ["python3 - <<'EOF'\nprint('gh pr merge 1')\nEOF"],
+    ["ruby -e 'puts \"gh pr merge 1\"'"],
+  ])("still allows %s", (cmd) => {
+    expect(blocked(cmd)).toBeNull();
+    expect(reviewer(cmd)).toBeNull();
+  });
+});
+
+describe("sapu-guard — a GitHub token written into a command line is refused in every session", () => {
+  // Built by concatenation: a real-looking token never stands in this file as one literal.
+  const classic = "gh" + "o_" + "x".repeat(36);
+  const pat = "github" + "_pat_" + "A1_".repeat(20);
+  const at = (command: string, agent: Record<string, string> = {}, tool_name = "Bash") => decide({ tool_name, ...agent, tool_input: { command }, cwd: wt });
+  const sub = { agent_type: "senior-dev-team:senior-fullstack-developer", agent_id: "tok1" };
+  it.each([
+    [`export GH_TOKEN=${classic}`],
+    [`GH_TOKEN=${classic} gh pr list`],
+    [`curl -H "Authorization: token ${"gh" + "p_" + "Z".repeat(40)}" https://api.github.com/user`],
+    [`echo ${"gh" + "s_" + "9".repeat(36)} | gh auth login --with-token`],
+    [`git push https://x:${pat}@github.com/o/r.git HEAD`],
+  ])("refuses %s, for the main session and a subagent", (cmd) => {
+    expect(at(cmd)).toMatch(/GitHub token.*GH_TOKEN=\$\(gh auth token --user <name>\)/);
+    expect(at(cmd, sub)).toMatch(/GitHub token/);
+    expect(at(cmd, {}, "PowerShell")).toMatch(/GitHub token/);
+  });
+  it("also inside a context-mode shell call", () => {
+    expect(decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_batch_execute", tool_input: { commands: [{ label: "a", command: `export GH_TOKEN=${classic}` }] }, cwd: wt })).toMatch(/GitHub token/);
+  });
+  it.each([
+    ["GH_TOKEN=$(gh auth token --user someone) gh pr list"],
+    ["echo gho_short"],
+    [`echo x${classic}`],
+    ["grep -r ghp_ src/"],
+  ])("lets the main session run %s", (cmd) => {
+    expect(at(cmd)).toBeNull();
+  });
+});
