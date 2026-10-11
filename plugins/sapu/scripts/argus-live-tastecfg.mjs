@@ -64,14 +64,16 @@ export function laneOnly(rule) {
 }
 /**
  * The owner's design tokens (live.json `tokens`: a CSS file's custom properties or a JSON file's leaves, read as
- * a11yTokens reads them) as the taste probe's scale (`rulesFor`'s `cfg.tokens`): `{spacing?, radius?, type?}`, each
- * the sorted px values whose name (a custom property's, a JSON path's) names that kind; px as written, `rem`/`em`
- * at 16 px (the root's default), a bare number px; anything else (`calc()`, `var()`, `%`) is no value. Null when no
- * kind holds a value, so a frame is not outranked by an empty scale. Self-contained: support.ts embeds its source.
+ * a11yTokens reads them) as the taste probe's scale (`rulesFor`'s `cfg.tokens`): `{spacing?, radius?, type?,
+ * control?}`, each the sorted px values whose name (a custom property's, a JSON path's) names that kind (`control`: a
+ * control's height or size, as `--control-height-md`, `--button-size-lg` or `size.control.sm` say it); px as
+ * written, `rem`/`em` at 16 px (the root's default), a bare number px; anything else (`calc()`, `var()`, `%`) is no
+ * value. Null when no kind holds a value, so a frame is not outranked by an empty scale. Self-contained: support.ts
+ * embeds its source.
  */
 export function tokensPx(kind, text) {
-  const KINDS = [["radius", /radius|radii|rounded|corner/i], ["type", /font[-_.]?size|text[-_.]?size|type[-_.]?(scale|size)|(^|[-_.])text([-_.]|$)/i], ["spacing", /spac|gap|gutter|inset|margin|padding|(^|[-_.])space([-_.]|$)/i]];
-  const out = { spacing: [], radius: [], type: [] };
+  const KINDS = [["radius", /radius|radii|rounded|corner/i], ["type", /font[-_.]?size|text[-_.]?size|type[-_.]?(scale|size)|(^|[-_.])text([-_.]|$)/i], ["control", /(control|button|btn|input|field)s?[-_.]?(height|size)|(^|[-_.])(height|size)[-_.](control|button|btn|input|field)/i], ["spacing", /spac|gap|gutter|inset|margin|padding|(^|[-_.])space([-_.]|$)/i]];
+  const out = { spacing: [], radius: [], type: [], control: [] };
   const px = (v) => {
     if (typeof v === "number") return Number.isFinite(v) ? v : null;
     const m = String(v).match(/^\s*(\d*\.?\d+)\s*(px|rem|em)?\s*$/i);

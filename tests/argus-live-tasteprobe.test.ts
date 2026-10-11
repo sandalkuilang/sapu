@@ -568,4 +568,17 @@ describe("argus-live-taste.mjs — density (T1.3)", () => {
     ]);
     expect((await rowsOf("density-twin.html", null)).filter((r: Obj) => r.rule.startsWith("density."))).toEqual([]);
   }, 60_000);
+
+  it("with the owner's control-height tokens, heights are judged against that scale, not a fixed three: four sizes on it hold; one off it fires, wherever the count", async () => {
+    const heights = async (file: string, control: number[]) => (await rowsOf(file, "density.control-heights", cfgOf({ tokens: { control } }))) as Obj[];
+    // Four button sizes, every one a token: the owner's system has four (the fixed three would have fired).
+    expect(await heights("density.html", [28, 36, 44, 56])).toEqual([]);
+    // The owner's scale is 36 and 44: the two field heights sit on it; the 28 and 56 px buttons do not.
+    expect(await heights("density.html", [36, 44])).toEqual([{ rule: "density.control-heights", key: "button", measured: "4 heights: 28, 36, 44, 56 px (off the token scale: 28, 56)", expected: "the token control heights: 36, 44 px" }]);
+    // Three sizes, within the fixed three, but one off the owner's scale (36.6 px is 36 px a pixel off: on it).
+    expect(await heights("density-twin.html", [36, 44])).toEqual([{ rule: "density.control-heights", key: "button", measured: "3 heights: 28, 36, 44 px (off the token scale: 28)", expected: "the token control heights: 36, 44 px" }]);
+    // A scale with no control kind is no control scale: the fixed bound decides, as before.
+    expect(await heights("density-twin.html", [])).toEqual([]);
+    expect((await rowsOf("density.html", "density.control-heights", cfgOf({ tokens: { spacing: [4, 8] } }))).map((r: Obj) => r.expected)).toEqual(["at most 3"]);
+  }, 60_000);
 });

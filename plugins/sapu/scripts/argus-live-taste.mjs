@@ -490,8 +490,8 @@ export const TASTE_INIT = String.raw`(() => {
 /**
  * The per-screen rows `[{rule, key, measured, expected}]` of `screen` against `bar` and `cfg`. `screen` is censusOf's
  * result, or a recorded screen holding it as `taste`. `cfg` is loadTaste's value: `off` silences a rule, `frame` names
- * the bar's frame for the off-scale rules, and `tokens` (`{spacing?, radius?, type?}`, px numbers: the owner's tokens,
- * resolved by the caller) outranks the frame. A rule whose threshold is `peer` gives one row `{key: "screen",
+ * the bar's frame for the off-scale rules, and `tokens` (`{spacing?, radius?, type?, control?}`, px numbers: the owner's
+ * tokens, resolved by the caller) outranks the frame; `control` is density.control-heights' scale. A rule whose threshold is `peer` gives one row `{key: "screen",
  * measured: <count>, expected: "peer"}` a screen: the judge's to compare with the app's best peer and the band.
  * Self-contained (no outer reference): its source runs in a page, as ruleExpression and the suite run it.
  */
@@ -591,9 +591,15 @@ export function rulesFor(screen, bar, cfg) {
       const list = once([...r.running.filter((a) => a.infinite && a.transform && !a.essential).map((a) => ({ ...a, duration: "running" })), ...r.motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && !m.essential && m.duration >= FRAME)]);
       each(rule, list, (m) => ({ key: m.name + "|" + m.target, measured: m.duration, expected: "no transform motion under reduced motion (WCAG 2.3.3, Level AAA)" }));
     } else if (id === "density.control-heights") {
+      // The owner's control heights (tokens' `control`), when given, are the scale: a height a pixel or more off every
+      // one of them fires, however few there are; without them, more distinct heights than the bar's bound.
+      const own = c.tokens && Array.isArray(c.tokens.control) && c.tokens.control.length ? c.tokens.control : null;
       for (const kind of ["button", "field"]) {
         const hs = clusters(base.controls.filter((x) => x.kind === kind && !x.wrapped).map((x) => x.h));
-        if (fires(t, hs.length)) out.push({ rule: id, key: kind, measured: hs.length + " heights: " + hs.join(", ") + " px", expected: "at most " + t.max });
+        const off = own ? hs.filter((h) => !own.some((x) => Math.abs(x - h) <= 1)) : [];
+        const what = hs.length + " heights: " + hs.join(", ") + " px";
+        if (own && off.length) out.push({ rule: id, key: kind, measured: what + " (off the token scale: " + off.join(", ") + ")", expected: "the token control heights: " + own.join(", ") + " px" });
+        else if (!own && fires(t, hs.length)) out.push({ rule: id, key: kind, measured: what, expected: "at most " + t.max });
       }
     } else if (id === "density.row-heights") {
       const hs = clusters(base.tables.map((x) => x.rowH));

@@ -635,6 +635,11 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     const json = { spacing: { "1": { $value: "4px", $type: "dimension" }, "2": "8px", "3": 12 }, radius: { md: { value: "0.375rem" } }, font: { size: { sm: "0.875rem" } }, color: { text: "black" } };
     expect(tokensPx("json", JSON.stringify(json))).toEqual({ spacing: [4, 8, 12], radius: [6], type: [14] });
     for (const [kind, text] of [["css", "--color-ink: navy;"], ["json", "{not json"], ["json", "{}"], ["yaml", "space: 4px"]]) expect(tokensPx(kind, text), text).toBe(null);
+    // Control heights: a name that says a control's height or size (density.control-heights reads them); a control's
+    // padding stays spacing, its font size type.
+    const controls = "--control-height-sm: 32px; --button-size-lg: 2.75rem; --input-height: 40px; --size-control-md: 36px; --btn-padding: 12px; --button-font-size: 15px;";
+    expect(tokensPx("css", controls)).toEqual({ spacing: [12], type: [15], control: [32, 36, 40, 44] });
+    expect(tokensPx("json", JSON.stringify({ size: { control: { sm: "28px", md: "2.25rem" } } }))).toEqual({ control: [28, 36] });
     // Self-contained: the suite embeds its source.
     expect(new Function(`return ${String(tokensPx)}`)()("css", "--radius-md: 6px")).toEqual({ radius: [6] });
   });
