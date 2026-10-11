@@ -562,7 +562,7 @@ The *best known path* is the journey's path in your smoke suite that held (an ex
 
 #### The calibrated bar
 
-The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 47 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.
+The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 48 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.
 
 **No band yet.** The bar ships with its rules and frames but with no band. The corpus (`scripts/taste-corpus.json`) lists 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), and sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)). But an agent read those terms, and the calibration measures a site only once a maintainer confirms that reading in the corpus; none is confirmed, so nothing was measured. Until a maintainer confirms the sites' terms, or a local reference corpus is measured instead, the outside bar decides nothing:
 - Every screen, of every archetype, is judged against your tokens or frame, your own best peer screens, and the rules that stand on their own measurement.
