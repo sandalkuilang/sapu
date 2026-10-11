@@ -389,12 +389,18 @@ export function tasteFactor(state, id, accept = []) {
   return 1 + Math.min(1, debt / 4);
 }
 
-/** What SELECT reads of the taste pass: the state (`failed: …` on a broken one) and the owner's accept rows (`refused: …` on a broken taste.json). */
+/**
+ * What SELECT reads of the taste pass: the state and the owner's accept rows. A broken taste.json or state never stops
+ * the cycle: no journey weighs taste debt (`off`, so every factor is 1) and `warning` says why.
+ */
 function selectTaste(main) {
-  const state = readTasteState(main);
   const { taste, errors } = loadTaste(main);
-  if (!taste) throw new Error(`refused: select: ${TASTE_FILE}: ${errors[0]}`);
-  return { state, accept: taste.accept, off: tasteOff(taste) };
+  if (!taste) return { state: null, accept: [], off: true, warning: `taste: ${TASTE_FILE}: ${errors[0]}: no taste debt weighed this cycle` };
+  try {
+    return { state: readTasteState(main), accept: taste.accept, off: tasteOff(taste), warning: null };
+  } catch (e) {
+    return { state: null, accept: [], off: true, warning: `taste: ${String(e.message).replace(/^failed: /, "")}: no taste debt weighed this cycle` };
+  }
 }
 
 /** The commits touching journey `j`'s anchor files in `lastHead..HEAD` (0 without lastHead, or when git cannot tell). */
@@ -499,7 +505,8 @@ export function selectJourneys(main, { cycle, flagged = [], ids = null, runner =
     }
     return { picks, waits };
   };
-  if (ids === null) return { ...pass(ranked), displaced: [] };
+  const warnings = t.warning ? [t.warning] : [];
+  if (ids === null) return { ...pass(ranked), displaced: [], warnings };
   const chosen = ids.map((id) => {
     const x = all.find((y) => y.j.id === id);
     if (!x) throw new Error(`refused: select: no journey ${id} in ${JOURNEYS_FILE}`);
@@ -507,5 +514,5 @@ export function selectJourneys(main, { cycle, flagged = [], ids = null, runner =
   });
   const mine = pass(chosen);
   const picked = new Set(mine.picks.map((p) => p.id));
-  return { ...mine, displaced: pass(ranked).picks.filter((p) => !picked.has(p.id)).map(({ id, score: s }) => ({ id, score: s })) };
+  return { ...mine, displaced: pass(ranked).picks.filter((p) => !picked.has(p.id)).map(({ id, score: s }) => ({ id, score: s })), warnings };
 }

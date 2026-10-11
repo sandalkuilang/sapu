@@ -398,6 +398,7 @@ try {
     for (const p of r.picks) print(`select ${p.id} score ${p.score} accounts ${list(p.accounts)}`);
     for (const w of r.waits) print(`wait ${w.id} score ${w.score} (${w.why})`);
     for (const d of r.displaced) print(`displaced ${d.id} score ${d.score}`);
+    for (const w of r.warnings) print(w);
     if (!r.picks.length) throw new Error("refused: no journey is selectable");
   } else if (cmd === "visit" && args.length >= 1) {
     const opts = { filed: [] };

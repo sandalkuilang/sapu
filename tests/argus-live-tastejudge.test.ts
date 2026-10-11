@@ -1115,12 +1115,16 @@ describe("argus-live SELECT weighs taste and usability debt (J3)", () => {
     // The whole pass off (off: *): no journey is lifted by taste debt.
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ off: ["*"] }));
     expect(scores(main)).toEqual({ money: 12, debt: 6, clean: 6, never: 6 });
-    // A taste.json the owner broke, or a state of another shape, stops SELECT rather than guess.
+    // A taste.json the owner broke, or a state of another shape, never stops the cycle: no taste debt weighs, and a warning says why.
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ cap: 0 }));
-    expect(() => selectJourneys(main, { cycle: 10 })).toThrow("refused: select: .argus/taste.json: cap must be an integer from 1 to 20");
+    expect(selectJourneys(main, { cycle: 10 }).warnings).toEqual(["taste: .argus/taste.json: cap must be an integer from 1 to 20: no taste debt weighed this cycle"]);
+    expect(scores(main)).toEqual({ money: 12, debt: 6, clean: 6, never: 6 });
     writeFileSync(join(main, ".argus/taste.json"), "{}");
     writeFileSync(join(main, ".argus/taste-state.json"), "{}");
-    expect(() => selectJourneys(main, { cycle: 10 })).toThrow("failed: .argus/taste-state.json is not {version: 1, journeys}");
+    expect(selectJourneys(main, { cycle: 10 }).warnings).toEqual(["taste: .argus/taste-state.json is not {version: 1, journeys}: no taste debt weighed this cycle"]);
+    expect(scores(main)).toEqual({ money: 12, debt: 6, clean: 6, never: 6 });
+    writeFileSync(join(main, ".argus/taste-state.json"), JSON.stringify({ version: 1, journeys: {} }));
+    expect(selectJourneys(main, { cycle: 10 }).warnings).toEqual([]);
   }, 30_000);
 
   it("off: * turns the pass off in the lane: no recording, the judge and filing say so and write nothing, a confirmation is refused", async () => {
