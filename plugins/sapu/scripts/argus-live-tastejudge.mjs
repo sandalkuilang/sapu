@@ -5,6 +5,7 @@
 // where the corpus band and an internal witness both agree.
 import fs from "node:fs";
 import path from "node:path";
+import { AIUX_DRIVE, driveArg, faultArm, rulesFor as aiRules } from "./argus-live-aiux.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { crossRules, pathCost, rulesFor as easeRules, ruleExpression as easeExpression } from "./argus-live-ease.mjs";
 import { fence } from "./argus-live-fence.mjs";
@@ -282,11 +283,12 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     if (rule.info) info += 1;
     else found.push({ s, rule, f });
   };
-  // Each recorded screen through both probes' rulesFor: T1's reads `taste` (censusOf's), T2's `route`, `events` and
-  // `ease` (its screen kind); `cycle` holds the run's other recorded screens.
+  // Each recorded screen through the probes' rulesFor: T1's reads `taste` (censusOf's), T2's `route`, `events` and
+  // `ease` (its screen kind), the AI probe's `route` and `ai` (on the owner's `ai` routes only); `cycle` holds the run's
+  // other recorded screens.
   screens.forEach((s, i) => {
     const view = { ...s, cycle: screens.filter((_, j) => j !== i) };
-    for (const fn of [tasteRules, easeRules]) {
+    for (const fn of [tasteRules, easeRules, aiRules]) {
       let list = [];
       try {
         list = fn(view, bar, scale);
@@ -524,10 +526,11 @@ export const MEDIA_RULES = Object.freeze(["colour.dark-contrast", "colour.dark-b
 
 /**
  * The replay's sink for row `row` (the session driver's, slot `r`, while confirming): `arm` (the routed fault of a
- * `states.error` row, else null); `wrap(text)` a step's code followed, at the first step after which the page is at
+ * `states.error` row, the AI probe's marked fault of an `ai.error` row, else null); `wrap(text)` a step's code followed, at the first step after which the page is at
  * the row's route template and width, once the network settled, by the row's measurement — a MEDIA_RULES row through
  * the taste probe's censusOf and rulesFor (their sources, self-contained, with `bar`'s rule and frames and the owner's
- * frame), any other through its probe's ruleExpression; `take(answer)` keeps that measurement (`measured`: `{rows}` of
+ * frame), an AI row through the AI probe's drive (AIUX_DRIVE: it sends its own prompt on the surface and measures what
+ * follows), any other through its probe's ruleExpression; `take(answer)` keeps that measurement (`measured`: `{rows}` of
  * the rule, at most 50, or `{rows: null}` when it failed) and removes it from the step's answer.
  */
 export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null }) {
@@ -535,10 +538,11 @@ export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null
   const family = row.rule.split(".")[0];
   const frame = cfg ? { frame: cfg.frame ?? null, tokens: cfg.tokens ?? null } : {};
   const media = MEDIA_RULES.includes(row.rule);
-  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
+  const ai = family === "ai";
+  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule) } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
   const sink = {
     measured: null,
-    arm: row.rule === "states.error" ? faultCode(S) : null,
+    arm: row.rule === "states.error" ? faultCode(S) : row.rule === "ai.error" ? faultArm() : null,
     wrap: (text) =>
       sink.measured
         ? text
@@ -552,7 +556,7 @@ export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null
       await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
       let rows = null;
       try {
-        rows = S.media ? new Function("return " + S.rules)()(await new Function("return " + S.census)()(page), S.bar, S.cfg) : await page.evaluate(S.expr);
+        rows = S.media ? new Function("return " + S.rules)()(await new Function("return " + S.census)()(page), S.bar, S.cfg) : S.drive ? await new Function("return " + S.drive)()(page, S.driveArg) : await page.evaluate(S.expr);
       } catch (e) {
         rows = null;
       }

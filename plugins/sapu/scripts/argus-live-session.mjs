@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { AIUX_SOURCE } from "./argus-live-aiux.mjs";
 import { openSession, PAGE_INIT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
@@ -213,7 +214,9 @@ export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a ins
  * state as the last observation (`T.prev`, the sha256 of its URL and ARIA snapshot, as the loop rule hashes it) →
  * `{changed: false}`, the buffer left as it is, so the next screen of the document gets its events (an action and
  * its change can fall in two observations). Else the ease probe's `screen` kind first (`T.ease` with `T.easeArg`:
- * the bar's vague terms and the owner's labels; no palette probe, which would type on the explorer's page), then
+ * the bar's vague terms and the owner's labels; no palette probe, which would type on the explorer's page), the AI
+ * probe's `screen` kind (`T.ai`, when the payload names it: what the document's AI-surface recorder counted, read,
+ * never acted), then
  * the taste events drained (TASTE_DRAIN). Then the screen: its route
  * template, width and theme (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
  * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
@@ -237,6 +240,14 @@ export const RECORDER = `async (page, o, T) => {
     ease = await ev("(" + T.ease + ")(" + JSON.stringify(T.easeArg) + ")");
   } catch (e) {
     faults.push("ease");
+  }
+  let ai = null;
+  if (T.ai) {
+    try {
+      ai = await ev("(" + T.ai + ")(" + JSON.stringify(T.aiArg) + ")");
+    } catch (e) {
+      faults.push("ai");
+    }
   }
   const drained = await ev(T.drain);
   const route = (${routeTemplate.toString()})(u.pathname, T.routes);
@@ -291,7 +302,7 @@ export const RECORDER = `async (page, o, T) => {
   try {
     await ev(T.drain);
   } catch (e) {}
-  return { changed: true, route, width, theme: media.colorScheme, taste, ease, rows, themed, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
+  return { changed: true, route, width, theme: media.colorScheme, taste, ease, ai, rows, themed, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
 }`;
 
 /**
@@ -332,7 +343,7 @@ const RECORD_FAULTS = ["timeout", "error", "too large", "no answer", "bad screen
 /**
  * Keeps recording `answer` of account `at.account` in slot `at.slot` (journey `at.journey`) of run `runId`, after the
  * observation's drain was kept: a new screen is one line of `<run>/taste/<slot>/screens.jsonl` (0600) `{v: 1, t,
- * journey, slot, account, key, route, width, theme, rows, themed, taste, ease, events, dropped, shots: [{theme, name,
+ * journey, slot, account, key, route, width, theme, rows, themed, taste, ease, ai, events, dropped, shots: [{theme, name,
  * key}], faults}` (`taste` censusOf's `{media, light, dark, reduce, themes}`, as the probe's rulesFor reads it) (events of a shape tasteEventFault refuses dropped and counted), each new shot made
  * 0600 with its scrub verdict beside it, and its time added to the budget. A failed or missing answer is a line of
  * `harness.jsonl` `{t, account, why}`. Never throws.
@@ -386,10 +397,11 @@ export function keepScreen(main, runId, at, answer) {
       themed: answer.themed === true,
       taste: pick("taste"),
       ease: pick("ease"),
+      ai: pick("ai"),
       events,
       dropped,
       shots,
-      faults: (Array.isArray(answer.faults) ? answer.faults : []).filter((f) => ["census", "ease", "rows", "shot"].includes(f)),
+      faults: (Array.isArray(answer.faults) ? answer.faults : []).filter((f) => ["census", "ease", "ai", "rows", "shot"].includes(f)),
     });
     spendTaste(main, runId, "record", answer.ms);
   } catch {
@@ -441,7 +453,7 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
     // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
     const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
     const vague = (loadTaste(main).taste ?? { copy: { vague: [] } }).copy.vague;
-    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;
   }

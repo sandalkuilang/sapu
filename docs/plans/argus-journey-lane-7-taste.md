@@ -1510,3 +1510,104 @@ commit each (items 6 and the suite's reporter share the scale; see below). Line 
 - Engine text, docs and diagrams (lane Z): the taste job and its scorecard, `taste-<family>-<name>`, the
   Curator's locked return, fractional SELECT scores, `taste file` after the confirmations.
 - Security review (T2's sixth note): PAGE_INIT wraps fetch, XHR and attachShadow in every lane session.
+
+### AI rules (D14)
+
+Decision 14's three rules, `ai.stop`, `ai.error` and `ai.regenerate`, built in a new leaf, `argus-live-aiux.mjs` (387
+lines), with its own Chrome test file `tests/argus-live-aiux.test.ts` (22 tests, about three and a half minutes under
+load, on the CI `taste` job's `files:` line). Fixtures: `tests/fixtures/journey-app/pages/aiux/` (`chat.html`, one
+assistant page whose answer is read chunk by chunk from a fetch, every variant by query; `search.html`, a search box
+with a live status). Commits: the probe and its fixtures; the lane's wiring; the CI line; this note.
+
+**Where the rules apply.** Decision 14 and spec §20's table hold: only on a route the owner declares in `taste.json`
+`ai`. Within such a route the probe finds the surface by what the page does, never by a name: an answer **streamed**
+into a live or busy region (`aria-live` other than off, `role=log` or `status`, or `aria-busy="true"`) whose text grows
+by letters or digits in three steps or more over 150 ms or more, after a user action in the 30 s before; and a
+**composer** (the nearest ancestor of a text box, four levels at most, holding a control, no live or busy region and
+at most eight controls). No stream on a declared screen means no AI row. A stream on an undeclared route is silent
+too: detecting AI surfaces alone was decision 14's rejected alternative (false positives).
+
+**The exports.** `AIUX_INIT` (the recorder, in `PAGE_INIT` after `EASE_INIT`, once a document), `AIUX_SOURCE` (`screen`,
+`rule` and the pure `judge` kind), `AIUX_DRIVE` (the confirmation's drive), `AIUX_FAULT` (the marked fault),
+`AI_EXPECTED`, `AI_MARKER`, `rulesFor(screen, bar, cfg)`, `ruleExpression(rule)` (lane 0's signatures), and
+`driveArg(rule)`, `faultArm()` for the sink. The recorder keeps counts, times and flags only: controls' names stay in
+the page (they tell a renamed control, a send turned Stop) and no page text reaches the record.
+
+**Each rule, as measured.** Each row has a fixed key; `expected` is `AI_EXPECTED`'s.
+- `ai.stop` (key `stream`). While a stream runs, every control that is new or renamed since its action is a stop
+  candidate, but not one inside the answer itself (the region's child the text grows in: a Source chip, a code block's
+  Copy). A stream of 1 s or more with no candidate is a row (`no stop control while it streamed`). A candidate clicked
+  while it streamed is a stop tried. When the stream grew past the bound (1 s) after the last stop tried, it is a row
+  (`it streamed <n> ms past a stop`). On the walk, a candidate nobody pressed rules on nothing. The drive presses up
+  to three candidates, those outside the answer region and nearest the composer first, until the stream stays quiet
+  for the bound.
+- `ai.regenerate` (key `answer`). The latest stream, ended (quiet for 1.5 s and its region not busy), not stopped and
+  not itself regenerated, with no control new since its action outside the composer and any dialog is a row (`no
+  control once the answer was complete`). A stream that follows a click on a control that appeared after the previous
+  answer marks that answer regenerated. With candidates, the walk is silent. The drive presses up to four, in document
+  order, and closes a dialog one opens with Escape. When none streams an answer again, the row is the drive's own (`none
+  of <n> controls shown after the answer answered again`).
+- `ai.error` (key `failed-stream`). A composer send, made once the document had streamed, whose request (non-GET, the
+  page's origin, within a second) answered no 2xx or 3xx (a status 0 after a later action is a stop's abort, never a
+  failure). Read 2 s after the failure: still busy (`aria-busy`, an indeterminate progressbar) is `an endless loader`;
+  no text shown after the response is `nothing shown`; no writable text box and no new control outside the composer
+  (a Retry) is `no way on`. The request's status comes from `EASE_INIT`'s request records (`document.__argusEase`).
+  The drive first sends a plain prompt and waits for its stream, which proves the surface. It then sends `AI_MARKER`,
+  which `AIUX_FAULT`, armed on the context before the navigation (T2's pattern), answers 500. The fault touches only a
+  request whose body holds the marker, so no request of the path itself is faulted.
+
+**Exclusions, each with its twin fixture** (the silent side, then the side that fires):
+- no AI surface: an answer read whole (`stream=once` / `stream=yes`); a box neither live nor busy (`live=bare` /
+  `live=busy`); a thinking indicator alone (`dots=yes&stream=once` / `dots=yes&stream=yes`); a search box with a live
+  status (`search.html`, no stream, no failure). The drive also finds no stream on these, so `[]`;
+- an undeclared route: the same recorded screen without and with `taste.json` `ai`;
+- a control inside the streamed answer is no stop: `stop=none&cite=yes` fires and `stop=button&cite=yes` holds;
+- a stream shorter than the stop's bound: `stop=none&n=5` / `stop=none&n=30`;
+- an answer not yet settled, or stopped: read as its stream ends / once ended; stopped by the walk's Stop / not;
+- a failure that is not the composer's (Rename's 500), or that comes before any stream in the document / the
+  composer's failure after a stream;
+- the drive undecided (`null`, never a row): no failure came because the fault was keyed to another prompt / the
+  marker failed. Also null when the answer never ended, no stop was tried, a pressed control left the route or
+  removed the answer.
+Four guards were checked as tripwires: the punctuation guard, the answer's own controls, the stream before the send,
+and the composer's send. Each was removed from a scratch copy, and its silent fixture fired.
+
+**Wiring in the lane** (the integration's pattern for T1 and T2; no locked signature changed):
+- `-tastecfg` `FAMILIES.ai.probe` is `aiux`. `laneOnly` already says the AI rules are the lane's, so `TASTE_LANE_ONLY`
+  keeps them out of the suite. `parseRepro` refuses a `taste` final on them, and the single taste reporter (the core
+  in `-codeproj`) never measures them. Their measurement needs the owner's routes and a drive that acts on the page.
+- `-browser` `PAGE_INIT` gains `AIUX_INIT` (the session hook's payload, every document of every lane session).
+- `-session`: the recorder's payload names `ai: AIUX_SOURCE` and `aiArg: {kind: "screen"}`. RECORDER reads it after the
+  ease probe (`faults` gains `ai`; a payload without it records `ai: null`), and `screens.jsonl` lines gain `ai`.
+- `-tastejudge`: the judge runs `rulesFor` of all three probes on each screen. For an AI row, `confirmSink` sets
+  `drive: AIUX_DRIVE` and `driveArg`, and its wrap runs the drive on the page at the row's route and width. An
+  `ai.error` row's `arm` is `faultArm()`, the marked fault on the context before the first navigation.
+- `-ease`: `ruleExpression` no longer refuses the AI rules as "not built yet"; it refuses them as no rule of its own.
+- The findings DAG test admits `-aiux` as a phase-7 leaf that the judge and the browser import; the `-instance`
+  header names it.
+- Line counts: `-aiux` 387, `-session` 626, `-tastejudge` 658, `-browser` 546, `-tastecfg` 553, `-ease` 624.
+
+**Deviations.**
+- *Detection.* The brief asked for detection from observable signals. Decision 14 and spec §20 also require the owner's
+  declaration. Both hold: the declaration gates, and the signals find the surface. Neither alone files.
+- *`ruleExpression(rule)`* returns the passive page expression, which reads what the page recorded so far. A
+  confirmation measures with the drive instead, because only a drive can press Stop, wait for an answer, or have its
+  send faulted.
+- *The bar is unchanged.* Its three rows already hold `max: 0` counts. The probe's bounds (1 s stop, 1.5 s quiet, 2 s
+  settle, 30 s reach) are definitions in the module, as T2's 100 ms request window is.
+
+**Needs the Curator or lane Z.**
+1. *Provenance and uncertainty* (decision 14, [pair], [apple-genai]): judgment, so no rule. The bar holds no rule id
+   for them, so a Curator lead (`{rule, screen}`) cannot name them. Z1 decides between a judgment-only bar id (never
+   filed, never measured) and the Curator naming them in its reason under `ai.*` rows.
+2. *Engine text (Z2).* The explorer's charter on a declared AI route should send a message, press Stop once while it
+   streams, and wait for a second answer to finish. Otherwise the walk rarely yields a broken Stop or a failure, and
+   the confirmation (two of two) only re-measures rows the walk produced. `ai.error` rows come only from a failure the
+   walk saw, so the gap is like `states.error`'s, whose rows no judge produces from a walk today.
+3. *Docs (Z3)*: `taste.json` `ai`, what counts as an AI surface, and that the drive types `argus-taste-check` and
+   `argus-taste-probe` into the composer during a confirmation (slot `r`, a fresh instance).
+4. *Security review (architect)*: `AIUX_INIT` observes every document of every lane session, the explorer's included.
+   It keeps no page text, but `nameOf` reads control names inside the page. The drive presses controls of the app
+   (buttons only, never a link) during a confirmation.
+5. *Shadow DOM*: the recorder observes the document, not shadow roots, so a web component's streamed answer is no
+   stream (silent). T2's `attachShadow` hook could feed it.

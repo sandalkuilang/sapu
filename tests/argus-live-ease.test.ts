@@ -134,7 +134,8 @@ describe("argus-live-ease.mjs — the shapes it shares with lane 0", () => {
     expect(() => ruleExpression("scale.spacing")).toThrow("is not a screen rule of the ease probe");
     expect(() => ruleExpression("states.recovery")).toThrow("refused: ruleExpression: states.recovery has no page expression: a form case drives it");
     expect(() => ruleExpression("feedback.skeleton-peers")).toThrow("it compares a screen with its peers");
-    expect(() => ruleExpression("ai.stop")).toThrow("refused: ruleExpression: ai.stop: not built yet");
+    // Decision 14's AI rules are the aiux probe's (tests/argus-live-aiux.test.ts).
+    expect(() => ruleExpression("ai.stop")).toThrow("refused: ruleExpression: ai.stop is not a screen rule of the ease probe");
   });
 });
 
