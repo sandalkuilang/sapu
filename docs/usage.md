@@ -573,8 +573,9 @@ The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: t
 #### Limits
 
 - **A measurement is not a verdict on taste.** A finding says a number is beyond a threshold and was measured twice. A call about intent is yours: accept the row, or close its issue as not planned.
-- **Thin bands.** Until more public sites with usable terms join the corpus, marketing, app, form and data screens are judged against your tokens and your own best screens.
-- **Archetypes are yours to declare.** Without `archetypes`, nearly every screen is an inferred `app`, and the count rules then need three recorded screens of that kind in one cycle before they compare anything.
+- **No bands yet.** Until a maintainer confirms the reference sites' terms (or a local reference corpus is measured), every screen is judged against your tokens and your own best screens alone.
+- **Colours that come from data.** A chart's series, a user's label colour or an avatar's chip are counted like any other colour: `scale.colours` and `colour.role` cannot tell them from a palette choice. Accept such a row (`taste accept`), or turn the rule off for the repo.
+- **Archetypes are yours to declare.** Without `archetypes`, nearly every screen is an inferred `app`, which has no peers: the count rules compare only screens of a declared archetype (or `data`), four of them in one cycle at the same width and theme.
 - **The shadow DOM.** The AI-surface recorder watches the document, not the shadow roots of web components, so a streamed answer inside a web component is not seen as a stream and its rules stay silent.
 - **Dark parity is judged only where the page answers `prefers-color-scheme`.** An app that does not theme is reported `single theme`.
 - **Cross-screen rules need a second cycle** to confirm, since they are not replayed.
