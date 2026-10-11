@@ -44,6 +44,10 @@ button:disabled { color: rgb(160, 160, 160); background: rgb(245, 245, 245); }
 <div class="legacy">Legacy panel</div>
 <!-- the excluded twin: an island that declares color-scheme: light is light by design -->
 <div class="legacy" style="color-scheme: light; color: rgb(23, 23, 23)">Print preview</div>
+<!-- the excluded twin: a QR code's quiet zone, a white box whose content is an image (QA's two-factor page) -->
+<div class="legacy" style="width: 200px; height: 200px; padding: 16px"><img alt="QR code" width="168" height="168" src="data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='5' height='5'/%3E%3C/svg%3E"></div>
+<!-- the excluded twin: a document preview, white paper raised by a shadow, stays white in a dark app -->
+<div class="legacy" style="box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); color: rgb(17, 17, 17)">Document preview</div>
 <!-- the excluded twin: a light primary button on a dark page is a control, not a surface -->
 <button>Save changes</button>
 </main>

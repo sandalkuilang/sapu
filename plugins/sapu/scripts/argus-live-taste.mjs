@@ -248,7 +248,10 @@ export const TASTE_SOURCE = String.raw`(arg) => {
         let up = el.parentElement;
         while (up && !surfaceKeys.has(up)) up = up.parentElement;
         surfaceKeys.set(el, keyOf(el));
-        surfaces.push({ key: keyOf(el), rgb: str(c), lum: Math.round(lum(c) * 1000) / 1000, in: up ? surfaceKeys.get(up) : null, light: /^(only )?light$/.test(norm(s.colorScheme)) });
+        // Light by design, never a dark-parity defect: a surface that is mostly an image, a canvas or a drawing (a QR
+        // code's quiet zone), or paper raised by a shadow (a document preview).
+        const media = [...el.querySelectorAll("img, canvas, svg, video, picture")].reduce((m, x) => { const r = x.getBoundingClientRect(); return m + r.width * r.height; }, 0) >= 0.4 * box.width * box.height;
+        surfaces.push({ key: keyOf(el), rgb: str(c), lum: Math.round(lum(c) * 1000) / 1000, in: up ? surfaceKeys.get(up) : null, light: /^(only )?light$/.test(norm(s.colorScheme)) || media || (Boolean(s.boxShadow) && s.boxShadow !== "none" && shadowOf(s.boxShadow) !== null) });
       }
     }
     // A status badge: short text on its own fill, rounded or padded, no control. Its role is its text; its value the fill and ink.
