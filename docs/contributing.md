@@ -20,7 +20,7 @@ plugins/sapu/
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh (and sapu-smoke-gate.mjs, its smoke check), sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
                                   the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report;
-                                  the taste pass's -taste, -ease and -aiux probes, -tastecfg, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
+                                  the taste pass's -taste, -ease and -aiux probes, -tastecfg, -tastesink, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
   scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
@@ -96,6 +96,7 @@ The journey lane's taste and usability pass ([Install and use](usage.md#the-tast
 | `argus-live-aiux.mjs` | The AI-surface rules (`ai.*`), their recorder `AIUX_INIT` and the drive a confirmation uses. |
 | `argus-live-tastecfg.mjs` | The shared leaf: loaders and validators for `.argus/taste.json` and the bar, the record shapes (judge rows, the Curator's return, `.argus/taste-state.json`), and the page-side constants the recorders and the lane share. |
 | `argus-live-tastejudge.mjs` | `taste judge` and `taste confirm`: witnesses, peers, bands, the replay and the state. |
+| `argus-live-tastesink.mjs` | The confirmation's sink: the in-daemon code a replay runs around each step of the path, measuring the row's screen once it is reached. |
 | `argus-live-tastefile.mjs` | `taste file` and `taste accept`: filing, the cap, deduplication, accepted rows. |
 | `argus-live-codeproj.mjs` | Split from `-codegen`: the suite's projects and check registry, including the `taste` project and its single reporter. |
 | `argus-live-browser.mjs`, `-session.mjs` | `PAGE_INIT`, the init payload the session hook installs in every lane document, and the recorder that writes `<run>/taste/`. |
