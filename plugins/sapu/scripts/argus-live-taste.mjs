@@ -34,7 +34,9 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
   const half = (n) => Math.round(n * 2) / 2;
   const own = (el) => { let t = ""; for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue; return norm(t); };
-  const label = (el) => norm(el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || (el.matches("input[type=submit], input[type=button], input[type=reset]") ? el.value : el.textContent)).slice(0, 60);
+  // Never what a user typed: a field by its aria-label, its labels or its name; inside an editable box, its aria-label only.
+  const field = (el) => el.matches("input:not([type=submit]):not([type=button]):not([type=reset]), textarea, select");
+  const label = (el) => norm(el.closest("[contenteditable]:not([contenteditable=false])") ? el.getAttribute("aria-label") : field(el) ? el.getAttribute("aria-label") || [...(el.labels || [])].map((l) => own(l)).join(" ") || el.getAttribute("name") : el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || (el.matches("input") ? el.value : el.textContent)).slice(0, 60);
   const keyOf = (el) => el.tagName.toLowerCase() + "|" + label(el).replace(/[0-9]+/g, "#");
   const media = { dark: win.matchMedia("(prefers-color-scheme: dark)").matches, reduce: win.matchMedia("(prefers-reduced-motion: reduce)").matches };
 
@@ -382,7 +384,8 @@ export const TASTE_INIT = String.raw`(() => {
   const store = (doc.__argusTasteMotion = []);
   const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
   const own = (el) => { let t = ""; for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue; return norm(t); };
-  const keyOf = (el) => el.tagName.toLowerCase() + "|" + norm(el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || el.textContent).slice(0, 60).replace(/[0-9]+/g, "#");
+  // Never what a user typed: a field or anything in an editable box by its aria-label or name only.
+  const keyOf = (el) => el.tagName.toLowerCase() + "|" + norm(el.closest("[contenteditable]:not([contenteditable=false])") || el.matches("input, textarea, select") ? el.getAttribute("aria-label") || el.getAttribute("name") : el.getAttribute("aria-label") || own(el) || el.getAttribute("alt") || el.textContent).slice(0, 60).replace(/[0-9]+/g, "#");
   const LAYOUT = /^(width|height|top|left|right|bottom|inset|min-width|min-height|max-width|max-height|margin|padding)(-.+)?$/;
   const MOVE = /^(transform|translate|scale|rotate)$/;
   const propsOf = (a) => [...new Set((a && a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k)).filter((p) => !/^(offset|easing|composite|computedOffset)$/.test(p)).map((p) => p.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())))];

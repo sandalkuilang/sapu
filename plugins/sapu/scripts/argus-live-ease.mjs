@@ -16,6 +16,19 @@ export const EASE_RENDER = ["class", "style", "hidden", "aria-hidden", "open", "
 const ROUTE_OF = String.raw`(p) => String(p || "/").split("?")[0].split("/").map((s) => (/^\d+$/.test(s) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s) || (s.length >= 16 && /\d/.test(s) && /^[A-Za-z0-9_-]+$/.test(s)) ? ":id" : s)).join("/")`;
 /** A form's key: its label, name or id, else its first heading or legend (digit runs `#`). */
 const FORM_KEY = String.raw`(f) => String(f.getAttribute("aria-label") || f.getAttribute("name") || f.id || (f.querySelector("h1, h2, h3, h4, legend") || {}).textContent || "form").replace(/\s+/g, " ").trim().replace(/[0-9]+/g, "#").slice(0, 60)`;
+/**
+ * A control's name that never reads what a user typed (a value, an editable box's text): a field (an input that is no
+ * button, a textarea, a select, an editable box) by its aria-label, its labels' own words or its name attribute; a
+ * button-type input by its value; any other control by its text.
+ */
+const NAME_OF = String.raw`(c) => {
+    const n = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+    const tag = c.tagName.toLowerCase();
+    const words = (l) => [...l.childNodes].filter((x) => x.nodeType === 3 || (x.nodeType === 1 && !x.matches("input, select, textarea, [contenteditable]"))).map((x) => x.textContent).join(" ");
+    if (tag === "input" && /^(button|submit|reset)$/i.test(c.type)) return n(c.getAttribute("aria-label") || c.value || c.getAttribute("title"));
+    if (tag === "input" || tag === "textarea" || tag === "select" || c.isContentEditable) return n(c.getAttribute("aria-label") || [...(c.labels || [])].map(words).join(" ") || c.getAttribute("name") || c.getAttribute("title") || (tag === "input" ? c.getAttribute("alt") : ""));
+    return n(c.getAttribute("aria-label") || c.innerText || c.textContent || c.getAttribute("title"));
+  }`;
 /** The loader shapes both sources share: a rotating infinite animation is a spinner, a bare animated or `skeleton`-classed box a skeleton. */
 const LOADER_FNS = String.raw`const SKELETON = /(^|[-_])(skeleton|shimmer)([-_]|$)/i;
   const bare = (el) => { const r = el.getBoundingClientRect(); return !/\S/.test(el.textContent || "") && !el.querySelector("a, button, input, select, textarea, img, video, canvas") && r.width >= 16 && r.height >= 6; };
@@ -50,10 +63,11 @@ export const EASE_INIT = String.raw`(() => {
   const REGION = [["dialog", "dialog, [role=dialog], [role=alertdialog]"], ["form", "form, [role=form], [role=search]"], ["nav", "nav, [role=navigation]"], ["header", "header, [role=banner]"], ["footer", "footer, [role=contentinfo]"], ["aside", "aside, [role=complementary]"], ["main", "main, [role=main]"]];
   const TAGS = { a: "link", button: "button", summary: "button", select: "combobox", textarea: "textbox" };
   const CONTROL = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=tab], [role=option], [role=checkbox], [role=switch], [role=radio]";
+  const nameOf = ${NAME_OF};
   const control = (t, target) => {
     const c = target && target.closest ? target.closest(CONTROL) : null;
     const tag = c ? c.tagName.toLowerCase() : "";
-    if (c) cap(S.actions, 100, { t, role: norm(c.getAttribute("role")).split(" ")[0] || (tag === "input" ? (/^(button|submit|reset|image)$/i.test(c.type) ? "button" : c.type) : TAGS[tag] || tag), name: norm(c.getAttribute("aria-label") || (tag === "input" ? c.value : c.innerText || c.textContent) || c.getAttribute("title")).replace(/[0-9]+/g, "#").replace(/\|/g, "/").slice(0, 80), region: (REGION.find(([, q]) => c.closest(q)) || ["page"])[0] });
+    if (c) cap(S.actions, 100, { t, role: norm(c.getAttribute("role")).split(" ")[0] || (tag === "input" ? (/^(button|submit|reset|image)$/i.test(c.type) ? "button" : c.type) : TAGS[tag] || tag), name: nameOf(c).replace(/[0-9]+/g, "#").replace(/\|/g, "/").slice(0, 80), region: (REGION.find(([, q]) => c.closest(q)) || ["page"])[0] });
   };
   let typed = -1e9, acted = null;
   const onInput = (e) => {
@@ -267,7 +281,8 @@ export const EASE_SOURCE = String.raw`(arg) => {
   const formKey = ${FORM_KEY};
   ${LOADER_FNS}
   const tag = (el) => el.tagName.toLowerCase();
-  const nameOf = (el) => norm((el.getAttribute("aria-labelledby") || "").split(/\s+/).map((id) => (doc.getElementById(id) || {}).textContent || "").join(" ")) || norm(el.getAttribute("aria-label")) || norm(tag(el) === "input" ? el.value : el.innerText) || norm(el.getAttribute("title"));
+  const safeName = ${NAME_OF};
+  const nameOf = (el) => norm((el.getAttribute("aria-labelledby") || "").split(/\s+/).map((id) => (doc.getElementById(id) || {}).textContent || "").join(" ")) || safeName(el);
   const CTRL = "a[href], button, input[type=button], input[type=submit], input[type=reset], [role=button], [role=link]";
   const controls = (root) => (root ? [...root.querySelectorAll(CTRL)].filter((c) => shown(c) && !c.disabled) : []);
   const DIALOG = "dialog, [role=dialog], [role=alertdialog]";

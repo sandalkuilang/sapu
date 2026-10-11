@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+<main>
+<!-- Fields a user filled and then clicked: their values must never become a control's name, a key or a row. -->
+<form id="f" onsubmit="return false">
+<label>Email <input name="email" id="e"></label>
+<label>Password <input type="password" name="password" id="p"></label>
+<label>API key <input name="api_key" id="k" value="sk_li&#x76;e_51HxQ2eZvKYlo2C0aBcDeFgHiJkL"></label>
+<label>Note <textarea name="note" id="n"></textarea></label>
+<label for="c">Draft</label><div id="c" contenteditable="true" aria-label="Draft" style="min-height: 24px; border: 1px solid rgb(120, 120, 120)"></div>
+<button id="go" type="submit">Sign in</button>
+</form>
+<p id="out"></p>
+</main>
+<script>
+document.getElementById("go").addEventListener("click", async () => {
+  await fetch("/api/save", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: document.getElementById("e").value }) });
+  document.getElementById("out").textContent = "Signed in.";
+});
+</script>
+</body></html>

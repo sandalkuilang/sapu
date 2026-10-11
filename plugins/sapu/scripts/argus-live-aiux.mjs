@@ -35,7 +35,7 @@ const CORE = String.raw`const V = { checkOpacity: true, checkVisibilityCSS: true
   const LIVE = "[aria-live]:not([aria-live=off]), [role=log], [role=status]";
   const enabled = (el) => !el.disabled && el.getAttribute("aria-disabled") !== "true";
   const writable = (el) => shown(el) && enabled(el) && !el.readOnly && el.getAttribute("aria-readonly") !== "true";
-  const nameOf = (el) => String(el.getAttribute("aria-label") || (el.tagName === "INPUT" ? el.value : el.textContent) || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  const nameOf = (el) => String(el.getAttribute("aria-label") || (el.tagName === "INPUT" ? (/^(button|submit|reset)$/i.test(el.type) ? el.value : el.getAttribute("name")) : el.isContentEditable ? "" : el.textContent) || el.getAttribute("title") || "").replace(/\s+/g, " ").trim().slice(0, 80);
   const controls = () => [...document.querySelectorAll(CONTROL)].filter((el) => shown(el) && enabled(el));
   const composerOf = (el) => {
     for (let a = el, k = 0; a && a.nodeType === 1 && k < 5; a = a.parentElement, k++) {

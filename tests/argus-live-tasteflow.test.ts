@@ -3,7 +3,7 @@
 // probes' rules and T2's crossRules in the judge. The point is the seam: the shape J records (`taste`, `events`, `ease`,
 // the run's other screens) is the shape T1's and T2's rules read, so each probe's rows reach judge.json.
 import { createServer, type Server } from "node:http";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -18,6 +18,8 @@ import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 import { keepScreen, RECORDER, recorderPayload, tasteDir } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
 import { tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
+// @ts-expect-error — plain ESM script without types
+import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
 
 type Obj = Record<string, any>;
 
@@ -129,5 +131,46 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     const split = of("consistent.action");
     expect(split.map((x) => x.screen).sort()).toEqual(["/ease/consist-a.html|1280|light", "/ease/consist-b.html|1280|light"]);
     expect(split.every((x) => x.expected === NO_MAJORITY && x.journey === "notes")).toBe(true);
+  }, 240_000);
+
+  it("never records what a user typed: a filled password, API key, email, textarea or editable box that was clicked reaches no file of the run, no judge row and no report", async () => {
+    const main = committed();
+    const runId = takeLock(main, { maxCycleMinutes: 45 }).runId as string;
+    const record = new Function(`return ${RECORDER}`)() as (page: Obj, o: Obj, T: Obj) => Promise<Obj>;
+    const SECRETS = ["Hunter2-SuperSecret!", "sk_li\u0076e_51HxQ2eZvKYlo2C0aBcDeFgHiJkL", "buyer7@example.test", "my note 4417 private", "draft text 9031 private"];
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    try {
+      await context.addInitScript({ content: PAGE_INIT });
+      const page = await context.newPage();
+      await page.goto(`${origin}/ease/leak.html`);
+      await page.fill("#e", SECRETS[2]);
+      await page.fill("#p", SECRETS[0]);
+      await page.fill("#n", SECRETS[3]);
+      await page.click("#c");
+      await page.keyboard.type(SECRETS[4]);
+      for (const id of ["#p", "#k", "#e", "#n", "#c", "#go"]) await page.click(id);
+      await page.getByText("Signed in.").waitFor({ timeout: 30_000 });
+      const T = recorderPayload({ main, runId, slot: 1, slotRec: { journey: "notes" }, prev: null, settleMs: 1000 });
+      const answer = await record(page, { url: page.url(), aria: "state 1" }, T);
+      keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "notes" }, answer);
+      // The clicked fields are named by their labels, never by what they hold.
+      expect(answer.ease.actions.map((a: Obj) => a.name)).toEqual(expect.arrayContaining(["Password", "API key", "Email", "Note", "Sign in"]));
+    } finally {
+      await context.close();
+    }
+    expect((await tasteJudge(main, { run: runId })).code).toBe(0);
+    const said = report(main, { run: runId }).lines.join("\n");
+    const files: string[] = [];
+    const walk = (d: string) => {
+      for (const f of readdirSync(d)) {
+        const p = join(d, f);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (!f.endsWith(".png")) files.push(readFileSync(p, "utf8"));
+      }
+    };
+    walk(join(main, ".argus"));
+    const all = [...files, said].join("\n");
+    // As typed, and as the probes write page text (digit runs as #), scrub's exact match would miss.
+    for (const v of SECRETS) for (const form of [v, v.replace(/[0-9]+/g, "#")]) expect(all, form).not.toContain(form);
   }, 240_000);
 });
