@@ -400,6 +400,18 @@ describe("argus-live ease — states: the routed fault, success, recovery, empty
     expect(filed(judged(await record(named)))).toEqual([]);
   }, 60_000);
 
+  it("states.success: only a change after the write answered names the new state; a disable/enable or text shown while it ran does not", async () => {
+    const run = async (id: string) => {
+      const p = await open("success.html");
+      await p.click(`#${id}`);
+      await sleep(1600);
+      return filed(judged(await record(p)));
+    };
+    expect(await run("disable-only")).toEqual(["states.success"]);
+    expect(await run("early-text")).toEqual(["states.success"]);
+    expect(await run("disable-toast")).toEqual([]);
+  }, 90_000);
+
   it("feedback.optimistic in Chrome: the late count fires on a declared route only; the early count holds", async () => {
     const cfg = { ...CFG, optimistic: ["/success.html"] };
     const late = await open("success.html");

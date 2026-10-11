@@ -128,6 +128,8 @@ export const EASE_INIT = String.raw`(() => {
     const t = now();
     for (const m of records) if (m.type === "attributes" && m.attributeName === "disabled") { if (m.oldValue === null && m.target.hasAttribute("disabled")) dis.add(m.target); else dis.delete(m.target); }
     if (S.pending) for (const m of records) { const r = relevant(m); if (r) { push({ kind: "change", t, cause: r[0], attr: r[1] }); S.pending = false; break; } }
+    // After a write answered 2xx: the first change that can name the new state (a busy toggle cannot), for states.success.
+    if (S.answered && !S.pending) for (const m of records) { const r = relevant(m); if (r && !(r[0] === "attribute" && /^(disabled|aria-busy)$/.test(r[1]))) { push({ kind: "change", t, cause: r[0], attr: r[1] }); S.answered = false; break; } }
     if (since === null) since = t;
     if (!timer) timer = setTimeout(() => { const s = since; timer = 0; since = null; last = now(); scan(s); }, Math.max(0, last + 30 - t));
   });
@@ -157,7 +159,12 @@ export const EASE_INIT = String.raw`(() => {
   const rec = (method, url, body) => {
     try { const st = typeof document.__argusEaseLive === "function" ? document.__argusEaseLive(KEY) : null, u = new URL(String(url), location.href); return st ? cap(st.requests, 200, { t: performance.now(), end: null, status: 0, method: String(method || "GET").toUpperCase(), route: routeOf(u.pathname), keys: keysOf(body), same: u.origin === location.origin }) : null; } catch (e) { return null; }
   };
-  const done = (r, status) => { if (r) [r.end, r.status] = [performance.now(), status]; };
+  const done = (r, status) => {
+    if (!r) return;
+    [r.end, r.status] = [performance.now(), status];
+    const live = typeof document.__argusEaseLive === "function" ? document.__argusEaseLive(KEY) : null;
+    if (live && r.same && !/^(GET|HEAD|OPTIONS)$/.test(r.method) && status >= 200 && status < 300) live.answered = true;
+  };
   const native = window.fetch;
   if (typeof native === "function") window.fetch = function (input, init) {
     const q = typeof Request === "function" && input instanceof Request ? input : null;
@@ -265,7 +272,13 @@ export const EASE_SOURCE = String.raw`(arg) => {
     const writes = fb.acts.map((a) => ({ a, end: Math.max(...a.reqs.filter(WRITE).map((r) => r.end)) })).filter((w) => w.end > -Infinity);
     const named = th("states.success").max;
     const after = (w) => (w.a.first === null ? null : w.a.start + w.a.first);
-    const unnamed = worst(writes.filter((w) => (after(w) === null ? w.a.horizon - w.end > named : after(w) > w.end + named)), (w) => (after(w) === null ? w.a.horizon : after(w)) - w.end);
+    // The new state is named only by a change after the write answered, before the next input: a control disabled and
+    // enabled again, or busy, names nothing, nor does text shown while the request ran.
+    const naming = (Array.isArray(s.events) ? s.events : []).filter((x) => x && x.kind === "change" && typeof x.t === "number" && !(x.cause === "attribute" && /^(disabled|aria-busy)$/.test(x.attr || "")));
+    // On a route the owner declared optimistic, the change made before the answer is the naming (decision 10).
+    const optimistic = ((cfg && cfg.optimistic) || []).some((g) => globMatch(g, route));
+    const shownAfter = (w) => naming.filter((x) => x.t >= (optimistic ? w.a.start : w.end) && (w.a.end === null || x.t < w.a.end)).reduce((m, x) => (m === null || x.t < m ? x.t : m), null);
+    const unnamed = worst(writes.filter((w) => (shownAfter(w) === null ? w.a.horizon - w.end > named : shownAfter(w) > w.end + named)), (w) => (shownAfter(w) === null ? w.a.horizon : Math.max(shownAfter(w), w.end)) - w.end);
     if (unnamed > named) add("states.success", "action", unnamed, "the new state named within " + named + " ms");
     if (((cfg && cfg.optimistic) || []).some((g) => globMatch(g, route))) {
       const late = writes.filter((w) => (after(w) === null ? w.a.horizon - w.end > named : after(w) >= w.end)).length;
