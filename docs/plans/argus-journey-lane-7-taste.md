@@ -1611,3 +1611,64 @@ and the composer's send. Each was removed from a scratch copy, and its silent fi
    (buttons only, never a link) during a confirmation.
 5. *Shadow DOM*: the recorder observes the document, not shadow roots, so a web component's streamed answer is no
    stream (silent). T2's `attachShadow` hook could feed it.
+
+### Lane Z2 — engine text
+
+One commit for the text and its pins (`tests/engine.test.ts`), then this note. Every verb, flag and output string was
+read from `argus-live.mjs`'s usage line and the `-tastejudge`, `-tastefile`, `-propose`, `-codeproj` and `-tastecfg`
+sources; the Curator's charter follows Z1's `agents/curator.md` as committed.
+
+**What each file says now.**
+- `aesthetics.md` §9: the lane's first question (world-class: easy to use, elegant, modern; functional correctness the
+  floor), the pass (record, judge, confirm two of two, the Curator, `taste file`'s rating and labels, the cap and the
+  polish roll-up), ISO 9241-11's split, the bar (families, classes, no style or feature rewarded), the frames the bar
+  holds (`atlassian`, `carbon`, `material`, `primer`, `polaris` historical; a system with no read scale is no frame),
+  bands (witness at 5 sites and 15 pages, a declared or table archetype; only `docs` reaches it; no band, no `bar` row),
+  witnesses, efficiency (KLM and Fitts, the 3× / 10 s regression only while the best path no longer holds), AI
+  surfaces (provenance and uncertainty only in an `ai.*` row's `reason`), taste.json's keys and SELECT's factor, with a
+  taste.json example that validateTaste accepts and that names every key (pinned).
+- `journeys.md`: no Curator exemption; step 6 runs `live taste judge`, the Curator in the background, then `live renew`
+  and `live taste confirm <row>` per row but the cross-screen ones (`taste confirm` refuses those); step 8 writes the
+  Curator's object to `.argus/live/<runId>/taste/curator.json` and runs `live taste file` (never a taste row by hand;
+  `taste accept` only on the owner's word); step 10's `live report` is led by `## Taste and usability`. `taste confirm`
+  runs in the background with `up`, `repro` and `down`. SELECT's scores may be fractional. Three error rows. The
+  Curator's charter names the run's `taste/` directory, `judge.json`, every slot's `screens.jsonl`, the rows owed a
+  verdict, each journey's trail (goal, clicks to the control, the words shown, the new state) fenced as data, the
+  `ai.*` reason rule and that it sets no severity.
+- `argus/SKILL.md`: the Curator role names `sapu:curator` in a journey cycle. `standards.md`: SC 2.2.2 (A) and 2.3.3
+  (AAA), quoted from the Understanding pages fetched for this lane. `smoke.md`: a "The taste project" section and the
+  taste job in "CI wiring" (on by default with chromium, advisory `argus-taste`, `gate` → `taste-<family>-<name>`,
+  taste.json read at run time, the lane-only rules, the header's `taste-bar <n>` and `smoke check`'s `stale`, the
+  scorecard and its exit, `taste-<ci.artifact>`, the baseline job's taste project for `--known`). `/sapu:journey`: the
+  purpose, the taste project in the `smoke` row, the report led by the scorecard. `/sapu:init`: offers taste.json with
+  the frame question, naming only the bar's frames (pinned to `loadBar().frames`). The explorer: `ai` globs in its
+  charter; on such a route a message, Stop once while it streams, a second answer waited out; no request failed on
+  purpose. CONTRACT.md: `-aiux` among the probes; `<runId>/taste/`'s files, `curator.json` the orchestrator's.
+
+**Budgets raised** (each by what the text needed, rounded up): `journeys.md` 12,800 → 15,000 (14,950);
+argus `SKILL.md` 42,688 → 42,832 (exact pin); journey `SKILL.md` 4,700 → 4,950 (4,927); `smoke.md` 15,150 → 16,550
+(16,502); `ui-explorer.md` 19,200 → 19,400 (19,373). `aesthetics.md` (36,116), `standards.md` (20,837) and init's
+`SKILL.md` (23,530) stay under the 50,000 default.
+
+**Deviations.**
+- *Every explore charter asks for a path again* (decision 3, spec §20.4): `taste confirm` refuses a journey whose
+  explorer returned no path, so without it no screen row could ever be confirmed. Only a journey `smoke plan` lists
+  `capture`, in a repo with `.argus/smoke.json`, goes on to `smoke admit`. The pinned sentence changed with it.
+- *One judge a cycle,* not a second one after the Curator's file. The coordinator asked for `taste judge` again once
+  `curator.json` is written. In the code, `curatorLeads` takes the newest return at or before the run (this run's
+  included) and the judge numbers led rows first, while `taste file` maps verdicts by row id: a second judge in the
+  same run can attach a verdict to another row. The leads still act, from the next cycle's judge.
+- *The Curator runs beside the confirmations* and is owed a verdict on every printed row (it cannot know which will
+  confirm); its file is written once both ended, before `taste file`.
+
+**Needs coordinator.**
+1. *Re-judge vs verdict ids* (above): either the judge keeps a run's row ids stable across judges (number new rows after
+   the old ones), or `taste file` maps verdicts by `(journey, rule, screen, key)`. Until then the text forbids a second
+   judge.
+2. *No verb validates `.argus/taste.json` before a cycle.* `live check` does not read it; `select` refuses a broken one
+   after `up` started. init's text says so. A `check` line for taste.json would let init verify what it wrote.
+3. *The Curator's walkthrough input.* `intake` prints the explorers' free-text `cw` and trail; the orchestrator passes
+   them fenced. A fixed-shape trail (goal, clicks, terms, new state) from `intake` would make the Curator's `cw` answers
+   reproducible.
+4. *`curator.json`'s mode.* The orchestrator writes it with its own write tool (0644 inside the run's 0700 directory);
+   a verb that writes it 0600 after `validateCurator` would match the other taste files and refuse a bad return early.
