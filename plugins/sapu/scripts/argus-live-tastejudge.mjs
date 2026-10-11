@@ -13,7 +13,7 @@ import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";
 import { pathSha } from "./argus-live-perf.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
-import { confirmSink } from "./argus-live-tastesink.mjs";
+import { confirmSink, firstRows, probePlan } from "./argus-live-tastesink.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
@@ -493,8 +493,13 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     state.journeys[id] = { ...entry, judged: runId };
   }
 
-  // Two cycles are a cross-screen row's two visits; an earlier judge of this run keeps its confirmations.
-  const before = new Map((readJudge(main, runId)?.rows ?? []).map((r) => [`${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`, r.confirmed]));
+  // Two cycles are a cross-screen row's two visits; an earlier judge of this run keeps its confirmations, and the rows a
+  // replay measured first (`probe`), which no recorded screen holds, with what its replays measured already.
+  const prior = readJudge(main, runId);
+  const before = new Map((prior?.rows ?? []).map((r) => [`${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`, r.confirmed]));
+  for (const r of prior?.rows ?? []) if (typeof r.probe === "string" && rules.has(r.rule) && !off.has(r.rule)) push({ journey: r.journey, rule: r.rule, class: r.class, screen: r.screen, key: r.key, measured: r.measured, expected: r.expected, witnesses: [], cost: null, probe: r.probe });
+  // One probe a journey with a path: a replay to its last recorded screen that measures first what the walk does not.
+  const probes = ids.filter((id) => paths.has(id) && screens.some((s) => s.journey === id)).map((id, i) => ({ ref: `p${i + 1}`, journey: id, at: screens.filter((s) => s.journey === id).sort((x, y) => x.t - y.t).at(-1).key }));
   const earlier = previousJudge(main, runId);
   // The Curator's leads, when its return validates, are measured first: the rows they name take the first numbers, so
   // a confirmation run in row order under the pass's budget replays them before the rest.
@@ -520,11 +525,11 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   const out = rows.map((r, i) => {
     const id = `${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`;
     const again = crossScreen(rules.get(r.rule)) && earlier.has(id) ? true : null;
-    return { row: `t${i + 1}`, journey: r.journey, rule: r.rule, class: r.class, screen: r.screen, key: r.key, measured: r.measured, expected: r.expected, witnesses: r.witnesses, cost: r.cost, confirmed: before.get(id) ?? again };
+    return { row: `t${i + 1}`, journey: r.journey, rule: r.rule, class: r.class, screen: r.screen, key: r.key, measured: r.measured, expected: r.expected, witnesses: r.witnesses, cost: r.cost, confirmed: before.get(id) ?? again, ...(r.probe ? { probe: r.probe } : {}) };
   });
   for (const r of out) if (r.confirmed === true) keepConfirmed(state, r, runId);
   fs.mkdirSync(tasteDir(main, runId), { recursive: true, mode: 0o700 });
-  writePrivate(judgeFile(main, runId), { version: 1, run: runId, bar: bar.version, rows: out, journeys });
+  writePrivate(judgeFile(main, runId), { version: 1, run: runId, bar: bar.version, rows: out, journeys, probes, probed: isObj(prior?.probed) ? prior.probed : { media: [], states: [] } });
   const brief = curatorBrief(runId, bar, screens, arch, out);
   writePrivate(path.join(liveDir(main), runId, BRIEF_FILE), brief);
   writeTasteState(main, state);
@@ -543,12 +548,13 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (bad) lines.push(`harness: ${bad} recorded screens of another shape skipped`);
   const secrets = loadLive(main).secrets ?? {};
   if (out.length) lines.push(fence(out.map(rowLine).join("\n"), { secrets }).body);
+  if (probes.length) lines.push(`probes: ${probes.map((p) => `${p.ref} ${p.journey}`).join(", ")}: each replays its journey once to measure first what the walk does not (dark parity, reduced motion)`);
   lines.push(`brief: ${BRIEF_FILE}: ${brief.screens.length} screens, ${brief.screens.reduce((n, x) => n + x.titles.length, 0)} title keys, ${brief.read.length} shots to read`);
   return { code: 0, lines, masked: true };
 }
 
 /** A row in words (page text: printed only inside a fence). */
-const rowLine = (r) => `${r.row} ${r.journey} ${r.rule} ${r.class} ${r.screen} key=${r.key} measured=${r.measured} expected=${r.expected ?? "-"} witnesses=${r.witnesses.map((w) => `${w.kind}:${w.value}@${w.from}`).join(",") || "-"}${r.confirmed === true ? " confirmed" : r.confirmed === false ? " not-confirmed" : ""}`;
+const rowLine = (r) => `${r.row} ${r.journey} ${r.rule} ${r.class} ${r.screen} key=${r.key} measured=${r.measured} expected=${r.expected ?? "-"} witnesses=${r.witnesses.map((w) => `${w.kind}:${w.value}@${w.from}`).join(",") || "-"}${r.confirmed === true ? " confirmed" : r.confirmed === false ? " not-confirmed" : ""}${r.probe ? ` first-measured-in=${r.probe}` : ""}`;
 
 /** The rows of the newest earlier run's judge.json, by identity. */
 function previousJudge(main, runId) {
@@ -592,8 +598,12 @@ function remeasured(row, measured, rule) {
  * replay ends at the step that reached the screen and measured it); an efficiency row replays the journey's
  * best known path (the suite's, by its sha): it is confirmed only when that path no longer holds — while it holds, the
  * longer path was the explorer's detour. A cross-screen row is confirmed by the next cycle's judge, never a replay.
- * Exit 0 when the replay decided, 2 when the harness failed or the screen was never reached (`confirmed` left null).
- * Refused: no cycle, a row of another shape or not in the judge, the taste pass's time spent (TASTE_BUDGET_MS), no path.
+ * A screen group's replay, and a probe's (`p<k>`: its journey's path to its last recorded screen), also measure first
+ * what the walk never does (probePlan, confirmSink's `probe`): each row found is added to judge.json with the next
+ * free number and `probe: <ref>`, and stays a candidate until its own `taste confirm` measures it again. Exit 0 when
+ * the replay decided (or a probe reached its screen, or had nothing left to measure), 2 when the harness failed or the
+ * screen was never reached (`confirmed` left null). Refused: no cycle, a row of another shape or not in the judge, the
+ * taste pass's time spent (TASTE_BUDGET_MS), no path.
  */
 export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now } = {}) {
   const t0 = now();
@@ -601,29 +611,37 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   if (!lock) throw new Error("refused: no journey cycle is running");
   const runId = lock.runId;
   if (tasteOff(loadTaste(main).taste)) throw new Error(`refused: taste confirm: ${PASS_OFF}`);
-  if (typeof ref !== "string" || !/^t[1-9][0-9]{0,4}$/.test(ref)) throw new Error(`refused: taste confirm: ${typeof ref === "string" && /^[\x21-\x7e]{1,20}$/.test(ref) ? ref : "that"} is not a judge row (t<k>)`);
+  if (typeof ref !== "string" || !/^[tp][1-9][0-9]{0,4}$/.test(ref)) throw new Error(`refused: taste confirm: ${typeof ref === "string" && /^[\x21-\x7e]{1,20}$/.test(ref) ? ref : "that"} is not a judge row (t<k>) or probe (p<k>)`);
   const judge = readJudge(main, runId);
   if (!judge) throw new Error(`refused: taste confirm: cycle ${runId} has no judge rows (taste judge first)`);
-  const row = judge.rows.find((r) => r.row === ref);
-  if (!row) throw new Error(`refused: taste confirm: no row ${ref} in cycle ${runId}'s judge`);
+  const probe = ref.startsWith("p") ? (Array.isArray(judge.probes) ? judge.probes : []).find((p) => isObj(p) && p.ref === ref) : null;
+  if (ref.startsWith("p") && !probe) throw new Error(`refused: taste confirm: no probe ${ref} in cycle ${runId}'s judge`);
+  const row = probe ? null : judge.rows.find((r) => r.row === ref);
+  if (!probe && !row) throw new Error(`refused: taste confirm: no row ${ref} in cycle ${runId}'s judge`);
   const bar = loadBar();
-  const rule = bar.rules.find((r) => r.id === row.rule);
-  if (!rule) throw new Error(`refused: taste confirm: ${ref}'s rule is not in taste-bar ${bar.version}`);
-  if (crossScreen(rule)) throw new Error(`refused: taste confirm: ${row.rule} compares the cycle's screens: the next cycle's judge confirms it, not a replay`);
+  const rule = row ? bar.rules.find((r) => r.id === row.rule) : null;
+  if (row && !rule) throw new Error(`refused: taste confirm: ${ref}'s rule is not in taste-bar ${bar.version}`);
+  if (rule && crossScreen(rule)) throw new Error(`refused: taste confirm: ${row.rule} compares the cycle's screens: the next cycle's judge confirms it, not a replay`);
   if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) throw new Error("refused: taste confirm: the taste pass's time this cycle is spent");
   // Its confirmation group: the undecided rows one replay measures with it (the rows of its journey's screen; else it alone).
   const rulesById = new Map(bar.rules.map((r) => [r.id, r]));
-  const group = groupable(rule) ? judge.rows.filter((r) => r.row === ref || (r.confirmed === null && groupOfRow(r, rulesById.get(r.rule)) === groupOfRow(row, rule))) : [row];
+  const group = !row ? [] : groupable(rule) ? judge.rows.filter((r) => r.row === ref || (r.confirmed === null && groupOfRow(r, rulesById.get(r.rule)) === groupOfRow(row, rule))) : [row];
+  const journey = row ? row.journey : probe.journey;
+  const cfg = { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) };
+  // What the replay measures first: a probe's, or a screen group's on its prefix (never an armed, driven or efficiency row's).
+  const plan = !row || groupable(rule) ? probePlan({ journey, at: row ? row.screen : probe.at, records: readScreens(main, runId).screens, judge, cfg }) : null;
+  if (probe && !plan) return { code: 0, lines: [`taste confirm ${ref}: nothing to measure first (each recorded screen of ${journey} was measured)`], masked: false };
   const state = readTasteState(main);
   let confirmed = null;
   let said;
+  let sink = null;
   /** Each group row's verdict once the replay measured: [row, confirmed, said]. */
   let decided = [];
   let replay = [];
   /** The replay's own HARNESS line (runOnce's, masked by it), carried into the answer. */
   const ran = (r) => ((replay = (Array.isArray(r.lines) ? r.lines : []).filter((l) => /^HARNESS: /.test(l)).slice(-1)), r);
   try {
-    if (rule.family === "efficiency") {
+    if (rule && rule.family === "efficiency") {
       const best = (state.journeys[row.journey] ?? {}).best;
       const list = best ? [...heldPaths(main)].map(([, l]) => l).find((l) => pathSha(l) === best.pathSha) : null;
       if (!list) throw new Error(`refused: taste confirm: the best path of ${row.journey} is not in the suite`);
@@ -632,8 +650,8 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
       else if (r.code === 3) [confirmed, said] = [true, "the best path no longer holds"];
       else said = "harness: the best path's replay failed";
     } else {
-      const list = explorerPaths(main, runId).get(row.journey);
-      if (!list) throw new Error(`refused: taste confirm: journey ${row.journey} returned no path to replay`);
+      const list = explorerPaths(main, runId).get(journey);
+      if (!list) throw new Error(`refused: taste confirm: journey ${journey} returned no path to replay`);
       let routes = [];
       try {
         routes = JSON.parse(fs.readFileSync(path.join(main, ".argus/journeys.json"), "utf8")).journeys.flatMap((j) => j.steps.map((s) => s.route)).filter((x) => typeof x === "string");
@@ -641,10 +659,11 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
         routes = [];
       }
       const live = loadLive(main).config ?? {};
-      const sink = confirmSink(group, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) }, prohibited: live.prohibited ?? [] });
+      sink = confirmSink(group, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg, prohibited: live.prohibited ?? [], probe: plan });
       // A prefix replay: the path runs to the step that reached the screen and measured it, never past it.
       const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list }, until: () => sink.measured !== null })));
       if (!sink.measured) said = r.code === 2 && !sink.measured ? "harness: the replay failed before the screen" : "harness: the replay never reached the screen";
+      else if (!row) [confirmed, said] = [true, "measured first"];
       else if (sink.measured.rows === null) said = "harness: the rule's expression failed on the screen";
       else {
         decided = group.map((g) => (remeasured(g, sink.measured, rulesById.get(g.rule)) ? [g, true, "measured again"] : [g, false, "not measured again: the screen holds the rule"]));
@@ -654,13 +673,23 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   } finally {
     spendTaste(main, runId, "confirm", now() - t0);
   }
-  if (confirmed !== null && !decided.length) decided = [[row, confirmed, said]];
-  if (decided.length) {
+  if (row && confirmed !== null && !decided.length) decided = [[row, confirmed, said]];
+  const first = sink ? firstRows({ ref, journey, sink, bar, cfg }) : { rows: [], probed: { media: [], states: [] } };
+  let added = [];
+  if (decided.length || first.rows.length || first.probed.media.length || first.probed.states.length) {
     const fresh = readJudge(main, runId) ?? judge;
     for (const [g, c] of decided) {
       const at = fresh.rows.find((r) => r.row === g.row && r.rule === g.rule && r.key === g.key);
       if (at) at.confirmed = c;
     }
+    // A row measured first takes the next free number (none renumbered); one the judge already holds is not added again.
+    const idOf = (r) => `${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`;
+    const have = new Set(fresh.rows.map(idOf));
+    let n = Math.max(0, ...fresh.rows.map((r) => Number(String(r.row).slice(1)) || 0));
+    added = first.rows.filter((r) => !have.has(idOf(r))).map((r) => ({ row: `t${(n += 1)}`, ...r }));
+    fresh.rows.push(...added);
+    const was = isObj(fresh.probed) ? fresh.probed : {};
+    fresh.probed = { media: [...new Set([...(was.media ?? []), ...first.probed.media])], states: [...new Set([...(was.states ?? []), ...first.probed.states])] };
     writePrivate(judgeFile(main, runId), fresh);
     if (decided.some(([, c]) => c)) {
       const now = readTasteState(main); // re-read: another verb may have written it while the replay ran
@@ -671,6 +700,9 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   const word = (c) => (c === true ? "confirmed" : c === false ? "not confirmed" : "not decided");
   const secrets = loadLive(main).secrets ?? {};
   const others = decided.filter(([g]) => g.row !== ref).map(([g, c, why]) => `taste confirm ${g.row}: ${word(c)} (${why}, in ${ref}'s replay)`);
-  const lines = [`taste confirm ${ref}: ${word(confirmed)} (${said.replace(/^harness: /, "")})`, ...others, ...(said.startsWith("harness: ") ? [said, ...replay] : []), fence((decided.length ? decided.map(([g, c]) => ({ ...g, confirmed: c })) : [{ ...row, confirmed }]).map(rowLine).join("\n"), { secrets }).body];
+  const head = probe ? `taste confirm ${ref}: ${confirmed ? `measured first (${journey}: ${added.length} new row(s))` : `not decided (${said.replace(/^harness: /, "")})`}` : `taste confirm ${ref}: ${word(confirmed)} (${said.replace(/^harness: /, "")})`;
+  const fresh = [...(added.length ? [`first measured in ${ref}'s replay: ${added.map((r) => r.row).join(", ")} (candidates: each confirmed by its own taste confirm)`] : [])];
+  const shown = [...decided.map(([g, c]) => ({ ...g, confirmed: c })), ...(row && !decided.length ? [{ ...row, confirmed }] : []), ...added];
+  const lines = [head, ...others, ...fresh, ...(said.startsWith("harness: ") ? [said, ...replay] : []), ...(shown.length ? [fence(shown.map(rowLine).join("\n"), { secrets }).body] : [])];
   return { code: confirmed === null ? 2 : 0, lines, masked: true };
 }

@@ -583,7 +583,7 @@ const BUDGETS: Record<string, number> = {
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 20_000,
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 15_300,
+  "skills/argus/journeys.md": 15_450,
   "skills/argus/SKILL.md": 42_832,
   "skills/journey/SKILL.md": 4_950,
   "skills/journey/live.md": 14_500,

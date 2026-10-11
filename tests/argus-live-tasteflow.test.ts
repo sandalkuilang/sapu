@@ -207,6 +207,36 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     expect(await judged(true)).toContain("feedback.busy");
   }, 240_000);
 
+  it("the replay measures first what the walk never does: dark parity and reduced motion at a recorded screen not measured yet", async () => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    try {
+      const page = await context.newPage();
+      const go = (path: string) => `async page => {\n  await page.goto(${JSON.stringify(`${origin}${path}`)});\n  return { ok: true };\n}\n`;
+      const run = async (sink: Obj, path: string) => sink.take(await new Function(`return ${sink.wrap(go(path))}`)()(page));
+      const probe = (at: string, over: Obj = {}) => ({ at, screens: [at], skip: [], target: null, ...over });
+      // Dark parity: a probe of its own (no row), its screen the target; the census of both schemes, the media rules' rows.
+      const DARK = "/taste/dark.html|1280|light";
+      const dark = confirmSink([], { routes: [], settleMs: 5000, probe: probe(DARK) });
+      expect(await run(dark, "/taste/dark.html")).toEqual({ ok: true });
+      expect(dark.measured).toEqual({ rows: [] });
+      expect(dark.probes).toHaveLength(1);
+      expect(dark.probes[0]).toMatchObject({ key: DARK, themes: "dual" });
+      expect(dark.probes[0].rows).toEqual(expect.arrayContaining([expect.objectContaining({ rule: "colour.dark-border", key: "input|Display name" }), expect.objectContaining({ rule: "colour.dark-surface", key: "div|Legacy panel" })]));
+      expect(await page.evaluate("matchMedia('(prefers-color-scheme: dark)').matches")).toBe(false);
+      // Twins: measured already (skip), a screen the walk never recorded, a single-theme page (no row).
+      for (const p of [probe(DARK, { skip: [DARK] }), probe("/taste/other.html|1280|light", { screens: ["/taste/other.html|1280|light"] })]) {
+        const s = confirmSink([], { routes: [], settleMs: 5000, probe: p });
+        await run(s, "/taste/dark.html");
+        expect(s.probes).toEqual([]);
+      }
+      const single = confirmSink([], { routes: [], settleMs: 5000, probe: probe("/taste/single.html|1280|light") });
+      await run(single, "/taste/single.html");
+      expect(single.probes).toEqual([{ key: "/taste/single.html|1280|light", themes: "single", rows: [] }]);
+    } finally {
+      await context.close();
+    }
+  }, 180_000);
+
   it("a states.recovery row is measured in the replay by the ease probe's form case (RECOVERY_SOURCE): each field the refusal lost, the values put back", async () => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     try {

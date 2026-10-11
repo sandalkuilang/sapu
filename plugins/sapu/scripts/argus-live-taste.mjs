@@ -655,9 +655,12 @@ const QUIET = `(on) => {
  * (`reduce`: what still runs, and what the recorder saw while it was asked for); then the media is put back as read,
  * never by null (null hands the choice to the OS: Task 0.1). `themes` is `single` when both schemes render the same
  * colours (the app does not answer prefers-color-scheme: dark parity is not judged, and the other census is dropped),
- * else `dual`. Self-contained: `String(censusOf)` runs in the lane's run-code and the suite as it runs here.
+ * else `dual`. With `opts.other` false (the walk's census, on the explorer's own page) the media is never switched:
+ * the page's own census alone, `reduce` that same census when the page already asks for reduced motion, `themes`
+ * null; the other scheme and reduced motion are the replay's to measure. Self-contained: `String(censusOf)` runs in
+ * the lane's run-code and the suite as it runs here.
  */
-export const censusOf = new Function(`return async (page) => {
+export const censusOf = new Function(`return async (page, opts) => {
   const SOURCE = ${JSON.stringify(TASTE_SOURCE)};
   const run = (arg) => page.evaluate("(" + SOURCE + ")(" + JSON.stringify(arg) + ")");
   const quiet = (on) => page.evaluate("(" + ${JSON.stringify(QUIET)} + ")(" + on + ")");
@@ -665,6 +668,10 @@ export const censusOf = new Function(`return async (page) => {
   const other = media.colorScheme === "dark" ? "light" : "dark";
   const out = { media, light: null, dark: null, reduce: null, themes: null };
   out[media.colorScheme] = await run({});
+  if (opts && opts.other === false) {
+    if (media.reducedMotion === "reduce") out.reduce = out[media.colorScheme];
+    return out;
+  }
   await quiet(true);
   try {
     await page.emulateMedia({ colorScheme: other, reducedMotion: media.reducedMotion });

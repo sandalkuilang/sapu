@@ -276,6 +276,26 @@ describe("argus-live-taste.mjs — colour roles, dark parity, contrast headroom 
     expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-")).length).toBe(4);
   }, 60_000);
 
+  it("censusOf(page, { other: false }), the walk's census: the page's own scheme only, its media never switched (no change event, no other census), themes unknown", async () => {
+    const page = await open("dark.html");
+    // The page as censusOf sees it, every media switch it asks for counted.
+    const switches: unknown[] = [];
+    const spied = new Proxy(page, { get: (t, k) => (k === "emulateMedia" ? (m: unknown) => (switches.push(m), t.emulateMedia(m)) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) });
+    const screen = await censusOf(spied, { other: false });
+    expect(screen.media).toEqual({ colorScheme: "light", reducedMotion: "no-preference" });
+    expect([screen.dark, screen.reduce, screen.themes]).toEqual([null, null, null]);
+    expect(screen.light.media.dark).toBe(false);
+    expect(switches).toEqual([]);
+    // No dark parity from the walk: the replay measures it.
+    expect(rulesFor(screen, BAR, cfgOf()).filter((r: Obj) => r.rule.startsWith("colour.dark-"))).toEqual([]);
+    // Under reduced motion the page's own census is the reduced one too (motion.reduced reads it), still unswitched.
+    const reduced = await censusOf(await open("dark.html", { reducedMotion: "reduce" }), { other: false });
+    expect(reduced.reduce).toBe(reduced.light);
+    // The default switches both and puts the page's own media back, as the replay's census does.
+    expect((await censusOf(spied)).themes).toBe("dual");
+    expect(switches).toEqual([{ colorScheme: "dark", reducedMotion: "no-preference" }, { colorScheme: "light", reducedMotion: "reduce" }, { colorScheme: "light", reducedMotion: "no-preference" }]);
+  }, 60_000);
+
   it("a single-theme app is reported single theme, and no dark parity row is measured", async () => {
     const screen = await censusOf(await open("single.html"));
     expect(screen.themes).toBe("single");

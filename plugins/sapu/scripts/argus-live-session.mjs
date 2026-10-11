@@ -206,9 +206,6 @@ export const MAIN_ROWS = `(() => {
   return most;
 })()`;
 
-/** A page expression → once the CSS transitions now running finished (a theme switch's), 0. */
-export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a instanceof CSSTransition).map((a) => a.finished.then(() => 0, () => 0))).then(() => 0)`;
-
 /**
  * The recorder, run in the daemon after the observation `o` (the source of `async (page, o, T) => answer`): the same
  * state as the last observation (`T.prev`, the sha256 of its URL and ARIA snapshot, as the loop rule hashes it) →
@@ -221,11 +218,10 @@ export const SETTLED = `Promise.all(document.getAnimations().filter((a) => a ins
  * template, width and theme (MEDIA_READ); one viewport screenshot per screen key not yet shot this run (its name the
  * first 32 hex digits of the key's sha256, written under `T.shots`, its verdict's text read by `T.read` (SHOT_READ, a
  * stage body of `page`), a text past `T.maxText` unread), taken before anything else touches the page; the census
- * (`T.census`, the source of argus-live-taste.mjs censusOf: the page's own scheme, the other one and reduced motion,
- * the media put back as it read them, never null); the rows of `main`'s largest
- * table (`T.rows`); on a themed page (the census's `themes` `dual`) the other scheme's screenshot, once its
- * transitions settled (at most `T.settleMax`), the explicit media restored after; then the events the census and that
- * switch caused drained and dropped. A probe that throws is a `faults` entry, never a failure.
+ * (`T.census`, the source of argus-live-taste.mjs censusOf, with `other: false`: the page's own scheme only, its
+ * media never switched on the explorer's page, so `themed` is always false: the other scheme and reduced motion are
+ * the confirmation replay's to measure, on a fresh instance); the rows of `main`'s largest table (`T.rows`). A probe
+ * that throws is a `faults` entry, never a failure.
  */
 export const RECORDER = `async (page, o, T) => {
   const t0 = Date.now();
@@ -278,7 +274,7 @@ export const RECORDER = `async (page, o, T) => {
   const shots = [await shoot(media.colorScheme)];
   let taste = null;
   try {
-    taste = await new Function("return " + T.census)()(page);
+    taste = await new Function("return " + T.census)()(page, { other: false });
   } catch (e) {
     faults.push("census");
   }
@@ -288,21 +284,7 @@ export const RECORDER = `async (page, o, T) => {
   } catch (e) {
     faults.push("rows");
   }
-  const themed = Boolean(taste && taste.themes === "dual");
-  if (themed) {
-    try {
-      await page.emulateMedia({ colorScheme: media.colorScheme === "dark" ? "light" : "dark", reducedMotion: media.reducedMotion });
-      await Promise.race([ev(T.settled), page.waitForTimeout(T.settleMax)]);
-      shots.push(await shoot(media.colorScheme === "dark" ? "light" : "dark"));
-    } finally {
-      await page.emulateMedia({ colorScheme: media.colorScheme, reducedMotion: media.reducedMotion });
-    }
-  }
-  await page.waitForTimeout(T.settle);
-  try {
-    await ev(T.drain);
-  } catch (e) {}
-  return { changed: true, route, width, theme: media.colorScheme, taste, ease, ai, rows, themed, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
+  return { changed: true, route, width, theme: media.colorScheme, taste, ease, ai, rows, themed: false, events: drained.events, dropped: drained.dropped, shots: shots.filter(Boolean), faults, ms: Date.now() - t0 };
 }`;
 
 /**
@@ -447,7 +429,7 @@ export async function confirming(sink, fn) {
 }
 
 /** How long the recorder may take after an observation, and how much it may answer (a shot's text past maxText is unread). */
-const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000, settle: 100, settleMax: 1000 };
+const RECORD_LIMITS = { maxBytes: 400_000, maxText: 150_000 };
 
 /**
  * The driver's views of the taste pass: recording runs for an explorer's slot (a positive integer) of a journey,
@@ -474,7 +456,7 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
     // The ease probe's screen kind as T2 measures a screen: the bar's vague terms per language, the owner's own labels.
     const terms = (loadBar().rules.find((r) => r.id === "copy.vague") ?? {}).terms ?? {};
     const vague = (taste ?? { copy: { vague: [] } }).copy.vague;
-    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, settled: SETTLED, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
+    return { prev: prev ?? null, routes, census: String(censusOf), ease: EASE_SOURCE, easeArg: { kind: "screen", terms, vague }, ai: AIUX_SOURCE, aiArg: { kind: "screen" }, media: MEDIA_READ, drain: TASTE_DRAIN, rows: MAIN_ROWS, read: SHOT_READ, shots, taken, limitMs, ...RECORD_LIMITS };
   } catch {
     return null;
   }
