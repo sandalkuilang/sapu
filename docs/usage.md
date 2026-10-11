@@ -382,7 +382,7 @@ The journey lane's first question is whether your UI is good by the standard of 
 
 - **Your own design tokens,** or a reference scale (a *frame*) when the repo has none.
 - **Your app's own best screens** of the same kind (the *archetype*: `marketing`, `docs`, `app`, `form` or `data`).
-- **An outside bar** drawn from public pages of well-regarded sites: built in, but with no calibrated band yet, so today every screen is judged against the first two alone ("The calibrated bar", below).
+- **An outside bar** drawn from public pages of well-regarded sites and from open-source apps run locally: built in, but with no calibrated band yet, so today every screen is judged against the first two alone ("The calibrated bar", below).
 
 The law of the pass is the lane's: taste proposes, measurement decides. A gap is filed only when it is measured beyond a threshold, measured again on a fresh instance, and, for a comparison with the outside bar, agreed by a second, internal witness. Nothing is filed on opinion, and nothing is filed because a screen differs from a famous one. A rule never requires or rewards a style or a CSS feature (`oklch()`, container queries, view transitions): "modern" means measured outcomes.
 
@@ -579,9 +579,15 @@ The *best known path* is the journey's path in your smoke suite that held (an ex
 
 #### The calibrated bar
 
-The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 48 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.
+The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 48 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across reference screens, with the number of screens and sites measured and where they came from. Bands are kept per width bucket: a screen narrower than 1024 px is compared with the `390` bands, any other with the `1440` ones. Each archetype records the month it was calibrated. The bar holds numbers only. A suite and a report name the bar version they used.
 
-**No band yet.** The bar ships with its rules and frames but with no band. The corpus (`scripts/taste-corpus.json`) lists 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), and sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)). But an agent read those terms, and the calibration measures a site only once a maintainer confirms that reading in the corpus; none is confirmed, so nothing was measured. Until a maintainer confirms the sites' terms, or a local reference corpus is measured instead, the outside bar decides nothing:
+Two reference corpora feed it, both measured by a maintainer, never by your cycle:
+- **Public pages** (`scripts/taste-corpus.json`), for `marketing` and `docs`: measured at 1440, honouring each site's `robots.txt` and terms.
+- **A local corpus of open-source apps** (`scripts/taste-corpus-local.json`), for `app`, `form` and `data`, whose real screens sit behind a login: OSI-licensed, actively maintained SaaS apps (Twenty, Plane, Cal.com, Documenso, Supabase Studio, Infisical and shadcn/ui are the candidates), each fetched at its latest release, run on the maintainer's machine by the journey lane's own instance runner, measured at 390 and 1440 in light and dark, and deleted. An app whose last release is over 12 months old is left out as unmaintained.
+
+**A stale bar is named.** When an archetype's bands were calibrated more than 12 months ago, `taste judge` prints `stale bands: <archetype> (calibrated <month>), …`. They still count as witnesses; a later sapu release recalibrates them.
+
+**No band yet.** The bar ships with its rules and frames but with no band. The corpus (`scripts/taste-corpus.json`) lists 43 public pages on 6 sites (Vercel, GitHub, Stripe, Linear, Atlassian and shadcn/ui), and sites whose terms bar robots or data mining were left out ([Safety and trust](security.md#the-calibration-is-maintainer-only)). But an agent read those terms, and the calibration measures a site only once a maintainer confirms that reading in the corpus; none is confirmed, so nothing was measured. The local corpus's apps are all candidates still: none has the instance config the calibration needs to run it. Until a maintainer confirms the sites' terms or makes the local apps ready and measures them, the outside bar decides nothing:
 - Every screen, of every archetype, is judged against your tokens or frame, your own best peer screens, and the rules that stand on their own measurement.
 - A count rule compares a screen with its peers only. A `bar`-class rule has no band to agree with, so its findings count as `not rows` in the judge's output and never file.
 
