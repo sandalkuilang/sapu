@@ -447,8 +447,11 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     if (heldCost && (!entry.best || heldCost.actions < entry.best.actions || pathSha(heldList) === entry.best.pathSha)) entry.best = { run: runId, actions: heldCost.actions, klm_s: round(heldCost.klm_s), pathSha: pathSha(heldList) };
     const list = paths.get(id);
     const cost = list ? costOf(list, id) : null;
-    const recovery = rows.filter((r) => r.journey === id && r.rule === "states.recovery" && isNum(r.measured)).reduce((n, r) => n + r.measured, 0);
-    journeys[id] = { screens: new Set(mine.map((s) => s.key)).size, efficiency: cost ? { actions: cost.actions, best: entry.best ? entry.best.actions : null, klm_s: round(cost.klm_s), typed: cost.typed, fitts_bits: round(cost.fitts_bits), modals: cost.modals, wait_ms: waitOf(mine), recovery } : null };
+    // A figure nothing measured is null (the scorecard prints `-`), never 0: recovery counts the fields lost (one
+    // states.recovery row each) only where a form case ran; Fitts' bits need the replay's target boxes.
+    const recovery = mine.some((s) => isObj(s.ease) && Array.isArray(s.ease.recovery)) ? rows.filter((r) => r.journey === id && r.rule === "states.recovery").length : null;
+    const boxes = (geometryOf(id).targets ?? []).length > 0;
+    journeys[id] = { screens: new Set(mine.map((s) => s.key)).size, efficiency: cost ? { actions: cost.actions, best: entry.best ? entry.best.actions : null, klm_s: round(cost.klm_s), typed: cost.typed, fitts_bits: boxes ? round(cost.fitts_bits) : null, modals: cost.modals, wait_ms: waitOf(mine), recovery } : null };
     const first = [...mine].sort((x, y) => x.t - y.t)[0];
     if (cost && entry.best && first && pathSha(list) !== entry.best.pathSha) {
       const witnesses = [{ kind: "peer", value: entry.best.actions, from: `best path ${entry.best.run}` }];

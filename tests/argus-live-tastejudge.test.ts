@@ -820,7 +820,7 @@ describe("argus-live taste judge (J2)", () => {
     await t.judge();
     expect(best()).toBeNull();
     expect(readTasteState(t.main).journeys.j.judged).toBe(t.runId);
-    expect(t.file().journeys.j).toEqual({ screens: 1, efficiency: { actions: 9, best: null, klm_s: 18, typed: 0, fitts_bits: 0, modals: 0, wait_ms: null, recovery: 0 } });
+    expect(t.file().journeys.j).toEqual({ screens: 1, efficiency: { actions: 9, best: null, klm_s: 18, typed: 0, fitts_bits: null, modals: 0, wait_ms: null, recovery: null } });
     // The suite's admitted path holds: the best; a shorter explorer path that never held does not replace it.
     writeFileSync(join(t.main, ".argus/smoke.json"), "{}");
     suite(4);
@@ -850,13 +850,17 @@ describe("argus-live taste judge (J2)", () => {
     expect(t.file().rows).toEqual([]);
   }, 30_000);
 
-  it("wait_ms sums each input's time to the first change after it; recovery counts the fields lost", async () => {
+  it("wait_ms sums each input's time to the first change after it; recovery counts the fields lost where a form case ran, else is unmeasured (null, never 0)", async () => {
     const t = judgeRepo();
     const ev = [{ kind: "input", t: 100, type: "click" }, { kind: "change", t: 340, cause: "added", attr: null }, { kind: "input", t: 500, type: "click" }, { kind: "input", t: 900, type: "keydown" }, { kind: "change", t: 950, cause: "attribute", attr: "class" }];
-    t.put(1, [t.screen("/a", [{ rule: "states.recovery", key: "form", measured: 2 }], { events: ev })]);
+    const lost = (k: string) => ({ rule: "states.recovery", key: k, measured: "lost", expected: "the value typed before the rejected submit" });
+    t.put(1, [t.screen("/a", [], { events: ev, ease: { findings: [lost("Email"), lost("Name")], recovery: [{ key: "Email" }, { key: "Name" }] } })]);
     t.ret(1, "j", pathOf(3));
     await t.judge();
-    expect(t.file().journeys.j.efficiency).toMatchObject({ wait_ms: 290, recovery: 2 });
+    expect(t.file().journeys.j.efficiency).toMatchObject({ wait_ms: 290, recovery: 2, fitts_bits: null });
+    t.put(1, [t.screen("/a", [], { events: ev })]);
+    await t.judge();
+    expect(t.file().journeys.j.efficiency).toMatchObject({ recovery: null });
   }, 30_000);
 
   it("hands T2's crossRules every recorded screen as J records it; a cross finding is a row of each journey that recorded its screen, never one from rulesFor", async () => {
