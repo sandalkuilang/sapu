@@ -7,7 +7,7 @@
 // a real GitHub repo.
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpus as osCpus, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
@@ -25,6 +25,8 @@ afterAll(() => rmSync(top, { recursive: true, force: true }));
 
 const GATE = `#!/usr/bin/env bash
 echo "gate ran: $0 in $PWD"
+# a journey run that starts and ends while the gate runs
+if [ -n "\${HX_GATE_LIVE:-}" ]; then t=$(date +%s); printf '%s start %s deadline %s\\n%s end %s\\n' "$HX_GATE_LIVE" "$t" "$((t + 600))" "$HX_GATE_LIVE" "$t" >> "$SAPU_MAIN/.git/sapu-live.log"; fi
 [ -z "\${HX_GATE_OUT:-}" ] || printf '%s\\n' "$HX_GATE_OUT"
 if [ -n "\${HX_GATE_BIG:-}" ]; then
   echo "Gate summary"; echo "⊘ skipped-check (no database)"
@@ -69,7 +71,13 @@ function harness({
   issues = {},
   children = {},
   listedOnly = [],
+  separateGitDir = false,
+  originUrl = "https://github.com/owner/app.git",
 }: {
+  /** <MAIN>'s git directory lives outside it (`git init --separate-git-dir`): <MAIN>/.git is a file. */
+  separateGitDir?: boolean;
+  /** What `git remote get-url origin` answers in <MAIN>. */
+  originUrl?: string;
   contract?: Record<string, unknown>;
   main?: Files;
   pr?: Files;
@@ -102,17 +110,26 @@ function harness({
     HX_CLAUDE_JSON: JSON.stringify([{ id: "sapu@sapu", scope: "project" }]),
   });
   const stub = (name: string, body: string) => writeFileSync(join(bin, name), body, { mode: 0o755 });
+  // The fake HOME is not the account's home, which sapu-contract.mjs refuses; the script never
+  // forwards the CLI's test seam, so this shim adds it to every sapu-contract.mjs call it makes.
+  stub(
+    "node",
+    `#!/bin/sh
+[ -n "\${HX_NO_SEAM:-}" ] || case "$1" in */sapu-contract.mjs) f="$1"; shift; exec "${process.execPath}" "$f" --machine-config "$HOME/.config/sapu/config.json" "$@" ;; esac
+exec "${process.execPath}" "$@"
+`,
+  );
   stub(
     "gh",
     `#!/usr/bin/env bash
-printf 'gh %s\\n' "$*" >> "$HX_GH_LOG"
+printf '%sgh %s\\n' "\${GH_HOST:+[$GH_HOST] }" "$*" >> "$HX_GH_LOG"
 ${GH_API}
 if [ "$1" = api ]; then gh_api "$@"; exit $?; fi
 case "$1 $2" in
   "repo view") echo owner/app ;;
   "pr list") [ -f "$HX_API/pr_list.json" ] && jq -r '.[].number' "$HX_API/pr_list.json" ;;
   "pr comment"|"pr edit"|"issue edit") ;;
-  "pr merge") exit "\${HX_GH_MERGE_RC:-0}" ;;
+  "pr merge") [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2; exit "\${HX_GH_MERGE_RC:-0}" ;;
   *) echo "gh stub: unexpected: $*" >&2; exit 1 ;;
 esac
 `,
@@ -121,7 +138,7 @@ esac
   stub(
     "git",
     `#!/bin/sh
-if [ "$1" = "-C" ] && [ "$3 $4 $5" = "remote get-url origin" ]; then echo "https://github.com/owner/app.git"; exit 0; fi
+if [ "$1" = "-C" ] && [ "$3 $4 $5" = "remote get-url origin" ]; then echo "${originUrl}"; exit 0; fi
 exec "${REAL_GIT}" "$@"
 `,
   );
@@ -145,7 +162,8 @@ exec "${REAL_GIT}" "$@"
     ...contract,
   };
   git(dir, "init", "-q", "--bare", "-b", "main", bare);
-  git(MAIN, "init", "-q", "-b", "main");
+  if (separateGitDir) git(dir, "init", "-q", "-b", "main", `--separate-git-dir=${join(dir, "main-store")}`, MAIN);
+  else git(MAIN, "init", "-q", "-b", "main");
   git(MAIN, "config", "user.email", FIXTURE_CONTRACT.gitEmail);
   git(MAIN, "config", "user.name", "Owner");
   git(MAIN, "remote", "add", "origin", bare);
@@ -399,6 +417,61 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts, tests\/test_b\.py/);
   });
 
+  // What each runner prints for a failure, and the entry the ledger records for it: a file where the
+  // runner names one, else its most stable name for the failing unit (a Go package, a cargo test path,
+  // a JUnit class). `wt` is the PR worktree: mocha prints absolute stack paths.
+  const RUNNERS: ReadonlyArray<readonly [string, (wt: string) => string, string]> = [
+    ["go test", () => "--- FAIL: TestRefund (0.01s)\n    pay_test.go:12: boom\nFAIL\nFAIL\texample.com/app/pay\t0.012s\nok  \texample.com/app/cart\t0.004s\nFAIL", "example.com/app/pay"],
+    ["go test, a versioned module path", () => "FAIL\tgithub.com/o/app.v2/pay\t1.5s", "github.com/o/app.v2/pay"],
+    ["cargo test", () => "test pay::tests::ok ... ok\ntest pay::tests::refund ... FAILED\n\nfailures:\n    pay::tests::refund\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored", "pay::tests::refund"],
+    ["cargo nextest", () => "        PASS [   0.002s] app tests::ok\n        FAIL [   0.004s] app::integration tests::refund\n  Summary [   0.010s] 2 tests run: 1 passed, 1 failed\n        FAIL [   0.004s] app::integration tests::refund", "app::integration/tests::refund"],
+    ["rspec", () => "Failures:\n  1) Order totals\n\nFailed examples:\n\nrspec ./spec/models/order_spec.rb:12 # Order totals\nrspec ./spec/models/order_spec.rb[1:2] # Order again", "spec/models/order_spec.rb"],
+    ["maven surefire", () => "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.05 s <<< FAILURE! -- in com.example.PayTest\n[ERROR] com.example.PayTest.refund -- Time elapsed: 0.01 s <<< FAILURE!\n[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0", "com.example.PayTest"],
+    ["maven surefire 2", () => "Tests run: 2, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 0.2 sec <<< ERROR! - in com.example.CartTest", "com.example.CartTest"],
+    ["gradle", () => "PayTest > refund() FAILED\n    org.opentest4j.AssertionFailedError at PayTest.java:12\n\n3 tests completed, 1 failed", "PayTest"],
+    [
+      "mocha",
+      (wt) =>
+        `  Pay\n    1) refunds\n\n  0 passing (12ms)\n  2 failing\n\n  1) Pay\n       refunds:\n     AssertionError [ERR_ASSERTION]: boom\n      at Context.<anonymous> (file://${wt}/test/pay.spec.mjs:5:14)\n      at process.processImmediate (node:internal/timers:483:21)\n\n` +
+        `  2) Cart\n       times out:\n     Error: Timeout of 2000ms exceeded. For async tests and hooks, ensure "done()" is called; if returning a Promise, ensure it resolves. (${wt}/test/cart.spec.js)\n      at listOnTimeout (node:internal/timers:581:17)\n`,
+      "test/cart.spec.js,test/pay.spec.mjs",
+    ],
+  ];
+
+  it.each(RUNNERS)("red: %s failures are read into the ledger", (_runner, out, failed) => {
+    const h = harness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out(h.WT) });
+    expect(r.status).toBe(2);
+    expect(gates(h)).toEqual([expect.stringMatching(new RegExp(` red gate=\\d+s failed=${failed.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} tree=[0-9a-f]{40} verdict=unknown$`))]);
+    expect(r.err).toMatch(/verdict: unknown — not proven flaky/);
+  });
+
+  it("a runner's entry proven flaky elsewhere is known-flake, like a file", () => {
+    const h = harness();
+    seed(h, ...provenBy(5, "example.com/app/pay"));
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: "FAIL\texample.com/app/pay\t0.012s" }).err).toMatch(/verdict: known-flake — .*example\.com\/app\/pay \(PR #5\)/);
+  });
+
+  it.each([
+    ["a Go package that did not build", "FAIL\tgithub.com/o/app.v2/pay [build failed]"],
+    ["a doc test (a name with spaces)", "test src/lib.rs - pay::refund (line 3) ... FAILED"],
+    ["a mocha failure with no test file in its stack", (wt: string) => `  1 failing\n\n  1) Pay\n       refunds:\n     Error: boom\n      at helper (${wt}/node_modules/x/index.js:1:1)\n`],
+    ["a mocha failure in a hook outside the worktree", () => "  1 failing\n\n  1) \"before all\" hook:\n     Error: boom\n      at /elsewhere/test/setup.js:1:1\n"],
+  ] as const)("%s keeps the verdict unknown: something besides a readable test failed", (_what, extra) => {
+    const h = harness();
+    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${typeof extra === "string" ? extra : extra(h.WT)}` });
+    expect(r.err).toMatch(/verdict: unknown \(not only tests failed: /);
+  });
+
+  it("an rspec, mocha or JUnit summary step is a test step", () => {
+    for (const step of ["✗ rspec 3.0s", "✗ mocha 2.0s", "✗ junit 9.0s"]) {
+      const h = harness();
+      seed(h, ...provenBy(5, "apps/a.test.ts"));
+      expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: step }).err, step).toMatch(/verdict: known-flake/);
+    }
+  });
+
   it("a vitest project label, colour codes, an empty FAIL line and a path with a space are never taken for a file", () => {
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  |db| apps/api/new.test.ts > breaks\n\x1b[31m FAIL \x1b[39m |pure| src/c.test.ts > x\n FAIL \n FAIL  src/my file.test.ts > y" });
@@ -467,7 +540,7 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h5 = harness();
     seed(h5, ...provenBy(5, "apps/a.test.ts"));
     expect(h5.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ Unit Tests (api) 3.0s\n✗ E2E 9.1s" }).err).toMatch(/verdict: known-flake/);
-  });
+  }, 60_000); // five full merge runs: 17-19 s on a loaded machine, too close to the file's 20 s
 
   it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {
     const h = harness();
@@ -496,12 +569,86 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
   });
 });
 
+const cpuCount = () => osCpus().length;
+
+describe("sapu-merge.sh — gate workers come from the machine", () => {
+  it("without --workers the gate gets the machine's gateWorkers (sapu-contract.mjs lanes), with it the number given", () => {
+    const cpus = cpuCount();
+    const allowed = [Math.max(1, Math.floor(cpus * 0.8)), Math.max(1, Math.floor(cpus * 0.4))];
+    const h = harness();
+    const n = Number(/gate running at [0-9a-f]+ \(workers=(\d+)\)/.exec(h.run().err)?.[1]);
+    expect(allowed).toContain(n);
+    expect(harness().run({}, ["--workers", "3"]).err).toMatch(/\(workers=3\)/);
+  });
+});
+
+describe("sapu-merge.sh — merge method, git directory layout and GitHub host", () => {
+  it("merges with the contract's mergeMethod, and the plan and the report name it", () => {
+    const h = harness({ contract: { mergeMethod: "rebase" } });
+    expect(h.run({}, ["--dry-run"]).err).toMatch(/gh pr merge 7 --rebase --delete-branch/);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/gh pr merge 7 --repo owner\/app --rebase --delete-branch --match-head-commit [0-9a-f]{40}/);
+    expect(r.out).toMatch(/PR #7 merged \(rebase\)/);
+  });
+
+  it("a merge GitHub refuses says what GitHub said and points at mergeMethod", () => {
+    const h = harness();
+    const r = h.run({ HX_GH_MERGE_RC: "1", HX_GH_MERGE_ERR: "GraphQL: Squash merges are not allowed on this repository. (mergePullRequest)" });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/gh pr merge --squash failed: GraphQL: Squash merges are not allowed on this repository/);
+    expect(r.err).toMatch(/mergeMethod/);
+  });
+
+  it("a --separate-git-dir checkout (.git is a file): the lock and every ledger live in its git directory", () => {
+    const h = harness({ separateGitDir: true });
+    const store = join(h.dir, "main-store");
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(readFileSync(join(store, "sapu-gates.log"), "utf8")).toMatch(/ red gate=/);
+    const r2 = harness({ separateGitDir: true });
+    expect(r2.run().status).toBe(0);
+    const store2 = join(r2.dir, "main-store");
+    expect(readFileSync(join(store2, "sapu-merges.log"), "utf8")).toMatch(/^\S+ 7 [0-9a-f]{40} gate=\d+s$/m);
+    expect(existsSync(join(store2, "sapu-merge.lock"))).toBe(false);
+  });
+
+  it("refuses a bare repository as the main checkout, naming the layout", () => {
+    const h = harness();
+    const wt = join(h.dir, "bare-wt");
+    execFileSync(REAL_GIT, ["-C", h.bare, "worktree", "add", "-q", wt, "main"]);
+    const r = spawnSync("bash", [MERGE, "7", join(h.dir, "review.md")], { cwd: wt, encoding: "utf8" });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/bare repository/);
+  });
+
+  it("a contract `host` (GitHub Enterprise): origin is pinned to it and every gh call goes to it", () => {
+    const h = harness({ contract: { host: "ghe.example.com" }, originUrl: "https://ghe.example.com/owner/app.git" });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    const calls = h.gh().split("\n").filter(Boolean);
+    expect(calls.length).toBeGreaterThan(3);
+    for (const c of calls) expect(c).toMatch(/^\[ghe\.example\.com\] gh /);
+    const wrong = harness({ contract: { host: "ghe.example.com" } });
+    expect(wrong.run().err).toMatch(/origin is "none" on ghe\.example\.com/);
+  });
+});
+
 describe("sapu-merge.sh — the scope lock of the machine config", () => {
   it("a <MAIN> outside the allowed roots is refused before the gate runs or anything merges", () => {
     const h = harness({ machine: { allowedRoots: ["~/elsewhere"] } });
     const r = h.run();
     expect(r.status).toBe(1);
     expect(r.err).toMatch(/is outside the allowed roots in .*\/\.config\/sapu\/config\.json/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("a HOME that is not the account's home is refused before anything merges, even with gh's token in the environment", () => {
+    const h = harness();
+    const r = h.run({ HX_NO_SEAM: "1", GH_TOKEN: "x" });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/HOME is .*, not this account's home directory/);
     expect(h.gh()).not.toMatch(/pr merge/);
     expect(h.gateLog()).toBe("");
   });
@@ -593,6 +740,38 @@ describe("sapu-merge.sh — which copy of a contract command runs (B)", () => {
     const r = h.run();
     expect(r.status).toBe(2);
     expect(h.gateLog()).toContain("gate ran: main copy");
+  });
+
+  it("`make gate`: <MAIN>'s makefile is read, the PR's is not, and the recipe runs in the PR worktree", () => {
+    const mk = (who: string) => `gate:\n\t@echo "gate ran: ${who} in $(CURDIR)"; echo "Gate summary"; echo "✓ 3 passed"\n`;
+    const gate = { fast: "make fast", merge: "make gate", summaryStart: "^Gate summary", redIf: "^⊘" };
+    const h = harness({ contract: { gate }, main: { Makefile: mk("main makefile") }, pr: { Makefile: mk("PR makefile") } });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gateLog()).toContain(`gate ran: main makefile in ${h.WT}`);
+    expect(h.gateLog()).not.toContain("PR makefile");
+    // …and <MAIN>'s makefile must be origin's, like any pinned file
+    const h2 = harness({ contract: { gate }, main: { Makefile: mk("main makefile") } });
+    h2.write({ Makefile: mk("tampered") });
+    const r2 = h2.run();
+    expect(r2.status).toBe(1);
+    expect(r2.err).toMatch(/Makefile differs from origin\/main/);
+  });
+
+  it("`uv run bash <script>`: the runner is peeled and the script is still <MAIN>'s copy", () => {
+    const gate = { fast: "uv run bash scripts/gate.sh --fast", merge: "uv run bash scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+    const h = harness({ contract: { gate }, pr: { "scripts/gate.sh": PR_GATE } });
+    writeFileSync(join(h.dir, "bin/uv"), '#!/bin/sh\n[ "$1" = run ] && shift\nexec "$@"\n', { mode: 0o755 });
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(h.gateLog()).toContain(`gate ran: ${h.MAIN}/scripts/gate.sh`);
+    expect(h.gateLog()).not.toContain("PR copy");
+  });
+
+  it("a gate.merge that pins nothing is warned about, and the dry-run plan names what is pinned", () => {
+    const h = harness({ contract: { gate: { fast: "npm run fast", merge: "npm test", summaryStart: "^Gate summary", redIf: "^⊘" } } });
+    expect(h.run({}, ["--dry-run"]).err).toMatch(/WARNING gate\.merge \(`npm test`\) pins no repo file/);
+    expect(harness().run({}, ["--dry-run"]).err).toMatch(/gate\.merge pins <MAIN>'s scripts\/gate\.sh/);
   });
 
   it("a working-tree change to an interpreter's script word is caught by the HEAD check (B4 + 1b)", () => {
@@ -715,7 +894,8 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     ["a bare mention of an outsider's issue", { prJson: { body: "Closes #7. See #8 for the plan." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a GH-8 mention of an outsider's issue", { prJson: { body: "Closes #7 (GH-8)" }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8/],
     ["a stray `#N` in prose, naming the sentence and the fix", { prJson: { body: "Closes #7.\nThe change keeps invariant #8 intact." }, issues: { 8: { author: "stranger" } } }, /\(rule: referenced issue\).*#8.*keeps invariant #8 intact.*without the #/],
-    ["a mention of another repository's issue", { prJson: { body: "Closes #7, like other/repo#3 did" } }, /\(rule: referenced issue\).*other\/repo#3/],
+    ["a Refs list naming another repository's issue", { prJson: { body: "Closes #7. Refs #9, other/repo#3" } }, /\(rule: referenced issue\).*other\/repo#3/],
+    ["a `Ref:` naming another repository's issue URL", { prJson: { body: "Closes #7\n\nRef: https://github.com/other/repo/issues/3" } }, /\(rule: referenced issue\).*other\/repo#3/],
     ["more commits than can be checked", { prJson: { commitsTotal: 101 } }, /\(rule: commit author\).*101 commits/],
     ["a PR GitHub returns as null", { prJson: { nullNode: true } }, /\(rule: unreadable\).*GitHub returned no PR #7/],
   ])("refuses %s before any worktree, gate or merge — in --dry-run too", (_what, spec, reason) => {
@@ -760,6 +940,21 @@ describe("sapu-merge.sh — only the trusted set's work is checked out, gated or
     const r = h.run();
     expect(r.err).not.toMatch(/refusing/);
     expect(r.status).toBe(0);
+  });
+
+  it("a trusted author's plain mention of another repository is informational: neither trust-checked nor relabelled", () => {
+    // #3, #4 and #5 here are outsiders' issues: other/plugin#3 must not be read as this repo's #3.
+    const h = harness({
+      prJson: { body: "Closes #7. Adapts to other/plugin#3 (see https://github.com/other/plugin/pull/4), as Implements other/plugin#5 asked." },
+      issues: { 3: { author: "stranger" }, 4: { author: "stranger" }, 5: { author: "stranger" } },
+    });
+    const dry = h.run({}, ["--dry-run"]);
+    expect(dry.err).not.toMatch(/refusing/);
+    expect(dry.status).toBe(0);
+    expect(dry.err).toMatch(/trust OK: .*closes: 7, refs: none/);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(h.gh()).not.toMatch(/gh issue edit [345] /);
   });
 
   it("a bare #N inside code is not a reference: GitHub does not link it either", () => {
@@ -842,5 +1037,98 @@ describe("sapu-merge.sh — the repo's policy (who merges, what stays on GitHub)
     const r = h.run();
     expect(r.status).toBe(4);
     expect(h.gh()).not.toMatch(/pr comment|pr merge|issue edit/);
+  });
+});
+
+describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and never proves a flake", () => {
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+  const live = (h: { MAIN: string }, ...lines: string[]) => writeFileSync(join(h.MAIN, ".git/sapu-live.log"), lines.map((l) => `${l}\n`).join(""));
+  const now = () => Math.floor(Date.now() / 1000);
+  const proof = (redTail: string) =>
+    [
+      `2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown${redTail}`,
+      "2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5",
+    ].map((l) => `${l}\n`).join("");
+
+  it("marks a gate that ran while a journey run was open", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} live=1$/);
+  });
+
+  it("does not mark a gate after the run ended, nor after an unended run's deadline", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 7200} deadline ${now() - 3600}`, `r2 start ${now() - 900} deadline ${now() + 900}`, `r2 end ${now() - 300}`);
+    h.run();
+    expect(gates(h).at(-1)).not.toMatch(/live=1/);
+  });
+
+  it("a red-then-green proof made beside a journey cycle proves nothing", () => {
+    const h = harness();
+    writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(" live=1"));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("control: the same proof without live=1 is a known-flake", () => {
+    const h = harness();
+    writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(""));
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: known-flake/);
+  });
+
+  it("a renewed run counts until its latest deadline", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 7200} deadline ${now() - 3600}`, `r1 deadline ${now() + 600}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ live=1$/);
+  });
+
+  it("an earlier deadline line never shortens a run", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`, `r1 deadline ${now() - 30}`);
+    h.run();
+    expect(gates(h).at(-1)).toMatch(/ live=1$/);
+  });
+
+  it("marks a gate inside which a journey run started and ended", () => {
+    const h = harness();
+    live(h, `r0 start ${now() - 7200} deadline ${now() - 3600}`, `r0 end ${now() - 3600}`);
+    h.run({ HX_GATE_LIVE: "r9" });
+    expect(readFileSync(join(h.MAIN, ".git/sapu-live.log"), "utf8")).toMatch(/^r9 end \d+$/m);
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} live=1$/);
+  });
+
+  it("a proof whose green half ran beside a journey cycle proves nothing", () => {
+    const h = harness();
+    writeFileSync(
+      join(h.MAIN, ".git/sapu-gates.log"),
+      ["2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown", "2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5 live=1"].map((l) => `${l}\n`).join(""),
+    );
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    expect(r.err).toMatch(/verdict: unknown/);
+  });
+
+  it("a setup-failed gate beside a journey cycle is marked live=1", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    expect(h.run({ HX_GATE_RC: "75", HX_GATE_LAST: "no database" }).status).toBe(1);
+    expect(gates(h).at(-1)).toMatch(/ setup-failed gate=\d+s failed=- tree=\S+ live=1$/);
+  });
+
+  it("a red verdict beside a journey cycle says so, and only then", () => {
+    const h = harness();
+    live(h, `r1 start ${now() - 60} deadline ${now() + 600}`);
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" }).err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts \(this gate ran beside a journey cycle\)/);
+    const h2 = harness();
+    expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" }).err).not.toMatch(/beside a journey cycle/);
+  });
+
+  it("a malformed live log never breaks the gate record", () => {
+    const h = harness();
+    live(h, "garbage line", "r1 start notanumber deadline x");
+    expect(h.run().status).toBe(0);
+    expect(gates(h).at(-1)).toMatch(/ green gate=\d+s /);
   });
 });

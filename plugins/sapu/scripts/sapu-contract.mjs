@@ -32,8 +32,21 @@
 //   sapu-contract.mjs pr-reviews <N>  PR <N>'s reviews + inline review comments by the trusted set and
 //                                 policy.reviewers only (prReviews); others are counted as withheld
 //   sapu-contract.mjs allowed <skill>  exit 0 when policy.skills allows <skill>, else 1 with the reason
-//   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, cpus, ramGB, load1, memFreePct}: how many
-//                                 Phase B lanes this machine carries now (safeLanes); no contract needed
+//   sapu-contract.mjs lanes       prints {lanes, ceiling, busy, gateWorkers, gateWorkersBeside, cpus, ramGB,
+//                                 load1, memFreePct}: how many Phase B lanes this machine carries now
+//                                 (safeLanes) and the merge gate's workers (gateWorkers); no contract needed
+//   sapu-contract.mjs tuning      prints the repo's resolved tuning (resolveTuning: the step budget, the
+//                                 context window and the context limits in tokens) with the gate workers
+//   sapu-contract.mjs sweep hold|release <run-marker>   one /sapu sweep per repo (ONE SWEEP PER REPO):
+//                                 hold = take or refresh <MAIN>/.git/sapu-sweep.json (the heartbeat), exit 1
+//                                 while another session's heartbeat is fresh; release = remove it, holder only
+//   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
+//   sapu-contract.mjs main        prints <MAIN>, the main checkout (findMain: also for a submodule or a
+//                                 --separate-git-dir checkout, where git lists its git directory first)
+//   sapu-contract.mjs stack       the guard /sapu:init proposes for the checkout (detectStack): its
+//                                 ecosystems' guard.deny rules and the dev databases of guard.postgres/databases
+//   sapu-contract.mjs protect [--ref <rev>] -- <words>   which repo file a contract command pins
+//                                 (protectedCommand), as JSON {words, index, file, why}
 //   sapu-contract.mjs get <a.b>   prints one value (strings raw, anything else as JSON)
 //   sapu-contract.mjs profiles    every .claude/sapu/<skill>.md carries the sections its skill reads
 //                                 (`--list` prints them; /sapu:init writes them)
@@ -104,7 +117,7 @@ export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
  * Why `t` cannot be a specialist, or null. A reviewer must be a dedicated agent with its own
  * model: `general-purpose` inherits the session's, and a ladder worker is a worker, not a reviewer.
  */
-/** The plugin's former built-in role agents (removed in 2.6.0): a contract still naming one dispatches nothing. */
+/** The plugin's former built-in role agents, which it no longer ships: a contract still naming one dispatches nothing. */
 const REMOVED_ROLE_AGENT = /(^|:)sapu-(qa|architect|db|developer|ux|writer|product)$/;
 const notSpecialist = (t) =>
   t === "general-purpose" ? "general-purpose inherits the session model"
@@ -122,6 +135,9 @@ export function resolveSpecialists(c) {
   return Object.fromEntries(SPECIALIST_ROLES.map((r) => [r, isStr(own[r]) ? own[r] : builtIn(r)]));
 }
 
+/** Characters the guard's label matcher splits command text on (or URL-decodes), so a label holding one can never be recognised. */
+const UNRECOGNISABLE_LABEL = /[\s,="'/[\]{}()%]/;
+
 /** The acceptance label when the contract's optional `labels.accepted` names none. */
 export const DEFAULT_ACCEPTED_LABEL = "sapu:accepted";
 /** A login as `trustedAuthors` writes it: letters, digits, hyphens; an app as `app/<name>` or `<name>[bot]`. */
@@ -133,6 +149,12 @@ const isId = (v) => Number.isInteger(v) && v > 0;
 
 /** The label a trusted login applies to accept an outsider's issue: `labels.accepted`, else the default. */
 export const acceptedLabel = (c) => (c && c.labels && isStr(c.labels.accepted) ? c.labels.accepted : DEFAULT_ACCEPTED_LABEL);
+/** The label marking a finding only the owner can rule on (argus journey lane); sapu skips it in B2. */
+export const DEFAULT_NEEDS_OWNER_LABEL = "argus:needs-owner";
+export const needsOwnerLabel = (c) => (c && c.labels && isStr(c.labels.needsOwner) ? c.labels.needsOwner : DEFAULT_NEEDS_OWNER_LABEL);
+/** The label every issue an agent files carries (its provenance): `labels.agentFiled`, else the default. */
+export const DEFAULT_AGENT_FILED_LABEL = "sapu:agent-filed";
+export const agentFiledLabel = (c) => (c && c.labels && isStr(c.labels.agentFiled) ? c.labels.agentFiled : DEFAULT_AGENT_FILED_LABEL);
 
 /**
  * The trusted set for contract `c` and the active owner account `owner` ({login, id}): the owner
@@ -149,7 +171,7 @@ export function trustedSet(c, owner) {
 }
 
 /** The skills a policy can allow (`policy.skills`). */
-export const SKILLS = ["sapu", "forge", "argus", "momus", "nemesis", "inspector", "dream"];
+export const SKILLS = ["sapu", "forge", "argus", "journey", "momus", "nemesis", "inspector", "dream"];
 /** Severities a pre-PR review command reports, highest first. */
 export const SEVERITIES = ["critical", "medium", "low"];
 
@@ -189,6 +211,18 @@ function policyProblems(p) {
   return errs;
 }
 
+/** The database engines `guard.databases` protects (the guard knows each one's clients, flags and URLs). */
+export const DB_ENGINES = ["postgres", "mysql", "mongodb", "redis", "sqlite"];
+
+/**
+ * Every protected port and database name of a contract guard, whatever the engine: `guard.postgres`
+ * and each `guard.databases` entry (sqlite files aside). For checks that compare values, not commands.
+ */
+export function protectedDatabases(guard) {
+  const all = [...(guard && guard.postgres ? [guard.postgres] : []), ...(guard && Array.isArray(guard.databases) ? guard.databases.filter((d) => d.engine !== "sqlite") : [])];
+  return { ports: [...new Set(all.flatMap((d) => d.ports))], databases: [...new Set(all.flatMap((d) => d.databases))] };
+}
+
 /** Every schema error in `c` (empty = valid). Unknown keys are errors: a typo must not silently drop a rule. */
 export function validate(c) {
   const errs = [];
@@ -204,8 +238,14 @@ export function validate(c) {
     c,
     "sapu.json",
     ["version", "repo", "ghUser", "gitEmail", "baseBranch", "gate", "redAreas", "redAreaSpecialists", "mergeAfter", ...(noTraces && !("labels" in c) ? [] : ["labels"]), "securityEpic", "invariantDomains", "testResources", "guard"],
-    ["specialists", "trustedAuthors", "requireSignedCommits", "policy", "labels"],
+    ["specialists", "trustedAuthors", "requireSignedCommits", "agentFiledNeedsAcceptance", "policy", "labels", "mergeMethod", "host", "tuning"],
   );
+  if ("agentFiledNeedsAcceptance" in c) {
+    need(typeof c.agentFiledNeedsAcceptance === "boolean", "agentFiledNeedsAcceptance must be true or false (omit it for false)");
+    need(!(c.agentFiledNeedsAcceptance === true && noTraces), 'agentFiledNeedsAcceptance needs traces "visible": with traces "none" no agent-filed label is applied, so nothing would need acceptance');
+  }
+  if ("mergeMethod" in c) need(MERGE_METHODS.includes(c.mergeMethod), `mergeMethod must be "squash", "merge" or "rebase" (the method the repo allows; omit it for squash)`);
+  if ("host" in c) need(typeof c.host === "string" && HOSTNAME.test(c.host), 'host must be a hostname, e.g. "github.example.com" (the GitHub Enterprise host; omit it for github.com)');
   need(c.version === 1, "version must be 1");
   need(typeof c.repo === "string" && /^[\w.-]+\/[\w.-]+$/.test(c.repo), "repo must be owner/name");
   need(isStr(c.ghUser), "ghUser must be a non-empty string");
@@ -271,17 +311,48 @@ export function validate(c) {
   }
   need(c.mergeAfter === null || isStr(c.mergeAfter), "mergeAfter must be a command or null");
   if (c.labels && typeof c.labels === "object") {
-    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors"]);
+    keys(c.labels, "labels", ["tierPrefix", "inProgress", "done"], ["accepted", "acceptors", "needsOwner", "agentFiled"]);
     for (const k of ["tierPrefix", "inProgress", "done"]) need(isStr(c.labels[k]), `labels.${k} must be a non-empty string`);
     if ("accepted" in c.labels) need(isStr(c.labels.accepted), `labels.accepted must be a non-empty label name (omit it for ${DEFAULT_ACCEPTED_LABEL})`);
+    if ("needsOwner" in c.labels) need(isStr(c.labels.needsOwner), `labels.needsOwner must be a non-empty label name (omit it for ${DEFAULT_NEEDS_OWNER_LABEL})`);
+    if ("agentFiled" in c.labels) need(isStr(c.labels.agentFiled), `labels.agentFiled must be a non-empty label name (omit it for ${DEFAULT_AGENT_FILED_LABEL})`);
+    for (const k of ["accepted", "needsOwner", "agentFiled"]) if (isStr(c.labels[k])) need(!UNRECOGNISABLE_LABEL.test(c.labels[k]), `labels.${k} must not contain spaces or any of , = " ' / [ ] { } ( ) % (the guard could not recognise it)`);
+    if (!("needsOwner" in c.labels) || isStr(c.labels.needsOwner)) need(needsOwnerLabel(c).toLowerCase() !== acceptedLabel(c).toLowerCase(), `labels.needsOwner must differ from the acceptance label: both are "${needsOwnerLabel(c)}"`);
+    if (!("agentFiled" in c.labels) || isStr(c.labels.agentFiled)) {
+      for (const [k, label] of [["accepted", acceptedLabel(c)], ["needsOwner", needsOwnerLabel(c)]]) need(agentFiledLabel(c).toLowerCase() !== label.toLowerCase(), `labels.agentFiled must differ from labels.${k}: both are "${label}"`);
+    }
+    // Each owner label (or its default) apart from the workflow and tier labels, in any case.
+    for (const [k, label] of [["accepted", acceptedLabel(c)], ["needsOwner", needsOwnerLabel(c)], ["agentFiled", agentFiledLabel(c)]]) {
+      if (k in c.labels && !isStr(c.labels[k])) continue;
+      const low = label.toLowerCase();
+      for (const o of ["inProgress", "done"]) if (isStr(c.labels[o])) need(low !== c.labels[o].toLowerCase(), `labels.${k} must differ from labels.${o}: both are "${label}"`);
+      if (isStr(c.labels.tierPrefix)) need(!low.startsWith(c.labels.tierPrefix.toLowerCase()), `labels.${k} must not start with labels.tierPrefix ("${c.labels.tierPrefix}"): it would read as a risk tier`);
+    }
   } else if (!(noTraces && !("labels" in c))) errs.push("labels must be an object");
   need(c.securityEpic === null || (Number.isInteger(c.securityEpic) && c.securityEpic > 0), "securityEpic must be an issue number or null");
   need(isStr(c.invariantDomains), "invariantDomains must be a non-empty string");
   need(isStr(c.testResources), "testResources must be a non-empty string");
   if ("policy" in c) policyProblems(c.policy).forEach((e) => errs.push(e));
+  if ("tuning" in c) tuningProblems(c.tuning).forEach((e) => errs.push(e));
   const g = c.guard;
   if (g && typeof g === "object") {
-    keys(g, "guard", ["envFiles", "postgres", "deny"]);
+    keys(g, "guard", ["envFiles", "postgres", "deny"], ["databases"]);
+    // Optional, like postgres per engine: a dev database other sessions use, of any engine the guard reads.
+    if ("databases" in g) {
+      if (!Array.isArray(g.databases)) errs.push(`guard.databases must be an array of {engine, ports, databases} (engines: ${DB_ENGINES.join(", ")}); omit it for none`);
+      else
+        g.databases.forEach((d, i) => {
+          const where = `guard.databases[${i}]`;
+          const shaped = need(
+            d && typeof d === "object" && !Array.isArray(d) && Object.keys(d).sort().join() === "databases,engine,ports" && Array.isArray(d.ports) && d.ports.every((n) => Number.isInteger(n) && n > 0 && n < 65536) && strArray(d.databases),
+            `${where} must be {engine, ports: [int], databases: [name]} (sqlite: databases are files, absolute or relative to the main checkout)`,
+          );
+          if (shaped !== true) return;
+          if (!DB_ENGINES.includes(d.engine)) errs.push(`${where}.engine must be one of ${DB_ENGINES.join(", ")}`);
+          else if (d.engine === "sqlite" && d.ports.length) errs.push(`${where}: sqlite protects files, not ports`);
+          need(d.ports.length + d.databases.length > 0, `${where} must name at least one port or database`);
+        });
+    }
     need(strArray(g.envFiles), "guard.envFiles must be an array of file names ([] adds nothing to .env/.env.local)");
     // The guard compares basenames: a path would silently protect nothing.
     if (strArray(g.envFiles)) for (const f of g.envFiles) need(!f.includes("/"), `guard.envFiles entries are file names, not paths: "${f}"`);
@@ -311,15 +382,66 @@ export function validate(c) {
   return errs;
 }
 
-/** <MAIN> = the first `git worktree list` entry seen from `cwd`; null outside a repo. */
-export function findMain(cwd) {
+/**
+ * The repository's common git directory for checkout `main` — where sapu keeps its locks, ledgers
+ * and counters (`<MAIN>/.git/…` in the docs): `<main>/.git` in a plain clone; the directory a `.git`
+ * FILE names (a submodule, `--separate-git-dir`), through its `commondir`; `main` itself when it is
+ * a bare repository. Read from the files, no git process (the guard calls it on every tool call);
+ * null when no such directory exists.
+ */
+export function gitCommonDir(main) {
+  if (!main) return null;
+  const dotgit = path.join(main, ".git");
+  let dir = null;
   try {
-    const out = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const first = out.split("\n").find((l) => l.startsWith("worktree "));
-    return first ? first.slice("worktree ".length) : null;
+    const st = fs.statSync(dotgit);
+    if (st.isDirectory()) dir = dotgit;
+    else {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotgit, "utf8"));
+      if (m) dir = path.resolve(main, m[1]);
+    }
+  } catch {
+    if (fs.existsSync(path.join(main, "HEAD")) && fs.existsSync(path.join(main, "objects"))) dir = main;
+  }
+  if (!dir) return null;
+  try {
+    const common = fs.readFileSync(path.join(dir, "commondir"), "utf8").trim();
+    if (common) dir = path.resolve(dir, common);
+  } catch {}
+  try {
+    return fs.statSync(dir).isDirectory() ? dir : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * <MAIN> = the main checkout seen from `cwd`: the first `git worktree list` entry; null outside a
+ * repo. Where `.git` is a file (a submodule, `--separate-git-dir`) git names its git DIRECTORY
+ * there, so the checkout is that directory's `core.worktree` (a submodule records it); without one,
+ * the toplevel when `cwd` is in the main checkout itself, else null (`git config core.worktree
+ * <checkout>` makes every worktree find it; linked worktrees ignore that key). A bare repository
+ * stays as named: the scope lock and sapu-merge.sh refuse it.
+ */
+export function findMain(cwd) {
+  let first;
+  try {
+    const out = execFileSync("git", ["-C", cwd, "worktree", "list", "--porcelain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    first = out.split("\n").find((l) => l.startsWith("worktree "));
+  } catch {
+    return null;
+  }
+  if (!first) return null;
+  const p = first.slice("worktree ".length);
+  const isGitDir = !fs.existsSync(path.join(p, ".git")) && fs.existsSync(path.join(p, "HEAD")) && fs.existsSync(path.join(p, "objects"));
+  if (!isGitDir) return p;
+  const cfg = (k) => sh("git", ["config", "--file", path.join(p, "config"), "--get", k], cwd);
+  const wt = cfg("core.worktree");
+  if (wt) return path.resolve(p, wt);
+  if (cfg("core.bare") === "true") return p;
+  const abs = (flag) => sh("git", ["-C", cwd, "rev-parse", "--path-format=absolute", flag], cwd);
+  const own = abs("--git-dir");
+  return own && own === abs("--git-common-dir") ? checkoutRoot(cwd) : null;
 }
 
 /** The checkout (worktree) root holding `cwd`; null outside a repo. */
@@ -374,7 +496,8 @@ export function localHome(nwo) {
 
 /** The local contract file for `root` when one exists (or a broken link stands there), else null. */
 function localContractFile(root) {
-  const nwo = nwoFromRemote(sh("git", ["-C", root, "remote", "get-url", "origin"], root));
+  // any host: a GitHub Enterprise repo names its host in the contract, and the scope lock pins it
+  const nwo = parseRemote(sh("git", ["-C", root, "remote", "get-url", "origin"], root))?.nwo;
   if (!nwo) return null;
   const f = path.join(localHome(nwo), "sapu.json");
   try {
@@ -462,6 +585,40 @@ export function machineConfigPath() {
   return path.join(os.homedir(), ".config", "sapu", "config.json");
 }
 
+/**
+ * Why $HOME cannot be trusted to find the machine config, or null. os.homedir() follows $HOME, which
+ * a repo's committed settings `env` can set: pointed elsewhere, the config is not found (no
+ * restriction), and gh keeps its login when GH_TOKEN, GH_CONFIG_DIR or XDG_CONFIG_HOME carries it.
+ * So $HOME must resolve to the account's own home directory (the password database's, which no
+ * environment variable moves); an account the system cannot name fails closed.
+ */
+export function homeProblem(home = os.homedir(), account = null) {
+  let own = account;
+  if (own === null) {
+    try {
+      own = os.userInfo().homedir;
+    } catch (e) {
+      return `the home directory of this account cannot be read (${e.message}), so the machine config cannot be found`;
+    }
+  }
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  if (own && real(home) === real(own)) return null;
+  return `HOME is ${home}, not this account's home directory ${own || "(none)"}: the machine config is read from ~/.config/sapu/config.json, so a moved HOME would lift its scope lock. Run sapu with HOME=${own || "<your home>"}`;
+}
+
+/** The machine config a sapu run is bound by: refused when $HOME is not the account's home (homeProblem). */
+export function accountMachineConfig({ main = null } = {}) {
+  const p = homeProblem();
+  if (p) throw new Error(p);
+  return loadMachineConfig(machineConfigPath(), { main });
+}
+
 /** Every error in a parsed machine config (empty = valid). Strict like the contract: an unknown key is a typo that must not silently drop a restriction. */
 export function validateMachineConfig(c) {
   if (!c || typeof c !== "object" || Array.isArray(c)) return ["the machine config must be a JSON object"];
@@ -537,22 +694,52 @@ export function loadMachineConfig(file = machineConfigPath(), { main = null } = 
   return { path: file, allowedRoots: (c.allowedRoots ?? []).map(expand), projectScopeOnly: c.projectScopeOnly === true };
 }
 
+/** The GitHub host the contract's repo lives on: `host` (GitHub Enterprise), else github.com. */
+export const DEFAULT_HOST = "github.com";
+export const hostOf = (c) => (c && isStr(c.host) ? c.host.toLowerCase() : DEFAULT_HOST);
+/** How sapu-merge.sh merges a PR: `mergeMethod`, else a squash merge. */
+export const MERGE_METHODS = ["squash", "merge", "rebase"];
+export const mergeMethodOf = (c) => (c && MERGE_METHODS.includes(c.mergeMethod) ? c.mergeMethod : "squash");
+const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
+
 /**
- * owner/name from a github.com remote URL, or null. The host is pinned: only
- * `https://[user@]github.com/o/r[.git]`, `git@github.com:o/r[.git]` and
- * `ssh://git@github.com[:port]/o/r[.git]` — never a URL that merely contains "github.com".
+ * The host an SSH host alias stands for, as `ssh -G <alias>` resolves it from the person's ssh
+ * config (it prints the configuration, never connects); null when ssh cannot say.
  */
-export function nwoFromRemote(url) {
-  const forms = [
-    /^https:\/\/(?:[^@/\s]+@)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-    /^git@github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-    /^ssh:\/\/git@github\.com(?::\d+)?\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i,
-  ];
-  for (const re of forms) {
-    const m = re.exec(url || "");
-    if (m) return `${m[1]}/${m[2]}`;
-  }
-  return null;
+export function sshHostname(alias) {
+  const r = spawnSync("ssh", ["-G", alias], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  return r.status === 0 ? (/^hostname\s+(\S+)\s*$/m.exec(r.stdout || "")?.[1] ?? null) : null;
+}
+
+/**
+ * {host, nwo} of a remote URL (`https://[user@]host/o/r`, `[user@]host:o/r`, `ssh://[user@]host[:port]/o/r`,
+ * each with an optional `.git`), or null. An SSH host is read through `resolve` (an alias in the
+ * ssh config: the host the push really goes to); an https host is taken as written.
+ */
+export function parseRemote(url, resolve = sshHostname) {
+  const u = String(url || "");
+  const path2 = String.raw`([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$`;
+  const https = new RegExp(String.raw`^https:\/\/(?:[^@/\s]+@)?([^/@:\s]+)\/${path2}`, "i").exec(u);
+  if (https) return HOSTNAME.test(https[1]) ? { host: https[1].toLowerCase(), nwo: `${https[2]}/${https[3]}` } : null;
+  const ssh = new RegExp(String.raw`^ssh:\/\/(?:[\w.-]+@)?([^/@:\s]+)(?::\d+)?\/${path2}`, "i").exec(u) || new RegExp(String.raw`^(?:[\w.-]+@)?([^/@:\s]+):${path2}`, "i").exec(u);
+  // an alias that looks like an option is never handed to ssh
+  if (!ssh || !HOSTNAME.test(ssh[1])) return null;
+  const named = ssh[1].toLowerCase();
+  // github.com itself needs no lookup; a name ssh cannot resolve is taken as written (never wider)
+  const host = (named === DEFAULT_HOST ? named : resolve(ssh[1]) || named).toLowerCase();
+  // ssh.github.com is GitHub's documented SSH endpoint on port 443
+  return { host: host === `ssh.${DEFAULT_HOST}` ? DEFAULT_HOST : host, nwo: `${ssh[2]}/${ssh[3]}` };
+}
+
+/**
+ * owner/name from a remote URL on `host` (github.com unless the contract names a GitHub Enterprise
+ * host), or null. The host is pinned: a URL that merely contains it is not it, and an SSH host alias
+ * counts only when ssh resolves it to that host.
+ */
+export function nwoFromRemote(url, host = DEFAULT_HOST, resolve = sshHostname) {
+  // the host itself needs no ssh lookup (the common case, and no process spawned for it)
+  const r = parseRemote(url, (alias) => (alias.toLowerCase() === host.toLowerCase() ? alias : resolve(alias)));
+  return r && r.host === host.toLowerCase() ? r.nwo : null;
 }
 
 function sh(cmd, args, cwd) {
@@ -575,7 +762,67 @@ export function safeLanes({ cpus, ramGB, load1, memFreePct }) {
   return { lanes: busy ? Math.max(1, ceiling - 1) : ceiling, ceiling, busy };
 }
 
-/** This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping. */
+/**
+ * The merge gate's test workers for a machine of `cpus` cores: most of them when the gate runs
+ * alone (`gateWorkers`), about half that beside a lane that is running tests (`gateWorkersBeside`),
+ * and the smaller figure while the machine is already busy.
+ */
+export function gateWorkers({ cpus, busy }) {
+  const beside = Math.max(1, Math.floor(cpus * 0.4));
+  return { gateWorkers: busy ? beside : Math.max(1, Math.floor(cpus * 0.8)), gateWorkersBeside: beside };
+}
+
+/**
+ * What a repo may tune (contract `tuning`, every key optional) and its defaults: the worker step
+ * budget the guard enforces (a reminder at `soft` tool calls, every `every` up to `hard`, every
+ * `everyLate` past it), and the orchestrator's context limits as fractions of the model's context
+ * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
+ */
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+
+/** The contract's tuning with every absent key at its default; context limits in tokens. */
+export function resolveTuning(c) {
+  const t = (c && c.tuning) || {};
+  const window = t.contextWindow ?? DEFAULT_TUNING.contextWindow;
+  const frac = { ...DEFAULT_TUNING.contextLimits, ...(t.contextLimits || {}) };
+  return {
+    stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
+    contextWindow: window,
+    contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
+  };
+}
+
+function tuningProblems(t) {
+  const errs = [];
+  if (!t || typeof t !== "object" || Array.isArray(t)) return ["tuning must be an object (omit it for the defaults)"];
+  const known = (obj, where, allowed) => Object.keys(obj).filter((k) => !allowed.includes(k)).forEach((k) => errs.push(`${where}: unknown key "${k}"`));
+  known(t, "tuning", Object.keys(DEFAULT_TUNING));
+  if ("stepBudget" in t) {
+    const s = t.stepBudget;
+    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push("tuning.stepBudget must be an object");
+    else {
+      known(s, "tuning.stepBudget", Object.keys(DEFAULT_TUNING.stepBudget));
+      for (const k of Object.keys(DEFAULT_TUNING.stepBudget)) if (k in s && !(Number.isInteger(s[k]) && s[k] >= 1)) errs.push(`tuning.stepBudget.${k} must be a whole number of tool calls, at least 1`);
+      const r = { ...DEFAULT_TUNING.stepBudget, ...s };
+      if (Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
+    }
+  }
+  if ("contextWindow" in t && !(Number.isInteger(t.contextWindow) && t.contextWindow >= 10_000)) errs.push("tuning.contextWindow must be a token count (the model's context window, at least 10000)");
+  if ("contextLimits" in t) {
+    const l = t.contextLimits;
+    if (!l || typeof l !== "object" || Array.isArray(l)) errs.push("tuning.contextLimits must be an object");
+    else {
+      known(l, "tuning.contextLimits", Object.keys(DEFAULT_TUNING.contextLimits));
+      for (const k of Object.keys(DEFAULT_TUNING.contextLimits)) if (k in l && !(typeof l[k] === "number" && l[k] > 0 && l[k] <= 1)) errs.push(`tuning.contextLimits.${k} must be a fraction of the context window (0 < x ≤ 1)`);
+    }
+  }
+  return errs;
+}
+
+/**
+ * This machine's figures for safeLanes. Free memory = what the OS can hand out without swapping.
+ * LIMIT: `cpus` is the host's core count; a container's cgroup CPU quota is not read.
+ */
 export function machineNow() {
   let memFreePct = (os.freemem() / os.totalmem()) * 100;
   if (process.platform === "darwin") {
@@ -596,8 +843,12 @@ export function machineNow() {
  * checks come from the contract; the allowed roots and the project-scope rule from the machine
  * config (loadMachineConfig), which no contract can widen.
  */
-export function lockProblems(main, c, machine = loadMachineConfig(machineConfigPath(), { main })) {
+export function lockProblems(main, c, machine = accountMachineConfig({ main })) {
   const p = [];
+  // A bare repository has no files to compare against origin and no branch to fast-forward.
+  if (sh("git", ["-C", main, "rev-parse", "--is-bare-repository"], main) === "true") {
+    p.push(`${main} is a bare repository: sapu needs a main checkout of the base branch as the first worktree (git worktree list), not a bare clone`);
+  }
   if (machine.allowedRoots.length && !underAllowedRoot(main, machine.allowedRoots)) {
     p.push(`${main} is outside the allowed roots in ${machine.path} (${machine.allowedRoots.join(", ")})`);
   }
@@ -606,8 +857,8 @@ export function lockProblems(main, c, machine = loadMachineConfig(machineConfigP
   // --local: a global email that happens to match must not pass for this repo's identity.
   const email = sh("git", ["-C", main, "config", "--local", "user.email"], main);
   if (email !== c.gitEmail) p.push(`git user.email is "${email || "unset"}", the contract needs "${c.gitEmail}"`);
-  const origin = nwoFromRemote(sh("git", ["-C", main, "remote", "get-url", "origin"], main));
-  if (!origin || origin.toLowerCase() !== c.repo.toLowerCase()) p.push(`origin is "${origin || "none"}", the contract says "${c.repo}"`);
+  const origin = nwoFromRemote(sh("git", ["-C", main, "remote", "get-url", "origin"], main), hostOf(c));
+  if (!origin || origin.toLowerCase() !== c.repo.toLowerCase()) p.push(`origin is "${origin || "none"}" on ${hostOf(c)}, the contract says "${c.repo}"`);
   // A trusted login renamed and re-registered by someone else would still pass by id elsewhere, but
   // the contract would name the wrong person: the recorded login must still resolve to its id.
   const lists = [["trustedAuthors", c.trustedAuthors], ["labels.acceptors", c.labels && c.labels.acceptors]];
@@ -708,6 +959,55 @@ export function profileProblems(root, skills = Object.keys(PROFILE_SECTIONS), { 
   return out;
 }
 
+// A segment of a handoff command: a cd, a git look or WIP commit (git's global options allowed), an
+// echo without substitution, a teardown (up to two words before it: `npm run teardown`, `bash scripts/teardown.sh`). Quoted text is dropped before splitting, so a `;` in
+// a commit message does not split it; a pipe, `$( )` or backtick never counts as handoff.
+const HANDOFF_SEGMENT = /^(cd\s+\S+|git(\s+(-C|-c)\s+\S+|\s+--no-pager)*\s+(add|commit|status|log|diff|rev-parse|show|branch)\b.*|echo\b.*|true|(\S+\s+){0,2}\S*teardown\S*(\s.*)?)$/;
+/** Is `command` a handoff command, which the guard's step budget never refuses (a WIP commit, a teardown)? */
+export function isHandoffCommand(command) {
+  // `2>&1` keeps a command a handoff; a background `&`, a pipe, `$( )` or a backtick never does.
+  if (typeof command !== "string" || /\$\(|`|(^|[^|])\|(?!\|)|(^|[^&>])&(?![&>\d])/.test(command)) return false;
+  const bare = command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+  const segs = bare.split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
+  return segs.length > 0 && segs.every((s) => HANDOFF_SEGMENT.test(s));
+}
+
+/** The commands a profile section writes: its inline code spans and the lines of its fenced blocks. */
+function sectionCommands(text, heading) {
+  const m = new RegExp(`^## ${heading}\\s*$([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m").exec(text);
+  if (!m) return [];
+  const body = m[1];
+  const fenced = [...body.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)].flatMap((f) => f[1].split("\n").map((l) => l.trim()).filter(Boolean));
+  const inline = [...body.replace(/^```[^\n]*\n[\s\S]*?^```/gm, "").matchAll(/`([^`\n]+)`/g)].map((x) => x[1].trim());
+  return [...fenced, ...inline];
+}
+
+/**
+ * What /sapu:init should still settle in the profiles (never a failure): worker.md §Teardown writing
+ * commands of which none is a handoff command, so a worker at its step-budget reminder would have
+ * that call refused once instead of tearing down. A section with no command (nothing to tear down)
+ * is fine.
+ */
+export function profileWarnings(root, { rev = "HEAD" } = {}) {
+  const home = contractHome(root);
+  const files = home.mode === "local" ? repoFiles(home.dir, null) : repoFiles(root, rev);
+  const dir = home.mode === "local" ? "." : ".claude/sapu";
+  const out = [];
+  let text = "";
+  try {
+    text = files.list(dir).filter((f) => f === "worker.md" || (f.startsWith("worker-") && f.endsWith(".md"))).map((f) => files.read(`${dir}/${f}`)).join("\n");
+  } catch {
+    return out;
+  }
+  const cmds = sectionCommands(text, "Teardown");
+  if (cmds.length && !cmds.some(isHandoffCommand)) {
+    out.push(
+      "worker.md §Teardown names no command the step budget treats as a handoff (`<script> teardown <ID>`, `npm run teardown -- <ID>`, `bash scripts/teardown.sh <ID>`): put the teardown behind one such command, or a worker at its step-budget reminder has that call refused once",
+    );
+  }
+  return out;
+}
+
 /**
  * Is sapu installed at USER scope (loaded in every repo)? true = yes; false = every sapu install
  * listed is at project or local scope; null = could not tell: `claude` missing, failing or slow,
@@ -780,8 +1080,13 @@ const named = (p) => (p ? `${p.login ?? "?"} (id ${p.id ?? "?"})` : "a deleted a
 const TIMELINE =
   "timelineItems(first:100,after:$after,itemTypes:[LABELED_EVENT,UNLABELED_EVENT,RENAMED_TITLE_EVENT]){pageInfo{hasNextPage endCursor} " +
   `nodes{__typename ... on LabeledEvent{createdAt actor{${WHO}} label{name updatedAt}} ... on UnlabeledEvent{createdAt actor{${WHO}} label{name updatedAt}} ... on RenamedTitleEvent{createdAt actor{${WHO}}}}}`;
+/**
+ * How long before the acceptance label an outsider's edit or retitle still refuses: the acceptor
+ * reads the text, then applies the label, and an edit landing in between would ride on it.
+ */
+export const ACCEPT_QUIET_MS = 10 * 60_000;
 const snapshotOf = (type) =>
-  `... on ${type}{title body lastEditedAt author{${WHO}} editor{${WHO}} labels(first:100){totalCount nodes{name}} ` +
+  `... on ${type}{title body createdAt lastEditedAt author{${WHO}} editor{${WHO}} labels(first:100){totalCount nodes{name}} ` +
   `userContentEdits(first:100){totalCount nodes{editedAt deletedAt editor{${WHO}}}} ${TIMELINE}}`;
 const ISSUE_QUERY =
   "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){" +
@@ -822,15 +1127,28 @@ function issueSnapshot(c, n) {
 }
 
 /**
+ * Does label `name` exist in the repo of contract `c` (GitHub matches its name in any case)? One REST
+ * call; false on GitHub's 404, and a throw when GitHub cannot be read.
+ */
+function labelExists(c, name) {
+  const r = spawnSync("gh", ["api", `repos/${c.repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (r.status === 0) return lc(r.stdout.trim()) === lc(name);
+  if (/\(HTTP 404\)/.test(r.stderr || "")) return false;
+  throw new Error(`cannot read label ${name}: ${(r.stderr || (r.error && r.error.message) || "").trim().split("\n").pop() || `gh exited ${r.status}`}`);
+}
+
+/**
  * May issue (or PR) `n` of contract `c` steer sapu? {trusted, reason, acceptedBy, snapshot}, where
  * snapshot = {kind, title, body, author, lastEditedAt, editor} is the text the verdict judged — the
- * only issue text a skill may read. Yes when its author's id is in `trusted` (decided on the first
- * page). Otherwise only when it carries acceptedLabel(c) NOW, the latest labeled/unlabeled event for
+ * only issue text a skill may read. Yes when its author's id is in `trusted`, unless the contract sets
+ * agentFiledNeedsAcceptance and agentFiledLabel(c) is or ever was on it (a timeline LabeledEvent).
+ * Otherwise only when it carries acceptedLabel(c) NOW, the latest labeled/unlabeled event for
  * that label applied it, by an acceptor (labels.acceptors, else the trusted set; an issue template
  * applies labels as the issue's author), the label was not renamed or edited since (GraphQL names a
  * label as it is now), and since then NO id outside the set retitled it or edited its body — any
  * such edit refuses, even one a trusted edit followed, deleted revisions included: the acceptance
- * covers the text as it stood. Throws when GitHub cannot be read.
+ * covers the text as it stood — nor in the ACCEPT_QUIET_MS before it, and the edit history must hold
+ * its latest revision (a self-check of the deleted-revision rule). Throws when GitHub cannot be read.
  */
 export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   const ids = new Set(trusted.map((t) => t.id));
@@ -847,12 +1165,33 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
     lastEditedAt: first.lastEditedAt ?? null,
     editor: person(first.editor),
   };
-  const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, snapshot });
-  if (ok(snapshot.author)) return verdict(true, `author ${named(snapshot.author)} is in the trusted set`);
-  const author = `author ${named(snapshot.author)} is not in the trusted set`;
+  // An agent files under the trusted account, so its issue would pass by author. Its provenance label
+  // says so; with agentFiledNeedsAcceptance, its text (which may quote outside material) needs the
+  // owner's acceptance like an outsider's, and only an acceptor may edit it after that. The label
+  // applied EVER counts then, not only now: removing it must not launder the issue into a plain
+  // trusted one. The timeline is paged only under that setting, when the label is not on the issue
+  // now; without it the author decides, and a history GitHub fails to return fails nothing.
+  let all = null;
+  const events = () => (all ??= timeline());
+  const filed = lc(agentFiledLabel(c));
+  const filedNow = first.labels.nodes.some((l) => l && lc(l.name) === filed);
+  const agentFiled = filedNow || (c.agentFiledNeedsAcceptance === true && events().some((e) => e.type === "LabeledEvent" && typeof e.label === "string" && lc(e.label) === filed));
+  const carries = filedNow ? `it carries ${agentFiledLabel(c)}` : `${agentFiledLabel(c)} was applied to it (removed since)`;
+  const gated = agentFiled && c.agentFiledNeedsAcceptance === true;
+  const verdict = (yes, reason, acceptedBy = null) => ({ trusted: yes, reason, acceptedBy, agentFiled, snapshot });
+  // A renamed or deleted agent-filed label is named otherwise (or not at all) on every issue it was
+  // on, labels and timeline alike: an agent-filed issue would pass as the author's own. The gate
+  // then trusts no author until the label is back under its contract name.
+  if (ok(snapshot.author) && !gated && c.agentFiledNeedsAcceptance === true && !labelExists(c, agentFiledLabel(c))) {
+    return verdict(false, `author ${named(snapshot.author)} is in the trusted set, but the agent-filed label ${agentFiledLabel(c)} is not in the repository (renamed or deleted?): GitHub would name it otherwise on the issues an agent filed, so none can be told from the owner's. Rename it back (or re-create it, if it was deleted).`);
+  }
+  if (ok(snapshot.author) && !gated) return verdict(true, `author ${named(snapshot.author)} is in the trusted set${agentFiled ? `; ${carries}: an agent filed it, and what it quotes is data` : ""}`);
+  const author = gated
+    ? `author ${named(snapshot.author)} is an agent's account: ${filedNow ? carries : `${agentFiledLabel(c)} was applied to it`} and the contract sets agentFiledNeedsAcceptance`
+    : `author ${named(snapshot.author)} is not in the trusted set`;
+  const editOk = gated ? accepts : ok;
   if (!first.labels.nodes.some((l) => l && l.name === label)) return verdict(false, `${author} and the issue does not carry ${label} (a trusted login applies it to accept the issue)`);
-  const events = timeline();
-  const last = events.filter((e) => e.label === label && (e.type === "LabeledEvent" || e.type === "UnlabeledEvent")).at(-1);
+  const last = events().filter((e) => e.label === label && (e.type === "LabeledEvent" || e.type === "UnlabeledEvent")).at(-1);
   if (!last || last.type !== "LabeledEvent") return verdict(false, `${author}, and no event shows who applied ${label}`);
   if (!accepts(last.actor)) {
     return verdict(false, `${author}, and ${label} was last applied by ${named(last.actor)}, who is not ${own ? "an acceptor (labels.acceptors)" : "in the trusted set"}`);
@@ -862,12 +1201,28 @@ export function issueTrust(c, n, trusted = resolveTrusted(c)) {
   }
   const since = Date.parse(last.at);
   const later = (t) => typeof t === "string" && Date.parse(t) >= since;
-  const retitle = events.find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !ok(e.actor));
+  // An outsider's change made shortly before the label: the acceptor may have read the text before it.
+  const racing = (t) => typeof t === "string" && Date.parse(t) < since && Date.parse(t) >= since - ACCEPT_QUIET_MS;
+  const reapply = (t) => `: the acceptor may have read the text before it — re-apply ${label} after ${new Date(Date.parse(t) + ACCEPT_QUIET_MS).toISOString()}, once its current text is read`;
+  const quietMin = ACCEPT_QUIET_MS / 60_000;
+  const retitle = events().find((e) => e.type === "RenamedTitleEvent" && later(e.at) && !editOk(e.actor));
   if (retitle) return verdict(false, `${author}, and it was retitled by ${named(retitle.actor)} after ${label} was applied`);
+  const raceTitle = events().find((e) => e.type === "RenamedTitleEvent" && racing(e.at) && !editOk(e.actor));
+  if (raceTitle) return verdict(false, `${author}, and it was retitled by ${named(raceTitle.actor)} at ${raceTitle.at}, less than ${quietMin} minutes before ${label} was applied${reapply(raceTitle.at)}`);
   const edits = first.userContentEdits;
   if (edits.totalCount > edits.nodes.length) return verdict(false, `${author}, and it has more body edits than can be checked (${edits.totalCount})`);
-  const edit = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].find((e) => later(e.at) && !ok(e.by));
+  // Self-check of the deleted-revision rule: GitHub lists every revision, a deleted one with
+  // deletedAt, the latest at exactly lastEditedAt. A history without that node is not the whole
+  // history (a revision dropped), so an edit made after the label could be missing from it.
+  if (snapshot.lastEditedAt && !edits.nodes.some((e) => e && e.editedAt === snapshot.lastEditedAt)) {
+    return verdict(false, `${author}, and the edit history GitHub returned does not hold its last edit (lastEditedAt ${snapshot.lastEditedAt}): a deleted revision may be missing from it, so the acceptance cannot be checked`);
+  }
+  // The original revision (listed once the body is edited, at the issue's creation time) is not an edit.
+  const changes = [...edits.nodes.map((e) => ({ at: e && e.editedAt, by: person(e && e.editor) })), { at: snapshot.lastEditedAt, by: snapshot.editor }].filter((e) => e.at !== first.createdAt);
+  const edit = changes.find((e) => later(e.at) && !editOk(e.by));
   if (edit) return verdict(false, `${author}, and its body was edited by ${named(edit.by)} after ${label} was applied`);
+  const raceEdit = changes.find((e) => racing(e.at) && !editOk(e.by));
+  if (raceEdit) return verdict(false, `${author}, and its body was edited by ${named(raceEdit.by)} at ${raceEdit.at}, less than ${quietMin} minutes before ${label} was applied${reapply(raceEdit.at)}`);
   return verdict(true, `${author}, but ${named(last.actor)} applied ${label} at ${last.at}`, { login: last.actor.login, id: last.actor.id, at: last.at });
 }
 
@@ -900,25 +1255,36 @@ export function prReviews(c, n, trusted = resolveTrusted(c)) {
   };
 }
 
-// An issue as a PR body names it: #N, owner/repo#N, GH-N, or a github.com issue/PR URL.
-const ONE_REF = String.raw`(?:https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
-const CLOSE_LIST = new RegExp(String.raw`\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+(${ONE_REF}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${ONE_REF})*)`, "gi");
-const asRef = (r) => ({ repo: r[1] || r[3] || null, number: Number(r[2] || r[4] || r[5] || r[6]) });
+// An issue as a PR body names it: #N, owner/repo#N, GH-N, or an issue/PR URL on github.com or the contract's host.
+const oneRef = (host) => {
+  const hosts = [...new Set([DEFAULT_HOST, host.toLowerCase()])].map((h) => h.replace(/[.-]/g, "\\$&")).join("|");
+  return String.raw`(?:https?:\/\/(${hosts})\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)|(?<![\w/.-])([\w.-]+\/[\w.-]+)#(\d+)|(?<![\w&#/])#(\d+)|\bGH-(\d+))\b`;
+};
+const listOf = (keyword) => (one) => new RegExp(String.raw`\b(?:${keyword})\b[:\s]+(${one}(?:(?:,\s*and\s+|,\s*|\s+and\s+|\s*&\s*)${one})*)`, "gi");
+const closeList = listOf(String.raw`close[sd]?|fix(?:e[sd])?|resolve[sd]?`);
+const citeList = listOf(String.raw`refs?|references?`);
+// A URL on another host than the repo's names another repository (`github.com/o/r` from a GitHub Enterprise PR).
+const asRef = (host) => (r) => ({ repo: r[2] ? (lc(r[1]) === lc(host) ? r[2] : `${lc(r[1])}/${r[2]}`) : r[4] || null, number: Number(r[3] || r[5] || r[6] || r[7]) });
 
 /**
  * Every issue or PR a PR body names, as {repo, number} (repo null = this repo): `closes` = those a
  * Closes/Fixes/Resolves list closes (relabelled after the merge), `refs` = every other mention —
- * `Refs #8`, `Implements #8`, `Part of #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL. Code
- * (fenced blocks, inline spans) is skipped, as GitHub skips it when it links references.
+ * `Refs #8`, `Implements #8`, `Part of #8`, a bare `#8`, `GH-8`, `owner/repo#8`, an issue URL — and
+ * `cited` = those of `refs` a Refs/Ref/References list names (a deliberate reference, which pr-trust
+ * refuses in another repository; any other mention of another repository is informational). Code
+ * (fenced blocks, inline spans) is skipped, as GitHub skips it when it links references. `host` is
+ * the repo's GitHub host (hostOf).
  */
-export function bodyRefs(body) {
+export function bodyRefs(body, host = DEFAULT_HOST) {
+  const one = oneRef(host);
   const text = String(body || "").replace(/```[\s\S]*?(```|$)/g, " ").replace(/`[^`\n]*`/g, " ");
-  const closes = [];
-  for (const m of text.matchAll(CLOSE_LIST)) for (const r of m[1].matchAll(new RegExp(ONE_REF, "gi"))) closes.push(asRef(r));
+  const listed = (list) => [...text.matchAll(list(one))].flatMap((m) => [...m[1].matchAll(new RegExp(one, "gi"))].map(asRef(host)));
+  const closes = listed(closeList);
   const key = (x) => `${lc(x.repo ?? "")}#${x.number}`;
   const closing = new Set(closes.map(key));
-  const refs = [...text.matchAll(new RegExp(ONE_REF, "gi"))].map(asRef).filter((x) => !closing.has(key(x)));
-  return { closes, refs };
+  const refs = [...text.matchAll(new RegExp(one, "gi"))].map(asRef(host)).filter((x) => !closing.has(key(x)));
+  const cited = listed(citeList).filter((x) => !closing.has(key(x)));
+  return { closes, refs, cited };
 }
 
 /**
@@ -947,8 +1313,9 @@ const PR_QUERY =
  * (cross-repository, or a head repository that is not this one); author (its id); commit author
  * (every author of every commit, co-authors included: a trusted id, or no GitHub account and
  * gitEmail); commit signature (with requireSignedCommits: a valid signature by a trusted id); closing
- * / referenced issue (GitHub's closing references plus the body's Closes/Fixes/Resolves and Refs
- * lists, in any form: in another repository, or failing issueTrust). Throws when GitHub cannot be read.
+ * / referenced issue (GitHub's closing references plus every issue the body names: one a
+ * Closes/Fixes/Resolves or Refs list puts in another repository, or one of this repository failing
+ * issueTrust; other mentions of another repository are informational). Throws when GitHub cannot be read.
  */
 export function prTrust(c, n, trusted = resolveTrusted(c)) {
   const ids = new Set(trusted.map((t) => t.id));
@@ -984,7 +1351,7 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
       if (!ok(signer)) return refuse("commit signature", `commit ${sha} is signed by ${named(signer)}, who is not in the trusted set`);
     }
   }
-  const refs = bodyRefs(pr.body);
+  const refs = bodyRefs(pr.body, hostOf(c));
   const gh = pr.closingIssuesReferences;
   if (gh.totalCount > gh.nodes.length) return refuse("closing issue", `it closes ${gh.totalCount} issues, more than can be checked`);
   // GitHub's own reference without a repository cannot be placed: it counts as another repository's.
@@ -992,10 +1359,13 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
   const outside = (list) => list.find((x) => x.repo !== null && !here(x.repo));
   const fc = outside(closing);
   if (fc) return refuse("closing issue", `it closes ${fc.repo || "an issue in a repository GitHub did not name"}#${fc.number}, outside ${c.repo}`);
-  const fr = outside(refs.refs);
+  // A Refs list is deliberate, so one into another repository refuses like a closing one. Any other
+  // mention of another repository (the plugin release a change adapts to) is informational: its
+  // trust cannot be read, so it is neither checked nor relabelled, and its text is never read.
+  const fr = outside(refs.cited);
   if (fr) return refuse("referenced issue", `it refs ${fr.repo}#${fr.number}, outside ${c.repo}`);
   const closes = [...new Set(closing.map((x) => x.number))].filter(isId).sort((a, b) => a - b);
-  const refNums = [...new Set(refs.refs.map((x) => x.number))].filter((x) => isId(x) && !closes.includes(x)).sort((a, b) => a - b);
+  const refNums = [...new Set(refs.refs.filter((x) => x.repo === null || here(x.repo)).map((x) => x.number))].filter((x) => isId(x) && !closes.includes(x)).sort((a, b) => a - b);
   for (const [rule, nums] of [["closing issue", closes], ["referenced issue", refNums]]) {
     for (const i of nums) {
       const v = issueTrust(c, i, trusted);
@@ -1020,8 +1390,469 @@ export function prTrust(c, n, trusted = resolveTrusted(c)) {
   };
 }
 
+// ONE SWEEP PER REPO. Two orchestrators on one repo would race for the same issues and merges, so
+// /sapu holds a marker in <MAIN>/.git/sapu-sweep.json (never tracked, never in a worktree), named by
+// its session's run marker (`sapu-run-<date-time>`) and refreshed by its heartbeat: every merge
+// command and every lane launch holds it again. Another session's marker with a heartbeat younger
+// than SWEEP_TTL_MS refuses the start; an older one is stale and taken over (a crashed session, a
+// killed shell). The longest silence a live sweep has is one lane running with nothing else to do,
+// which SWEEP_TTL_MS covers with room. A fresh marker is created atomically (O_EXCL); a takeover is
+// a rename read back afterwards, so two sessions taking over one stale marker at the same instant
+// is the only race left. Only the holder releases it; `sweep clear` is the person's, for a session
+// that died while its marker is still fresh.
+export const SWEEP_TTL_MS = 3 * 3600 * 1000;
+const SWEEP_OWNER = /^[A-Za-z0-9][\w.:-]{0,99}$/;
+const sweepFile = (main) => path.join(gitCommonDir(main) ?? path.join(main, ".git"), "sapu-sweep.json");
+
+/** The marker: {owner, started, beat, host}, {corrupt: true} for one that cannot be read, or null when there is none. */
+function readSweep(main) {
+  let raw;
+  try {
+    raw = fs.readFileSync(sweepFile(main), "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return null;
+    return { corrupt: true };
+  }
+  try {
+    const m = JSON.parse(raw);
+    return m && typeof m.owner === "string" && Number.isFinite(Date.parse(m.beat)) ? m : { corrupt: true };
+  } catch {
+    return { corrupt: true };
+  }
+}
+
+/** Status of the marker at `now`: {held: false} or {held: true, owner, started, beat, host, agoMin, fresh}. */
+export function sweepStatus(main, now = Date.now()) {
+  const m = readSweep(main);
+  if (!m) return { held: false };
+  if (m.corrupt) return { held: true, owner: null, corrupt: true, fresh: false };
+  const ago = now - Date.parse(m.beat);
+  return { held: true, owner: m.owner, started: m.started, beat: m.beat, host: m.host, agoMin: Math.max(0, Math.floor(ago / 60000)), fresh: ago < SWEEP_TTL_MS };
+}
+
+/**
+ * Take or refresh the sweep marker for `owner`: {held: true, resumed, tookOver} when this session
+ * holds it now, {held: false, holder, agoMin} when another session's heartbeat is fresh.
+ */
+export function sweepHold(main, owner, now = Date.now(), tries = 3) {
+  const file = sweepFile(main);
+  const cur = readSweep(main);
+  const at = new Date(now).toISOString();
+  const mine = (started) => `${JSON.stringify({ owner, started, beat: at, host: os.hostname() })}\n`;
+  if (!cur) {
+    try {
+      fs.writeFileSync(file, mine(at), { flag: "wx" });
+      return { held: true, resumed: false, tookOver: null };
+    } catch (e) {
+      if (e.code !== "EEXIST" || tries <= 0) throw e;
+      return sweepHold(main, owner, now, tries - 1); // another session created it first: judge that one
+    }
+  }
+  const ago = cur.corrupt ? Infinity : now - Date.parse(cur.beat);
+  if (!cur.corrupt && cur.owner !== owner && ago < SWEEP_TTL_MS) return { held: false, holder: cur.owner, host: cur.host, agoMin: Math.max(0, Math.floor(ago / 60000)) };
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, mine(cur.owner === owner && cur.started ? cur.started : at));
+  fs.renameSync(tmp, file);
+  const back = readSweep(main);
+  if (!back || back.owner !== owner) return { held: false, holder: back && back.owner, agoMin: 0 };
+  return { held: true, resumed: cur.owner === owner, tookOver: cur.owner === owner ? null : { owner: cur.owner ?? null, agoMin: Number.isFinite(ago) ? Math.floor(ago / 60000) : null } };
+}
+
+/** Remove the marker when `owner` holds it (or it is gone): {released: true}; another holder's stays: {released: false, holder}. */
+export function sweepRelease(main, owner) {
+  const cur = readSweep(main);
+  if (cur && !cur.corrupt && cur.owner !== owner) return { released: false, holder: cur.owner };
+  fs.rmSync(sweepFile(main), { force: true });
+  return { released: true };
+}
+
+// THE GUARD /sapu:init PROPOSES. The engine floor knows JS package managers, Prisma and Postgres; every
+// other ecosystem's destructive commands are blocked by the contract's guard.deny, and every other
+// engine's dev database by guard.databases. detectStack reads the checkout (marker files, Compose
+// files, Rails' database.yml; never an env file) and proposes both, for the owner to confirm.
+const drop = (what) => `${what} destroys data other sessions use. Use your own throwaway test database (.claude/sapu/worker.md).`;
+const variants = (progs, words, why) => progs.map((p) => ({ argv: [...p.split(" "), ...words], reason: drop(why) }));
+const PY = ["python", "python3", "manage.py"];
+/** Each ecosystem: the files that mark it (any one; `has` = text a file must contain), and the deny rules it gets. */
+export const ECOSYSTEMS = {
+  rails: {
+    markers: [["bin/rails"], ["config/application.rb", /Rails::Application/]],
+    deny: ["db:drop", "db:reset", "db:purge", "db:truncate_all", "db:migrate:reset", "db:schema:load", "db:seed:replant", "db:drop:all", "db:rollback"].flatMap((t) => variants(["rails", "rake"], [t], `\`rails ${t}\``)),
+  },
+  django: {
+    markers: [["manage.py"]],
+    deny: [...variants([...PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), "django-admin"], ["flush"], "`manage.py flush`"), ...variants(PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), ["reset_db"], "`manage.py reset_db`"), ...variants(PY.map((p) => (p === "manage.py" ? p : `${p} manage.py`)), ["migrate", "zero"], "`manage.py migrate <app> zero`")],
+  },
+  alembic: { markers: [["alembic.ini"]], deny: variants(["alembic"], ["downgrade"], "`alembic downgrade`") },
+  laravel: {
+    markers: [["artisan"]],
+    deny: ["migrate:fresh", "migrate:reset", "migrate:refresh", "db:wipe"].flatMap((t) => variants(["php artisan", "artisan", "sail artisan"], [t], `\`artisan ${t}\``)),
+  },
+  go: {
+    markers: [["go.mod"]],
+    deny: [...variants(["migrate"], ["drop"], "`migrate drop`"), ...variants(["migrate"], ["down"], "`migrate down`"), ...variants(["goose"], ["reset"], "`goose reset`"), ...variants(["goose"], ["down"], "`goose down`"), ...variants(["atlas"], ["schema", "clean"], "`atlas schema clean`")],
+  },
+  node: {
+    // per ORM, only when package.json names it (Prisma is in the engine floor)
+    markers: [["package.json"]],
+    tools: {
+      sequelize: [...variants(["sequelize", "sequelize-cli"], ["db:drop"], "`sequelize db:drop`"), ...variants(["sequelize", "sequelize-cli"], ["db:migrate:undo:all"], "`sequelize db:migrate:undo:all`")],
+      typeorm: variants(["typeorm"], ["schema:drop"], "`typeorm schema:drop`"),
+      knex: variants(["knex"], ["migrate:rollback", "--all"], "`knex migrate:rollback --all`"),
+      "drizzle-kit": variants(["drizzle-kit"], ["drop"], "`drizzle-kit drop`"),
+    },
+    deny: [],
+  },
+};
+const IMAGE_ENGINE = [[/(^|\/)(postgres|postgis|timescaledb)\b/, "postgres"], [/(^|\/)(mysql|mariadb|percona)\b/, "mysql"], [/(^|\/)mongo\b/, "mongodb"], [/(^|\/)(redis|valkey|keydb)\b/, "redis"]];
+const DB_ENV = /^(POSTGRES_DB|MYSQL_DATABASE|MARIADB_DATABASE|MONGO_INITDB_DATABASE)$/;
+const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+/** Quotes dropped, each `${X:-default}` read as its default; a value with any other substitution → null. */
+const composeValue = (v) => {
+  const s = String(v).trim().replace(/^(["'])(.*)\1$/, "$2").replace(/\$\{\w+:?-([^}]*)\}/g, "$1");
+  return s.includes("$") ? null : s;
+};
+
+/** The dev databases a Compose file's services publish: [{engine, ports, databases}] (a line reader for the common shapes, not YAML). */
+export function composeDatabases(text) {
+  const out = [];
+  let svcIndent = -1;
+  let svc = null;
+  let inPorts = false;
+  for (const raw of String(text).split("\n")) {
+    if (!raw.trim() || raw.trim().startsWith("#")) continue;
+    const indent = raw.length - raw.trimStart().length;
+    const line = raw.trim();
+    if (indent === 0) {
+      svcIndent = line === "services:" ? -2 : -1;
+      continue;
+    }
+    if (svcIndent === -1) continue;
+    if (svcIndent === -2) svcIndent = indent;
+    if (indent === svcIndent) {
+      svc = { image: "", ports: [], databases: [] };
+      out.push(svc);
+      inPorts = false;
+      continue;
+    }
+    if (!svc) continue;
+    if (inPorts && line.startsWith("-") && !/^-\s*[A-Za-z_][\w.-]*\s*:/.test(line)) {
+      svc.ports.push(line.replace(/^-\s*/, ""));
+      continue;
+    }
+    const kv = /^(?:-\s*)?([\w.-]+)\s*[:=]\s*(.*)$/.exec(line);
+    if (kv && kv[1] === "image") svc.image = composeValue(kv[2]) ?? "";
+    if (kv && DB_ENV.test(kv[1])) {
+      const v = composeValue(kv[2]);
+      if (v) svc.databases.push(v);
+    }
+    if (kv && kv[1] === "ports") {
+      inPorts = true;
+      for (const p of kv[2].replace(/^\[|\]$/g, "").split(",").filter((x) => x.trim())) svc.ports.push(p);
+      continue;
+    }
+    if (kv && kv[1] === "published") svc.ports.push(`${composeValue(kv[2])}:0`);
+    else if (kv && !["target", "published", "protocol", "mode", "host_ip", "app_protocol", "name"].includes(kv[1])) inPorts = false;
+  }
+  return out.flatMap((s) => {
+    const engine = IMAGE_ENGINE.find(([re]) => re.test(s.image.toLowerCase()))?.[1];
+    if (!engine) return [];
+    // "HOST:CONTAINER", "IP:HOST:CONTAINER": the host port; a container port alone is a random host port
+    const ports = s.ports.map((p) => composeValue(p)).filter(Boolean).map((p) => p.replace(/\/\w+$/, "").split(":")).filter((x) => x.length >= 2).map((x) => Number(x[x.length - 2])).filter((n) => Number.isInteger(n) && n > 0);
+    return [{ engine, ports, databases: s.databases }];
+  });
+}
+
+/** The development database of a Rails config/database.yml: {engine, database} or null (ERB is skipped). */
+function railsDatabase(text) {
+  const adapter = /^\s*adapter:\s*(\w+)/m.exec(text)?.[1];
+  const engine = { postgresql: "postgres", postgis: "postgres", mysql2: "mysql", trilogy: "mysql", sqlite3: "sqlite" }[adapter];
+  const dev = /^development:\s*\n((?:[ \t]+.*\n?)*)/m.exec(text)?.[1] ?? "";
+  const db = /^\s*database:\s*([^\s<#]+)\s*$/m.exec(dev)?.[1];
+  return engine && db ? { engine, database: db } : null;
+}
+
+/** What /sapu:init proposes for the checkout at `root`: {ecosystems, sources, guard: {postgres, databases, deny}}. */
+export function detectStack(root) {
+  const read = (f) => {
+    try {
+      return fs.readFileSync(path.join(root, f), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const sources = [];
+  const ecosystems = [];
+  const deny = [];
+  for (const [name, eco] of Object.entries(ECOSYSTEMS)) {
+    const hit = eco.markers.find(([f, has]) => {
+      const t = read(f);
+      return t !== null && (!has || has.test(t));
+    });
+    if (!hit) continue;
+    let rules = eco.deny;
+    if (eco.tools) {
+      const pkg = read(hit[0]) ?? "";
+      rules = Object.entries(eco.tools).flatMap(([tool, r]) => (new RegExp(`"${tool.replace(/[.-]/g, "\\$&")}"\\s*:`).test(pkg) ? r : []));
+      if (!rules.length) continue;
+    }
+    ecosystems.push(name);
+    sources.push(hit[0]);
+    deny.push(...rules);
+  }
+  const dbs = [];
+  for (const f of COMPOSE_FILES) {
+    const t = read(f);
+    if (t === null) continue;
+    const found = composeDatabases(t);
+    if (found.length) sources.push(f);
+    dbs.push(...found);
+  }
+  const yml = read("config/database.yml");
+  const rails = yml && railsDatabase(yml);
+  if (rails) {
+    sources.push("config/database.yml");
+    dbs.push({ engine: rails.engine, ports: [], databases: [rails.database] });
+  }
+  // one entry per engine, in the order found
+  const merged = [];
+  for (const d of dbs) {
+    const m = merged.find((x) => x.engine === d.engine);
+    if (m) {
+      m.ports = [...new Set([...m.ports, ...d.ports])];
+      m.databases = [...new Set([...m.databases, ...d.databases])];
+    } else merged.push({ engine: d.engine, ports: [...new Set(d.ports)], databases: [...new Set(d.databases)] });
+  }
+  const pg = merged.find((d) => d.engine === "postgres");
+  return {
+    ecosystems,
+    sources: [...new Set(sources)],
+    guard: { postgres: pg ? { ports: pg.ports, databases: pg.databases } : null, databases: merged.filter((d) => d.engine !== "postgres" && d.ports.length + d.databases.length > 0), deny },
+  };
+}
+
+// WHICH FILE A CONTRACT COMMAND RUNS. sapu-merge.sh runs gate.merge in the PR's worktree, so a word
+// naming repo code runs the PR's copy unless it is pinned: the merge runs <MAIN>'s copy instead,
+// proven identical to origin/<base>'s blob. The one implementation of "which word" is
+// protectedCommand; sapu-merge.sh calls it through `protect`, and `show`/`check` warn when gate.merge
+// has none.
+/** Interpreters whose first non-option word is the script they run. */
+const SCRIPT_INTERPRETER = /^(?:bash|sh|zsh|dash|ksh|node|tsx|ts-node|python(?:\d+(?:\.\d+)?)?|ruby|perl|php|deno|bun)$/;
+/** Interpreter options whose value is the next word (node's preloads), never the script. */
+const PRELOAD_OPTS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader"]);
+/**
+ * Runners that run the command after them (`uv run pytest`): the subcommand that does (null = the
+ * runner itself), options whose value is the next word, options that move the working directory or
+ * run a shell string (the rest is then no longer a command sapu can pin).
+ */
+const COMMAND_RUNNERS = {
+  uv: { sub: "run", values: ["--with", "--with-editable", "--with-requirements", "--extra", "--group", "--only-group", "--no-group", "--package", "-p", "--python", "--env-file", "--index", "--default-index", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--cache-dir", "--config-file", "--color"], moves: ["--directory", "--project"] },
+  poetry: { sub: "run", values: [], moves: ["-C", "--directory", "-P", "--project"] },
+  pipenv: { sub: "run", values: [], moves: [] },
+  npx: { sub: null, values: ["-p", "--package"], moves: ["-c", "--call"] },
+  pnpm: { sub: "exec", values: [], moves: ["-C", "--dir", "-c", "--shell-mode", "-r", "--recursive", "-F", "--filter"] },
+  env: { sub: null, values: ["-u", "--unset"], moves: ["-C", "--chdir", "-S", "--split-string"], assignments: true },
+};
+/** The default makefiles GNU make reads, in its order; the default justfiles just reads. */
+const MAKEFILES = ["GNUmakefile", "makefile", "Makefile"];
+const JUSTFILES = ["justfile", ".justfile", "Justfile", "JUSTFILE"];
+/** just's options whose value is the next word (besides --justfile and --working-directory). */
+const JUST_VALUES = ["--shell", "--shell-arg", "--dotenv-filename", "--dotenv-path", "-E", "--color", "--command-color", "--chooser"];
+const repoPath = (w) => typeof w === "string" && !w.startsWith("/") && w.includes("/");
+const optName = (w) => (w.startsWith("--") && w.includes("=") ? w.slice(0, w.indexOf("=")) : w);
+/** Does option word `w` name one of `opts` (`--dir=x`, `-Cx` included)? */
+const isOpt = (w, opts) => opts.includes(optName(w)) || opts.some((o) => /^-[A-Za-z]$/.test(o) && w.length > 2 && !w.startsWith("--") && w.startsWith(o));
+
+/**
+ * `words` (a contract command split on whitespace) as sapu-merge.sh runs it, and the index of the
+ * word naming the repo file it pins: {words, index, file, why}. index null = nothing pinned (`why`
+ * says so); the PR's own copy of the gate logic then runs. `hasFile(path)` answers whether the base
+ * holds a file (it picks make's or just's default file). Pinned: a relative word with a `/` as the
+ * program; an interpreter's script (its first non-option word, node's preload values and deno/bun
+ * `run` skipped) when that is relative with a `/`; make's makefile and just's justfile (`-f`, else
+ * the default the base holds, written out so the pinned copy is the one read, recipes still run in
+ * the cwd). Runners that run a command (`uv run`, `poetry run`, `pipenv run`, `npx`, `pnpm exec`,
+ * `env`) are peeled first. An absolute program runs as is.
+ */
+export function protectedCommand(words, hasFile = () => false) {
+  const none = (why) => ({ words: [...words], index: null, file: null, why });
+  const at = (ws, index) => ({ words: ws, index, file: ws[index], why: null });
+  if (!words.length) return none("an empty command");
+  if (repoPath(words[0])) return at([...words], 0);
+  const prog = words[0].slice(words[0].lastIndexOf("/") + 1);
+  const n = words.length;
+  if (SCRIPT_INTERPRETER.test(prog)) {
+    let j = 1;
+    while (j < n && (words[j].startsWith("-") || (words[j] === "run" && (prog === "deno" || prog === "bun")))) j += PRELOAD_OPTS.has(words[j]) ? 2 : 1;
+    return j < n && repoPath(words[j]) ? at([...words], j) : none(`${prog}'s script word is ${j < n ? `\`${words[j]}\`, not a relative path with a /` : "missing"}`);
+  }
+  const runner = COMMAND_RUNNERS[prog];
+  if (runner) {
+    let j = 1;
+    let inSub = !runner.sub;
+    while (j < n) {
+      const w = words[j];
+      if (isOpt(w, runner.moves)) return none(`\`${prog} ${optName(w)}\` moves the working directory or runs a shell string`);
+      if (!inSub) {
+        if (w === runner.sub) inSub = true;
+        else if (!w.startsWith("-")) return none(`\`${prog} ${w}\` runs no command sapu can pin (only \`${prog} ${runner.sub}\` does)`);
+        j++;
+        continue;
+      }
+      if (w === "--") {
+        j++;
+        break;
+      }
+      if (runner.assignments && /^[A-Za-z_]\w*=/.test(w)) j++;
+      else if (w.startsWith("-")) j += runner.values.includes(w) ? 2 : 1;
+      else break;
+    }
+    if (!inSub || j >= n) return none(`\`${words.join(" ")}\` names no command`);
+    const inner = protectedCommand(words.slice(j), hasFile);
+    return inner.index === null ? { ...inner, words: [...words.slice(0, j), ...inner.words] } : at([...words.slice(0, j), ...inner.words], j + inner.index);
+  }
+  if (prog === "make" || prog === "gmake") {
+    const ws = [words[0]];
+    const files = [];
+    for (let j = 1; j < n; j++) {
+      const w = words[j];
+      if (isOpt(w, ["-C", "--directory"])) return none(`\`make ${optName(w)}\` reads its makefile from another directory`);
+      if (["-f", "--file", "--makefile"].includes(w)) {
+        files.push(ws.length + 1);
+        ws.push(w, words[++j] ?? "");
+      } else if (/^--(?:file|makefile)=/.test(w) || /^-f./.test(w)) {
+        files.push(ws.length + 1);
+        ws.push("-f", w.startsWith("--") ? w.slice(w.indexOf("=") + 1) : w.slice(2));
+      } else if (/^-[^-]*f/.test(w)) return none(`\`${w}\` bundles -f with other options: write -f on its own`);
+      else ws.push(w);
+    }
+    if (files.length > 1) return none("make reads several makefiles; sapu pins one");
+    if (files.length === 1) return ws[files[0]] && !ws[files[0]].startsWith("/") ? at(ws, files[0]) : none("make's -f names an absolute path");
+    const def = MAKEFILES.find((f) => hasFile(f));
+    return def ? at([words[0], "-f", def, ...words.slice(1)], 2) : none(`the base has none of ${MAKEFILES.join(", ")}`);
+  }
+  if (prog === "just") {
+    const ws = [words[0]];
+    let file = -1;
+    let dir = false;
+    let j = 1;
+    for (; j < n && words[j].startsWith("-"); j++) {
+      const w = words[j];
+      const name = optName(w);
+      if (name === "-f" || name === "--justfile") {
+        file = ws.length + 1;
+        ws.push(name, w.includes("=") ? w.slice(w.indexOf("=") + 1) : (words[++j] ?? ""));
+      } else if (name === "-d" || name === "--working-directory") {
+        dir = true;
+        ws.push(w);
+        if (!w.includes("=")) ws.push(words[++j] ?? "");
+      } else {
+        // an option's value is no recipe: --set takes two
+        const take = w.includes("=") ? 0 : name === "--set" ? 2 : JUST_VALUES.includes(name) ? 1 : 0;
+        ws.push(w, ...words.slice(j + 1, j + 1 + take));
+        j += take;
+      }
+    }
+    ws.push(...words.slice(j));
+    if (file < 0) {
+      if (dir) return none("just's --working-directory without --justfile");
+      const def = JUSTFILES.find((f) => hasFile(f));
+      return def ? at([words[0], "--justfile", def, "--working-directory", ".", ...words.slice(1)], 2) : none(`the base has none of ${JUSTFILES.join(", ")}`);
+    }
+    if (ws[file].startsWith("/")) return none("just's --justfile names an absolute path");
+    // just runs recipes in the justfile's directory unless told otherwise: keep that directory.
+    if (!dir) ws.splice(file + 1, 0, "--working-directory", path.posix.dirname(ws[file]));
+    return at(ws, file);
+  }
+  return none(`\`${prog}\` reads the PR's own files; no word names a repo file sapu can pin`);
+}
+
+/** Does the repo at `root` hold `file` at `ref` (null = in its working tree)? */
+function fileAt(root, ref, file) {
+  if (ref === null) return fs.existsSync(path.join(root, file));
+  return spawnSync("git", ["-C", root, "cat-file", "-e", `${ref}:${file}`], { stdio: "ignore" }).status === 0;
+}
+
+/** The text of `file` in the repo at `root` at `ref` (null = its working tree), or null. */
+function textAt(root, ref, file) {
+  if (ref === null) {
+    try {
+      return fs.readFileSync(path.join(root, file), "utf8");
+    } catch {
+      return null;
+    }
+  }
+  const r = spawnSync("git", ["-C", root, "show", `${ref}:${path.posix.normalize(file)}`], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  return r.status === 0 ? r.stdout : null;
+}
+
+/**
+ * The ways a file finds its own location (make, just, shell, node, python, ruby, perl, php), each with
+ * the name a warning prints. sapu-merge.sh runs a pinned file from <MAIN>'s path, so a gate that
+ * finds the tree it tests this way tests <MAIN>, not the PR's worktree.
+ */
+const SELF_LOCATING = [
+  // the makefile's own path (`lastword`/`firstword` of it, `$(word $(words …),…)`, or the list inside
+  // abspath/realpath/dir or a shell's dirname/realpath/readlink, `$(…)` or `${…}`, also further into
+  // the shell text: `$(shell cd "$$(dirname …)" && pwd)`), not a help target that only greps it
+  [/\b(?:lastword|firstword|words)\s+\$[({]MAKEFILE_LIST[)}]|\$[({](?:abspath|realpath|dir|shell\s+(?:[^\n]*?[\s"'(;&|])?(?:dirname|realpath|readlink))\s[^\n]*\bMAKEFILE_LIST\b/, "$(MAKEFILE_LIST)"],
+  [/\b(justfile_directory|justfile|source_directory|source_file)\s*\(\s*\)/, (m) => `${m[1]}()`],
+  [/\bBASH_SOURCE\b/, "${BASH_SOURCE}"],
+  [/\$\{0[%#:]/, (m) => m[0]],
+  [/\b(?:dirname|realpath|readlink)\b[^\n;|&)]*?(["']?)\$(?:0\b|\{0\})/, () => 'dirname "$0"'],
+  [/\b__dirname\b|\b__filename\b/, (m) => m[0]],
+  [/\bimport\.meta\.(?:url|dirname|filename)\b/, (m) => m[0]],
+  [/\b__file__\b|\b__dir__\b|\b__FILE__\b|\b__DIR__\b/, (m) => m[0]],
+  [/\bFindBin\b/, "$FindBin::Bin"],
+];
+
+/**
+ * The warning `show`/`check` print about gate.merge, or null: when it pins no repo file, or when the
+ * file it pins finds the tree from its own location (`readFile(path)` gives that file's text, or null).
+ */
+export function gateProtectionWarning(contract, hasFile, readFile = () => null) {
+  const merge = contract && contract.gate && contract.gate.merge;
+  if (!isStr(merge)) return null;
+  const p = protectedCommand(merge.trim().split(/\s+/), hasFile);
+  if (p.index === null) {
+    return `gate.merge (\`${merge}\`) pins no repo file (${p.why}): sapu-merge.sh runs the PR's own copy of the gate's logic, so a PR can change the gate that judges it. Write it as a repo script run by path or by an interpreter (\`scripts/gate.sh\`, \`bash scripts/gate.sh\`, \`node scripts/gate.mjs\`, \`uv run python scripts/gate.py\`), or as \`make <target>\`/\`just <recipe>\` with the makefile or justfile on the base branch.`;
+  }
+  const text = readFile(p.file);
+  if (typeof text !== "string") return null;
+  const found = [];
+  for (const [re, name] of SELF_LOCATING) {
+    const m = re.exec(text);
+    if (m) found.push(typeof name === "function" ? name(m) : name);
+  }
+  if (!found.length) return null;
+  return `gate.merge's pinned file ${p.file} finds the tree from its own location (${[...new Set(found)].join(", ")}): sapu-merge.sh runs it from the main checkout's path (\`<MAIN>/${p.file}\`), so that location is the main checkout, not the PR's worktree, and the gate would test the main checkout (a false green). Find the tree through the cwd or $SAPU_WT (both the PR's worktree) instead.`;
+}
+
 function main(argv) {
+  // `--machine-config <file>` first: read that file as the machine config, $HOME aside (the tests' seam).
+  let machineFile = null;
+  if (argv[0] === "--machine-config") {
+    if (!argv[1] || !path.isAbsolute(argv[1])) {
+      process.stderr.write("sapu-contract: --machine-config needs an absolute file path\n");
+      process.exit(1);
+    }
+    machineFile = argv[1];
+    argv = argv.slice(2);
+  }
   const [cmd, ...args] = argv;
+  if (cmd === "protect") {
+    // protect [--ref <rev>] -- <word>...: before the option parsing below, which would eat a gate's own `--text`.
+    const sep = args.indexOf("--");
+    const opts = sep < 0 ? args : args.slice(0, sep);
+    const ref = opts[0] === "--ref" && opts.length === 2 ? opts[1] : opts.length === 0 ? "HEAD" : null;
+    const root = findMain(process.cwd());
+    if (sep < 0 || ref === null || !/^[\w./@^~][\w./@^~-]*$/.test(ref) || !root) {
+      process.stderr.write("sapu-contract: usage (inside the repo): sapu-contract.mjs protect [--ref <rev>] -- <word>...\n");
+      process.exit(1);
+    }
+    process.stdout.write(`${JSON.stringify(protectedCommand(args.slice(sep + 1), (f) => fileAt(root, ref, f)))}\n`);
+    return;
+  }
   const workingTree = args.includes("--working-tree");
   const withComments = args.includes("--comments");
   const withText = args.includes("--text");
@@ -1038,8 +1869,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main", "stack", "tuning"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1051,16 +1882,30 @@ function main(argv) {
   }
   if (cmd === "lanes") {
     const m = machineNow();
-    process.stdout.write(`${JSON.stringify({ ...safeLanes(m), ...m })}\n`);
+    const l = safeLanes(m);
+    process.stdout.write(`${JSON.stringify({ ...l, ...gateWorkers({ cpus: m.cpus, busy: l.busy }), ...m })}\n`);
     return;
   }
   const mainDir = findMain(process.cwd());
   const here = workingTree ? checkoutRoot(process.cwd()) : mainDir;
+  if (cmd === "stack") {
+    const root = checkoutRoot(process.cwd());
+    if (!root) fail("not inside a git repository");
+    process.stdout.write(`${JSON.stringify(detectStack(root), null, 2)}\n`);
+    return;
+  }
+  if (cmd === "main") {
+    if (!mainDir) fail("cannot resolve the main checkout from here: outside a repo, or a --separate-git-dir checkout seen from a linked worktree (run `git config core.worktree <main checkout>` there once)");
+    process.stdout.write(`${mainDir}\n`);
+    return;
+  }
   // A broken machine config stops the lock and preflight: the owner restricted this machine, and a
   // typo must not silently lift the restriction.
   const machineOrFail = () => {
     try {
-      return loadMachineConfig(machineConfigPath(), { main: mainDir });
+      // --machine-config is the test harness's seam: a CLI argument no repo setting can supply, and
+      // sapu-merge.sh never forwards one.
+      return machineFile !== null ? loadMachineConfig(machineFile, { main: mainDir }) : accountMachineConfig({ main: mainDir });
     } catch (e) {
       return fail(e.message);
     }
@@ -1069,12 +1914,17 @@ function main(argv) {
     // For /sapu:init: facts only, no contract needed, never fails on them.
     const dir = mainDir || process.cwd();
     const machine = machineOrFail();
+    const remote = mainDir ? parseRemote(sh("git", ["-C", dir, "remote", "get-url", "origin"], dir)) : null;
+    // gh asks the origin's host (GitHub Enterprise) unless GH_HOST already names one
+    if (remote && remote.host !== DEFAULT_HOST && !process.env.GH_HOST) process.env.GH_HOST = remote.host;
     const out = {
       main: mainDir,
       allowedRoot: machine.allowedRoots.length ? underAllowedRoot(dir, machine.allowedRoots) : null,
       machineConfig: machine.path,
       projectScopeOnly: machine.projectScopeOnly,
-      origin: mainDir ? nwoFromRemote(sh("git", ["-C", dir, "remote", "get-url", "origin"], dir)) : null,
+      origin: remote ? remote.nwo : null,
+      host: remote ? remote.host : null,
+      bare: mainDir ? sh("git", ["-C", mainDir, "rev-parse", "--is-bare-repository"], mainDir) === "true" : null,
       ghLogin: sh("gh", ["api", "user", "--jq", ".login"], dir) || null,
       gitEmail: mainDir ? sh("git", ["-C", dir, "config", "user.email"], dir) || null : null,
       userScopeInstall: userScopeInstall(),
@@ -1082,6 +1932,34 @@ function main(argv) {
       hasContract: mainDir ? fs.existsSync(path.join(mainDir, CONTRACT_PATH)) : false,
     };
     process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+    return;
+  }
+  if (cmd === "sweep") {
+    // ONE SWEEP PER REPO (above). No contract needed: the marker lives in <MAIN>/.git.
+    const [verb, owner] = rest;
+    if (!["hold", "release", "status", "clear"].includes(verb) || ((verb === "hold" || verb === "release") && !SWEEP_OWNER.test(owner ?? ""))) {
+      fail("usage: sapu-contract.mjs sweep hold|release <run-marker> | sweep status|clear (run-marker: letters, digits, . _ : -)");
+    }
+    if (!mainDir) fail("not inside a git repository");
+    const script = fileURLToPath(import.meta.url);
+    if (verb === "status") {
+      process.stdout.write(`${JSON.stringify(sweepStatus(mainDir))}\n`);
+    } else if (verb === "clear") {
+      const s = sweepStatus(mainDir);
+      fs.rmSync(sweepFile(mainDir), { force: true });
+      process.stdout.write(s.held ? `removed ${sweepFile(mainDir)} (held by ${s.owner ?? "an unreadable marker"}${s.beat ? `, last heartbeat ${s.agoMin} min ago` : ""})\n` : "no sweep marker\n");
+    } else if (verb === "release") {
+      const r = sweepRelease(mainDir, owner);
+      if (!r.released) fail(`the sweep marker is held by ${r.holder}, not ${owner}: left as it is`);
+      process.stdout.write(`${JSON.stringify(r)}\n`);
+    } else {
+      const r = sweepHold(mainDir, owner);
+      if (!r.held) {
+        fail(`another sapu sweep holds this repo: ${r.holder}, last heartbeat ${r.agoMin} min ago${r.host ? ` on ${r.host}` : ""} (stale after ${SWEEP_TTL_MS / 60000} min). Two orchestrators would race for the same issues and merges: stop and report this. If that session is gone, the person at this machine removes the marker with \`node "${script}" sweep clear\`; never clear it yourself.`);
+      }
+      if (r.tookOver) process.stderr.write(`sapu-contract: took over a stale sweep marker of ${r.tookOver.owner ?? "an unreadable marker"}${r.tookOver.agoMin != null ? ` (last heartbeat ${r.tookOver.agoMin} min ago)` : ""}\n`);
+      process.stdout.write(`${JSON.stringify(r)}\n`);
+    }
     return;
   }
   if (cmd === "home") {
@@ -1095,6 +1973,7 @@ function main(argv) {
       return;
     }
     if (!here) fail("not inside a git repository");
+    for (const w of profileWarnings(here, { rev: workingTree ? null : "HEAD" })) process.stderr.write(`sapu-contract: WARNING ${w}\n`);
     const probs = profileProblems(here, undefined, { rev: workingTree ? null : "HEAD" });
     const lines = Object.entries(probs).map(([s, m]) => `.claude/sapu/${s}.md: ${m.join(", ")}`);
     if (lines.length) fail(`profile sections missing:\n  - ${lines.join("\n  - ")}`);
@@ -1103,6 +1982,13 @@ function main(argv) {
   }
   const { contract, error } = loadContract(here, { workingTree, ref: ref ?? "HEAD" });
   if (error) fail(error);
+  // Every gh call below (and in its children) goes to the contract's GitHub host.
+  if (hostOf(contract) !== DEFAULT_HOST) process.env.GH_HOST = hostOf(contract);
+  if (cmd === "show" || cmd === "check") {
+    const at = workingTree ? null : (ref ?? "HEAD");
+    const warning = gateProtectionWarning(contract, (f) => fileAt(here, at, f), (f) => textAt(here, at, f));
+    if (warning) process.stderr.write(`sapu-contract: WARNING ${warning}\n`);
+  }
   if (cmd === "check") {
     const problems = lockProblems(mainDir, contract, machineOrFail());
     if (problems.length) fail(`refusing to run here:\n  - ${problems.join("\n  - ")}`);
@@ -1123,6 +2009,11 @@ function main(argv) {
     process.stdout.write(`${JSON.stringify(resolvePolicy(contract))}\n`);
     return;
   }
+  if (cmd === "tuning") {
+    const m = machineNow();
+    process.stdout.write(`${JSON.stringify({ ...resolveTuning(contract), ...gateWorkers({ cpus: m.cpus, busy: safeLanes(m).busy }) })}\n`);
+    return;
+  }
   if (cmd === "pr-reviews") {
     if (!/^[1-9]\d*$/.test(arg ?? "")) fail("usage: sapu-contract.mjs pr-reviews <N>");
     try {
@@ -1135,6 +2026,8 @@ function main(argv) {
   if (cmd === "allowed") {
     if (!SKILLS.includes(arg)) fail(`allowed needs a skill name: ${SKILLS.join(", ")}`);
     if (!resolvePolicy(contract).skills.includes(arg)) fail(`${arg} is not allowed in this repo (policy.skills: ${resolvePolicy(contract).skills.join(", ")}); /sapu:init changes it`);
+    // The journey lane is an argus lane: it runs under argus's gates, so it needs argus allowed too.
+    if (arg === "journey" && !resolvePolicy(contract).skills.includes("argus")) fail(`journey runs under argus, which is not allowed in this repo (policy.skills: ${resolvePolicy(contract).skills.join(", ")}); /sapu:init changes it`);
     process.stdout.write(`${arg} allowed\n`);
     return;
   }
@@ -1190,7 +2083,7 @@ function main(argv) {
       } else {
         const r = issueTrust(contract, n, trusted);
         const s = r.snapshot;
-        v = { trusted: r.trusted, number: n, kind: s.kind, author: s.author, reason: r.reason, acceptedBy: r.acceptedBy, lastEditedAt: s.lastEditedAt, editor: s.editor };
+        v = { trusted: r.trusted, number: n, kind: s.kind, author: s.author, reason: r.reason, acceptedBy: r.acceptedBy, agentFiled: r.agentFiled, lastEditedAt: s.lastEditedAt, editor: s.editor };
         if (r.trusted && withText) Object.assign(v, { title: s.title, body: s.body });
         if (r.trusted && withComments) {
           const cm = trustedComments(contract, n, trusted);

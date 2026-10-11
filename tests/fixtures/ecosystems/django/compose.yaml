@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-site_dev}
+      - POSTGRES_PASSWORD=example
+    ports:
+      - "127.0.0.1:5433:5432"
+  worker:
+    image: python:3.12
+    ports:
+      - "8000"

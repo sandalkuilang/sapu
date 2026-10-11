@@ -5,13 +5,18 @@
 // machine's own config, accounts and plugin installs never leak into a result.
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { SAPU_AGENT } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import {
   DEFAULT_ACCEPTED_LABEL,
+  DEFAULT_NEEDS_OWNER_LABEL,
+  DEFAULT_AGENT_FILED_LABEL,
+  agentFiledLabel,
+  SKILLS,
+  needsOwnerLabel,
   LADDER_AGENT,
   PROFILE_SECTIONS,
   SPECIALIST_ROLES,
@@ -22,6 +27,7 @@ import {
   loadMachineConfig,
   lockProblems,
   machineConfigPath,
+  homeProblem,
   nwoFromRemote,
   resolveSpecialists,
   safeLanes,
@@ -31,9 +37,21 @@ import {
   underAllowedRoot,
   validate,
   validateMachineConfig,
+  SWEEP_TTL_MS,
+  sweepHold,
+  sweepRelease,
+  protectedCommand,
+  gateProtectionWarning,
+  bodyRefs,
+  gitCommonDir,
+  detectStack,
+  gateWorkers,
+  resolveTuning,
+  profileWarnings,
+  isHandoffCommand,
 } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
-import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser } from "./gh-stub";
+import { GH_API, type IssueSpec, at, writeIssue, writePr, writeUser, writeLabel } from "./gh-stub";
 
 const CLI = join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs");
 const clone = () => JSON.parse(JSON.stringify(FIXTURE_CONTRACT));
@@ -81,13 +99,18 @@ function fakeHome(name: string, config?: unknown) {
 const DEFAULT_HOME = fakeHome("home-none");
 const DEFAULT_BIN = stubBin("bin-default");
 
-/** Run the CLI with a throwaway HOME (no XDG_CONFIG_HOME) and stubbed gh/claude; returns {status, out, err}. */
-function cli(cwd: string, a: string[], { home = DEFAULT_HOME, bin = DEFAULT_BIN, xdg, env: extra = {} }: { home?: string; bin?: string; xdg?: string; env?: Record<string, string> } = {}) {
+/**
+ * Run the CLI with a throwaway HOME (no XDG_CONFIG_HOME) and stubbed gh/claude; returns {status, out, err}.
+ * A HOME that is not the account's own is refused, so the CLI is told the throwaway HOME's machine
+ * config through its test seam (`--machine-config`) — unless `seam` is false.
+ */
+function cli(cwd: string, a: string[], { home = DEFAULT_HOME, bin = DEFAULT_BIN, xdg, env: extra = {}, seam = true }: { home?: string; bin?: string; xdg?: string; env?: Record<string, string>; seam?: boolean } = {}) {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra, HOME: home, PATH: `${bin}:${process.env.PATH}` };
   delete env.XDG_CONFIG_HOME;
   if (xdg !== undefined) env.XDG_CONFIG_HOME = xdg;
+  const pre = seam ? ["--machine-config", join(home, ".config/sapu/config.json")] : [];
   // spawnSync, not execFileSync: stderr is kept on success too (issue-trust --comments reports there).
-  const r = spawnSync("node", [CLI, ...a], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const r = spawnSync("node", [CLI, ...pre, ...a], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   return { status: r.status, out: r.stdout, err: r.stderr };
 }
 
@@ -121,6 +144,14 @@ describe("validate", () => {
     ["a fast gate equal to the merge gate", (c: any) => (c.gate.fast = ` ${c.gate.merge}  `), /gate.fast must differ from gate.merge/],
     // round 4 D: a path in envFiles would never match (the guard compares basenames)
     ["an env file given as a path", (c: any) => (c.guard.envFiles = ["config/.env.production"]), /envFiles.*file names/],
+    ["a merge method GitHub does not have", (c: any) => (c.mergeMethod = "fast-forward"), /mergeMethod must be "squash", "merge" or "rebase"/],
+    ["a host written as a URL", (c: any) => (c.host = "https://ghe.example.com"), /host must be a hostname/],
+    ["a host with a path", (c: any) => (c.host = "ghe.example.com/owner"), /host must be a hostname/],
+    ["a database engine the guard does not know", (c: any) => (c.guard.databases = [{ engine: "oracle", ports: [1521], databases: [] }]), /guard\.databases\[0\]\.engine must be one of postgres, mysql, mongodb, redis, sqlite/],
+    ["a database entry that protects nothing", (c: any) => (c.guard.databases = [{ engine: "mysql", ports: [], databases: [] }]), /guard\.databases\[0\] must name at least one port or database/],
+    ["a database entry with a string port", (c: any) => (c.guard.databases = [{ engine: "redis", ports: ["6379"], databases: [] }]), /guard\.databases\[0\] must be \{engine, ports: \[int\], databases: \[name\]\}/],
+    ["a sqlite entry with a port", (c: any) => (c.guard.databases = [{ engine: "sqlite", ports: [1], databases: ["db/dev.sqlite3"] }]), /sqlite.*files, not ports/],
+    ["databases that is not a list", (c: any) => (c.guard.databases = {}), /guard\.databases must be an array/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
     mutate(c);
@@ -135,6 +166,173 @@ describe("validate", () => {
     expect(validate(c)).toEqual([]);
     c.guard.postgres = { ports: [], databases: ["only_a_db"] };
     expect(validate(c)).toEqual([]);
+  });
+
+  it("guard.databases is optional and takes one entry per engine (postgres too, besides guard.postgres)", () => {
+    const c = clone();
+    c.guard.databases = [
+      { engine: "mysql", ports: [3306], databases: ["app_dev"] },
+      { engine: "mongodb", ports: [], databases: ["app_dev"] },
+      { engine: "redis", ports: [6379], databases: [] },
+      { engine: "sqlite", ports: [], databases: ["db/development.sqlite3"] },
+      { engine: "postgres", ports: [5433], databases: [] },
+    ];
+    expect(validate(c)).toEqual([]);
+  });
+
+  it("mergeMethod and host are optional: a contract without them stays valid, and each value GitHub has is accepted", () => {
+    for (const m of ["squash", "merge", "rebase"]) expect(validate({ ...clone(), mergeMethod: m }), m).toEqual([]);
+    expect(validate({ ...clone(), host: "ghe.example.com" })).toEqual([]);
+    expect(validate({ ...clone(), host: "github.com" })).toEqual([]);
+  });
+});
+
+describe("the repository's git directory, whatever the layout", () => {
+  const gd = gitCommonDir as (main: string | null) => string | null;
+  it("is <MAIN>/.git in a plain clone, the directory a .git file names (submodule, --separate-git-dir), the repo itself when bare, null when none exists", () => {
+    const plain = join(root, "gd-plain");
+    execFileSync("git", ["init", "-q", plain]);
+    expect(gd(plain)).toBe(join(plain, ".git"));
+    const sep = join(root, "gd-sep");
+    const store = join(root, "gd-sep-store");
+    execFileSync("git", ["init", "-q", `--separate-git-dir=${store}`, sep]);
+    expect(realpathSync(gd(sep)!)).toBe(realpathSync(store));
+    const bare = join(root, "gd-bare.git");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    expect(gd(bare)).toBe(bare);
+    const dangling = mkdtempSync(join(root, "gd-dangling-"));
+    writeFileSync(join(dangling, ".git"), "gitdir: nowhere\n");
+    expect(gd(dangling)).toBeNull();
+    expect(gd(null)).toBeNull();
+  });
+
+  it("<MAIN> is the checkout, not the git directory git lists first for a submodule or a --separate-git-dir checkout", () => {
+    const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "protocol.file.allow=always", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const sep = join(root, "main-sep");
+    g(root, "init", "-q", `--separate-git-dir=${join(root, "main-sep-store")}`, sep);
+    g(sep, "commit", "-q", "--allow-empty", "-m", "x");
+    g(sep, "worktree", "add", "-q", join(sep, ".claude/worktrees/w1"));
+    expect(cli(sep, ["main"]).out.trim()).toBe(realpathSync(sep));
+    // from a linked worktree the git directory does not say where its checkout is…
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).status).toBe(1);
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).err).toMatch(/core\.worktree/);
+    // …until core.worktree does
+    g(sep, "config", "core.worktree", sep);
+    expect(cli(join(sep, ".claude/worktrees/w1"), ["main"]).out.trim()).toBe(realpathSync(sep));
+    // a submodule records its checkout in core.worktree
+    const lib = join(root, "main-lib");
+    g(root, "init", "-q", lib);
+    g(lib, "commit", "-q", "--allow-empty", "-m", "x");
+    const sup = join(root, "main-super");
+    g(root, "init", "-q", sup);
+    g(sup, "submodule", "add", "-q", lib, "sub");
+    g(join(sup, "sub"), "worktree", "add", "-q", join(sup, "sub/.claude/worktrees/w1"));
+    expect(cli(join(sup, "sub/.claude/worktrees/w1"), ["main"]).out.trim()).toBe(realpathSync(join(sup, "sub")));
+  });
+
+  it("the sweep marker lives in that directory, so a --separate-git-dir checkout holds one too", () => {
+    const sep = join(root, "sweep-sep");
+    const store = join(root, "sweep-sep-store");
+    execFileSync("git", ["init", "-q", `--separate-git-dir=${store}`, sep]);
+    expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-1").held).toBe(true);
+    expect(existsSync(join(store, "sapu-sweep.json"))).toBe(true);
+    expect((sweepHold as (m: string, o: string) => { held: boolean })(sep, "sapu-run-2").held).toBe(false);
+  });
+});
+
+describe("detectStack: the guard /sapu:init proposes for the repo's ecosystem (one fixture per ecosystem)", () => {
+  type Stack = { ecosystems: string[]; sources: string[]; guard: { postgres: { ports: number[]; databases: string[] } | null; databases: { engine: string; ports: number[]; databases: string[] }[]; deny: { argv?: string[]; reason: string }[] } };
+  const stack = (name: string) => (detectStack as (root: string) => Stack)(join(__dirname, "fixtures/ecosystems", name));
+  const argvs = (s: Stack) => s.guard.deny.map((r) => r.argv!.join(" "));
+
+  it.each([
+    ["rails", ["rails"], null, [{ engine: "mysql", ports: [3307], databases: ["shop_development"] }, { engine: "redis", ports: [6380], databases: [] }], ["rails db:drop", "rake db:reset", "rails db:schema:load"]],
+    ["django", ["django", "alembic"], { ports: [5433], databases: ["site_dev"] }, [], ["python manage.py flush", "python3 manage.py flush", "manage.py flush", "django-admin flush", "alembic downgrade"]],
+    ["laravel", ["laravel"], null, [{ engine: "mysql", ports: [3306], databases: ["laravel"] }, { engine: "mongodb", ports: [27018], databases: [] }], ["php artisan migrate:fresh", "artisan db:wipe", "sail artisan migrate:reset"]],
+    ["go", ["go"], null, [{ engine: "mongodb", ports: [27017], databases: ["ledger_dev"] }, { engine: "redis", ports: [6379], databases: [] }], ["migrate drop", "goose reset"]],
+    ["node", ["node"], null, [], ["sequelize db:drop", "typeorm schema:drop"]],
+  ] as const)("%s", (name, ecosystems, postgres, databases, someDeny) => {
+    const s = stack(name);
+    expect(s.ecosystems).toEqual(ecosystems);
+    expect(s.guard.postgres).toEqual(postgres);
+    expect(s.guard.databases).toEqual(databases);
+    expect(argvs(s)).toEqual(expect.arrayContaining([...someDeny]));
+    // what init proposes is a valid contract guard as it stands
+    expect(validate({ ...clone(), guard: { envFiles: [], ...s.guard } })).toEqual([]);
+  });
+
+  it("a repo with no known ecosystem gets no proposal; Node rules come only with the tool in package.json", () => {
+    const empty = mkdtempSync(join(root, "stack-empty-"));
+    expect(stack("node").guard.deny.every((r) => /sequelize|typeorm/.test(r.argv!.join(" ")))).toBe(true);
+    expect((detectStack as (root: string) => Stack)(empty)).toEqual({ ecosystems: [], sources: [], guard: { postgres: null, databases: [], deny: [] } });
+  });
+
+  it("`stack` prints it for the checkout it runs in", () => {
+    const r = join(root, "stack-cli");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commit(r, { "manage.py": "print()\n" });
+    expect(JSON.parse(cli(r, ["stack"]).out).ecosystems).toEqual(["django"]);
+  });
+});
+
+describe("profile warnings: a teardown the step budget lets through", () => {
+  const warn = profileWarnings as (root: string, o?: { rev: string | null }) => string[];
+  const repoWith = (teardown: string) => {
+    const r = mkdtempSync(join(root, "teardown-"));
+    mkdirSync(join(r, ".claude/sapu"), { recursive: true });
+    writeFileSync(join(r, ".claude/sapu/worker.md"), `## Setup\n\n\`npm ci\`\n\n## Teardown\n\n${teardown}\n\n## Test\n\n\`npm test\`\n`);
+    return r;
+  };
+  it.each([
+    ["`scripts/sapu-worktree.sh teardown <ID>` removes the DB and the containers."],
+    ["Run `npm run teardown -- <ID>`."],
+    ["```\nbash scripts/teardown.sh <ID>\n```"],
+    ["None: the tests use no database, container or port."],
+  ])("passes %j", (text) => {
+    expect(warn(repoWith(text), { rev: null })).toEqual([]);
+  });
+  it.each([
+    ["`dropdb app_test_<ID>`, then `docker compose -p <ID> down -v`."],
+    ["```\nmake clean-db ID=<ID>\n```"],
+  ])("warns on %j", (text) => {
+    expect(warn(repoWith(text), { rev: null })).toEqual([expect.stringMatching(/worker\.md §Teardown names no command the step budget treats as a handoff/)]);
+  });
+  it("is the guard's own test of a handoff command", () => {
+    expect((isHandoffCommand as (c: string) => boolean)("npm run teardown -- 7")).toBe(true);
+    expect((isHandoffCommand as (c: string) => boolean)("dropdb app_test_7")).toBe(false);
+  });
+  it("`profiles --working-tree` prints the warning", () => {
+    const r = repoWith("`dropdb app_test_<ID>`");
+    execFileSync("git", ["init", "-q", r]);
+    const out = cli(r, ["profiles", "--working-tree"]);
+    expect(out.err).toMatch(/WARNING worker\.md §Teardown/);
+  });
+});
+
+describe("bodyRefs on GitHub Enterprise", () => {
+  it("reads an issue URL of the contract's host as a reference; one on github.com names another repository", () => {
+    const refs = bodyRefs as (body: string, host?: string) => { closes: { repo: string | null; number: number }[]; refs: { repo: string | null; number: number }[] };
+    expect(refs("Fixes https://ghe.example.com/owner/app/issues/8", "ghe.example.com").closes).toEqual([{ repo: "owner/app", number: 8 }]);
+    expect(refs("See https://ghe.example.com/other/x/pull/3", "ghe.example.com").refs).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("Fixes https://github.com/owner/app/issues/9", "ghe.example.com").closes).toEqual([{ repo: "github.com/owner/app", number: 9 }]);
+    expect(refs("Fixes https://github.com/owner/app/issues/9").closes).toEqual([{ repo: "owner/app", number: 9 }]);
+    expect(refs("Fixes https://ghe.example.com/owner/app/issues/8").closes).toEqual([]);
+  });
+});
+
+describe("bodyRefs — the Refs list", () => {
+  const refs = bodyRefs as (body: string, host?: string) => { cited: { repo: string | null; number: number }[] };
+  it("`cited` holds what a Refs/Ref/References list names; other mentions are not cited", () => {
+    expect(refs("Refs #8, other/x#3 and https://github.com/o/r/pull/4").cited).toEqual([
+      { repo: null, number: 8 },
+      { repo: "other/x", number: 3 },
+      { repo: "o/r", number: 4 },
+    ]);
+    expect(refs("Ref: other/x#3").cited).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("References other/x#3").cited).toEqual([{ repo: "other/x", number: 3 }]);
+    expect(refs("Adapts to other/x#3; see #8. Implements other/x#5").cited).toEqual([]);
+    expect(refs("Prefs #8, `Refs other/x#3`").cited).toEqual([]);
   });
 });
 
@@ -240,6 +438,34 @@ describe("machine config", () => {
       if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
       else process.env.XDG_CONFIG_HOME = saved;
     }
+  });
+
+  it("a HOME that is not the account's home directory is refused: it would hide the machine config, while GH_TOKEN keeps gh logged in", () => {
+    expect(homeProblem("/a/b", "/a/b")).toBeNull();
+    expect(homeProblem(join(root, "elsewhere"), homedir())).toMatch(/HOME is .*elsewhere, not this account's home directory .*: the machine config is read from ~\/\.config\/sapu\/config\.json/);
+    // a link to the account's home is that home
+    const link = join(root, "home-link");
+    symlinkSync(userInfo().homedir, link);
+    expect(homeProblem(link, userInfo().homedir)).toBeNull();
+    // the CLI, without the test seam: check and preflight stop, whatever gh's token says
+    const repo = join(root, "home-moved");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify(FIXTURE_CONTRACT) });
+    for (const cmd of ["check", "preflight"]) {
+      const r = cli(repo, [cmd], { seam: false, env: { GH_TOKEN: "x" } });
+      expect(r.status, cmd).toBe(1);
+      expect(r.err, cmd).toMatch(/HOME is .*home-none, not this account's home directory/);
+    }
+    // HOME spelled through a link to the account's home passes that check (preflight reports facts)
+    expect(cli(repo, ["preflight"], { seam: false, home: link }).err).not.toMatch(/not this account's home directory/);
+  });
+
+  it("--machine-config is the CLI's test seam only: sapu-merge.sh never forwards one", () => {
+    expect(readFileSync(join(import.meta.dirname, "../plugins/sapu/scripts/sapu-merge.sh"), "utf8")).not.toMatch(/machine-config/);
+    const r = cli(root, ["--machine-config", "relative.json", "preflight"], { seam: false });
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/--machine-config needs an absolute file path/);
   });
 
   it("an absent file means no restriction", () => {
@@ -413,6 +639,63 @@ describe("the scope lock", () => {
     expect(nwoFromRemote("git@evil.example:github.com/owner/app.git")).toBeNull();
     expect(nwoFromRemote("https://github.com.evil.example/owner/app.git")).toBeNull();
     expect(nwoFromRemote("/srv/mirror/github.com/owner/app.git")).toBeNull();
+  });
+
+  it("nwoFromRemote pins the contract's host (GitHub Enterprise) and reads an SSH host alias through what ssh resolves it to", () => {
+    const nwo = nwoFromRemote as (url: string, host?: string, resolve?: (alias: string) => string | null) => string | null;
+    const ssh = (map: Record<string, string>) => (alias: string) => map[alias] ?? alias;
+    expect(nwo("https://ghe.example.com/owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("git@ghe.example.com:owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("ssh://git@ghe.example.com:2222/owner/app.git", "ghe.example.com")).toBe("owner/app");
+    expect(nwo("https://github.com/owner/app.git", "ghe.example.com")).toBeNull();
+    expect(nwo("https://ghe.example.com/owner/app.git")).toBeNull();
+    // an alias from ~/.ssh/config: what it resolves to is the host the push really goes to
+    expect(nwo("git@github-work:owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("ssh://git@github-work/owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("github-work:owner/app.git", "github.com", ssh({ "github-work": "github.com" }))).toBe("owner/app");
+    expect(nwo("git@github-work:owner/app.git", "github.com", ssh({ "github-work": "evil.example" }))).toBeNull();
+    expect(nwo("git@github-work:owner/app.git", "github.com", () => null)).toBeNull();
+    // https has no aliases, and an option-looking alias is never handed to ssh
+    let asked = 0;
+    const counting = (a: string) => (asked++, a === "github.example" ? "github.com" : a);
+    expect(nwo("https://github.example/owner/app.git", "github.com", counting)).toBeNull();
+    expect(nwo("git@-oProxyCommand=x:owner/app.git", "github.com", counting)).toBeNull();
+    expect(asked).toBe(0);
+  });
+
+  it("the default alias resolver asks `ssh -G` (no connection), so the scope lock accepts an alias of the contract's host", () => {
+    const bin = stubBin("ssh-alias");
+    writeFileSync(join(bin, "ssh"), '#!/bin/sh\n[ "$1" = -G ] || exit 9\nif [ "$2" = github-work ]; then echo "user git"; echo "hostname github.com"; else echo "hostname $2"; fi\n', { mode: 0o755 });
+    const r = join(root, "alias-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    execFileSync("git", ["-C", r, "config", "--local", "user.email", FIXTURE_CONTRACT.gitEmail]);
+    execFileSync("git", ["-C", r, "remote", "add", "origin", `git@github-work:${FIXTURE_CONTRACT.repo}.git`]);
+    expect(withPath(bin, () => lockProblems(r, FIXTURE_CONTRACT, NO_MACHINE))).toEqual([]);
+    execFileSync("git", ["-C", r, "remote", "set-url", "origin", `git@other-alias:${FIXTURE_CONTRACT.repo}.git`]);
+    expect(withPath(bin, () => lockProblems(r, FIXTURE_CONTRACT, NO_MACHINE)).join("\n")).toMatch(/origin is "none"/);
+  });
+
+  it("the scope lock refuses a bare repository as the main checkout: the merge compares files and fast-forwards there", () => {
+    const bare = join(root, "lock-bare.git");
+    execFileSync("git", ["init", "-q", "--bare", bare]);
+    expect(withPath(stubBin("id-ok"), () => lockProblems(bare, FIXTURE_CONTRACT, NO_MACHINE)).join("\n")).toMatch(/bare repository/);
+  });
+
+  it("a contract `host` reaches gh as GH_HOST and pins origin to that host", () => {
+    const bin = stubBin("ghe-bin");
+    writeFileSync(join(bin, "gh"), '#!/bin/sh\n[ "$GH_HOST" = ghe.example.com ] && echo owner\n', { mode: 0o755 });
+    const r = join(root, "ghe-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    execFileSync("git", ["-C", r, "config", "--local", "user.email", FIXTURE_CONTRACT.gitEmail]);
+    execFileSync("git", ["-C", r, "remote", "add", "origin", `https://ghe.example.com/${FIXTURE_CONTRACT.repo}.git`]);
+    commit(r, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, host: "ghe.example.com" }) });
+    const ok = cli(r, ["check"], { bin });
+    expect(ok.err).not.toMatch(/active gh account|origin is/);
+    expect(ok.status).toBe(0);
+    const pre = JSON.parse(cli(r, ["preflight"], { bin }).out);
+    expect([pre.origin, pre.host]).toEqual(["owner/app", "ghe.example.com"]);
   });
 
   it("lockProblems reads the repo-LOCAL git email, not a global one (13)", () => {
@@ -800,6 +1083,7 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   const bin = apiBin("trust-bin");
   const TRUSTING = { ...FIXTURE_CONTRACT, trustedAuthors: [ALICE] };
   commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+  writeLabel(api, "owner/app", "sapu:agent-filed");
   const run = (a: string[], env: Record<string, string> = {}) => cli(repo, a, { bin, env: { HX_API: api, ...env } });
   let next = 10;
   /** Writes `spec` as a fresh issue, runs `issue-trust` on it, and parses the verdict it always prints. */
@@ -811,6 +1095,8 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   };
   const L = "sapu:accepted";
   const ACCEPTED: IssueSpec = { author: "stranger", labels: [L], events: [{ event: "labeled", label: L, actor: "owner", minute: 5 }] };
+  /** Accepted at minute 30: past the quiet window after edits in the first minutes. */
+  const LATE: IssueSpec = { author: "stranger", labels: [L], events: [{ event: "labeled", label: L, actor: "owner", minute: 30 }] };
 
   it("`trusted` prints the resolved set — the active owner's id first — and --ref reads the contract at that commit", () => {
     expect(JSON.parse(run(["trusted"]).out)).toEqual([{ login: "owner", id: 1 }, ALICE]);
@@ -894,7 +1180,7 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
   });
 
   it("acceptance covers the text as it stood: ANY outsider edit after it refuses, even with a trusted edit later", () => {
-    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 3 }] }).status).toBe(0);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 3 }] }).status).toBe(0);
     expect(judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 9 }] }).status).toBe(0);
     const masked = judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 9 }, { by: "stranger", minute: 7 }] });
     expect(masked.status).toBe(1);
@@ -905,10 +1191,118 @@ describe("`trusted`, `issue-trust` and `pr-trust` — one verdict, on the snapsh
     expect(renamed.v.reason).toMatch(/retitled by stranger \(id 666\) after sapu:accepted was applied/);
   });
 
-  it("the verdict shows the last edit, so an edit made just before the label is visible to whoever applied it", () => {
-    const r = judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 4 }] });
+  it("the verdict shows the last edit, so an edit made before the label is visible to whoever applied it", () => {
+    const r = judge({ ...LATE, edits: [{ by: "stranger", minute: 4 }] });
     expect(r.status).toBe(0);
     expect(r.v).toMatchObject({ lastEditedAt: at(4), editor: { login: "stranger", id: 666 } });
+  });
+
+  it("an outsider's edit or retitle shortly before the label refuses: the acceptor may have read the text before it", () => {
+    const r = judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 4 }] });
+    expect(r.status).toBe(1);
+    expect(r.v.reason).toMatch(/body was edited by stranger \(id 666\) at .* less than 10 minutes before sapu:accepted was applied.*re-apply sapu:accepted after/);
+    expect(judge({ ...ACCEPTED, events: [{ event: "renamed", actor: "stranger", minute: 2 }, ...ACCEPTED.events!] }).v.reason).toMatch(/retitled by stranger \(id 666\) .* less than 10 minutes before/);
+    // the original revision (GitHub lists it at the issue's creation time) is not an edit
+    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 0 }, { by: "owner", minute: 1 }] }).status).toBe(0);
+    expect(judge({ ...ACCEPTED, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 1 }] }).status).toBe(1);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 25 }] }).status).toBe(1);
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 0 }, { by: "stranger", minute: 19 }] }).status).toBe(0);
+    // a trusted edit just before the label is the acceptor's side: no race
+    expect(judge({ ...ACCEPTED, edits: [{ by: "owner", minute: 4 }] }).status).toBe(0);
+  });
+
+  it("self-check: an edit history that does not hold the last edit (lastEditedAt) refuses — a deleted revision may be missing", () => {
+    const r = judge({ ...LATE, edits: [{ by: "stranger", minute: 2 }], edited: { by: "stranger", minute: 3 } });
+    expect(r.status).toBe(1);
+    expect(r.v.reason).toMatch(/edit history GitHub returned does not hold its last edit/);
+    expect(judge({ ...LATE, edits: [], edited: { by: "owner", minute: 3 } }).status).toBe(1);
+    // a deleted revision that GitHub keeps as a node still counts, as before
+    expect(judge({ ...LATE, edits: [{ by: "stranger", minute: 2, deleted: true }, { by: "owner", minute: 3 }] }).status).toBe(0);
+  });
+
+  it("an agent-filed issue says so in the verdict, and stays trusted by its author unless the contract asks for acceptance", () => {
+    const F = "sapu:agent-filed";
+    const plain = judge({ author: "owner", labels: [F], events: [{ event: "labeled", label: F, actor: "owner", minute: 0 }] });
+    expect(plain.status).toBe(0);
+    expect(plain.v).toMatchObject({ trusted: true, agentFiled: true });
+    expect(judge({ author: "owner" }).v.agentFiled).toBe(false);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      const filed = { author: "owner", labels: [F], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }] };
+      const r = judge(filed);
+      expect(r.status).toBe(1);
+      expect(r.v.reason).toMatch(/carries sapu:agent-filed and the contract sets agentFiledNeedsAcceptance.*does not carry sapu:accepted/);
+      // the label in another case is the same label to GitHub
+      expect(judge({ ...filed, labels: ["Sapu:Agent-Filed"] }).status).toBe(1);
+      const accepted = { ...filed, labels: [F, L], events: [...filed.events, { event: "labeled" as const, label: L, actor: "owner", minute: 30 }] };
+      expect(judge(accepted).v).toMatchObject({ trusted: true, agentFiled: true, acceptedBy: { login: "owner", id: 1, at: at(30) } });
+      // an untouched trusted author's issue is still trusted by its author
+      expect(judge({ author: "owner" }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
+  it("with agentFiledNeedsAcceptance, a trusted author's issue passes only while the agent-filed label exists: a renamed or deleted label hides it", () => {
+    const named = { ...TRUSTING, agentFiledNeedsAcceptance: true, labels: { ...TRUSTING.labels, agentFiled: "bot:filed" } };
+    commit(repo, { ".claude/sapu.json": JSON.stringify(named) });
+    try {
+      // after a rename GitHub names the label otherwise on every issue that carries it: fail closed
+      const r = judge({ author: "owner", labels: ["renamed"], events: [{ event: "labeled", label: "renamed", actor: "owner", minute: 0 }] });
+      expect(r.status).toBe(1);
+      expect(r.v.reason).toMatch(/agent-filed label bot:filed is not in the repository/);
+      writeLabel(api, "owner/app", "bot:filed");
+      expect(judge({ author: "owner" }).status).toBe(0);
+      // an issue carrying it is judged by its acceptance, which needs no lookup
+      expect(judge({ author: "owner", labels: ["bot:filed"], events: [{ event: "labeled", label: "bot:filed", actor: "owner", minute: 0 }] }).v.reason).toMatch(/does not carry sapu:accepted/);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+    // without the setting nothing is looked up: the author decides
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, labels: { ...TRUSTING.labels, agentFiled: "gone:label" } }) });
+    try {
+      expect(judge({ author: "owner" }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
+  it("an issue the agent-filed label was EVER applied to stays agent-filed: removing the label launders nothing", () => {
+    const F = "sapu:agent-filed";
+    const removed = { author: "owner", labels: [] as string[], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "unlabeled" as const, label: F, actor: "owner", minute: 1 }] };
+    // without agentFiledNeedsAcceptance the author decides and no history is read: the label counts only while on
+    const plain = judge(removed);
+    expect(plain.status).toBe(0);
+    expect(plain.v).toMatchObject({ trusted: true, agentFiled: false });
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      // the event on a later timeline page counts too, and in another letter case
+      expect(judge({ ...removed, events: [{ event: "labeled", label: "Sapu:Agent-Filed", actor: "owner", minute: 0 }], pages: 3 }).v.agentFiled).toBe(true);
+      const r = judge(removed);
+      expect(r.status).toBe(1);
+      expect(r.v.agentFiled).toBe(true);
+      expect(r.v.reason).toMatch(/sapu:agent-filed was applied to it and the contract sets agentFiledNeedsAcceptance.*does not carry sapu:accepted/);
+      // acceptance is still judged by who applied the acceptance label
+      const byOwner = { ...removed, labels: [L], events: [...removed.events, { event: "labeled" as const, label: L, actor: "owner", minute: 30 }] };
+      expect(judge(byOwner).v).toMatchObject({ trusted: true, agentFiled: true, acceptedBy: { login: "owner", id: 1 } });
+      const byStranger = { ...removed, labels: [L], events: [...removed.events, { event: "labeled" as const, label: L, actor: "stranger", minute: 30 }] };
+      expect(judge(byStranger).v.reason).toMatch(/last applied by stranger/);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+  });
+
+  it("with labels.acceptors, an agent-filed issue edited after acceptance by a non-acceptor (the agents' own account) refuses", () => {
+    const F = "sapu:agent-filed";
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true, labels: { ...TRUSTING.labels, acceptors: [ALICE] } }) });
+    try {
+      const base = { author: "owner", labels: [F, L], events: [{ event: "labeled" as const, label: F, actor: "owner", minute: 0 }, { event: "labeled" as const, label: L, actor: "alice", minute: 30 }] };
+      expect(judge(base).status).toBe(0);
+      expect(judge({ ...base, edits: [{ by: "owner", minute: 0 }, { by: "owner", minute: 40 }] }).v.reason).toMatch(/edited by owner \(id 1\) after sapu:accepted was applied/);
+      expect(judge({ ...base, edits: [{ by: "owner", minute: 0 }, { by: "alice", minute: 40 }] }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
   });
 
   it("labels.accepted names the label; the default one then accepts nothing", () => {
@@ -1019,6 +1413,7 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
   const TRUSTING = { ...FIXTURE_CONTRACT, trustedAuthors: [ALICE] };
   const BOT_RUN = { ...TRUSTING, labels: { ...TRUSTING.labels, acceptors: [ALICE] } };
   commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+  writeLabel(api, "owner/app", "sapu:agent-filed");
   let next = 300;
   const judge = (spec: IssueSpec, env: Record<string, string> = {}) => {
     const n = next++;
@@ -1071,12 +1466,25 @@ describe("acceptors, a relabelled label, light paging and deleted revisions", ()
     expect(judge(accepted("owner", { events: [{ event: "labeled", label: L, actor: "owner", minute: 5, labelUpdated: 3 }] })).status).toBe(0);
   });
 
-  it("decides a trusted author and a missing label from the first page, without paging the timeline", () => {
+  it("pages the timeline only when the agent-filed label is not on the issue now, and refuses a timeline it cannot read whole", () => {
     const events = [1, 2, 3].map((m) => ({ event: "renamed" as const, actor: "stranger", minute: m }));
+    // without agentFiledNeedsAcceptance the author decides: no later page is read, so one GitHub fails to return fails nothing
     expect(judge({ author: "alice", events, pages: 3, missingPages: true }).status).toBe(0);
-    const noLabel = judge({ author: "stranger", events, pages: 3, missingPages: true });
-    expect(noLabel.status).toBe(1);
-    expect(noLabel.v.reason).toMatch(/does not carry sapu:accepted/);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...TRUSTING, agentFiledNeedsAcceptance: true }) });
+    try {
+      // gated, a later page could hold the agent-filed label, applied and removed since: unread, nothing is trusted
+      const unread = judge({ author: "alice", events, pages: 3, missingPages: true });
+      expect(unread.status).toBe(1);
+      expect(unread.v.reason).toMatch(/cannot read issue #\d+ from GitHub/);
+      expect(judge({ author: "alice", events, pages: 3 }).status).toBe(0);
+    } finally {
+      commit(repo, { ".claude/sapu.json": JSON.stringify(TRUSTING) });
+    }
+    // carrying the label now settles it on the first page
+    const F = "sapu:agent-filed";
+    const now = judge({ author: "alice", labels: [F], events, pages: 3, missingPages: true });
+    expect(now.status).toBe(0);
+    expect(now.v.agentFiled).toBe(true);
   });
 
   it("pages the rest of the timeline with a light query only when the label must be traced", () => {
@@ -1118,7 +1526,47 @@ describe("safeLanes: how many Phase B lanes the machine carries", () => {
   it("the CLI prints it with the figures it used, no contract needed", () => {
     const out = JSON.parse(execFileSync("node", [join(__dirname, "../plugins/sapu/scripts/sapu-contract.mjs"), "lanes"], { cwd: tmpdir(), encoding: "utf8" }));
     expect(out.lanes).toBeGreaterThanOrEqual(1);
-    expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "cpus", "ramGB", "load1", "memFreePct"]);
+    expect(Object.keys(out)).toEqual(["lanes", "ceiling", "busy", "gateWorkers", "gateWorkersBeside", "cpus", "ramGB", "load1", "memFreePct"]);
+    expect(out).toMatchObject(gateWorkers({ cpus: out.cpus, busy: out.busy }));
+  });
+});
+
+describe("tuning: what the engine derives from the machine and the model, and what a contract may override", () => {
+  it("gate workers follow the cores: most of them alone, half that beside a lane running tests, the smaller one while the machine is busy", () => {
+    expect(gateWorkers({ cpus: 10, busy: false })).toEqual({ gateWorkers: 8, gateWorkersBeside: 4 });
+    expect(gateWorkers({ cpus: 4, busy: false })).toEqual({ gateWorkers: 3, gateWorkersBeside: 1 });
+    expect(gateWorkers({ cpus: 1, busy: false })).toEqual({ gateWorkers: 1, gateWorkersBeside: 1 });
+    expect(gateWorkers({ cpus: 16, busy: true })).toEqual({ gateWorkers: 6, gateWorkersBeside: 6 });
+  });
+
+  it("the step budget and the context limits default as before and follow `tuning`; the limits are fractions of the context window", () => {
+    const d = resolveTuning(FIXTURE_CONTRACT);
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
+    const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextWindow: 200_000 } });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
+    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.5 } } }).contextLimits).toEqual({ session: 500_000, phaseA: 600_000 });
+  });
+
+  it.each([
+    [{ stepBudget: { soft: 0 } }, /tuning\.stepBudget\.soft must be a whole number/],
+    [{ stepBudget: { soft: 200, hard: 100 } }, /tuning\.stepBudget\.hard must not be below soft/],
+    [{ stepBudget: { sotf: 10 } }, /tuning\.stepBudget: unknown key "sotf"/],
+    [{ contextWindow: 5000 }, /tuning\.contextWindow must be a token count/],
+    [{ contextLimits: { session: 75 } }, /tuning\.contextLimits\.session must be a fraction/],
+    [{ workers: 8 }, /tuning: unknown key "workers"/],
+  ])("refuses tuning %j", (tuning, msg) => {
+    expect(validate({ ...clone(), tuning }).join("\n")).toMatch(msg);
+  });
+
+  it("`tuning` prints the resolved values for the repo and the machine", () => {
+    const r = join(root, "tuning-repo");
+    mkdirSync(r, { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commit(r, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, tuning: { contextWindow: 200_000 } }) });
+    const out = JSON.parse(cli(r, ["tuning"]).out);
+    expect(out.contextLimits).toEqual({ session: 150_000, phaseA: 120_000 });
+    expect(out.stepBudget.soft).toBe(120);
+    expect(out.gateWorkers).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -1268,5 +1716,417 @@ describe("labels: required, except under traces none", () => {
     const { labels: _l, ...rest } = FIXTURE_CONTRACT as Record<string, unknown>;
     expect(validate({ ...rest, policy: { traces: "none" } })).toEqual([]);
     expect(validate(rest).join()).toMatch(/missing "labels"/);
+  });
+});
+
+describe("journey lane — the contract fields (2.9.0)", () => {
+  it("journey is a skill a policy can allow, and `allowed journey` follows the policy", () => {
+    expect(SKILLS).toContain("journey");
+    expect(validate({ ...clone(), policy: { skills: ["argus", "journey"] } })).toEqual([]);
+    const repo = join(root, "policy-journey");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["argus"] } }) });
+    const no = cli(repo, ["allowed", "journey"]);
+    expect(no.status).toBe(1);
+    expect(no.err).toMatch(/journey is not allowed in this repo/);
+  });
+
+  it("labels.needsOwner is optional; absent, the label is argus:needs-owner", () => {
+    expect(DEFAULT_NEEDS_OWNER_LABEL).toBe("argus:needs-owner");
+    expect(needsOwnerLabel(FIXTURE_CONTRACT)).toBe("argus:needs-owner");
+    const c = clone();
+    c.labels.needsOwner = "owner:decide";
+    expect(validate(c)).toEqual([]);
+    expect(needsOwnerLabel(c)).toBe("owner:decide");
+  });
+
+  it.each([
+    ["an empty label", ""],
+    ["a blank label", "  "],
+    ["a number", 3],
+    ["null", null],
+  ])("refuses labels.needsOwner as %s", (_what, v) => {
+    const c = clone();
+    c.labels.needsOwner = v;
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must be a non-empty label name/);
+  });
+
+  it.each([["owner/decide"], ["needs owner"], ["a%2Cb"]])("refuses labels.needsOwner %s, which the guard could not recognise", (v) => {
+    const c = clone();
+    c.labels.needsOwner = v;
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must not contain spaces or any of/);
+  });
+
+  it.each([["triage ok"], ["triage/ok"], ["a%2Cb"]])("refuses labels.accepted %s, which the guard could not recognise", (v) => {
+    const c = clone();
+    c.labels.accepted = v;
+    expect(validate(c).join("\n")).toMatch(/labels\.accepted must not contain spaces or any of/);
+  });
+
+  it("still accepts plain owner label names", () => {
+    const c = clone();
+    c.labels.accepted = "triage:ok";
+    c.labels.needsOwner = "owner:decide";
+    expect(validate(c)).toEqual([]);
+  });
+
+  it("refuses a needs-owner label equal to the acceptance label, whatever the case", () => {
+    const c = clone();
+    c.labels.needsOwner = "Sapu:Accepted";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label/);
+  });
+
+  it("labels.agentFiled is optional (default sapu:agent-filed), a plain name apart from every other owner, workflow and tier label", () => {
+    expect(DEFAULT_AGENT_FILED_LABEL).toBe("sapu:agent-filed");
+    expect(agentFiledLabel(FIXTURE_CONTRACT)).toBe("sapu:agent-filed");
+    const c = clone();
+    c.labels.agentFiled = "bot:filed";
+    expect(validate(c)).toEqual([]);
+    expect(agentFiledLabel(c)).toBe("bot:filed");
+    for (const [v, msg] of [
+      ["", /labels\.agentFiled must be a non-empty label name/],
+      ["bot filed", /labels\.agentFiled must not contain spaces/],
+      ["Sapu:Accepted", /labels\.agentFiled must differ from labels\.accepted/],
+      ["argus:needs-owner", /labels\.agentFiled must differ from labels\.needsOwner/],
+      ["AGENT:DONE", /labels\.agentFiled must differ from labels\.done/],
+      ["risk:filed", /labels\.agentFiled must not start with labels\.tierPrefix/],
+    ] as const) {
+      const d = clone();
+      d.labels.agentFiled = v;
+      expect(validate(d).join("\n"), v).toMatch(msg);
+    }
+  });
+
+  it("agentFiledNeedsAcceptance is an optional boolean, and needs the label that traces none forbids", () => {
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: true })).toEqual([]);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: false })).toEqual([]);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: "yes" }).join("\n")).toMatch(/agentFiledNeedsAcceptance must be true or false/);
+    expect(validate({ ...clone(), agentFiledNeedsAcceptance: true, policy: { traces: "none" } }).join("\n")).toMatch(/agentFiledNeedsAcceptance needs traces "visible"/);
+  });
+
+  it("`allowed journey` passes when the policy allows it", () => {
+    const repo = join(root, "policy-journey-ok");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["argus", "journey"] } }) });
+    expect(cli(repo, ["allowed", "journey"]).status).toBe(0);
+  });
+
+  it("`allowed journey` also needs argus, which the lane runs under", () => {
+    const repo = join(root, "policy-journey-alone");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, policy: { skills: ["sapu", "journey"] } }) });
+    const no = cli(repo, ["allowed", "journey"]);
+    expect(no.status).toBe(1);
+    expect(no.err).toMatch(/journey runs under argus, which is not allowed in this repo \(policy\.skills: sapu, journey\); \/sapu:init changes it/);
+  });
+
+  it("refuses an acceptance label equal to the default needs-owner label when needsOwner is absent", () => {
+    const c = clone();
+    c.labels.accepted = "argus:needs-owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from the acceptance label: both are "argus:needs-owner"/);
+  });
+
+  it.each([
+    ["the in-progress label", "inProgress", "Agent:In-Progress", /labels\.needsOwner must differ from labels\.inProgress/],
+    ["the done label", "done", "AGENT:DONE", /labels\.needsOwner must differ from labels\.done/],
+  ])("refuses a needs-owner label equal to %s, whatever the case", (_what, key, v, msg) => {
+    const c = clone();
+    c.labels.needsOwner = v;
+    expect(key in c.labels).toBe(true);
+    expect(validate(c).join("\n")).toMatch(msg);
+  });
+
+  it("refuses a needs-owner label that starts with the tier prefix, whatever the case", () => {
+    const c = clone();
+    c.labels.needsOwner = "Risk:owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must not start with labels\.tierPrefix \("risk:"\)/);
+  });
+
+  it("checks the default needs-owner label against the other labels when needsOwner is absent", () => {
+    const c = clone();
+    c.labels.done = "argus:needs-owner";
+    expect(validate(c).join("\n")).toMatch(/labels\.needsOwner must differ from labels\.done/);
+    const t = clone();
+    t.labels.tierPrefix = "argus:";
+    expect(validate(t).join("\n")).toMatch(/labels\.needsOwner must not start with labels\.tierPrefix/);
+  });
+
+  it.each([
+    ["the in-progress label", "Agent:In-Progress", /labels\.accepted must differ from labels\.inProgress/],
+    ["the done label", "AGENT:DONE", /labels\.accepted must differ from labels\.done/],
+    ["a tier label", "Risk:ok", /labels\.accepted must not start with labels\.tierPrefix \("risk:"\)/],
+  ])("refuses an acceptance label clashing with %s, whatever the case", (_what, v, msg) => {
+    const c = clone();
+    c.labels.accepted = v;
+    expect(validate(c).join("\n")).toMatch(msg);
+  });
+
+  it("checks the default acceptance label against the other labels when accepted is absent", () => {
+    const c = clone();
+    c.labels.inProgress = "sapu:accepted";
+    expect(validate(c).join("\n")).toMatch(/labels\.accepted must differ from labels\.inProgress/);
+    const t = clone();
+    t.labels.tierPrefix = "sapu:";
+    expect(validate(t).join("\n")).toMatch(/labels\.accepted must not start with labels\.tierPrefix/);
+  });
+
+  it("an invalid needsOwner reports only the name error, not a clash", () => {
+    const c = clone();
+    c.labels.accepted = "argus:needs-owner";
+    c.labels.needsOwner = 3;
+    const e = validate(c).join("\n");
+    expect(e).toMatch(/labels\.needsOwner must be a non-empty label name/);
+    expect(e).not.toMatch(/must differ/);
+  });
+});
+
+describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", () => {
+  const hold = sweepHold as (main: string, owner: string, now?: number) => { held: boolean; resumed?: boolean; holder?: string; agoMin?: number; tookOver?: { owner: string } | null };
+  const release = sweepRelease as (main: string, owner: string) => { released: boolean; holder?: string };
+  const fresh = () => {
+    const m = mkdtempSync(join(root, "sweep-"));
+    mkdirSync(join(m, ".git"));
+    return m;
+  };
+  const marker = (m: string) => JSON.parse(readFileSync(join(m, ".git/sapu-sweep.json"), "utf8"));
+
+  it("the first session holds it; a second session is refused while the heartbeat is fresh", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    expect(hold(m, "sapu-run-1", t)).toMatchObject({ held: true, resumed: false });
+    expect(marker(m)).toMatchObject({ owner: "sapu-run-1" });
+    const no = hold(m, "sapu-run-2", t + SWEEP_TTL_MS - 60_000);
+    expect(no).toMatchObject({ held: false, holder: "sapu-run-1" });
+    expect(marker(m).owner).toBe("sapu-run-1");
+  });
+
+  it("holding again is the heartbeat: the same session refreshes it and keeps its start", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    hold(m, "sapu-run-1", t);
+    expect(hold(m, "sapu-run-1", t + SWEEP_TTL_MS - 1000)).toMatchObject({ held: true, resumed: true });
+    expect(marker(m)).toMatchObject({ owner: "sapu-run-1", started: new Date(t).toISOString(), beat: new Date(t + SWEEP_TTL_MS - 1000).toISOString() });
+    // a beat just inside the TTL keeps it from the next session
+    expect(hold(m, "sapu-run-2", t + 2 * SWEEP_TTL_MS - 2000)).toMatchObject({ held: false });
+  });
+
+  it("a stale marker expires: the next session takes it over, and the silent one has lost it", () => {
+    const m = fresh();
+    const t = Date.parse("2030-01-01T00:00:00Z");
+    hold(m, "sapu-run-1", t);
+    expect(hold(m, "sapu-run-2", t + SWEEP_TTL_MS + 1)).toMatchObject({ held: true, tookOver: { owner: "sapu-run-1" } });
+    expect(hold(m, "sapu-run-1", t + SWEEP_TTL_MS + 2)).toMatchObject({ held: false, holder: "sapu-run-2" });
+    writeFileSync(join(m, ".git/sapu-sweep.json"), "{ broken");
+    expect(hold(m, "sapu-run-3", t)).toMatchObject({ held: true });
+  });
+
+  it("only its holder releases it; releasing a marker that is gone is fine", () => {
+    const m = fresh();
+    hold(m, "sapu-run-1");
+    expect(release(m, "sapu-run-2")).toMatchObject({ released: false, holder: "sapu-run-1" });
+    expect(existsSync(join(m, ".git/sapu-sweep.json"))).toBe(true);
+    expect(release(m, "sapu-run-1")).toMatchObject({ released: true });
+    expect(existsSync(join(m, ".git/sapu-sweep.json"))).toBe(false);
+    expect(release(m, "sapu-run-1")).toMatchObject({ released: true });
+    expect(hold(m, "sapu-run-2")).toMatchObject({ held: true });
+  });
+
+  it("CLI: `sweep hold|release|status|clear` from a worktree act on <MAIN>'s marker, exit 1 when refused", () => {
+    const repo = join(root, "sweep-repo");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    const wt = join(repo, ".claude/worktrees/w");
+    execFileSync("git", ["-C", repo, "worktree", "add", "-q", "--detach", wt], { stdio: "ignore" });
+    expect(cli(wt, ["sweep", "hold", "sapu-run-a"]).status).toBe(0);
+    expect(existsSync(join(repo, ".git/sapu-sweep.json"))).toBe(true);
+    const second = cli(repo, ["sweep", "hold", "sapu-run-b"]);
+    expect(second.status).toBe(1);
+    expect(second.err).toMatch(/another sapu sweep holds this repo: sapu-run-a, last heartbeat 0 min ago.*stop.*sweep clear/s);
+    expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toMatchObject({ held: true, owner: "sapu-run-a", fresh: true });
+    expect(cli(repo, ["sweep", "release", "sapu-run-b"]).status).toBe(1);
+    expect(cli(repo, ["sweep", "release", "sapu-run-a"]).status).toBe(0);
+    expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toEqual({ held: false });
+    expect(cli(repo, ["sweep", "hold", "sapu-run-b"]).status).toBe(0);
+    const cleared = cli(repo, ["sweep", "clear"]);
+    expect(cleared.status).toBe(0);
+    expect(cleared.out).toMatch(/removed .*sapu-run-b/);
+    for (const bad of [["sweep"], ["sweep", "hold"], ["sweep", "hold", "x y"], ["sweep", "hold", "../x"], ["sweep", "nope", "a"]]) expect(cli(repo, bad).status, bad.join(" ")).toBe(1);
+    expect(cli(root, ["sweep", "status"]).status).toBe(1); // not a repo
+  });
+
+  it("the sapu skill holds it at Step 0, beats it with every merge and lane launch, and releases it when a session ends", () => {
+    const skill = readFileSync(join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toMatch(/sweep hold <marker>`[^\n]*non-zero = another session is sweeping this repo: stop/);
+    expect(skill).toMatch(/never clear it yourself/);
+    expect(skill).toMatch(/heartbeat[^\n]*every merge command and every `lanes` check/);
+    expect(skill).toMatch(/sweep release <marker>/);
+  });
+});
+
+describe("protectedCommand: the repo file a contract command pins, for any runner", () => {
+  type P = { words: string[]; index: number | null; file: string | null; why: string | null };
+  const prot = protectedCommand as (words: string[], hasFile?: (f: string) => boolean) => P;
+  const has = (...files: string[]) => (f: string) => files.includes(f);
+  const pinned = (cmd: string, files: string[] = []) => {
+    const p = prot(cmd.split(" "), has(...files));
+    return p.index === null ? null : [p.words.join(" "), p.file];
+  };
+
+  it.each([
+    ["scripts/gate.sh", "scripts/gate.sh", "scripts/gate.sh"],
+    ["/bin/bash scripts/gate.sh", "/bin/bash scripts/gate.sh", "scripts/gate.sh"],
+    ["node --import ./x.mjs scripts/gate.mjs", "node --import ./x.mjs scripts/gate.mjs", "scripts/gate.mjs"],
+    ["deno run -A scripts/gate.ts", "deno run -A scripts/gate.ts", "scripts/gate.ts"],
+    ["python3.12 -u scripts/gate.py", "python3.12 -u scripts/gate.py", "scripts/gate.py"],
+    ["uv run python scripts/gate.py", "uv run python scripts/gate.py", "scripts/gate.py"],
+    ["uv run --with pytest-xdist scripts/gate.sh", "uv run --with pytest-xdist scripts/gate.sh", "scripts/gate.sh"],
+    ["poetry run bash scripts/gate.sh", "poetry run bash scripts/gate.sh", "scripts/gate.sh"],
+    ["pipenv run scripts/gate.sh", "pipenv run scripts/gate.sh", "scripts/gate.sh"],
+    ["npx --yes tsx scripts/gate.ts", "npx --yes tsx scripts/gate.ts", "scripts/gate.ts"],
+    ["pnpm exec tsx scripts/gate.ts", "pnpm exec tsx scripts/gate.ts", "scripts/gate.ts"],
+    ["env CI=1 -u HOME bash scripts/gate.sh", "env CI=1 -u HOME bash scripts/gate.sh", "scripts/gate.sh"],
+  ])("`%s` pins its script", (cmd, words, file) => {
+    expect(pinned(cmd)).toEqual([words, file]);
+  });
+
+  it("make reads the pinned makefile: -f as written, else the default the base holds written out; recipes still run in the cwd", () => {
+    expect(pinned("make gate", ["Makefile"])).toEqual(["make -f Makefile gate", "Makefile"]);
+    expect(pinned("make gate", ["Makefile", "GNUmakefile"])).toEqual(["make -f GNUmakefile gate", "GNUmakefile"]);
+    expect(pinned("make -f ci/gate.mk gate")).toEqual(["make -f ci/gate.mk gate", "ci/gate.mk"]);
+    expect(pinned("make --file=ci/gate.mk gate")).toEqual(["make -f ci/gate.mk gate", "ci/gate.mk"]);
+    expect(pinned("/usr/bin/make -fci/gate.mk -j4 gate")).toEqual(["/usr/bin/make -f ci/gate.mk -j4 gate", "ci/gate.mk"]);
+    expect(pinned("uv run make gate", ["Makefile"])).toEqual(["uv run make -f Makefile gate", "Makefile"]);
+  });
+
+  it("just reads the pinned justfile and keeps running recipes where it did", () => {
+    expect(pinned("just gate", ["justfile"])).toEqual(["just --justfile justfile --working-directory . gate", "justfile"]);
+    expect(pinned("just -f ci/justfile gate")).toEqual(["just -f ci/justfile --working-directory ci gate", "ci/justfile"]);
+    expect(pinned("just --justfile=justfile -d . gate")).toEqual(["just --justfile justfile -d . gate", "justfile"]);
+    expect(pinned("just --set mode ci gate", ["Justfile"])).toEqual(["just --justfile Justfile --working-directory . --set mode ci gate", "Justfile"]);
+  });
+
+  it.each([
+    ["npm test", /npm/],
+    ["npm run gate", /npm/],
+    ["go test ./...", /go/],
+    ["cargo test", /cargo/],
+    ["uv run pytest", /pytest/],
+    ["gate.sh", /gate\.sh/],
+    ["bash /opt/gate.sh", /not a relative path/],
+    ["make gate", /none of GNUmakefile, makefile, Makefile/],
+    ["make -C sub gate", /another directory/],
+    ["make -kf x.mk gate", /bundles -f/],
+    ["make -f a.mk -f b.mk gate", /several makefiles/],
+    ["just gate", /none of justfile/],
+    ["uv run --directory sub scripts/gate.sh", /moves the working directory/],
+    ["poetry -C sub run scripts/gate.sh", /moves the working directory/],
+    ["poetry install", /only `poetry run` does/],
+    ["npx -c scripts/gate.sh", /shell string/],
+    ["pnpm exec --filter web tsx scripts/gate.ts", /moves the working directory/],
+    ["env -S bash scripts/gate.sh", /shell string/],
+  ])("`%s` pins nothing and says why", (cmd, why) => {
+    const p = prot(cmd.split(" "));
+    expect(p.index).toBeNull();
+    expect(p.words).toEqual(cmd.split(" "));
+    expect(p.why).toMatch(why);
+  });
+
+  it("`protect --ref <rev> -- <words>` answers from the files that rev holds, a gate's own options included", () => {
+    const repo = join(root, "protect-repo");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { Makefile: "gate:\n\techo ok\n" });
+    const sha = git(repo, "rev-parse", "HEAD").trim();
+    commit(repo, { GNUmakefile: "gate:\n\techo ok\n" });
+    expect(JSON.parse(cli(repo, ["protect", "--ref", sha, "--", "make", "gate"]).out)).toEqual({ words: ["make", "-f", "Makefile", "gate"], index: 2, file: "Makefile", why: null });
+    expect(JSON.parse(cli(repo, ["protect", "--", "make", "gate"]).out).file).toBe("GNUmakefile");
+    expect(JSON.parse(cli(repo, ["protect", "--", "node", "--text", "scripts/g.mjs"]).out).index).toBe(2);
+    expect(cli(repo, ["protect", "make"]).status).toBe(1);
+  });
+
+  it("`show` and `check` warn when gate.merge pins no repo file, and only then", () => {
+    const repo = join(root, "protect-warn");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    const withMerge = (merge: string, files: Record<string, string> = {}) => commit(repo, { ...files, ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge } }) });
+    withMerge("npm test");
+    const r = cli(repo, ["show"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/WARNING gate\.merge \(`npm test`\) pins no repo file .*a PR can change the gate that judges it/);
+    expect(cli(repo, ["check"]).err).toMatch(/WARNING gate\.merge/);
+    withMerge("make gate");
+    expect(cli(repo, ["show"]).err).toMatch(/WARNING gate\.merge \(`make gate`\)/);
+    withMerge("make gate", { Makefile: "gate:\n\techo ok\n" });
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+    withMerge("uv run bash scripts/gate.sh");
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+  });
+
+  it.each([
+    ["make gate", "Makefile", "ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))\ngate:\n\tcd $(ROOT) && npm test\n", /MAKEFILE_LIST/],
+    ["just gate", "justfile", "gate:\n  cd {{justfile_directory()}} && npm test\n", /justfile_directory\(\)/],
+    ["just gate", "justfile", "gate:\n  cd {{ source_directory () }} && npm test\n", /source_directory\(\)/],
+    ["scripts/gate.sh", "scripts/gate.sh", '#!/bin/sh\ncd "$(dirname "$0")/.." && npm test\n', /dirname "\$0"/],
+    ["bash scripts/gate.sh", "scripts/gate.sh", '#!/bin/bash\ncd "$(dirname "${BASH_SOURCE[0]}")/.."\nnpm test\n', /BASH_SOURCE/],
+    ["bash scripts/gate.sh", "scripts/gate.sh", "#!/bin/bash\ncd ${0%/*}/..\nnpm test\n", /\$\{0%/],
+    ["node scripts/gate.mjs", "scripts/gate.mjs", "process.chdir(new URL('..', import.meta.url).pathname);\n", /import\.meta\.url/],
+    ["node scripts/gate.cjs", "scripts/gate.cjs", "process.chdir(require('path').join(__dirname, '..'));\n", /__dirname/],
+    ["uv run python scripts/gate.py", "scripts/gate.py", "import os\nos.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n", /__file__/],
+  ])("`show`/`check` warn when gate.merge's pinned file locates the tree from its own place: `%s` (%s)", (merge, file, text, idiom) => {
+    const repo = join(root, `self-locate-${file.replace(/\W/g, "-")}-${merge.replace(/\W/g, "-")}`);
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { [file]: text, ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge } }) });
+    const r = cli(repo, ["show"]);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(new RegExp(`WARNING gate\\.merge's pinned file ${file.replace(/\./g, "\\.")} finds the tree from its own location`));
+    expect(r.err).toMatch(idiom);
+    expect(r.err).toMatch(/runs it from the main checkout's path.*through the cwd or \$SAPU_WT/);
+    expect(cli(repo, ["check"]).err).toMatch(/pinned file .* finds the tree from its own location/);
+    // the working tree is what `show --working-tree` reads: a fixed copy there no longer warns
+    writeFileSync(join(repo, file), "gate:\n\tnpm test\n");
+    expect(cli(repo, ["show", "--working-tree"]).err).not.toMatch(/WARNING/);
+  });
+
+  it("a pinned file that finds the tree through its cwd or SAPU_WT does not warn", () => {
+    const repo = join(root, "self-locate-ok");
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    commit(repo, { "scripts/gate.sh": '#!/bin/sh\ncd "${SAPU_WT:-$PWD}" && npm test\n', ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, merge: "bash scripts/gate.sh" } }) });
+    expect(cli(repo, ["show"]).err).not.toMatch(/WARNING/);
+  });
+});
+
+describe("gate.merge self-location: the idioms that find the tree, not a file merely read", () => {
+  const warn = (merge: string, text: string) => gateProtectionWarning({ gate: { merge } }, () => true, () => text);
+  it.each([
+    ["ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))\ngate:\n\tcd $(ROOT) && npm test\n"],
+    ["ROOT := $(dir $(realpath $(firstword $(MAKEFILE_LIST))))\n"],
+    ["MK := $(lastword $(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
+    ["ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword ${MAKEFILE_LIST}))))\n"],
+    ["ROOT := $(realpath $(dir $(MAKEFILE_LIST)))\n"],
+    ["MK := $(word $(words $(MAKEFILE_LIST)),$(MAKEFILE_LIST))\nROOT := $(dir $(MK))\n"],
+    ["ROOT := $(shell dirname $(MAKEFILE_LIST))\n"],
+    ["ROOT := $(shell cd $(shell dirname $(realpath $(MAKEFILE_LIST))) && pwd)\n"],
+    ['ROOT := $(shell cd "$$(dirname $(MAKEFILE_LIST))" && pwd)\n'],
+    ["ROOT := ${shell dirname ${MAKEFILE_LIST}}\n"],
+    ["ROOT := ${dir ${abspath ${MAKEFILE_LIST}}}\n"],
+  ])("warns on a makefile that finds its own place: %s", (text) => {
+    expect(warn("make gate", text)).toMatch(/finds the tree from its own location \(\$\(MAKEFILE_LIST\)\)/);
+  });
+
+  it("does not warn on the common help target, which only greps the makefiles", () => {
+    const help = "help:\n\t@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = \":.*?## \"}; {printf \"%s\\n\", $$1}'\ngate: ## run the gate\n\tnpm test\n";
+    expect(warn("make gate", help)).toBeNull();
+    expect(warn("make gate", "lint:\n\t$(shell grep -c TODO $(MAKEFILE_LIST))\ngate:\n\tnpm test\n")).toBeNull();
+  });
+
+  it("warns on Perl's FindBin", () => {
+    expect(warn("perl scripts/gate.pl", "use FindBin;\nchdir \"$FindBin::Bin/..\" or die;\nsystem('npm test');\n")).toMatch(/\$FindBin::Bin/);
+    expect(warn("perl scripts/gate.pl", "use FindBin qw($RealBin);\nchdir \"$RealBin/..\";\n")).toMatch(/\$FindBin::Bin/);
   });
 });

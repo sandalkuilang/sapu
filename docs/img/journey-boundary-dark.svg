@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 1054" width="920" height="1054" role="img" aria-label="The journey lane's trust boundary: the orchestrator in the main session dispatches a guarded explorer whose Bash runs only the pw wrapper and whose Read reaches only files committed in the run's worktree; the wrapper drives one browser session per account through a filtering proxy to an isolated instance with its own worktree, ports, data and HOME, never the owner's servers; page text returns only inside nonce fences; and a candidate leaves the machine only after a script reproduced it two of two and scrub found no secret the run saw (its 0600 ledger) or the configuration holds in it.">
+  <title>/journey — the trust boundary</title>
+  <desc>The repo and .argus/live.json are the owner's and trusted; the app's pages are not. The orchestrator runs in the main session, unguarded, and reads the instance only through argus-live.mjs status --json and intake. It dispatches one sapu:ui-explorer per journey; the guard limits that agent to Bash, Read and StructuredOutput, its Bash to node &lt;wrapper&gt; pw with single-quoted or plain-word arguments, and its Read to files committed at HEAD in the run's worktree outside .argus/, with no Grep, Glob, Agent, Task or Workflow. The pw wrapper checks each explorer's token, budget, loop and deadline, allowlists every command and flag, keeps every URL inside the run's origins and offers no run-code or eval; what a page printed comes back inside a &lt;&lt;&lt;PAGE- fence with a fresh nonce, and the explorer's return reaches the orchestrator inside a &lt;&lt;&lt;RETURN- fence. The browsers reach the app only through the run's filtering proxy, which admits the run's origins and allow_origins. up builds an instance of its own (a worktree at HEAD, ports from port_range, its own HOME, Docker client and store, an environment holding only what live.json names) and refuses one that would reach the owner's servers, services or data; an egress check and a Docker runtime gate run at up and at every renew. Secrets live in the env file the guard keeps from every agent and reach a command only as ARGUS_SECRET_&lt;NAME&gt;; what the run meets goes to a 0600 secret ledger. A candidate is filed only after repro reproduced it two of two on a fresh instance and scrub found none of those secrets, nor a value of the env file, in the issue; a hit names where, never what, and an incomplete ledger files nothing. These checks are defence in depth, not a sandbox.</desc>
+  <style>
+    text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#dbe3ee}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
+    .canvas{fill:#0f1623;stroke:#263247;stroke-width:1}
+    .eyebrow{font-size:11.5px;font-weight:700;letter-spacing:.12em;fill:#a5b4fc}
+    .h1{font-size:25px;font-weight:750;fill:#f1f5f9;letter-spacing:-.01em}
+    .sub{font-size:13.5px;fill:#9fb0c6}
+    .sec{font-size:15px;font-weight:700;fill:#f1f5f9}
+    .sec2{font-size:12.5px;fill:#9fb0c6}
+    .ttl{font-size:14px;font-weight:650;fill:#f1f5f9}
+    .t{font-size:13px;fill:#dbe3ee}
+    .tb{font-size:13px;font-weight:650;fill:#f1f5f9}
+    .cap{font-size:12px;fill:#9fb0c6}
+    .lbl{font-size:11.5px;font-weight:650;letter-spacing:.06em;fill:#9fb0c6}
+    .chipt{font-size:11.5px;font-weight:600}
+    .white{fill:#ffffff}
+    .ink{fill:#f1f5f9} .muted{fill:#9fb0c6} .accent{fill:#a5b4fc} .tealt{fill:#5eead4}
+    .card{fill:#172133;stroke:#2e3c55;stroke-width:1}
+    .sunken{fill:#121a28;stroke:#253147;stroke-width:1}
+    .chip{fill:#121a28;stroke:#2e3c55;stroke-width:1}
+    .ar{stroke:#8796ad;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-g{stroke:#22c55e;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .ar-a{stroke:#f59e0b;stroke-width:1.6;fill:none;stroke-dasharray:5 4;stroke-linecap:round;stroke-linejoin:round}
+    .ar-b{stroke:#93c5fd;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .ar-v{stroke:#a78bfa;stroke-width:1.6;fill:none;stroke-dasharray:6 4;stroke-linecap:round}
+    .guard{stroke:#ef4444;stroke-width:1.4;fill:none;stroke-dasharray:2 4;stroke-linecap:round}
+    .m-n{stroke:#8796ad} .m-g{stroke:#22c55e} .m-a{stroke:#f59e0b} .m-b{stroke:#93c5fd} .m-v{stroke:#a78bfa}
+    .ico{fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+    .ico-n{stroke:#9fb0c6} .ico-w{stroke:#ffffff}
+    .rule{stroke:#2e3c55;stroke-width:1}
+    .c-blue{fill:#93c5fd} .k-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1.25} .s-blue{stroke:#93c5fd} .f-blue{fill:#93c5fd} .tile-blue{fill:#0f1e38;stroke:#2f5596;stroke-width:1}
+    .c-green{fill:#4ade80} .k-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1.25} .s-green{stroke:#22c55e} .f-green{fill:#22c55e} .tile-green{fill:#0b2417;stroke:#1f7a45;stroke-width:1}
+    .c-amber{fill:#fbbf24} .k-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1.25} .s-amber{stroke:#f59e0b} .f-amber{fill:#f59e0b} .tile-amber{fill:#271c08;stroke:#8a5d12;stroke-width:1}
+    .c-red{fill:#fca5a5} .k-red{fill:#2a1216;stroke:#8f3434;stroke-width:1.25} .s-red{stroke:#ef4444} .f-red{fill:#ef4444} .tile-red{fill:#2a1216;stroke:#8f3434;stroke-width:1}
+    .c-violet{fill:#c4b5fd} .k-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1.25} .s-violet{stroke:#a78bfa} .f-violet{fill:#a78bfa} .tile-violet{fill:#1c1736;stroke:#5b4aa3;stroke-width:1}
+  </style>
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#4f46e5"/></linearGradient>
+    <linearGradient id="brandbar" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#14b8a6"/><stop offset=".55" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.35"/><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.25"/></filter>
+    <marker id="mn" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-n"/></marker><marker id="mg" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-g"/></marker><marker id="ma" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-a"/></marker><marker id="mb" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-b"/></marker><marker id="mv" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1.5,1.5 L8.5,5 L1.5,8.5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="m-v"/></marker>
+  </defs>
+  <rect x="0.5" y="0.5" width="919" height="1053" rx="20" class="canvas"/>
+  <clipPath id="cv"><rect x="0" y="0" width="920" height="1054" rx="20"/></clipPath>
+  <rect x="0" y="0" width="920" height="4" fill="url(#brandbar)" clip-path="url(#cv)"/>
+  <text x="32" y="46" class="eyebrow">JOURNEY LANE · TRUST BOUNDARY</text>
+  <text x="32" y="78" class="h1">Yours is trusted; the pages are not</text>
+  <text x="32" y="102" class="sub">What each part of a journey cycle may touch. Defence in depth for honest mistakes, not a sandbox.</text>
+  <path d="M32,136 L58,136" class="ar" marker-end="url(#mn)"/>
+  <text x="66" y="140" class="cap">calls</text>
+  <path d="M113.2,136 L139.2,136" class="ar-b" marker-end="url(#mb)"/>
+  <text x="147.2" y="140" class="cap">fenced data back</text>
+  <path d="M260.4,136 L286.4,136" class="ar-g" marker-end="url(#mg)"/>
+  <text x="294.4" y="140" class="cap">files</text>
+  <rect x="341.59999999999997" y="129" width="22" height="14" rx="4" class="guard"/>
+  <text x="371.59999999999997" y="140" class="cap">guard hook</text>
+  <rect x="451.19999999999993" y="129" width="22" height="14" rx="4" class="k-red"/>
+  <text x="481.19999999999993" y="140" class="cap">never touched</text>
+  <rect x="32" y="162" width="232" height="212" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="178" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,184.75) scale(0.9375)"><path d="M9 4.5a3.5 3.5 0 1 0 0.01 0 M3 20c0-3.6 2.7-6 6-6s6 2.4 6 6 M16.5 5.5a2.8 2.8 0 1 1 0 5.6 M17.5 14.2c2.2.5 3.5 2.6 3.5 5.3" class="ico ico-w"/></g>
+  <text x="96" y="194" class="ttl">Orchestrator</text>
+  <text x="96" y="212" class="cap">main session · unguarded</text>
+  <text x="48" y="250" class="cap">runs <tspan class="mono">up</tspan>, <tspan class="mono">repro</tspan>, <tspan class="mono">scrub</tspan>, <tspan class="mono">down</tspan></text>
+<text x="48" y="269" class="cap">reads the instance only via</text>
+<text x="48" y="288" class="cap"><tspan class="mono">status --json</tspan> and <tspan class="mono">intake</tspan></text>
+<text x="48" y="307" class="cap">dispatches one explorer per</text>
+<text x="48" y="326" class="cap">journey, with its charter</text>
+  <rect x="282" y="162" width="320" height="212" rx="14" class="guard" />
+  <text x="298" y="180" class="cap c-red">guard hook: the explorer's tools</text>
+  <rect x="296" y="190" width="292" height="170" rx="12" class="k-violet" />
+  <rect x="310" y="204" width="34" height="34" rx="9.5625" class="tile-violet"/>
+  <g transform="translate(316.375,210.375) scale(0.8854166666666667)"><path d="M10.5 4a6.5 6.5 0 1 0 0.01 0 M15.5 15.5L20 20" class="ico s-violet"/></g>
+  <text x="356" y="220" class="tb mono">sapu:ui-explorer</text>
+  <text x="356" y="238" class="cap">subagent · walks one journey</text>
+  <text x="310" y="270" class="cap"><tspan class="tb c-violet">Bash</tspan>  <tspan class="mono">node &lt;wrapper&gt; pw …</tspan> only</text>
+<text x="310" y="289" class="cap"><tspan class="tb c-violet">Read</tspan>  committed at HEAD in the run's</text>
+<text x="320" y="308" class="cap">worktree, outside <tspan class="mono">.argus/</tspan></text>
+<text x="310" y="327" class="cap">no Grep, Glob, Agent, Task, Workflow</text>
+  <rect x="620" y="162" width="268" height="212" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="636" y="178" width="34" height="34" rx="9.5625" class="tile-blue"/>
+  <g transform="translate(642.375,184.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-blue"/></g>
+  <text x="682" y="194" class="ttl">pw wrapper</text>
+  <text x="682" y="212" class="cap mono">argus-live.mjs pw</text>
+  <text x="636" y="250" class="cap">a token per explorer; budget,</text>
+<text x="636" y="269" class="cap">loop and deadline per token</text>
+<text x="636" y="288" class="cap">allowlisted commands and flags</text>
+<text x="636" y="307" class="cap">URLs inside the run's origins</text>
+<text x="636" y="326" class="cap">no <tspan class="mono">run-code</tspan>, no <tspan class="mono">eval</tspan></text>
+  <path d="M266,258 L294,258" class="ar" marker-end="url(#mn)"/>
+  <path d="M590,250 L618,250" class="ar" marker-end="url(#mn)"/>
+  <path d="M618,302 L590,302" class="ar-b" marker-end="url(#mb)"/>
+  <path d="M294,322 L266,322" class="ar-b" marker-end="url(#mb)"/>
+  <rect x="32" y="386" width="570" height="52" rx="10" class="sunken" />
+  <text x="48" y="407" class="cap"><tspan class="tb">Page text is data.</tspan> A page's answer comes back in <tspan class="mono">&lt;&lt;&lt;PAGE-&lt;nonce&gt;</tspan>,</text>
+  <text x="48" y="426" class="cap">a return through <tspan class="mono">intake</tspan> in <tspan class="mono">&lt;&lt;&lt;RETURN-&lt;nonce&gt;</tspan>: never instructions.</text>
+  <rect x="32" y="462" width="256" height="200" rx="14" class="k-red" />
+  <rect x="48" y="478" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(54.375,484.375) scale(0.8854166666666667)"><path d="M8.5 3h7L21 8.5v7L15.5 21h-7L3 15.5v-7z M9 9l6 6 M15 9l-6 6" class="ico s-red"/></g>
+  <text x="94" y="494" class="t"><tspan class="tb c-red">Your servers and data</tspan></text>
+  <text x="94" y="512" class="cap">never touched</text>
+  <text x="48" y="548" class="cap"><tspan class="mono">up</tspan> refuses a base URL off</text>
+<text x="48" y="567" class="cap">loopback, a protected store, an</text>
+<text x="48" y="586" class="cap">env value reaching what your env</text>
+<text x="48" y="605" class="cap">files name; an egress check and</text>
+<text x="48" y="624" class="cap">a Docker gate at <tspan class="mono">up</tspan> and <tspan class="mono">renew</tspan></text>
+  <rect x="304" y="462" width="584" height="200" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="304" y="462" width="584" height="200" rx="14" fill="none" stroke="url(#brand)" stroke-width="1.6"/>
+  <rect x="320" y="478" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(326.75,484.75) scale(0.9375)"><path d="M12 3.5l8.5 4.5-8.5 4.5L3.5 8z M3.5 12.5l8.5 4.5 8.5-4.5 M3.5 16.5l8.5 4.5 8.5-4.5" class="ico ico-w"/></g>
+  <text x="368" y="494" class="ttl">Isolated instance</text>
+  <text x="368" y="512" class="cap">built by <tspan class="mono">up</tspan> · one per cycle, under a lock with a deadline</text>
+  <rect x="750" y="532" width="122" height="52" rx="10" class="sunken" />
+  <text x="811" y="554" class="tb" text-anchor="middle">browser sessions</text>
+  <text x="811" y="572" class="cap" text-anchor="middle">one per account</text>
+  <path d="M748,558 L734,558" class="ar" marker-end="url(#mn)"/>
+  <rect x="610" y="532" width="122" height="52" rx="10" class="sunken" />
+  <text x="671" y="554" class="tb" text-anchor="middle">filtering proxy</text>
+  <text x="671" y="572" class="cap" text-anchor="middle">run's origins only</text>
+  <path d="M608,558 L594,558" class="ar" marker-end="url(#mn)"/>
+  <rect x="470" y="532" width="122" height="52" rx="10" class="sunken" />
+  <text x="531" y="554" class="tb" text-anchor="middle">the app</text>
+  <text x="531" y="572" class="cap" text-anchor="middle">start entries</text>
+  <path d="M468,558 L454,558" class="ar" marker-end="url(#mn)"/>
+  <rect x="330" y="532" width="122" height="52" rx="10" class="sunken" />
+  <text x="391" y="554" class="tb" text-anchor="middle">own store</text>
+  <text x="391" y="572" class="cap" text-anchor="middle">reset: synthetic</text>
+  <path d="M811,376 L811,530" class="ar" marker-end="url(#mn)"/>
+  <rect x="320" y="602" width="124" height="22" rx="11" class="chip"/>
+  <text x="330" y="617" class="chipt muted">worktree at HEAD</text>
+  <rect x="450" y="602" width="149" height="22" rx="11" class="chip"/>
+  <text x="460" y="617" class="chipt muted">ports from port_range</text>
+  <rect x="605" y="602" width="76" height="22" rx="11" class="chip"/>
+  <text x="615" y="617" class="chipt muted">own HOME</text>
+  <rect x="687" y="602" width="120" height="22" rx="11" class="chip"/>
+  <text x="697" y="617" class="chipt muted">own Docker client</text>
+  <rect x="320" y="630" width="186" height="22" rx="11" class="chip"/>
+  <text x="330" y="645" class="chipt muted">env: only what live.json names</text>
+  <rect x="32" y="686" width="856" height="204" rx="14" class="card" filter="url(#sh)"/>
+  <rect x="48" y="702" width="36" height="36" rx="10.125" fill="url(#brand)"/>
+  <g transform="translate(54.75,708.75) scale(0.9375)"><path d="M5 21V4 M5 4.5h11l-2 4 2 4H5" class="ico ico-w"/></g>
+  <text x="96" y="718" class="ttl">Before anything leaves the machine</text>
+  <text x="96" y="736" class="cap">filed only through <tspan class="mono">scrub</tspan>, only at two of two</text>
+  <rect x="48" y="754" width="170" height="50" rx="10" class="k-violet" />
+  <text x="133" y="775" class="tb c-violet" text-anchor="middle">candidate</text>
+  <text x="133" y="793" class="cap" text-anchor="middle">the explorer suspects</text>
+  <path d="M221,779 L245,779" class="ar" marker-end="url(#mn)"/>
+  <rect x="248" y="754" width="170" height="50" rx="10" class="k-amber" />
+  <text x="333" y="775" class="tb c-amber" text-anchor="middle">repro</text>
+  <text x="333" y="793" class="cap" text-anchor="middle">2 of 2, fresh instance</text>
+  <path d="M421,779 L445,779" class="ar" marker-end="url(#mn)"/>
+  <rect x="448" y="754" width="170" height="50" rx="10" class="k-red" />
+  <text x="533" y="775" class="tb c-red" text-anchor="middle">scrub</text>
+  <text x="533" y="793" class="cap" text-anchor="middle">names where, never what</text>
+  <path d="M621,779 L645,779" class="ar-g" marker-end="url(#mg)"/>
+  <rect x="648" y="754" width="170" height="50" rx="10" class="k-green" />
+  <text x="733" y="775" class="tb c-green" text-anchor="middle">GitHub issue</text>
+  <text x="733" y="793" class="cap" text-anchor="middle">with its RED test</text>
+  <rect x="48" y="828" width="380" height="46" rx="10" class="sunken" />
+  <text x="62" y="847" class="cap"><tspan class="mono">.argus/live.env</tspan>: kept from every agent</text>
+  <text x="62" y="864" class="cap">a command gets <tspan class="mono">ARGUS_SECRET_&lt;NAME&gt;</tspan>, never the text</text>
+  <rect x="448" y="828" width="240" height="46" rx="10" class="sunken" />
+  <text x="462" y="847" class="cap">secret ledger, <tspan class="mono">0600</tspan></text>
+  <text x="462" y="864" class="cap">what the run met; kept by down</text>
+  <path d="M533,826 L533,806" class="ar-b" marker-end="url(#mb)"/>
+  <path d="M400,826 L400.0,821.5 Q400,817 404.5,817.0 L464.5,817.0 Q470,817 470.0,811.5 L470,806" class="ar-b" marker-end="url(#mb)"/>
+  <text x="704" y="847" class="cap"><tspan class="tb c-red">ledger incomplete,</tspan></text>
+<text x="704" y="864" class="cap">gone or damaged: nothing filed</text>
+  <rect x="32" y="910" width="856" height="122" rx="14" class="k-red" />
+  <rect x="44" y="926" width="34" height="34" rx="9.5625" class="tile-red"/>
+  <g transform="translate(50.375,932.375) scale(0.8854166666666667)"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.2-7.5 9.5-4.3-1.3-7.5-4.9-7.5-9.5V6z" class="ico s-red"/></g>
+  <text x="90" y="940" class="t"><tspan class="tb c-red">Defence in depth, not a sandbox</tspan></text>
+  <text x="90" y="964" class="cap">· Process groups bound every kill and listing: a process that leaves its group is neither killed nor listed.</text>
+<text x="90" y="982" class="cap">· The egress check samples, and lists no process inside a container.</text>
+<text x="90" y="1000" class="cap">· An explorer's wrapper token is in the process list while a pw call runs: the lane assumes a single-user machine.</text>
+<text x="90" y="1018" class="cap">· The full list: <tspan class="mono">plugins/sapu/skills/journey/live.md</tspan>, section Known limits.</text>
+</svg>

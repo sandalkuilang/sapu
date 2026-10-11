@@ -1,6 +1,11 @@
 // tests/sapu-metrics.test.ts — transcript arithmetic of plugins/sapu/scripts/sapu-metrics.ts.
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  findTranscript,
   compareToBaseline,
   computeMetrics,
   computeSubagentUsage,
@@ -267,5 +272,39 @@ describe("computeSubagentUsage", () => {
       { agentType: "workflow", agents: 1, steps: 1, avgFirstContext: 500_000, totalTokens: 500_010, cost: expect.closeTo(0.1002, 6) },
       { agentType: "sapu-sonnet-high", agents: 2, steps: 3, avgFirstContext: 90_000, totalTokens: 290_030, cost: expect.closeTo(0.0586, 6) },
     ]);
+  });
+});
+
+describe("finding this session's transcript (CLAUDE_CONFIG_DIR honoured)", () => {
+  const find = findTranscript as (main: string, marker: string, env?: Record<string, string | undefined>) => string | null;
+  const setup = () => {
+    const cfg = mkdtempSync(join(tmpdir(), "sapu-cfg-"));
+    const main = "/srv/src/my.app";
+    const dir = join(cfg, "projects", "-srv-src-my-app");
+    mkdirSync(dir, { recursive: true });
+    const mine = join(dir, "mine.jsonl");
+    writeFileSync(mine, `${line({ type: "assistant", message: { id: "m1", usage: usage(10, 0, 0, 1) }, timestamp: "2026-01-01T00:00:00Z" })}\n${line({ type: "user", message: { content: "echo sapu-run-0101-0000" } })}\n`);
+    const other = join(dir, "other.jsonl");
+    writeFileSync(other, `${line({ type: "user", message: { content: "a parallel session" } })}\n`);
+    utimesSync(mine, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000)); // the newest is another session's
+    return { cfg, main, mine };
+  };
+
+  it("reads <CLAUDE_CONFIG_DIR>/projects/<slug>/, and picks the transcript holding the run marker, not the newest", () => {
+    const { cfg, main, mine } = setup();
+    expect(find(main, "sapu-run-0101-0000", { CLAUDE_CONFIG_DIR: cfg })).toBe(mine);
+    expect(find(main, "sapu-run-other", { CLAUDE_CONFIG_DIR: cfg })).toBeNull();
+    expect(find(main, "sapu-run-0101-0000", { CLAUDE_CONFIG_DIR: undefined, HOME: cfg })).toBeNull(); // ~/.claude/projects, not there
+  });
+
+  it("the CLI takes --marker and --main instead of a path", () => {
+    const { cfg, main } = setup();
+    const run = (args: string[]) => spawnSync("node", [join(__dirname, "../plugins/sapu/scripts/sapu-metrics.ts"), ...args], { encoding: "utf8", env: { ...process.env, CLAUDE_CONFIG_DIR: cfg } });
+    const ok = run(["--marker", "sapu-run-0101-0000", "--main", main]);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toMatch(/^steps:\s+1$/m);
+    const missing = run(["--marker", "sapu-run-nope", "--main", main]);
+    expect(missing.status).toBe(2);
+    expect(missing.stderr).toMatch(/no transcript under .*projects\/-srv-src-my-app holds sapu-run-nope/);
   });
 });

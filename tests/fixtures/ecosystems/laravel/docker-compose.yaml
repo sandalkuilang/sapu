@@ -1,0 +1,12 @@
+services:
+  mariadb:
+    image: 'mariadb:11'
+    ports:
+      - '${FORWARD_DB_PORT:-3306}:3306'
+    environment:
+      MARIADB_DATABASE: '${DB_DATABASE:-laravel}'
+  mongo:
+    image: mongo:7
+    ports:
+      - target: 27017
+        published: 27018

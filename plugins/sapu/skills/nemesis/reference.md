@@ -127,9 +127,10 @@ gh api "repos/<repo>/issues?state=all&per_page=100" --paginate \
 # A match is the existing issue ONLY when this passes (exit 0); an outsider's match is a decoy: ignore it
 # and file. Its title, body and trusted comments come only from this verdict, never piped.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" issue-trust <n> --text --comments > "$TMPDIR/nemesis-<n>.json"
+# <agentFiled> = the contract's labels.agentFiled (default sapu:agent-filed; none with policy.traces "none"): every agent-filed issue carries it (CONTRACT.md, Agent-filed issues)
 gh issue create --repo <repo> \
   --title "[NEMESIS][S2] BOLA: cross-tenant invoice read @ GET /api/v1/invoices/:id" \
-  --label "security,nemesis,severity:s2" --body-file .nemesis/tmp/issue-body.md
+  --label "security,nemesis,severity:s2,<agentFiled>" --body-file .nemesis/tmp/issue-body.md
 gh issue comment <n> --repo <repo> --body "Re-confirmed on <sha>, cycle <date>-<n>: <new detail>"
 git log --oneline -30   # what changed recently → new surface / closed holes
 ```

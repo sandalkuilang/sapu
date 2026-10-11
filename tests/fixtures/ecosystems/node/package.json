@@ -1,0 +1,7 @@
+{
+  "name": "orders-api",
+  "private": true,
+  "scripts": { "test": "vitest run" },
+  "dependencies": { "sequelize": "^6.37.0", "typeorm": "^0.3.20" },
+  "devDependencies": { "sequelize-cli": "^6.6.2", "vitest": "^3.0.0" }
+}
