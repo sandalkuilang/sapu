@@ -465,7 +465,8 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     expect(metrics.loader_shown_ms).toBeLessThan(300);
     // After an action that sent a request, the latency too: the slowest first change, as feedback.latency measures it.
     await page.click("#b-load");
-    await page.waitForFunction(() => document.getElementById("out")?.textContent === "Refreshed.", null, { timeout: 15_000 });
+    // The click's transition too: a slow runner's frame can come after the fetch, so its transitionrun with it.
+    await page.waitForFunction(() => document.getElementById("out")?.textContent === "Refreshed." && ((document as unknown as { __argusTasteMotion?: { caused: boolean }[] }).__argusTasteMotion ?? []).some((m) => m.caused), null, { timeout: 15_000 });
     const acted = { census: await censusOf(page), ease: await easeOf(page) };
     const after = metricsOf(acted, BAR);
     expect(barRules.filter((r: Obj) => !Number.isFinite(after[r.metric])).map((r: Obj) => r.id)).toEqual([]);

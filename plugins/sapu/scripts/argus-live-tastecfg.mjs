@@ -406,7 +406,9 @@ export function tasteKey(runDir) {
   } catch {
     // none yet
   }
-  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  // No mkdir: the slot's writeSlotConfig made runDir; a call that finds it gone met a down and must fail, not
+  // bring the slot's directory back.
+  if (!fs.existsSync(runDir)) throw new Error(`${runDir} is gone: the slot was torn down`);
   const k = randomBytes(16).toString("hex");
   try {
     fs.writeFileSync(file, `${k}\n`, { mode: 0o600, flag: "wx" });
