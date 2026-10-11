@@ -73,10 +73,17 @@ export const EASE_INIT = String.raw`(() => {
   const TAGS = { a: "link", button: "button", summary: "button", select: "combobox", textarea: "textbox" };
   const CONTROL = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=tab], [role=option], [role=checkbox], [role=switch], [role=radio]";
   const nameOf = ${NAME_OF};
+  // A control in an empty state's region (an empty list or table beside it, or a box named empty): its own way to start.
+  const EMPTY_LIST = "ul, ol, [role=list], [role=listbox], [role=feed], table, [role=table], [role=grid]";
+  const emptyState = (c) => {
+    if (c.closest('[class*="empty" i], [data-empty]')) return true;
+    const box = c.closest("section, article, aside, [role=region]");
+    return Boolean(box) && [...box.querySelectorAll(EMPTY_LIST)].some((l) => !l.querySelector("li, [role=listitem], [role=option], [role=article], article, td, [role=cell], [role=gridcell]"));
+  };
   const control = (t, target) => {
     const c = target && target.closest ? target.closest(CONTROL) : null;
     const tag = c ? c.tagName.toLowerCase() : "";
-    if (c) cap(S.actions, 100, { t, role: norm(c.getAttribute("role")).split(" ")[0] || (tag === "input" ? (/^(button|submit|reset|image)$/i.test(c.type) ? "button" : c.type) : TAGS[tag] || tag), name: nameOf(c).replace(/[0-9]+/g, "#").replace(/\|/g, "/").slice(0, 80), region: (REGION.find(([, q]) => c.closest(q)) || ["page"])[0] });
+    if (c) cap(S.actions, 100, { ...(emptyState(c) ? { empty: true } : {}), t, role: norm(c.getAttribute("role")).split(" ")[0] || (tag === "input" ? (/^(button|submit|reset|image)$/i.test(c.type) ? "button" : c.type) : TAGS[tag] || tag), name: nameOf(c).replace(/[0-9]+/g, "#").replace(/\|/g, "/").slice(0, 80), region: (REGION.find(([, q]) => c.closest(q)) || ["page"])[0] });
   };
   let typed = -1e9, acted = null;
   const onInput = (e) => {
@@ -626,7 +633,8 @@ export const NO_MAJORITY = "no majority";
 /**
  * The cycle-scope rules over recorded screens (`[{key, route, journey, archetype?, events, ease}]`) → `[{screen, rule,
  * key, measured, expected}]`. consistent.action: one non-GET (method, route template, body field names) sent within
- * 100 ms of clicks on different controls (role, name, region); footer-order: the primary first or last in dialog (and
+ * 100 ms of clicks on different controls (role and name, wherever they sit; a control in an empty state's region is
+ * left out; each way on two routes at least); footer-order: the primary first or last in dialog (and
  * in form) footers; save-pattern: a form with a submit whose edits also saved (PUT or PATCH naming the field, or a POST
  * naming two of its fields) with no click between; palette: Mod+K opening on some of a journey's routes and not on
  * others (opening on a minority is a local shortcut: no row). A split counts routes: the minority is flagged against the
@@ -645,10 +653,10 @@ export function crossRules(screens, bar, cfg) {
     const l = m.get(value) || m.set(value, []).get(value);
     if (!l.some((y) => y.id === x.id && y.key === x.key)) l.push(x);
   };
-  const split = (rule, ways, describe) => {
+  const split = (rule, ways, describe, minRoutes = 1) => {
     const routes = (v) => new Set(ways.get(v).map((x) => x.route)).size;
     const order = [...ways.keys()].sort((a, b) => routes(b) - routes(a));
-    if (order.length < 2) return;
+    if (order.length < 2 || order.some((v) => routes(v) < minRoutes)) return;
     const tie = routes(order[0]) === routes(order[1]);
     for (const v of order) if (tie || v !== order[0]) for (const x of ways.get(v)) add(x.id, rule, x.key, describe(v), tie ? NO_MAJORITY : describe(order[0]));
   };
@@ -657,12 +665,14 @@ export function crossRules(screens, bar, cfg) {
   for (const s of list) {
     for (const r of s.e.requests || []) {
       const a = r && r.same !== false && !/^(GET|HEAD|OPTIONS)$/.test(r.method) ? (s.e.actions || []).filter((x) => x.t <= r.t).pop() : null;
-      if (!a || r.t - a.t > 100) continue;
+      if (!a || r.t - a.t > 100 || a.empty) continue;
       const g = `${r.method} ${r.route}${r.keys && r.keys.length ? ` {${r.keys.join(",")}}` : ""}`;
-      way(sub(groups, g), `${a.role}|${a.name}|${a.region}`, { id: s.id, route: s.route, key: `${g}|${a.role}|${a.name}|${a.region}` });
+      // One way: a control's role and name, wherever it sits (the same action in several places is no inconsistency).
+      way(sub(groups, g), `${a.role}|${a.name}`, { id: s.id, route: s.route, key: `${g}|${a.role}|${a.name}` });
     }
   }
-  for (const m of groups.values()) split("consistent.action", m, (v) => v.replace(/^([^|]*)\|(.*)\|([^|]*)$/, '$1 "$2" ($3)'));
+  // A split needs each way on two routes at least: one screen's own control is no pattern.
+  for (const m of groups.values()) split("consistent.action", m, (v) => v.replace(/^([^|]*)\|(.*)$/, '$1 "$2"'), 2);
   const kinds = new Map();
   for (const s of list) for (const f of s.e.footers || []) way(sub(kinds, f.kind), f.position, { id: s.id, route: s.route, key: `${f.kind}|${f.name}` });
   for (const m of kinds.values()) split("consistent.footer-order", m, (v) => `primary ${v}`);

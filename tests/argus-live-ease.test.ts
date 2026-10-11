@@ -573,13 +573,22 @@ describe("argus-live ease — consistency across screens (decision 13)", () => {
     expect(b.ease.requests.filter((r: Obj) => r.method === "PATCH").map((r: Obj) => [r.route, r.keys])[0]).toEqual(["/api/prefs", ["theme"]]);
   }, 60_000);
 
+  /** A walked screen seen again on another route of the journey (the cross rules count routes). */
+  const at = (s: Obj, route: string) => ({ ...s, key: `${route}|1280|light`, route });
+
   it("a two-way split with no majority marks every side needs-owner; the palette's gap is the side flagged", async () => {
     const [a, b] = await Promise.all([walk("consist-a.html"), walk("consist-b.html")]);
-    const found = crossRules([a, b], BAR, CFG);
-    const rows = found.map((f: Obj) => [f.screen.split("|")[0], f.rule, f.key, f.measured, f.expected]);
+    // consistent.action needs each way on two routes: one screen's own control is no pattern.
+    expect(crossRules([a, b], BAR, CFG).map((f: Obj) => f.rule)).not.toContain("consistent.action");
+    const found = crossRules([a, at(a, "/consist-a2.html"), b, at(b, "/consist-b2.html")], BAR, CFG);
+    const rows = found.filter((f: Obj) => f.rule === "consistent.action").map((f: Obj) => [f.screen.split("|")[0], f.key, f.measured, f.expected]);
     expect(rows).toEqual([
-      ["/consist-a.html", "consistent.action", 'POST /api/notes {body,title}|button|Save|form', 'button "Save" (form)', NO_MAJORITY],
-      ["/consist-b.html", "consistent.action", 'POST /api/notes {body,title}|link|Submit|form', 'link "Submit" (form)', NO_MAJORITY],
+      ["/consist-a.html", 'POST /api/notes {body,title}|button|Save', 'button "Save"', NO_MAJORITY],
+      ["/consist-a2.html", 'POST /api/notes {body,title}|button|Save', 'button "Save"', NO_MAJORITY],
+      ["/consist-b.html", 'POST /api/notes {body,title}|link|Submit', 'link "Submit"', NO_MAJORITY],
+      ["/consist-b2.html", 'POST /api/notes {body,title}|link|Submit', 'link "Submit"', NO_MAJORITY],
+    ]);
+    expect(crossRules([a, b], BAR, CFG).map((f: Obj) => [f.screen.split("|")[0], f.rule, f.key, f.measured, f.expected])).toEqual([
       ["/consist-a.html", "consistent.footer-order", "dialog|Archive", "primary last", NO_MAJORITY],
       ["/consist-b.html", "consistent.footer-order", "dialog|Archive", "primary first", NO_MAJORITY],
       ["/consist-b.html", "consistent.save-pattern", "Preferences", "autosave and a submit button", "one save pattern per form"],
@@ -589,9 +598,12 @@ describe("argus-live ease — consistency across screens (decision 13)", () => {
 
   it("with a majority, only the deviant screen is flagged, against the majority's way; one page alone is consistent", async () => {
     const [a, b, c] = await Promise.all([walk("consist-a.html"), walk("consist-b.html"), walk("consist-c.html")]);
+    expect(crossRules([a, b, c, at(a, "/consist-a2.html"), at(b, "/consist-b2.html")], BAR, CFG).filter((f: Obj) => f.rule === "consistent.action").map((f: Obj) => [f.screen.split("|")[0], f.measured, f.expected])).toEqual([
+      ["/consist-b.html", 'link "Submit"', 'button "Save"'],
+      ["/consist-b2.html", 'link "Submit"', 'button "Save"'],
+    ]);
     const found = crossRules([a, b, c], BAR, CFG).map((f: Obj) => [f.screen.split("|")[0], f.rule, f.measured, f.expected]);
     expect(found).toEqual([
-      ["/consist-b.html", "consistent.action", 'link "Submit" (form)', 'button "Save" (form)'],
       ["/consist-b.html", "consistent.footer-order", "primary first", "primary last"],
       ["/consist-b.html", "consistent.save-pattern", "autosave and a submit button", "one save pattern per form"],
       ["/consist-b.html", "consistent.palette", "does not open", "opens, as on 2 other screens of the journey"],
@@ -615,5 +627,31 @@ describe("argus-live ease — easeOf", () => {
     const s = await easeOf(await open("copy-broken.html"));
     expect(s.route).toBe("/copy-broken.html");
     expect(s.copy).toHaveLength(9);
+  }, 60_000);
+});
+
+describe("argus-live ease — consistent.action counts a control's role and name, never its region or an empty state's", () => {
+  const screen = (route: string, action: Obj) => ({ key: `${route}|1280|light`, route, journey: "j", events: [], ease: { now: 9000, requests: [{ t: 1010, end: 1100, status: 201, method: "POST", route: "/api/projects", keys: ["name"], same: true }], actions: [{ t: 1000, ...action }] } });
+  it("the same named control in a header, a form or a dialog is one way; a different one on two routes splits", () => {
+    const header = { role: "button", name: "New project", region: "header" };
+    const dialog = { role: "button", name: "New project", region: "dialog" };
+    expect(crossRules([screen("/a", header), screen("/b", dialog), screen("/c", header), screen("/d", dialog)], BAR, CFG)).toEqual([]);
+    const other = { role: "link", name: "Add project", region: "main" };
+    expect(crossRules([screen("/a", header), screen("/b", header), screen("/c", other), screen("/d", other)], BAR, CFG).map((f: Obj) => f.rule)).toEqual(["consistent.action", "consistent.action", "consistent.action", "consistent.action"]);
+  });
+
+  it("an empty state's own call to action is left out (QA's projects page: the header's New project beside the empty list's Create project)", () => {
+    const header = { role: "button", name: "New project", region: "header" };
+    const empty = { role: "button", name: "Create project", region: "main", empty: true };
+    expect(crossRules([screen("/a", header), screen("/b", header), screen("/c", empty), screen("/d", empty)], BAR, CFG)).toEqual([]);
+  });
+
+  it("in Chrome: a clicked control inside an empty state's region is marked so; the header's is not", async () => {
+    const page = await open("projects.html");
+    await page.click("#new");
+    await page.click("#create");
+    await sleep(300);
+    const r = await record(page);
+    expect(r.ease.actions.map((a: Obj) => [a.name, a.empty === true])).toEqual([["New project", false], ["Create project", true]]);
   }, 60_000);
 });

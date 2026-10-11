@@ -385,7 +385,7 @@ Usability is split the way ISO 9241-11 splits it. *Effectiveness* (the goal reac
 | `feedback` | Time from an action to its first visible change: over 100 ms is information, over 1 s with no busy signal and over 10 s with no determinate progress are findings. A loader that flashes; a spinner on a route whose peers use a skeleton; a skeleton that shifts the layout; the routes you list under `optimistic`. |
 | `density` | More than two control heights of one kind on a screen; table row heights that differ between tables. |
 | `states`, `copy` | An error state with no way on (a routed 500 on the first data request, in the confirmation replay only); an empty state with no next step; a success the page does not name; fields lost after a rejected submit; `undefined`, `NaN`, `[object Object]` in visible text; vague labels such as `OK`. |
-| `consistent` | Across the cycle's screens: one action reached by different controls, names or regions; the primary button first in one footer and last in another; autosave and an explicit submit in one form; a command palette that opens on some screens only. |
+| `consistent` | Across the cycle's screens: one action reached by controls of different roles or names, each way on two routes at least (the same control in a header and a dialog is one way, and an empty state's own call to action is left out); the primary button first in one footer and last in another; autosave and an explicit submit in one form; a command palette that opens on some screens only. |
 | `ai` | On the routes you declare as AI surfaces: Stop while an answer streams, an error state, regenerate ("The AI-surface rules"). |
 | `efficiency` | Per journey, the explorer's path against the best known path ("Efficiency"). |
 

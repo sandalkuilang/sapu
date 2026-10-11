@@ -41,9 +41,10 @@ beforeAll(async () => {
   browser = await chromium.launch({ executablePath: chrome.path, headless: true });
   server = createServer((req, res) => {
     const url = new URL(String(req.url), "http://x");
-    const page = /^\/(taste|ease)\/([a-z-]+\.html)$/.exec(url.pathname);
+    const page = /^\/(taste|ease)\/([a-z0-9-]+\.html)$/.exec(url.pathname);
     if (page) {
-      let text = readFileSync(join(PAGES, page[1], page[2]), "utf8");
+      // A page seen on a second route of the journey (the consistency rules count routes).
+      let text = readFileSync(join(PAGES, page[1], page[2].replace(/^consist-(a|b)\1\.html$/, "consist-$1.html")), "utf8");
       for (const [mark, value] of Object.entries(FILL)) text = text.split(mark).join(value);
       res.setHeader("content-type", "text/html");
       res.end(text);
@@ -107,7 +108,7 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
       const wait = await observe();
       expect(wait.events.some((e: Obj) => e.kind === "input")).toBe(true);
       // T2's crossRules: one endpoint saved by a "Save" button on one screen and a "Submit" link on the other.
-      for (const [file, role, name] of [["consist-a.html", "button", "Save"], ["consist-b.html", "link", "Submit"]]) {
+      for (const [file, role, name] of [["consist-a.html", "button", "Save"], ["consist-aa.html", "button", "Save"], ["consist-b.html", "link", "Submit"], ["consist-bb.html", "link", "Submit"]]) {
         await page.goto(`${origin}/ease/${file}`);
         await page.getByLabel("Title").fill("Groceries");
         await page.getByLabel("Body").fill("milk");
@@ -129,9 +130,9 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     const busy = of("feedback.busy");
     expect(busy.map((x) => x.screen)).toEqual(["/ease/feedback.html|1280|light"]);
     expect(busy[0].measured).toBeGreaterThanOrEqual(1400);
-    // An even split: both screens' rows carry the one mark filing reads as needs-owner.
+    // An even split (each way on two routes): every screen's row carries the one mark filing reads as needs-owner.
     const split = of("consistent.action");
-    expect(split.map((x) => x.screen).sort()).toEqual(["/ease/consist-a.html|1280|light", "/ease/consist-b.html|1280|light"]);
+    expect(split.map((x) => x.screen).sort()).toEqual(["/ease/consist-a.html|1280|light", "/ease/consist-aa.html|1280|light", "/ease/consist-b.html|1280|light", "/ease/consist-bb.html|1280|light"]);
     expect(split.every((x) => x.expected === NO_MAJORITY && x.journey === "notes")).toBe(true);
   }, 240_000);
 
