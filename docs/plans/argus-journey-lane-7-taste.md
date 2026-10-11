@@ -265,7 +265,7 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
     taste crawl of the app (the explorers already reach the screens that matter).
 18. **SELECT weighs taste and usability debt like money and momus flags.** `score =
     cycles_since_visit × exposure × taste × (1 + commits)`, `taste = 1 + min(1, debt / 4)`, `debt`
-    from `taste-state.json`: each confirmed row of the journey that is open or queued and not
+    from `taste-state.json` (as built, Z4: queued rows only, the S4 rows together at most ×1.25): each confirmed row of the journey that is open or queued and not
     accepted weighs S2 2, S3 1, S4 0.5; a journey never judged has `debt` 2 (×1.5). The cap at ×2
     equals money's doubling, so a journey's UI debt can lift it as far as handling money does, and
     never further; an unjudged journey rises enough to be looked at within a few cycles.

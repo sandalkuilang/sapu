@@ -202,6 +202,14 @@ function archetypeOf(s, cfg) {
  */
 const crossScreen = (rule) => rule.family === "consistent" || rule.id === "feedback.skeleton-peers";
 
+/**
+ * A row one replay can measure beside the other rows of its screen: a screen rule that needs no armed fault and no drive
+ * (not `states.error`, not `ai.*`), never a cross-screen or an efficiency row. Such rows of one journey's screen are one
+ * confirmation group: `taste confirm` replays the path once and measures every rule of the group.
+ */
+const groupable = (rule) => Boolean(rule) && !crossScreen(rule) && rule.family !== "efficiency" && rule.family !== "ai" && rule.id !== "states.error";
+const groupOfRow = (r, rule) => (groupable(rule) ? `${r.journey}\n${r.screen}` : `${r.journey}\n${r.screen}\n${r.rule}\n${r.key}`);
+
 /** The band of `metric` for archetype `a`, when it is a witness: enough sites and pages, an archetype not inferred. */
 function bandOf(bar, a, metric) {
   const b = (bar.archetypes[a.name] ?? {})[metric];
@@ -443,7 +451,23 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   // a confirmation run in row order under the pass's budget replays them before the rest.
   const lead = curatorLeads(main, runId, bar);
   const led = (r) => lead.leads.some((l) => l.rule === r.rule && l.screen === r.screen);
-  rows.sort((x, y) => Number(led(y)) - Number(led(x)) || (x.journey < y.journey ? -1 : x.journey > y.journey ? 1 : x.screen < y.screen ? -1 : x.screen > y.screen ? 1 : x.rule < y.rule ? -1 : x.rule > y.rule ? 1 : x.key < y.key ? -1 : x.key > y.key ? 1 : 0));
+  // Rows in confirmation groups (one replay a journey's screen), numbered group by group: the groups by their candidate
+  // severity (S3 first), then cost, then a Curator lead among them; inside a group by rule and key.
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const groups = new Map();
+  for (const r of rows) {
+    const g = groupOfRow(r, rules.get(r.rule));
+    const x = groups.get(g) ?? { rank: 9, cost: -1, led: false, first: r };
+    x.rank = Math.min(x.rank, severityOf(r) === "S3" ? 0 : 1);
+    x.cost = Math.max(x.cost, isNum(r.cost) ? r.cost : -1);
+    x.led = x.led || led(r);
+    groups.set(g, x);
+  }
+  const stat = (r) => groups.get(groupOfRow(r, rules.get(r.rule)));
+  rows.sort((x, y) => {
+    const a = stat(x), b = stat(y);
+    return a.rank - b.rank || b.cost - a.cost || Number(b.led) - Number(a.led) || cmp(a.first.journey, b.first.journey) || cmp(a.first.screen, b.first.screen) || cmp(groupOfRow(x, rules.get(x.rule)), groupOfRow(y, rules.get(y.rule))) || cmp(x.rule, y.rule) || cmp(x.key, y.key);
+  });
   const out = rows.map((r, i) => {
     const id = `${r.journey}\n${r.rule}\n${r.screen}\n${r.key}`;
     const again = crossScreen(rules.get(r.rule)) && earlier.has(id) ? true : null;
@@ -548,13 +572,20 @@ export const MEDIA_RULES = Object.freeze(["colour.dark-contrast", "colour.dark-b
  * follows), any other through its probe's ruleExpression; `take(answer)` keeps that measurement (`measured`: `{rows}` of
  * the rule, at most 50, or `{rows: null}` when it failed) and removes it from the step's answer.
  */
-export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [] }) {
+export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [] }) {
+  const group = Array.isArray(rows) ? rows : [rows];
+  const row = group[0];
   const [route, width] = row.screen.split("|");
   const family = row.rule.split(".")[0];
   const frame = cfg ? { frame: cfg.frame ?? null, tokens: cfg.tokens ?? null } : {};
-  const media = MEDIA_RULES.includes(row.rule);
+  const exprOf = (id) => (FAMILIES[id.split(".")[0]].probe === "ease" ? easeExpression : tasteExpression)(id, frame);
+  const ids = [...new Set(group.map((r) => r.rule))];
+  const mediaIds = ids.filter((id) => MEDIA_RULES.includes(id));
+  const media = mediaIds.length > 0;
   const ai = family === "ai";
-  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => r.id === row.rule), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : { expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(row.rule, frame) }) };
+  // A group (rows of one screen): the media rules through one census, every other rule through its expression.
+  const more = group.length > 1 ? { ids, exprs: ids.filter((id) => !MEDIA_RULES.includes(id) && (media || id !== row.rule)).map(exprOf) } : {};
+  const S = { rule: row.rule, route, width: Number(width), routes, settleMs, media, ...(media ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id)), frames: bar.frames }, cfg: frame } : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : { expr: exprOf(row.rule) }), ...more };
   const sink = {
     measured: null,
     arm: row.rule === "states.error" ? faultCode(S) : row.rule === "ai.error" ? faultArm() : null,
@@ -572,10 +603,12 @@ export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null
       let rows = null;
       try {
         rows = S.media ? new Function("return " + S.rules)()(await new Function("return " + S.census)()(page), S.bar, S.cfg) : S.drive ? await new Function("return " + S.drive)()(page, S.driveArg) : await page.evaluate(S.expr);
+        for (const e of S.exprs || []) if (Array.isArray(rows)) rows = rows.concat(await page.evaluate(e));
       } catch (e) {
         rows = null;
       }
-      answer.__taste = { rows: Array.isArray(rows) ? rows.filter((r) => r && r.rule === S.rule).slice(0, 50).map((r) => ({ key: String(r.key).slice(0, 300), measured: r.measured })) : null };
+      const ours = (r) => r && (S.ids ? S.ids.includes(r.rule) : r.rule === S.rule);
+      answer.__taste = { rows: Array.isArray(rows) ? rows.filter(ours).slice(0, S.ids ? 50 * S.ids.length : 50).map((r) => (S.ids ? { rule: r.rule, key: String(r.key).slice(0, 300), measured: r.measured } : { key: String(r.key).slice(0, 300), measured: r.measured })) : null };
     }
   } catch (e) {}
   return answer;
@@ -594,7 +627,7 @@ export function confirmSink(row, { routes, settleMs, bar = loadBar(), cfg = null
 
 /** Was row `row` measured again by `measured` (the sink's)? A peer-count row: a row of its key beyond its expected; any other: a row of its key. */
 function remeasured(row, measured, rule) {
-  const mine = measured.rows.filter((r) => r.key === row.key);
+  const mine = measured.rows.filter((r) => r.key === row.key && (r.rule === undefined || r.rule === row.rule));
   if (rule.threshold.peer) return mine.some((r) => isNum(r.measured) && isNum(row.expected) && r.measured > row.expected);
   return mine.length > 0;
 }
@@ -625,9 +658,14 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
   if (!rule) throw new Error(`refused: taste confirm: ${ref}'s rule is not in taste-bar ${bar.version}`);
   if (crossScreen(rule)) throw new Error(`refused: taste confirm: ${row.rule} compares the cycle's screens: the next cycle's judge confirms it, not a replay`);
   if (tasteSpent(main, runId) >= TASTE_BUDGET_MS) throw new Error("refused: taste confirm: the taste pass's time this cycle is spent");
+  // Its confirmation group: the undecided rows one replay measures with it (the rows of its journey's screen; else it alone).
+  const rulesById = new Map(bar.rules.map((r) => [r.id, r]));
+  const group = groupable(rule) ? judge.rows.filter((r) => r.row === ref || (r.confirmed === null && groupOfRow(r, rulesById.get(r.rule)) === groupOfRow(row, rule))) : [row];
   const state = readTasteState(main);
   let confirmed = null;
   let said;
+  /** Each group row's verdict once the replay measured: [row, confirmed, said]. */
+  let decided = [];
   let replay = [];
   /** The replay's own HARNESS line (runOnce's, masked by it), carried into the answer. */
   const ran = (r) => ((replay = (Array.isArray(r.lines) ? r.lines : []).filter((l) => /^HARNESS: /.test(l)).slice(-1)), r);
@@ -650,26 +688,35 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
         routes = [];
       }
       const live = loadLive(main).config ?? {};
-      const sink = confirmSink(row, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) }, prohibited: live.prohibited ?? [] });
+      const sink = confirmSink(group, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) }, prohibited: live.prohibited ?? [] });
       const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list } })));
       if (!sink.measured) said = r.code === 2 && !sink.measured ? "harness: the replay failed before the screen" : "harness: the replay never reached the screen";
       else if (sink.measured.rows === null) said = "harness: the rule's expression failed on the screen";
-      else [confirmed, said] = remeasured(row, sink.measured, rule) ? [true, "measured again"] : [false, "not measured again: the screen holds the rule"];
+      else {
+        decided = group.map((g) => (remeasured(g, sink.measured, rulesById.get(g.rule)) ? [g, true, "measured again"] : [g, false, "not measured again: the screen holds the rule"]));
+        [, confirmed, said] = decided.find(([g]) => g.row === ref);
+      }
     }
   } finally {
     spendTaste(main, runId, "confirm", now() - t0);
   }
-  if (confirmed !== null) {
+  if (confirmed !== null && !decided.length) decided = [[row, confirmed, said]];
+  if (decided.length) {
     const fresh = readJudge(main, runId) ?? judge;
-    const at = fresh.rows.find((r) => r.row === ref && r.rule === row.rule && r.key === row.key);
-    if (at) at.confirmed = confirmed;
+    for (const [g, c] of decided) {
+      const at = fresh.rows.find((r) => r.row === g.row && r.rule === g.rule && r.key === g.key);
+      if (at) at.confirmed = c;
+    }
     writePrivate(judgeFile(main, runId), fresh);
-    if (confirmed) {
-      keepConfirmed(state, row, runId);
-      writeTasteState(main, state);
+    if (decided.some(([, c]) => c)) {
+      const now = readTasteState(main); // re-read: another verb may have written it while the replay ran
+      for (const [g, c] of decided) if (c) keepConfirmed(now, g, runId);
+      writeTasteState(main, now);
     }
   }
-  const word = confirmed === true ? "confirmed" : confirmed === false ? "not confirmed" : "not decided";
-  const lines = [`taste confirm ${ref}: ${word} (${said.replace(/^harness: /, "")})`, ...(said.startsWith("harness: ") ? [said, ...replay] : []), fence(rowLine({ ...row, confirmed }), { secrets: loadLive(main).secrets ?? {} }).body];
+  const word = (c) => (c === true ? "confirmed" : c === false ? "not confirmed" : "not decided");
+  const secrets = loadLive(main).secrets ?? {};
+  const others = decided.filter(([g]) => g.row !== ref).map(([g, c, why]) => `taste confirm ${g.row}: ${word(c)} (${why}, in ${ref}'s replay)`);
+  const lines = [`taste confirm ${ref}: ${word(confirmed)} (${said.replace(/^harness: /, "")})`, ...others, ...(said.startsWith("harness: ") ? [said, ...replay] : []), fence((decided.length ? decided.map(([g, c]) => ({ ...g, confirmed: c })) : [{ ...row, confirmed }]).map(rowLine).join("\n"), { secrets }).body];
   return { code: confirmed === null ? 2 : 0, lines, masked: true };
 }

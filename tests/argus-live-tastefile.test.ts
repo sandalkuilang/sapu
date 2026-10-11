@@ -363,6 +363,18 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     expect(gh.calls.map((c) => c.argv.slice(0, 3))).toEqual([["issue", "list", "--state"], ["issue", "view", old]]);
   });
 
+  it("every open row of the state is reconciled with the listing it fetches: an issue closed since is no open debt", async () => {
+    const t = cycle();
+    const other = "/refunds|1440|light";
+    const was = (issue: string, screen = other) => ({ rule: "states.success", screen, class: "implicit", severity: "S3", state: "open", issue, first: "20000101000000-0123abcd", last: "20000101000000-0123abcd" });
+    writeTasteState(t.main, { version: 1, journeys: { refund: { judged: t.runId, best: null, rows: { [tk("states.success", other)]: was("https://github.com/o/r/issues/7") } }, "order-to-cash": { judged: t.runId, best: null, rows: { [tk("states.success", ORDER)]: was("https://github.com/o/r/issues/8", ORDER) } } } });
+    judged(t, [row(1, { rule: "copy.broken", class: "implicit", measured: 1, expected: 0, witnesses: [] })]);
+    const gh = fakeGh([{ number: 7, title: "x", url: "https://github.com/o/r/issues/7", state: "CLOSED", stateReason: "COMPLETED" }], [{ number: 8, title: "y", url: "https://github.com/o/r/issues/8", state: "OPEN", stateReason: null }]);
+    await file(t, gh);
+    expect(rowsOf(t, "refund")[tk("states.success", other)].state).toBe("closed");
+    expect(rowsOf(t)[tk("states.success", ORDER)].state).toBe("open");
+  });
+
   it("an issue the owner closed as not planned is their ruling: never filed again; one closed as completed is filed anew", async () => {
     const t = cycle();
     judged(t, [row(1, { rule: "copy.broken", class: "implicit", measured: 1, expected: 0, witnesses: [] }), row(2, { rule: "states.recovery", class: "implicit", measured: 1, expected: 0, witnesses: [] })]);

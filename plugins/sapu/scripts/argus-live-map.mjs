@@ -374,19 +374,23 @@ const DEBT = { S1: 2, S2: 2, S3: 1, S4: 0.5 };
 
 /**
  * Journey `id`'s taste factor (phase 7 decision 18): `1 + min(1, debt / 4)`, `debt` the weight of its rows in `state`
- * (`.argus/taste-state.json`: confirmed rows only) that are open or queued and not accepted — neither in state
- * `accepted` nor named by one of `accept` (taste.json's `{rule, key}`, `key` the row's screen key). A journey never
- * judged has debt 2 (×1.5). The cap at ×2 is money's doubling: a journey's UI debt lifts it as far as handling money
- * does, never further.
+ * (`.argus/taste-state.json`: confirmed rows only) that are still queued (a filed row's debt is its issue's, which the
+ * filing reconciles) and not accepted — neither in state `accepted` nor named by one of `accept` (taste.json's `{rule,
+ * key}`, `key` the row's screen key). S4 rows together weigh at most 1 (×1.25): coherence alone never lifts a journey
+ * far. A journey never judged has debt 2 (×1.5). The cap at ×2 is money's doubling: a journey's UI debt lifts it as far
+ * as handling money does, never further.
  */
 export function tasteFactor(state, id, accept = []) {
   const j = state && isObj(state.journeys) && Object.hasOwn(state.journeys, id) ? state.journeys[id] : null;
   if (!j || j.judged === null) return 1.5;
   let debt = 0;
+  let polish = 0;
   for (const r of Object.values(j.rows)) {
-    if ((r.state === "open" || r.state === "queued") && !accept.some((a) => a.rule === r.rule && a.key === r.screen)) debt += DEBT[r.severity] ?? 0;
+    if (r.state !== "queued" || accept.some((a) => a.rule === r.rule && a.key === r.screen)) continue;
+    if (r.severity === "S4") polish += DEBT.S4;
+    else debt += DEBT[r.severity] ?? 0;
   }
-  return 1 + Math.min(1, debt / 4);
+  return 1 + Math.min(1, (debt + Math.min(1, polish)) / 4);
 }
 
 /**

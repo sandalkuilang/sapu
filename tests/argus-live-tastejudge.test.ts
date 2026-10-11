@@ -924,6 +924,28 @@ describe("argus-live taste confirm (J2)", () => {
     expect(tasteSpent(t.main, t.runId)).toBeGreaterThan(0);
   }, 30_000);
 
+  it("one replay a screen: the undecided rows of the row's journey and screen are measured together, each decided; an armed or driven row stays alone", async () => {
+    const heading = { rule: "hierarchy.heading-order", key: "h2|Profile", measured: 32, expected: "at most 24" };
+    const error = { rule: "states.error", key: "error-state", measured: "blank main", expected: null };
+    const t = await confirmRepo([broken, heading, error]);
+    // The S3 rows first; the screen's group (copy.broken, hierarchy.heading-order) numbered together.
+    const ids = Object.fromEntries(t.file().rows.map((r: Obj) => [r.rule, r.row]));
+    const lead = ids["copy.broken"];
+    const r = await t.confirm(lead, { rows: [{ rule: "copy.broken", key: "facts|undefined", measured: "undefined" }] });
+    expect(t.runs).toHaveLength(1);
+    const S = JSON.parse(/const S = (.*);\n/.exec(t.runs[0].wrapped)![1]);
+    expect(S.ids.sort()).toEqual(["copy.broken", "hierarchy.heading-order"]);
+    expect(S.exprs).toHaveLength(1);
+    expect(r.lines[0]).toBe(`taste confirm ${lead}: confirmed (measured again)`);
+    expect(r.lines[1]).toBe(`taste confirm ${ids["hierarchy.heading-order"]}: not confirmed (not measured again: the screen holds the rule, in ${lead}'s replay)`);
+    const by = Object.fromEntries(t.file().rows.map((x: Obj) => [x.rule, x.confirmed]));
+    expect(by).toEqual({ "copy.broken": true, "hierarchy.heading-order": false, "states.error": null });
+    // The routed fault's row has its own replay, armed.
+    await t.confirm(ids["states.error"], { rows: [] });
+    expect(t.runs).toHaveLength(2);
+    expect(t.runs[1].arm).toContain("route.fulfill({ status: 500");
+  }, 30_000);
+
   it("a row the replay does not measure again is not confirmed; a replay that never reached the screen decides nothing", async () => {
     const t = await confirmRepo([broken]);
     expect((await t.confirm("t1", { rows: [{ key: "other", measured: 1 }] })).lines[0]).toBe("taste confirm t1: not confirmed (not measured again: the screen holds the rule)");
@@ -1003,14 +1025,15 @@ describe("argus-live taste confirm (J2)", () => {
     const t = await confirmRepo([broken], { ease: { findings: [], cross: [{ rule: "consistent.action", key: "POST /orders", measured: 2, expected: 1 }] } });
     await expect(tasteConfirm(t.main, "x1")).rejects.toThrow("refused: taste confirm: x1 is not a judge row (t<k>)");
     await expect(tasteConfirm(t.main, "t9")).rejects.toThrow(`refused: taste confirm: no row t9 in cycle ${t.runId}'s judge`);
-    await expect(tasteConfirm(t.main, "t1")).rejects.toThrow("refused: taste confirm: consistent.action compares the cycle's screens: the next cycle's judge confirms it, not a replay");
+    // The S3 row's group comes first (t1); the cross-screen S4 row is t2.
+    await expect(tasteConfirm(t.main, "t2")).rejects.toThrow("refused: taste confirm: consistent.action compares the cycle's screens: the next cycle's judge confirms it, not a replay");
     const u = judgeRepo();
     await expect(tasteConfirm(u.main, "t1")).rejects.toThrow(`refused: taste confirm: cycle ${u.runId} has no judge rows (taste judge first)`);
     u.put(1, [u.screen("/a", [broken])]);
     await u.judge();
     await expect(tasteConfirm(u.main, "t1")).rejects.toThrow("refused: taste confirm: journey j returned no path to replay");
     spendTaste(t.main, t.runId, "record", TASTE_BUDGET_MS);
-    await expect(t.confirm("t2", { rows: [] })).rejects.toThrow("refused: taste confirm: the taste pass's time this cycle is spent");
+    await expect(t.confirm("t1", { rows: [] })).rejects.toThrow("refused: taste confirm: the taste pass's time this cycle is spent");
   }, 30_000);
 
   it("the CLI's taste judge prints the verb's lines; taste confirm of a row the judge lacks is refused, exit 1", () => {
@@ -1073,22 +1096,26 @@ describe("argus-live SELECT weighs taste and usability debt (J3)", () => {
   const row = (rule: string, severity: string, state: string, screen = "/a|1440|light") => [`taste:${rule}:${screen}`, { rule, screen, class: "derived", severity, state, issue: null, first: RUN, last: RUN }];
   const judged = (rows: [string, Obj][]) => ({ judged: RUN, best: null, rows: Object.fromEntries(rows) });
 
-  it("taste = 1 + min(1, debt / 4): S1 and S2 weigh 2, S3 1, S4 0.5; only open or queued rows; never judged is ×1.5; the cap is ×2", () => {
+  it("taste = 1 + min(1, debt / 4): S1 and S2 weigh 2, S3 1, S4 0.5 (all S4 at most 1: ×1.25); queued rows only (a filed row's debt is its issue's); never judged is ×1.5; the cap is ×2", () => {
     const state = (j: Obj) => ({ version: 1, journeys: { j } });
     expect(tasteFactor({ version: 1, journeys: {} }, "j")).toBe(1.5);
     expect(tasteFactor(state({ judged: null, best: null, rows: {} }), "j")).toBe(1.5);
     // An id that names a property of every object is no journey of the state.
     expect(tasteFactor({ version: 1, journeys: {} }, "constructor")).toBe(1.5);
     expect(tasteFactor(state(judged([])), "j")).toBe(1);
-    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open")])), "j")).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open")])), "j")).toBe(1);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "queued")])), "j")).toBe(1.5);
     expect(tasteFactor(state(judged([row("copy.broken", "S1", "queued")])), "j")).toBe(1.5);
-    expect(tasteFactor(state(judged([row("copy.broken", "S3", "queued"), row("scale.spacing", "S4", "open")])), "j")).toBe(1.375);
+    expect(tasteFactor(state(judged([row("copy.broken", "S3", "queued"), row("scale.spacing", "S4", "queued")])), "j")).toBe(1.375);
     expect(tasteFactor(state(judged([row("copy.broken", "S2", "closed"), row("scale.spacing", "S2", "accepted")])), "j")).toBe(1);
-    const lots = judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "open"), row("scale.radii", "S2", "queued"), row("states.error", "S3", "open")]);
+    const lots = judged([row("copy.broken", "S2", "queued"), row("scale.spacing", "S2", "queued"), row("scale.radii", "S2", "queued"), row("states.error", "S3", "open")]);
     expect(tasteFactor(state(lots), "j")).toBe(2);
+    // S4 coherence debt alone lifts a journey at most ×1.25, however many rows.
+    const polish = judged(["a", "b", "c", "d", "e", "f"].map((k) => row("hierarchy.alignment", "S4", "queued", `/${k}|1440|light`)) as [string, Obj][]);
+    expect(tasteFactor(state(polish), "j")).toBe(1.25);
     // The owner's accept rows (taste.json) weigh nothing, matched by rule and screen key.
-    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "open", "/b|1440|light")])), "j", [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }])).toBe(1.5);
-    expect(tasteFactor(state(judged([row("copy.broken", "S2", "open")])), "j", [{ rule: "copy.broken", key: "/b|1440|light", why: "another screen" }])).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "queued"), row("scale.spacing", "S2", "queued", "/b|1440|light")])), "j", [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }])).toBe(1.5);
+    expect(tasteFactor(state(judged([row("copy.broken", "S2", "queued")])), "j", [{ rule: "copy.broken", key: "/b|1440|light", why: "another screen" }])).toBe(1.5);
     // score multiplies it in; without it the score is as before.
     expect(score({ id: "j", lastCycle: 90 }, { cycle: 100, taste: 1.5 })).toBe(15);
     expect(score({ id: "j", lastCycle: 90 }, { cycle: 100 })).toBe(10);
@@ -1107,7 +1134,7 @@ describe("argus-live SELECT weighs taste and usability debt (J3)", () => {
 
   it("selectJourneys: a money journey with no debt ties a non-money journey at full debt; an unjudged one sits between", () => {
     const main = selectRepo([{ id: "money", money: true }, { id: "debt" }, { id: "clean" }, { id: "never" }]);
-    writeTasteState(main, { version: 1, journeys: { money: judged([]), clean: judged([]), debt: judged([row("copy.broken", "S2", "open"), row("scale.spacing", "S2", "queued")]) } });
+    writeTasteState(main, { version: 1, journeys: { money: judged([]), clean: judged([]), debt: judged([row("copy.broken", "S2", "queued"), row("scale.spacing", "S2", "queued")]) } });
     expect(scores(main)).toEqual({ money: 12, debt: 12, clean: 6, never: 9 });
     // The owner accepts one of the debt rows: it weighs nothing (debt 2: ×1.5).
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ accept: [{ rule: "copy.broken", key: "/a|1440|light", why: "intended" }] }));

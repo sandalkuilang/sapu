@@ -392,7 +392,8 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
   issues = issues.filter(shaped);
   // An issue the state names that the list does not hold (older than its limit): viewed by its URL, never filed twice.
   const listedUrls = new Set(issues.map((i) => i.url));
-  for (const url of new Set(todo.flatMap((g) => g.prior.map((p) => p.issue)).filter((u) => u && !listedUrls.has(u)))) {
+  const openRows = Object.values(state.journeys).flatMap((j) => Object.values(j.rows)).filter((r) => r.state === "open" && r.issue);
+  for (const url of new Set([...todo.flatMap((g) => g.prior.map((p) => p.issue)), ...openRows.map((r) => r.issue)].filter((u) => u && !listedUrls.has(u)))) {
     const v = runner([gh, "issue", "view", url, "--json", "number,title,url,state,stateReason"], { cwd: main, env });
     try {
       const i = v.status === 0 ? JSON.parse(String(v.stdout ?? "")) : null;
@@ -401,6 +402,9 @@ export async function tasteFile(main, { run, cap }, { env = process.env, gh = "g
       // gone, or not an issue: the title decides
     }
   }
+  // Every open row of the state against the listing: an issue closed since (whatever the reason) is no open debt.
+  const byUrl = new Map(issues.map((i) => [i.url, i]));
+  for (const r of openRows) if (byUrl.get(r.issue)?.state === "CLOSED") ((r.state = "closed"), (changed = true));
   const seen = readSeen(main, runId);
   const thisRun = new Set();
   try {

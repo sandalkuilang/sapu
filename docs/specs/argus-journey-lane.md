@@ -2577,9 +2577,10 @@ measures first-encounter discoverability, with its `clicks` and `term` now recor
   by the guard to the run's `taste/`) judges each cycle's screens from screenshots and numbers: per
   screen aesthetics.md §8's output; per judge row `confirm`, `reject` (with reason) or `polish`; leads
   for the next pass. It files nothing; a verdict that names no row is dropped.
-- **SELECT** multiplies by `taste = 1 + min(1, debt / 4)`, `debt` the journey's confirmed, open or
-  queued, unaccepted rows (S2 2, S3 1, S4 0.5), 2 for a journey never judged: taste debt lifts a
-  journey at most as far as money does.
+- **SELECT** multiplies by `taste = 1 + min(1, debt / 4)`, `debt` the journey's confirmed, still
+  queued, unaccepted rows (S2 2, S3 1, S4 0.5, the S4 rows together at most 1: ×1.25), 2 for a journey
+  never judged: taste debt lifts a journey at most as far as money does. A filed row's debt is its
+  issue's: filing reconciles every open row with the issue listing it fetches (closed → `closed`).
 - **Smoke suite.** A `taste` project (Chromium, first width) is on by default: the per-screen rules at
   the path's screens and after each action, again under dark and reduced motion; `argus-taste`
   annotations; a separate `taste` workflow job writes the scorecard to the job summary and stays green.
