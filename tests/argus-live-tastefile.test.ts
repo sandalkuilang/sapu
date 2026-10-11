@@ -463,7 +463,7 @@ describe("argus-live taste accept — the owner's ruling, staged on their word",
     writeFileSync(join(main, ".argus/taste.json"), "{");
     await expect(tasteAccept(main, "copy.broken", ORDER)).rejects.toThrow("refused: taste accept: .argus/taste.json is not valid JSON");
     writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ bogus: 1 }));
-    await expect(tasteAccept(main, "copy.broken", ORDER)).rejects.toThrow('refused: taste accept: .argus/taste.json: .argus/taste.json: unknown key "bogus"');
+    await expect(tasteAccept(main, "copy.broken", ORDER)).rejects.toThrow(new Error('refused: taste accept: .argus/taste.json: unknown key "bogus"'));
   });
 
   it("taste accept through the CLI writes taste.json with no state yet", () => {

@@ -267,7 +267,7 @@ export function validateTaste(raw, bar = loadBar()) {
   const rules = new Map(bar.rules.map((r) => [r.id, r]));
   const frames = Object.keys(bar.frames).sort();
   const has = (k) => k in raw;
-  unknown(raw, TASTE_FILE, TASTE_KEYS);
+  for (const k of Object.keys(raw)) if (!TASTE_KEYS.includes(k)) errs.push(`unknown key "${shown(k)}"`);
   if (has("frame")) need(typeof raw.frame === "string" && frames.includes(raw.frame), `frame must be one of ${frames.join(", ")}`);
   if (has("archetypes") && need(isObj(raw.archetypes), "archetypes must map route globs to archetypes") === true) {
     for (const [glob, a] of Object.entries(raw.archetypes)) {

@@ -181,7 +181,8 @@ describe(".argus/taste.json — the owner's calibration", () => {
   });
 
   it("refuses unknown keys at every level", () => {
-    expect(errs({ colour: "blue" })).toEqual(['.argus/taste.json: unknown key "colour"']);
+    // Each caller names the file once (`refused: <verb>: .argus/taste.json: …`): the fault itself never repeats it.
+    expect(errs({ colour: "blue" })).toEqual(['unknown key "colour"']);
     expect(errs({ copy: { vague: [], tone: "warm" } })).toEqual(['copy: unknown key "tone"']);
     expect(errs({ accept: [{ rule: "scale.spacing", key: "k", why: "w", until: 3 }] })).toEqual(['accept[0]: unknown key "until"']);
   });
