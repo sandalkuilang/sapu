@@ -147,13 +147,13 @@ describe("argus-live modules — the DAG", () => {
 
   it("admits phase 7's modules, each with the imports it may have (spec §20)", () => {
     const g = graph();
-    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
+    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
     for (const m of PHASE7) expect(g.has(m), m).toBe(true);
-    // The shapes, and the in-page probes the suite embeds verbatim: leaves.
-    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease"]) expect(g.get(leaf), leaf).toEqual([]);
-    // The judge reads both probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
-    expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
-    expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-tastecfg"]));
+    // The shapes, and the in-page probes the suite embeds verbatim (the AI probe is the lane's alone): leaves.
+    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The judge reads the probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
+    expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg"]));
+    expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg"]));
     // The suite's projects, registry and config (split from the generator) read the in-page checks and the shapes only.
     for (const d of g.get("argus-live-codeproj") ?? []) expect(["argus-live-layout", "argus-live-a11y", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
     expect(g.get("argus-live-codegen")).toContain("argus-live-codeproj");

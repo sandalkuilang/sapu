@@ -1,16 +1,16 @@
 // tests/argus-live-aiux.test.ts — the AI-surface rules (decision 14: ai.stop, ai.error, ai.regenerate) of
-// argus-live-aiux.mjs.
+// argus-live-aiux.mjs and their seams in the lane (the recorder, the judge, the confirmation's drive and fault).
 // Every rule is shown firing on its fixture and silent on the twin that differs only by the defect, and every
 // exclusion (no AI surface, an undeclared route, a stream too short to stop, an answer not settled, a stopped answer,
 // a failure that is not the composer's or comes before any stream, an undecided drive) beside the twin that fires. Real
 // Chrome (the pinned install's playwright-core) against a local server whose assistant streams its answer chunk by
 // chunk (tests/fixtures/journey-app/pages/aiux/); the judge on synthetic records.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { browserTools, cleanTemps } from "./helpers/argus-live";
+import { browserTools, cleanTemps, committed } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { AI_EXPECTED, AI_MARKER, AIUX_DRIVE, AIUX_FAULT, AIUX_INIT, AIUX_SOURCE, driveArg, faultArm, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-aiux.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -20,7 +20,13 @@ import { TASTE_LANE_ONLY } from "../plugins/sapu/scripts/argus-live-codeproj.mjs
 // @ts-expect-error — plain ESM script without types
 import { EASE_INIT, ruleExpression as easeExpression } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
+import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
+// @ts-expect-error — plain ESM script without types
+import { keepScreen, RECORDER, recorderPayload, tasteDir } from "../plugins/sapu/scripts/argus-live-session.mjs";
+// @ts-expect-error — plain ESM script without types
 import { FAMILIES, laneOnly, loadBar, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+// @ts-expect-error — plain ESM script without types
+import { confirmSink, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 
 type Obj = Record<string, any>;
 const BAR = loadBar();
@@ -391,5 +397,62 @@ describe("argus-live aiux — the confirmation's drive (Chrome)", () => {
     expect(other.armed.faulted()).toBe(null);
     for (const rule of AI_RULES) expect(await drive(await open("", { file: "search.html" }), rule, 4000), rule).toEqual([]);
     expect(await drive(await open("stream=once&stop=none"), "ai.stop", 4000)).toEqual([]);
+  }, SLOW);
+});
+
+// ---------------------------------------------------------------------------------------------------
+// The lane's pass end to end, with the real modules: the recorder's payload and RECORDER on a walked page,
+// keepScreen's line, the judge's row, and the confirmation sink (its arm and its wrap) re-measuring it.
+
+describe("argus-live aiux — the lane's seams (Chrome, the real recorder, judge and sink)", () => {
+  it("records the walk's AI record, judges it into a row on a declared route only, and the sink's drive measures it again", async () => {
+    const main = committed();
+    const runId = takeLock(main, { maxCycleMinutes: 45 }).runId as string;
+    mkdirSync(join(main, ".argus"), { recursive: true });
+    const T = recorderPayload({ main, runId, slot: 1, slotRec: { journey: "j" }, prev: null, settleMs: 1000 });
+    expect(T).toMatchObject({ ai: AIUX_SOURCE, aiArg: { kind: "screen" } });
+    const page = await open("stop=none&regen=yes");
+    await ask(page);
+    await answered(page);
+    const answer = await fnOf(RECORDER)(page, { url: page.url(), aria: "x" }, T);
+    expect(answer.faults).toEqual([]);
+    expect(answer.ai).toMatchObject({ route: "/chat.html", seen: 1 });
+    keepScreen(main, runId, { slot: 1, journey: "j", account: "buyer.1" }, answer);
+    const line = JSON.parse(readFileSync(join(tasteDir(main, runId), "1", "screens.jsonl"), "utf8").trim());
+    expect(line.ai).toEqual(answer.ai);
+    // Undeclared: no AI row. Declared: the stop row, a derived row standing on its measurement.
+    await tasteJudge(main, { run: null });
+    const judge = () => JSON.parse(readFileSync(join(tasteDir(main, runId), "judge.json"), "utf8"));
+    expect(judge().rows.filter((r: Obj) => r.rule.startsWith("ai."))).toEqual([]);
+    writeFileSync(join(main, ".argus/taste.json"), JSON.stringify({ ai: ["/chat.html"] }));
+    await tasteJudge(main, { run: null });
+    const ai = judge().rows.filter((r: Obj) => r.rule.startsWith("ai."));
+    expect(ai).toHaveLength(1);
+    expect(ai[0]).toMatchObject({ rule: "ai.stop", class: "derived", screen: "/chat.html|1280|light", key: "stream", measured: "no stop control while it streamed", witnesses: [], confirmed: null });
+    // The confirmation's sink for that row: no arm, a drive; run its wrapped step code as the slot r driver does.
+    const sink = confirmSink(ai[0], { routes: [], settleMs: 1000 });
+    expect(sink.arm).toBe(null);
+    const fresh = await open("stop=none");
+    const out = sink.take(await fnOf(sink.wrap("async page => ({ step: 1 })"))(fresh));
+    expect(out).toEqual({ step: 1 });
+    expect(sink.measured).toEqual({ rows: [{ key: "stream", measured: "no stop control while it streamed" }] });
+    // Twin: the same row replayed on a page with a working Stop is not measured again.
+    const held = confirmSink(ai[0], { routes: [], settleMs: 1000 });
+    held.take(await fnOf(held.wrap("async page => ({ step: 1 })"))(await open("stop=button")));
+    expect(held.measured).toEqual({ rows: [] });
+  }, 150_000);
+
+  it("an ai.error row's sink arms the marked fault before the navigation, then its drive measures the failure", async () => {
+    const r = { row: "t1", journey: "j", rule: "ai.error", class: "derived", screen: "/chat.html|1280|light", key: "failed-stream", measured: "an endless loader", expected: AI_EXPECTED["ai.error"], witnesses: [], cost: null, confirmed: null };
+    const sink = confirmSink(r, { routes: [], settleMs: 1000 });
+    expect(sink.arm).toBe(faultArm());
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    contexts.push(context);
+    await context.addInitScript({ content: PAGE_INIT });
+    const page = await context.newPage();
+    expect(await fnOf(sink.arm)(page)).toEqual({ armed: true });
+    await page.goto(`${origin}/chat.html?error=endless`);
+    sink.take(await fnOf(sink.wrap("async page => ({ step: 1 })"))(page));
+    expect(sink.measured).toEqual({ rows: [{ key: "failed-stream", measured: "an endless loader" }] });
   }, SLOW);
 });
