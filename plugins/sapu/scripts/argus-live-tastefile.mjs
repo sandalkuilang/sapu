@@ -209,8 +209,11 @@ const routeOf = (screen) => screen.split("|")[0];
 const viewportOf = (screen) => screen.split("|").slice(1).join(" × ");
 /** Groups of rows by rank: severity, then cost (highest first), then witnesses (most first), then the first row. */
 const byRank = (a, b) => RANK[a.severity] - RANK[b.severity] || (b.cost ?? -1) - (a.cost ?? -1) || b.witnesses - a.witnesses || a.n - b.n;
-/** A row as the issue quotes it: one JSON line inside a `json` block (page text never reaches the prose). */
-const record = (r, extra = {}) => JSON.stringify({ ...extra, row: r.row, journey: r.journey, key: r.key, measured: r.measured, expected: r.expected, witnesses: r.witnesses, cost: r.cost, ...(r.curator ? { curator: r.curator } : {}) });
+/**
+ * A row as the issue quotes it: one JSON line inside a `json` block (page text never reaches the prose). Of the
+ * Curator's verdict only its word: its reason is model text written from untrusted screenshots, never an issue's.
+ */
+const record = (r, extra = {}) => JSON.stringify({ ...extra, row: r.row, journey: r.journey, key: r.key, measured: r.measured, expected: r.expected, witnesses: r.witnesses, cost: r.cost, ...(r.curator ? { curator: { verdict: r.curator.verdict } } : {}) });
 
 /** The issue's title: the title key, then the metric and, for one row of numbers, value → expected. */
 function titleOf(g) {

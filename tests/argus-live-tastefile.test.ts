@@ -296,7 +296,9 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     expect(owner(tk("states.success", ORDER))).toBe(false);
     expect(by[tk("consistent.footer-order", ORDER)].body).toContain("Needs the owner: a consistency split with no majority: two ways, neither the app's own rule");
     expect(by[tk("copy.broken", ORDER)].body).toContain("Needs the owner: the Curator rejected the measured row");
-    expect(by[tk("copy.broken", ORDER)].body).toContain('"curator":{"verdict":"reject","reason":"the token is the product\'s own word"}');
+    // The Curator's verdict word only: its reason is model text written from untrusted screenshots, never an issue's.
+    expect(by[tk("copy.broken", ORDER)].body).toContain('"curator":{"verdict":"reject"}');
+    expect(by[tk("copy.broken", ORDER)].body).not.toContain("the product's own word");
     // A split with a majority is the polish roll-up's (S4), as is an S4 row; one the Curator rejected is held.
     expect(by[tk("consistent.action", LIST)]).toBeUndefined();
     expect(r.lines).toContain(`held: ${tk("scale.radii", ORDER)} (the Curator rejected an S4 coherence item)`);
