@@ -1765,3 +1765,64 @@ folds phase 7 into 2.10.0 (D23's fallback), move the notes into the 2.10.0 secti
 10. *`states.error` and `ai.*` rows exist only if the walk produces them.* A confirmation replays a row the walk made, so the
     explorer charter (Z2) must make an explorer reach a failure and press Stop; usage.md describes the rules and the drive as
     built.
+
+### Lane Z4 — the phase-end fixes (writer, architect and QA reviews)
+
+Z4 closes Z3's "Needs coordinator" list and the three phase-end reviews. Version 2.11.0 (D23 kept, not folded into 2.10.0).
+
+**Z3's list, as resolved.**
+1. `validateTaste` refuses a lane-only rule in `gate`, naming it and the suite's rules.
+2. Every bar-class rule's metric is measured per screen, and a bar row compares the screen's own figure with the band
+   (`screenMetric`). The census and the ease probe emit `primary_actions`, `body_contrast_ratio`, `transition_all`,
+   `reduced_motion_transforms`, `animation_ms`, `vague_labels` (when the page's language is the lexicon's),
+   `empty_states_without_control`, `errors_without_exit`, `loader_shown_ms` and `first_change_ms`; the ratio, duration
+   and vague figures exist only when the page has the thing. The calibration measures a page without acting, so it cannot
+   measure `feedback.latency` or `motion.duration` (both need an action); those compare with the frame only.
+3. Five frames: spec §20.3 and decision 4 now say five.
+4. `taste curator <file>` validates the Curator's return and stores it as `taste/curator.json`; verdicts are matched by
+   title key, so a second `taste judge` in the same run keeps them. The Curator reads `taste/brief.json` (each screen cut
+   to 1,500 bytes), and the explorer returns a fixed-shape `trail` (each step at most 120 characters).
+5. `/sapu:init` adds the `!/.argus/taste.json` exception, and `live check` validates the file it wrote.
+6. The probe digest is pinned: the test passes while the bar holds no band, and fails with the calibration command once
+   a band's digest differs from the probes'. No skip, no expected failure.
+7. CONTRACT.md §Engine floor and security.md name what the calibration guard catches (name, glob, brace expansion,
+   symlink, interpreter operand, preload, stdin or pipe into an interpreter, `-e` code, a shell-built name) and its limit
+   (a copy under another name).
+8. A screenshot whose scrub flags a secret, a password or a one-time code goes to `<run>/held-shots/`, outside `taste/`,
+   so the Curator never reads it.
+9. `off` takes a family name or `*`; `*` stops the whole pass (judge, suite, filing, recorders).
+10. The explorer presses Stop once on an AI route (an `off_goal` step) and never fails a request on purpose; the
+    confirmation's fault drive makes the failure. `states.error` rows still exist only when the walk reaches an error.
+
+**Decisions.**
+- *The bar ships no band.* `--network` refuses a site whose terms no maintainer confirmed (`sites.<s>.confirmed`), and
+  none is, so `archetypes` is empty and `probe` is null. The coordinator does not confirm terms for the owner.
+- *Efficiency rules are information only* until their proof (a best path with at least one action, the info gate) is
+  wired into confirmation; an unmeasured figure is null, printed `-`.
+- *Count rules compare with a peer median* of at least three real peers (same width, theme and similar size, a declared
+  archetype only), and fire only beyond the band's p50 when there is one.
+- *Recorders are keyed.* The page cannot forge or drain the taste and ease records: a per-run key from
+  `<slot>/.playwright/taste.key` replaces `TASTE_KEY_MARK`, the stores are getter copies, and no record holds a field value.
+- *Confirmation replays one group per journey screen*, ranked by severity, cost and lead; the AI drive refuses a
+  destructive or prohibited control.
+- *Precision.* `copy.broken` only where a value stands; `states.success` needs a naming change after the write answered;
+  `consistent.action` keys by role and name on two routes; motion rules split the user's motion (caused within 1 s of
+  trusted input) from the page's and spare essential motion; nested-radius compares shown corners; dark-surface spares
+  media-led and raised surfaces; `vague` reads its context; optical alignment allows a small negative margin;
+  `feedback.loader-flash` is information; a new `feedback.endless` rule (loader over 10 s) files.
+- *Calibration structure* leaves room for a `--local <manifest>` mode; the local corpus itself is not built.
+
+**Budget raises.** `skills/journey/journeys.md` 15,000 → 15,200 → 15,300; `agents/ui-explorer.md` 19,400 → 20,000.
+Both for the trail shape, the Curator brief and the group confirmation text.
+
+**Deviations.** Item 5 (the digest pin) landed with the no-band decision rather than alone. The efficiency rules became
+information only, a narrowing the reviews asked for. The calibration guard's docs no longer say "in any form".
+
+**Follow-ups (not in 2.11.0).**
+- Replay a journey's prefix before a confirmation (architect M9).
+- A second-theme census outside the replay (architect m10).
+- `density.control-heights` read from the owner's scale, not a fixed three.
+- Pricing `fill` by the best path's values.
+- First-measurement probes for `states.error` and `states.recovery` in the replay.
+- The rest of the recorder hardening: an isolated world, proxy timing, the AI recorder's globals.
+- The local reference-app corpus (`--local <manifest>`).
