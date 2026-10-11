@@ -430,6 +430,23 @@ const shownPath = (main, file) => {
 /** An issue or comment URL in gh's stdout. */
 const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
 
+/** Where run `runId` keeps what scrub filed (spec §19.13), for the cycle's report: `<run>/filed.jsonl` (0600). */
+export const filedFile = (main, runId) => path.join(liveDir(main), runId, "filed.jsonl");
+
+/**
+ * Appends `{ref, url, kind}` (`kind` `issue` or `comment`, `ref` the candidate or null) to run `runId`'s
+ * filedFile, only once gh printed the URL → [] or, when it cannot be written, the one line saying so (the
+ * issue is filed: the exit stays 0, so nothing files it twice).
+ */
+function recordFiled(main, runId, rec) {
+  try {
+    fs.appendFileSync(filedFile(main, runId), `${JSON.stringify(rec)}\n`, { mode: 0o600 });
+    return [];
+  } catch (e) {
+    return [`note: ${rec.kind} not recorded in the run's filed.jsonl (${(e && e.code) || "error"})`];
+  }
+}
+
 /**
  * `argus-live.mjs scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file>
  * [--attach <png>…] [--create [--label <l>…] | --comment <n>]` → `{code, out}`. The run is the one named, or
@@ -448,8 +465,9 @@ const ISSUE_URL = /https?:\/\/\S+\/issues\/\d+(?:#issuecomment-\d+)?/;
  * [--label <l>]… [--attach <png>]…`, the labels ending with the contract's agent-filed label (once; none
  * under `traces` "none"); with `comment`: `gh issue comment <n> --body-file <file> [--attach
  * <png>]…`; an issue URL in gh's stdout → `filed: <url>` / `commented: <url>` (exit 0, whatever gh's
- * exit); none → `failed: gh issue create|comment exited <k> before printing an issue URL` (exit 2). gh's
- * own output is never printed.
+ * exit), and `{ref, url, kind}` appended to the run's filed.jsonl (recordFiled); none → `failed: gh issue
+ * create|comment exited <k> before printing an issue URL` (exit 2), nothing recorded. gh's own output is
+ * never printed.
  */
 export async function scrub(main, { run: named = null, ref = null, title, bodyFile, attach = [], create = false, labels = [], comment = null } = {}, { env = process.env, gh = "gh", runner = run } = {}) {
   const which = scrubRun(main, { run: named, ref });
@@ -515,6 +533,6 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   const argv = create ? ["issue", "create", "--title", dt.text, "--body-file", bodyFile, ...all.flatMap((l) => ["--label", l]), ...files] : ["issue", "comment", String(comment), "--body-file", bodyFile, ...files];
   const r = runner([gh, ...argv], { cwd: main, env });
   const url = ISSUE_URL.exec(String(r.stdout ?? ""));
-  if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`] };
+  if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`, ...recordFiled(main, runId, { ref, url: url[0], kind: create ? "issue" : "comment" })] };
   return { code: 2, out: [...out, `failed: gh issue ${create ? "create" : "comment"} exited ${r.status ?? "on a signal"} before printing an issue URL`] };
 }

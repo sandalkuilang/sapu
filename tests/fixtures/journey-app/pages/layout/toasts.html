@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Toasts</title>
+<style>
+.toast { position: fixed; background: rgb(40, 40, 40); color: white; padding: 8px; }
+</style></head>
+<body style="margin:0">
+<main>
+<h1>Toasts</h1>
+<button id="next" style="position:absolute;left:10px;top:10px;width:90px;height:30px">Next</button>
+<div style="margin-top:120px">
+<button id="plain" type="button">Save plain</button>
+<button id="live" type="button">Save live</button>
+<button id="cover" type="button">Save over next</button>
+<button id="dismiss" type="button">Save dismissible</button>
+<button id="sticky" type="button">Save sticky</button>
+<button id="inplace" type="button">Save inside region</button>
+<button id="keep" type="button">Keep inside region</button>
+</div>
+<div id="region" role="status" class="toast" style="right:10px;top:300px"></div>
+</main>
+<script>
+function toast(opts) {
+  var t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = opts.text;
+  t.setAttribute("style", opts.style);
+  if (opts.live) t.setAttribute("role", "status");
+  if (opts.close) {
+    var b = document.createElement("button");
+    b.textContent = "Close";
+    b.onclick = function () { t.remove(); };
+    t.appendChild(b);
+  }
+  document.body.appendChild(t);
+  if (opts.ms) setTimeout(function () { t.remove(); }, opts.ms);
+}
+document.getElementById("plain").onclick = function () { toast({ text: "Saved plain", style: "right:10px;bottom:10px", ms: 400 }); };
+document.getElementById("live").onclick = function () { toast({ text: "Saved live", style: "right:10px;bottom:10px", live: true, ms: 400 }); };
+document.getElementById("cover").onclick = function () { toast({ text: "Saved over next", style: "left:0;top:0;width:300px;height:100px", live: true, ms: 400 }); };
+document.getElementById("dismiss").onclick = function () { toast({ text: "Draft kept", style: "right:10px;bottom:10px", live: true, close: true }); };
+document.getElementById("sticky").onclick = function () { toast({ text: "Working on it", style: "right:10px;bottom:10px", live: true }); };
+document.getElementById("inplace").onclick = function () {
+  var r = document.getElementById("region");
+  var p = document.createElement("p");
+  p.textContent = "Saved inside region";
+  r.appendChild(p);
+  setTimeout(function () { p.remove(); }, 400);
+};
+document.getElementById("keep").onclick = function () {
+  var p = document.createElement("p");
+  p.textContent = "Kept inside region";
+  document.getElementById("region").appendChild(p);
+};
+</script>
+</body></html>

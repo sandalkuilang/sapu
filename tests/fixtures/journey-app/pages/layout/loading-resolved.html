@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Resolved</title></head>
+<body>
+<main>
+<h1>Orders</h1>
+<!-- the excluded twin: busy for a moment, then settled -->
+<div id="loader" aria-busy="true">Loading orders</div>
+</main>
+<script>setTimeout(function () { document.getElementById("loader").setAttribute("aria-busy", "false"); }, 200);</script>
+</body></html>

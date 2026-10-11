@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dates</title></head>
+<body>
+<main>
+<h1>Dates</h1>
+<p id="day-first">Shipped 13/02/2026</p>
+<p id="month-first">Shipped 02/13/2026</p>
+<p id="dotted">Shipped 02.13.2026</p>
+<p id="ambiguous">Shipped 03/04/2026</p>
+<p id="iso">Shipped <span id="when"></span></p>
+</main>
+<script>document.getElementById("when").textContent = ["2026", "02", "13"].join("-");</script>
+</body></html>

@@ -1,6 +1,6 @@
 ---
 name: journey
-description: Use when walking the repo's web app through its real UI as every role its business journeys need, or when listing those journeys — argus's journey lane, on an isolated instance argus starts itself, never the owner's servers. One invocation = one bounded cycle: the catalog refreshed while the instance comes up, the top journeys walked by sapu:ui-explorer agents, every candidate reproduced two of two by a script before anything is filed. Needs `.argus/live.json` and the argus profile (/sapu:init writes them). Triggers: "/sapu:journey", "run a journey cycle", "walk the workflows as every role", "list the journeys".
+description: Use when walking the repo's web app through its real UI as every role its business journeys need, when listing those journeys, or when keeping their committed smoke suite — argus's journey lane, on an isolated instance argus starts itself, never the owner's servers. One invocation = one bounded cycle: the catalog refreshed while the instance comes up, the top journeys walked by sapu:ui-explorer agents, every candidate reproduced two of two by a script before anything is filed. Needs `.argus/live.json` and the argus profile (/sapu:init writes them). Triggers: "/sapu:journey", "run a journey cycle", "walk the workflows as every role", "list the journeys", "/sapu:journey smoke".
 ---
 
 # JOURNEY — argus's journey lane
@@ -21,8 +21,11 @@ Run it from the main session only, never inside `/sapu:inspector` or a subagent:
 |---|---|
 | `list` | the catalog only; starts no app. `live map-check --list`: with `refresh: none`, print its catalog and stop. A refresh due (or `refused: no journey is selectable` with one due) → rebuild: `live up --map`, `live slot 1 --map`, one map-mode `sapu:ui-explorer` (journeys.md's map charter), `live map-check --merge 1`, `live down`, then `live map-check --list` and print it |
 | `list --rebuild` | `list`, rebuilding the map even when no refresh is due |
+| `seed --issue <n>` | `list --rebuild` from a trusted issue: `live up --map`, once `live status --json` shows its `worktree` `live seed --issue <n>`, `live slot 1 --map --seed`, one map-mode explorer (journeys.md's map charter with `seed: <kind> <ref>`), `live map-check --merge 1`, `live down`, then `list`'s print; the journeys it added are marked `seeded` |
+| `seed --doc <file>:<a>-<b>` | the same from lines a to b of a file tracked at HEAD (`live seed --doc <file>:<a>-<b>`) |
 | no argument | one journey cycle, autonomous, never stopping to ask: journeys.md's steps 1 to 10, SELECT picking up to `limits.max_parallel_journeys` within `limits.max_cycle_minutes` |
 | `<id> [<id>…]` | one cycle on the named journeys: step 3 runs `live select --cycle <n> --ids <id>,…` and prints the journeys they displaced |
+| `smoke` | one smoke cycle, autonomous, per [smoke.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/smoke.md): the committed suite's pass, CI triage, heals, admissions, proposals and baselines |
 
 One invocation = one bounded cycle; a pass over the whole catalog is that many invocations. The report's catalog line is `map-check`'s own (`catalog: <k> journeys, <d> dropped`).
 

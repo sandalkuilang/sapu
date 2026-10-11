@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Modals</title>
+<style>
+  body { margin: 0; padding: 16px; font: 16px sans-serif; }
+  button, input { margin: 4px; padding: 6px 10px; }
+  :focus-visible { outline: 3px solid rgb(26, 79, 214); outline-offset: 2px; }
+  .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); display: none; align-items: center; justify-content: center; }
+  .overlay.open { display: flex; }
+  .box { background: white; padding: 16px; width: 280px; border: 1px solid gray; }
+  dialog { width: 280px; }
+</style>
+</head>
+<body>
+<main>
+  <button id="o-native">Open native</button>
+  <button id="o-alert">Open alert</button>
+  <button id="o-sticky">Open sticky</button>
+  <button id="o-lost">Open lost</button>
+  <button id="o-elsewhere">Open elsewhere</button>
+  <button id="o-leak">Open leak</button>
+  <button id="o-gone">Open gone</button>
+  <button id="o-plain">Open plain</button>
+  <button id="elsewhere">Somewhere else</button>
+</main>
+
+<dialog id="d-native" aria-labelledby="t-native">
+  <h2 id="t-native">Native modal</h2>
+  <input aria-label="Note">
+  <button class="close">Close</button>
+</dialog>
+
+<dialog id="d-plain" aria-labelledby="t-plain">
+  <h2 id="t-plain">Plain panel</h2>
+  <button class="close">Close</button>
+</dialog>
+
+<script>
+  document.querySelector("#o-native").addEventListener("click", () => document.querySelector("#d-native").showModal());
+  document.querySelector("#d-native .close").addEventListener("click", () => document.querySelector("#d-native").close());
+  document.querySelector("#o-plain").addEventListener("click", () => document.querySelector("#d-plain").show());
+  document.querySelector("#d-plain .close").addEventListener("click", () => document.querySelector("#d-plain").close());
+
+  // A custom modal: an overlay holding a box that carries the role. Each flag is one way to get it wrong.
+  function custom(button, { title, role = "dialog", escape = true, trap = true, back = "invoker", backdrop = false, removeInvoker = false }) {
+    const invoker = document.querySelector(button);
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = '<div class="box" role="' + role + '" aria-modal="true" aria-labelledby="t-' + button.slice(3) + '"><h2 id="t-' + button.slice(3) + '">' + title + '</h2><button class="ok">OK</button><button class="cancel">Cancel</button></div>';
+    document.body.append(overlay);
+    const box = overlay.firstElementChild;
+    const stops = () => [...box.querySelectorAll("button")];
+    const close = () => {
+      overlay.classList.remove("open");
+      if (back === "invoker") invoker.focus();
+      else if (back === "other") document.querySelector("#elsewhere").focus();
+      else document.activeElement.blur();
+    };
+    invoker.addEventListener("click", () => {
+      overlay.classList.add("open");
+      stops()[0].focus();
+      if (removeInvoker) invoker.remove();
+    });
+    box.querySelector(".ok").addEventListener("click", close);
+    box.querySelector(".cancel").addEventListener("click", close);
+    if (backdrop) overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.addEventListener("keydown", (e) => {
+      if (!overlay.classList.contains("open")) return;
+      if (e.key === "Escape" && escape) close();
+      if (e.key === "Tab" && trap) {
+        const s = stops(), i = s.indexOf(document.activeElement);
+        e.preventDefault();
+        s[(i + (e.shiftKey ? s.length - 1 : 1)) % s.length].focus();
+      }
+    });
+  }
+  custom("#o-alert", { title: "Delete it?", role: "alertdialog", backdrop: true });
+  custom("#o-sticky", { title: "Stuck", escape: false });
+  custom("#o-lost", { title: "Lost focus", back: "body" });
+  custom("#o-elsewhere", { title: "Elsewhere", back: "other" });
+  custom("#o-leak", { title: "Leaky", trap: false });
+  custom("#o-gone", { title: "Gone", removeInvoker: true });
+</script>
+</body>
+</html>

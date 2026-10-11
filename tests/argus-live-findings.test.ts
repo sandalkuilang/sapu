@@ -37,7 +37,9 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
-import { minimize, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { minimize } from "../plugins/sapu/scripts/argus-live-minimize.mjs";
+// @ts-expect-error — plain ESM script without types
+import { repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -47,13 +49,15 @@ import { defang, redactIds, scrub, scrubSecrets, writeVerdict } from "../plugins
 // @ts-expect-error — plain ESM script without types
 import { configuredUser, drainSessions, maskSecrets, sessionDriver } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
-import { intake, ORACLES } from "../plugins/sapu/scripts/argus-live-return.mjs";
+import { intake, LANE_ORACLES, ORACLES, validateReturn } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { mintMapSlot, mintSlot, readSlotState, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
 import { FINAL_KINDS, parseRepro, reductions, stepCode, substitute } from "../plugins/sapu/scripts/argus-live-steps.mjs";
 // @ts-expect-error — plain ESM script without types
 import { parseTarget } from "../plugins/sapu/scripts/argus-live-targets.mjs";
+// @ts-expect-error — plain ESM script without types
+import { LAYOUT_KINDS, pageExpression } from "../plugins/sapu/scripts/argus-live-layout.mjs";
 
 type Obj = Record<string, any>;
 
@@ -62,12 +66,12 @@ afterEach(cleanTemps);
 const SCRIPTS = join(__dirname, "../plugins/sapu/scripts");
 
 describe("argus-live modules — the DAG", () => {
-  /** Each argus-live module (`argus-live`, `argus-live-pw`, …) → the argus-live modules it imports. */
+  /** Each argus-live module (`argus-live`, `argus-live-pw`, `argus-live-a11y`, …) → the argus-live modules it imports. */
   const graph = () => {
     const out = new Map<string, string[]>();
-    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z]+)?\.mjs$/.test(x))) {
+    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(x))) {
       const text = readFileSync(join(SCRIPTS, f), "utf8");
-      out.set(f.replace(/\.mjs$/, ""), [...text.matchAll(/from "\.\/(argus-live-[a-z]+)\.mjs"/g)].map((m) => m[1]));
+      out.set(f.replace(/\.mjs$/, ""), [...text.matchAll(/from "\.\/(argus-live-[a-z0-9]+)\.mjs"/g)].map((m) => m[1]));
     }
     return out;
   };
@@ -100,11 +104,12 @@ describe("argus-live modules — the DAG", () => {
     expect(reach(g, "argus-live-run").has("argus-live-session")).toBe(false);
     // The repro DSL sits beside pw, above the session driver: it reaches neither pw nor the instance.
     expect(g.has("argus-live-steps")).toBe(true);
-    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin"], d).toContain(d);
+    for (const d of g.get("argus-live-steps") ?? []) expect(["argus-live-targets", "argus-live-hooks", "argus-live-login", "argus-live-return", "argus-live-slots", "argus-live-session", "argus-live-origin", "argus-live-layout"], d).toContain(d);
     for (const above of ["argus-live-pw", "argus-live-instance"]) expect(reach(g, "argus-live-steps").has(above), above).toBe(false);
-    // The generated RED test reads targets and oracles only; the runner above it writes it.
-    expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-return", "argus-live-targets"]);
-    expect(g.get("argus-live-repro")).toContain("argus-live-redtest");
+    // The generated RED test reads oracles and the smoke suite's step builder only; minimize, above the runner, writes it.
+    expect([...(g.get("argus-live-redtest") ?? [])].sort()).toEqual(["argus-live-codegen", "argus-live-return"]);
+    expect(g.get("argus-live-minimize")).toContain("argus-live-redtest");
+    expect(g.get("argus-live-minimize")).toContain("argus-live-repro");
     // Scrub reads only what a down keeps: the configuration, the ledger, the lock and run.json's records; pw writes its screenshot verdicts.
     expect([...(g.get("argus-live-scrub") ?? [])].sort()).toEqual(["argus-live-config", "argus-live-endpoints", "argus-live-fence", "argus-live-ledger", "argus-live-lock", "argus-live-proc", "argus-live-run"]);
     expect(g.get("argus-live-pw")).toContain("argus-live-scrub");
@@ -114,6 +119,34 @@ describe("argus-live modules — the DAG", () => {
     // Doc drift reads git's blame and nothing else.
     expect(g.get("argus-live-drift")).toEqual(["argus-live-proc"]);
     expect(readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8").split("\n").length).toBeLessThan(700);
+  });
+
+  it("admits phase 6's modules, each with the imports it may have (spec §19)", () => {
+    const g = graph();
+    const PHASE6 = ["argus-live-layout", "argus-live-a11y", "argus-live-perf", "argus-live-seed", "argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
+    for (const m of PHASE6) expect(g.has(m), m).toBe(true);
+    // The in-page check sources are leaves: embedded verbatim in the suite, run by the lane through run-code.
+    for (const leaf of ["argus-live-layout", "argus-live-a11y"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The generator builds from data alone: targets, oracles, the DSL, the check sources and the login template.
+    for (const d of g.get("argus-live-codegen") ?? []) expect(["argus-live-targets", "argus-live-return", "argus-live-steps", "argus-live-layout", "argus-live-a11y", "argus-live-login"], d).toContain(d);
+    // The lane's verbs sit above the runner and below the CLI: no module of phases 1 to 5 reaches one.
+    const UPPER = ["argus-live-smoke", "argus-live-suite", "argus-live-propose", "argus-live-artifacts", "argus-live-heal", "argus-live-ci", "argus-live-baseline", "argus-live-report"];
+    // CI's runs and artifacts are read through one module, below both verbs that read them.
+    for (const m of ["argus-live-ci", "argus-live-baseline"]) expect(g.get(m), m).toContain("argus-live-artifacts");
+    expect(g.get("argus-live-baseline")).not.toContain("argus-live-ci");
+    for (const m of g.keys()) {
+      if (m === "argus-live" || UPPER.includes(m)) continue;
+      for (const u of UPPER) expect(reach(g, m).has(u), `${m} reaches ${u}`).toBe(false);
+    }
+    // perf's in-page script is installed by the session hook beside the signal script, and seed's text is read by pw: both sit below them.
+    for (const [low, above] of [["argus-live-perf", "argus-live-session"], ["argus-live-seed", "argus-live-pw"]]) expect(reach(g, low).has(above), `${low} reaches ${above}`).toBe(false);
+    for (const m of [...PHASE6.slice(2), "argus-live-seed"]) expect(g.get("argus-live"), m).toContain(m);
+  });
+
+  it("caps every argus-live module at 750 lines", () => {
+    for (const f of readdirSync(SCRIPTS).filter((x) => /^argus-live(-[a-z0-9]+)?\.mjs$/.test(x))) {
+      expect(readFileSync(join(SCRIPTS, f), "utf8").trimEnd().split("\n").length, f).toBeLessThanOrEqual(750);
+    }
   });
 
   it("one helper names a run's browser HOME: browserHome in the run module", () => {
@@ -128,8 +161,8 @@ describe("argus-live modules — the DAG", () => {
     const text = readFileSync(join(SCRIPTS, "argus-live-instance.mjs"), "utf8");
     const header = text.slice(0, text.indexOf("\nimport ")).replace(/^\/\/ ?/gm, "");
     const dag = header.slice(header.indexOf("argus-live-proc.mjs"), header.indexOf("Leaves:"));
-    const leaves = [...header.slice(header.indexOf("Leaves:")).split(/\.\s/)[0].matchAll(/-([a-z]+)\.mjs/g)].map((m) => `argus-live-${m[1]}`);
-    const order = [...dag.matchAll(/argus-live\.mjs|argus-live-[a-z]+\.mjs|-([a-z]+)\.mjs|this module/g)].map((m) => (m[0] === "this module" ? "argus-live-instance" : m[1] ? `argus-live-${m[1]}` : m[0].replace(/\.mjs$/, "")));
+    const leaves = [...header.slice(header.indexOf("Leaves:")).split(/\.\s/)[0].matchAll(/-([a-z0-9]+)\.mjs/g)].map((m) => `argus-live-${m[1]}`);
+    const order = [...dag.matchAll(/argus-live\.mjs|argus-live-[a-z0-9]+\.mjs|-([a-z0-9]+)\.mjs|this module/g)].map((m) => (m[0] === "this module" ? "argus-live-instance" : m[1] ? `argus-live-${m[1]}` : m[0].replace(/\.mjs$/, "")));
     const at = (m: string) => order.indexOf(m);
     for (const m of g.keys()) expect(leaves.includes(m) || at(m) >= 0, `${m} is named in the header`).toBe(true);
     for (const leaf of leaves) expect(g.get(leaf), leaf).toEqual([]);
@@ -552,7 +585,72 @@ describe("argus-live repro DSL", () => {
 
   it("FINAL_KINDS holds decision 7's templates, one per oracle", () => {
     expect(Object.keys(FINAL_KINDS)).toEqual(ORACLES);
-    expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled"] });
+    expect(FINAL_KINDS).toMatchObject({ handoff: ["visible"], "status-coherence": ["fact-equals", "text-equals"], "dead-end": ["enabled"], reversal: ["fact-equals"], "claim-race": ["count"], "viewport-locale": ["visible", "enabled", "layout"] });
+  });
+
+  it("the layout expectation (lane Z1): one layout check, optionally on a target, a final of viewport-locale only", () => {
+    const list = (extra: Obj = {}, final: string | undefined = "viewport-locale"): Obj[] => [{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered", ...(final ? { final } : {}), ...extra }];
+    expect(parseRepro(list(), at).steps.at(-1)).toMatchObject({ n: 2, as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" });
+    expect(parseRepro(list({ target: { role: "button", name: "Pay" } }), at).steps.at(-1).target).toMatchObject({ by: "role", role: "button", name: "Pay" });
+    for (const check of LAYOUT_KINDS) expect(refusal(list({ check, ...(check === "page-scroll" ? {} : { target: { text: "x" } }) })), check).toBe("parsed");
+    // The check is required and is one the oracle has.
+    expect(refusal(list({ check: undefined }))).toMatch(/^refused: repro: step 2: layout takes a check \(page-scroll, clipped, covered, target-size\)$/);
+    for (const check of ["nope", 3, "", "locale", "links"]) expect(refusal(list({ check })), String(check)).toMatch(/^refused: repro: step 2: layout takes a check/);
+    // The page-wide check has no element to name.
+    expect(refusal(list({ check: "page-scroll", target: { role: "button", name: "Pay" } }))).toBe("refused: repro: step 2: page-scroll is page-wide: it takes no target");
+    expect(refusal(list({ value: "x" }))).toMatch(/^refused: repro: step 2: unknown key "value"$/);
+    // Only viewport-locale ends in it; a final of another oracle is refused with that oracle's kinds.
+    expect(refusal(list({ final: "handoff" }))).toBe("refused: repro: step 2: handoff's final is visible");
+    expect(refusal(list({ final: "regression" }))).toMatch(/^refused: repro: step 2: regression's final is /);
+    // A layout expectation before the final is allowed (it is an ordinary expectation), as a system step is not.
+    expect(refusal([{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "clipped" }, { ...FINAL_EXPECT, as: "customer.1", final: "viewport-locale", expect: "visible" }])).toBe("parsed");
+    expect(refusal([{ as: "system", expect: "layout", check: "clipped" }, { as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" }])).toBe("refused: repro: step 1: system only triggers, reads facts and reads mail");
+    // The suite runs the oracle after every step: a path never holds one, and a regression final is never one.
+    const path = (steps: Obj[]) => {
+      try {
+        parseRepro(steps, { ...at, path: true });
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "parsed";
+    };
+    expect(path([{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered" }, { as: "customer.1", expect: "visible", target: { text: "x" } }])).toBe("refused: repro: step 2: a path has no layout expectation: the suite runs the layout oracle after every step");
+    expect(FINAL_KINDS.regression).not.toContain("layout");
+  });
+
+  it("stepCode's layout template carries the check's expression, the check and the skipped rows as data", () => {
+    const step = { n: 2, as: "customer.1", expect: "layout", check: "covered", target: { by: "role", role: "button", name: "Pay" }, final: "viewport-locale" };
+    const skip = [{ check: "covered", key: "button|Pay|button" }];
+    const code = stepCode(step, { ...OPTS, skip });
+    const P = JSON.parse(/\n  const P = (.*);\n/.exec(code)![1]);
+    expect(P).toMatchObject({ kind: "layout", check: "covered", skip, expr: pageExpression("layout", { only: ["covered"] }) });
+    expect(code).toContain("const T = (pg) => pg.getByRole(\"button\"");
+    // Without a target there is none; without skipped rows none are skipped.
+    const bare = stepCode({ ...step, target: undefined }, OPTS);
+    expect(bare).toContain("\n  const T = null;\n");
+    expect(JSON.parse(/\n  const P = (.*);\n/.exec(bare)![1]).skip).toEqual([]);
+    // The page's answer is only ever compared with that data: no evaluation of anything the page returns.
+    expect(own(code)).not.toMatch(/\beval\(|new Function|\bimport\(/);
+  });
+
+  it("the regression oracle (spec §19.9): the lane's own, its final any expectation kind", () => {
+    expect(ORACLES.at(-1)).toBe("regression");
+    expect(LANE_ORACLES).toEqual(["regression"]);
+    expect(FINAL_KINDS.regression).toEqual(["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals", "count", "url", "fact-equals", "mail", "no-error"]);
+    const last = EXAMPLE().at(-1);
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { ...last, final: "regression" }], at).steps.at(-1)).toMatchObject({ final: "regression" });
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { as: "sales.1", expect: "url", value: "/orders", final: "regression" }], at).steps.at(-1)).toMatchObject({ expect: "url", final: "regression" });
+    expect(parseRepro([...EXAMPLE().slice(0, -1), { as: "sales.1", expect: "no-error", final: "regression" }], at).steps.at(-1)).toMatchObject({ expect: "no-error", final: "regression" });
+  });
+
+  it("an explorer's return never names the regression oracle: that decision is the unchanged expectations re-run", () => {
+    const ret = (oracle: string) => ({ journey: "j1", status: "done", candidates: [{ claim: "c", oracle, repro: [] }] });
+    const opts = { journey: "j1", accounts: { "customer.1": "buyer1@example.test" }, outFiles: [] };
+    expect(validateReturn(ret("dead-end"), opts).errors).toEqual([]);
+    const { errors } = validateReturn(ret("regression"), opts);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^candidates\[0\]\.oracle must be one of handoff, .*, viewport-locale$/);
+    expect(validateReturn({ journey: "j1", status: "done", coverage: { regression: "held" } }, opts).errors).toEqual(['coverage: "regression" is not an oracle']);
   });
 
   it("parseRepro reads §10's example", () => {
@@ -909,6 +1007,11 @@ describe("argus-live classes", () => {
     }
     expect(classify({ oracle: "handoff", needsOwner: "owner:rule" }).labels).toEqual(["ux", "workflow", "owner:rule", "argus", "found-by:user"]);
   });
+  it("regression: A, a bug only the owner can rule on (an intended change must not be fixed back), S2 on a money journey, else S3", () => {
+    expect(classify({ oracle: "regression", money: true })).toEqual({ cls: "A", labels: ["bug", "argus:needs-owner", "argus", "found-by:user"], severity: "S2", because: "regression on a money journey" });
+    expect(classify({ oracle: "regression", stock: true, movedTwice: true, actedOn: true })).toMatchObject({ cls: "A", severity: "S3", because: "regression, not on a money journey" });
+    expect(classify({ oracle: "regression", needsOwner: "owner:rule" }).labels).toEqual(["bug", "owner:rule", "argus", "found-by:user"]);
+  });
 
   it("each seeded defect's class line", () => {
     const main = committed();
@@ -924,6 +1027,8 @@ describe("argus-live classes", () => {
     expect(line("--oracle", "stale-view", "--stock")).toBe("class A labels bug,argus,found-by:user severity S1 because stale view on money or stock\n");
     expect(line("--oracle", "orphaned-work")).toBe("class A labels bug,argus,found-by:user severity S3 because orphaned work\n");
     expect(line("--oracle", "viewport-locale")).toBe("class A labels bug,argus,found-by:user severity by outcome because viewport or locale: rated by its outcome, as argus rates\n");
+    expect(line("--oracle", "regression")).toBe("class A labels bug,argus:needs-owner,argus,found-by:user severity S3 because regression, not on a money journey\n");
+    expect(line("--oracle", "regression", "--money")).toBe("class A labels bug,argus:needs-owner,argus,found-by:user severity S2 because regression on a money journey\n");
     const bad = spawnSync(process.execPath, [ARGUS_LIVE, "classify", "--oracle", "handoff", "--money", "--money"], { cwd: main, encoding: "utf8" });
     expect(bad.status).toBe(1);
   }, 30_000);
@@ -1182,6 +1287,11 @@ describe("argus-live generated RED test", () => {
     // The header and the title take only an id, a ref and an oracle.
     const { context, steps } = parseRepro(EXAMPLE(), at);
     expect(() => redTest({ journey: "x\nprocess.exit()", oracle: "handoff", ref: "1.1.1", context, steps, settleMs: 3000 })).toThrow("failed: redTest: a journey id is kebab-case");
+  });
+
+  it("a layout expectation has no generated test: it is refused, never written as another kind (lane Z1)", () => {
+    const list = [{ as: "customer.1", do: "goto", path: "/orders" }, { as: "customer.1", expect: "layout", check: "covered", final: "viewport-locale" }];
+    expect(() => red(list)).toThrow("failed: redTest: a layout expectation has no generated test (the layout oracle is the suite's and pw layout's)");
   });
 
   it("repro --test writes red.spec.ts from the confirmed min.json, else repro.json", () => {

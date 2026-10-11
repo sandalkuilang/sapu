@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Modal</title></head>
+<body style="margin:0">
+<main>
+<h1>Orders</h1>
+<!-- the excluded twin: everything behind an open modal is outside its scope -->
+<div style="position:relative;width:200px;height:40px">
+<button id="behind" style="width:100px;height:30px">Behind modal</button>
+<div style="position:absolute;left:0;top:0;width:100px;height:30px"></div>
+</div>
+<p style="margin-top:200px">
+<button aria-label="Edit row" style="width:16px;height:16px;padding:0;margin:0 2px 0 0">e</button><button aria-label="Delete row" style="width:16px;height:16px;padding:0;margin:0">d</button>
+</p>
+<dialog id="d" style="width:320px;padding:10px">
+<p>Confirm the order?</p>
+<button id="ok" style="width:100px;height:30px">Confirm</button>
+<!-- the violation, still checked inside the modal -->
+<div style="position:relative;width:100px;height:30px;margin-top:10px">
+<button id="inside" style="width:100px;height:30px">Hidden choice</button>
+<div style="position:absolute;left:0;top:0;width:100px;height:30px"></div>
+</div>
+</dialog>
+</main>
+<script>document.getElementById("d").showModal();</script>
+</body></html>

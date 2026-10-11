@@ -3,30 +3,17 @@
 // normalizes it; substitute puts `{{marker}}` and the values a `read` saved in as literals; stepCode
 // builds the wrapper's own `run-code` template of one browser step — its payload only as `const P =
 // <JSON>;`, its target only through targetCode — whose every answer drains the session's hook;
-// reductions names the units minimize may drop.
+// reductions names the units minimize may drop. Path mode (spec §19.4) reads the smoke suite's paths:
+// no final, the selector order, seed triggers only; suiteAccounts and pathChecks serve it.
 import { fillArgv } from "./argus-live-hooks.mjs";
+import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { HELPERS } from "./argus-live-login.mjs";
 import { BLOCKED_ERROR } from "./argus-live-origin.mjs";
 import { ORACLES } from "./argus-live-return.mjs";
 import { configuredUser } from "./argus-live-session.mjs";
 import { accountOf } from "./argus-live-slots.mjs";
-import { targetCode } from "./argus-live-targets.mjs";
+import { parseTarget, targetCode } from "./argus-live-targets.mjs";
 
-/** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
-export const FINAL_KINDS = {
-  handoff: ["visible"],
-  "status-coherence": ["fact-equals", "text-equals"],
-  "dead-end": ["enabled"],
-  reversal: ["fact-equals"],
-  "orphaned-work": ["hidden"],
-  "claim-race": ["count"],
-  "stale-view": ["fact-equals"],
-  "unreachable-step": ["visible"],
-  "re-entry": ["value-equals"],
-  discoverability: ["visible"],
-  "interrupted-flow": ["count"],
-  "viewport-locale": ["visible", "enabled"],
-};
 
 /** Each action's fields (`?` optional). */
 const ACTIONS = {
@@ -58,6 +45,25 @@ const EXPECTS = {
   "fact-equals": ["marker", "field", "value"],
   mail: ["to", "contains"],
   "no-error": [],
+  // The layout oracle's check (argus-live-layout.mjs) on the page: held when it finds no violation, on the target's when one is named.
+  layout: ["check", "target?"],
+};
+/** Decision 7: the expectation kinds each oracle's final may take, keys exactly ORACLES. */
+export const FINAL_KINDS = {
+  handoff: ["visible"],
+  "status-coherence": ["fact-equals", "text-equals"],
+  "dead-end": ["enabled"],
+  reversal: ["fact-equals"],
+  "orphaned-work": ["hidden"],
+  "claim-race": ["count"],
+  "stale-view": ["fact-equals"],
+  "unreachable-step": ["visible"],
+  "re-entry": ["value-equals"],
+  discoverability: ["visible"],
+  "interrupted-flow": ["count"],
+  "viewport-locale": ["visible", "enabled", "layout"],
+  // Spec §19.9: whatever expectation of a suite path broke is the regression candidate's final (a path holds no layout expectation: the suite runs the oracle after every step).
+  regression: Object.keys(EXPECTS).filter((k) => k !== "layout"),
 };
 /** Decision 6: the steps that always change state, and those that do when the page sent a request other than GET or HEAD meanwhile. */
 const ALWAYS_CHANGES = ["select", "check", "uncheck", "trigger", "login"];
@@ -73,6 +79,9 @@ const PLACEHOLDER = /\{\{([^{}]*)\}\}/g;
 const CONTROLS = /[\u0000-\u001f\u007f-\u009f]/;
 const MAX_STEPS = 100;
 const MAX_STRING = 500;
+/** Spec §19.4's selector order for an action's target in a path. */
+const ACTION_TARGET = "an action's target in a path is {role, name}, {label}, {placeholder} or {testId}";
+const NO_FINAL = "a path has no final: it ends with an expect proving the journey's goal";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 /** How a refusal shows a word the candidate wrote: as given when it is short and plain, else not at all. */
@@ -119,6 +128,19 @@ function targetOf(t, depth = 0) {
   return out;
 }
 
+/**
+ * Spec §19.4's selector order for target `t` (targetOf's structure) of a path's step: `within` one level at
+ * most, a testId only with live.json's `test_id_attribute`, and an action's target (`action`) a named role,
+ * a label, a placeholder or a test id, never text.
+ */
+function pathTarget(t, action, live) {
+  if (t.within && t.within.within) refuse("within nests at most one level in a path");
+  for (let x = t; x; x = x.within) {
+    if (x.by === "testId" && !live.test_id_attribute) refuse("a testId target needs live.json's test_id_attribute");
+    if (action && !((x.by === "role" && typeof x.name === "string" && x.name !== "") || ["label", "placeholder", "testId"].includes(x.by))) refuse(ACTION_TARGET);
+  }
+}
+
 /** The repro's context element → `{viewport?, locale?, timezone?}` as given, each checked. */
 function contextOf(el) {
   for (const k of Object.keys(el)) if (k !== "context") refuse(`unknown key ${keyWord(k)}`);
@@ -154,14 +176,15 @@ function contextOf(el) {
 /** The highest `{i}` placeholder of a hook's argv: the number of values it takes. */
 const arity = (argv) => Math.max(0, ...argv.flatMap((el) => [...String(el).matchAll(/\{(\d+)\}/g)].map((m) => Number(m[1]))));
 
-/** One step `raw` (number `n`) checked and normalized → `{n, as, do|expect, …fields, final?}`. */
-function stepOf(raw, n, { accounts, live }) {
+/** One step `raw` (number `n`) checked and normalized → `{n, as, do|expect, …fields, final?}`; `path`: a path's step (no final, pathTarget). */
+function stepOf(raw, n, { accounts, live, path = false }) {
   if (!isObj(raw)) refuse("unknown action");
   const isAction = Object.hasOwn(raw, "do");
   if (isAction === Object.hasOwn(raw, "expect")) refuse("unknown action");
   const kind = isAction ? raw.do : raw.expect;
   const table = isAction ? ACTIONS : EXPECTS;
   if (typeof kind !== "string" || !Object.hasOwn(table, kind)) refuse("unknown action");
+  if (path && kind === "layout") refuse("a path has no layout expectation: the suite runs the layout oracle after every step");
   const fields = table[kind];
   const allowed = ["as", isAction ? "do" : "expect", "final", ...fields.map((f) => f.replace(/\?$/, ""))];
   for (const k of Object.keys(raw)) if (!allowed.includes(k)) refuse(`unknown key ${keyWord(k)}`);
@@ -186,13 +209,19 @@ function stepOf(raw, n, { accounts, live }) {
   for (const f of fields) {
     const name = f.replace(/\?$/, "");
     if (f.endsWith("?") && !has(name)) continue;
-    if (name === "target") step.target = targetOf(raw.target);
+    if (name === "target") {
+      step.target = targetOf(raw.target);
+      if (path) pathTarget(step.target, isAction, live);
+    }
     else if (name === "path") {
       if (typeof raw.path !== "string" || !/^\/(?![/\\])/.test(raw.path)) refuse("goto takes a path (/…)");
       step.path = raw.path;
     } else if (name === "key") {
       if (typeof raw.key !== "string" || !/^[A-Za-z0-9+]{1,32}$/.test(raw.key)) refuse("press takes a key (letters, digits and +, at most 32)");
       step.key = raw.key;
+    } else if (name === "check" && kind === "layout") {
+      if (typeof raw.check !== "string" || !LAYOUT_KINDS.includes(raw.check)) refuse(`layout takes a check (${LAYOUT_KINDS.join(", ")})`);
+      step.check = raw.check;
     } else if (name === "save") {
       if (typeof raw.save !== "string" || !SAVE.test(raw.save) || raw.save === "marker") refuse(`save takes a name (${SAVE.source}, not marker)`);
       step.save = raw.save;
@@ -213,6 +242,7 @@ function stepOf(raw, n, { accounts, live }) {
       step[name] = raw[name];
     } else text(name);
   }
+  if (kind === "layout" && step.check === "page-scroll" && step.target) refuse("page-scroll is page-wide: it takes no target");
   if (kind === "login") {
     // Decision 26: an account of the allocation written with its number, never anon, never a configured user.
     if (typeof raw.as !== "string" || !raw.as.includes(".")) refuse("login's as names an account (<role>.<k>)");
@@ -237,6 +267,7 @@ function stepOf(raw, n, { accounts, live }) {
     }
   }
   if (raw.final !== undefined) {
+    if (path) refuse(NO_FINAL);
     if (typeof raw.final !== "string" || !ORACLES.includes(raw.final)) refuse("final is not an oracle");
     if (isAction || !FINAL_KINDS[raw.final].includes(kind)) refuse(`${raw.final}'s final is ${FINAL_KINDS[raw.final].join(" or ")}`);
     step.final = raw.final;
@@ -275,6 +306,9 @@ export function provingExpect(steps, n, changed = new Set()) {
 
 /**
  * A candidate's repro `list` (validateReturn's array) checked before any browser work → `{context, steps}`.
+ * With `path` (spec §19.4) it is a smoke path instead: no `final` anywhere, the last step an `expect` (the
+ * journey's goal), every target in the selector order (pathTarget), and a `trigger` only before the first
+ * step of an account and only one live.json marks `seed: true`; every other rule as for a repro.
  * `accounts` is the slot's allocation (`{"<role>.<k>": user}`), `live` the expanded config. The first
  * element may be `{"context": {viewport, locale, timezone}}` (each optional; defaults: live's first viewport,
  * its locale and timezone, else 1440, en-US, UTC); every other element is a step or `{"parallel": [2 to 8
@@ -285,7 +319,7 @@ export function provingExpect(steps, n, changed = new Set()) {
  * (claim race, interrupted flow), and every always-state-changing step's proving expect (decision 6). A
  * fault throws `refused: repro: step <n>: <reason>` (`refused: repro: context: <reason>` for the context).
  */
-export function parseRepro(list, { accounts, live }) {
+export function parseRepro(list, { accounts, live, path = false }) {
   const at = (n, reason) => new Error(`refused: repro: ${n === null ? "context" : `step ${n}`}: ${reason}`);
   if (!Array.isArray(list)) throw new Error("refused: repro: a repro is a list of steps");
   const context = { viewport: (Array.isArray(live.viewports) && live.viewports[0]) || 1440, locale: live.locale || "en-US", timezone: live.timezone || "UTC" };
@@ -306,7 +340,7 @@ export function parseRepro(list, { accounts, live }) {
     n += 1;
     if (n > MAX_STEPS) throw at(n, `at most ${MAX_STEPS} steps`);
     try {
-      return stepOf(raw, n, { accounts, live });
+      return stepOf(raw, n, { accounts, live, path });
     } catch (e) {
       if (!(e instanceof Refusal)) throw e;
       throw at(n, e.message);
@@ -349,6 +383,13 @@ export function parseRepro(list, { accounts, live }) {
     }
   });
 
+  if (path) {
+    let acted = false;
+    for (const s of steps) {
+      if (s.do === "trigger" && (acted || !(live.triggers[s.name] && live.triggers[s.name].seed === true))) throw at(s.n, "a path's trigger leads it and is marked seed: true in live.triggers");
+      if (s.as !== "system") acted = true;
+    }
+  }
   const finals = steps.filter((s) => s.final !== undefined);
   if (finals.length > 1) throw at(finals[1].n, "one final only");
   if (finals.length === 1 && finals[0] !== steps.at(-1)) throw at(finals[0].n, "final must be the last step");
@@ -357,6 +398,10 @@ export function parseRepro(list, { accounts, live }) {
     throw at(s.n, s.do === "trigger" ? "trigger changes state: an expect must follow before the next state-changing step" : `${s.do} changes state: an expect as ${s.as} must follow before its next action`);
   }
   const final = steps.at(-1);
+  if (path) {
+    if (!final.expect) throw at(final.n, "a path ends with an expect proving the journey's goal");
+    return { context, steps };
+  }
   if (final.final === undefined) throw at(final.n, "the last step must be an expect naming its oracle (final)");
   if (final.final === "claim-race") {
     const raced = Array.from({ length: groups }, (_, g) => steps.filter((s) => s.group === g + 1).map((s) => s.as.split(".")[0])).some((roles) => roles.some((r, i) => roles.indexOf(r) !== i));
@@ -367,6 +412,61 @@ export function parseRepro(list, { accounts, live }) {
     if (!before || before.expect !== "no-error" || before.as !== final.as) throw at(final.n, "interrupted-flow needs no-error right before its final");
   }
   return { context, steps };
+}
+
+/**
+ * The suite's accounts (spec §19.5) from live.json's roles → `{"<role>.<k>": user | null}`: a users role's
+ * k-th user is `<role>.<k>`; anon and a login-command role are `<role>.1` with no user. A path names its
+ * accounts so, and the generated suite signs the same ones in.
+ */
+export function suiteAccounts(live) {
+  const out = {};
+  for (const [role, r] of Object.entries(live.roles ?? {})) {
+    if (role === "anon" || (r && r.login)) out[`${role}.1`] = null;
+    else ((r && r.users) || []).forEach((u, i) => (out[`${role}.${i + 1}`] = u ? u.user : null));
+  }
+  return out;
+}
+
+/** A locator string (parseTarget's forms) → the DSL's target object; a ref or `locator()` refused. */
+function dslTarget(s) {
+  let t;
+  try {
+    t = parseTarget(s);
+  } catch {
+    refuse("not a target (a locator such as getByRole('button', { name: 'Pay' }))");
+  }
+  const of = (x) => {
+    if (x.ref !== undefined || x.css !== undefined) refuse(ACTION_TARGET);
+    const out = x.by === "role" ? { role: x.role } : { [x.by]: x.value };
+    for (const k of ["name", "exact", "nth"]) if (x[k] !== undefined) out[k] = x[k];
+    if (x.within) out.within = of(x.within);
+    return out;
+  };
+  return of(t);
+}
+
+/**
+ * What the explorer's return is checked with (spec §19.4, §19.9), for `validateReturn`'s `checks`: `parsePath`
+ * (a path in path mode against the slot's `accounts`), `healTarget` (a heal's new target: a locator string →
+ * the DSL's target, in the selector order an action takes; else throws its reason) and `healMax`.
+ */
+export function pathChecks({ accounts, live, healMax }) {
+  return {
+    healMax,
+    parsePath: (list) => parseRepro(list, { accounts, live, path: true }),
+    healTarget: (s) => {
+      if (typeof s !== "string") throw new Error("a heal's target is a locator string");
+      try {
+        const t = dslTarget(s);
+        pathTarget(targetOf(t), true, live);
+        return t;
+      } catch (e) {
+        if (e instanceof Refusal) throw new Error(e.message);
+        throw e;
+      }
+    },
+  };
 }
 
 /** A copy of `step` with every `{{name}}` in its string fields (its target and values included) replaced by `vars[name]`, a literal; a name `vars` lacks stays as written. */
@@ -408,6 +508,7 @@ const COMMON = `  const BLOCKED = ${BLOCKED_ERROR};
 const ACTION = `  const step = async () => {
     const L = T ? T(page) : null;
     if (L && !(await settle(async () => (await L.count()) > 0, P.settleMs))) return { ok: false, why: "missing-target" };
+    if (L && (await L.count()) > 1) return { ok: false, why: "ambiguous-target" };
     if (P.at) await pause(Math.max(0, P.at - Date.now()));
     let changed = false;
     let method = null;
@@ -453,8 +554,32 @@ const ACTION = `  const step = async () => {
  * → `{held, observed, shown?, detail?}`, `observed` (decision 8) `absent`, `hidden`, `visible`, `disabled`,
  * `differs`, `count:<k>`, or `error` when the last poll threw (a strict-mode violation, a page gone): the
  * runner never counts that as reproduced. `shown` is what the page showed (the URL, the count, the text). `no-error` only drains: the runner judges the account's errors.
+ * `layout` runs the layout oracle's own expression for `P.check` (argus-live-layout.mjs) and holds when it finds no violation
+ * less the rows in `P.skip`; with a target, only the violations whose key names the target (the name its ARIA snapshot
+ * gives, digit runs written `#`, or one inside it) count, and a target the page lacks is `error`: `violations:<k>` otherwise,
+ * `shown` the keys.
  */
-const EXPECT = `  const judge = async () => {
+const EXPECT = `  const layout = async () => {
+    const found = await page.evaluate(P.expr);
+    const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.check === P.check && typeof f.key === "string" && !P.skip.some((s) => s.check === f.check && s.key === f.key));
+    let list = rows;
+    if (T) {
+      const L = T(page);
+      const n = await L.count();
+      if (n === 0) return { held: false, observed: "error", detail: "no target" };
+      if (n > 1) return { held: false, observed: "ambiguous", shown: n };
+      const first = (await L.ariaSnapshot({ timeout: 1000 })).split("\\n")[0];
+      const m = /^- [A-Za-z-]+ "(.*)"/.exec(first) || /^- [A-Za-z-]+: (.*)$/.exec(first);
+      const name = String(m ? m[1] : await L.innerText({ timeout: 1000 })).replace(/\\s+/g, " ").trim().replace(/[0-9]+/g, "#").slice(0, 60);
+      list = rows.filter((f) => {
+        const k = f.key.slice(f.key.indexOf("|") + 1, f.key.lastIndexOf("|"));
+        return k === name || (k !== "" && name.includes(k));
+      });
+    }
+    return list.length === 0 ? { held: true } : { held: false, observed: "violations:" + list.length, shown: list.slice(0, 20).map((f) => f.key) };
+  };
+  const judge = async () => {
+    if (P.kind === "layout") return await layout();
     if (P.kind === "url") {
       const u = new URL(page.url());
       return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
@@ -462,6 +587,7 @@ const EXPECT = `  const judge = async () => {
     const L = T(page);
     const n = await L.count();
     if (P.kind === "count") return n === P.value ? { held: true } : { held: false, observed: "count:" + n, shown: n };
+    if (n > 1) return { held: false, observed: "ambiguous", shown: n };
     if (P.kind === "hidden") return n === 0 || !(await L.isVisible()) ? { held: true } : { held: false, observed: "visible" };
     if (n === 0) return { held: false, observed: "absent" };
     const shown = await L.isVisible();
@@ -494,11 +620,13 @@ const EXPECT = `  const judge = async () => {
  * answer through `finish` — a throw too. A `login` (signed in through the driver) and the hooks (`trigger`,
  * `fact-equals`, `mail`, run through runHook) have no template.
  */
-export function stepCode(step, { settleMs, at = null, runOrigins }) {
+export function stepCode(step, { settleMs, at = null, runOrigins, skip = [] }) {
   const kind = step.do ?? step.expect;
   if (step.do === "login" || HOOKED.includes(kind)) throw new Error(`failed: ${kind} has no template`);
   const P = { kind, settleMs, at, runOrigins };
   for (const k of ["url", "value", "key"]) if (step[k] !== undefined) P[k] = step[k];
+  // The layout check runs as the oracle's own expression; `skip` ({check, key} rows: the journey's allowed and adopted ones) is data it is compared with.
+  if (kind === "layout") Object.assign(P, { check: step.check, skip: skip.map(({ check, key }) => ({ check, key })), expr: pageExpression("layout", { only: [step.check] }) });
   const T = step.target ? `(pg) => ${targetCode(step.target, "pg")}` : "null";
   const fail = step.do ? '{ ok: false, why: "error", detail: failure(e) }' : '{ held: false, observed: "error", detail: failure(e) }';
   return `async page => {\n  const P = ${JSON.stringify(P)};\n  const T = ${T};\n${HELPERS}${COMMON}${step.do ? ACTION : EXPECT}  try {\n    return await finish(await step());\n  } catch (e) {\n    return await finish(${fail});\n  }\n}\n`;
