@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Formate</title></head>
+<body>
+<main>
+<h1>Summen</h1>
+<p id="bad">Total 1,234.56 EUR</p>
+<p>Menge 1,234,567</p>
+<p id="good">Total 1.234,56 EUR</p>
+<p>Faellig am 13.02.2026 und am <span id="iso"></span></p>
+<p>Seite https://example.test/a/1,234.56 und kontakt 9,876.54@example.test</p>
+<input value="9,999.99" aria-label="Betrag">
+<code>8,888.88</code>
+<p translate="no">7,777.77</p>
+</main>
+<script>document.getElementById("iso").textContent = ["2026", "02", "13"].join("-");</script>
+</body></html>

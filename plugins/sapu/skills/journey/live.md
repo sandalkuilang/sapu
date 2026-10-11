@@ -70,13 +70,14 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `env` — the instance environment, names to strings. Every command gets only `PATH`, `USER`, `SHELL`, `TMPDIR`, `LANG`/`LC_*`, the `pass_env` names, `env`, the run's `COMPOSE_PROJECT_NAME`, its own empty `HOME` and its own Docker client. `env`, `pass_env` and a start entry's `env` may not name `HOME`, `COMPOSE_PROJECT_NAME`, `DOCKER_CONFIG`, `DOCKER_HOST` or `DOCKER_CONTEXT`.
 - `pass_env` — names passed through from the owner's environment (an npm cache, a proxy): the owner's choice to share them.
 - `store` — the one datastore `reset` may touch; never one the contract's `guard.postgres` protects. `store_check` — a shell command printing the store the app's own configuration resolves to: it must print `store`, under the instance environment and under each start entry's. `reset` — a shell command recreating the store's synthetic data. `/sapu:init` never invents either command.
-- `facts` — `{argv, args}`: prints an object's facts (status coherence on server-rendered pages). `mail` — `{argv}`: prints the run's mail as a JSON array of `{to, subject, text}`. `triggers` — `{<name>: {argv, args}}`: the commands a `system` step runs (a scheduler, webhook, queue or expiry). No shell: each value replaces one placeholder (`{1}`, `{2}`…) and must match that placeholder's regex in `args` (a default one when `args` has none); a leading `-` is refused whatever the regex.
+- `facts` — `{argv, args}`: prints an object's facts (status coherence on server-rendered pages). `mail` — `{argv}`: prints the run's mail as a JSON array of `{to, subject, text}`. `triggers` — `{<name>: {argv, args}}`: the commands a `system` step runs (a scheduler, webhook, queue or expiry). No shell: each value replaces one placeholder (`{1}`, `{2}`…) and must match that placeholder's regex in `args` (a default one when `args` has none); a leading `-` is refused whatever the regex. `seed: true` marks one a smoke path may start with.
 - `confirmed` — `{"mocks": true, "data": true}`, the owner's two statements (below); anything else is refused.
 - `allow_origins` — full origins (`scheme://host:port`, never a bare host) pages may load from, such as a font CDN.
 - `port_range` — `[low, high]`, required whenever a `{port:<name>}` is used. `reserved_ports` — the repo's dev and E2E ports, never allocated.
 - `login_spacing_ms` — 0 to 60 000 between the proving logins. `timezone` — an IANA zone; `locale` — a BCP 47 tag.
 - `fixtures` — a repo-relative directory (no absolute path, no `..`) holding the files `upload` may use.
 - `roles` — below. `viewports` — widths from 200 to 4000; the first is the explorers'. `locales` — the locales the viewport-and-locale oracle repeats a critical step in.
+- Smoke suite: `test_id_attribute` — the app's test-id attribute (`data-testid`); `pseudo_locales` — codes the app serves as pseudo-locales (`en-XA`); `tokens` — `{css|json: <tracked file>}`, its design tokens, read from the repo's root when the suite runs.
 - `settle_ms` — 0 to 120 000: how long anything judged missing is waited for.
 - `prohibited` — actions the explorer must never take, copied into its charter.
 - `limits` — below.
@@ -96,7 +97,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 
 ## Roles
 
-`roles.<name>`: names match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<k>` names an account). `anon` is reserved for the signed-out visitor and is `{}`; `system` is reserved for scheduled and external steps; the wrapper's role-free commands `submit`, `code`, `trigger`, `facts` and `mail` are not role names. Every other role signs in by exactly one of:
+`roles.<name>`: names match `^[a-z][a-z0-9_-]*$` (no `.`: `<role>.<k>` names an account). `anon` is reserved for the signed-out visitor and is `{}`; `system` is reserved for scheduled and external steps; the wrapper's role-free commands `submit`, `code`, `trigger`, `facts`, `mail` and `source` are not role names. Every other role signs in by exactly one of:
 - `users` — a non-empty list of `{user, password, totp_secret?}`: `user` written literally (SELECT prints the accounts), `password` and `totp_secret` as `${NAME}`. Account `<role>.<k>` is the k-th user, from 1.
 - `login` — `{"command": <command>}`, run at every session open, printing a fresh Playwright storage state (`{cookies, origins}`). One journey a cycle may use such a role.
 

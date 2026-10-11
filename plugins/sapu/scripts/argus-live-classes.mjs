@@ -5,8 +5,8 @@
 /** Every journey issue's last labels (spec §10). */
 const ALWAYS = ["argus", "found-by:user"];
 
-/** Class A: a `bug` whose starting severity follows from the facts given. */
-const bug = (severity, because) => ({ kind: "bug", severity, because });
+/** Class A: a `bug` whose starting severity follows from the facts given; `owner` adds the needs-owner label. */
+const bug = (severity, because, { owner = false } = {}) => ({ kind: "bug", severity, because, owner });
 /** A heuristic oracle: B(a) under a written rule, else heuristic and needs-owner; at most S3 either way. */
 const heuristic = (name) => ({ kind: "heuristic", name });
 
@@ -51,6 +51,13 @@ export const CLASSES = {
     () => "by outcome",
     () => "viewport or locale: rated by its outcome, as argus rates",
   ),
+  // Spec §19.9: an expectation a suite path held now fails. Only the owner can tell it from an intended
+  // product change, which must never be "fixed" back.
+  regression: bug(
+    (f) => (f.money ? "S2" : "S3"),
+    (f) => (f.money ? "regression on a money journey" : "regression, not on a money journey"),
+    { owner: true },
+  ),
 };
 
 /**
@@ -68,5 +75,5 @@ export function classify({ oracle, money = false, stock = false, movedTwice = fa
       : { cls: "heuristic", labels: ["ux", "workflow", needsOwner, ...ALWAYS], severity: "at most S3", because: `${row.name} with no written rule` };
   }
   const facts = { money, stock, movedTwice, actedOn };
-  return { cls: "A", labels: ["bug", ...ALWAYS], severity: row.severity(facts), because: row.because(facts) };
+  return { cls: "A", labels: ["bug", ...(row.owner ? [needsOwner] : []), ...ALWAYS], severity: row.severity(facts), because: row.because(facts) };
 }

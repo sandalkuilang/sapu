@@ -65,7 +65,9 @@
 //   /storage      signed in: sets localStorage.jwt (32 hex) and localStorage.theme ("dark-mode-on"),
 //                 fetches /api/me with the first bearer, /api/reset/<x> and /api/items/<id>, and
 //                 /api/me again 2000 ms after load with the second bearer; nothing of it is rendered
-//                 but, with ?show=1, the second bearer once that fetch answered.
+//                 but, with ?show=1, the second bearer once that fetch answered (then GET /api/shown).
+//                 With ?hold=1 that second fetch waits for /api/hold instead of the 2000 ms: a test
+//                 decides when the page asks with it (POST /__test/release).
 //                 Both bearers and the jwt are 32 random hex chosen at the app's start, kept in
 //                 $DATA_DIR/bearer.json ({bearers: [first, second], jwt}) for the tests to read
 //   /api/me, /api/reset/<x>, /api/items/<id>
@@ -78,9 +80,11 @@
 //                 stale-view (approve accepts any status), orphaned (the inbox also lists cancelled
 //                 orders), dead-end ("Ship" rendered disabled), narrow-viewport ("Place order" hidden
 //                 below 500 px wide by a media query)
-//   POST /__test/expire, GET /__test/stats
+//   /api/hold     signed in: answers {"ok": true} once POST /__test/release was called (held until then)
+//   POST /__test/expire, GET /__test/stats, POST /__test/release
 //                 with header x-test-control: $CONTROL_TOKEN only (else 404): drop every session; the
-//                 request counts ({"<METHOD> <path>": n}) and the number of orders
+//                 request counts ({"<METHOD> <path>": n}) and the number of orders; answer every held
+//                 /api/hold, and every later one at once
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -253,6 +257,8 @@ const loginForm = (token, { action = "/login", user = null } = {}) =>
 const pre = new Map();
 const failures = new Map();
 const counts = {};
+/** /api/hold: its held responses, until POST /__test/release. */
+const hold = { released: false, held: [] };
 
 function cookies(req) {
   const out = {};
@@ -488,9 +494,20 @@ async function handle(req, res) {
   if (p.startsWith("/__test/")) {
     const token = process.env.CONTROL_TOKEN;
     if (!token || req.headers["x-test-control"] !== token) return send(res, 404, "");
+    // Each control request on a connection of its own: a test polling these on a loaded machine never reuses a
+    // keep-alive connection the server is closing at that moment.
+    res.shouldKeepAlive = false;
     if (req.method === "POST" && p === "/__test/expire") {
       writeJson("sessions.json", {});
       return send(res, 200, "expired");
+    }
+    if (req.method === "POST" && p === "/__test/release") {
+      hold.released = true;
+      for (const r of hold.held.splice(0)) {
+        r.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        r.end(JSON.stringify({ ok: true }));
+      }
+      return send(res, 200, "released");
     }
     if (req.method === "GET" && p === "/__test/stats") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -626,7 +643,8 @@ const me = (b) => fetch("/api/me", { headers: { authorization: "Bearer " + b } }
 me(${js(first)});
 fetch("/api/reset/rk7b6a5c4d3e2f1g0h9i8j7k6");
 fetch("/api/items/ck9a8b7c6d5e4f3g2h1i0j9k8");
-setTimeout(() => me(${js(second)})${url.searchParams.get("show") === "1" ? `.then(() => document.querySelector("main").insertAdjacentHTML("beforeend", "<p>Second: " + ${js(second)} + "</p>"))` : ""}, 2000);`;
+const later = () => me(${js(second)})${url.searchParams.get("show") === "1" ? `.then(() => { document.querySelector("main").insertAdjacentHTML("beforeend", "<p>Second: " + ${js(second)} + "</p>"); fetch("/api/shown"); })` : ""};
+${url.searchParams.get("hold") === "1" ? "fetch(\"/api/hold\").then(later);" : "setTimeout(later, 2000);"}`;
       return send(res, 200, page("Storage", `<p>Stored.</p><script>${script}</script>`, { user }));
     });
   }
@@ -634,6 +652,8 @@ setTimeout(() => me(${js(second)})${url.searchParams.get("show") === "1" ? `.the
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
     res.end(JSON.stringify(value));
   };
+  if (p === "/api/hold" && req.method === "GET") return signedIn(() => (hold.released ? json(200, { ok: true }) : hold.held.push(res)));
+  if (p === "/api/shown" && req.method === "GET") return signedIn(() => json(200, { ok: true }));
   if (p === "/api/me" && req.method === "GET") return signedIn(() => json(200, { user }));
   if (/^\/api\/reset\/[A-Za-z0-9]+$/.test(p) && req.method === "GET") return signedIn(() => json(200, { ok: true }));
   m = p.match(/^\/api\/items\/([A-Za-z0-9]+)$/);

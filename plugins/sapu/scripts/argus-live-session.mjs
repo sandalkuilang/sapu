@@ -10,6 +10,7 @@ import { openSession, SIGNAL_SCRIPT } from "./argus-live-browser.mjs";
 import { closeSessions, runCli, sessionAlive, sessionName } from "./argus-live-cli.mjs";
 import { loadLive } from "./argus-live-config.mjs";
 import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-ledger.mjs";
+import { activeSink, measure, PERF_SCRIPT } from "./argus-live-perf.mjs";
 import { commandLogin, login, loginCode, loginPlan, runCode } from "./argus-live-login.mjs";
 import { run, runAsync } from "./argus-live-proc.mjs";
 import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
@@ -123,7 +124,9 @@ function logProbe(main, runId, entry) {
  *   parameter) replaces it.
  * - `cli(args, timeoutMs)`: one CLI call in the slot's directory, under the run's browser HOME;
  *   `stage(which, payload)` a login stage (loginCode) and `code(text, timeoutMs)` a template the caller
- *   built, each through runCode.
+ *   built, each through runCode. A driver made while a perf pass measures (argus-live-perf's activeSink)
+ *   hooks the perf script beside the signal script, and its `code` is measured (perf's `measure`): a snapshot
+ *   after load, the step, a snapshot of what it left; a stage never is.
  * - `ensure()` → `{record, opened, events}`: the recorded session with a daemon, else one opened now
  *   (stillLive; a login-command role's with the storage state commandLogin wrote, which signs it in;
  *   openSession) and hooked: the `hook` stage with the run's origins, the signal script and `capBytes`
@@ -153,6 +156,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   const plan = loginPlan(live, role);
   const name = sessionName(runId, slot, account);
   const home = () => browserHome(rec);
+  const perf = activeSink();
   let record = null;
   const d = {
     name,
@@ -168,9 +172,10 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
         return u ? { user: u.user, password: u.password, totpSecret: u.totp_secret ?? null, created: false } : null;
       }),
     cli: (args, timeoutMs = plan.settleMs + 60_000) => runCli({ js, session: name, args, cwd: dir, home: home(), timeoutMs, runner: cliRunner }),
-    stage: (which, payload) => d.code(loginCode(which, payload)),
-    code: (text, timeoutMs = 4 * plan.settleMs + 60_000) => runCode({ js, session: name, cwd: dir, home: home(), code: text, timeoutMs, runner: cliRunner }),
+    stage: (which, payload) => raw(loginCode(which, payload)),
   };
+  const raw = (text, timeoutMs = 4 * plan.settleMs + 60_000) => runCode({ js, session: name, cwd: dir, home: home(), code: text, timeoutMs, runner: cliRunner });
+  d.code = perf ? measure(perf, { account, raw, waitMs: plan.settleMs }) : raw;
   /** Opens the session (a login-command role's with a fresh storage state, which signs it in) and hooks it → the hook's events. */
   const open = async () => {
     stillLive(main, runId); // an up --fresh or a down may have begun while this call waited
@@ -180,7 +185,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     d.state = { signedIn: Boolean(storageState) };
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
     try {
-      await d.stage("hook", { runOrigins, signals: SIGNAL_SCRIPT, capBytes });
+      await d.stage("hook", { runOrigins, signals: perf ? `${SIGNAL_SCRIPT};\n${PERF_SCRIPT}` : SIGNAL_SCRIPT, capBytes });
       return [];
     } catch {
       if (markUnhooked) appendLedger(main, runId, [{ c: "incomplete", v: `${name} unhooked` }]);

@@ -51,6 +51,20 @@ export function ledgerFile(main, runId) {
   return path.join(logsDir(main, runId), "secrets.jsonl");
 }
 
+/**
+ * The newest run under `.argus/live/` that keeps a secret ledger, or null: the run a check of text that carries no
+ * run's page values reads (a map run keeps none, so the newest run may have none).
+ */
+export function newestLedgerRun(main) {
+  let names = [];
+  try {
+    names = fs.readdirSync(liveDir(main)).filter((n) => RUN_ID.test(n));
+  } catch {
+    names = [];
+  }
+  return names.sort().reverse().find((n) => fs.existsSync(ledgerFile(main, n))) ?? null;
+}
+
 /** The ids the run's pages saw: `<logsDir>/seen.jsonl`. */
 export function seenFile(main, runId) {
   return path.join(logsDir(main, runId), "seen.jsonl");

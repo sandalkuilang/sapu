@@ -1,0 +1,10 @@
+/* The fixture's design tokens. */
+:root {
+  --color-text: #0b1b3a;
+  --color-brand: #0b5fff;
+  --color-on-brand: #ffffff;
+  --color-surface: #ffffff;
+  --brand-alias: var(--color-brand);
+  --font-body: Helvetica, Arial, sans-serif;
+  --size-body: 1rem;
+}

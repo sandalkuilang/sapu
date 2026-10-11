@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Empty states</title></head>
+<body>
+<main>
+<section>
+<h2>Orders</h2>
+<!-- the violation: a header and no rows, and no words anywhere near it -->
+<table aria-label="Orders"><thead><tr><th>Number</th><th>Total</th></tr></thead><tbody></tbody></table>
+</section>
+<section>
+<h2>Returns</h2>
+<!-- the excluded twin: the same table with an empty-state message -->
+<p>No returns yet. They show up here once a customer asks for one.</p>
+<table aria-label="Returns"><thead><tr><th>Number</th><th>Reason</th></tr></thead><tbody></tbody></table>
+</section>
+<section>
+<h2>Messages</h2>
+<ul aria-label="Messages"></ul>
+</section>
+<section>
+<h2>Tasks</h2>
+<ul aria-label="Tasks"><li>Ship order A-1</li></ul>
+</section>
+</main>
+</body></html>
