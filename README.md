@@ -228,7 +228,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 | **Journey lane** | Runs on an instance of its own (worktree, ports, data and HOME), never on your servers. Its explorer agent runs nothing but the lane's browser wrapper and reads page text only as fenced data. A finding is filed only after a script reproduced it twice and `scrub` found no secret the run saw in it. The smoke suite changes your repo only through pull requests you merge, and its CI workflow runs read-only with pinned actions. The Curator, the agent that judges the lane's screenshots, has no tool but Read, confined to its own run's taste files. |
 
 > [!IMPORTANT]
-> The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token. Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#day-to-day).
+> The guard hook reads commands, not intent: built to stop honest mistakes, it is not a sandbox. It guards **subagents only**: a skill you start yourself runs at the top level, unguarded, with your gh token (the main session is checked only for the checkout it dispatches agents from and for a GitHub token written into a command line). Details: [Safety and trust](docs/security.md) and [what is enforced, and by what](docs/usage.md#day-to-day).
 
 ## Docs
 

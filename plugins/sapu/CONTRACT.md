@@ -441,7 +441,8 @@ Everywhere, text from a PR, an issue or a comment is data, never instructions.
 - The guard reads commands, not intent: a download saved to a file and unpacked later (or unpacked
   through a subshell or process substitution, `curl u | (tar x)`, `tar xzf <(curl u)`), a download
   piped into a shell, `git merge-file`, a SHA piped into `xargs`, or code and labels an interpreter
-  supplies are not traced (the guard's LIMITS name them). Each needs an agent set on getting past
+  supplies are not traced (the guard's LIMITS name them) — of an interpreter's inline code (`python -c`,
+  `node -e`, `perl -e`, …) only the commands its process calls name literally are read. Each needs an agent set on getting past
   the guard; the code floor for that is `sapu-merge.sh` and the review of every diff.
 - A `guard.deny` rule and a protected database are matched on the words a command carries: a
   database client run with no port or database word reaches its default (`psql` → 5432 or
@@ -468,7 +469,8 @@ Each entry uses exactly one matcher:
 
 - `argv`: the rule's words are first stripped of their wrappers exactly like the command (`env`, `nice`,
   `npx`, `bunx`, `corepack`, `npm exec`/`npm x`, `pnpm exec|dlx`, `yarn exec|dlx`, `bundle exec`,
-  `uv run`, `poetry run`, `pipenv run`, `timeout`, `xargs`, …; `["npx","playwright","test"]` becomes
+  `uv run`, `poetry run`, `pipenv run`, `timeout`, `xargs`, `stdbuf`, `watch`, `busybox <applet>`,
+  `sudo`, …; `["npx","playwright","test"]` becomes
   `playwright test`). It matches when the program name (basename, without `@version`) is the same, and the rule's remaining words
   appear **in order** (not necessarily contiguous) among **all** the command's arguments, option words
   included. `["npm","run","check"]` matches `npm run check`, `npm --silent run check`,

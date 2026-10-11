@@ -616,7 +616,7 @@ The script deletes a local branch only when both hold:
 - **It is one of sapu's own:** `<type>/issue-<N>-…` (a worker's branch), `worktree-wf_*`, `worktree-agent-*` or `sapu-*`.
 - **Every commit of it is proven merged:** its tip is in the base branch, or its tip is (or is an ancestor of) the head of a PR merged into the base. Nothing weaker counts: a merged PR with the same name or a closed issue would lose a reused name, a later local commit or a second attempt. Every deleted branch keeps its tip under `refs/sapu-trash/<branch>` (hidden from `git branch`; `git branch <name> refs/sapu-trash/<name>` brings it back).
 
-It never touches the base branch, the branch the main checkout is on, a branch with an open PR, or a branch it cannot prove merged. A branch's worktree is removed only when it has no uncommitted or untracked change, no ignored env file (`.env*`), is not the script's own directory and saw no git activity in the last hour (never `--force`); otherwise the branch stays too. With policy `cleanup: "never"` the script refuses to run.
+It never touches the base branch, the branch the main checkout is on, a branch with an open PR, or a branch it cannot prove merged. A branch's worktree is removed only when it has no uncommitted or untracked change, no ignored env file (`.env*`), no agent memory written inside it, is not the script's own directory and saw no git activity in the last hour (never `--force`); otherwise the branch stays too. The agent-memory link Claude Code puts in a worktree (set up by `/sapu:init`) is not a change: removing the worktree removes only the link. With policy `cleanup: "never"` the script refuses to run.
 
 ### Updating the plugin
 
@@ -647,6 +647,16 @@ claude plugin list --json
 ```
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
+
+#### Upgrading from a version before 2.12.0
+
+Start a new session, then run `/sapu:init` once in each repo: it now verifies with `git check-ignore` that the agent-memory links it sets up are ignored, and leaves out one the repo's own ignore files take back.
+
+What behaves differently:
+- **The guard sees through more wrappers:** `stdbuf`, `watch` (its words also read as the `sh -c` text it runs), `busybox`/`toybox <applet>` (`busybox sh -c …`), `setsid`, `unbuffer`, `ionice`, `taskset`, `chrt`, `flock` (`flock -c` too), `sudo`, `doas`, `time` with its options, and coreutils' g-prefixed names (`gtimeout`, `gstdbuf`, `genv`). A heredoc fed to a shell through a wrapper (`env bash <<EOF`) is read like one fed to `bash`.
+- **An interpreter's inline code is read for the commands it runs:** `python -c`, `perl -e`, `ruby -e`, `node`/`bun`/`tsx -e|-p`, `deno eval`, `php -r`, and a heredoc fed to one (`python3 - <<EOF`): the string a process call runs, a list of literals as the argv it is (`subprocess.run(["sh", "-c", "…"])`), and perl, ruby and php backticks and `qx`/`%x`. Code that only prints or parses passes as before.
+- **A GitHub token written into a command line is refused in every session,** the main one included (`export GH_TOKEN=gho_…`, a token in a URL or a header): `ps`, the shell snapshot and the transcript keep it. Let the shell fetch it at run time: `GH_TOKEN=$(gh auth token --user <name>) gh …`.
+- **The cleanup script** counts the agent-memory link Claude Code puts in a worktree as no change and removes only the link, never the main checkout's memory behind it; it keeps a worktree whose own `.claude/agent-memory/` holds notes written there.
 
 #### Upgrading from a version before 2.11.0
 
@@ -770,6 +780,7 @@ Then check one repo: in a session there, `/sapu:init`'s preflight reports the ac
 | `active gh account is "…", the contract needs "…"` | The active `gh` account is wrong. Switch it yourself with `gh auth switch --user <the contract's ghUser>`, then try again. |
 | A `senior-dev-team:…` agent is not found | The dependency is missing or disabled. Run `claude plugin install senior-dev-team@sapu` (`--scope user` to use it in every project, `--scope project` for this repo only), then start a new session. `claude plugin update` does not install it. |
 | `… moves the session's cwd into the linked worktree …` or `an Agent call starts its agents in your cwd …` | The main session tried to `cd` into a worktree (or dispatch from one). Agents start in the session's cwd and take their project memory from that checkout, so their notes would land in a worktree and be lost with it. Run worktree commands as `git -C <wt> …` or `( cd <wt> && … )`. `/sapu:init` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` in `.claude/settings.local.json`, which makes Claude Code reset the cwd after every command (from the next session); the guard then skips its `cd` check. |
+| `a GitHub token written into a command line leaks …` | A command held a literal token (`ghp_…`, `gho_…`, `github_pat_…`). Every session is refused it, yours too: `ps`, the shell snapshot and the transcript would keep it. Let the shell fetch it at run time (`GH_TOKEN=$(gh auth token --user <name>) gh …`), and revoke a token that was written out. |
 | A lane stops with a "canary" reason | The guard hook is not active. Make sure `claude plugin list` shows `sapu@sapu` enabled at project scope, then start a new session. |
 | The wave log shows `WARNING #…: step budget off — …` | The guard is live, but it cannot count that worker's tool calls, so no hand-off reminder comes and a long worker grows its context unchecked. `off: this hook input carries no agent_id` = this Claude Code version does not pass `agent_id` to the hook of a Workflow agent (update Claude Code); `off: … sapu-steps cannot be written` = fix that path's permissions; `off: no step_budget in its return` = the worker did not report what the canary told it (read its trail). The sweep goes on. The first sweep after an upgrade is the check: no such line means the budget counts. |
 | A lane's issue blocked with `PR #… fails pr-trust: … no reviewer dispatched` | The worker's own `pr-trust` check refused its PR, usually a `#` written in prose (`invariant #6`) that names an issue outside the trusted set. Edit the PR body (`invariant 6`, or put the number in backticks); the next session's Phase A picks the PR up. |
