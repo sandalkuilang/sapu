@@ -151,18 +151,20 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     const t = cycle();
     judged(t, [
       row(1, { rule: "copy.broken", class: "implicit", key: "p.status", measured: "undefined", expected: 0, witnesses: [] }),
-      row(2, { rule: "efficiency.klm", class: "derived", screen: LIST, key: "path", measured: 41.5, expected: 31.5, witnesses: [], cost: 10 }),
+      row(2, { rule: "density.row-heights", class: "derived", screen: LIST, key: "tables", measured: 41.5, expected: 31.5, witnesses: [], cost: 10 }),
+      // An efficiency row is information only until proven: never filed.
+      row(4, { rule: "efficiency.klm", class: "derived", screen: LIST, key: "path", measured: 41.5, expected: 31.5, witnesses: [], cost: 10 }),
       row(3, { rule: "hierarchy.primary-actions", class: "bar", key: "main", measured: 3, expected: 1, witnesses: [{ kind: "band", value: 1, from: "p90" }, { kind: "peer", value: 1, from: LIST }], cost: 12.5 }),
     ]);
     const gh = fakeGh();
     const r = await file(t, gh);
     expect(r.code).toBe(0);
     const made = gh.created();
-    expect(made.map((c) => c.title)).toEqual([`${tk("hierarchy.primary-actions", ORDER)} — primary_actions 3 → 1`, `${tk("efficiency.klm", LIST)} — klm_s 41.5 → 31.5`, `${tk("copy.broken", ORDER)} — broken_tokens`]);
+    expect(made.map((c) => c.title)).toEqual([`${tk("hierarchy.primary-actions", ORDER)} — primary_actions 3 → 1`, `${tk("density.row-heights", LIST)} — table_row_heights 41.5 → 31.5`, `${tk("copy.broken", ORDER)} — broken_tokens`]);
     // Ranked by severity, then cost (12.5 before 10 before none); every one S3.
     const labels = Object.fromEntries(made.map((c) => [c.title.split(" ")[0], c.labels]));
     expect(labels[tk("copy.broken", ORDER)]).toEqual(["bug", "ux", "argus", "found-by:user", "severity:s3", "sapu:agent-filed"]);
-    expect(labels[tk("efficiency.klm", LIST)]).toEqual(["bug", "ux", "argus", "found-by:user", "severity:s3", "sapu:agent-filed"]);
+    expect(labels[tk("density.row-heights", LIST)]).toEqual(["bug", "ux", "argus", "found-by:user", "severity:s3", "sapu:agent-filed"]);
     expect(labels[tk("hierarchy.primary-actions", ORDER)]).toEqual(["ux", "argus", "found-by:user", "severity:s3", "sapu:agent-filed"]);
     // The body: Viewport, Measured (value → expected, the witnesses, the bar version), the citation, the rows fenced as data.
     const body = made[0].body as string;

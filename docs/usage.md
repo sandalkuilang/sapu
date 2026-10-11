@@ -556,6 +556,8 @@ Efficiency is measured per journey, from the lane's deterministic paths. Every e
 
 The *best known path* is the journey's path in your smoke suite that held (an explorer's own path never replaces it). An explorer path with at least three times the best path's actions, or at least 10 s more `klm_s`, is an efficiency row, but only a candidate: it is confirmed only when the best path no longer holds with the same expectations. While the best path holds, a longer explorer path is a detour and not a finding. A journey with no path in the suite has nothing to compare with, so it has figures but no efficiency rows.
 
+**Information only, for now.** `efficiency.actions` and `efficiency.klm` ship as information rules: the judge computes and the scorecard shows the figures, but makes no row and files nothing, and neither can gate. An explorer's path is not yet minimized before it is compared, nor its typed values priced by the best path's, so a longer path could still be the explorer's detour; the rules become findings once that proof is wired.
+
 #### The calibrated bar
 
 The bar is a versioned file in the plugin, `plugins/sapu/data/taste-bar.json`: the 47 rules and their thresholds and sources, the reference frames, and per-archetype *bands*. A band is the 10th, 50th and 90th percentile of one metric across public pages, with the number of pages and sites measured and their URLs. It holds numbers only. A suite and a report name the bar version they used.

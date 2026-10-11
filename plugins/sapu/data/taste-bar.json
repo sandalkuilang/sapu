@@ -89,8 +89,8 @@
     { "id": "ai.stop", "family": "ai", "class": "derived", "metric": "streams_without_stop", "threshold": { "max": 0 }, "cite": ["teams-streaming", "aisdk-chat"], "gate": false },
     { "id": "ai.error", "family": "ai", "class": "derived", "metric": "errors_without_way_on", "threshold": { "max": 0 }, "cite": ["aisdk-chat", "apple-genai"], "gate": false },
     { "id": "ai.regenerate", "family": "ai", "class": "derived", "metric": "answers_without_regenerate", "threshold": { "max": 0 }, "cite": ["aisdk-chat"], "gate": false },
-    { "id": "efficiency.actions", "family": "efficiency", "class": "derived", "metric": "actions", "threshold": { "ratio": 3 }, "cite": ["klm"], "gate": false },
-    { "id": "efficiency.klm", "family": "efficiency", "class": "derived", "metric": "klm_s", "threshold": { "plus_s": 10 }, "cite": ["klm", "fitts-mackenzie", "nng-fitts"], "gate": false }
+    { "id": "efficiency.actions", "family": "efficiency", "class": "derived", "metric": "actions", "threshold": { "ratio": 3 }, "cite": ["klm"], "gate": false, "info": true },
+    { "id": "efficiency.klm", "family": "efficiency", "class": "derived", "metric": "klm_s", "threshold": { "plus_s": 10 }, "cite": ["klm", "fitts-mackenzie", "nng-fitts"], "gate": false, "info": true }
   ],
   "frames": {
     "atlassian": { "cite": ["atlassian"], "spacing": { "range": [0, 80], "step": 8 }, "durations": { "range": [50, 400] }, "layers": 4 },

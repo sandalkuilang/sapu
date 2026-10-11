@@ -578,6 +578,11 @@ afterEach(() => {
 
 /** A band of `metric` as calibration writes it: `sites` sites, `n` pages, its percentiles. */
 const band = (p10: number, p50: number, p90: number, { sites = 6, n = 20 } = {}) => ({ n, sites, p10, p50, p90, urls: Array.from({ length: Math.min(n, 3) }, (_, i) => `https://example.test/${i}`) });
+/** The plugin's bar with its efficiency rules as they will be once proven (the shipped bar holds them information only). */
+const provenEfficiency = () => {
+  const real = JSON.parse(readFileSync(join(__dirname, "../plugins/sapu/data/taste-bar.json"), "utf8"));
+  STAND_IN.bar.current = { ...real, rules: real.rules.map((r: Obj) => (r.family === "efficiency" ? Object.fromEntries(Object.entries(r).filter(([k]) => k !== "info")) : r)) };
+};
 /** The plugin's bar with `archetypes` in place (lane K's calibration, stood in). */
 const barWith = (archetypes: Obj) => {
   STAND_IN.bar.current = null;
@@ -779,6 +784,7 @@ describe("argus-live taste judge (J2)", () => {
   }, 30_000);
 
   it("the best known path is kept, and replaced only by a held shorter path; a path at 3× its actions is an efficiency row", async () => {
+    provenEfficiency();
     const t = judgeRepo();
     t.put(1, [t.screen("/orders/new")]);
     const smokeDir = join(t.main, "e2e/argus-smoke/journeys");
@@ -1025,6 +1031,7 @@ describe("argus-live taste confirm (J2)", () => {
   });
 
   it("an efficiency row replays the best known path: confirmed only when it no longer holds", async () => {
+    provenEfficiency();
     const t = judgeRepo();
     t.put(1, [t.screen("/orders/new")]);
     writeFileSync(join(t.main, ".argus/smoke.json"), "{}");

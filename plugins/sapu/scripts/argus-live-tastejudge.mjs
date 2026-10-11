@@ -455,8 +455,9 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
       const actions = rules.get("efficiency.actions");
       const klm = rules.get("efficiency.klm");
       const base = { journey: id, screen: first.key, key: id, witnesses, cost: more > 0 ? more : null, confirmed: null };
-      if (actions && !off.has(actions.id) && cost.actions >= actions.threshold.ratio * entry.best.actions) push({ ...base, rule: actions.id, class: actions.class, measured: cost.actions, expected: actions.threshold.ratio * entry.best.actions });
-      if (klm && !off.has(klm.id) && more >= klm.threshold.plus_s) push({ ...base, rule: klm.id, class: klm.class, measured: round(cost.klm_s), expected: round(entry.best.klm_s + klm.threshold.plus_s) });
+      // Information only until proven (the phase-end review): the figures are shown, an efficiency row is never made.
+      if (actions && !actions.info && !off.has(actions.id) && entry.best.actions >= 1 && cost.actions >= actions.threshold.ratio * entry.best.actions) push({ ...base, rule: actions.id, class: actions.class, measured: cost.actions, expected: actions.threshold.ratio * entry.best.actions });
+      if (klm && !klm.info && !off.has(klm.id) && more >= klm.threshold.plus_s) push({ ...base, rule: klm.id, class: klm.class, measured: round(cost.klm_s), expected: round(entry.best.klm_s + klm.threshold.plus_s) });
     }
     state.journeys[id] = { ...entry, judged: runId };
   }
