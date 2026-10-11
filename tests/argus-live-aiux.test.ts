@@ -14,7 +14,11 @@ import { browserTools, cleanTemps, committed } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { AI_EXPECTED, AI_MARKER, AIUX_DRIVE, AIUX_FAULT, AIUX_INIT, AIUX_SOURCE, driveArg, faultArm, ruleExpression, rulesFor } from "../plugins/sapu/scripts/argus-live-aiux.mjs";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { TASTE_WORLD } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_NET, WORLD_EVAL, WORLD_INSTALL } from "../plugins/sapu/scripts/argus-live-world.mjs";
+// @ts-expect-error — plain ESM script without types
+import { TASTE_INIT } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_LANE_ONLY } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -24,7 +28,7 @@ import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
 import { keepScreen, RECORDER, recorderPayload, tasteDir } from "../plugins/sapu/scripts/argus-live-session.mjs";
 // @ts-expect-error — plain ESM script without types
-import { FAMILIES, laneOnly, loadBar, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { FAMILIES, laneOnly, loadBar, TASTE_BUFFER, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
 import { confirmSink, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 
@@ -108,17 +112,28 @@ afterEach(async () => {
   for (const c of contexts.splice(0)) await c.close();
 }, 30_000);
 
-/** An assistant page (`query` its variant) in a fresh context whose documents run the lane's init payload; `fault` arms AIUX_FAULT first. */
-async function open(query = "", { file = "chat.html", fault = null as string | null } = {}) {
+/** The recorders in the page's own world, as a context without the lane's world would hold them (the request wrappers, EASE_NET, included). */
+const OWN_WORLD = [TASTE_BUFFER, TASTE_INIT, EASE_INIT, EASE_NET, AIUX_INIT].join(";\n");
+/**
+ * An assistant page (`query` its variant) in a fresh context whose documents run the recorders, in the page's own world
+ * (the probe's in-page sources read there), or with `world` in their own, as the session hook installs them; `fault`
+ * arms AIUX_FAULT first.
+ */
+async function open(query = "", { file = "chat.html", fault = null as string | null, world = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   contexts.push(context);
-  await context.addInitScript({ content: PAGE_INIT });
+  if (!world) await context.addInitScript({ content: OWN_WORLD });
   const page = await context.newPage();
+  if (world) await fnOf(WORLD_INSTALL)(context, TASTE_WORLD);
   const armed = fault === null ? null : await fnOf(AIUX_FAULT)(page, fault);
   await page.goto(`${origin}/${file}?${query}`);
   return Object.assign(page, { armed });
 }
-const screenOf = (page: any): Promise<Obj> => page.evaluate(`(${AIUX_SOURCE})(${JSON.stringify({ kind: "screen" })})`);
+/** The AI record of `page`, read where its recorder runs (the hook's world, when the page has one). */
+const screenOf = (page: any): Promise<Obj> => {
+  const expr = `(${AIUX_SOURCE})(${JSON.stringify({ kind: "screen" })})`;
+  return page.context().__argusWorld ? fnOf(WORLD_EVAL)(page, expr) : page.evaluate(expr);
+};
 /** The explorer's own walk: types and sends through real input, as the CLI does. */
 const ask = async (page: any, text = "Hello there") => {
   await page.fill("#box", text);
@@ -155,7 +170,9 @@ describe("argus-live-aiux.mjs — its shapes and registrations", () => {
       expect(laneOnly(BAR.rules.find((r: Obj) => r.id === id))).toBe("it reads the owner's declared AI surfaces");
       expect(TASTE_LANE_ONLY).toContain(id);
     }
-    expect(PAGE_INIT.indexOf(AIUX_INIT)).toBeGreaterThan(PAGE_INIT.indexOf(EASE_INIT));
+    // In the recorders' own world, after the feedback clock; the recorder's state a fixed property of the document.
+    expect(TASTE_WORLD.indexOf(AIUX_INIT)).toBeGreaterThan(TASTE_WORLD.indexOf(EASE_INIT));
+    expect(AIUX_INIT).toContain('Object.defineProperty(doc, "__argusAi", { value: Object.freeze(api), writable: false, configurable: false');
     for (const src of [AIUX_INIT, AIUX_SOURCE, AIUX_DRIVE, AIUX_FAULT, faultArm()]) {
       expect(src).not.toContain("${");
       expect(src).not.toContain("`");
@@ -427,7 +444,9 @@ describe("argus-live aiux — the lane's seams (Chrome, the real recorder, judge
     mkdirSync(join(main, ".argus"), { recursive: true });
     const T = recorderPayload({ main, runId, slot: 1, slotRec: { journey: "j" }, prev: null, settleMs: 1000 });
     expect(T).toMatchObject({ ai: AIUX_SOURCE, aiArg: { kind: "screen" } });
-    const page = await open("stop=none&regen=yes");
+    // The walk's page as the hook leaves it: the recorders in a world of their own, which RECORDER reads (T.world).
+    const page = await open("stop=none&regen=yes", { world: true });
+    expect(await page.evaluate("typeof document.__argusAi")).toBe("undefined");
     await ask(page);
     await answered(page);
     const answer = await fnOf(RECORDER)(page, { url: page.url(), aria: "x" }, T);
@@ -448,13 +467,13 @@ describe("argus-live aiux — the lane's seams (Chrome, the real recorder, judge
     // The confirmation's sink for that row: no arm, a drive; run its wrapped step code as the slot r driver does.
     const sink = confirmSink(ai[0], { routes: [], settleMs: 1000 });
     expect(sink.arm).toBe(null);
-    const fresh = await open("stop=none");
+    const fresh = await open("stop=none", { world: true });
     const out = sink.take(await fnOf(sink.wrap("async page => ({ step: 1 })"))(fresh));
     expect(out).toEqual({ step: 1 });
     expect(sink.measured).toEqual({ rows: [{ key: "stream", measured: "no stop control while it streamed" }] });
     // Twin: the same row replayed on a page with a working Stop is not measured again.
     const held = confirmSink(ai[0], { routes: [], settleMs: 1000 });
-    held.take(await fnOf(held.wrap("async page => ({ step: 1 })"))(await open("stop=button")));
+    held.take(await fnOf(held.wrap("async page => ({ step: 1 })"))(await open("stop=button", { world: true })));
     expect(held.measured).toEqual({ rows: [] });
   }, 150_000);
 
@@ -464,8 +483,8 @@ describe("argus-live aiux — the lane's seams (Chrome, the real recorder, judge
     expect(sink.arm).toBe(faultArm());
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     contexts.push(context);
-    await context.addInitScript({ content: PAGE_INIT });
     const page = await context.newPage();
+    await fnOf(WORLD_INSTALL)(context, TASTE_WORLD);
     expect(await fnOf(sink.arm)(page)).toEqual({ armed: true });
     await page.goto(`${origin}/chat.html?error=endless`);
     sink.take(await fnOf(sink.wrap("async page => ({ step: 1 })"))(page));

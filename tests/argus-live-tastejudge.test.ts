@@ -450,9 +450,12 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
     }
   }, 60_000);
 
-  /** Row `rule` on screen `screen`, a step that goes to `name`, the sink's wrap around it run on `page`, its answer taken. */
+  /**
+   * Row `rule` on screen `screen`, a step that goes to `name`, the sink's wrap around it run on `page`, its answer taken.
+   * The stand-in probes read the fixture pages' own scripts (`__standInFlags`), so the sink reads the page's own world.
+   */
   const confirmOn = async (page: Obj, rule: string, screen: string, name: string, { arm = true } = {}) => {
-    const sink = confirmSink({ row: "t1", journey: "j", rule, class: "implicit", screen, key: "k", measured: 1, expected: 0 }, { routes: [], settleMs: 5000 });
+    const sink = confirmSink({ row: "t1", journey: "j", rule, class: "implicit", screen, key: "k", measured: 1, expected: 0 }, { routes: [], settleMs: 5000, world: false });
     if (arm && sink.arm) expect(await new Function(`return ${sink.arm}`)()(page)).toEqual({ armed: true });
     const step = `async page => {\n  await page.goto(${JSON.stringify(`${base}/${name}/1234`)});\n  return { ok: true };\n}\n`;
     const answer = sink.take(await new Function(`return ${sink.wrap(step)}`)()(page));

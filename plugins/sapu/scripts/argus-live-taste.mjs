@@ -386,10 +386,11 @@ export const TASTE_SOURCE = String.raw`(arg) => {
 }`;
 
 /**
- * The motion recorder of the session hook's init payload (argus-live-browser.mjs PAGE_INIT): self-contained script
+ * The motion recorder of the taste recorders' world (argus-live-browser.mjs TASTE_WORLD): self-contained script
  * text, installed once a document. Each transition (run, start, end, cancel) and animation (start, end, cancel) goes
  * to the taste buffer through `document.__argusTastePush` (argus-live-tastecfg.mjs TASTE_EVENTS), timed by the
- * browser's own animation (`effect.getTiming()`); a view transition, which fires no event, is read at its `ready`.
+ * browser's own animation (`effect.getTiming()`); a view transition is one motion, read when its pseudo-elements'
+ * animations start (their own events: a world of its own sees them, and the page's startViewTransition is never wrapped).
  * For the census it also keeps `document.__argusTasteMotion` (the last 200): each motion's properties, whether
  * reduced motion was asked for and whether the census was switching media (quiet) when it began, and, for one
  * animating a layout property, how many other boxes it moved (sibling boxes up its ancestors, compared at its start
@@ -437,9 +438,21 @@ export const TASTE_INIT = String.raw`(() => {
     e.moved = differs(rects([snap.el])[0], snap.self) ? snap.before.filter((r, i) => snap.els[i].isConnected && differs(r, after[i])).length : 0;
   };
   fix("__argusTasteMotionNow", { value: () => { for (const e of snaps.keys()) settle(e); }, writable: false });
+  // A view transition: its pseudo-elements' animations start together; the first start records the one motion, its
+  // duration the longest of them.
+  let vt = -1e9;
+  const view = () => {
+    const t = performance.now();
+    if (t - vt < 100) return;
+    vt = t;
+    let longest = 0;
+    for (const a of doc.getAnimations()) if (a.effect && String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0) longest = Math.max(longest, Number(a.effect.getTiming().duration) || 0);
+    keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet, caused: caused(), essential: false, target: "::view-transition", moved: null });
+    push({ kind: "animation", t, phase: "start", name: "view-transition", duration_ms: longest, delay_ms: 0, easing: "", target: "::view-transition" });
+  };
   const record = (ev, kind, phase) => {
     const el = ev.target;
-    // A view transition's own pseudo-element animations are the one motion the startViewTransition wrapper records.
+    if (el && kind === "animation" && phase === "start" && String(ev.pseudoElement || "").indexOf("::view-transition") === 0) return view();
     if (!el || el.nodeType !== 1 || String(ev.pseudoElement || "").indexOf("::view-transition") === 0) return;
     const name = kind === "transition" ? ev.propertyName : ev.animationName;
     const id = name + "|" + (ev.pseudoElement || "");
@@ -467,21 +480,6 @@ export const TASTE_INIT = String.raw`(() => {
   };
   for (const [type, kind, phase] of [["transitionrun", "transition", "run"], ["transitionstart", "transition", "start"], ["transitionend", "transition", "end"], ["transitioncancel", "transition", "cancel"], ["animationstart", "animation", "start"], ["animationend", "animation", "end"], ["animationcancel", "animation", "cancel"]]) {
     doc.addEventListener(type, (ev) => { try { record(ev, kind, phase); } catch (err) {} }, true);
-  }
-  const start = doc.startViewTransition;
-  if (typeof start === "function") {
-    doc.startViewTransition = function () {
-      const vt = start.apply(this, arguments);
-      try {
-        vt.ready.then(() => {
-          let longest = 0;
-          for (const a of doc.getAnimations()) if (a.effect && String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0) longest = Math.max(longest, Number(a.effect.getTiming().duration) || 0);
-          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet, caused: caused(), essential: false, target: "::view-transition", moved: null });
-          push({ kind: "animation", t: performance.now(), phase: "start", name: "view-transition", duration_ms: longest, delay_ms: 0, easing: "", target: "::view-transition" });
-        }, () => {});
-      } catch (err) {}
-      return vt;
-    };
   }
 })();
 `;
@@ -657,14 +655,16 @@ const QUIET = `(on) => {
  * colours (the app does not answer prefers-color-scheme: dark parity is not judged, and the other census is dropped),
  * else `dual`. With `opts.other` false (the walk's census, on the explorer's own page) the media is never switched:
  * the page's own census alone, `reduce` that same census when the page already asks for reduced motion, `themes`
- * null; the other scheme and reduced motion are the replay's to measure. Self-contained: `String(censusOf)` runs in
- * the lane's run-code and the suite as it runs here.
+ * null; the other scheme and reduced motion are the replay's to measure. `opts.evaluate` (a page expression → its
+ * value) reads the page where the recorders run (the lane's own world: argus-live-world.mjs WORLD_EVAL), else the
+ * page's own. Self-contained: `String(censusOf)` runs in the lane's run-code and the suite as it runs here.
  */
 export const censusOf = new Function(`return async (page, opts) => {
   const SOURCE = ${JSON.stringify(TASTE_SOURCE)};
-  const run = (arg) => page.evaluate("(" + SOURCE + ")(" + JSON.stringify(arg) + ")");
-  const quiet = (on) => page.evaluate("(" + ${JSON.stringify(QUIET)} + ")(" + on + ")");
-  const media = await page.evaluate('({ colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "no-preference" })');
+  const evaluate = opts && typeof opts.evaluate === "function" ? opts.evaluate : (expr) => page.evaluate(expr);
+  const run = (arg) => evaluate("(" + SOURCE + ")(" + JSON.stringify(arg) + ")");
+  const quiet = (on) => evaluate("(" + ${JSON.stringify(QUIET)} + ")(" + on + ")");
+  const media = await evaluate('({ colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "no-preference" })');
   const other = media.colorScheme === "dark" ? "light" : "dark";
   const out = { media, light: null, dark: null, reduce: null, themes: null };
   out[media.colorScheme] = await run({});

@@ -8,7 +8,7 @@ import vm from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ARGUS_LIVE, cleanTemps, committed, example, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { PAGE_INIT, SIGNAL_SCRIPT, slotConfig, TASTE_WORLD, withRunKey, writeSlotConfig } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { classify } from "../plugins/sapu/scripts/argus-live-classes.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -247,9 +247,12 @@ describe(".argus/taste.json — the owner's calibration", () => {
     const sink = { pass: "perf" };
     expect(hookSignals(sink)).toBe(`${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`);
     for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(hookSignals(sink)).not.toContain(recorder.trim());
-    // Outside a perf pass, the lane's whole payload.
+    // Outside a perf pass, the page's own world gets the signal script alone: the recorders go in their own world.
     expect(hookSignals(null)).toBe(PAGE_INIT);
-    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) expect(PAGE_INIT).toContain(recorder.trim());
+    for (const recorder of [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT]) {
+      expect(PAGE_INIT).not.toContain(recorder.trim());
+      expect(TASTE_WORLD).toContain(recorder.trim());
+    }
     // The slot's CLI init payload follows it at each open: signals.js holds the same.
     const dir = tempDir();
     const { writeInitPayload } = await import("../plugins/sapu/scripts/argus-live-browser.mjs");
@@ -517,22 +520,25 @@ describe("argus-live CLI — the taste verbs (spec §20.4, §20.5)", () => {
 });
 
 describe("the session hook's init payload (Task 0.1's post-probe seam)", () => {
-  it("is the signal script, then the taste buffer, then the taste and ease init scripts, in every document", () => {
-    expect(PAGE_INIT.startsWith(SIGNAL_SCRIPT)).toBe(true);
-    expect(PAGE_INIT).toContain(TASTE_BUFFER);
-    expect(PAGE_INIT.indexOf(TASTE_BUFFER)).toBeGreaterThan(PAGE_INIT.indexOf(SIGNAL_SCRIPT));
-    for (const s of [TASTE_INIT, EASE_INIT]) if (s) expect(PAGE_INIT.indexOf(s)).toBeGreaterThan(PAGE_INIT.indexOf(TASTE_BUFFER));
-    expect(() => new Function(PAGE_INIT)).not.toThrow();
+  it("is the signal script in the page's own world; the recorders' world holds the taste buffer, then the taste, ease and AI init scripts", () => {
+    expect(PAGE_INIT).toBe(SIGNAL_SCRIPT);
+    expect(TASTE_WORLD.startsWith(TASTE_BUFFER)).toBe(true);
+    for (const s of [TASTE_INIT, EASE_INIT]) if (s) expect(TASTE_WORLD.indexOf(s)).toBeGreaterThan(TASTE_WORLD.indexOf(TASTE_BUFFER));
+    expect(TASTE_WORLD).not.toContain(SIGNAL_SCRIPT);
+    for (const t of [PAGE_INIT, TASTE_WORLD]) expect(() => new Function(t)).not.toThrow();
   });
 
-  it("the slot's init script file holds it, with the slot's own taste key in place of the mark", () => {
+  it("the slot's init script file holds it; the recorders reach a page through run-code, with the slot's own taste key in place of the mark", () => {
     const dir = tempDir();
     writeSlotConfig(dir, slotConfig({ dir, origins: ["http://localhost:4100"], proxyPort: 4999, chrome: { channel: "chrome" } }));
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT);
+    // The hook stage's code carries them (withRunKey: the funnel every run-code file passes through).
+    expect(TASTE_WORLD).toContain(TASTE_KEY_MARK);
+    const keyed = withRunKey(TASTE_WORLD, dir);
     const key = readFileSync(join(dir, ".playwright/taste.key"), "utf8").trim();
     expect(key).toMatch(/^[0-9a-f]{32}$/);
     expect(statSync(join(dir, ".playwright/taste.key")).mode & 0o777).toBe(0o600);
-    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT.split(TASTE_KEY_MARK).join(key));
-    expect(PAGE_INIT).toContain(TASTE_KEY_MARK);
+    expect(keyed).toBe(TASTE_WORLD.split(TASTE_KEY_MARK).join(key));
   });
 
   it("emulation stays the lane's own: the explorer's pw has no media command", () => {
@@ -675,7 +681,10 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     // Run against a stand-in page whose expression answers the mocked probe's rows.
     const run = async (key: string) => {
       const c = stepCode({ n: 2, as: "customer.1", expect: "taste", rule: "copy.broken", key, final: "taste" }, { settleMs: 300, runOrigins: [] });
-      const page = { waitForTimeout: async () => {}, evaluate: async (e: unknown) => (typeof e === "string" ? (0, eval)(e) : []), context: () => ({ cookies: async () => [], pages: () => [] }) };
+      // The recorders' world as a stand-in CDP session: the expression runs here (the lazy install and the requests are no-ops).
+      const cdp = { send: async (m: string, a: Obj = {}) => (m === "Page.getFrameTree" ? { frameTree: { frame: { id: "f" } } } : m === "Page.createIsolatedWorld" ? { executionContextId: 1 } : { result: { value: /performance\.timeOrigin|__argusNet = /.test(a.expression) ? 0 : (0, eval)(a.expression) } }) };
+      const world = { name: "argus-taste", payload: "", net: new Map(), attach: async () => cdp };
+      const page = { waitForTimeout: async () => {}, evaluate: async (e: unknown) => (typeof e === "string" ? (0, eval)(e) : []), context: () => ({ cookies: async () => [], pages: () => [], __argusWorld: world }) };
       const r = await new Function(`return (${c})`)()(page);
       return { held: r.held, observed: r.observed, shown: r.shown };
     };

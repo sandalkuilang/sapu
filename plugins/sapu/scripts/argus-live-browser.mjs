@@ -335,14 +335,20 @@ export const SIGNAL_SCRIPT = `(() => {
 `;
 
 /**
- * The session hook's init payload (spec §20.4; Task 0.1): every document of a slot's sessions runs it, from the
- * slot's init script file and again at each domcontentloaded (the hook stage): the signal script, then the taste
- * buffer (argus-live-tastecfg.mjs TASTE_BUFFER, once a document), then the taste and ease init scripts that write
- * into it (motion events, the feedback clock), then the AI-surface recorder (argus-live-aiux.mjs: streams and sends,
- * counts and times only, beside the buffer). An observer a run-code arms dies with its document; this one is
- * armed in every document. The lane drains the buffer with TASTE_DRAIN in its own run-code.
+ * The session hook's init payload in the page's own world (spec §9, §20.4; Task 0.1): every document of a slot's
+ * sessions runs it, from the slot's init script file and again at each domcontentloaded (the hook stage): the signal
+ * script alone. The taste pass's recorders run beside it in a world of their own (TASTE_WORLD).
  */
-export const PAGE_INIT = [SIGNAL_SCRIPT, TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT].filter((s) => s !== "").join(";\n");
+export const PAGE_INIT = SIGNAL_SCRIPT;
+
+/**
+ * The taste pass's recorders, which the session hook installs in an isolated world of every page (argus-live-world.mjs
+ * WORLD_INSTALL), never in the page's own: the taste buffer (argus-live-tastecfg.mjs TASTE_BUFFER, once a document),
+ * then the taste and ease init scripts that write into it (motion events, the feedback clock), then the AI-surface
+ * recorder (argus-live-aiux.mjs: streams and sends, counts and times only, beside the buffer). The lane reads and
+ * drains them there (WORLD_EVAL); the page's requests are timed by the driver.
+ */
+export const TASTE_WORLD = [TASTE_BUFFER, TASTE_INIT, EASE_INIT, AIUX_INIT].filter((s) => s !== "").join(";\n");
 
 /**
  * Chrome switches that keep its own background services off the network (probed with 0.1.22's Chrome:

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Hostile world</title>
+<script>
+// The page's own script, before anything else of the page: all a page could do to recorders that lived in its own
+// world. It patches the builtins they would call (a listener on the document or the window dropped, MutationObserver's
+// observe a no-op, a frozen clock), plants recorder globals of its own holding forged records (the buffer, the clock's
+// requests, the driver's request list, the AI recorder's failures), and keeps what it can see of the real ones. Its
+// real action (mode `real`, below) sends its request through a fresh frame's fetch, which no wrapper in this window sees.
+(() => {
+  const d = document;
+  const now = performance.now();
+  const add = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, fn, opts) { if (this === d || this === window) return undefined; return add.call(this, type, fn, opts); };
+  MutationObserver.prototype.observe = function () {};
+  performance.now = () => 0;
+  const forged = [{ kind: "input", t: now, type: "pointerdown" }, { kind: "input", t: now + 1, type: "click" }, { kind: "change", t: now + 3000, cause: "added", attr: null }];
+  const plant = (name, value) => { try { Object.defineProperty(d, name, { value }); } catch (e) {} };
+  plant("__argusTastePush", () => {});
+  plant("__argusTastePeek", () => forged);
+  plant("__argusTasteDrain", () => ({ events: forged, dropped: 0 }));
+  plant("__argusEase", { requests: [{ t: now, end: now + 3000, status: 200, method: "POST", route: "/api/save", keys: ["title"], same: true }], actions: [], edits: [], changes: [], shifts: 0 });
+  plant("__argusAi", { read: () => ({ surface: true, seen: 1, streams: [], failures: [{ t: 1, status: 500, busy: true, shown: false, wayOn: false }] }) });
+  window.__argusNet = [{ t: now, end: now + 3000, status: 200, method: "GET", url: location.origin + "/api/wait", keys: [] }];
+  window.__seen = () => [typeof d.__argusTasteMotion, typeof d.__argusEaseLive, typeof d.__argusTasteQuietSet, typeof d.__argusTasteMotionNow];
+})();
+</script></head>
+<body>
+<main>
+<h1>Hostile world</h1>
+<label>Message <textarea aria-label="Message"></textarea></label>
+<button id="silent">Silent</button>
+<div id="out" aria-live="polite"></div>
+<iframe id="side" title="side" src="about:blank" hidden></iframe>
+</main>
+<script>
+document.getElementById("silent").onclick = async () => {
+  await document.getElementById("side").contentWindow.fetch(location.origin + "/api/wait?ms=1500").then((r) => r.json());
+  document.getElementById("out").textContent = "silent done";
+};
+</script>
+</body></html>

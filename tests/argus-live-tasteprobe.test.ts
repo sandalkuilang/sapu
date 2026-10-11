@@ -12,7 +12,9 @@ import { censusOf, ruleExpression, rulesFor, TASTE_INIT, TASTE_SOURCE } from "..
 // @ts-expect-error — plain ESM script without types
 import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-codeproj.mjs";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { TASTE_WORLD } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+// @ts-expect-error — plain ESM script without types
+import { EASE_NET, WORLD_EVAL, WORLD_INSTALL } from "../plugins/sapu/scripts/argus-live-world.mjs";
 // @ts-expect-error — plain ESM script without types
 import { EASE_INIT, easeOf, rulesFor as easeRulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -394,17 +396,19 @@ describe("the suite's taste core on the probe's pages (phase 7 integration)", ()
     expect(await stepOne(false)).toEqual([]);
   }, 120_000);
 
-  it("the lane's init payload (PAGE_INIT) records step 1's motion: the hook installs it before the first document", async () => {
+  it("the lane's recorders (TASTE_WORLD) record step 1's motion in their own world: the hook installs them before the first document, the page's world never sees them", async () => {
     const context = await browser.newContext({ viewport: { width: 1000, height: 800 } });
     contexts.push(context);
-    await context.addInitScript({ content: PAGE_INIT });
     const page = await context.newPage();
+    await new Function(`return ${WORLD_INSTALL}`)()(context, TASTE_WORLD);
+    const world = (expr: string) => new Function(`return ${WORLD_EVAL}`)()(page, expr);
     await page.goto(`${origin}/motion.html`);
     await act(page, "b-slide");
-    const { events, dropped } = await page.evaluate(TASTE_DRAIN);
+    expect(await page.evaluate("[typeof document.__argusTasteMotion, typeof document.__argusTastePush]")).toEqual(["undefined", "undefined"]);
+    const { events, dropped } = await world(TASTE_DRAIN);
     expect(dropped).toBe(0);
     expect(events.filter((e: Obj) => e.kind === "transition" && e.phase === "end" && e.duration_ms === 900).map((e: Obj) => e.target)).toContain("div|Panel");
-    expect(rulesFor(await censusOf(page), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration" && r.key === "transform|div|Panel")).toEqual([{ rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" }]);
+    expect(rulesFor(await censusOf(page, { evaluate: world }), BAR, cfgOf()).filter((r: Obj) => r.rule === "motion.duration" && r.key === "transform|div|Panel")).toEqual([{ rule: "motion.duration", key: "transform|div|Panel", measured: 900, expected: "50–500 ms" }]);
   }, 120_000);
 
   it("a rule the owner gates fails as phase 6's violation, unless adopted in known/<id>.json; off leaves it unmeasured", async () => {
@@ -458,10 +462,11 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
 
   it("censusOf and easeOf carry every bar-class rule's metric as a finite number, each as its rows count it; only feedback.latency's and motion.duration's need an action", async () => {
     const barRules = BAR.rules.filter((r: Obj) => r.class === "bar");
-    // As the calibration script opens a page: the taste buffer and both recorders in the context, no action.
+    // As the calibration script opens a page: the taste buffer and both recorders in the context, no action; and the
+    // suite's request wrappers (EASE_NET), which the latency after the action below needs in the page's own world.
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     contexts.push(context);
-    await context.addInitScript({ content: [TASTE_BUFFER, TASTE_INIT, EASE_INIT].join(";\n") });
+    await context.addInitScript({ content: [TASTE_BUFFER, TASTE_INIT, EASE_INIT, EASE_NET].join(";\n") });
     const page = await context.newPage();
     await page.goto(`${origin}/bar-metrics.html`);
     await page.waitForFunction(() => document.getElementById("slot")?.textContent === "Loaded." && document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });

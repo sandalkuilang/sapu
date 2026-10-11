@@ -684,6 +684,13 @@ What behaves differently:
 - **The cleanup script** counts the agent-memory link Claude Code puts in a worktree as no change and removes only the link, never the main checkout's memory behind it; it keeps a worktree whose own `.claude/agent-memory/` holds notes written there.
 - **`.argus/live.json` may no longer hold a secret written literally,** anywhere the lane hands a value to a process, a shell or a URL: an `env` value, a command, an argv list, a URL's password. `check`, `up`, `smoke check`, `smoke propose`, `smoke workflow` and `scrub` refuse such a file, one line per field naming the kind (`env.DATABASE_URL: a password in a URL`, `roles.admin.login.command: a value for "password"`), never the value. Run `argus-live.mjs check` after updating; for each field it names, move the value to your env file as `NAME=value` and write `${NAME}` in its place (`postgres://app:${DB_PW}@…`, `"SESSION_SECRET": "${SESSION_SECRET}"`). If the file was ever committed with the value, change that secret.
 
+The taste and usability pass measures more of each screen, more precisely:
+- **The walk only watches.** The hook no longer switches the explorer's page to the other colour scheme or to reduced motion, nor shoots the other scheme. The confirmation replays measure those first, on a fresh instance, together with a refused form and a failed load; `taste judge` also lists one probe a journey (`probes: p1 <journey>`, run like a row). A row a replay measures first is a candidate until its own replay measures it again. A cycle replays a little more, inside the pass's 15 minutes.
+- **A replay stops at its screen:** the steps of the explorer's path after the row's screen no longer run.
+- **The recorders run in a world of their own** in every lane page, and the page's requests are timed by the browser driver: a page's scripts can no longer read, forge or hide what they record ([Safety and trust](security.md#what-the-recorders-keep)).
+- **Your tokens can name control heights** (`--control-height-md`, `--button-size-lg`, `size.control.sm`): `density.control-heights` then judges heights against them instead of the bar's three. An explorer's typed values are priced with the best path's for the efficiency figures.
+- **The smoke suite needs a regeneration.** Its `support.ts` embeds the probes, which changed, so `smoke check` lists it as `stale` until `/journey smoke` proposes it again (one pull request).
+
 #### Upgrading from a version before 2.11.0
 
 The journey lane now judges ease, elegance and modernity in every cycle ("The taste and usability pass"). Nothing is written to your repo until you ask. After updating, start a new session.

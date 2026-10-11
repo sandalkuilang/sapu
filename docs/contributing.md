@@ -20,7 +20,7 @@ plugins/sapu/
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh (and sapu-smoke-gate.mjs, its smoke check), sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;
                                   the smoke suite's -smokecfg configuration, -codegen generator, -layout and -a11y checks, -smoke pass, -suite, -propose, -heal, -artifacts (CI's runs and artifacts), -ci, -baseline, -perf, -seed and -report;
-                                  the taste pass's -taste, -ease and -aiux probes, -tastecfg, -tastesink, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
+                                  the taste pass's -taste, -ease and -aiux probes, -world (their isolated world), -tastecfg, -tastesink, -tastejudge, -tastefile and -codeproj: see "The taste bar and its calibration")
   scripts/pw/                     package.json and lockfile of the pinned browser CLI the journey lane installs on first use
 plugins/senior-dev-team/          sapu's dependency: the specialist agents (agents/), README, LICENSE
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
@@ -99,7 +99,8 @@ The journey lane's taste and usability pass ([Install and use](usage.md#the-tast
 | `argus-live-tastesink.mjs` | The confirmation's sink: the in-daemon code a replay runs around each step of the path, measuring the row's screen once it is reached. |
 | `argus-live-tastefile.mjs` | `taste file` and `taste accept`: filing, the cap, deduplication, accepted rows. |
 | `argus-live-codeproj.mjs` | Split from `-codegen`: the suite's projects and check registry, including the `taste` project and its single reporter. |
-| `argus-live-browser.mjs`, `-session.mjs` | `PAGE_INIT`, the init payload the session hook installs in every lane document, and the recorder that writes `<run>/taste/`. |
+| `argus-live-browser.mjs`, `-session.mjs` | `PAGE_INIT` (the signal script, the init payload of every lane document's own world), `TASTE_WORLD` (the recorders), and the recorder that writes `<run>/taste/`. |
+| `argus-live-world.mjs` | The recorders' isolated world: `WORLD_INSTALL` (the session hook's, through a CDP session a page, with the driver's request timing), `WORLD_EVAL` (every read of the recorders), and `EASE_NET`, the request wrappers for the page's own world the suite uses. |
 | `argus-live-propose.mjs` | The workflow's `taste` job and `TASTE_SUMMARY`, the scorecard it writes. |
 
 A probe is one in-page function, so the lane (through `run-code`) and the suite (embedded verbatim in `support.ts`) run the same source. Each rule's fixture has a twin that differs only by the defect: a rule that fires on one must hold on the other. The bar's `probe` digest is the sha256 of `TASTE_SOURCE` and `EASE_SOURCE` as they were when the bands were measured. When you change how a probe measures a banded metric, calibrate again: no test compares the shipped digest with the current sources, so a stale one fails nothing.

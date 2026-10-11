@@ -16,6 +16,7 @@ import { accountOf } from "./argus-live-slots.mjs";
 import { ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
 import { FAMILIES, laneOnly, loadBar } from "./argus-live-tastecfg.mjs";
 import { parseTarget, targetCode } from "./argus-live-targets.mjs";
+import { WORLD_EVAL } from "./argus-live-world.mjs";
 
 
 /** Each action's fields (`?` optional). */
@@ -575,7 +576,8 @@ const ACTION = `  const step = async () => {
  * `layout` runs the layout oracle's own expression for `P.check` (argus-live-layout.mjs) and holds when it finds no violation
  * less the rows in `P.skip`; with a target, only the violations whose key names the target (the name its ARIA snapshot
  * gives, digit runs written `#`, or one inside it) count, and a target the page lacks is `error`: `violations:<k>` otherwise,
- * `shown` the keys. `taste` runs its rule's page expression (argus-live-taste.mjs or -ease.mjs ruleExpression) and holds
+ * `shown` the keys. `taste` runs its rule's page expression (argus-live-taste.mjs or -ease.mjs ruleExpression) in the
+ * taste recorders' world (argus-live-world.mjs WORLD_EVAL) and holds
  * when no row of `P.rule` has `P.key`: `rows:<k>` otherwise, `shown` each row's `{key, measured}` (at most 20).
  */
 const EXPECT = `  const layout = async () => {
@@ -597,8 +599,9 @@ const EXPECT = `  const layout = async () => {
     }
     return list.length === 0 ? { held: true } : { held: false, observed: "violations:" + list.length, shown: list.slice(0, 20).map((f) => f.key) };
   };
+  // Its rule's expression reads the taste recorders, which live in their own world (argus-live-world.mjs).
   const taste = async () => {
-    const found = await page.evaluate(P.expr);
+    const found = await (${WORLD_EVAL})(page, P.expr);
     const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.rule === P.rule && f.key === P.key);
     return rows.length === 0 ? { held: true } : { held: false, observed: "rows:" + rows.length, shown: rows.slice(0, 20).map((f) => ({ key: f.key, measured: f.measured })) };
   };

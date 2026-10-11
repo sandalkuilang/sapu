@@ -7,6 +7,7 @@ import { EASE_SOURCE, FAULT_SOURCE, RECOVERY_SOURCE, ruleExpression as easeExpre
 import { routeTemplate } from "./argus-live-session.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
 import { FAMILIES, loadBar, MEDIA_READ } from "./argus-live-tastecfg.mjs";
+import { WORLD_EVAL } from "./argus-live-world.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -54,8 +55,12 @@ export const FIRST_RULES = Object.freeze([...MEDIA_RULES, "states.recovery", "st
  * case (each empty text field filled first; never a form whose submit `prohibited` names) and `target.error`'s routed
  * fault (armed, the page reloaded, the first same-origin JSON GET answered 500, its error state read; the route taken off
  * again) → `first` `{key, rows, ran: [what ran whole]}`. With no rows, reaching `at` is the measurement (`{rows: []}`).
+ *
+ * Every read that needs the recorders (a rule's expression, the census, the AI drive's) runs in their own world
+ * (argus-live-world.mjs WORLD_EVAL, the session hook's); `world: false` reads the page's own instead, for a context the
+ * hook gave no world. The form case and the routed fault act through Playwright.
  */
-export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [], probe = null }) {
+export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = null, prohibited = [], probe = null, world = true }) {
   const group = Array.isArray(rows) ? rows : [rows];
   const row = group[0] ?? null;
   const [route, width] = (row ? row.screen : probe.at).split("|");
@@ -74,7 +79,7 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   const mode = !row ? {} : media ? {} : ai ? { drive: AIUX_DRIVE, driveArg: driveArg(row.rule, prohibited) } : row.rule === "states.recovery" ? {} : { expr: exprOf(row.rule) };
   const target = probe && probe.target ? { recovery: Boolean(probe.target.recovery) && !off.has("states.recovery"), error: Boolean(probe.target.error) && !off.has("states.error") } : null;
   const P = probe ? { screens: probe.screens, media: MEDIA_READ, target, errorExpr: target && target.error ? easeExpression("states.error") : null, fault: target && target.error ? FAULT_SOURCE : null, prohibited: (Array.isArray(prohibited) ? prohibited : []).filter((x) => typeof x === "string" && x.trim() !== "").map((x) => x.toLowerCase()).slice(0, 50) } : null;
-  const S = { rule: row ? row.rule : null, route, width: Number(width), routes, settleMs, media, ...(needCensus ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id) || firstMedia.includes(r.id)), frames: bar.frames }, cfg: frame, mediaIds, firstMedia } : {}), ...((row && row.rule === "states.recovery") || (target && target.recovery) ? { recover: RECOVERY_SOURCE, ease: EASE_SOURCE } : {}), ...mode, ...more, probe: P };
+  const S = { rule: row ? row.rule : null, route, width: Number(width), routes, settleMs, media, ...(needCensus ? { census: String(censusOf), rules: String(tasteRules), bar: { version: bar.version, rules: bar.rules.filter((r) => mediaIds.includes(r.id) || firstMedia.includes(r.id)), frames: bar.frames }, cfg: frame, mediaIds, firstMedia } : {}), ...((row && row.rule === "states.recovery") || (target && target.recovery) ? { recover: RECOVERY_SOURCE, ease: EASE_SOURCE } : {}), ...mode, ...more, probe: P, world: world ? WORLD_EVAL : null };
   if (row && row.rule === "states.recovery") S.recovering = true;
   const sink = {
     measured: null,
@@ -89,12 +94,14 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   const S = ${JSON.stringify({ ...S, probe: S.probe ? { ...S.probe, skip: [...(probe.skip ?? []), ...sink.probes.map((x) => x.key)] } : null })};
   const fn = (src) => new Function("return " + src)();
   const routeOf = ${routeTemplate.toString()};
+  const W = S.world ? fn(S.world) : null;
+  const ev = (expr) => (W ? W(page, expr) : page.evaluate(expr));
   try {
     const vp = page.viewportSize();
     const width = vp && vp.width ? vp.width : await page.evaluate("innerWidth");
     const at = width === S.width && routeOf(new URL(page.url()).pathname, S.routes) === S.route;
     const P = S.probe;
-    const key = P ? routeOf(new URL(page.url()).pathname, S.routes) + "|" + width + "|" + (await page.evaluate(P.media)).colorScheme : null;
+    const key = P ? routeOf(new URL(page.url()).pathname, S.routes) + "|" + width + "|" + (await ev(P.media)).colorScheme : null;
     const firstHere = Boolean(P) && P.screens.includes(key) && !P.skip.includes(key);
     if (at || firstHere) await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
     // The form case (RECOVERY_SOURCE) on the screen's first form with a submit: each field the refusal lost.
@@ -109,12 +116,12 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
       return Array.isArray(lost) ? lost.map((x) => ({ rule: "states.recovery", key: x.key, measured: "lost", expected: "the value typed before the rejected submit" })) : null;
     };
     let census = null;
-    const censusNow = async () => census || (census = await fn(S.census)(page));
+    const censusNow = async () => census || (census = await fn(S.census)(page, { evaluate: ev }));
     if (at && S.rule) {
       let rows = null;
       try {
-        rows = S.media ? fn(S.rules)(await censusNow(), S.bar, S.cfg).filter((r) => S.mediaIds.includes(r.rule)) : S.drive ? await fn(S.drive)(page, S.driveArg) : S.recovering ? await recover() : await page.evaluate(S.expr);
-        for (const e of S.exprs || []) if (Array.isArray(rows)) rows = rows.concat(await page.evaluate(e));
+        rows = S.media ? fn(S.rules)(await censusNow(), S.bar, S.cfg).filter((r) => S.mediaIds.includes(r.rule)) : S.drive ? await fn(S.drive)(page, S.driveArg, ev) : S.recovering ? await recover() : await ev(S.expr);
+        for (const e of S.exprs || []) if (Array.isArray(rows)) rows = rows.concat(await ev(e));
       } catch (e) {
         rows = null;
       }
@@ -152,7 +159,7 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
             for (const end = Date.now() + S.settleMs; f.faulted() === null && Date.now() < end; ) await page.waitForTimeout(100);
             if (f.faulted() !== null) {
               await page.waitForLoadState("networkidle", { timeout: S.settleMs }).catch(() => {});
-              const found = await page.evaluate(P.errorExpr);
+              const found = await ev(P.errorExpr);
               if (Array.isArray(found)) rows.push(...found.filter((r) => r && r.rule === "states.error"));
             }
             ran.push("states.error");
@@ -161,7 +168,7 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
           }
         } catch (e) {}
       }
-      answer.__first = { key: S.route + "|" + S.width + "|" + (await page.evaluate(P.media).catch(() => ({ colorScheme: "light" }))).colorScheme, ran, rows: rows.slice(0, 50).map((r) => ({ rule: r.rule, key: String(r.key).slice(0, 300), measured: String(r.measured).slice(0, 200), expected: r.expected == null ? null : String(r.expected).slice(0, 200) })) };
+      answer.__first = { key: S.route + "|" + S.width + "|" + (await ev(P.media).catch(() => ({ colorScheme: "light" }))).colorScheme, ran, rows: rows.slice(0, 50).map((r) => ({ rule: r.rule, key: String(r.key).slice(0, 300), measured: String(r.measured).slice(0, 200), expected: r.expected == null ? null : String(r.expected).slice(0, 200) })) };
     }
   } catch (e) {}
   return answer;

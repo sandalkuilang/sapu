@@ -26,7 +26,7 @@ which the orchestrator stores through `taste curator`; a shot whose scrub verdic
 per-cycle summary, 0600). `argus-live.mjs` is the lane's one program: its modules (`argus-live-*.mjs`; the
 smoke suite's are `-smokecfg` (`.argus/smoke.json`), `-codegen`, `-codeproj` (its projects and the taste reporter), `-suite`, `-smoke`, `-propose`, `-heal`, `-artifacts`, `-ci`, `argus-live-baseline.mjs`,
 `-layout`, `-a11y`, `-perf`, `-seed`, `-report` and `-minimize`; the taste pass's `-tastecfg` (`.argus/taste.json`, the bar,
-`.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-tastesink`, `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
+`.argus/taste-state.json`), `-taste`, `-ease` and `-aiux` (the probes), `-world` (their isolated world), `-tastesink`, `-tastejudge` and `-tastefile`) run only under its verbs. The taste bar (`data/taste-bar.json`) ships with the plugin; the
 maintainer's calibration script (`taste-calibrate`) and its reference corpora (public pages, and the local corpus of
 OSS apps) live in sapu's own repository, never in the plugin.
 

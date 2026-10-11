@@ -147,17 +147,19 @@ describe("argus-live modules — the DAG", () => {
 
   it("admits phase 7's modules, each with the imports it may have (spec §20)", () => {
     const g = graph();
-    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastesink", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
+    const PHASE7 = ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-world", "argus-live-tastesink", "argus-live-tastejudge", "argus-live-tastefile", "argus-live-codeproj"];
     for (const m of PHASE7) expect(g.has(m), m).toBe(true);
     // The shapes, and the in-page probes the suite embeds verbatim (the AI probe is the lane's alone): leaves.
-    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux"]) expect(g.get(leaf), leaf).toEqual([]);
+    for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-world"]) expect(g.get(leaf), leaf).toEqual([]);
+    // The recorders' world is installed by the session hook (-login's hook stage) and read by every reader of them.
+    for (const m of ["argus-live-login", "argus-live-session", "argus-live-steps", "argus-live-tastesink", "argus-live-codeproj"]) expect(g.get(m), m).toContain("argus-live-world");
     // The judge reads the probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
     expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg", "argus-live-tastesink"]));
     // The confirmation's sink builds the in-daemon code from the probes and the session's route template, below the judge.
-    for (const d of g.get("argus-live-tastesink") ?? []) expect(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg", "argus-live-session"], d).toContain(d);
+    for (const d of g.get("argus-live-tastesink") ?? []) expect(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg", "argus-live-world", "argus-live-session"], d).toContain(d);
     expect(g.get("argus-live-browser")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg"]));
     // The suite's projects, registry and config (split from the generator) read the in-page checks and the shapes only.
-    for (const d of g.get("argus-live-codeproj") ?? []) expect(["argus-live-layout", "argus-live-a11y", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg"], d).toContain(d);
+    for (const d of g.get("argus-live-codeproj") ?? []) expect(["argus-live-layout", "argus-live-a11y", "argus-live-taste", "argus-live-ease", "argus-live-tastecfg", "argus-live-world"], d).toContain(d);
     expect(g.get("argus-live-codegen")).toContain("argus-live-codeproj");
     // The judge and filing sit above the runner, below the report and the CLI: nothing else reaches them.
     for (const m of g.keys()) {

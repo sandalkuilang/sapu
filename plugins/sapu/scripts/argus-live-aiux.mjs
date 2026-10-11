@@ -47,7 +47,7 @@ const CORE = String.raw`const V = { checkOpacity: true, checkVisibilityCSS: true
   const regionOf = (el) => el.closest(LIVE) || el.closest('[aria-busy="true"]');`;
 
 /**
- * The AI-surface recorder of the session hook's init payload (argus-live-browser.mjs PAGE_INIT), once a document.
+ * The AI-surface recorder of the taste recorders' world (argus-live-browser.mjs TASTE_WORLD), once a document.
  * Each trusted action (pointerdown with the main button, Enter, or a click or submit with no action in the second
  * before) snapshots the shown, enabled controls and their names; one from the composer is a send. A region's text
  * that grows by letters or digits in three steps or more, over 150 ms or more, after an action the 30 s before, is a
@@ -57,12 +57,16 @@ const CORE = String.raw`const V = { checkOpacity: true, checkVisibilityCSS: true
  * on one is a stop tried. A stream after a click on a control that appeared after the last answer is that answer
  * regenerated. A composer send counts as a failure only once the document streamed before it. The times of text
  * shown outside text boxes are kept, a burst at its latest (an error shown after a failure). Names stay in the page
- * (they tell a renamed control); nothing the page says leaves it. `document.__argusAi` holds `read()` (the counts AIUX_SOURCE's `screen` kind returns) and, for the drive, `composer()`
- * ([text box, send control]), `stops()` and `regens()` (the candidates of the latest stream, as elements).
+ * (they tell a renamed control); nothing the page says leaves it. `document.__argusAi`, a fixed property (in the
+ * lane it lives in the recorders' own world, which the page never reaches), holds `read()` (the counts AIUX_SOURCE's
+ * `screen` kind returns; the requests the driver timed when the lane put them there, `window.__argusNet`, else the
+ * feedback clock's) and, for the drive, `composer()` ([text box, send control]), `stops()` and `regens()` (the
+ * candidates of the latest stream, as elements), and `at(kind)`: those of one kind as `{path, name}` (an XPath from the
+ * document, null inside a shadow root; the control's name), which the drive acts on through Playwright from any world.
  */
 export const AIUX_INIT = String.raw`(() => {
   const doc = document;
-  if (doc.__argusAi) return;
+  if (Object.prototype.hasOwnProperty.call(doc, "__argusAi")) return;
   const now = () => performance.now();
   ${CORE}
   const own = new WeakMap(), state = new WeakMap(), pending = new Map();
@@ -148,7 +152,17 @@ export const AIUX_INIT = String.raw`(() => {
     const s = streams[streams.length - 1];
     return s ? freshOf(own.get(s).base).filter((el) => !composerOf(el) && !el.closest("dialog, [role=dialog], [role=alertdialog]")) : [];
   };
-  doc.__argusAi = {
+  const xpath = (el) => {
+    if (!el || el.getRootNode() !== doc) return null;
+    const parts = [];
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      let i = 1;
+      for (let x = n.previousElementSibling; x; x = x.previousElementSibling) if (x.localName === n.localName) i += 1;
+      parts.unshift((n.namespaceURI === "http://www.w3.org/1999/xhtml" ? n.localName : "*[local-name()='" + n.localName + "']") + "[" + i + "]");
+    }
+    return "/" + parts.join("/");
+  };
+  const api = {
     v: 1,
     read: () => {
       const t = now();
@@ -160,7 +174,8 @@ export const AIUX_INIT = String.raw`(() => {
         const regen = i === streams.length - 1 && ended && !s.tried ? regens().length : null;
         return { t0: s.t0, last: s.last, ticks: s.ticks, chars: s.chars, stops: s.stops, outside: s.outside, tried: s.tried, wentOn: s.lastTry === null ? 0 : Math.max(0, s.last - s.lastTry), again: s.again, ended, regen, size: r.isConnected ? String(r.textContent || "").length : 0 };
       });
-      const reqs = doc.__argusEase && Array.isArray(doc.__argusEase.requests) ? doc.__argusEase.requests : [];
+      const net = Array.isArray(window.__argusNet) ? window.__argusNet.map((x) => { try { return { t: x.t, end: x.end, status: x.status, method: String(x.method || "GET").toUpperCase(), same: new URL(String(x.url), location.href).origin === location.origin }; } catch (e) { return null; } }).filter(Boolean) : null;
+      const reqs = net || (doc.__argusEase && Array.isArray(doc.__argusEase.requests) ? doc.__argusEase.requests : []);
       const failures = [];
       for (const sd of surface ? sends : []) {
         if (!sd.streamed) continue;
@@ -190,7 +205,9 @@ export const AIUX_INIT = String.raw`(() => {
       return [...h.fresh].filter((el) => shown(el) && enabled(el)).sort((x, y) => Number(h.region.contains(x)) - Number(h.region.contains(y)) || far(x) - far(y));
     },
     regens,
+    at: (kind) => (kind === "composer" ? api.composer() : kind === "stops" ? api.stops() : kind === "regens" ? regens() : []).map((el) => ({ path: xpath(el), name: nameOf(el) })),
   };
+  Object.defineProperty(doc, "__argusAi", { value: Object.freeze(api), writable: false, configurable: false, enumerable: false });
 })();
 `;
 
@@ -251,14 +268,18 @@ export const AIUX_SOURCE = String.raw`(arg) => {
  * after it (four at most) until one streams an answer again; a dialog it opens is closed with Escape. `ai.error`: the
  * send's failure (AIUX_FAULT armed before the navigation). Rows are AIUX_SOURCE's `rule` kind's, plus the drive's own
  * `ai.regenerate` row when no candidate answered again. `[]` when the page shows no AI surface; null (undecided) when the
- * answer never ended, no stop was tried, a control left the route or removed the answer, or no failure came.
+ * answer never ended, no stop was tried, a control left the route or removed the answer, or no failure came. `W` (a
+ * page expression → its value) reads where the recorder runs (the lane's world: argus-live-world.mjs WORLD_EVAL), else
+ * the page's own; the drive acts through Playwright on each control's XPath (`at`), so the page's scripts never hand it
+ * an element.
  */
-export const AIUX_DRIVE = String.raw`async (page, A) => {
+export const AIUX_DRIVE = String.raw`async (page, A, W) => {
   const INIT = ${JSON.stringify(AIUX_INIT)};
   const SRC = ${JSON.stringify(AIUX_SOURCE)};
+  const ev = typeof W === "function" ? W : (expr) => page.evaluate(expr);
   const wait = (ms) => page.waitForTimeout(ms);
-  const read = () => page.evaluate("(" + SRC + ")(" + JSON.stringify({ kind: "screen" }) + ")");
-  const rows = () => page.evaluate("(" + SRC + ")(" + JSON.stringify({ kind: "rule", rule: A.rule, rules: A.rules }) + ")");
+  const read = () => ev("(" + SRC + ")(" + JSON.stringify({ kind: "screen" }) + ")");
+  const rows = () => ev("(" + SRC + ")(" + JSON.stringify({ kind: "rule", rule: A.rule, rules: A.rules }) + ")");
   const until = async (ok, ms) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -268,28 +289,23 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
       await wait(100);
     }
   };
-  const handles = async (expr) => {
-    const h = await page.evaluateHandle(expr);
-    const n = await h.evaluate((a) => a.length);
-    const out = [];
-    for (let i = 0; i < n; i++) { const e = (await h.getProperty(String(i))).asElement(); if (e) out.push(e); }
-    return out;
-  };
+  // The recorder's controls of one kind, as Playwright locators by their XPath (none inside a shadow root), with their names.
+  const handles = async (kind) => ((await ev("document.__argusAi.at(" + JSON.stringify(kind) + ")")) || []).filter((x) => x && typeof x.path === "string").map((x) => ({ loc: page.locator("xpath=" + x.path), name: x.name }));
   const send = async (text) => {
-    const first = await handles("document.__argusAi.composer()");
+    const first = await handles("composer");
     if (!first.length) return false;
-    await first[0].fill(text);
-    const c = await handles("document.__argusAi.composer()");
-    if (c.length > 1) await c[1].click({ timeout: 5000 }); else await first[0].press("Enter");
+    await first[0].loc.fill(text);
+    const c = await handles("composer");
+    if (c.length > 1) await c[1].loc.click({ timeout: 5000 }); else await first[0].loc.press("Enter");
     return true;
   };
   // Never a destructive control (the lexicon) or one the owner's live.json prohibits: such a candidate leaves the drive undecided.
   const RISK = new RegExp(A.refuse, "iu");
-  const risky = async (el) => {
-    const n = String(await el.evaluate((e) => e.getAttribute("aria-label") || (e.tagName === "INPUT" ? e.value : e.innerText || e.textContent) || e.getAttribute("title") || "").catch(() => "")).replace(/\s+/g, " ").trim().toLowerCase();
+  const risky = (x) => {
+    const n = String(x.name || "").replace(/\s+/g, " ").trim().toLowerCase();
     return RISK.test(n) || (n !== "" && (A.prohibited || []).some((p) => { const q = String(p).toLowerCase(); return q.includes(n) || n.includes(q); }));
   };
-  if (!(await page.evaluate("Boolean(document.__argusAi)"))) await page.evaluate(INIT);
+  if (!(await ev("Boolean(document.__argusAi)"))) await ev(INIT);
   let before = await read();
   if (!(await send(A.rule === "ai.error" ? A.plain : A.marker))) return [];
   const url = page.url();
@@ -305,11 +321,11 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
   if (A.rule === "ai.stop") {
     const s = mine(await read());
     if (s.stops > 0) {
-      for (const el of (await handles("document.__argusAi.stops()")).slice(0, 3)) {
+      for (const el of (await handles("stops")).slice(0, 3)) {
         const at = await read(), m = mine(at);
         if (!m || at.now - m.last >= A.stopMs) break;
-        if (await risky(el)) return null;
-        await el.click({ timeout: 2000 }).catch(() => null);
+        if (risky(el)) return null;
+        await el.loc.click({ timeout: 2000 }).catch(() => null);
         await wait(A.stopMs + 500);
         const after = await read(), n = mine(after);
         if (!n || after.now - n.last >= A.stopMs) break;
@@ -322,17 +338,17 @@ export const AIUX_DRIVE = String.raw`async (page, A) => {
   const ended = await until((x) => mine(x).ended, A.endMs);
   if (!ended || mine(ended).tried) return null;
   if (mine(ended).regen === 0) return rows();
-  const tried = (await handles("document.__argusAi.regens()")).slice(0, 4);
+  const tried = (await handles("regens")).slice(0, 4);
   for (const el of tried) {
     const at = await read(), size = mine(at) ? mine(at).size : 0;
-    if (await risky(el)) return null;
-    await el.click({ timeout: 2000 }).catch(() => null);
+    if (risky(el)) return null;
+    await el.loc.click({ timeout: 2000 }).catch(() => null);
     const again = await until((x) => x.seen > at.seen, 3000);
     if (page.url() !== url) return null;
     if (again) return (await until((x) => x.streams[x.streams.length - 1].ended, A.endMs)) ? rows() : null;
     const now = await read(), m = now.streams[now.streams.length - 1];
     if (m && m.size < size / 2) return null;
-    if (await page.evaluate("Boolean(document.querySelector('dialog[open], [role=dialog], [role=alertdialog]'))")) await page.keyboard.press("Escape");
+    if (await ev("Boolean(document.querySelector('dialog[open], [role=dialog], [role=alertdialog]'))")) await page.keyboard.press("Escape");
   }
   return [{ rule: "ai.regenerate", key: "answer", measured: "none of " + tried.length + " controls shown after the answer answered again", expected: A.expected }];
 }`;
