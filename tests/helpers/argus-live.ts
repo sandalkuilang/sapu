@@ -430,7 +430,7 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
     logged_in: "getByRole('button', { name: 'Account' })",
     env_file: ".argus/live.env",
     services: { cache: { env: "CACHE_URL" } },
-    env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "control-7", ...(repro ? { DEFECTS_FILE: defectsFile } : {}) },
+    env: { DATA_DIR: data, CACHE_URL: "tcp://127.0.0.1:{port:cache}", APP_PW: "${APP_PW}", APP_TOTP: "${APP_TOTP}", CONTROL_TOKEN: "${CONTROL_TOKEN}", ...(repro ? { DEFECTS_FILE: defectsFile } : {}) },
     pass_env: [],
     store: "app_explore",
     store_check: app("--which-store"),
@@ -456,7 +456,7 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
   liveContract(main);
   execFileSync("git", ["-C", main, "add", "."]);
   execFileSync("git", ["-C", main, "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
-  writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\n`);
+  writeFileSync(join(main, ".argus/live.env"), `APP_PW='${PW}'\nAPP_TOTP=${TOTP}\nCONTROL_TOKEN=control-7\n`);
   const env = { ...process.env, PATH: `${fakeDocker()}:${process.env.PATH}`, HOME: homeWithCli(), TMPDIR: tempDir() };
   const outs: string[] = [];
   /**

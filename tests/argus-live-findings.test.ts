@@ -94,7 +94,7 @@ describe("argus-live modules — the DAG", () => {
     expect(g.has("argus-live-start")).toBe(true);
     for (const [m, deps] of g) for (const d of deps) expect(g.has(d), `${m} imports ${d}`).toBe(true);
     for (const m of g.keys()) expect(reach(g, m).has(m), `${m} imports itself through its imports`).toBe(false);
-    for (const leaf of ["argus-live-fence", "argus-live-targets", "argus-live-origin", "argus-live-classes"]) expect(g.get(leaf), leaf).toEqual([]);
+    for (const leaf of ["argus-live-fence", "argus-live-targets", "argus-live-origin", "argus-live-classes", "argus-live-literal"]) expect(g.get(leaf), leaf).toEqual([]);
     expect(reach(g, "argus-live-pw").has("argus-live-instance")).toBe(false);
     expect(reach(g, "argus-live-start").has("argus-live-browser")).toBe(false);
     expect(g.has("argus-live-session")).toBe(true);
