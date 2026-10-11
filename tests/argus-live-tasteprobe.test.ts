@@ -18,7 +18,7 @@ import { EASE_INIT, easeOf, rulesFor as easeRulesFor } from "../plugins/sapu/scr
 // @ts-expect-error — plain ESM script without types
 import { metricsOf } from "../scripts/taste-calibrate.mjs";
 // @ts-expect-error — plain ESM script without types
-import { loadBar, TASTE_BUFFER, TASTE_DRAIN, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { loadBar, TASTE_BUFFER, TASTE_DRAIN, TASTE_PEEK, tasteEventFault, validateTaste } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -450,7 +450,7 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     expect(barRules.filter((r: Obj) => !Number.isFinite(metrics[r.metric])).map((r: Obj) => r.id)).toEqual(["feedback.latency"]);
     // Each number is what the rule's own rows count on the same screen.
     const taste = rulesFor(screen.census, BAR, cfgOf()) as Obj[];
-    const ease = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate("document.__argusTasteEvents.slice()"), ease: screen.ease }, BAR, cfgOf()) as Obj[];
+    const ease = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate(TASTE_PEEK), ease: screen.ease }, BAR, cfgOf()) as Obj[];
     const of = (rows: Obj[], id: string) => rows.filter((r) => r.rule === id);
     expect(metrics).toMatchObject({ primary_actions: 2, body_contrast_ratio: 4.74, animation_ms: 300, transition_all: 1, reduced_motion_transforms: 1, vague_labels: 1, empty_states_without_control: 1, errors_without_exit: 1 });
     expect(metrics.primary_actions).toBe(of(taste, "hierarchy.primary-actions")[0].measured);
@@ -468,7 +468,7 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
     const acted = { census: await censusOf(page), ease: await easeOf(page) };
     const after = metricsOf(acted, BAR);
     expect(barRules.filter((r: Obj) => !Number.isFinite(after[r.metric])).map((r: Obj) => r.id)).toEqual([]);
-    const latency = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate("document.__argusTasteEvents.slice()"), ease: acted.ease }, { rules: [{ ...BAR.rules.find((r: Obj) => r.id === "feedback.latency"), threshold: { max: -1 } }] }, cfgOf());
+    const latency = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate(TASTE_PEEK), ease: acted.ease }, { rules: [{ ...BAR.rules.find((r: Obj) => r.id === "feedback.latency"), threshold: { max: -1 } }] }, cfgOf());
     expect(after.first_change_ms).toBe(latency[0].measured);
   }, 120_000);
 });

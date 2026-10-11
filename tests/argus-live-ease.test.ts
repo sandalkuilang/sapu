@@ -116,7 +116,7 @@ describe("argus-live-ease.mjs — the shapes it shares with lane 0", () => {
   it("counts the rendering attributes -tastecfg names, and installs once a document behind the taste buffer", () => {
     expect(EASE_RENDER).toEqual([...RENDER_ATTRIBUTES]);
     expect(EASE_INIT).toContain(JSON.stringify(EASE_RENDER));
-    expect(EASE_INIT).toContain("doc.__argusEase || typeof doc.__argusTastePush !== \"function\"");
+    expect(EASE_INIT).toContain('Object.prototype.hasOwnProperty.call(doc, "__argusEase") || typeof doc.__argusTastePush !== "function"');
     expect(() => new Function(EASE_INIT)).not.toThrow();
     expect(typeof ease).toBe("function");
     // The in-page sources never hold a template interpolation or a word the support file's scans refuse.

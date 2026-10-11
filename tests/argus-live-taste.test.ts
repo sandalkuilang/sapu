@@ -22,7 +22,7 @@ import { COMMANDS } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { TASTE_INIT, ruleExpression as tasteRuleExpression } from "../plugins/sapu/scripts/argus-live-taste.mjs";
 // @ts-expect-error — plain ESM script without types
-import { ARCHETYPES, BAR_FILE, CURATOR_FILE, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
+import { ARCHETYPES, BAR_FILE, CURATOR_FILE, TASTE_KEY_MARK, tasteOff, CW_WORDS, explicitMedia, FAMILIES, laneOnly, loadBar, readCuratorFile, SUBSTITUTIONS, tokensPx, validateCurator, loadTaste, MEDIA_READ, readTasteState, RENDER_ATTRIBUTES, ROW_STATES, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DEFAULTS, TASTE_DRAIN, TASTE_EVENTS, TASTE_EVENTS_MAX, TASTE_FILE, TASTE_KEYS, TASTE_STATE_FILE, tasteEventFault, titleKey, validateBar, validateTaste, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -350,7 +350,7 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
     vm.runInContext(TASTE_BUFFER, ctx);
     return ctx;
   };
-  const push = (ctx: Obj, rec: Obj) => vm.runInContext(`document.__argusTastePush(${JSON.stringify(rec)})`, ctx);
+  const push = (ctx: Obj, rec: Obj) => vm.runInContext(`document.__argusTastePush(${JSON.stringify(rec)}, ${JSON.stringify(TASTE_KEY_MARK)})`, ctx);
   const drain = (ctx: Obj) => vm.runInContext(TASTE_DRAIN, ctx);
   const CHANGE = { kind: "change", t: 3.25, cause: "attribute", attr: "class" };
   const MOTION = { kind: "transition", t: 4, phase: "end", name: "transform", duration_ms: 200, delay_ms: 0, easing: "ease-out", target: "div|dialog|Edit order" };
@@ -362,6 +362,33 @@ describe("the page-side taste buffer, its drain and the media restore (Task 0.1'
     push(ctx, MOTION);
     expect(drain(ctx)).toEqual({ url: "http://localhost:4100/orders/7", timeOrigin: 1000, dropped: 0, events: [CHANGE, MOTION] });
     expect(drain(ctx)).toEqual({ url: "http://localhost:4100/orders/7", timeOrigin: 1000, dropped: 0, events: [] });
+  });
+
+  it("a page can neither replace, delete nor read the buffer, nor push or drain without the taste key", () => {
+    const ctx = page();
+    push(ctx, CHANGE);
+    vm.runInContext(`
+      document.__argusTastePush = () => {};
+      try { delete document.__argusTastePush; } catch (e) {}
+      document.__argusTasteEvents = [];
+      document.__argusTastePush(${JSON.stringify({ kind: "input", t: 1, type: "click" })});
+      document.__argusTastePush(${JSON.stringify({ kind: "input", t: 1, type: "click" })}, "a guess");
+      globalThis.stolen = [document.__argusTasteDrain(), document.__argusTasteDrain("a guess"), document.__argusTastePeek()];
+    `, ctx);
+    expect(vm.runInContext("stolen", ctx)).toEqual([null, null, null]);
+    // The recorders' own record is there, alone.
+    expect(drain(ctx).events).toEqual([CHANGE]);
+  });
+
+  it("a title key passes only a safe charset of the page-made route: no markup, mention, backtick or space reaches an issue title", () => {
+    expect(titleKey("copy.broken", "/orders/:id|1440|light")).toBe("taste:copy.broken:/orders/:id|1440|light");
+    expect(titleKey("copy.broken", "/a<b>`x`@y'z%20|1440|light")).toBe("taste:copy.broken:/a_b__x__y_z_20|1440|light");
+  });
+
+  it("the leaf probes write the same key mark as -tastecfg (a leaf cannot import it), in every source that reads or pushes records", async () => {
+    const { censusOf } = await import("../plugins/sapu/scripts/argus-live-taste.mjs");
+    const { EASE_SOURCE } = await import("../plugins/sapu/scripts/argus-live-ease.mjs");
+    for (const [name, src] of Object.entries({ TASTE_BUFFER, TASTE_DRAIN, TASTE_INIT, EASE_INIT, EASE_SOURCE, censusOf: String(censusOf) })) expect(src, name).toContain(TASTE_KEY_MARK);
   });
 
   it("keeps at most TASTE_EVENTS_MAX a document, counts the rest and every record of another shape as dropped", () => {
@@ -442,10 +469,14 @@ describe("the session hook's init payload (Task 0.1's post-probe seam)", () => {
     expect(() => new Function(PAGE_INIT)).not.toThrow();
   });
 
-  it("the slot's init script file holds it", () => {
+  it("the slot's init script file holds it, with the slot's own taste key in place of the mark", () => {
     const dir = tempDir();
     writeSlotConfig(dir, slotConfig({ dir, origins: ["http://localhost:4100"], proxyPort: 4999, chrome: { channel: "chrome" } }));
-    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT);
+    const key = readFileSync(join(dir, ".playwright/taste.key"), "utf8").trim();
+    expect(key).toMatch(/^[0-9a-f]{32}$/);
+    expect(statSync(join(dir, ".playwright/taste.key")).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT.split(TASTE_KEY_MARK).join(key));
+    expect(PAGE_INIT).toContain(TASTE_KEY_MARK);
   });
 
   it("emulation stays the lane's own: the explorer's pw has no media command", () => {

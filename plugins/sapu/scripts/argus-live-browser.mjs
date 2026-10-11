@@ -15,7 +15,7 @@ import { processTable, redact, run, runAsync, within } from "./argus-live-proc.m
 import { EASE_INIT } from "./argus-live-ease.mjs";
 import { ownDir, updateRun } from "./argus-live-run.mjs";
 import { TASTE_INIT } from "./argus-live-taste.mjs";
-import { TASTE_BUFFER } from "./argus-live-tastecfg.mjs";
+import { TASTE_BUFFER, TASTE_KEY_MARK, tasteKey, withTasteKey } from "./argus-live-tastecfg.mjs";
 
 export const CLI_PACKAGE = "@playwright/cli";
 export const CLI_VERSION = "0.1.22";
@@ -405,11 +405,19 @@ export function slotConfig({ dir, origins, allowOrigins = [], proxyPort, live = 
   };
 }
 
-/** Writes a slot's init payload (`<dir>/.playwright/signals.js`, 0600, beside then renamed), the script its CLI config loads in every page. */
+/**
+ * `text` (code bound for a page of slot directory `slotDir`'s session) with the run's taste key in place of the taste
+ * recorders' mark (-tastecfg TASTE_KEY_MARK, the key file in the slot's `.playwright/`, beside its init payload): the
+ * one funnel every init payload and every run-code file of the slot passes through, so the page's own scripts never
+ * learn it.
+ */
+export const withRunKey = (text, slotDir) => (typeof text === "string" && text.includes(TASTE_KEY_MARK) ? withTasteKey(text, tasteKey(path.join(slotDir, ".playwright"))) : text);
+
+/** Writes a slot's init payload (`<dir>/.playwright/signals.js`, 0600, beside then renamed), the script its CLI config loads in every page, with the run's taste key. */
 export function writeInitPayload(dir, text = PAGE_INIT) {
   const file = path.join(dir, ".playwright", "signals.js");
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text, { mode: 0o600 });
+  fs.writeFileSync(tmp, withRunKey(text, dir), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 

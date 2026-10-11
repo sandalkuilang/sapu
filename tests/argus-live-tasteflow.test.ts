@@ -20,6 +20,8 @@ import { keepScreen, RECORDER, recorderPayload, tasteDir } from "../plugins/sapu
 import { tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 // @ts-expect-error — plain ESM script without types
 import { report } from "../plugins/sapu/scripts/argus-live-report.mjs";
+// @ts-expect-error — plain ESM script without types
+import { withTasteKey } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 
 type Obj = Record<string, any>;
 
@@ -172,5 +174,35 @@ describe("phase 7 integration — a screen J records runs through T1's and T2's 
     const all = [...files, said].join("\n");
     // As typed, and as the probes write page text (digit runs as #), scrub's exact match would miss.
     for (const v of SECRETS) for (const form of [v, v.replace(/[0-9]+/g, "#")]) expect(all, form).not.toContain(form);
+  }, 240_000);
+
+  it("a page that overwrites, deletes, drains or forges the recorders' records can neither force nor suppress a row", async () => {
+    const judged = async (click: boolean) => {
+      const main = committed();
+      const runId = takeLock(main, { maxCycleMinutes: 45 }).runId as string;
+      const record = new Function(`return ${RECORDER}`)() as (page: Obj, o: Obj, T: Obj) => Promise<Obj>;
+      // As the lane puts them in a page: the run's key in place of the mark, which the page only guesses.
+      const key = "5e".repeat(16);
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      try {
+        await context.addInitScript({ content: withTasteKey(PAGE_INIT, key) });
+        const page = await context.newPage();
+        await page.goto(`${origin}/ease/hostile.html`);
+        if (click) {
+          await page.click("#silent");
+          await page.getByText("silent done").waitFor({ timeout: 30_000 });
+        }
+        const T = JSON.parse(withTasteKey(JSON.stringify(recorderPayload({ main, runId, slot: 1, slotRec: { journey: "notes" }, prev: null, settleMs: 1000 })), key));
+        keepScreen(main, runId, { slot: 1, account: "buyer.1", journey: "notes" }, await record(page, { url: page.url(), aria: "state 1" }, T));
+      } finally {
+        await context.close();
+      }
+      expect((await tasteJudge(main, { run: runId })).code).toBe(0);
+      return (JSON.parse(readFileSync(join(tasteDir(main, runId), "judge.json"), "utf8")).rows as Obj[]).map((r) => r.rule);
+    };
+    // Forged records alone: no feedback, success or latency row.
+    expect((await judged(false)).filter((r) => /^(feedback|states)\./.test(r))).toEqual([]);
+    // A real 1.5 s silent wait after all that: still measured.
+    expect(await judged(true)).toContain("feedback.busy");
   }, 240_000);
 });

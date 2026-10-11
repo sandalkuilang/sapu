@@ -335,7 +335,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
     "refund.spec.ts": "0125b0b69225d90ac7fb27f00883bf49d214bb65de27336bdda05514271344ec",
-    "support.ts": "e014dc4706dd1f8c5276a2483eb455a50c96fec980979c84e28cd88dec004b83",
+    "support.ts": "6ec89c69e3c755db1156747458e0f16f470d39a896150fe24348e89c156734ef",
   };
 
   it("leaves every generated file byte-identical", () => {
@@ -690,7 +690,9 @@ function fakePage(answers: (rule: string, media: Obj) => unknown, start: Obj = {
   const calls = { emulate: [] as Obj[], drains: 0, settles: 0, armed: 0, initRuns: 0, evaluated: [] as string[], scales: [] as string[] };
   const page = {
     evaluate: async (expr: string) => {
-      if (expr === TASTE_DRAIN) return void (calls.drains += 1);
+      // Every source reaches the page with the suite's own random key, never the mark (the app's scripts would know it).
+      if (expr.includes("@@argus-taste-key@@")) throw new Error(`the taste key's mark reached the page: ${expr.slice(0, 80)}`);
+      if (expr.includes("document.__argusTasteDrain(")) return void (calls.drains += 1);
       if (expr === MEDIA_READ) return { ...media };
       if (expr.includes("__argusTastePush")) return void (calls.initRuns += 1);
       if (expr.includes("getAnimations")) return void (calls.settles += 1);

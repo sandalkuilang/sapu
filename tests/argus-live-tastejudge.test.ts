@@ -388,7 +388,7 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
   const open = async (name: string, contextOptions: Obj = {}) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...contextOptions });
     const page = await context.newPage();
-    await page.addInitScript(`${TASTE_BUFFER};document.addEventListener("transitionrun", (e) => document.__argusTastePush({ kind: "transition", t: performance.now(), phase: "run", name: String(e.propertyName), duration_ms: 0, delay_ms: 0, easing: "", target: "body" }), true);`);
+    await page.addInitScript(`${TASTE_BUFFER};document.addEventListener("transitionrun", (e) => document.__argusTastePush({ kind: "transition", t: performance.now(), phase: "run", name: String(e.propertyName), duration_ms: 0, delay_ms: 0, easing: "", target: "body" }, "@@argus-taste-key@@"), true);`);
     await page.goto(`${base}/${name}/1234`);
     const shots = join(tempDir(), "shots");
     mkdirSync(shots);
@@ -410,7 +410,7 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
       const again = await record(p.page, { url: p.page.url(), aria: "y" }, { ...T, taken: [name] });
       expect(again.shots).toEqual([]);
       // The same state leaves the buffer as it is: an action and its change in two observations stay one screen's events.
-      await p.page.evaluate('document.__argusTastePush({ kind: "input", t: performance.now(), type: "click" })');
+      await p.page.evaluate('document.__argusTastePush({ kind: "input", t: performance.now(), type: "click" }, "@@argus-taste-key@@")');
       expect(await record(p.page, { url: p.page.url(), aria: "x" }, { ...T, prev: sha(`${p.page.url()}\nx`) })).toEqual({ changed: false });
       expect((await p.page.evaluate(TASTE_DRAIN)).events.map((e: Obj) => e.kind)).toEqual(["input"]);
       // The media are back as they were: light, no preference.
@@ -447,7 +447,7 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
       expect(a.shots.map((s: Obj) => s.theme)).toEqual(["dark", "light"]);
       expect(await dark.page.evaluate(MEDIA_READ)).toEqual({ colorScheme: "dark", reducedMotion: "reduce" });
       // An event of the explorer's action is in the buffer before the recorder runs; the switch's transitions are not kept for the next one.
-      await light.page.evaluate(() => (document as Obj).__argusTastePush({ kind: "input", t: performance.now(), type: "click" }));
+      await light.page.evaluate(() => (document as Obj).__argusTastePush({ kind: "input", t: performance.now(), type: "click" }, "@@argus-taste-key@@"));
       const b = await record(light.page, { url: light.page.url(), aria: "x" }, light.T);
       expect(b.events.map((e: Obj) => e.kind)).toEqual(["input"]);
       expect(b.themed).toBe(true);

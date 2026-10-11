@@ -9,7 +9,7 @@ import { ARIA_EXPECT, CHECKS as A11Y } from "./argus-live-a11y.mjs";
 import * as easeProbe from "./argus-live-ease.mjs";
 import { CHECKS as LAYOUT } from "./argus-live-layout.mjs";
 import * as tasteProbe from "./argus-live-taste.mjs";
-import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN, tokensPx } from "./argus-live-tastecfg.mjs";
+import { FAMILIES, laneOnly, loadBar, MEDIA_READ, TASTE_BUFFER, TASTE_DRAIN, TASTE_KEY_MARK, tokensPx } from "./argus-live-tastecfg.mjs";
 
 /** The generator's version, in every file's header: a new one regenerates the suite. */
 export const CODEGEN_VERSION = "1";
@@ -188,6 +188,9 @@ const SETTLE = `new Promise((r) => requestAnimationFrame(() => r(0))).then(() =>
 /** The core's TypeScript in support.ts for `table` (tasteTable's). */
 export function tasteSource(table) {
   return `const TASTE_BAR_VERSION = ${table.version};
+/** The recorders' key for this run of the suite, random (-tastecfg TASTE_KEY_MARK's place): the app's scripts never learn it. */
+const TASTE_KEY = globalThis.crypto.randomUUID().replace(/-/g, "");
+const tasteKeyed = (s: string): string => s.split(${JSON.stringify(TASTE_KEY_MARK)}).join(TASTE_KEY);
 type TasteRule = { id: string; info: boolean; passes: string[]; expr: string };
 type TasteFinding = { rule: string; key: string; measured: number | string; expected: number | string };
 type TasteViolation = { check: string; step: number; key: string; detail: string };
@@ -197,8 +200,8 @@ const TASTE_RULES: TasteRule[] = ${literal(table.rules)};
 const TASTE_PROBES: Record<string, string> = ${literal(table.probes)};
 /** The dark-parity rules' census and judge (the taste probe's censusOf and rulesFor sources) and their bar rules, or null. */
 const TASTE_PARITY: { census: string; rules: string; bar: unknown } | null = ${literal(table.parity ?? null)};
-const TASTE_INIT = ${JSON.stringify(tasteInit())};
-const TASTE_DRAIN = ${JSON.stringify(TASTE_DRAIN)};
+const TASTE_INIT = tasteKeyed(${JSON.stringify(tasteInit())});
+const TASTE_DRAIN = tasteKeyed(${JSON.stringify(TASTE_DRAIN)});
 const TASTE_MEDIA = ${JSON.stringify(MEDIA_READ)};
 const TASTE_SETTLE = ${JSON.stringify(SETTLE)};
 const tasteArmed = new WeakSet<object>();
@@ -283,7 +286,7 @@ function tasteConfig(): Promise<TasteConfig> {
 /** A rule's expression as it runs: each probe's source and the owner's scale put back. */
 const tasteExpr = (r: TasteRule, cfg: TasteConfig): string =>
   Object.entries(TASTE_PROBES)
-    .reduce((s, [mark, src]) => s.split(mark).join(src), r.expr)
+    .reduce((s, [mark, src]) => s.split(mark).join(tasteKeyed(src)), tasteKeyed(r.expr))
     .split(${JSON.stringify(JSON.stringify(TASTE_SCALE_MARK.tokens))})
     .join(JSON.stringify(cfg.tokens))
     .split(${JSON.stringify(JSON.stringify(TASTE_SCALE_MARK.frame))})
@@ -331,7 +334,7 @@ async function tasteParity(page: Page, rules: TasteRule[], cfg: TasteConfig, not
   if (!TASTE_PARITY || !rules.length) return [];
   const found: TasteFinding[] = [];
   try {
-    const census = new Function("return " + TASTE_PARITY.census)();
+    const census = new Function("return " + tasteKeyed(TASTE_PARITY.census))();
     const judge = new Function("return " + TASTE_PARITY.rules)();
     const screen = await census(page);
     if (screen && screen.themes === "single") notes.push("taste: single theme (the app does not answer prefers-color-scheme): dark parity not judged");

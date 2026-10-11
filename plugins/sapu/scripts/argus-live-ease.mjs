@@ -10,6 +10,8 @@
 // cannot decide stays silent.
 import { readFileSync } from "node:fs";
 
+/** argus-live-tastecfg.mjs TASTE_KEY_MARK (a leaf cannot import it; a test pins the two equal): the lane's taste key goes in its place. */
+const KEY_MARK = "@@argus-taste-key@@";
 /** argus-live-tastecfg.mjs RENDER_ATTRIBUTES (a leaf cannot import it; a test pins the two equal). */
 export const EASE_RENDER = ["class", "style", "hidden", "aria-hidden", "open", "disabled", "aria-expanded", "aria-selected", "aria-busy"];
 /** A request's route template: numeric, uuid and long token segments become `:id`. */
@@ -49,10 +51,17 @@ const LOADER_FNS = String.raw`const SKELETON = /(^|[-_])(skeleton|shimmer)([-_]|
  */
 export const EASE_INIT = String.raw`(() => {
   const doc = document;
-  if (doc.__argusEase || typeof doc.__argusTastePush !== "function") return;
-  const push = doc.__argusTastePush;
+  if (Object.prototype.hasOwnProperty.call(doc, "__argusEase") || typeof doc.__argusTastePush !== "function") return;
+  const KEY = "${KEY_MARK}";
+  const push = (rec) => doc.__argusTastePush(rec, KEY);
   const now = () => performance.now();
-  const S = (doc.__argusEase = { v: 1, requests: [], actions: [], edits: [], shifts: 0, pending: false, roots: new Set() });
+  const S = { v: 1, requests: [], actions: [], edits: [], shifts: 0, pending: false };
+  const roots = new Set();
+  // Fixed properties a page cannot replace: what the probes read, as a copy (writing to it changes nothing), and the
+  // live record only with the taste key (the request wrappers write to it).
+  const fix = (name, desc) => Object.defineProperty(doc, name, { ...desc, configurable: false, enumerable: false });
+  fix("__argusEase", { get: () => ({ v: S.v, requests: S.requests.map((r) => Object.assign({}, r)), actions: S.actions.map((a) => Object.assign({}, a)), edits: S.edits.map((e) => Object.assign({}, e)), shifts: S.shifts, pending: S.pending, observe: S.observe }) });
+  fix("__argusEaseLive", { value: (key) => (key === KEY ? S : null), writable: false });
   const V = { checkOpacity: true, checkVisibilityCSS: true };
   const shown = (el) => Boolean(el) && el.nodeType === 1 && el.isConnected && (typeof el.checkVisibility !== "function" || el.checkVisibility(V));
   const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
@@ -99,7 +108,7 @@ export const EASE_INIT = String.raw`(() => {
   };
   const scan = (t) => {
     const c = { "aria-busy": 0, progressbar: 0, spinner: 0, skeleton: 0, disabled: 0, decoration: 0 };
-    const all = (q) => [...S.roots].flatMap((r) => [...r.querySelectorAll(q)]);
+    const all = (q) => [...roots].flatMap((r) => [...r.querySelectorAll(q)]);
     for (const el of all('[aria-busy="true"]')) if (shown(el)) c["aria-busy"] += 1;
     for (const el of all("[role=progressbar], progress")) if (shown(el)) c[(el.tagName === "PROGRESS" ? el.hasAttribute("value") : el.hasAttribute("aria-valuenow")) ? "progressbar" : "spinner"] += 1;
     const seen = new Set();
@@ -123,7 +132,7 @@ export const EASE_INIT = String.raw`(() => {
     if (!timer) timer = setTimeout(() => { const s = since; timer = 0; since = null; last = now(); scan(s); }, Math.max(0, last + 30 - t));
   });
   // Shadow roots too (web components render there): each one attachShadow makes, once the wrapper below is on.
-  (S.observe = (root) => S.roots.add(root) && mo.observe(root, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true, attributeOldValue: true, attributeFilter: ${JSON.stringify(EASE_RENDER)} }))(doc);
+  (S.observe = (root) => roots.add(root) && mo.observe(root, { subtree: true, childList: true, characterData: true, characterDataOldValue: true, attributes: true, attributeOldValue: true, attributeFilter: ${JSON.stringify(EASE_RENDER)} }))(doc);
   try { new PerformanceObserver((list) => { for (const e of list.getEntries()) if (e.value > 0.001) cap(jolts, 50, e.startTime); match(); }).observe({ type: "layout-shift", buffered: true }); } catch (e) {}
   addEventListener("pagehide", () => { if (S.pending) push({ kind: "change", t: now(), cause: "navigation", attr: null }); });
   // A focus move is visible feedback (decision 10): to a shown element that is not the action's own control, which
@@ -146,7 +155,7 @@ export const EASE_INIT = String.raw`(() => {
   };
   // The current document's record of a request (null when it has none), and its end; the wrappers change nothing else.
   const rec = (method, url, body) => {
-    try { const st = document.__argusEase, u = new URL(String(url), location.href); return st ? cap(st.requests, 200, { t: performance.now(), end: null, status: 0, method: String(method || "GET").toUpperCase(), route: routeOf(u.pathname), keys: keysOf(body), same: u.origin === location.origin }) : null; } catch (e) { return null; }
+    try { const st = typeof document.__argusEaseLive === "function" ? document.__argusEaseLive(KEY) : null, u = new URL(String(url), location.href); return st ? cap(st.requests, 200, { t: performance.now(), end: null, status: 0, method: String(method || "GET").toUpperCase(), route: routeOf(u.pathname), keys: keysOf(body), same: u.origin === location.origin }) : null; } catch (e) { return null; }
   };
   const done = (r, status) => { if (r) [r.end, r.status] = [performance.now(), status]; };
   const native = window.fetch;
@@ -276,6 +285,8 @@ export const EASE_SOURCE = String.raw`(arg) => {
   if (A.kind === "feedback") return feedback(A.events, A.requests, A.now);
   const doc = document;
   const st = doc.__argusEase || null;
+  // The document's buffered records (the taste key's), never drained here.
+  const peek = () => (typeof doc.__argusTastePeek === "function" ? doc.__argusTastePeek("${KEY_MARK}") || [] : []);
   const V = { checkOpacity: true, checkVisibilityCSS: true };
   const shown = (el) => Boolean(el) && el.nodeType === 1 && el.isConnected && (typeof el.checkVisibility !== "function" || el.checkVisibility(V));
   const formKey = ${FORM_KEY};
@@ -406,7 +417,7 @@ export const EASE_SOURCE = String.raw`(arg) => {
   const metricsOf = (s) => {
     const m = { empty_states_without_control: s.empty.length, errors_without_exit: s.exits.length };
     if (vagueWords().size) m.vague_labels = s.vague.length;
-    const fb = feedback(doc.__argusTasteEvents || [], s.requests, s.now);
+    const fb = feedback(peek(), s.requests, s.now);
     const waits = fb.acts.filter((a) => a.reqs.length && a.first !== null).map((a) => a.first);
     if (waits.length) m.first_change_ms = Math.round(Math.max(...waits));
     if (fb.loaders.length) m.loader_shown_ms = Math.round(Math.min(...fb.loaders.map((l) => l.shown)));
@@ -424,7 +435,7 @@ export const EASE_SOURCE = String.raw`(arg) => {
   if (A.kind === "rule") {
     const s = screen();
     if (A.rule === "states.error") s.error = Object.assign({ faulted: true }, errorState());
-    const events = doc.__argusTasteEvents ? doc.__argusTasteEvents.slice() : [];
+    const events = peek();
     return judge({ route: s.route, events, ease: s }, A.rules, { optimistic: A.optimistic || [] }).filter((f) => f.rule === A.rule);
   }
   throw new Error("failed: ease: no kind " + String(A.kind).slice(0, 40));

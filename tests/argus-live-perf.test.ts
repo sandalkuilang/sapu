@@ -13,7 +13,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 import { appCycle, browserCleanup, browserLeftovers, browserTools, cleanTemps, committed, example, fixtureProcs, git, liveRun, makeShim, tempDir } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
-import { PAGE_INIT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
+import { PAGE_INIT, SIGNAL_SCRIPT, slotDir } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -334,14 +334,15 @@ await import(${JSON.stringify(shim)});
   };
   const hookPayload = (code: string) => JSON.parse(/const P = (.*);\n/.exec(code)![1]);
 
-  it("the hook installs the perf script beside the init payload (the signal script first), and only in a perf pass", async () => {
+  it("the hook installs the perf script beside the signal script in a perf pass (no taste recorder), the init payload otherwise", async () => {
     const plain = driverRun();
     await plain.driver().ensure();
-    expect(hookPayload(plain.runCodes()[0].code).signals).toBe(PAGE_INIT);
+    const key = readFileSync(join(slotDir(plain.main, plain.runId, 1), ".playwright/taste.key"), "utf8").trim();
+    expect(hookPayload(plain.runCodes()[0].code).signals).toBe(PAGE_INIT.split("@@argus-taste-key@@").join(key));
     const t = driverRun();
     await collecting(newSink(), () => t.driver().ensure());
     const { signals } = hookPayload(t.runCodes()[0].code);
-    expect(signals).toBe(`${PAGE_INIT};\n${PERF_SCRIPT}`);
+    expect(signals).toBe(`${SIGNAL_SCRIPT};\n${PERF_SCRIPT}`);
     expect(() => new vm.Script(signals)).not.toThrow();
   }, 60_000);
 

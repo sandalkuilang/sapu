@@ -3,7 +3,7 @@
 // and the lane's `.argus/taste-state.json`, each with its one validator, reader and writer. A leaf module: it
 // imports no other argus-live module, so the probes, the judge, SELECT, filing and the suite all read the same
 // shapes from here.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -384,31 +384,77 @@ export function tasteEventFault(e) {
 }
 
 /**
- * The buffer, first in the session hook's init payload: once a document (`document.__argusTasteEvents`), a
- * `document.__argusTastePush(record)` the taste and ease init scripts call; a record of an unknown kind or without
- * a numeric `t`, or past TASTE_EVENTS_MAX, is counted in `document.__argusTasteDropped`.
+ * The key the taste recorders and the lane's readers share (the phase-end review's M3): every in-page source writes it
+ * as this mark, and the lane puts a key in its place where a source enters a page (the CLI's init payload, a run-code
+ * file: argus-live-browser.mjs writeInitPayload, argus-live-login.mjs runCode; the suite at run time). The page's own
+ * scripts do not know it, so they can neither push a record nor drain the buffer.
+ */
+export const TASTE_KEY_MARK = "@@argus-taste-key@@";
+/** `text` with the taste key in place of every TASTE_KEY_MARK. */
+export const withTasteKey = (text, key) => (typeof text === "string" && text.includes(TASTE_KEY_MARK) ? text.split(TASTE_KEY_MARK).join(key) : text);
+/**
+ * The taste key kept in directory `runDir` (`<dir>/taste.key`, 0600, made on first use: 32 random hex digits; the lane
+ * keeps one beside each slot's init payload). Every process reads the same key there; a page never does.
+ */
+export function tasteKey(runDir) {
+  const file = path.join(runDir, "taste.key");
+  try {
+    const k = fs.readFileSync(file, "utf8").trim();
+    if (/^[0-9a-f]{32}$/.test(k)) return k;
+  } catch {
+    // none yet
+  }
+  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  const k = randomBytes(16).toString("hex");
+  try {
+    fs.writeFileSync(file, `${k}\n`, { mode: 0o600, flag: "wx" });
+    return k;
+  } catch {
+    return fs.readFileSync(file, "utf8").trim(); // another process made it first
+  }
+}
+
+/**
+ * The buffer, first in the session hook's init payload, once a document: its records live in a closure, never on the
+ * page. `document.__argusTastePush(record, key)` (the taste, ease and AI recorders), `__argusTasteDrain(key)` (the
+ * lane's TASTE_DRAIN) and `__argusTastePeek(key)` (a probe reading the records without draining them) are fixed
+ * properties a page cannot replace or delete, and each does nothing without the taste key. A record of an unknown kind
+ * or without a numeric `t`, or past TASTE_EVENTS_MAX, is counted as dropped. No builtin method the page could patch is
+ * called on the records.
  */
 export const TASTE_BUFFER = `(() => {
-  if (document.__argusTasteEvents) return;
-  const buffer = (document.__argusTasteEvents = []);
-  const KINDS = ${JSON.stringify(Object.keys(TASTE_EVENTS))};
-  document.__argusTasteDropped = 0;
-  document.__argusTastePush = (rec) => {
-    if (!rec || KINDS.indexOf(rec.kind) < 0 || typeof rec.t !== "number" || buffer.length >= ${TASTE_EVENTS_MAX}) {
-      document.__argusTasteDropped += 1;
+  if (Object.prototype.hasOwnProperty.call(document, "__argusTastePush")) return;
+  const KEY = "${TASTE_KEY_MARK}";
+  const KINDS = Object.assign(Object.create(null), ${JSON.stringify(Object.fromEntries(Object.keys(TASTE_EVENTS).map((k) => [k, true])))});
+  let buffer = [];
+  let dropped = 0;
+  const copy = (list) => { const out = []; for (let i = 0; i < list.length; i++) out[i] = list[i]; return out; };
+  const fix = (name, value) => Object.defineProperty(document, name, { value, writable: false, configurable: false, enumerable: false });
+  fix("__argusTastePush", (rec, key) => {
+    if (key !== KEY) return;
+    if (!rec || KINDS[rec.kind] !== true || typeof rec.t !== "number" || buffer.length >= ${TASTE_EVENTS_MAX}) {
+      dropped += 1;
       return;
     }
-    buffer.push(rec);
-  };
+    buffer[buffer.length] = rec;
+  });
+  fix("__argusTasteDrain", (key) => {
+    if (key !== KEY) return null;
+    const out = { events: buffer, dropped };
+    buffer = [];
+    dropped = 0;
+    return out;
+  });
+  fix("__argusTastePeek", (key) => (key === KEY ? copy(buffer) : null));
 })();
 `;
 /** A page expression (page.evaluate) draining the current document's buffer → `{url, timeOrigin, dropped, events}`. */
 export const TASTE_DRAIN = `(() => {
-  const events = document.__argusTasteEvents ? document.__argusTasteEvents.splice(0) : [];
-  const dropped = document.__argusTasteDropped || 0;
-  document.__argusTasteDropped = 0;
-  return { url: location.href, timeOrigin: performance.timeOrigin, dropped, events };
+  const r = typeof document.__argusTasteDrain === "function" ? document.__argusTasteDrain("${TASTE_KEY_MARK}") : null;
+  return { url: location.href, timeOrigin: performance.timeOrigin, dropped: r ? r.dropped : 0, events: r ? r.events : [] };
 })()`;
+/** A page expression → the current document's buffered records, not drained (`[]` with none). */
+export const TASTE_PEEK = `(typeof document.__argusTastePeek === "function" ? document.__argusTastePeek("${TASTE_KEY_MARK}") || [] : [])`;
 /** A page expression → the media the page answers now, as explicit values `{colorScheme: light|dark, reducedMotion: reduce|no-preference}`. */
 export const MEDIA_READ = `(() => ({ colorScheme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light", reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduce" : "no-preference" }))()`;
 /**
@@ -428,8 +474,11 @@ export const TASTE_STATE_FILE = ".argus/taste-state.json";
 export const ROW_STATES = Object.freeze(["queued", "open", "closed", "accepted"]);
 /** A screen key (decision 17): `<route template>|<viewport width>|<light|dark>`. */
 export const SCREEN_KEY = /^\/[^\s|]{0,200}\|[1-9][0-9]{2,3}\|(light|dark)$/;
-/** An issue's title key and the state's row key (decision 19). */
-export const titleKey = (rule, screen) => `taste:${rule}:${screen}`;
+/**
+ * An issue's title key and the state's row key (decision 19). The screen key's route comes from the page's URL: in a
+ * title only a safe charset passes (letters, digits, `/ . _ - : * { } [ ] |`), anything else becomes `_`.
+ */
+export const titleKey = (rule, screen) => `taste:${rule}:${String(screen).replace(/[^A-Za-z0-9/._:*{}[\]|-]/g, "_")}`;
 /**
  * The one screenshot a run keeps of screen key `key`: `<run>/taste/shots/<shotName(key)>.png` (0600), its scrub
  * verdict beside it as `<name>.verdict.json` — the first 32 hex digits of the key's sha256. The recorder names its

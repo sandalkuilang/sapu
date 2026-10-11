@@ -261,7 +261,10 @@ if (cmd === "goto" && fs.existsSync(${JSON.stringify(gone)})) process.exitCode =
     // Opened and hooked (one hook stage: the run's origins, the signal script, the byte cap), never signed in by ensure: that is the caller's.
     expect(first.events).toEqual([]);
     expect(t.stages()).toHaveLength(1);
-    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT, capBytes: 4 * 2 ** 20 })};`);
+    // The init payload with the slot's taste key in place of the mark (never the mark itself: the page must not know it).
+    const key = readFileSync(join(t.dir, ".playwright/taste.key"), "utf8").trim();
+    expect(t.stages()[0].code).toContain(`const P = ${JSON.stringify({ runOrigins: ["http://localhost:41001", BASE], signals: PAGE_INIT.split("@@argus-taste-key@@").join(key), capBytes: 4 * 2 ** 20 })};`);
+    expect(t.stages()[0].code).not.toContain("@@argus-taste-key@@");
     expect(t.stages()[0].code).toContain("ctx.__argus = {");
     const again = await t.driver().ensure();
     expect(again).toEqual({ record: first.record, opened: false, events: [] });
@@ -2560,12 +2563,14 @@ describe("argus-live select", () => {
       picks: [{ id: "g", score: 150, accounts: { "anon.1": null } }],
       waits: [{ id: "n", score: 75, why: "global journey selected alone" }, { id: "m", score: 60, why: "global journey selected alone" }, { id: "o", score: 45, why: "global journey selected alone" }],
       displaced: [],
+      warnings: [],
     });
     t.map([journey("g", [ANON], { global: true, lastCycle: 90 }), journey("n", [ANON], { lastCycle: 50 }), journey("m", [ANON], { lastCycle: 60 }), journey("o", [ANON], { lastCycle: 70 })]);
     expect(selectJourneys(t.main, { cycle: 100 })).toEqual({
       picks: [{ id: "n", score: 75, accounts: { "anon.1": null } }, { id: "m", score: 60, accounts: { "anon.1": null } }],
       waits: [{ id: "o", score: 45, why: "limit 2 reached" }, { id: "g", score: 15, why: "a global journey waits for a cycle of its own" }],
       displaced: [],
+      warnings: [],
     });
   });
 

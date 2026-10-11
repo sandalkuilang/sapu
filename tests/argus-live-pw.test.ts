@@ -1494,7 +1494,9 @@ describe("argus-live per-slot config", () => {
     const dir = join(tempDir(), "1");
     writeSlotConfig(dir, slotConfig({ ...fixture(), dir }));
     expect(JSON.parse(readFileSync(join(dir, ".playwright/cli.config.json"), "utf8")).outputDir).toBe(join(dir, "out"));
-    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT);
+    // The init payload with the slot's own taste key in place of the recorders' mark.
+    const key = readFileSync(join(dir, ".playwright/taste.key"), "utf8").trim();
+    expect(readFileSync(join(dir, ".playwright/signals.js"), "utf8")).toBe(PAGE_INIT.split("@@argus-taste-key@@").join(key));
     for (const f of [".playwright/cli.config.json", ".playwright/signals.js"]) expect(statSync(join(dir, f)).mode & 0o777).toBe(0o600);
     for (const d of ["", ".playwright", "out", "files"]) expect(statSync(join(dir, d)).mode & 0o777).toBe(0o700);
   });

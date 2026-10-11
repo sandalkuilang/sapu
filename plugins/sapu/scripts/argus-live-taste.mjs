@@ -14,6 +14,8 @@ import fs from "node:fs";
 
 /** The bar as shipped (`plugins/sapu/data/taste-bar.json`), read as data: argus-live-tastecfg.mjs validates it. */
 const BAR = JSON.parse(fs.readFileSync(new URL("../data/taste-bar.json", import.meta.url), "utf8"));
+/** argus-live-tastecfg.mjs TASTE_KEY_MARK (a leaf cannot import it; a test pins the two equal): the lane's taste key goes in its place. */
+const KEY_MARK = "@@argus-taste-key@@";
 /** The rule families this module measures (argus-live-tastecfg.mjs FAMILIES, probe `taste`). */
 const OURS = ["scale", "hierarchy", "colour", "contrast", "motion", "density"];
 
@@ -381,8 +383,15 @@ export const TASTE_SOURCE = String.raw`(arg) => {
  */
 export const TASTE_INIT = String.raw`(() => {
   const doc = document;
-  if (doc.__argusTasteMotion) return;
-  const store = (doc.__argusTasteMotion = []);
+  if (Object.prototype.hasOwnProperty.call(doc, "__argusTasteMotion")) return;
+  const KEY = "${KEY_MARK}";
+  const store = [];
+  let quiet = false;
+  // Fixed properties a page cannot replace: the store as a copy (writing to it changes nothing), the settle, and the
+  // census's quiet switch, which does nothing without the taste key.
+  const fix = (name, desc) => Object.defineProperty(doc, name, { ...desc, configurable: false, enumerable: false });
+  fix("__argusTasteMotion", { get: () => store.map((m) => Object.assign({}, m)) });
+  fix("__argusTasteQuietSet", { value: (on, key) => { if (key === KEY) quiet = Boolean(on); }, writable: false });
   const norm = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
   const own = (el) => { let t = ""; for (const n of el.childNodes) if (n.nodeType === 3) t += n.nodeValue; return norm(t); };
   // Never what a user typed: a field or anything in an editable box by its aria-label or name only.
@@ -391,7 +400,7 @@ export const TASTE_INIT = String.raw`(() => {
   const MOVE = /^(transform|translate|scale|rotate)$/;
   const propsOf = (a) => [...new Set((a && a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : []).flatMap((k) => Object.keys(k)).filter((p) => !/^(offset|easing|composite|computedOffset)$/.test(p)).map((p) => p.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase())))];
   const reduce = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const push = (rec) => { if (typeof doc.__argusTastePush === "function") doc.__argusTastePush(rec); };
+  const push = (rec) => { if (typeof doc.__argusTastePush === "function") doc.__argusTastePush(rec, KEY); };
   const keep = (e) => { if (store.length >= 200) store.shift(); store.push(e); };
   const rects = (els) => els.map((x) => { const r = x.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
   const differs = (a, b) => a.some((v, j) => Math.abs(v - b[j]) >= 1);
@@ -405,7 +414,7 @@ export const TASTE_INIT = String.raw`(() => {
     const after = rects(snap.els);
     e.moved = differs(rects([snap.el])[0], snap.self) ? snap.before.filter((r, i) => snap.els[i].isConnected && differs(r, after[i])).length : 0;
   };
-  doc.__argusTasteMotionNow = () => { for (const e of snaps.keys()) settle(e); };
+  fix("__argusTasteMotionNow", { value: () => { for (const e of snaps.keys()) settle(e); }, writable: false });
   const record = (ev, kind, phase) => {
     const el = ev.target;
     // A view transition's own pseudo-element animations are the one motion the startViewTransition wrapper records.
@@ -419,7 +428,7 @@ export const TASTE_INIT = String.raw`(() => {
       const a = el.getAnimations({ subtree: true }).find((x) => x.effect && x.effect.target === el && (kind === "transition" ? x.transitionProperty === name : x.animationName === name) && (x.effect.pseudoElement || "") === (ev.pseudoElement || ""));
       const tm = a && a.effect ? a.effect.getTiming() : {};
       const props = kind === "transition" ? [name] : propsOf(a);
-      e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet: Boolean(doc.__argusTasteQuiet), target: keyOf(el), moved: null };
+      e = { kind, name, duration: Number(tm.duration) || 0, delay: Math.max(0, Number(tm.delay) || 0), easing: String(tm.easing || "").slice(0, 120), infinite: tm.iterations === Infinity, layout: props.some((x) => LAYOUT.test(x)), transform: props.some((x) => MOVE.test(x)), opacityOnly: props.length > 0 && props.every((x) => x === "opacity"), reduce: reduce(), quiet, target: keyOf(el), moved: null };
       mine.set(id, e);
       keep(e);
       if (e.layout) {
@@ -445,7 +454,7 @@ export const TASTE_INIT = String.raw`(() => {
         vt.ready.then(() => {
           let longest = 0;
           for (const a of doc.getAnimations()) if (a.effect && String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0) longest = Math.max(longest, Number(a.effect.getTiming().duration) || 0);
-          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet: Boolean(doc.__argusTasteQuiet), target: "::view-transition", moved: null });
+          keep({ kind: "view", name: "view-transition", duration: longest, delay: 0, easing: "", infinite: false, layout: false, transform: true, opacityOnly: false, reduce: reduce(), quiet, target: "::view-transition", moved: null });
           push({ kind: "animation", t: performance.now(), phase: "start", name: "view-transition", duration_ms: longest, delay_ms: 0, easing: "", target: "::view-transition" });
         }, () => {});
       } catch (err) {}
@@ -606,7 +615,7 @@ const QUIET = `(on) => {
     d.adoptedStyleSheets = d.adoptedStyleSheets.filter((x) => x !== sheet);
     d.__argusTasteQuietSheet = null;
   }
-  d.__argusTasteQuiet = on;
+  if (typeof d.__argusTasteQuietSet === "function") d.__argusTasteQuietSet(on, "${KEY_MARK}");
 }`;
 
 /**
