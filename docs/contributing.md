@@ -24,7 +24,7 @@ plugins/senior-dev-team/          sapu's dependency: the specialist agents (agen
 docs/img/src/                     the diagram generator: one source per diagram, light and dark files
 scripts/rule-guard.ts             gate: a weakened engine rule needs a Rule-Change trailer (not shipped)
 tests/                            vitest: guard, workflows, contract, merge, metrics, cleanup, rule-guard, the journey lane (argus-live*), and "the engine is clean of repos"
-.github/workflows/                test.yml runs the suite on Linux for every push and PR; tag-release.yml tags a released version
+.github/workflows/                test.yml runs the suite on Linux and macOS for a PR once it is ready for review (drafts run nothing); tag-release.yml tags a released version
 ```
 
 The plugin has no npm dependencies. Its scripts run on Node ≥ 22.18 (`.ts` runs directly), `bash`, `git`, `gh`, and `jq`. The journey lane's browser CLI is the one exception, and it is not installed with the plugin: `scripts/pw/` pins it, and the lane installs it into the user's cache with `npm ci --ignore-scripts` the first time it needs it.

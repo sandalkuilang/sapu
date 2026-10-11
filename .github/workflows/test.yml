@@ -1,4 +1,6 @@
-# Runs the test suite on Linux and on macOS for every push and pull request. The journey lane's live
+# Runs the test suite on Linux and on macOS for a pull request that is ready for review: a draft runs
+# nothing, marking it ready runs it, and each later push to it runs it again, cancelling the run it
+# replaces. A maintainer can also run it by hand (workflow_dispatch). The journey lane's live
 # instance takes different paths on each (process start times from /proc or ps, unix-socket peers from
 # `ss -xp` or lsof, dash or bash as /bin/sh, Chrome's socket paths), so each job runs on both.
 #
@@ -8,12 +10,17 @@
 # on two lines, or one that is gone, fails the `rest` job.
 name: test
 on:
-  push:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     name: test (${{ matrix.os }}, ${{ matrix.job }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}
