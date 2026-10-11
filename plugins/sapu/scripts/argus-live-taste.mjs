@@ -93,7 +93,12 @@ export const TASTE_SOURCE = String.raw`(arg) => {
     const vt = String(a.effect.pseudoElement || "").indexOf("::view-transition") === 0;
     running.push({ name: a.transitionProperty || a.animationName || "animation", infinite: a.effect.getTiming().iterations === Infinity, transform: props.some((p) => /^(transform|translate|scale|rotate)$/.test(p)), target: vt ? "::view-transition" : keyOf(a.effect.target) });
   }
-  if (o.motionOnly) return { media, motion, running };
+  // The bar-class rules' own numbers (calibration's bands and the judge's witness read each by its metric name), as
+  // rulesFor counts them: a motion shorter than a frame is none, one motion seen twice is one.
+  const FRAME = 17;
+  const latest = (list) => [...new Map(list.map((m) => [m.name + "|" + m.target, m])).values()];
+  const reduced = () => latest([...running.filter((a) => a.infinite && a.transform), ...motion.filter((m) => m.reduce && m.transform && !m.quiet && !m.infinite && m.duration >= FRAME)]).length;
+  if (o.motionOnly) return { media, motion, running, metrics: media.reduce ? { reduced_motion_transforms: reduced() } : {} };
 
   // What renders: a box of some size, visible, not hidden from everyone (the visually-hidden pattern is 1x1).
   const shown = (el) => {
@@ -322,13 +327,25 @@ export const TASTE_SOURCE = String.raw`(arg) => {
   }
 
   const root = surface(doc.body) || canvasBg;
+  // The loudest filled style's distinct actions in view (hierarchy.primary-actions), the lowest body-text ratio that
+  // passes AA (contrast.headroom), the median duration of the motion the duration rule judges (motion.duration).
+  const loud = new Map();
+  for (const b of buttons) if (b.loud >= 2) (loud.get(b.sig) || loud.set(b.sig, { loud: b.loud, names: new Set() }).get(b.sig)).names.add(b.name);
+  const loudest = [...loud.values()].sort((a, b) => b.loud - a.loud)[0];
+  const body = text.filter((x) => !x.large && x.ratio >= 4.5).map((x) => x.ratio);
+  const durations = latest(motion.filter((m) => !m.infinite && !m.reduce && !m.quiet && m.duration >= FRAME)).map((m) => m.duration).sort((a, b) => a - b);
+  const metrics = { primary_actions: loudest ? loudest.names.size : 0, transition_all: transitionAll.length };
+  if (body.length) metrics.body_contrast_ratio = Math.min(...body);
+  if (durations.length) metrics.animation_ms = durations[Math.floor((durations.length - 1) / 2)];
+  if (media.reduce) metrics.reduced_motion_transforms = reduced();
   return {
     media,
     vw: win.innerWidth,
     truncated: all.length >= MAX,
     counts: { spacing: spacing.size, type: types.size, weights: weights.size, colours: colours.size, radii: radii.size, shadows: shadows.size },
-    // The same counts under the bar's metric names: calibration's bands read a metric by its rule's metric name.
-    metrics: { distinct_spacing: spacing.size, distinct_type: types.size, distinct_weights: weights.size, distinct_colours: colours.size, distinct_radii: radii.size, distinct_shadows: shadows.size },
+    // Per screen, under the bar's metric names (calibration's bands read a metric by its rule's metric name): the six
+    // counts, then the bar-class rules' numbers (a ratio or a duration only when the screen has one).
+    metrics: { distinct_spacing: spacing.size, distinct_type: types.size, distinct_weights: weights.size, distinct_colours: colours.size, distinct_radii: radii.size, distinct_shadows: shadows.size, ...metrics },
     values: { spacing: [...spacing], type: [...types.values()], radius: [...radiusValues], gaps: [...gaps.keys()] },
     palette: [...palette].sort(),
     headings,

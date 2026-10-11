@@ -14,7 +14,7 @@ import { tasteSource, tasteTable } from "../plugins/sapu/scripts/argus-live-code
 // @ts-expect-error — plain ESM script without types
 import { PAGE_INIT } from "../plugins/sapu/scripts/argus-live-browser.mjs";
 // @ts-expect-error — plain ESM script without types
-import { easeOf } from "../plugins/sapu/scripts/argus-live-ease.mjs";
+import { EASE_INIT, easeOf, rulesFor as easeRulesFor } from "../plugins/sapu/scripts/argus-live-ease.mjs";
 // @ts-expect-error — plain ESM script without types
 import { metricsOf } from "../scripts/taste-calibrate.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -420,6 +420,42 @@ describe("the calibration seam (phase 7 integration, lane K)", () => {
         expect(rows.find((x) => x.rule === r.id)?.measured, `${file} ${r.id}`).toBe(metrics[r.metric]);
       }
     }
+  }, 120_000);
+
+  it("censusOf and easeOf carry every bar-class rule's metric as a finite number, each as its rows count it; only feedback.latency's needs an action", async () => {
+    const barRules = BAR.rules.filter((r: Obj) => r.class === "bar");
+    // As the calibration script opens a page: the taste buffer and both recorders in the context, no action.
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    contexts.push(context);
+    await context.addInitScript({ content: [TASTE_BUFFER, TASTE_INIT, EASE_INIT].join(";\n") });
+    const page = await context.newPage();
+    await page.goto(`${origin}/bar-metrics.html`);
+    await page.waitForFunction(() => document.getElementById("slot")?.textContent === "Loaded." && document.getAnimations().every((a) => a.effect?.getTiming().iterations === Infinity), null, { timeout: 15_000 });
+    const screen = { census: await censusOf(page), ease: await easeOf(page) };
+    const metrics = metricsOf(screen, BAR);
+    expect(barRules.filter((r: Obj) => !Number.isFinite(metrics[r.metric])).map((r: Obj) => r.id)).toEqual(["feedback.latency"]);
+    // Each number is what the rule's own rows count on the same screen.
+    const taste = rulesFor(screen.census, BAR, cfgOf()) as Obj[];
+    const ease = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate("document.__argusTasteEvents.slice()"), ease: screen.ease }, BAR, cfgOf()) as Obj[];
+    const of = (rows: Obj[], id: string) => rows.filter((r) => r.rule === id);
+    expect(metrics).toMatchObject({ primary_actions: 2, body_contrast_ratio: 4.74, animation_ms: 300, transition_all: 1, reduced_motion_transforms: 1, vague_labels: 1, empty_states_without_control: 1, errors_without_exit: 1 });
+    expect(metrics.primary_actions).toBe(of(taste, "hierarchy.primary-actions")[0].measured);
+    expect(metrics.body_contrast_ratio).toBe(Math.min(...of(taste, "contrast.headroom").map((r) => r.measured)));
+    expect(metrics.transition_all).toBe(of(taste, "motion.transition-all").length);
+    expect(metrics.reduced_motion_transforms).toBe(of(taste, "motion.reduced").length);
+    expect(metrics.vague_labels).toBe(of(ease, "copy.vague").length);
+    expect(metrics.empty_states_without_control).toBe(of(ease, "states.empty-next").length);
+    expect(metrics.errors_without_exit).toBe(of(ease, "states.error-exit").length);
+    expect(metrics.loader_shown_ms).toBe(Math.min(...of(ease, "feedback.loader-flash").map((r) => r.measured)));
+    expect(metrics.loader_shown_ms).toBeLessThan(300);
+    // After an action that sent a request, the latency too: the slowest first change, as feedback.latency measures it.
+    await page.click("#b-load");
+    await page.waitForFunction(() => document.getElementById("out")?.textContent === "Refreshed.", null, { timeout: 15_000 });
+    const acted = { census: await censusOf(page), ease: await easeOf(page) };
+    const after = metricsOf(acted, BAR);
+    expect(barRules.filter((r: Obj) => !Number.isFinite(after[r.metric])).map((r: Obj) => r.id)).toEqual([]);
+    const latency = easeRulesFor({ route: "/bar-metrics.html", events: await page.evaluate("document.__argusTasteEvents.slice()"), ease: acted.ease }, { rules: [{ ...BAR.rules.find((r: Obj) => r.id === "feedback.latency"), threshold: { max: -1 } }] }, cfgOf());
+    expect(after.first_change_ms).toBe(latency[0].measured);
   }, 120_000);
 });
 

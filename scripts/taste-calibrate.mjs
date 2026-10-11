@@ -164,13 +164,18 @@ export const robotsAllows = (txt, url, agent = AGENT) => robotsRefusal(txt, url,
 // ---------------------------------------------------------------------------------------------------
 // Measurements and bands.
 
-/** The bar's per-screen metric names (a cycle family compares paths or screens: only the judge has those). */
-const screenMetrics = (bar) => [...new Set(bar.rules.filter((r) => FAMILIES[r.family] && FAMILIES[r.family].scope === "screen").map((r) => r.metric))];
+/**
+ * The metrics a band is read for (the judge's bandOf): every screen rule of class `bar` (its band and an internal
+ * witness make its row) and every count with a `band` threshold. A cycle family compares paths or screens: only the
+ * judge has those; an implicit or derived rule stands on its own measurement and needs no band.
+ */
+const screenMetrics = (bar) => [...new Set(bar.rules.filter((r) => FAMILIES[r.family] && FAMILIES[r.family].scope === "screen" && (r.class === "bar" || "band" in r.threshold)).map((r) => r.metric))];
 
 /**
- * A measured screen (`{census, ease}`, whatever shape the probes give) → `{<metric>: number}` for the bar's screen
- * metrics: the first finite number found under the metric's own name, at any depth of plain objects. A string, an
- * array or a non-finite number is never taken, so no page text can become a band.
+ * A measured screen (`{census, ease}`, whatever shape the probes give) → `{<metric>: number}` for the band metrics
+ * (screenMetrics): the first finite number found under the metric's own name, at any depth of plain objects (the
+ * probes put them under `metrics`). A string, an array or a non-finite number is never taken, so no page text can
+ * become a band.
  */
 export function metricsOf(screen, bar) {
   const wanted = new Set(screenMetrics(bar));

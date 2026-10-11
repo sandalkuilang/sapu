@@ -219,6 +219,18 @@ function bandAgrees(threshold, m, band) {
   return false;
 }
 
+/**
+ * Recorded screen `s`'s own number under `metric`, as calibration measured each corpus page (the probes' `metrics`:
+ * the census of the screen's scheme, its reduced-motion pass, the ease screen kind), or null. A bar row's band compares
+ * this, never one element's value: a row's `measured` may be a label or a single motion, a band counts per page.
+ */
+function screenMetric(s, metric) {
+  const t = isObj(s.taste) ? s.taste : {};
+  const own = t.media && t.media.colorScheme === "dark" ? t.dark : t.light;
+  for (const o of [own, t.reduce, s.ease]) if (isObj(o) && isObj(o.metrics) && isNum(o.metrics[metric])) return o.metrics[metric];
+  return null;
+}
+
 /** The owner's frame as a witness of a duration (decision 5): `motion.duration` outside the frame's durations. */
 function frameWitness(rule, m, cfg, bar) {
   const f = cfg.frame ? bar.frames[cfg.frame] : null;
@@ -365,7 +377,9 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
     if (group.length >= PEERS_AT_LEAST && holds.length) internal.push({ kind: "peer", value: "holds", from: holds.sort()[0] });
     const frame = frameWitness(rule, f.measured, cfg, bar);
     if (frame) internal.push(frame);
-    if (!band || !bandAgrees(rule.threshold, f.measured, band) || !internal.length) {
+    // The screen's own number (a record made before the probes carried it: the row's, when a number).
+    const own = screenMetric(s, rule.metric) ?? (isNum(f.measured) ? f.measured : null);
+    if (!band || !bandAgrees(rule.threshold, own, band) || !internal.length) {
       unwitnessed += 1;
       continue;
     }

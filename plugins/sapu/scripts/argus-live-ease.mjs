@@ -289,11 +289,15 @@ export const EASE_SOURCE = String.raw`(arg) => {
     for (const el of doc.querySelectorAll("input[type=button], input[type=submit]")) if (shown(el)) check(el.value, el, true);
     return out;
   };
-  const vague = () => {
+  // The labels a vague one is named from: the owner's, and the bar's for the page's language (none: not measured).
+  const vagueWords = () => {
     const lang = norm(doc.documentElement.getAttribute("lang")).toLowerCase();
     const words = [...(Array.isArray(A.vague) ? A.vague : [])];
     for (const [l, list] of Object.entries(A.terms || {})) if (lang === l.toLowerCase() || lang.startsWith(l.toLowerCase() + "-")) words.push(...list);
-    const want = new Set(words.map((x) => norm(x).toLowerCase()));
+    return new Set(words.map((x) => norm(x).toLowerCase()));
+  };
+  const vague = () => {
+    const want = vagueWords();
     const out = [], seen = new Set();
     const pick = (where, list) => {
       for (const c of [...list].filter((x) => !seen.has(x) && seen.add(x) && shown(x))) if (want.has(nameOf(c).toLowerCase()) && !out.some((o) => o.key === keyOf(where, nameOf(c)))) out.push({ key: keyOf(where, nameOf(c)), name: nameOf(c) });
@@ -381,7 +385,23 @@ export const EASE_SOURCE = String.raw`(arg) => {
       return { i, key: norm((x.labels && x.labels[0] && x.labels[0].textContent) || x.getAttribute("aria-label") || x.name || x.placeholder).replace(/[0-9]+/g, "#").slice(0, 60), filled: box ? x.checked : v !== "", need: (x.required || x.getAttribute("aria-required") === "true") && (f.noValidate || !x.required), text: !box && x.tagName !== "SELECT", box, digest: digest(v) };
     });
   };
-  const screen = () => ({ v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: st ? st.requests.map((r) => Object.assign({}, r)) : [], actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits(), footers: footers(), forms: forms() });
+  // The bar-class rules' own numbers (calibration's bands and the judge's witness read each by its metric name): counts
+  // of what the screen kind found, and, from the document's buffer as it stands, the slowest first change after an
+  // action that sent a request (feedback.latency) and the shortest loader shown (feedback.loader-flash) when there is one.
+  const metricsOf = (s) => {
+    const m = { empty_states_without_control: s.empty.length, errors_without_exit: s.exits.length };
+    if (vagueWords().size) m.vague_labels = s.vague.length;
+    const fb = feedback(doc.__argusTasteEvents || [], s.requests, s.now);
+    const waits = fb.acts.filter((a) => a.reqs.length && a.first !== null).map((a) => a.first);
+    if (waits.length) m.first_change_ms = Math.round(Math.max(...waits));
+    if (fb.loaders.length) m.loader_shown_ms = Math.round(Math.min(...fb.loaders.map((l) => l.shown)));
+    return m;
+  };
+  const screen = () => {
+    const s = { v: 1, now: performance.now(), route: routeOf(location.pathname), lang: norm(doc.documentElement.getAttribute("lang")), requests: st ? st.requests.map((r) => Object.assign({}, r)) : [], actions: st ? st.actions.slice() : [], edits: st ? st.edits.slice() : [], shifts: st ? st.shifts : 0, copy: copy(), vague: vague(), empty: empty(), exits: exits(), footers: footers(), forms: forms() };
+    s.metrics = metricsOf(s);
+    return s;
+  };
   if (A.kind === "screen") return A.palette ? palette().then((p) => Object.assign(screen(), { palette: p })) : screen();
   if (A.kind === "error") return errorState();
   if (A.kind === "fields") return fields(A.form);

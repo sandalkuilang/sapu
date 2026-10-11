@@ -174,11 +174,12 @@ describe("bands — percentiles, sites, the cut", () => {
     expect(cut).toEqual([{ archetype: "data", metric: "distinct_spacing", why: "one site gives more than half its pages" }]);
   });
 
-  it("metricsOf takes the bar's screen metrics as finite numbers wherever the probes put them, and nothing else", () => {
+  it("metricsOf takes the metrics a band is read for as finite numbers wherever the probes put them, and nothing else", () => {
     const bar = BAR();
-    const screen = { census: { scale: { distinct_spacing: 7, distinct_type: "9" }, label: "x", hierarchy: { primary_actions: 1 } }, ease: { first_change_ms: Infinity, broken_tokens: 0, actions: 4 } };
-    // `actions` is a cycle rule's metric (efficiency): only the judge compares paths, so it has no band.
-    expect(metricsOf(screen, bar)).toEqual({ distinct_spacing: 7, primary_actions: 1, broken_tokens: 0 });
+    const screen = { census: { scale: { distinct_spacing: 7, distinct_type: "9" }, label: "x", hierarchy: { primary_actions: 1 } }, ease: { first_change_ms: Infinity, vague_labels: 0, broken_tokens: 0, actions: 4 } };
+    // `actions` is a cycle rule's metric (efficiency): only the judge compares paths, so it has no band; `broken_tokens`
+    // is an implicit rule's, which stands on its own measurement: no band is read for it.
+    expect(metricsOf(screen, bar)).toEqual({ distinct_spacing: 7, primary_actions: 1, vague_labels: 0 });
   });
 
   it("the witness threshold is decision 16's: at least 5 sites and 15 pages", () => {

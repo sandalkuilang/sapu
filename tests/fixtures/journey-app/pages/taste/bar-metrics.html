@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Orders</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; border: 0 solid; }
+body { font: 400 16px/24px sans-serif; color: rgb(23, 23, 23); background: rgb(255, 255, 255); }
+main { padding: 24px; }
+section { margin: 12px 0; }
+.muted { color: rgb(115, 115, 115); }
+.primary { padding: 8px 16px; background: rgb(37, 99, 235); color: rgb(255, 255, 255); }
+.all { transition: all 200ms; }
+@keyframes enter { from { transform: translateY(8px); } to { transform: translateY(0); } }
+.enter { animation: enter 300ms ease-out 1; }
+@keyframes nudge-x { from { transform: translateX(0); } to { transform: translateX(8px); } }
+.hint { animation: nudge-x 1200ms infinite alternate; width: 120px; }
+.skeleton { width: 200px; height: 16px; background: rgb(229, 229, 229); }
+</style></head>
+<body>
+<main>
+<!-- One page holding a number for every bar-class rule, as the calibration measures a page (no action): two
+     primaries, AA body text under 7:1, a 300 ms entrance, transition: all, a loop that ignores reduced motion, an
+     empty list with no next step, an alert with no way on, a vague "OK", and a skeleton that flashes on load. -->
+<h1>Orders</h1>
+<p class="muted">Updated weekly</p>
+<section class="enter"><p>New this week.</p></section>
+<button class="primary">Create order</button> <button class="primary">Import orders</button>
+<div class="all">Hover card</div>
+<div class="hint">Hint</div>
+<section><h2>Drafts</h2><ul></ul><p>No drafts yet.</p></section>
+<section><div role="alert">The report could not be loaded.</div></section>
+<form onsubmit="return false"><input name="q" aria-label="Search"><button>OK</button></form>
+<div><button id="b-load" type="button">Refresh</button> <span id="out"></span></div>
+<div id="slot"></div>
+</main>
+<script>
+addEventListener("DOMContentLoaded", () => {
+  const sk = document.createElement("div");
+  sk.className = "skeleton";
+  document.getElementById("slot").append(sk);
+  setTimeout(() => { sk.remove(); document.getElementById("slot").textContent = "Loaded."; }, 150);
+});
+document.getElementById("b-load").addEventListener("click", async () => {
+  await fetch(location.href);
+  document.getElementById("out").textContent = "Refreshed.";
+});
+</script>
+</body></html>

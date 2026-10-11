@@ -630,6 +630,28 @@ describe("argus-live taste judge (J2)", () => {
     }
   }, 30_000);
 
+  it("a bar row's band compares the screen's own number under the rule's metric, as calibration measured each page, not one element's value", async () => {
+    const t = judgeRepo();
+    t.taste({ archetypes: { "/**": "app" } });
+    const vague = { rule: "copy.vague", key: "form|OK", measured: "OK", expected: "a label that names its result" };
+    const counted = (n: number | null) => ({ ease: { findings: [vague], ...(n === null ? {} : { metrics: { vague_labels: n } }) } });
+    // A label is text, which no band can compare: the screen's count of vague labels (1) is beyond the band's p90 (0).
+    barWith({ app: { vague_labels: band(0, 0, 0) } });
+    t.put(1, [t.screen("/a", [], counted(1)), t.screen("/b"), t.screen("/c")]);
+    await t.judge();
+    expect(t.file().rows.map((r: Obj) => [r.rule, r.class, r.measured, r.witnesses])).toEqual([["copy.vague", "bar", "OK", [{ kind: "band", value: 0, from: "app vague_labels" }, { kind: "peer", value: "holds", from: "/b|1440|light" }]]]);
+    // Within the band (one vague label is common there), or no number recorded for the screen: not a row.
+    barWith({ app: { vague_labels: band(0, 1, 1) } });
+    expect((await t.judge(), t.file().rows)).toEqual([]);
+    barWith({ app: { vague_labels: band(0, 0, 0) } });
+    t.put(1, [t.screen("/a", [], counted(null)), t.screen("/b"), t.screen("/c")]);
+    expect((await t.judge(), t.file().rows)).toEqual([]);
+    // The screen's own number outranks an element's: 3 primaries in a row, but the census counted 2, within the p90 of 2.
+    barWith({ app: { primary_actions: band(1, 1, 2) } });
+    t.put(1, [t.screen("/a", [primary(3)], { taste: { findings: [primary(3)], light: { metrics: { primary_actions: 2 } } } }), t.screen("/b"), t.screen("/c")]);
+    expect((await t.judge(), t.file().rows)).toEqual([]);
+  }, 30_000);
+
   it("the owner's frame witnesses a duration beyond it; implicit and derived rows stand on their measurement; info and off rules are never rows", async () => {
     const t = judgeRepo();
     t.taste({ frame: "carbon", archetypes: { "/**": "app" }, off: ["density.control-heights"] });
