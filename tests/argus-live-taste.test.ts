@@ -537,9 +537,9 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     ] as [Obj, string][]) expect(check([bad]).errors, why).toEqual([why]);
   });
 
-  it("validateCurator locks the Curator's return: verdicts, leads, substitutions per screen, and a walkthrough in fixed words", () => {
+  it("validateCurator locks the Curator's return: one verdict a title key, leads, substitutions per screen, and a walkthrough in fixed words", () => {
     const ok = {
-      verdicts: [{ row: "t1", verdict: "confirm", reason: "" }, { row: "t12", verdict: "polish", reason: "minor" }],
+      verdicts: [{ title: "taste:copy.broken:/orders/:id|1440|light", verdict: "confirm", reason: "" }, { title: "taste:hierarchy.alignment:/orders|1440|dark", verdict: "polish", reason: "minor" }],
       leads: [{ rule: "copy.broken", screen: "/orders/:id|1440|light" }],
       substitutions: [{ screen: "/orders/:id|1440|light", substitution: "partly" }, { screen: "/orders|1440|dark", substitution: "no" }],
       cw: [{ journey: "order-to-cash", step: 1, q1: "pass", q2: "fail", q3: "n/a", q4: "pass" }],
@@ -550,8 +550,11 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
       [null, "is not {verdicts, leads, substitutions, cw}"],
       [{ ...ok, extra: [] }, "unknown key extra"],
       [{ verdicts: [], leads: [], substitutions: [] }, "cw must be a list"],
-      [{ ...ok, verdicts: [{ row: "1", verdict: "confirm", reason: "" }] }, "verdicts[0] is not {row, verdict: confirm|reject|polish, reason}"],
-      [{ ...ok, verdicts: [{ row: "t1", verdict: "confirm" }] }, "verdicts[0] is not {row, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, verdicts: [{ row: "t1", verdict: "confirm", reason: "" }] }, "verdicts[0]: unknown key row"],
+      [{ ...ok, verdicts: [{ title: "taste:copy.broken:/a|1440|light", verdict: "confirm" }] }, "verdicts[0] is not {title: a title key of taste-bar 1, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, verdicts: [{ title: "taste:scale.vibes:/a|1440|light", verdict: "confirm", reason: "" }] }, "verdicts[0] is not {title: a title key of taste-bar 1, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, verdicts: [{ title: "taste:copy.broken:/a <b>|1440|light", verdict: "confirm", reason: "" }] }, "verdicts[0] is not {title: a title key of taste-bar 1, verdict: confirm|reject|polish, reason}"],
+      [{ ...ok, verdicts: [ok.verdicts[0], { ...ok.verdicts[0], verdict: "reject" }] }, "verdicts[1]: a second verdict for taste:copy.broken:/orders/:id|1440|light"],
       [{ ...ok, leads: [{ rule: "consistent.action", screen: "/a|1440|light" }] }, "leads[0] is not {rule: a screen rule of taste-bar 1, screen: a screen key}"],
       [{ ...ok, leads: [{ rule: "copy.broken", screen: "/a" }] }, "leads[0] is not {rule: a screen rule of taste-bar 1, screen: a screen key}"],
       [{ ...ok, substitutions: [{ screen: "/a|1440|light", substitution: "maybe" }] }, "substitutions[0] is not {screen, substitution: substitutable|partly|no}"],
@@ -564,13 +567,8 @@ describe("the taste lane oracle (spec §20.4; Task 0.3)", () => {
     const run = tempDir();
     expect(readCuratorFile(run)).toEqual({ value: null, fault: null });
     mkdirSync(join(run, "taste"));
-    // The file holds the return as `taste curator` stored it: each verdict also names its row's journey, rule, screen and key.
     writeFileSync(join(run, CURATOR_FILE), JSON.stringify(ok));
-    expect(readCuratorFile(run)).toEqual({ value: null, fault: "taste/curator.json verdicts[0] is not {row, journey, rule, screen, key, verdict: confirm|reject|polish, reason}" });
-    const stored = { ...ok, verdicts: ok.verdicts.map((v) => ({ ...v, journey: "order-to-cash", rule: "copy.broken", screen: "/orders/:id|1440|light", key: "main" })) };
-    writeFileSync(join(run, CURATOR_FILE), JSON.stringify(stored));
-    expect(readCuratorFile(run)).toEqual({ value: stored, fault: null });
-    expect(validateCurator(stored).errors[0]).toBe("verdicts[0]: unknown key journey");
+    expect(readCuratorFile(run)).toEqual({ value: ok, fault: null });
     writeFileSync(join(run, CURATOR_FILE), "{");
     expect(readCuratorFile(run)).toEqual({ value: null, fault: "taste/curator.json is not valid JSON" });
   });

@@ -78,11 +78,11 @@ The same lane, in `smoke` mode, turns the journeys it has walked into a generate
 
 ### The Curator
 
-The journey lane's second agent, `sapu:curator` (Opus, high effort), judges the screens the explorers walked. The orchestrator dispatches it once per cycle, after `taste judge`, with the judge's rows and the paths of the screenshots. It is built to do very little else: its tools are `Read` and `StructuredOutput`, and the guard confines its reads to its own run's `taste/` folder, the judge rows and the screenshots ([Safety and trust](security.md#the-curator)).
+The journey lane's second agent, `sapu:curator` (Opus, high effort), judges the screens the explorers walked. The orchestrator dispatches it once per cycle, after `taste judge`, with the judge's brief (`taste/brief.json`: each screen's rows grouped by title key, its counts, and the screenshots to read). It is built to do very little else: its tools are `Read` and `StructuredOutput`, and the guard confines its reads to its own run's `taste/` folder, the brief and the screenshots ([Safety and trust](security.md#the-curator)).
 
 It is the one place a screen is judged by taste rather than by a number. Its words never reach an issue and never decide a filing: an issue quotes only its verdict word, and only the replay makes a row fileable. Its return is locked, in place of the aesthetics review's full output:
 - **Per screen,** the substitution test's answer (could this screen belong to any product?): `substitutable`, `partly` or `no`.
-- **Per judge row,** a verdict: `confirm`, `reject` with a reason, or `polish`. A verdict that names no row of the judge is dropped.
+- **Per title key** (one rule on one screen, the one issue it would be), a verdict: `confirm`, `reject` with a reason, or `polish`. A verdict that names no title of the judge is dropped.
 - **Leads:** a perception that names a rule and a screen, which the next judge pass measures first.
 - **The cognitive walkthrough,** per journey step: four questions, each `pass`, `fail` or `n/a`.
 

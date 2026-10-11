@@ -251,6 +251,8 @@ assistant attribution; a commit touching an enforcement file also carries a `Rul
       `reject` with reason, `polish`). It may add **leads** (a perception naming a rule and a
       screen) that the next judge pass measures first; it can file nothing, and a verdict that
       names no row id is dropped. The guard confines its reads to the run's `taste/` directory.
+      *As built (Z4):* it reads `taste/brief.json` and the shots it lists, and gives one verdict per
+      title key, never per element row.
     - **Smoke suite (CI).** A `taste` project (Chromium, the first width), on by default, runs the
       per-screen rules at the path's screens and after each action, then repeats the census under
       `colorScheme: "dark"` and `reducedMotion: "reduce"` (`page.emulateMedia`). Its annotations are

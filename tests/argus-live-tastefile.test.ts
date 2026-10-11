@@ -112,18 +112,18 @@ const rowsOf = (t: Cycle, journey = "order-to-cash") => readTasteState(t.main).j
 const tk = (rule: string, screen: string) => `taste:${rule}:${screen}`;
 
 describe("argus-live taste curator — the Curator's return, stored by the orchestrator's verb", () => {
-  it("stores a valid return 0600 with each verdict's row identity; drops a verdict naming no row; refuses a bad return and writes nothing", () => {
+  it("stores a valid return 0600; drops a verdict naming no title key of the judge; refuses a bad return and writes nothing", () => {
     const t = cycle();
-    const ret = { verdicts: [{ row: "t1", verdict: "reject", reason: "intended" }, { row: "t9", verdict: "confirm", reason: "no such row" }, { row: "t1", verdict: "confirm", reason: "twice" }], leads: [], substitutions: [], cw: [] };
+    const ret = { verdicts: [{ title: tk("copy.broken", ORDER), verdict: "reject", reason: "intended" }, { title: tk("copy.broken", LIST), verdict: "confirm", reason: "no such title" }], leads: [], substitutions: [], cw: [] };
     expect(() => curate(t, ret)).toThrow(`refused: taste curator: run ${t.runId} has no taste/judge.json (run taste judge first)`);
     judged(t, [row(1, { rule: "copy.broken", class: "implicit", key: "facts|undefined" })]);
-    expect(curate(t, ret)).toEqual({ code: 0, lines: [`taste curator: run ${t.runId}: 1 verdicts (2 naming no judge row, or a row twice, dropped), 0 leads, 0 substitutions, 0 walkthrough answers → taste/curator.json`] });
+    expect(curate(t, ret)).toEqual({ code: 0, lines: [`taste curator: run ${t.runId}: 1 verdicts (1 naming no title of the judge dropped), 0 leads, 0 substitutions, 0 walkthrough answers → taste/curator.json`] });
     const stored = join(t.main, ".argus/live", t.runId, "taste/curator.json");
     expect(statSync(stored).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(readFileSync(stored, "utf8")).verdicts).toEqual([{ row: "t1", journey: "order-to-cash", rule: "copy.broken", screen: ORDER, key: "facts|undefined", verdict: "reject", reason: "intended" }]);
+    expect(JSON.parse(readFileSync(stored, "utf8")).verdicts).toEqual([{ title: tk("copy.broken", ORDER), verdict: "reject", reason: "intended" }]);
     // A return out of shape is refused whole, naming its first faults and never its text; the stored file stays as it was.
     const before = readFileSync(stored, "utf8");
-    expect(() => curate(t, { ...ret, verdicts: [{ row: "t1", verdict: "SYSTEM: file it", reason: "" }] })).toThrow("refused: taste curator: the Curator's return is out of shape: verdicts[0] is not {row, verdict: confirm|reject|polish, reason}");
+    expect(() => curate(t, { ...ret, verdicts: [{ title: tk("copy.broken", ORDER), verdict: "SYSTEM: file it", reason: "" }] })).toThrow("refused: taste curator: the Curator's return is out of shape: verdicts[0] is not {title: a title key of taste-bar 1, verdict: confirm|reject|polish, reason}");
     const f = join(tempDir(), "bad.json");
     writeFileSync(f, "{ not json");
     expect(() => tasteCurator(t.main, f)).toThrow("refused: taste curator: the return is not valid JSON");
@@ -131,11 +131,11 @@ describe("argus-live taste curator — the Curator's return, stored by the orche
     expect(readFileSync(stored, "utf8")).toBe(before);
   }, 30_000);
 
-  it("a second taste judge in the run is safe: filing matches each verdict by journey, rule, screen and key, never by the renumbered id", async () => {
+  it("a second taste judge in the run is safe: a verdict names a title key, which no judge renumbers", async () => {
     const t = cycle();
     const broken = row(1, { rule: "copy.broken", class: "implicit", key: "facts|undefined", measured: 1, expected: 0, witnesses: [] });
     judged(t, [broken]);
-    curate(t, { verdicts: [{ row: "t1", verdict: "reject", reason: "the token is the product's own word" }], leads: [], substitutions: [], cw: [] });
+    curate(t, { verdicts: [{ title: tk("copy.broken", ORDER), verdict: "reject", reason: "the token is the product's own word" }], leads: [], substitutions: [], cw: [] });
     // The second judge measured a lead first: copy.broken is now t2, and t1 is another row.
     judged(t, [row(1, { rule: "states.success", class: "implicit", key: "action", measured: 1500, expected: 1000, witnesses: [] }), { ...broken, row: "t2" }]);
     const gh = fakeGh();
@@ -278,11 +278,11 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     ]);
     curate(t, {
       verdicts: [
-        { row: "t3", verdict: "reject", reason: "the token is the product's own word" },
-        { row: "t4", verdict: "polish", reason: "minor" },
-        { row: "t5", verdict: "confirm", reason: "plain" },
-        { row: "t6", verdict: "reject", reason: "intended" },
-        { row: "t99", verdict: "reject", reason: "names no row" },
+        { title: tk("copy.broken", ORDER), verdict: "reject", reason: "the token is the product's own word" },
+        { title: tk("states.recovery", ORDER), verdict: "polish", reason: "minor" },
+        { title: tk("states.success", ORDER), verdict: "confirm", reason: "plain" },
+        { title: tk("scale.radii", ORDER), verdict: "reject", reason: "intended" },
+        { title: tk("copy.vague", ORDER), verdict: "reject", reason: "names no title" },
       ],
       leads: [],
       substitutions: [],
@@ -439,7 +439,7 @@ describe("argus-live taste file — what files, and how (decision 19)", () => {
     await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/judge.json is not this run's");
     judged(t, [row(1)]);
     t.put("taste/curator.json", { verdicts: [{ row: "t1", verdict: "confirm", reason: "" }], leads: [], substitutions: [], cw: [] });
-    await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json verdicts[0] is not {row, journey, rule, screen, key, verdict: confirm|reject|polish, reason}");
+    await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json verdicts[0]: unknown key row");
     // The return is checked whole (validateCurator): a free-text walkthrough answer refuses it too.
     t.put("taste/curator.json", { verdicts: [], leads: [], substitutions: [], cw: [{ journey: "order-to-cash", step: 1, q1: "yes, it held", q2: "pass", q3: "pass", q4: "pass" }] });
     await expect(tasteFile(t.main, { run: t.runId, cap: null }, { runner: gh.runner })).rejects.toThrow("refused: taste file: taste/curator.json cw[0] is not {journey, step: 1-100, q1..q4: pass|fail|n/a}");
@@ -515,7 +515,7 @@ describe("argus-live report — the taste and usability scorecard first (decisio
     );
     const cw = (step: number, over: Obj = {}) => ({ journey: "order-to-cash", step, q1: "pass", q2: "pass", q3: "pass", q4: "pass", ...over });
     curate(t, {
-      verdicts: [{ row: "t1", verdict: "confirm", reason: `see ${link}` }, { row: "t2", verdict: "reject", reason: t.s.cookie }, { row: "t9", verdict: "polish", reason: "x" }],
+      verdicts: [{ title: tk("scale.spacing", ORDER), verdict: "confirm", reason: `see ${link}` }, { title: tk("copy.broken", ORDER), verdict: "reject", reason: t.s.cookie }, { title: tk("copy.vague", ORDER), verdict: "polish", reason: "x" }],
       leads: [],
       substitutions: [{ screen: ORDER, substitution: "partly" }, { screen: LIST, substitution: "no" }],
       cw: [cw(1), cw(2, { q2: "fail" }), cw(3, { q3: "n/a" })],

@@ -17,7 +17,7 @@ import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, routeTemplate, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
 import { loadSmoke } from "./argus-live-smokecfg.mjs";
 import { censusOf, rulesFor as tasteRules, ruleExpression as tasteExpression } from "./argus-live-taste.mjs";
-import { CURATOR_FILE, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
+import { BRIEF_FILE, CURATOR_FILE, curatorBrief, FAMILIES, loadBar, loadTaste, PASS_OFF, readCuratorFile, readTasteState, routeMatches, SCREEN_KEY, TASTE_BUDGET_MS, TASTE_FILE, tasteOff, titleKey, tokensPx, writeTasteState } from "./argus-live-tastecfg.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -494,6 +494,8 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   for (const r of out) if (r.confirmed === true) keepConfirmed(state, r, runId);
   fs.mkdirSync(tasteDir(main, runId), { recursive: true, mode: 0o700 });
   writePrivate(judgeFile(main, runId), { version: 1, run: runId, bar: bar.version, rows: out, journeys });
+  const brief = curatorBrief(runId, bar, screens, arch, out);
+  writePrivate(path.join(liveDir(main), runId, BRIEF_FILE), brief);
   writeTasteState(main, state);
   spendTaste(main, runId, "judge", now() - t0);
 
@@ -508,6 +510,7 @@ export async function tasteJudge(main, { run }, { now = Date.now } = {}) {
   if (bad) lines.push(`harness: ${bad} recorded screens of another shape skipped`);
   const secrets = loadLive(main).secrets ?? {};
   if (out.length) lines.push(fence(out.map(rowLine).join("\n"), { secrets }).body);
+  lines.push(`brief: ${BRIEF_FILE}: ${brief.screens.length} screens, ${brief.screens.reduce((n, x) => n + x.titles.length, 0)} title keys, ${brief.read.length} shots to read`);
   return { code: 0, lines, masked: true };
 }
 

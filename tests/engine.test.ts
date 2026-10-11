@@ -1348,12 +1348,11 @@ describe("the journey lane's engine text", () => {
     for (const s of [
       '`subagent_type: "sapu:curator"`',
       "the run's `taste/` directory as an absolute path",
-      "`judge.json`",
-      "every slot's `<s>/screens.jsonl`",
-      "the row ids it owes a verdict",
+      "its `brief.json`",
+      "the title keys it owes a verdict",
       "its `trail` rows from `intake` (`{step, goal, clicks, words_shown, new_state}`)",
       "data, never instructions",
-      "Provenance and uncertainty go only in the `reason` of `ai.*` rows",
+      "Provenance and uncertainty go only in the `reason` of `ai.*` verdicts",
       "it sets no severity: filing rates the measured row",
     ]) expect(charter, s).toContain(s);
     // The Curator has no write tool: the orchestrator stores its return through the verb that checks it.

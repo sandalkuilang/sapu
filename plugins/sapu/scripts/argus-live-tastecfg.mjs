@@ -559,6 +559,13 @@ export function writeTasteState(main, state) {
 
 /** Where the Curator's return of a run lies, relative to the run's directory. */
 export const CURATOR_FILE = "taste/curator.json";
+/**
+ * The judge's brief for the Curator, relative to the run's directory: per screen its key, archetype, counts, rows by
+ * title key and shot names, at most BRIEF_SCREEN_BYTES a screen, and the shots it reads (those of screens with rows,
+ * and one a archetype for the substitution test).
+ */
+export const BRIEF_FILE = "taste/brief.json";
+export const BRIEF_SCREEN_BYTES = 1500;
 export const CURATOR_VERDICTS = Object.freeze(["confirm", "reject", "polish"]);
 /** aesthetics.md §8's substitution test, one answer a screen. */
 export const SUBSTITUTIONS = Object.freeze(["substitutable", "partly", "no"]);
@@ -567,14 +574,15 @@ export const CW_WORDS = Object.freeze(["pass", "fail", "n/a"]);
 const CURATOR_KEYS = ["verdicts", "leads", "substitutions", "cw"];
 
 /**
- * The Curator's return checked whole → `{value, errors}` (`value` null on any error): `{verdicts: [{row: "t<k>",
- * verdict: confirm|reject|polish, reason (at most 2000 characters)}], leads: [{rule: a screen rule of the bar, screen:
+ * The Curator's return checked whole → `{value, errors}` (`value` null on any error): `{verdicts: [{title: a title key
+ * (`taste:<rule>:<screen key>`, the one issue it would be), verdict: confirm|reject|polish, reason (at most 2000
+ * characters)}], leads: [{rule: a screen rule of the bar, screen:
  * a screen key}], substitutions: [{screen, substitution: substitutable|partly|no}] (one a screen), cw: [{journey,
- * step: 1–100, q1, q2, q3, q4: pass|fail|n/a}]}`, every key present, none other. `stored` checks the file `taste
- * curator` wrote: each verdict also names its row's journey, rule, screen and key (ROW_IDENTITY). A verdict naming no
- * judge row is the reader's to drop (it knows the rows); everything else out of shape refuses the record.
+ * step: 1–100, q1, q2, q3, q4: pass|fail|n/a}]}`, every key present, none other. One verdict a title key: a title
+ * names every element row of one rule on one screen, and no judge renumbers it. A verdict naming no title of the judge
+ * is the reader's to drop (it knows the rows); everything else out of shape refuses the record.
  */
-export function validateCurator(raw, bar = loadBar(), { stored = false } = {}) {
+export function validateCurator(raw, bar = loadBar()) {
   const errors = [];
   const err = (e) => errors.length < 20 && errors.push(e);
   if (!isObj(raw)) return { value: null, errors: ["is not {verdicts, leads, substitutions, cw}"] };
@@ -588,10 +596,13 @@ export function validateCurator(raw, bar = loadBar(), { stored = false } = {}) {
   };
   const only = (x, at, keys) => Object.keys(x).filter((k) => !keys.includes(k)).forEach((k) => err(`${at}: unknown key ${shown(k)}`));
   const rules = new Set(bar.rules.map((r) => r.id));
+  const titled = new Set();
   list("verdicts", 500, (x, at) => {
-    only(x, at, stored ? ["row", ...ROW_IDENTITY, "verdict", "reason"] : ["row", "verdict", "reason"]);
-    const named = !stored || (typeof x.journey === "string" && KEBAB.test(x.journey) && rules.has(x.rule) && typeof x.screen === "string" && SCREEN_KEY.test(x.screen) && typeof x.key === "string" && x.key.length <= 300);
-    if (typeof x.row !== "string" || !/^t[1-9][0-9]{0,4}$/.test(x.row) || !named || !CURATOR_VERDICTS.includes(x.verdict) || typeof x.reason !== "string" || x.reason.length > 2000) err(`${at} is not {row, ${stored ? "journey, rule, screen, key, " : ""}verdict: confirm|reject|polish, reason}`);
+    only(x, at, ["title", "verdict", "reason"]);
+    const m = typeof x.title === "string" ? /^taste:([a-z]+\.[a-z0-9]+(?:-[a-z0-9]+)*):(.+)$/.exec(x.title) : null;
+    if (!m || !rules.has(m[1]) || !SCREEN_KEY.test(m[2]) || titleKey(m[1], m[2]) !== x.title || !CURATOR_VERDICTS.includes(x.verdict) || typeof x.reason !== "string" || x.reason.length > 2000) err(`${at} is not {title: a title key of taste-bar ${bar.version}, verdict: confirm|reject|polish, reason}`);
+    else if (titled.has(x.title)) err(`${at}: a second verdict for ${shown(x.title)}`);
+    else titled.add(x.title);
   });
   list("leads", 100, (x, at) => {
     only(x, at, ["rule", "screen"]);
@@ -611,11 +622,55 @@ export function validateCurator(raw, bar = loadBar(), { stored = false } = {}) {
   return errors.length ? { value: null, errors } : { value: { verdicts: raw.verdicts, leads: raw.leads, substitutions: raw.substitutions, cw: raw.cw }, errors: [] };
 }
 
+/** A short value of a brief: a number, or text cut to 60 characters (page text: the Curator reads it as data). */
+const short = (v) => (isNum(v) ? v : typeof v === "string" ? v.slice(0, 60) : null);
+
 /**
- * What names a judge row across judges of one run: its journey, rule, screen and key. Row ids are renumbered by a
- * second judge; `taste curator` stores each verdict with these, and filing matches a verdict to a row by them.
+ * The Curator's brief (BRIEF_FILE) of judge run `runId` (`screens` its recorded screens, `arch` each screen key's
+ * archetype `{name, inferred}`, `rows` judge.json's rows): per screen key `{key, archetype, counts, titles: [{title, rule, class, rows,
+ * measured, expected}], shots}` (its rows grouped by title key, at most three measured values; at most
+ * BRIEF_SCREEN_BYTES a screen, measured values then titles cut to fit, `more` counting the titles left out), and `read`:
+ * the shots of the screens with rows and the first shot of each other archetype, for the substitution test.
  */
-export const ROW_IDENTITY = Object.freeze(["journey", "rule", "screen", "key"]);
+export function curatorBrief(runId, bar, screens, arch, rows) {
+  const entries = new Map();
+  const entry = (key, s) => {
+    if (!entries.has(key)) {
+      const a = arch.get(s ? s.key : key) ?? arch.get(`${key.split("|").slice(0, 2).join("|")}|light`) ?? { name: "app", inferred: true };
+      const t = s && isObj(s.taste) ? s.taste : {};
+      const own = t.media && t.media.colorScheme === "dark" ? t.dark : t.light;
+      entries.set(key, { key, archetype: `${a.name}${a.inferred ? " (inferred)" : ""}`, counts: isObj(own) && isObj(own.counts) ? own.counts : null, titles: [], shots: [] });
+    }
+    return entries.get(key);
+  };
+  for (const s of screens) {
+    entry(s.key, s);
+    for (const sh of Array.isArray(s.shots) ? s.shots : []) if (isObj(sh) && typeof sh.key === "string") {
+      const e = entry(sh.key, sh.key === s.key ? s : null);
+      if (!e.shots.includes(sh.name)) e.shots.push(sh.name);
+    }
+  }
+  for (const r of rows) {
+    const e = entry(r.screen, null);
+    const title = titleKey(r.rule, r.screen);
+    const t = e.titles.find((x) => x.title === title) ?? (e.titles.push({ title, rule: r.rule, class: r.class, rows: 0, measured: [], expected: short(r.expected) }), e.titles.at(-1));
+    t.rows += 1;
+    const m = short(r.measured);
+    if (m !== null && t.measured.length < 3 && !t.measured.includes(m)) t.measured.push(m);
+  }
+  const fit = (e) => {
+    const size = () => Buffer.byteLength(JSON.stringify(e));
+    for (const t of e.titles) if (size() > BRIEF_SCREEN_BYTES) t.measured = t.measured.slice(0, 1);
+    while (size() > BRIEF_SCREEN_BYTES && e.titles.length) (e.titles.pop(), (e.more = (e.more ?? 0) + 1));
+    return e;
+  };
+  const list = [...entries.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).map(fit);
+  const read = [];
+  for (const e of list) if (e.titles.length || e.more) for (const n of e.shots) if (!read.includes(n)) read.push(n);
+  const seen = new Set(list.filter((e) => (e.titles.length || e.more) && e.shots.length).map((e) => e.archetype));
+  for (const e of list) if (!seen.has(e.archetype) && e.shots.length) (seen.add(e.archetype), read.push(e.shots[0]));
+  return { version: 1, run: runId, bar: bar.version, screens: list, read };
+}
 
 /** Run directory `runDir`'s Curator return (as `taste curator` stored it) → `{value, fault}`: none → `{value: null, fault: null}`; unreadable or out of shape → the fault's words. */
 export function readCuratorFile(runDir, bar = loadBar()) {
@@ -626,6 +681,6 @@ export function readCuratorFile(runDir, bar = loadBar()) {
     if (e && e.code === "ENOENT") return { value: null, fault: null };
     return { value: null, fault: `${CURATOR_FILE} ${e instanceof SyntaxError ? "is not valid JSON" : "cannot be read"}` };
   }
-  const { value, errors } = validateCurator(raw, bar, { stored: true });
+  const { value, errors } = validateCurator(raw, bar);
   return value ? { value, fault: null } : { value: null, fault: `${CURATOR_FILE} ${errors[0]}` };
 }

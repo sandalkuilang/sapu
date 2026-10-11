@@ -36,7 +36,7 @@ import { worktreeHeadFile } from "./argus-live-run.mjs";
 import { defang, filedFile, redactIds, REF, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { readPass } from "./argus-live-smoke.mjs";
 import { readTriage } from "./argus-live-artifacts.mjs";
-import { loadBar, readTasteState, SUBSTITUTIONS, TASTE_STATE_FILE } from "./argus-live-tastecfg.mjs";
+import { loadBar, readTasteState, SUBSTITUTIONS, TASTE_STATE_FILE, titleKey } from "./argus-live-tastecfg.mjs";
 import { readCurator, readJudge } from "./argus-live-tastefile.mjs";
 
 /** Where the reports go, from the repo's root. */
@@ -283,7 +283,7 @@ function sections(main, runId, quote) {
  * {pass, total}, curator: {confirm, reject, polish}, bar}`. `confirmed` counts this run's rows measured two of two;
  * `queued` and `accepted` the journey's standing rows in `.argus/taste-state.json`; the walkthrough the Curator's `cw`
  * rows of the journey (fixed words, -tastecfg CW_WORDS: a step passes when no question is `fail`, `n/a` being a question
- * that does not apply); the Curator's verdicts by the journey of the row each names. `substitutions` counts the
+ * that does not apply); the Curator's verdicts by the journeys whose rows each title key names. `substitutions` counts the
  * Curator's substitution test over the run's screens. `unread` names each record out of shape.
  */
 export function tasteScorecard(main, runId) {
@@ -300,7 +300,6 @@ export function tasteScorecard(main, runId) {
   } catch {
     unread.push(TASTE_STATE_FILE);
   }
-  const journeyOf = new Map(judge.rows.map((r) => [r.row, r.journey]));
   const ids = [...new Set([...Object.keys(judge.journeys), ...judge.rows.map((r) => r.journey)])].sort();
   const rows = ids.map((id) => {
     const j = judge.journeys[id] ?? {};
@@ -311,7 +310,7 @@ export function tasteScorecard(main, runId) {
     for (const r of judge.rows) if (r.journey === id && r.confirmed === true) bump(r.rule, "confirmed");
     for (const s of Object.values(state.journeys[id]?.rows ?? {})) if (s.state === "queued" || s.state === "accepted") bump(s.rule, s.state);
     const curator = { confirm: 0, reject: 0, polish: 0 };
-    for (const [row, v] of cur.verdicts) if (journeyOf.get(row) === id) curator[v.verdict] += 1;
+    for (const [title, v] of cur.verdicts) if (judge.rows.some((r) => r.journey === id && titleKey(r.rule, r.screen) === title)) curator[v.verdict] += 1;
     const steps = cur.cw.filter((s) => s.journey === id);
     const pass = steps.filter((s) => CW_QUESTIONS.every((q) => s[q] !== "fail")).length;
     const screens = Array.isArray(j.screens) ? j.screens.length : (j.screens ?? 0);

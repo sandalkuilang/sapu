@@ -729,6 +729,30 @@ describe("argus-live taste judge (J2)", () => {
     expect((await t.judge(), t.file().rows)).toEqual([]);
   }, 30_000);
 
+  it("writes the Curator's brief: per screen its archetype, counts, rows by title key and shots (1.5 KB at most), and the shots to read", async () => {
+    const t = judgeRepo();
+    t.taste({ archetypes: { "/a": "app", "/b": "app", "/c": "data" } });
+    const broken = (k: string) => ({ rule: "copy.broken", key: k, measured: "undefined", expected: "no broken copy" });
+    const shot = (route: string) => [{ theme: "light", name: sha(`${route}|1440|light`).slice(0, 32), key: `${route}|1440|light` }];
+    const long = Array.from({ length: 80 }, (_, i) => ({ rule: "hierarchy.alignment", key: `div|Row ${i} ${"x".repeat(40)}`, measured: 2, expected: "aligned" }));
+    t.put(1, [
+      t.screen("/a", [broken("p|One"), broken("p|Two")], { shots: shot("/a"), taste: { findings: [broken("p|One"), broken("p|Two"), ...long], light: { counts: { spacing: 9 } } } }),
+      t.screen("/b", [], { shots: shot("/b") }),
+      t.screen("/c", [], { shots: shot("/c") }),
+    ]);
+    const r = await t.judge();
+    expect(r.lines).toContain("brief: taste/brief.json: 3 screens, 2 title keys, 2 shots to read");
+    const brief = JSON.parse(readFileSync(join(t.dir, "brief.json"), "utf8"));
+    expect(mode(join(t.dir, "brief.json"))).toBe(0o600);
+    const a = brief.screens.find((x: Obj) => x.key === "/a|1440|light");
+    expect(a).toMatchObject({ archetype: "app", counts: { spacing: 9 }, shots: [shot("/a")[0].name] });
+    expect(a.titles[0]).toEqual({ title: "taste:copy.broken:/a|1440|light", rule: "copy.broken", class: "implicit", rows: 2, measured: ["undefined"], expected: "no broken copy" });
+    expect(a.titles[1]).toMatchObject({ title: "taste:hierarchy.alignment:/a|1440|light", rows: 80, measured: [2] });
+    for (const x of brief.screens) expect(Buffer.byteLength(JSON.stringify(x)), x.key).toBeLessThanOrEqual(1500);
+    // The shots of the screens with rows, then one of each other archetype (app's /b is left out: /a stands for it).
+    expect(brief.read).toEqual([shot("/a")[0].name, shot("/c")[0].name]);
+  }, 30_000);
+
   it("the owner's frame witnesses a duration beyond it; implicit and derived rows stand on their measurement; info and off rules are never rows", async () => {
     const t = judgeRepo();
     t.taste({ frame: "carbon", archetypes: { "/**": "app" }, off: ["density.control-heights"] });
@@ -1077,7 +1101,7 @@ describe("argus-live taste confirm (J2)", () => {
     // The spawned CLI runs the real probes (stubs until lanes T1 and T2 merge, whose failure is a harness line).
     const [first, ...rest] = r.stdout.trimEnd().split("\n");
     expect(first).toMatch(new RegExp(`^taste judge ${t.runId}: 1 screens recorded, \\d+ rows \\(implicit \\d+, derived \\d+, bar \\d+\\), taste-bar 1$`));
-    for (const l of rest) expect(l).toMatch(/^(harness: |<<<PAGE-|information: |not rows: )/);
+    for (const l of rest) expect(l).toMatch(/^(harness: |<<<PAGE-|information: |not rows: |brief: )/);
     expect(cli("taste", "confirm", "t1")).toMatchObject({ status: 1, stdout: "", stderr: `refused: taste confirm: no row t1 in cycle ${t.runId}'s judge\n` });
   }, 30_000);
 });
