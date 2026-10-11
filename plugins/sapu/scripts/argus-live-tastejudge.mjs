@@ -588,7 +588,8 @@ function remeasured(row, measured, rule) {
  * `taste confirm <row>` → `{code, lines, masked}`: judge row `ref` (`t<k>`) of the lock's run replayed in slot `r` on a
  * fresh instance (runOnce in path mode, its records under `<run>/smoke/taste-<row>/`) and measured again; the result
  * written back to judge.json (`confirmed` true or false) and a confirmed row kept in taste-state.json (`queued`). A
- * screen row replays the journey's explorer path through the confirm sink; an efficiency row replays the journey's
+ * screen row replays the journey's explorer path through the confirm sink, its prefix only (runOnce's `until`: the
+ * replay ends at the step that reached the screen and measured it); an efficiency row replays the journey's
  * best known path (the suite's, by its sha): it is confirmed only when that path no longer holds — while it holds, the
  * longer path was the explorer's detour. A cross-screen row is confirmed by the next cycle's judge, never a replay.
  * Exit 0 when the replay decided, 2 when the harness failed or the screen was never reached (`confirmed` left null).
@@ -641,7 +642,8 @@ export async function tasteConfirm(main, ref, { once = runOnce, now = Date.now }
       }
       const live = loadLive(main).config ?? {};
       const sink = confirmSink(group, { routes, settleMs: live.settle_ms ?? 10_000, bar, cfg: { ...(loadTaste(main).taste ?? {}), tokens: laneTokens(main) }, prohibited: live.prohibited ?? [] });
-      const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list } })));
+      // A prefix replay: the path runs to the step that reached the screen and measured it, never past it.
+      const r = ran(await confirming(sink, () => once(main, null, { path: { id: `taste-${ref}`, list }, until: () => sink.measured !== null })));
       if (!sink.measured) said = r.code === 2 && !sink.measured ? "harness: the replay failed before the screen" : "harness: the replay never reached the screen";
       else if (sink.measured.rows === null) said = "harness: the rule's expression failed on the screen";
       else {

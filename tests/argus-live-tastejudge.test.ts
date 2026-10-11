@@ -1009,8 +1009,10 @@ describe("argus-live taste confirm (J2)", () => {
     /** runOnce's stand-in: records its call; `measure` gives the sink what the screen's step would (null: never reached). */
     const once = (measure: Obj | null, code = 3) => async (main: string, ref: null, opts: Obj) => {
       const sink = activeConfirm();
-      runs.push({ ref, opts, wrapped: sink ? sink.wrap("async page => ({ ok: true })") : null, arm: sink ? sink.arm : null });
+      const run: Obj = { ref, opts, wrapped: sink ? sink.wrap("async page => ({ ok: true })") : null, arm: sink ? sink.arm : null, until: typeof opts.until === "function" ? [opts.until()] : null };
+      runs.push(run);
       if (sink && measure) sink.take({ ok: true, __taste: measure });
+      if (run.until) run.until.push(opts.until());
       return { code, lines: [] };
     };
     return { ...t, runs, once, confirm: (ref: string, measure: Obj | null, code = 3) => {
@@ -1028,6 +1030,8 @@ describe("argus-live taste confirm (J2)", () => {
     expect(r.lines[0]).toBe("taste confirm t1: confirmed (measured again)");
     expect(r.lines[1]).toMatch(/^<<<PAGE-[0-9a-f]{32}\nt1 j copy\.broken implicit \/orders\/:id\|1440\|light key=facts\|undefined .* confirmed\nPAGE-[0-9a-f]{32}>>>$/);
     expect(t.runs.map((x) => [x.ref, x.opts.path.id, x.opts.path.list.length])).toEqual([[null, "taste-t1", 3]]);
+    // A prefix replay: the path runs until the screen was measured, never past it.
+    expect(t.runs[0].until).toEqual([false, true]);
     expect(t.runs[0].wrapped).toContain('"route":"/orders/:id","width":1440,"routes":[],"settleMs":10000,"media":false,"expr":');
     expect(t.runs[0].arm).toBeNull();
     expect(t.file().rows[0].confirmed).toBe(true);
@@ -1125,6 +1129,8 @@ describe("argus-live taste confirm (J2)", () => {
     const once = (code: number) => async (_m: string, _r: null, opts: Obj) => (calls.push(opts), { code });
     expect((await tasteConfirm(t.main, "t1", { once: once(0) })).lines[0]).toBe("taste confirm t1: not confirmed (the best path still holds: the longer path was the explorer's detour)");
     expect(calls[0].path).toEqual({ id: "taste-t1", list: pathOf(3) });
+    // The best path is replayed whole: it holds only when every step holds.
+    expect(calls[0].until).toBeUndefined();
     expect((await tasteConfirm(t.main, "t2", { once: once(3) })).lines[0]).toBe("taste confirm t2: confirmed (the best path no longer holds)");
     expect(readTasteState(t.main).journeys.j.rows["taste:efficiency.klm:/orders/new|1440|light"]).toMatchObject({ severity: "S3", state: "queued" });
     expect((await tasteConfirm(t.main, "t1", { once: once(2) })).code).toBe(2);
@@ -1196,8 +1202,12 @@ describe("argus-live taste confirm — the replay in slot r (J2)", () => {
     expect(plain.lines[0]).toBe("taste confirm t2: not confirmed (not measured again: the screen holds the rule)");
     expect(JSON.parse(readFileSync(join(live, "taste", "judge.json"), "utf8")).rows.map((r: Obj) => r.confirmed)).toEqual([true, false]);
     expect(Object.keys(readTasteState(c.main).journeys["order-to-cash"].rows)).toEqual(["taste:states.error:/orders/:id|1440|light"]);
-    // Each replay ran on a fresh instance, as a path of its own.
-    for (const ref of ["t1", "t2"]) expect(JSON.parse(readFileSync(join(live, "smoke", `taste-${ref}`, "run-1.json"), "utf8"))).toMatchObject({ exit: 0 });
+    // Each replay ran on a fresh instance, as a path of its own, and only its prefix: the screen is reached and measured
+    // at step 3, so step 4 (the path's final) never ran.
+    for (const ref of ["t1", "t2"]) {
+      expect(JSON.parse(readFileSync(join(live, "smoke", `taste-${ref}`, "run-1.json"), "utf8"))).toMatchObject({ exit: 0, prefix: 3 });
+      expect(lines(join(live, "smoke", `taste-${ref}`, "steps-1.jsonl")).map((x: Obj) => x.n)).toEqual([1, 2, 3]);
+    }
   }, 900_000);
 });
 
