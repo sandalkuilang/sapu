@@ -3908,6 +3908,11 @@ describe("sapu-guard — a ladder worker's single lookups get a note, its big wh
     expect(codeSearchCommand(join(box, "nowhere"))).toBeNull();
     const F = repo("f", "## Code search\n\n```sh\nidx query <terms> --json\n```\n");
     expect(codeSearchCommand(F.r)).toBe("idx query <terms> --json");
+    // Prose before a list names other things in backticks: the list's command wins, then a span with arguments.
+    const L = repo("l", "## Code search\n\n`setup` copies the index. Run first:\n\n- `idx ask \"<terms>\" --source` — locate.\n- `idx grep \"<x>\"` — all.\n");
+    expect(codeSearchCommand(L.r)).toBe('idx ask "<terms>" --source');
+    const A = repo("a", "## Code search\n\nAfter `setup`, run `idx search <terms>` first.\n");
+    expect(codeSearchCommand(A.r)).toBe("idx search <terms>");
   });
 
   it("tells a single lookup from a batched call, other work, and the code search itself", () => {

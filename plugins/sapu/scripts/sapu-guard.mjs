@@ -3149,8 +3149,12 @@ export function codeSearchCommand(main) {
   }
   const m = /^## Code search[ \t]*$([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(text);
   if (!m || /^\s*none\b/i.test(m[1])) return null;
-  const c = /^```[^\n]*\n[ \t]*([^\n]+)|`([^`\n]+)`/m.exec(m[1]);
-  const cmd = c && (c[1] || c[2]).trim();
+  // The command: a fenced block's first line, else a list item's leading code span, else the first code
+  // span with arguments, else any code span. Prose before the list may name other things in backticks.
+  const s = m[1];
+  const spans = [...s.matchAll(/`([^`\n]+)`/g)].map((x) => x[1]);
+  const c = /^```[^\n]*\n[ \t]*([^\n]+)/m.exec(s)?.[1] || /^[ \t]*[-*+][ \t]+`([^`\n]+)`/m.exec(s)?.[1] || spans.find((x) => /\s/.test(x.trim())) || spans[0];
+  const cmd = c && c.trim();
   return cmd ? cmd.slice(0, 200) : null;
 }
 

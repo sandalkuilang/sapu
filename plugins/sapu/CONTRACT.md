@@ -751,7 +751,8 @@ A section `profiles --list` marks `(optional)` may be left out: the engine reads
   key terms, before any grep: it returns a `file:line` map of where those terms live and who calls them
   (a code indexer's CLI, for example). `none`, or no section, means the worker starts with its batched
   `rg` lookups instead. Example: `` `<indexer> search <terms>` `` — or `none: no code index in this repo`.
-  The guard reads the section's first code span or fenced line, and names that command in the note it
+  The guard reads the section's command from its first fenced line, else its first list item's code span,
+  else its first code span with arguments, else any code span, and names that command in the note it
   gives a worker that searches by hand (see the guard above).
 
 ## Engine defects go upstream
