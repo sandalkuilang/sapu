@@ -618,8 +618,10 @@ What is compared is the file's own content, byte for byte, not git status and wi
 filters, so `update-index --skip-worktree`, `--assume-unchanged`, local commits, or a
 `clean` filter that fakes the content cannot hide a change. PR syncing uses the full ref
 `refs/remotes/origin/<base>`, so a local branch named `origin/<base>` cannot
-stand in for it. A difference = stop (exit 1)
-naming the file, including when the main checkout is behind `origin/<base>` (the message
+stand in for it. A main checkout that is only behind (on `baseBranch`, clean tree, no commit
+`origin/<base>` lacks) is fast-forwarded first, under the same rules as the fast-forward after a
+merge, so a PR merged outside the script does not block the next one. A difference after that = stop (exit 1)
+naming the file, including when a dirty main checkout is behind `origin/<base>` (the message
 says to fast-forward). The check is repeated just before the gate and just before `mergeAfter`
 (which at that point also accepts the content of `origin/<base>` after the merge); when it differs, `mergeAfter` is not
 run and the script exits 3. A main checkout that is on `baseBranch` also must not have

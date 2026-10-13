@@ -52,8 +52,8 @@
 # to --smoke-wait minutes; still running then = stop. Cannot judge = stop (fails closed). Judged on the PR's head,
 # before the sync push of step 8 (that commit's own run is not awaited).
 #
-# SAFETY. In <MAIN> only `git merge --ff-only origin/<base>`, after a merge, on the base branch,
-# with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
+# SAFETY. In <MAIN> only `git merge --ff-only origin/<base>` (after a merge, or before the gate when
+# <MAIN> is only behind), on the base branch, with a clean tree; never checkout/pull/stash/reset there. Uses only the existing gh/git
 # credentials. This script is the backstop against tampering (the guard hook only catches honest
 # mistakes): it trusts nothing local. The contract is read from a FRESHLY FETCHED origin/<base>,
 # and the repo file a contract command runs (its protected word: see protect() below) must be byte-identical in <MAIN> to origin/<base>'s blob (git hash-object --no-filters, so
@@ -266,8 +266,23 @@ if [ -f "$COMMENT_FILE" ] && ! grep -qF "$HEADING" "$COMMENT_FILE"; then
 fi
 
 # --- 2b. the contract and its hooks in <MAIN> are exactly origin/<base>'s ----------------------------
+# A <MAIN> that is only behind (on <base>, clean, no commit origin lacks) is fast-forwarded first: a PR
+# merged outside this script, say one that changed a hook, would otherwise block every merge here until
+# someone did it by hand. Step 9's rules exactly (--ff-only, base branch, clean tree, under the lock);
+# origin/<base> is what the hooks are checked against anyway. Dirty or diverged: left alone, refused below.
+FF_PLANNED=0
+if [ "$(git -C "$MAIN" rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ] \
+  && [ "$(git -C "$MAIN" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = "$BASE" ] \
+  && [ -z "$(git -C "$MAIN" status --porcelain -- . ':(exclude).claude/worktrees' 2>/dev/null || echo 'status failed')" ] \
+  && git -C "$MAIN" merge-base --is-ancestor HEAD "$BASE_SHA"; then
+  if [ "$DRY" = 1 ]; then
+    FF_PLANNED=1; plan "fast-forward <MAIN> to origin/$BASE first (it is only behind)"
+  elif git -C "$MAIN" merge --ff-only "$BASE_SHA" >/dev/null 2>&1; then
+    say "<MAIN> was behind: fast-forwarded to origin/$BASE ($(git -C "$MAIN" rev-parse --short HEAD))"
+  fi
+fi
 MISMATCH="$(main_mismatch)"
-[ -z "$MISMATCH" ] || check_fail "$(mismatch_msg "$MISMATCH")"
+[ -z "$MISMATCH" ] || [ "$FF_PLANNED" = 1 ] || check_fail "$(mismatch_msg "$MISMATCH")"
 # Nobody commits in <MAIN>: a commit there that origin lacks is a tamper signal, not work.
 if [ "$(git -C "$MAIN" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = "$BASE" ] && ! git -C "$MAIN" merge-base --is-ancestor HEAD "$BASE_SHA"; then
   check_fail "<MAIN>'s $BASE has local commits origin/$BASE lacks (read them: git -C '$MAIN' log origin/$BASE..HEAD); nothing is ever committed in <MAIN>"
