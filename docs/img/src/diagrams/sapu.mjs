@@ -75,7 +75,7 @@ export default {
     s += text(lx + 18, ly + 28, `${c("Lane", "tb c-violet")}  — one Workflow call per issue  ${m("sapu-wave.js")}`, "t");
     s += text(lx + 18, ly + 48, "own worktree · ≤ lanes in flight (1–4, per machine) · refilled as each returns", "cap");
     const iy = ly + 66, ih = 66, inx = lx + 18;
-    s += box(inx, iy, 140, ih, "forge worker", ["plan · TDD · open PR"]);
+    s += box(inx, iy, 140, ih, "scout → builder", ["plan → fresh TDD · PR"]);
     s += arrow([[inx + 144, iy + ih / 2], [inx + 162, iy + ih / 2]]);
     s += box(inx + 166, iy, 140, ih, "review by tier", ["never the author"]);
     s += arrow([[inx + 310, iy + ih / 2], [inx + 328, iy + ih / 2]], "ar-g");
@@ -99,7 +99,7 @@ export default {
       "finding is reported by three reviews in a row; else blocked (reason)",
       `${b("ESCALATE", "tb")} → one step up the ladder, once; then blocked`,
       `past its ${b("step budget")} → handoff: WIP commit, then a fresh worker`,
-      "of the same tier continues from its note (≤ 2 handoffs per step)",
+      "of the same tier goes on while each brings a commit (≤ 5 per step)",
     ], "cap", 19);
     ry2 += 5 * 19 + 14;
     s += `<line x1="${inx}" y1="${ry2 - 6}" x2="${inx + 442}" y2="${ry2 - 6}" class="rule"/>`;
