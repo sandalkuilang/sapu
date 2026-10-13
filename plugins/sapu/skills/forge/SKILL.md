@@ -13,7 +13,7 @@ Engine only: every repo fact comes from the contract (`.claude/sapu.json`) and t
 
 ## Scope lock — profile and contract first
 
-1. Read the repo profile `<profiles>/forge.md` at the repo root (`git rev-parse --show-toplevel`). Missing — or missing a *profile §…* hook this skill names (a repo with nothing to say writes `none`) → STOP, tell the user to run `/sapu:init`; never guess a default.
+1. Read the repo profile `<profiles>/forge.md` at the repo root (`git rev-parse --show-toplevel`). Missing — or missing a *profile §…* hook this skill names (a repo with nothing to say writes `none`) → STOP, tell the user to run `/sapu:init`; never guess a default. Exception: the optional `worker.md` §Code search (missing = `none`).
 2. `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" check` — exit 0 prints the contract JSON; keep `repo`, `baseBranch`, `gate.fast`, `labels`, `securityEpic`. Non-zero → STOP with its message. Then `sapu-contract.mjs specialists` prints the role → agent map: every specialist below is named by role (`specialists.<role>`) and dispatched with `subagent_type` = that map's value (the repo's own agent, else its senior-dev-team default).
 3. `gh repo view --json nameWithOwner -q .nameWithOwner` must print the contract's `repo` — else STOP.
 
@@ -24,7 +24,8 @@ Re-run `check` right before each push, `gh pr create`, `gh issue create`, and me
 - The repo's `CLAUDE.md` is already in your system prompt (and every subagent's) — never `Read` it (a full duplicate; size in profile §Token discipline).
 - Every `Agent` dispatch costs a large fixed context **before it does anything** (profile §Token discipline). Agent count is the budget — each dispatch below is the only one allowed at that tier.
 - No helper skills in the loop — a separate code-review, PR-review, commit-review or summarize skill re-does work this loop already does. Exception: an issue-analysis skill, only when acceptance criteria are genuinely missing.
-- Cap every command's output: `2>&1 | tail -40`, plus the repo's quiet flags (profile §Token discipline). Read files by range, not whole, when you know where to look.
+- **Explore in one call, not one grep per turn** (each turn re-sends all context): collect every "where is X / who calls Y / what is in Z" question and answer them all in ONE `ctx_batch_execute` or one Bash running several `grep -rn`. The `worker.md` profile §Code search, when it names a command, runs first, once, with the issue's key terms.
+- Cap every command's output: `2>&1 | tail -40`, plus the repo's quiet flags (profile §Token discipline). Read files by line range, several per call.
 - Comments: from step 2's verdict file, the last 2 first (`jq '.comments[-2:]' <file>`); full history only if those point back to an earlier decision.
 
 ## The loop
