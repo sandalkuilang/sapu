@@ -827,9 +827,20 @@ describe("sapu-merge.sh — trusts only a freshly fetched origin/<base> (round 4
     expect(h.gateLog()).toBe("");
   });
 
-  it("a hook that changed on origin while <MAIN> lags behind is refused, naming the fast-forward", () => {
+  it("a hook that changed on origin while a clean <MAIN> lags behind: <MAIN> is fast-forwarded first, then the merge runs", () => {
     const h = harness();
     h.pushToOrigin({ "scripts/after.sh": AFTER.replace("exit", "# newer\nexit") });
+    expect(h.run({}, ["--dry-run"]).err).toMatch(/PLAN +fast-forward <MAIN> to origin\/main first/);
+    const r = h.run();
+    expect(r.err).toMatch(/<MAIN> was behind: fast-forwarded/);
+    expect(r.status).toBe(0);
+    expect(readFileSync(join(h.MAIN, "scripts/after.sh"), "utf8")).toContain("# newer");
+  });
+
+  it("a hook that changed on origin while a DIRTY <MAIN> lags behind is refused, naming the fast-forward", () => {
+    const h = harness();
+    h.pushToOrigin({ "scripts/after.sh": AFTER.replace("exit", "# newer\nexit") });
+    writeFileSync(join(h.MAIN, "notes.txt"), "someone's work\n");
     const r = h.run();
     expect(r.status).toBe(1);
     expect(r.err).toContain("scripts/after.sh");
