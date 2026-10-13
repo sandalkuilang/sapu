@@ -1091,6 +1091,8 @@ export function compileRules(contract) {
     agentFiledGate: !!contract && contract.agentFiledNeedsAcceptance === true,
     // The worker step budget: the contract's tuning.stepBudget over the defaults.
     steps: resolveTuning(contract).stepBudget,
+    // The worker context budget: the contract's tuning.contextBudget over the defaults.
+    context: resolveTuning(contract).contextBudget,
   };
 }
 
@@ -1470,7 +1472,12 @@ function globHits(word, name) {
   try {
     return new RegExp(`^${re}$`, "i").test(name);
   } catch {
-    return true;
+    // An unclosed `[` is a literal `[` to the shell: the test builtin `[ -f x ]` names no script.
+    try {
+      return new RegExp(`^${re.replace(/\[/g, "\\[")}$`, "i").test(name);
+    } catch {
+      return true;
+    }
   }
 }
 
@@ -1521,6 +1528,7 @@ const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
 const notPlanned = (v) => typeof v === "string" && /^not[\s_-]*planned$/i.test(v.trim());
 
 const BLOCK = {
+  poll: "run the long command with run_in_background and wait for its completion notification; never sleep-poll (sapu §No polling)",
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
   explorerRead:
@@ -2769,6 +2777,31 @@ function prSource(toks) {
 }
 
 /** `base` = the caller's scope: {main, rules, resolve}; each command of `text` re-resolves its own place. */
+// NO POLLING (sapu SKILL.md §No polling), for ladder workers. Measured in worker transcripts:
+// `until [ -f x ]; do sleep …; done` held a worker 10-16 minutes. A loop that sleeps POLL_LOOP_SLEEP
+// seconds or more per round, or one sleep of POLL_SLEEP or more, is refused; a short readiness loop
+// (`until pg_isready; do sleep 1; done`) passes. Each command text is judged where checkText reads it,
+// so the shells and wrappers it already unwraps (bash -c, sh -c, a runner) are covered too.
+export const POLL_LOOP_SLEEP = 5;
+export const POLL_SLEEP = 30;
+const LOOP_OPEN = new Set(["while", "until", "for", "select"]);
+const LOOP_LEAD = new Set(["do", "then", "else", "elif", "!", "{"]);
+const SLEEP_UNIT = { "": 1, s: 1, m: 60, h: 3600, d: 86400 };
+
+/** The seconds a `sleep` command waits (its arguments summed), or null when this is no sleep or a word is built at run time. */
+function sleepSeconds(toks) {
+  const a = toks.slice(programIndex(toks));
+  if (!a.length || bare(a[0].v) !== "sleep") return null;
+  let s = 0;
+  for (const x of a.slice(1)) {
+    if (x.dyn) return null;
+    if (/^inf(inity)?$/i.test(x.v)) return Infinity;
+    const m = /^(\d+(?:\.\d*)?|\.\d+)([smhd]?)$/.exec(x.v);
+    if (m) s += Number(m[1]) * SLEEP_UNIT[m[2]];
+  }
+  return s;
+}
+
 function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   // A command text starts with OLDPWD = its cwd: Claude Code's Bash sets it so (measured), and a
@@ -2788,7 +2821,16 @@ function checkText(text, dir, base, depth) {
   let fromPr = false; // the previous command pipes a PR's diff into this one
   let fromNet = false; // the previous command pipes a download into this one
   let printed = null; // what the previous command, a literal echo or printf, pipes into this one
+  const noPoll = base.rules && base.rules.worker !== false && !base.explorer;
+  let loops = 0; // while/until/for/select loops open at this command
   for (const c of cmds) {
+    if (noPoll) {
+      const lead = c.toks.find((x) => !LOOP_LEAD.has(x.v));
+      if (lead && LOOP_OPEN.has(lead.v)) loops++;
+      const s = sleepSeconds(c.toks);
+      if (s !== null && s >= (loops ? POLL_LOOP_SLEEP : POLL_SLEEP)) return BLOCK.poll;
+      if (loops && c.toks[0] && c.toks[0].v === "done") loops--;
+    }
     if (c.pre === "(") saved.push(state.dir);
     const before = state.dir;
     // Code a shell or an interpreter reads on stdin, written as a literal in this command line: a
@@ -2978,7 +3020,53 @@ export function stepProbe({ main, agentId }) {
   }
 }
 
-export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget }) {
+// ponytail: a worker's last usage sits at the end of its transcript; a 256 KB tail holds several turns
+// without reading a transcript that grows to megabytes, and only every CONTEXT_EVERY_CALLS-th call reads it.
+const TRANSCRIPT_TAIL = 256 * 1024;
+export const CONTEXT_EVERY_CALLS = 5;
+
+/**
+ * A worker's own transcript: `agent_transcript_path` when the host gives it, else
+ * <session>/subagents/agent-<agent_id>.jsonl beside the session's `transcript_path` (a subagent's hook
+ * gets the main session's transcript there; that layout was read on disk, not documented). Never the
+ * main session's transcript itself: the orchestrator's context is not the worker's.
+ */
+export function workerTranscript(input) {
+  if (typeof input.agent_transcript_path === "string" && input.agent_transcript_path) return input.agent_transcript_path;
+  const t = input.transcript_path;
+  const id = input.agent_id;
+  if (typeof t !== "string" || !t || typeof id !== "string" || !id) return null;
+  return path.basename(t) === `agent-${id}.jsonl` ? t : path.join(t.replace(/\.jsonl$/, ""), "subagents", `agent-${id}.jsonl`);
+}
+
+/** The context of the last assistant turn in transcript `file` (input + cache read + cache creation tokens), from its tail; null when there is none. */
+export function contextTokens(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, TRANSCRIPT_TAIL);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let u;
+      try {
+        u = JSON.parse(lines[i])?.message?.usage;
+      } catch {
+        continue; // the tail's first line is cut, and a line may be half-written
+      }
+      if (u && typeof u === "object") return [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+    }
+  } catch {
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+  return null;
+}
+
+export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget, context = DEFAULT_TUNING.contextBudget, transcript = null }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
   let n;
   try {
@@ -2987,22 +3075,47 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
     return null;
   }
   const file = path.join(stepsDir(main), agentId.replace(/[^\w.-]/g, "_"));
+  const num = (f) => {
+    try {
+      return fs.readFileSync(f, "utf8").split(" ").map((x) => Number(x) || 0);
+    } catch {
+      return [0, 0];
+    }
+  };
   // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
-  // never skipped. The last one given is kept in `<id>.r`.
+  // never skipped. The last one given is kept in `<id>.r` (steps) and `<id>.cr` (context).
   const { soft: SOFT, every: EVERY, hard: HARD, everyLate: LATE } = steps;
   const soft = Math.floor((Math.min(n, HARD) - SOFT) / EVERY) + 1;
   const dueSlots = n < SOFT ? 0 : soft + (n > HARD ? Math.floor((n - HARD) / LATE) : 0);
-  let given = 0;
+  // The context budget, on the same path: the worker's context is measured on every
+  // CONTEXT_EVERY_CALLS-th call; from the call that first sees `context.soft` tokens, a reminder every
+  // `context.every` calls. `<id>.c` keeps that call's number and the last measure.
+  let [from, tokens] = num(`${file}.c`);
+  if (transcript && n % CONTEXT_EVERY_CALLS === 0) {
+    const t = contextTokens(transcript);
+    if (t !== null) {
+      tokens = t;
+      if (!from && t >= context.soft) from = n;
+      try {
+        fs.writeFileSync(`${file}.c`, `${from} ${tokens}`);
+      } catch {}
+    }
+  }
+  const ctxSlots = from ? Math.floor((n - from) / context.every) + 1 : 0;
+  const stepDue = dueSlots > num(`${file}.r`)[0];
+  const ctxDue = ctxSlots > num(`${file}.cr`)[0];
+  if (!(stepDue || ctxDue) || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
   try {
-    given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
-  } catch {}
-  if (dueSlots <= given || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
-  try {
+    // Both recorded: a step and a context reminder due on the same call refuse one call, not two.
     fs.writeFileSync(`${file}.r`, String(dueSlots));
+    fs.writeFileSync(`${file}.cr`, String(ctxSlots));
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`;
+  const handOff = `Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes.`;
+  return stepDue
+    ? `STEP BUDGET: ${n} tool calls. ${handOff} Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`
+    : `CONTEXT BUDGET (${Math.round(tokens / 1000)}k tokens): every turn re-sends your context. ${handOff} Reminders come every ${context.every} calls.`;
 }
 
 // EXPLORATION, ENFORCED. Measured on ladder-worker transcripts: the brief's "explore in one call, run
@@ -3774,7 +3887,7 @@ export function decide(input) {
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
-  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps }) : null;
+  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps, context: rules.context, transcript: workerTranscript(input) }) : null;
 }
 
 /** True when this file is the process's entry point, however it was reached (symlink, relative path). */

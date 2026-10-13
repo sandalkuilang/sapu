@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
-import { BIG_READ_BYTES, checkBigRead, codeSearchCommand, lookupKind, nudge } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, codeSearchCommand, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -3978,5 +3978,146 @@ describe("sapu-guard — a ladder worker's single lookups get a note, its big wh
     expect(read(S.w, { file_path: join(S.r, ".claude/sapu/forge.md") })).toBeNull();
     expect(read(S.w, { file_path: join(S.w, "big.ts") }, "senior-dev-team:senior-qa-reviewer")).toBeNull();
     expect((checkBigRead as (i: unknown) => string | null)({ ti: { file_path: join(S.w, "missing.ts") }, cwd: S.w, main: S.r })).toBeNull();
+  });
+});
+
+describe("sapu-guard — a ladder worker never sleep-polls (sapu §No polling)", () => {
+  const poll = /run_in_background .*never sleep-poll \(sapu §No polling\)/;
+  it.each([
+    ["until [ -f /tmp/done ]; do sleep 30; done"],
+    ["while true\ndo\n  sleep 5\ndone"],
+    ["while ! test -f out.json; do sleep 10s; done && cat out.json"],
+    ["for i in $(seq 1 60); do gh pr checks 1 && break; sleep 20; done"],
+    ["while sleep 1m; do ls; done"],
+    ["sleep 60"],
+    ["sleep 30"],
+    ["sleep 1m"],
+    ["npm test & sleep 45; cat log"],
+    ["bash -c 'until [ -f x ]; do sleep 15; done'"],
+    ["sh -c \"sleep 120\""],
+    ["timeout 900 bash -c 'while :; do sleep 9; done'"],
+  ])("refuses %j", (command) => {
+    expect(check({ command, cwd: wt, main, rules })).toMatch(poll);
+  });
+
+  it.each([
+    ["until pg_isready -h localhost; do sleep 1; done"],
+    ["for i in 1 2 3; do curl -sf localhost:3000/health && break; sleep 2; done"],
+    ["while read -r l; do echo $l; done < f; sleep 4"],
+    ["sleep 2"],
+    ["sleep 29"],
+    ["sleep $DELAY"],
+    ["for f in a b; do echo $f; done; sleep 10"],
+    ["echo until do sleep 60 done"],
+  ])("allows %j", (command) => {
+    expect(check({ command, cwd: wt, main, rules })).toBeNull();
+  });
+
+  it("reads the test builtin `[` as a program, not as a glob naming the calibration script", () => {
+    for (const command of ["[ -f x ]", "if [ -f x ]; then ls; fi", "until [ -f x ]; do sleep 1; done"]) expect(check({ command, cwd: wt, main, rules }), command).toBeNull();
+    expect(check({ command: "node scripts/t[a-z]ste-calibrate.mjs", cwd: wt, main, rules })).toMatch(/taste calibration/);
+  });
+
+  it("binds ladder workers only", () => {
+    expect(check({ command: "until [ -f x ]; do sleep 30; done", cwd: wt, main, rules, worker: false })).toBeNull();
+    expect(check({ command: "sleep 60", cwd: wt, main, rules, worker: false })).toBeNull();
+  });
+});
+
+describe("sapu-guard — the context budget of a ladder worker, on the step budget's path", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-ctx-")));
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  let k = 0;
+  const fresh = () => {
+    const m = join(box, `m${++k}`);
+    mkdirSync(join(m, ".git"), { recursive: true });
+    return m;
+  };
+  /** A transcript whose last assistant turn carried `ctx` context tokens (a cut first line and a later line without usage, as a real tail has). */
+  const transcript = (ctx: number) => {
+    const f = join(box, `t${++k}.jsonl`);
+    const turn = (n: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 2, cache_read_input_tokens: n - 502, cache_creation_input_tokens: 500, output_tokens: 900 } } });
+    writeFileSync(f, ['ge": {"usage": {"input_tokens": 999999', turn(1000), turn(ctx), JSON.stringify({ type: "user", message: { content: "x" } }), ""].join("\n"));
+    return f;
+  };
+  const budget = stepBudgetUntyped as (i: Record<string, unknown>) => string | null;
+  const steps = { soft: 1000, every: 15, hard: 1700, everyLate: 5 }; // out of the way
+  const context = { soft: 150_000, every: 10 };
+  const run = (m: string, t: string | null, n: number, command = "ls", at = 0) => {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(budget({ main: m, agentId: "w", tool: "Bash", command: i + 1 === at ? command : "ls", steps, context, transcript: t }));
+    return out;
+  };
+  const refused = (out: (string | null)[]) => out.flatMap((r, i) => (r ? [i + 1] : []));
+
+  it("reads the last usage from the transcript's tail: input + cache read + cache creation", () => {
+    expect(contextTokens(transcript(161_000))).toBe(161_000);
+    expect(contextTokens(join(box, "missing.jsonl"))).toBeNull();
+    const junk = join(box, "junk.jsonl");
+    writeFileSync(junk, 'not json\n{"usage": 5\n');
+    expect(contextTokens(junk)).toBeNull();
+  });
+
+  it("fires at or above soft, on the first measured call, then every `every` calls; never below", () => {
+    expect(CONTEXT_EVERY_CALLS).toBe(5);
+    const out = run(fresh(), transcript(161_000), 30);
+    expect(refused(out)).toEqual([5, 15, 25]);
+    expect(out[4]).toMatch(/^CONTEXT BUDGET \(161k tokens\): .*hand off now \(brief point 11\).*Re-issue this call; it passes\. Reminders come every 10 calls\.$/s);
+    expect(refused(run(fresh(), transcript(150_000), 12))).toEqual([5]); // exactly soft
+    expect(refused(run(fresh(), transcript(149_999), 30))).toEqual([]);
+  });
+
+  it("counts from the measure that first crosses soft", () => {
+    const m = fresh();
+    const t = transcript(100_000);
+    expect(refused(run(m, t, 7))).toEqual([]);
+    writeFileSync(t, readFileSync(transcript(200_000)));
+    expect(refused(run(m, t, 15))).toEqual([3, 13]); // calls 10 and 20
+  });
+
+  it("is never refused for good: a handoff command on the due call passes, the next call gets it", () => {
+    expect(refused(run(fresh(), transcript(200_000), 6, "git add -A && git commit -m 'wip: handoff'", 5))).toEqual([6]);
+  });
+
+  it("refuses one call, not two, when the step and context reminders fall due together", () => {
+    const m = fresh();
+    const t = transcript(200_000);
+    const out = Array.from({ length: 6 }, () => budget({ main: m, agentId: "w", tool: "Bash", command: "ls", steps: { soft: 5, every: 15, hard: 170, everyLate: 5 }, context, transcript: t }));
+    expect(refused(out)).toEqual([5]);
+    expect(out[4]).toMatch(/^STEP BUDGET/);
+  });
+
+  it("is a no-op with a missing or unreadable transcript, or none", () => {
+    expect(refused(run(fresh(), join(box, "missing.jsonl"), 20))).toEqual([]);
+    const junk = join(box, "junk2.jsonl");
+    writeFileSync(junk, "garbage\n");
+    expect(refused(run(fresh(), junk, 20))).toEqual([]);
+    expect(refused(run(fresh(), null, 20))).toEqual([]);
+  });
+
+  it("finds the worker's own transcript, never the main session's", () => {
+    const wt = workerTranscript as (i: Record<string, unknown>) => string | null;
+    expect(wt({ transcript_path: "/p/s1.jsonl", agent_id: "a9" })).toBe(join("/p/s1", "subagents", "agent-a9.jsonl"));
+    expect(wt({ transcript_path: "/p/s1.jsonl", agent_id: "a9", agent_transcript_path: "/p/own.jsonl" })).toBe("/p/own.jsonl");
+    expect(wt({ transcript_path: "/p/s1/subagents/agent-a9.jsonl", agent_id: "a9" })).toBe("/p/s1/subagents/agent-a9.jsonl");
+    expect(wt({ transcript_path: "/p/s1.jsonl" })).toBeNull();
+  });
+
+  it("reaches a worker through decide(); a non-worker session is never counted", () => {
+    const r = join(box, "repo");
+    mkdirSync(join(r, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commitContract(r, FIXTURE_CONTRACT);
+    const subs = join(box, "proj", "s1", "subagents");
+    mkdirSync(subs, { recursive: true });
+    const session = join(box, "proj", "s1.jsonl");
+    writeFileSync(session, readFileSync(transcript(10_000))); // the orchestrator's own context: small
+    writeFileSync(join(subs, "agent-wk.jsonl"), readFileSync(transcript(180_000)));
+    writeFileSync(join(subs, "agent-rv.jsonl"), readFileSync(transcript(180_000)));
+    const call = (agent_type: string, agent_id: string) => decide({ tool_name: "Bash", agent_type, agent_id, tool_input: { command: "ls" }, cwd: r, transcript_path: session });
+    const worker = Array.from({ length: 5 }, () => call("sapu:sapu-sonnet-high", "wk"));
+    expect(refused(worker)).toEqual([5]);
+    expect(worker[4]).toMatch(/CONTEXT BUDGET \(180k tokens\)/);
+    expect(refused(Array.from({ length: 12 }, () => call("senior-dev-team:senior-qa-reviewer", "rv")))).toEqual([]);
   });
 });
