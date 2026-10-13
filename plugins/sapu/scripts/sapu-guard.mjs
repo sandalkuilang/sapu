@@ -3262,6 +3262,9 @@ export function checkBigRead({ ti = {}, cwd, main = null }) {
     return null;
   }
   if (!st.isFile() || st.size <= BIG_READ_BYTES) return null;
+  // The scout's plan (sapu-wave.js PLAN_CAP, 48 KB) is written for the builder to read whole, once: the
+  // cap, not this limit, bounds it. Without this the builder's first Read of its own plan was refused.
+  if (/^sapu-plan-[A-Za-z0-9_-]+\.md$/.test(path.basename(abs)) && st.size <= 64 * 1024) return null;
   const home = main ? contractHome(main).dir : null;
   const exempt = [OWN_PLUGIN_ROOT, process.env.CLAUDE_PLUGIN_ROOT, home, main && path.join(main, ".claude", "sapu.json")].filter(Boolean).map(realLoose);
   const r = realLoose(abs);

@@ -3982,6 +3982,13 @@ describe("sapu-guard — a ladder worker's single lookups get a note, its big wh
     expect(read(S.w, { file_path: join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md") })).toBeNull();
     expect(read(S.w, { file_path: join(S.r, ".claude/sapu/forge.md") })).toBeNull();
     expect(read(S.w, { file_path: join(S.w, "big.ts") }, "senior-dev-team:senior-qa-reviewer")).toBeNull();
+    // the scout's plan (up to 48 KB) is read whole by the builder; a same-size file under another name is not
+    writeFileSync(join(S.w, "sapu-plan-issue7.md"), "x".repeat(40 * 1024));
+    writeFileSync(join(S.w, "plan.md"), "x".repeat(40 * 1024));
+    writeFileSync(join(S.w, "sapu-plan-issue8.md"), "x".repeat(80 * 1024));
+    expect(read(S.w, { file_path: join(S.w, "sapu-plan-issue7.md") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "plan.md") })).toMatch(/all of plan\.md/);
+    expect(read(S.w, { file_path: join(S.w, "sapu-plan-issue8.md") })).toMatch(/all of sapu-plan-issue8\.md/);
     expect((checkBigRead as (i: unknown) => string | null)({ ti: { file_path: join(S.w, "missing.ts") }, cwd: S.w, main: S.r })).toBeNull();
   });
 });
