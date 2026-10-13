@@ -750,6 +750,8 @@ A section `profiles --list` marks `(optional)` may be left out: the engine reads
   key terms, before any grep: it returns a `file:line` map of where those terms live and who calls them
   (a code indexer's CLI, for example). `none`, or no section, means the worker starts with its batched
   `rg` lookups instead. Example: `` `<indexer> search <terms>` `` — or `none: no code index in this repo`.
+  The guard reads the section's first code span or fenced line, and names that command in the note it
+  gives a worker that searches by hand (see the guard above).
 
 ## Engine defects go upstream
 
@@ -815,6 +817,17 @@ could use them.
   canary call was counted) or `off: <why>`. `sapu-wave.js` requires it and logs anything but `counting`
   as `WARNING #<N>: step budget off — …`: on first use in a host this proves `agent_id` reaches the
   hook of a Workflow agent.
+  For workers it also enforces exploration in few calls. Single lookups (a `Grep` or `Glob` call, or
+  a Bash call that is one `grep`/`rg`/`ag`/`ack`/`sed`/`cat`/`head`/`tail`/`ls`/`find`, after an
+  optional `cd X &&`) get a short note as the hook's `additionalContext`, never a refusal: with
+  `worker.md` §Code search naming a command, the note names it on the first single search, then on a
+  search once 5 single lookups have passed (never on the code-search call itself); without one, after 3
+  single lookups in a row, then every 5 more, it says to batch the rest or send independent calls in one
+  message (a batched call or other work ends the run; `Read` neither counts nor ends it). The count and
+  the parsed §Code search live per worker (`session_id` + `agent_id`) in `sapu-nudge/` under the OS temp
+  dir. A `Read` without `limit` (a PDF: without `pages`) of a file over 24 KB is refused, telling the
+  worker to read a range or use §Code search; images, the plugin's own files and the repo's sapu
+  contract and profiles are exempt.
 - **MCP tools** reach agents without a `tools:` allowlist (general-purpose, a repo's specialists,
   agents a worker spawns). context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`
   are checked as the Bash/Read calls they amount to (commands in every shape, shell code, the command a

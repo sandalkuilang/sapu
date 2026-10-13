@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, codeSearchCommand, lookupKind, nudge } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -3866,5 +3867,116 @@ describe("sapu-guard — a GitHub token written into ctx_execute code of any lan
   });
   it("and a literal in ctx_execute_file code", () => {
     expect(decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_execute_file", tool_input: { path: "x.json", language: "python", code: `T = "${classic}"` }, cwd: wt })).toMatch(/GitHub token/);
+  });
+});
+
+describe("sapu-guard — a ladder worker's single lookups get a note, its big whole-file Read is refused", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-nudge-")));
+  const state = join(box, "state");
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const git = (repo: string, ...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  const repo = (name: string, codeSearch: string | null) => {
+    const r = join(box, name);
+    mkdirSync(join(r, ".claude/sapu"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commitContract(r, FIXTURE_CONTRACT);
+    writeFileSync(join(r, ".claude/sapu/worker.md"), `# worker\n\n## Setup\n\`npm ci\`\n\n${codeSearch ?? ""}\n## Teardown\n\`npm run teardown\`\n`);
+    const w = join(r, ".claude/worktrees/w");
+    git(r, "worktree", "add", "-q", "--detach", w);
+    return { r, w };
+  };
+  const S = repo("s", "## Code search\n\nRun first: `idx search <terms>`, it prints file:line.\n");
+  const N = repo("n", "## Code search\n\nnone: no code index in this repo\n");
+  const P = repo("p", null); // an older profile, written before the section existed
+  const W = "sapu:sapu-sonnet-medium";
+  const nudgeAt = nudge as (i: unknown, d: string) => string | null;
+  let sid = 0;
+  const session = (cwd: string, agent_type = W) => {
+    const session_id = `sess-${++sid}`;
+    return (tool_name: string, tool_input: Record<string, unknown> = {}) => nudgeAt({ session_id, agent_id: "a1", agent_type, tool_name, tool_input, cwd }, state);
+  };
+  type Call = [string, Record<string, unknown>?];
+  const firedAt = (go: ReturnType<typeof session>, calls: Call[]) => calls.flatMap(([t, i], k) => (go(t, i) ? [k + 1] : []));
+  const grep: Call = ["Grep", { pattern: "x" }];
+  const sed: Call = ["Bash", { command: "sed -n '1,40p' src/a.ts" }];
+  const edit: Call = ["Edit", { file_path: "a" }];
+
+  it("reads §Code search from the profile: its first code span or fenced line; `none` or no section is none", () => {
+    expect(codeSearchCommand(S.r)).toBe("idx search <terms>");
+    expect(codeSearchCommand(N.r)).toBeNull();
+    expect(codeSearchCommand(P.r)).toBeNull();
+    expect(codeSearchCommand(join(box, "nowhere"))).toBeNull();
+    const F = repo("f", "## Code search\n\n```sh\nidx query <terms> --json\n```\n");
+    expect(codeSearchCommand(F.r)).toBe("idx query <terms> --json");
+  });
+
+  it("tells a single lookup from a batched call, other work, and the code search itself", () => {
+    const k = lookupKind as (t: string, i?: Record<string, unknown>, h?: string | null) => string | null;
+    expect(k("Grep", { pattern: "x" })).toBe("search");
+    expect(k("Glob", { pattern: "**/*.ts" })).toBe("look");
+    for (const c of ["grep -rn foo src", "cd /w && rg -n 'a|b' src | head -20", "FOO=1 ag x", "ack x"]) expect(k("Bash", { command: c }), c).toBe("search");
+    for (const c of ["sed -n '1,40p' a.ts", "cat a.ts | grep x", "head -50 a.ts", "tail -n 5 log", "ls src", "find . -name '*.ts'"]) expect(k("Bash", { command: c }), c).toBe("look");
+    for (const c of ["grep a x; grep b y", "rg a && sed -n 1,5p b", "sed -i 's/a/b/' f", "npm test", "git status"]) expect(k("Bash", { command: c }), c).toBeNull();
+    expect(k("Bash", { command: "cd /w && idx search Invoice total" }, "idx search")).toBe("self");
+    expect(k("Edit", { file_path: "a" })).toBeNull();
+  });
+
+  it("with §Code search: names it on the first search, then once 5 single lookups have passed; never on the code search", () => {
+    const go = session(S.w);
+    const first = go(...grep);
+    expect(first).toMatch(/^This repo's code search: `idx search <terms>`\. It answers where\/who-calls in one call\. Batch what's left into one call, or send independent Reads\/Edits\/searches as parallel calls in one message\.$/);
+    expect(first!.length).toBeLessThan(240); // about 60 tokens
+    expect(firedAt(go, Array(11).fill(grep))).toEqual([5, 10]);
+    // other lookups count toward the 5, but only a search gets the note; other work does not reset it
+    expect(firedAt(session(S.w), [sed, sed, grep, sed, edit, sed, sed, sed, grep])).toEqual([3, 9]);
+    expect(firedAt(session(S.w), Array(8).fill(["Bash", { command: "idx search Invoice" }]))).toEqual([]);
+  });
+
+  it("without §Code search: after 3 single lookups in a row, then every 5 more; batched calls and other work end the run, Read does not", () => {
+    for (const dir of [N.w, P.w]) {
+      const go = session(dir);
+      const out: (string | null)[] = [];
+      for (let i = 0; i < 13; i++) out.push(go(...(i % 2 ? sed : grep)));
+      expect(out.flatMap((r, i) => (r ? [i + 1] : []))).toEqual([3, 8, 13]);
+      expect(out[2]).toMatch(/^3 single lookups in a row: batch the remaining lookups into one ctx_batch_execute or one Bash, or send independent .* parallel calls in one message\.$/);
+      expect(out[2]!.length).toBeLessThan(240);
+    }
+    const batched: Call = ["Bash", { command: "rg a src; rg b src" }];
+    expect(firedAt(session(N.w), [grep, sed, batched, grep, ["Read", { file_path: "a.ts" }], sed, edit, grep, grep, grep])).toEqual([10]);
+  });
+
+  it("is for ladder workers only, and needs a session id", () => {
+    expect(firedAt(session(S.w, "senior-dev-team:senior-qa-reviewer"), [grep, grep, grep])).toEqual([]);
+    expect(nudgeAt({ agent_type: W, tool_name: "Grep", tool_input: {}, cwd: S.w }, state)).toBeNull();
+  });
+
+  it("reaches the worker as the hook's additionalContext, with the call let through", () => {
+    const tmp = join(box, "tmp");
+    mkdirSync(tmp, { recursive: true });
+    const run = () => execFileSync("node", [GUARD], { input: JSON.stringify({ session_id: "e2e", agent_id: "e1", agent_type: W, tool_name: "Grep", tool_input: { pattern: "x", path: S.w }, cwd: S.w }), env: { ...process.env, TMPDIR: tmp }, encoding: "utf8" });
+    expect(JSON.parse(run())).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: expect.stringContaining("`idx search <terms>`") } });
+    expect(run()).toBe(""); // the second search, before 5 lookups have passed: no note
+  });
+
+  it("refuses a worker's whole-file Read over BIG_READ_BYTES (text or PDF), naming offset/limit and the code search", () => {
+    const big = "x".repeat(BIG_READ_BYTES + 1);
+    for (const [d, f] of [[S.w, "big.ts"], [S.w, "doc.pdf"], [S.w, "shot.png"], [P.w, "big.ts"]] as const) writeFileSync(join(d, f), big);
+    writeFileSync(join(S.w, "small.ts"), "x".repeat(BIG_READ_BYTES));
+    writeFileSync(join(S.r, ".claude/sapu/forge.md"), big);
+    let id = 0;
+    const read = (cwd: string, tool_input: Record<string, unknown>, agent_type = W) => decide({ tool_name: "Read", agent_type, agent_id: `r${++id}`, tool_input, cwd });
+    expect(read(S.w, { file_path: join(S.w, "big.ts") })).toMatch(/all of big\.ts \(24 KB\).*offset\/limit.*`idx search <terms>`/s);
+    expect(read(S.w, { file_path: "doc.pdf" })).toMatch(/doc\.pdf.*with pages/s);
+    expect(read(P.w, { file_path: join(P.w, "big.ts") })).toMatch(/offset\/limit/);
+    expect(read(P.w, { file_path: join(P.w, "big.ts") })).not.toMatch(/code search/);
+    // a range, an image, a file at the threshold, the plugin's own files, the repo's sapu profiles, another subagent: let through
+    expect(read(S.w, { file_path: join(S.w, "big.ts"), offset: 1, limit: 80 })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "doc.pdf"), pages: "1-3" })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "shot.png") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "small.ts") })).toBeNull();
+    expect(read(S.w, { file_path: join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.r, ".claude/sapu/forge.md") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "big.ts") }, "senior-dev-team:senior-qa-reviewer")).toBeNull();
+    expect((checkBigRead as (i: unknown) => string | null)({ ti: { file_path: join(S.w, "missing.ts") }, cwd: S.w, main: S.r })).toBeNull();
   });
 });

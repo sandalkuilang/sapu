@@ -50,7 +50,7 @@ The policy is asked in popups, one choice per field; the full table is in [`CONT
 
 Each profile's `##` section headings are English and match exactly what `sapu-contract.mjs profiles --list` prints for that skill.
 
-One section is optional: `worker.md`'s `## Code search`. It names a command that turns the issue's key terms into a `file:line` map of where they live and who calls them (a code indexer's CLI, for example). A worker runs it once, first, before any grep. Init asks for it and writes `none` when the repo has no such tool; a profile without the section reads as `none`, so an older profile keeps working unchanged.
+One section is optional: `worker.md`'s `## Code search`. It names a command that turns the issue's key terms into a `file:line` map of where they live and who calls them (a code indexer's CLI, for example). A worker runs it once, first, before any grep. Init asks for it and writes `none` when the repo has no such tool; a profile without the section reads as `none`, so an older profile keeps working unchanged. The guard holds workers to it: a worker that searches by hand (a `Grep` call, or one `grep`/`rg` per Bash call) gets a short note naming this command, on its first search and then once every 5 single lookups. The note never refuses the call. Without the section, a worker gets a note to batch its lookups after 3 single lookups in a row, then every 5 more. Either way, a worker's `Read` of a whole file over 24 KB (text or PDF) is refused with a pointer to a ranged read (or to this command); images, the plugin's files and the repo's sapu profiles are exempt.
 
 When you enable `journey` among the skills (with `argus`, which it runs under: `/journey` checks both, and init selects `argus` with it), init also drafts `.argus/live.json`, the instance the journey lane builds for itself (its format is [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md)):
 - **From the scan, each fact confirmed by you:** a `services` entry for every local service the repo's config names (cache, queue, object store, search engine, mail server), the roles from `.argus/config.yml`'s `test_accounts`, the repo's dev and E2E ports as `reserved_ports`, and a `port_range` of its own.
@@ -674,6 +674,14 @@ claude plugin list --json
 ```
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
+
+#### Upgrading from a version before 2.14.0
+
+Nothing to do: start a new session so the new guard loads.
+
+What behaves differently:
+- **Workers are nudged out of one-lookup-per-turn exploration.** The guard adds a short note to a worker's single `grep`/`rg`/`sed`/`cat`/`ls`/`find` calls (and `Grep`/`Glob`): with `worker.md` `## Code search`, it names that command on the first search, then once every 5 single lookups; without it, it says to batch after 3 in a row, then every 5 more. The note also says to send independent Reads, Edits and searches as parallel calls in one message. Notes never refuse a call.
+- **A worker's whole-file `Read` over 24 KB is refused.** It reads a range instead (`offset`/`limit`; a PDF: `pages`). Images, the plugin's files and the repo's sapu contract and profiles are exempt.
 
 #### Upgrading from a version before 2.13.0
 
