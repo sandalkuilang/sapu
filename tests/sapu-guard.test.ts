@@ -4125,12 +4125,12 @@ describe("sapu-guard — the context budget of a ladder worker, on the step budg
     mkdirSync(subs, { recursive: true });
     const session = join(box, "proj", "s1.jsonl");
     writeFileSync(session, readFileSync(transcript(10_000))); // the orchestrator's own context: small
-    writeFileSync(join(subs, "agent-wk.jsonl"), readFileSync(transcript(180_000)));
-    writeFileSync(join(subs, "agent-rv.jsonl"), readFileSync(transcript(180_000)));
+    writeFileSync(join(subs, "agent-wk.jsonl"), readFileSync(transcript(240_000)));
+    writeFileSync(join(subs, "agent-rv.jsonl"), readFileSync(transcript(240_000)));
     const call = (agent_type: string, agent_id: string) => decide({ tool_name: "Bash", agent_type, agent_id, tool_input: { command: "ls" }, cwd: r, transcript_path: session });
     const worker = Array.from({ length: 5 }, () => call("sapu:sapu-sonnet-high", "wk"));
     expect(refused(worker)).toEqual([5]);
-    expect(worker[4]).toMatch(/CONTEXT BUDGET \(180k tokens\)/);
+    expect(worker[4]).toMatch(/CONTEXT BUDGET \(240k tokens\)/);
     expect(refused(Array.from({ length: 12 }, () => call("senior-dev-team:senior-qa-reviewer", "rv")))).toEqual([]);
   });
 });

@@ -188,7 +188,7 @@ from the cores, the smaller one while the machine is busy), and `sapu-merge.sh` 
 uses `gateWorkers`. The cores are the host's (`os.cpus()`), not a container's cgroup quota: in a
 CPU-limited container pass `--workers` yourself. What depends on the repo and the model is the optional `tuning` object, every key
 optional: `stepBudget` (`soft`, `every`, `hard`, `everyLate`: the guard's worker reminders, in tool
-calls), `contextBudget` (`soft`, default 150000: the worker context, in tokens, at which the same
+calls), `contextBudget` (`soft`, default 200000: the worker context, in tokens, at which the same
 reminder comes; `every`, default 10: tool calls between its repeats), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
 (`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in

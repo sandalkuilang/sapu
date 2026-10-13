@@ -781,7 +781,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 150_000, every: 10 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
