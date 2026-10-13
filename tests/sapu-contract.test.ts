@@ -959,7 +959,7 @@ describe("loadContract and the CLI", () => {
     expect(worker.optionalSections).toEqual(["Code search"]);
     expect(worker.sections).not.toContain("Code search");
     const list = cli(repo, ["profiles", "--list"]).out.split("\n").find((l) => l.startsWith(".claude/sapu/worker.md:")) ?? "";
-    expect(list).toContain("## Teardown | ## Code search (optional)");
+    expect(list).toContain("## Teardown | optional: ## Code search");
   });
 
   it("`show --ref <ref>` and `check --ref <ref>` read the contract committed at that ref (round 4 B)", () => {

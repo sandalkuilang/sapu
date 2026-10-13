@@ -1973,7 +1973,7 @@ function main(argv) {
   if (cmd === "profiles") {
     if (arg === "--list") {
       for (const [s, spec] of Object.entries(PROFILE_SECTIONS)) {
-        const heads = [...spec.sections.map((h) => `## ${h}`), ...(spec.optionalSections ?? []).map((h) => `## ${h} (optional)`)];
+        const heads = [...spec.sections.map((h) => `## ${h}`), ...(spec.optionalSections ?? []).map((h) => `optional: ## ${h}`)];
         process.stdout.write(`.claude/sapu/${s}.md${spec.optional ? " (optional)" : ""}: ${heads.join(" | ")}\n`);
       }
       return;

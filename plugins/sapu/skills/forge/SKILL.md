@@ -24,7 +24,7 @@ Re-run `check` right before each push, `gh pr create`, `gh issue create`, and me
 - The repo's `CLAUDE.md` is already in your system prompt (and every subagent's) — never `Read` it (a full duplicate; size in profile §Token discipline).
 - Every `Agent` dispatch costs a large fixed context **before it does anything** (profile §Token discipline). Agent count is the budget — each dispatch below is the only one allowed at that tier.
 - No helper skills in the loop — a separate code-review, PR-review, commit-review or summarize skill re-does work this loop already does. Exception: an issue-analysis skill, only when acceptance criteria are genuinely missing.
-- **Explore in one call, not one grep per turn** (each turn re-sends the whole context): collect every "where is X / who calls Y / what is in Z" question and answer them all in ONE `ctx_batch_execute` or one Bash running several `rg`. The `worker.md` profile §Code search, when it names a command, runs first, once, with the issue's key terms.
+- **Explore in one call, not one grep per turn** (each turn re-sends all context): collect every "where is X / who calls Y / what is in Z" question and answer them all in ONE `ctx_batch_execute` or one Bash running several `grep -rn`. The `worker.md` profile §Code search, when it names a command, runs first, once, with the issue's key terms.
 - Cap every command's output: `2>&1 | tail -40`, plus the repo's quiet flags (profile §Token discipline). Read files by line range, several per call.
 - Comments: from step 2's verdict file, the last 2 first (`jq '.comments[-2:]' <file>`); full history only if those point back to an earlier decision.
 
