@@ -15,7 +15,7 @@ plugins/sapu/
   agents/                         the worker ladder sapu-sonnet-medium … sapu-opus-high, ui-explorer (the journey lane's explorer) and curator (its taste judge, tools Read and StructuredOutput)
   data/taste-bar.json             the taste bar: rules, thresholds, sources, reference frames, calibrated bands per archetype and width (versioned)
   hooks/hooks.json                PreToolUse guard (Bash, Monitor, PowerShell, file and search tools, every MCP tool), active for every subagent, not for the orchestrator
-  workflows/sapu-wave.js          one Phase B lane (one issue: worker, review, fix cycles) as code
+  workflows/sapu-wave.js          one Phase B lane (one issue: scout, builder, review, fix cycles) as code
   workflows/inspector.js          the momus → argus → nemesis sequence as code
   scripts/                        sapu-contract.mjs, sapu-guard.mjs, sapu-merge.sh (and sapu-smoke-gate.mjs, its smoke check), sapu-metrics.ts, sapu-cleanup.mjs;
                                   argus-live.mjs and its argus-live-*.mjs modules (the journey lane's instance, wrapper, repro and scrub;

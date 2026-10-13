@@ -777,10 +777,11 @@ export function gateWorkers({ cpus, busy }) {
 /**
  * What a repo may tune (contract `tuning`, every key optional) and its defaults: the worker step
  * budget the guard enforces (a reminder at `soft` tool calls, every `every` up to `hard`, every
- * `everyLate` past it), and the orchestrator's context limits as fractions of the model's context
+ * `everyLate` past it), the worker context budget (the same reminder once a worker's context reaches
+ * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 150_000, every: 10 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -789,6 +790,7 @@ export function resolveTuning(c) {
   const frac = { ...DEFAULT_TUNING.contextLimits, ...(t.contextLimits || {}) };
   return {
     stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
+    contextBudget: { ...DEFAULT_TUNING.contextBudget, ...(t.contextBudget || {}) },
     contextWindow: window,
     contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
   };
@@ -799,14 +801,15 @@ function tuningProblems(t) {
   if (!t || typeof t !== "object" || Array.isArray(t)) return ["tuning must be an object (omit it for the defaults)"];
   const known = (obj, where, allowed) => Object.keys(obj).filter((k) => !allowed.includes(k)).forEach((k) => errs.push(`${where}: unknown key "${k}"`));
   known(t, "tuning", Object.keys(DEFAULT_TUNING));
-  if ("stepBudget" in t) {
-    const s = t.stepBudget;
-    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push("tuning.stepBudget must be an object");
+  for (const [key, unit] of [["stepBudget", "tool calls"], ["contextBudget", "tokens (soft) or tool calls (every)"]]) {
+    if (!(key in t)) continue;
+    const s = t[key];
+    if (!s || typeof s !== "object" || Array.isArray(s)) errs.push(`tuning.${key} must be an object`);
     else {
-      known(s, "tuning.stepBudget", Object.keys(DEFAULT_TUNING.stepBudget));
-      for (const k of Object.keys(DEFAULT_TUNING.stepBudget)) if (k in s && !(Number.isInteger(s[k]) && s[k] >= 1)) errs.push(`tuning.stepBudget.${k} must be a whole number of tool calls, at least 1`);
-      const r = { ...DEFAULT_TUNING.stepBudget, ...s };
-      if (Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
+      known(s, `tuning.${key}`, Object.keys(DEFAULT_TUNING[key]));
+      for (const k of Object.keys(DEFAULT_TUNING[key])) if (k in s && !(Number.isInteger(s[k]) && s[k] >= 1)) errs.push(`tuning.${key}.${k} must be a whole number of ${unit}, at least 1`);
+      const r = { ...DEFAULT_TUNING[key], ...s };
+      if (key === "stepBudget" && Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
     }
   }
   if ("contextWindow" in t && !(Number.isInteger(t.contextWindow) && t.contextWindow >= 10_000)) errs.push("tuning.contextWindow must be a token count (the model's context window, at least 10000)");

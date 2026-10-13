@@ -1,5 +1,5 @@
 {
-  "description": "sapu guard: refuses the Bash commands, file reads/writes and searches a subagent may never make (acts for every subagent; for the orchestrator only where it dispatches agents from; see scripts/sapu-guard.mjs)",
+  "description": "sapu guard: refuses the Bash commands, file reads/writes and searches a subagent may never make, and notes a ladder worker's one-at-a-time lookups (acts for every subagent; for the orchestrator only where it dispatches agents from; see scripts/sapu-guard.mjs)",
   "hooks": {
     "PreToolUse": [
       {

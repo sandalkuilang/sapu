@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, codeSearchCommand, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -3866,5 +3867,265 @@ describe("sapu-guard — a GitHub token written into ctx_execute code of any lan
   });
   it("and a literal in ctx_execute_file code", () => {
     expect(decide({ tool_name: "mcp__plugin_context-mode_context-mode__ctx_execute_file", tool_input: { path: "x.json", language: "python", code: `T = "${classic}"` }, cwd: wt })).toMatch(/GitHub token/);
+  });
+});
+
+describe("sapu-guard — a ladder worker's single lookups get a note, its big whole-file Read is refused", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-nudge-")));
+  const state = join(box, "state");
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const git = (repo: string, ...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  const repo = (name: string, codeSearch: string | null) => {
+    const r = join(box, name);
+    mkdirSync(join(r, ".claude/sapu"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commitContract(r, FIXTURE_CONTRACT);
+    writeFileSync(join(r, ".claude/sapu/worker.md"), `# worker\n\n## Setup\n\`npm ci\`\n\n${codeSearch ?? ""}\n## Teardown\n\`npm run teardown\`\n`);
+    const w = join(r, ".claude/worktrees/w");
+    git(r, "worktree", "add", "-q", "--detach", w);
+    return { r, w };
+  };
+  const S = repo("s", "## Code search\n\nRun first: `idx search <terms>`, it prints file:line.\n");
+  const N = repo("n", "## Code search\n\nnone: no code index in this repo\n");
+  const P = repo("p", null); // an older profile, written before the section existed
+  const W = "sapu:sapu-sonnet-medium";
+  const nudgeAt = nudge as (i: unknown, d: string) => string | null;
+  let sid = 0;
+  const session = (cwd: string, agent_type = W) => {
+    const session_id = `sess-${++sid}`;
+    return (tool_name: string, tool_input: Record<string, unknown> = {}) => nudgeAt({ session_id, agent_id: "a1", agent_type, tool_name, tool_input, cwd }, state);
+  };
+  type Call = [string, Record<string, unknown>?];
+  const firedAt = (go: ReturnType<typeof session>, calls: Call[]) => calls.flatMap(([t, i], k) => (go(t, i) ? [k + 1] : []));
+  const grep: Call = ["Grep", { pattern: "x" }];
+  const sed: Call = ["Bash", { command: "sed -n '1,40p' src/a.ts" }];
+  const edit: Call = ["Edit", { file_path: "a" }];
+
+  it("reads §Code search from the profile: its first code span or fenced line; `none` or no section is none", () => {
+    expect(codeSearchCommand(S.r)).toBe("idx search <terms>");
+    expect(codeSearchCommand(N.r)).toBeNull();
+    expect(codeSearchCommand(P.r)).toBeNull();
+    expect(codeSearchCommand(join(box, "nowhere"))).toBeNull();
+    const F = repo("f", "## Code search\n\n```sh\nidx query <terms> --json\n```\n");
+    expect(codeSearchCommand(F.r)).toBe("idx query <terms> --json");
+  });
+
+  it("tells a single lookup from a batched call, other work, and the code search itself", () => {
+    const k = lookupKind as (t: string, i?: Record<string, unknown>, h?: string | null) => string | null;
+    expect(k("Grep", { pattern: "x" })).toBe("search");
+    expect(k("Glob", { pattern: "**/*.ts" })).toBe("look");
+    for (const c of ["grep -rn foo src", "cd /w && rg -n 'a|b' src | head -20", "FOO=1 ag x", "ack x"]) expect(k("Bash", { command: c }), c).toBe("search");
+    for (const c of ["sed -n '1,40p' a.ts", "cat a.ts | grep x", "head -50 a.ts", "tail -n 5 log", "ls src", "find . -name '*.ts'"]) expect(k("Bash", { command: c }), c).toBe("look");
+    for (const c of ["grep a x; grep b y", "rg a && sed -n 1,5p b", "sed -i 's/a/b/' f", "npm test", "git status"]) expect(k("Bash", { command: c }), c).toBeNull();
+    expect(k("Bash", { command: "cd /w && idx search Invoice total" }, "idx search")).toBe("self");
+    expect(k("Edit", { file_path: "a" })).toBeNull();
+  });
+
+  it("with §Code search: names it on the first search, then once 5 single lookups have passed; never on the code search", () => {
+    const go = session(S.w);
+    const first = go(...grep);
+    expect(first).toMatch(/^This repo's code search: `idx search <terms>`\. It answers where\/who-calls in one call\. Batch what's left into one call, or send independent Reads\/Edits\/searches as parallel calls in one message\.$/);
+    expect(first!.length).toBeLessThan(240); // about 60 tokens
+    expect(firedAt(go, Array(11).fill(grep))).toEqual([5, 10]);
+    // other lookups count toward the 5, but only a search gets the note; other work does not reset it
+    expect(firedAt(session(S.w), [sed, sed, grep, sed, edit, sed, sed, sed, grep])).toEqual([3, 9]);
+    expect(firedAt(session(S.w), Array(8).fill(["Bash", { command: "idx search Invoice" }]))).toEqual([]);
+  });
+
+  it("without §Code search: after 3 single lookups in a row, then every 5 more; batched calls and other work end the run, Read does not", () => {
+    for (const dir of [N.w, P.w]) {
+      const go = session(dir);
+      const out: (string | null)[] = [];
+      for (let i = 0; i < 13; i++) out.push(go(...(i % 2 ? sed : grep)));
+      expect(out.flatMap((r, i) => (r ? [i + 1] : []))).toEqual([3, 8, 13]);
+      expect(out[2]).toMatch(/^3 single lookups in a row: batch the remaining lookups into one ctx_batch_execute or one Bash, or send independent .* parallel calls in one message\.$/);
+      expect(out[2]!.length).toBeLessThan(240);
+    }
+    const batched: Call = ["Bash", { command: "rg a src; rg b src" }];
+    expect(firedAt(session(N.w), [grep, sed, batched, grep, ["Read", { file_path: "a.ts" }], sed, edit, grep, grep, grep])).toEqual([10]);
+  });
+
+  it("is for ladder workers only, and needs a session id", () => {
+    expect(firedAt(session(S.w, "senior-dev-team:senior-qa-reviewer"), [grep, grep, grep])).toEqual([]);
+    expect(nudgeAt({ agent_type: W, tool_name: "Grep", tool_input: {}, cwd: S.w }, state)).toBeNull();
+  });
+
+  it("reaches the worker as the hook's additionalContext, with the call let through", () => {
+    const tmp = join(box, "tmp");
+    mkdirSync(tmp, { recursive: true });
+    const run = () => execFileSync("node", [GUARD], { input: JSON.stringify({ session_id: "e2e", agent_id: "e1", agent_type: W, tool_name: "Grep", tool_input: { pattern: "x", path: S.w }, cwd: S.w }), env: { ...process.env, TMPDIR: tmp }, encoding: "utf8" });
+    expect(JSON.parse(run())).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: expect.stringContaining("`idx search <terms>`") } });
+    expect(run()).toBe(""); // the second search, before 5 lookups have passed: no note
+  });
+
+  it("refuses a worker's whole-file Read over BIG_READ_BYTES (text or PDF), naming offset/limit and the code search", () => {
+    const big = "x".repeat(BIG_READ_BYTES + 1);
+    for (const [d, f] of [[S.w, "big.ts"], [S.w, "doc.pdf"], [S.w, "shot.png"], [P.w, "big.ts"]] as const) writeFileSync(join(d, f), big);
+    writeFileSync(join(S.w, "small.ts"), "x".repeat(BIG_READ_BYTES));
+    writeFileSync(join(S.r, ".claude/sapu/forge.md"), big);
+    let id = 0;
+    const read = (cwd: string, tool_input: Record<string, unknown>, agent_type = W) => decide({ tool_name: "Read", agent_type, agent_id: `r${++id}`, tool_input, cwd });
+    expect(read(S.w, { file_path: join(S.w, "big.ts") })).toMatch(/all of big\.ts \(24 KB\).*offset\/limit.*`idx search <terms>`/s);
+    expect(read(S.w, { file_path: "doc.pdf" })).toMatch(/doc\.pdf.*with pages/s);
+    expect(read(P.w, { file_path: join(P.w, "big.ts") })).toMatch(/offset\/limit/);
+    expect(read(P.w, { file_path: join(P.w, "big.ts") })).not.toMatch(/code search/);
+    // a range, an image, a file at the threshold, the plugin's own files, the repo's sapu profiles, another subagent: let through
+    expect(read(S.w, { file_path: join(S.w, "big.ts"), offset: 1, limit: 80 })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "doc.pdf"), pages: "1-3" })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "shot.png") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "small.ts") })).toBeNull();
+    expect(read(S.w, { file_path: join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.r, ".claude/sapu/forge.md") })).toBeNull();
+    expect(read(S.w, { file_path: join(S.w, "big.ts") }, "senior-dev-team:senior-qa-reviewer")).toBeNull();
+    expect((checkBigRead as (i: unknown) => string | null)({ ti: { file_path: join(S.w, "missing.ts") }, cwd: S.w, main: S.r })).toBeNull();
+  });
+});
+
+describe("sapu-guard — a ladder worker never sleep-polls (sapu §No polling)", () => {
+  const poll = /run_in_background .*never sleep-poll \(sapu §No polling\)/;
+  it.each([
+    ["until [ -f /tmp/done ]; do sleep 30; done"],
+    ["while true\ndo\n  sleep 5\ndone"],
+    ["while ! test -f out.json; do sleep 10s; done && cat out.json"],
+    ["for i in $(seq 1 60); do gh pr checks 1 && break; sleep 20; done"],
+    ["while sleep 1m; do ls; done"],
+    ["sleep 60"],
+    ["sleep 30"],
+    ["sleep 1m"],
+    ["npm test & sleep 45; cat log"],
+    ["bash -c 'until [ -f x ]; do sleep 15; done'"],
+    ["sh -c \"sleep 120\""],
+    ["timeout 900 bash -c 'while :; do sleep 9; done'"],
+  ])("refuses %j", (command) => {
+    expect(check({ command, cwd: wt, main, rules })).toMatch(poll);
+  });
+
+  it.each([
+    ["until pg_isready -h localhost; do sleep 1; done"],
+    ["for i in 1 2 3; do curl -sf localhost:3000/health && break; sleep 2; done"],
+    ["while read -r l; do echo $l; done < f; sleep 4"],
+    ["sleep 2"],
+    ["sleep 29"],
+    ["sleep $DELAY"],
+    ["for f in a b; do echo $f; done; sleep 10"],
+    ["echo until do sleep 60 done"],
+  ])("allows %j", (command) => {
+    expect(check({ command, cwd: wt, main, rules })).toBeNull();
+  });
+
+  it("reads the test builtin `[` as a program, not as a glob naming the calibration script", () => {
+    for (const command of ["[ -f x ]", "if [ -f x ]; then ls; fi", "until [ -f x ]; do sleep 1; done"]) expect(check({ command, cwd: wt, main, rules }), command).toBeNull();
+    expect(check({ command: "node scripts/t[a-z]ste-calibrate.mjs", cwd: wt, main, rules })).toMatch(/taste calibration/);
+  });
+
+  it("binds ladder workers only", () => {
+    expect(check({ command: "until [ -f x ]; do sleep 30; done", cwd: wt, main, rules, worker: false })).toBeNull();
+    expect(check({ command: "sleep 60", cwd: wt, main, rules, worker: false })).toBeNull();
+  });
+});
+
+describe("sapu-guard — the context budget of a ladder worker, on the step budget's path", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-ctx-")));
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  let k = 0;
+  const fresh = () => {
+    const m = join(box, `m${++k}`);
+    mkdirSync(join(m, ".git"), { recursive: true });
+    return m;
+  };
+  /** A transcript whose last assistant turn carried `ctx` context tokens (a cut first line and a later line without usage, as a real tail has). */
+  const transcript = (ctx: number) => {
+    const f = join(box, `t${++k}.jsonl`);
+    const turn = (n: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 2, cache_read_input_tokens: n - 502, cache_creation_input_tokens: 500, output_tokens: 900 } } });
+    writeFileSync(f, ['ge": {"usage": {"input_tokens": 999999', turn(1000), turn(ctx), JSON.stringify({ type: "user", message: { content: "x" } }), ""].join("\n"));
+    return f;
+  };
+  const budget = stepBudgetUntyped as (i: Record<string, unknown>) => string | null;
+  const steps = { soft: 1000, every: 15, hard: 1700, everyLate: 5 }; // out of the way
+  const context = { soft: 150_000, every: 10 };
+  const run = (m: string, t: string | null, n: number, command = "ls", at = 0) => {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(budget({ main: m, agentId: "w", tool: "Bash", command: i + 1 === at ? command : "ls", steps, context, transcript: t }));
+    return out;
+  };
+  const refused = (out: (string | null)[]) => out.flatMap((r, i) => (r ? [i + 1] : []));
+
+  it("reads the last usage from the transcript's tail: input + cache read + cache creation", () => {
+    expect(contextTokens(transcript(161_000))).toBe(161_000);
+    expect(contextTokens(join(box, "missing.jsonl"))).toBeNull();
+    const junk = join(box, "junk.jsonl");
+    writeFileSync(junk, 'not json\n{"usage": 5\n');
+    expect(contextTokens(junk)).toBeNull();
+  });
+
+  it("fires at or above soft, on the first measured call, then every `every` calls; never below", () => {
+    expect(CONTEXT_EVERY_CALLS).toBe(5);
+    const out = run(fresh(), transcript(161_000), 30);
+    expect(refused(out)).toEqual([5, 15, 25]);
+    expect(out[4]).toMatch(/^CONTEXT BUDGET \(161k tokens\): .*hand off now \(brief point 11\).*Re-issue this call; it passes\. Reminders come every 10 calls\.$/s);
+    expect(refused(run(fresh(), transcript(150_000), 12))).toEqual([5]); // exactly soft
+    expect(refused(run(fresh(), transcript(149_999), 30))).toEqual([]);
+  });
+
+  it("counts from the measure that first crosses soft", () => {
+    const m = fresh();
+    const t = transcript(100_000);
+    expect(refused(run(m, t, 7))).toEqual([]);
+    writeFileSync(t, readFileSync(transcript(200_000)));
+    expect(refused(run(m, t, 15))).toEqual([3, 13]); // calls 10 and 20
+  });
+
+  it("is never refused for good: a handoff command on the due call passes, the next call gets it", () => {
+    expect(refused(run(fresh(), transcript(200_000), 6, "git add -A && git commit -m 'wip: handoff'", 5))).toEqual([6]);
+  });
+
+  it("refuses one call, not two, when the step and context reminders fall due together", () => {
+    const m = fresh();
+    const t = transcript(200_000);
+    const out = Array.from({ length: 6 }, () => budget({ main: m, agentId: "w", tool: "Bash", command: "ls", steps: { soft: 5, every: 15, hard: 170, everyLate: 5 }, context, transcript: t }));
+    expect(refused(out)).toEqual([5]);
+    expect(out[4]).toMatch(/^STEP BUDGET/);
+  });
+
+  it("is a no-op with a missing or unreadable transcript, or none", () => {
+    expect(refused(run(fresh(), join(box, "missing.jsonl"), 20))).toEqual([]);
+    const junk = join(box, "junk2.jsonl");
+    writeFileSync(junk, "garbage\n");
+    expect(refused(run(fresh(), junk, 20))).toEqual([]);
+    expect(refused(run(fresh(), null, 20))).toEqual([]);
+  });
+
+  it("finds the worker's own transcript, never the main session's", () => {
+    const wt = workerTranscript as (i: Record<string, unknown>) => string | null;
+    expect(wt({ transcript_path: "/p/s1.jsonl", agent_id: "a9" })).toBe(join("/p/s1", "subagents", "agent-a9.jsonl"));
+    expect(wt({ transcript_path: "/p/s1.jsonl", agent_id: "a9", agent_transcript_path: "/p/own.jsonl" })).toBe("/p/own.jsonl");
+    expect(wt({ transcript_path: "/p/s1/subagents/agent-a9.jsonl", agent_id: "a9" })).toBe("/p/s1/subagents/agent-a9.jsonl");
+    expect(wt({ transcript_path: "/p/s1.jsonl" })).toBeNull();
+  });
+
+  it("finds a Workflow agent's transcript under subagents/workflows/<run>/", () => {
+    const wt = workerTranscript as (i: Record<string, unknown>) => string | null;
+    const run = join(box, "s2", "subagents", "workflows", "wf_x");
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, "agent-b7.jsonl"), "");
+    expect(wt({ transcript_path: join(box, "s2.jsonl"), agent_id: "b7" })).toBe(join(run, "agent-b7.jsonl"));
+  });
+
+  it("reaches a worker through decide(); a non-worker session is never counted", () => {
+    const r = join(box, "repo");
+    mkdirSync(join(r, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commitContract(r, FIXTURE_CONTRACT);
+    const subs = join(box, "proj", "s1", "subagents");
+    mkdirSync(subs, { recursive: true });
+    const session = join(box, "proj", "s1.jsonl");
+    writeFileSync(session, readFileSync(transcript(10_000))); // the orchestrator's own context: small
+    writeFileSync(join(subs, "agent-wk.jsonl"), readFileSync(transcript(180_000)));
+    writeFileSync(join(subs, "agent-rv.jsonl"), readFileSync(transcript(180_000)));
+    const call = (agent_type: string, agent_id: string) => decide({ tool_name: "Bash", agent_type, agent_id, tool_input: { command: "ls" }, cwd: r, transcript_path: session });
+    const worker = Array.from({ length: 5 }, () => call("sapu:sapu-sonnet-high", "wk"));
+    expect(refused(worker)).toEqual([5]);
+    expect(worker[4]).toMatch(/CONTEXT BUDGET \(180k tokens\)/);
+    expect(refused(Array.from({ length: 12 }, () => call("senior-dev-team:senior-qa-reviewer", "rv")))).toEqual([]);
   });
 });

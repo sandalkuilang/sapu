@@ -188,7 +188,8 @@ from the cores, the smaller one while the machine is busy), and `sapu-merge.sh` 
 uses `gateWorkers`. The cores are the host's (`os.cpus()`), not a container's cgroup quota: in a
 CPU-limited container pass `--workers` yourself. What depends on the repo and the model is the optional `tuning` object, every key
 optional: `stepBudget` (`soft`, `every`, `hard`, `everyLate`: the guard's worker reminders, in tool
-calls), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
+calls), `contextBudget` (`soft`, default 150000: the worker context, in tokens, at which the same
+reminder comes; `every`, default 10: tool calls between its repeats), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
 (`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.
@@ -750,6 +751,8 @@ A section `profiles --list` marks `(optional)` may be left out: the engine reads
   key terms, before any grep: it returns a `file:line` map of where those terms live and who calls them
   (a code indexer's CLI, for example). `none`, or no section, means the worker starts with its batched
   `rg` lookups instead. Example: `` `<indexer> search <terms>` `` — or `none: no code index in this repo`.
+  The guard reads the section's first code span or fenced line, and names that command in the note it
+  gives a worker that searches by hand (see the guard above).
 
 ## Engine defects go upstream
 
@@ -809,12 +812,33 @@ could use them.
   dropped it would leave that subagent unguarded — not yet probed live). A canary in every worker proves it is live.
   For workers it also counts tool calls (`<MAIN>/.git/sapu-steps/`) and refuses one call as a
   hand-off reminder at `tuning.stepBudget.soft` tool calls, every `every` up to `hard`, every
-  `everyLate` after (§Tuning); the re-issued call passes. The count
+  `everyLate` after (§Tuning); the re-issued call passes. On the same path, the context budget
+  reads the worker's last turn context (input + cache read + cache creation tokens of the last
+  `usage` in the tail of its own transcript: `agent_transcript_path`, else
+  `<session>/subagents/agent-<agent_id>.jsonl` beside `transcript_path`, never the main session's)
+  on every 5th counted call; from the call that first sees `tuning.contextBudget.soft`, it refuses
+  one call as a `CONTEXT BUDGET (<n>k tokens)` reminder, every `every` calls after. A step and a
+  context reminder due together refuse one call; a handoff command passes either. No transcript, or
+  none readable, means no context reminder. The count
   needs the hook input's `agent_id` and a writable counter, and switches itself off without them, so
   the worker canary's block message also tells the worker to report `step_budget`: `counting` (the
   canary call was counted) or `off: <why>`. `sapu-wave.js` requires it and logs anything but `counting`
   as `WARNING #<N>: step budget off — …`: on first use in a host this proves `agent_id` reaches the
   hook of a Workflow agent.
+  For workers it also enforces exploration in few calls. Single lookups (a `Grep` or `Glob` call, or
+  a Bash call that is one `grep`/`rg`/`ag`/`ack`/`sed`/`cat`/`head`/`tail`/`ls`/`find`, after an
+  optional `cd X &&`) get a short note as the hook's `additionalContext`, never a refusal: with
+  `worker.md` §Code search naming a command, the note names it on the first single search, then on a
+  search once 5 single lookups have passed (never on the code-search call itself); without one, after 3
+  single lookups in a row, then every 5 more, it says to batch the rest or send independent calls in one
+  message (a batched call or other work ends the run; `Read` neither counts nor ends it). The count and
+  the parsed §Code search live per worker (`session_id` + `agent_id`) in `sapu-nudge/` under the OS temp
+  dir. A `Read` without `limit` (a PDF: without `pages`) of a file over 24 KB is refused, telling the
+  worker to read a range or use §Code search; images, the plugin's own files and the repo's sapu
+  contract and profiles are exempt. A worker never sleep-polls (the sapu skill's §No polling): a Bash
+  `while`/`until`/`for`/`select` loop whose body or condition sleeps 5 seconds or more, or one `sleep`
+  of 30 seconds or more, is refused, wherever the guard reads a command (inside `bash -c`, `eval` or a
+  runner too); a `sleep` whose argument is built at run time passes.
 - **MCP tools** reach agents without a `tools:` allowlist (general-purpose, a repo's specialists,
   agents a worker spawns). context-mode's `ctx_execute`/`ctx_execute_file`/`ctx_batch_execute`/`ctx_index`
   are checked as the Bash/Read calls they amount to (commands in every shape, shell code, the command a

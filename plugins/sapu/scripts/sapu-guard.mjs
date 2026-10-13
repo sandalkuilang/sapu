@@ -191,7 +191,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, agentFiledLabel, checkoutRoot, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, checkoutRoot, contractHome, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -1091,6 +1091,8 @@ export function compileRules(contract) {
     agentFiledGate: !!contract && contract.agentFiledNeedsAcceptance === true,
     // The worker step budget: the contract's tuning.stepBudget over the defaults.
     steps: resolveTuning(contract).stepBudget,
+    // The worker context budget: the contract's tuning.contextBudget over the defaults.
+    context: resolveTuning(contract).contextBudget,
   };
 }
 
@@ -1470,7 +1472,12 @@ function globHits(word, name) {
   try {
     return new RegExp(`^${re}$`, "i").test(name);
   } catch {
-    return true;
+    // An unclosed `[` is a literal `[` to the shell: the test builtin `[ -f x ]` names no script.
+    try {
+      return new RegExp(`^${re.replace(/\[/g, "\\[")}$`, "i").test(name);
+    } catch {
+      return true;
+    }
   }
 }
 
@@ -1521,6 +1528,7 @@ const GQL_NOT_PLANNED = /\bstateReason\s*:\s*NOT_PLANNED\b/;
 const notPlanned = (v) => typeof v === "string" && /^not[\s_-]*planned$/i.test(v.trim());
 
 const BLOCK = {
+  poll: "run the long command with run_in_background and wait for its completion notification; never sleep-poll (sapu §No polling)",
   explorerBash:
     "the journey explorer's shell runs only its wrapper: `node <plugin>/scripts/argus-live.mjs pw …`, joined by `;`, `&&` or newlines, every argument a single-quoted literal or a plain word (no $, double quotes, globs, ~, pipes, redirections, substitutions or environment prefixes).",
   explorerRead:
@@ -2769,6 +2777,31 @@ function prSource(toks) {
 }
 
 /** `base` = the caller's scope: {main, rules, resolve}; each command of `text` re-resolves its own place. */
+// NO POLLING (sapu SKILL.md §No polling), for ladder workers. Measured in worker transcripts:
+// `until [ -f x ]; do sleep …; done` held a worker 10-16 minutes. A loop that sleeps POLL_LOOP_SLEEP
+// seconds or more per round, or one sleep of POLL_SLEEP or more, is refused; a short readiness loop
+// (`until pg_isready; do sleep 1; done`) passes. Each command text is judged where checkText reads it,
+// so the shells and wrappers it already unwraps (bash -c, sh -c, a runner) are covered too.
+export const POLL_LOOP_SLEEP = 5;
+export const POLL_SLEEP = 30;
+const LOOP_OPEN = new Set(["while", "until", "for", "select"]);
+const LOOP_LEAD = new Set(["do", "then", "else", "elif", "!", "{"]);
+const SLEEP_UNIT = { "": 1, s: 1, m: 60, h: 3600, d: 86400 };
+
+/** The seconds a `sleep` command waits (its arguments summed), or null when this is no sleep or a word is built at run time. */
+function sleepSeconds(toks) {
+  const a = toks.slice(programIndex(toks));
+  if (!a.length || bare(a[0].v) !== "sleep") return null;
+  let s = 0;
+  for (const x of a.slice(1)) {
+    if (x.dyn) return null;
+    if (/^inf(inity)?$/i.test(x.v)) return Infinity;
+    const m = /^(\d+(?:\.\d*)?|\.\d+)([smhd]?)$/.exec(x.v);
+    if (m) s += Number(m[1]) * SLEEP_UNIT[m[2]];
+  }
+  return s;
+}
+
 function checkText(text, dir, base, depth) {
   if (depth > MAX_DEPTH) return BLOCK.deep;
   // A command text starts with OLDPWD = its cwd: Claude Code's Bash sets it so (measured), and a
@@ -2788,7 +2821,16 @@ function checkText(text, dir, base, depth) {
   let fromPr = false; // the previous command pipes a PR's diff into this one
   let fromNet = false; // the previous command pipes a download into this one
   let printed = null; // what the previous command, a literal echo or printf, pipes into this one
+  const noPoll = base.rules && base.rules.worker !== false && !base.explorer;
+  let loops = 0; // while/until/for/select loops open at this command
   for (const c of cmds) {
+    if (noPoll) {
+      const lead = c.toks.find((x) => !LOOP_LEAD.has(x.v));
+      if (lead && LOOP_OPEN.has(lead.v)) loops++;
+      const s = sleepSeconds(c.toks);
+      if (s !== null && s >= (loops ? POLL_LOOP_SLEEP : POLL_SLEEP)) return BLOCK.poll;
+      if (loops && c.toks[0] && c.toks[0].v === "done") loops--;
+    }
     if (c.pre === "(") saved.push(state.dir);
     const before = state.dir;
     // Code a shell or an interpreter reads on stdin, written as a literal in this command line: a
@@ -2978,7 +3020,66 @@ export function stepProbe({ main, agentId }) {
   }
 }
 
-export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget }) {
+// ponytail: a worker's last usage sits at the end of its transcript; a 256 KB tail holds several turns
+// without reading a transcript that grows to megabytes, and only every CONTEXT_EVERY_CALLS-th call reads it.
+const TRANSCRIPT_TAIL = 256 * 1024;
+export const CONTEXT_EVERY_CALLS = 5;
+
+/**
+ * A worker's own transcript: `agent_transcript_path` when the host gives it, else
+ * <session>/subagents/agent-<agent_id>.jsonl beside the session's `transcript_path` (a subagent's hook
+ * gets the main session's transcript there), or <session>/subagents/workflows/<run>/agent-<agent_id>.jsonl
+ * for a Workflow's agents (sapu-wave's workers); both layouts were read on disk, not documented. Never
+ * the main session's transcript itself: the orchestrator's context is not the worker's.
+ */
+export function workerTranscript(input) {
+  if (typeof input.agent_transcript_path === "string" && input.agent_transcript_path) return input.agent_transcript_path;
+  const t = input.transcript_path;
+  const id = input.agent_id;
+  if (typeof t !== "string" || !t || typeof id !== "string" || !id) return null;
+  const name = `agent-${id}.jsonl`;
+  if (path.basename(t) === name) return t;
+  const sub = path.join(t.replace(/\.jsonl$/, ""), "subagents");
+  const direct = path.join(sub, name);
+  if (fs.existsSync(direct)) return direct;
+  try {
+    const wf = path.join(sub, "workflows");
+    for (const run of fs.readdirSync(wf)) {
+      const p = path.join(wf, run, name);
+      if (fs.existsSync(p)) return p;
+    }
+  } catch { /* no Workflow runs in this session */ }
+  return direct;
+}
+
+/** The context of the last assistant turn in transcript `file` (input + cache read + cache creation tokens), from its tail; null when there is none. */
+export function contextTokens(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, TRANSCRIPT_TAIL);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let u;
+      try {
+        u = JSON.parse(lines[i])?.message?.usage;
+      } catch {
+        continue; // the tail's first line is cut, and a line may be half-written
+      }
+      if (u && typeof u === "object") return [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+    }
+  } catch {
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+  return null;
+}
+
+export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget, context = DEFAULT_TUNING.contextBudget, transcript = null }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
   let n;
   try {
@@ -2987,22 +3088,183 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
     return null;
   }
   const file = path.join(stepsDir(main), agentId.replace(/[^\w.-]/g, "_"));
+  const num = (f) => {
+    try {
+      return fs.readFileSync(f, "utf8").split(" ").map((x) => Number(x) || 0);
+    } catch {
+      return [0, 0];
+    }
+  };
   // Reminders due so far; one that fell on a handoff command is postponed to the next other call,
-  // never skipped. The last one given is kept in `<id>.r`.
+  // never skipped. The last one given is kept in `<id>.r` (steps) and `<id>.cr` (context).
   const { soft: SOFT, every: EVERY, hard: HARD, everyLate: LATE } = steps;
   const soft = Math.floor((Math.min(n, HARD) - SOFT) / EVERY) + 1;
   const dueSlots = n < SOFT ? 0 : soft + (n > HARD ? Math.floor((n - HARD) / LATE) : 0);
-  let given = 0;
+  // The context budget, on the same path: the worker's context is measured on every
+  // CONTEXT_EVERY_CALLS-th call; from the call that first sees `context.soft` tokens, a reminder every
+  // `context.every` calls. `<id>.c` keeps that call's number and the last measure.
+  let [from, tokens] = num(`${file}.c`);
+  if (transcript && n % CONTEXT_EVERY_CALLS === 0) {
+    const t = contextTokens(transcript);
+    if (t !== null) {
+      tokens = t;
+      if (!from && t >= context.soft) from = n;
+      try {
+        fs.writeFileSync(`${file}.c`, `${from} ${tokens}`);
+      } catch {}
+    }
+  }
+  const ctxSlots = from ? Math.floor((n - from) / context.every) + 1 : 0;
+  const stepDue = dueSlots > num(`${file}.r`)[0];
+  const ctxDue = ctxSlots > num(`${file}.cr`)[0];
+  if (!(stepDue || ctxDue) || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
   try {
-    given = Number(fs.readFileSync(`${file}.r`, "utf8")) || 0;
-  } catch {}
-  if (dueSlots <= given || ((tool === "Bash" || tool === "Monitor" || tool === "PowerShell") && isHandoff(command))) return null;
-  try {
+    // Both recorded: a step and a context reminder due on the same call refuse one call, not two.
     fs.writeFileSync(`${file}.r`, String(dueSlots));
+    fs.writeFileSync(`${file}.cr`, String(ctxSlots));
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  return `STEP BUDGET: ${n} tool calls. Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes. Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`;
+  const handOff = `Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes.`;
+  return stepDue
+    ? `STEP BUDGET: ${n} tool calls. ${handOff} Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`
+    : `CONTEXT BUDGET (${Math.round(tokens / 1000)}k tokens): every turn re-sends your context. ${handOff} Reminders come every ${context.every} calls.`;
+}
+
+// EXPLORATION, ENFORCED. Measured on ladder-worker transcripts: the brief's "explore in one call, run
+// §Code search first" was ignored (about 190 one-per-turn grep/sed/cat calls, two code-search calls),
+// and whole-file Reads of large files (a 42 KB source, a 1 MB PDF) rode along on every later turn.
+// So the hook carries the rule: a short note (additionalContext, never a refusal) on single lookups,
+// and a refusal for a big whole-file Read (checkBigRead, in decide()).
+
+/** The command profile `worker.md` §Code search names (its first code span or fenced line), or null when the section is missing or `none`. */
+export function codeSearchCommand(main) {
+  const dir = main && contractHome(main).dir;
+  if (!dir) return null;
+  let text = "";
+  try {
+    for (const f of fs.readdirSync(dir).sort()) if (f === "worker.md" || (f.startsWith("worker-") && f.endsWith(".md"))) text += fs.readFileSync(path.join(dir, f), "utf8") + "\n";
+  } catch {
+    return null;
+  }
+  const m = /^## Code search[ \t]*$([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(text);
+  if (!m || /^\s*none\b/i.test(m[1])) return null;
+  const c = /^```[^\n]*\n[ \t]*([^\n]+)|`([^`\n]+)`/m.exec(m[1]);
+  const cmd = c && (c[1] || c[2]).trim();
+  return cmd ? cmd.slice(0, 200) : null;
+}
+
+/** The literal head of a code-search command (its words before the first placeholder), which marks a call as that command. */
+const searchHead = (cmd) => {
+  const w = [];
+  for (const x of cmd.split(/\s+/)) {
+    if (/[<{$"'[]/.test(x)) break;
+    w.push(x);
+  }
+  return w.join(" ") || cmd.split(/\s+/)[0];
+};
+
+const SEARCHERS = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack"]);
+const LOOKERS = new Set([...SEARCHERS, "sed", "cat", "head", "tail", "ls", "find"]);
+
+/**
+ * What one call is to the nudges: "search" (one grep-like lookup), "look" (one other lookup: sed,
+ * cat, head, tail, ls, find, Glob), "self" (the repo's code search, by its literal head `head`), or
+ * null (anything else, a batched call included). A leading `cd X &&` and a pipe after it are fine.
+ */
+export function lookupKind(tool, ti = {}, head = null) {
+  if (tool === "Grep") return "search";
+  if (tool === "Glob") return "look";
+  if (tool !== "Bash" || typeof ti.command !== "string") return null;
+  if (head && ti.command.includes(head)) return "self";
+  const segs = ti.command.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''").split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
+  while (segs.length > 1 && /^cd\s+\S+$/.test(segs[0])) segs.shift();
+  if (segs.length !== 1) return null;
+  const words = segs[0].split("|")[0].trim().split(/\s+/).filter((w) => !/^[A-Za-z_]\w*=/.test(w));
+  const prog = path.basename(words[0] || "");
+  if (SEARCHERS.has(prog)) return "search";
+  if (prog === "sed" && words.some((w) => /^-[a-zA-Z]*i|^--in-place/.test(w))) return null;
+  return LOOKERS.has(prog) ? "look" : null;
+}
+
+// ponytail: one small JSON per worker (session_id + agent_id) in the OS temp dir, holding the run count
+// and the §Code search command parsed once; read on every worker call, written only when it changes.
+export const NUDGE_DIR = path.join(os.tmpdir(), "sapu-nudge");
+export const NUDGE_FIRST = 3; // single lookups in a row before the batching note (no §Code search)
+export const NUDGE_EVERY = 5; // single lookups between two notes
+
+/**
+ * The note for one call of a ladder worker (its hook's additionalContext), or null. With §Code search:
+ * on the first single search, then on a search once 5 single lookups have passed since the last note.
+ * Without: after 3 single lookups in a row, then every 5 more; a batched call or other work ends the run.
+ * Read is neither a lookup nor a break. Never on the code-search call itself.
+ */
+export function nudge(input, dir = NUDGE_DIR) {
+  if (!input || !SAPU_AGENT.test(input.agent_type || "") || typeof input.session_id !== "string" || !input.session_id) return null;
+  const tool = input.tool_name;
+  if (tool === "Read") return null;
+  const file = path.join(dir, `${input.session_id}-${input.agent_id || ""}`.replace(/[^\w.-]/g, "_") + ".json");
+  let s = null;
+  try {
+    s = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {}
+  const fresh = !s || typeof s.n !== "number";
+  if (fresh) s = { search: codeSearchCommand(findMain(input.cwd || process.cwd())), n: 0, fired: false };
+  const before = JSON.stringify(s);
+  const kind = lookupKind(tool, input.tool_input || {}, s.search && searchHead(s.search));
+  let say = null;
+  if (kind === "search" || kind === "look") {
+    s.n++;
+    if (s.search) {
+      if (kind === "search" && (!s.fired || s.n >= NUDGE_EVERY)) {
+        say = `This repo's code search: \`${s.search}\`. It answers where/who-calls in one call. Batch what's left into one call, or send independent Reads/Edits/searches as parallel calls in one message.`;
+        s.fired = true;
+        s.n = 0;
+      }
+    } else if (s.n >= NUDGE_FIRST && (s.n - NUDGE_FIRST) % NUDGE_EVERY === 0) {
+      say = `${s.n} single lookups in a row: batch the remaining lookups into one ctx_batch_execute or one Bash, or send independent Reads/Edits/searches as parallel calls in one message.`;
+    }
+  } else if (!s.search && kind !== "self") s.n = 0;
+  if (fresh || JSON.stringify(s) !== before) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      if (fresh) for (const f of fs.readdirSync(dir)) {
+        const p = path.join(dir, f);
+        if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
+      }
+      fs.writeFileSync(file, JSON.stringify(s));
+    } catch {
+      return null; // a note that cannot be counted would repeat on every call
+    }
+  }
+  return say;
+}
+
+// ponytail: 24 KB is about 6k tokens, which every later turn re-sends; past it a ranged read is the
+// cheaper call. Images (an issue's screenshots, read whole by design) are exempt, so are the plugin's
+// own files and the repo's sapu contract and profiles, which a worker reads whole on purpose.
+export const BIG_READ_BYTES = 24 * 1024;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|avif)$/i;
+
+/** Why a ladder worker's Read of a whole file over BIG_READ_BYTES is refused, or null (a range given, an image, an exempt or small file). */
+export function checkBigRead({ ti = {}, cwd, main = null }) {
+  const p = ti.file_path;
+  if (typeof p !== "string" || !p || ti.limit != null || ti.pages != null || IMAGE_EXT.test(p)) return null;
+  const abs = path.resolve(cwd || process.cwd(), p);
+  let st;
+  try {
+    st = fs.statSync(abs);
+  } catch {
+    return null;
+  }
+  if (!st.isFile() || st.size <= BIG_READ_BYTES) return null;
+  const home = main ? contractHome(main).dir : null;
+  const exempt = [OWN_PLUGIN_ROOT, process.env.CLAUDE_PLUGIN_ROOT, home, main && path.join(main, ".claude", "sapu.json")].filter(Boolean).map(realLoose);
+  const r = realLoose(abs);
+  if (exempt.some((d) => under(r, d))) return null;
+  const search = main ? codeSearchCommand(main) : null;
+  const how = /\.pdf$/i.test(p) ? "with pages (a PDF: a few at a time)" : "with offset/limit around the lines you need (find them first with grep -n)";
+  return `this Read takes all of ${path.basename(p)} (${Math.round(st.size / 1024)} KB) into your context, and every later turn re-sends it. Read only the part you need, ${how}${search ? `, or get its outline from this repo's code search: \`${search}\`` : ""}.`;
 }
 
 // context-mode's MCP tools run shell commands and read files like Bash and Read do, and its own hook
@@ -3632,11 +3894,13 @@ export function decide(input) {
   } else {
     const reason = SEARCH_TOOLS.has(tool) ? checkSearch({ tool, input: ti, cwd, rules, resolve }) : checkFile({ tool, filePath: ti.file_path ?? ti.notebook_path, cwd, main, rules, worker, resolve });
     if (reason) return reason;
+    const big = worker && tool === "Read" ? checkBigRead({ ti, cwd, main }) : null;
+    if (big) return big;
   }
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
-  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps }) : null;
+  return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps, context: rules.context, transcript: workerTranscript(input) }) : null;
 }
 
 /** True when this file is the process's entry point, however it was reached (symlink, relative path). */
@@ -3669,6 +3933,13 @@ if (isEntryPoint()) {
       process.stderr.write(`sapu-guard: BLOCKED — ${reason}\n`);
       process.exit(2);
     }
+    // A note is never a refusal: no permissionDecision, so the call goes on as it would have.
+    let note = null;
+    try {
+      note = nudge(input);
+    } catch {}
+    // writeSync: a pipe's stdout is asynchronous on macOS, and exit() would cut an async write short.
+    if (note) fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: note } }));
     process.exit(0);
   });
 }

@@ -214,7 +214,7 @@ The plugin is an **engine**: skills, the worker agents, a guard hook and a merge
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/sapu-dark.svg">
-  <img src="docs/img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock and one sweep per repo, Phase A drains PRs, Phase B runs one Workflow lane per issue with a worker, qa review or the red pair and fix cycles (two; up to five on red while they converge) and a handoff past the step budget, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report, engine defects filed on the plugin's repo" width="100%">
+  <img src="docs/img/sapu.svg" alt="The sapu orchestrator: Step 0 scope lock and one sweep per repo, Phase A drains PRs, Phase B runs one Workflow lane per issue with a read-only scout and a fresh builder, qa review or the red pair and fix cycles (two; up to five on red while they converge) and a handoff past the step budget, a merge queue through sapu-merge.sh, then the end-of-session state page, and the finish with a final gate, cleanup per policy and the report, engine defects filed on the plugin's repo" width="100%">
 </picture>
 
 ## Safety model
