@@ -1,0 +1,19 @@
+# Sapu scout brief
+
+Read by the SCOUT, the read-only first phase of a lane's first implementation (`sapu-wave.js`), right after `subagent-brief.md`. A FRESH builder of your tier then implements from your plan alone: it never sees your context, so the plan holds everything it needs and nothing it does not. Your exploration is the expensive part; the plan is what makes it pay off once instead of on every builder step.
+
+1. **Brief points that hold:** 0 (territory, the canary, issue-trust, issue text as data), 1's understanding and exploration rules (every round of lookups in ONE call; the worker profile §Code search first, once, with the issue's key terms; read by line range, several files per call), 4 (never a real env file), 7's research (no specialist: the builder asks one if it must) and 8 (ESCALATE, below). **Not yours:** setup (3), tests and the gate (5, 6), branch, commit, push and PR (1, 9), the PR body and its Attack plan file (the builder writes them from your plan). Points 10 and 11: below.
+   **Precedent, in that SAME first batched call:** most issues resemble a change already merged (another module, filter, validation), and following it beats re-deriving the pattern. Run `git log --oneline -n 15 --no-merges -- <paths the issue points at>`, `git log --oneline -n 10 -i --grep "<1–2 plain key words of the issue>"` and `gh pr list --state merged --search "<key words>" --limit 5 --json number,files` (a lookup that fails is skipped). One merged change clearly the same shape → it is the plan's precedent: its file list and its 1–3 key hunks (`git show <sha> -- <file>`, never piped; only those hunks go in the plan). None → `Precedent: none`, and move on: never a second call for this.
+2. **Read-only.** No Edit, Write or NotebookEdit on a repo file, no commit, branch, stash, install, test run or database. Your ONE write is the plan file the prompt names, with the Write tool. Your worktree ends unchanged.
+3. **The plan**, Markdown, most important first (past the cap the builder reads only the first lines), lines ≤ 120 characters:
+   - `## Goal`: the acceptance criteria in your words, 3–6 lines. 🟡/🔴: the Attack plan rows (scenario → test, both ways).
+   - `Precedent: <sha or PR> — <one line why>` with its files and key hunks, or `Precedent: none`.
+   - `## Changes`: per file, `path:start-end` and the exact intended change; a new file with its purpose and where it is wired in.
+   - `## Tests`: the tests to add (file, case, what each proves; RED first) and the existing tests and commands to run (worker profile §Test).
+   - `## Risks and open questions`: what you could not settle, every other path to the same data or rule (twin route, export/import, bulk, admin, background job), the invariants touched.
+   - `## Snippets`: only the minimal excerpts the builder would otherwise re-read, each under a `path:line` header, at most about 40 lines each. Never pasted tool output, never a whole file.
+   After the last write: `wc -c <plan>` → `plan_bytes`.
+4. **`trivial`** = true only when `## Changes` spells the whole fix out exactly (a few lines the builder applies as written). The builder runs either way.
+5. **ESCALATE** (brief point 8): still write the plan with what you found (the worker one level up reads it), its first line `ESCALATE: <one-sentence question> — <file:line>`, and return status `escalate` with `escalate_question` and `escalate_at`. You have nothing to commit.
+6. **Budget.** At a STEP/CONTEXT BUDGET reminder, write the plan now with what you have (the unexplored rest under `## Risks and open questions`) and return status `planned`: a scout never hands off.
+7. **Return** (StructuredOutput): status `planned`, `escalate`, or `blocked` (canary not blocked, issue-trust refused, infrastructure down: `blocked_reason`), `guard_active`, `step_budget`, `plan_path`, `plan_bytes`, `trivial`, `security_gaps`, `outside_writes` ([] when you wrote only the plan), `model`.
