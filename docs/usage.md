@@ -50,6 +50,8 @@ The policy is asked in popups, one choice per field; the full table is in [`CONT
 
 Each profile's `##` section headings are English and match exactly what `sapu-contract.mjs profiles --list` prints for that skill.
 
+One section is optional: `worker.md`'s `## Code search`. It names a command that turns the issue's key terms into a `file:line` map of where they live and who calls them (a code indexer's CLI, for example). A worker runs it once, first, before any grep. Init asks for it and writes `none` when the repo has no such tool; a profile without the section reads as `none`, so an older profile keeps working unchanged.
+
 When you enable `journey` among the skills (with `argus`, which it runs under: `/journey` checks both, and init selects `argus` with it), init also drafts `.argus/live.json`, the instance the journey lane builds for itself (its format is [`skills/journey/live.md`](../plugins/sapu/skills/journey/live.md)):
 - **From the scan, each fact confirmed by you:** a `services` entry for every local service the repo's config names (cache, queue, object store, search engine, mail server), the roles from `.argus/config.yml`'s `test_accounts`, the repo's dev and E2E ports as `reserved_ports`, and a `port_range` of its own.
 - **Secrets stay out of it:** passwords, TOTP secrets and every other secret (an `env` value, a token a command passes) are written as `${NAME}`; `check` refuses one written literally, naming the field and the kind, never the value. Init writes `.argus/live.env` with those names and empty values for you to fill (only when the file does not exist yet: it never overwrites yours), and adds its file name to the contract's `guard.envFiles`, so no agent reads it. Init never reads or writes a value.
@@ -672,6 +674,14 @@ claude plugin list --json
 ```
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
+
+#### Upgrading from a version before 2.13.0
+
+Nothing to do: your profiles keep working. To give workers a code index, add a `## Code search` section to `.claude/sapu/worker.md` naming the command (or run `/sapu:init` again, which asks for it).
+
+What behaves differently:
+- **Workers explore in one call.** Before reading code, a worker collects every "where is X / who calls Y" question and answers them in one batched call (`ctx_batch_execute`, or one Bash running several `rg`), instead of one grep per turn: each turn re-sends the worker's whole context, so fewer turns cost less and finish sooner. Files are read by line range.
+- **`worker.md` `## Code search` (optional).** When it names a command, the worker runs it first, once, with the issue's key terms. Missing or `none` changes nothing, and never stops forge or the sweep.
 
 #### Upgrading from a version before 2.12.0
 

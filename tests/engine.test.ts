@@ -578,8 +578,8 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
   "skills/sapu/SKILL.md": 40_850,
-  "skills/sapu/subagent-brief.md": 14_000,
-  "skills/forge/SKILL.md": 15_400,
+  "skills/sapu/subagent-brief.md": 14_400, // +batched exploration: one call per round of lookups saves whole turns
+  "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 20_000,
   "agents/curator.md": 7_800,
@@ -697,7 +697,9 @@ describe("profile sections", () => {
   const engineText = (skill: string) =>
     readdirSync(join(PLUGIN, "skills", skill)).filter((f) => f.endsWith(".md")).map((f) => readFileSync(join(PLUGIN, "skills", skill, f), "utf8")).join("\n");
 
-  it.each(Object.entries(PROFILE_SECTIONS).flatMap(([p, spec]) => (spec as { sections: string[] }).sections.map((s) => [p, s])))(
+  type Spec = { sections: string[]; optionalSections?: string[] };
+  const allSections = (spec: Spec) => [...spec.sections, ...(spec.optionalSections ?? [])];
+  it.each(Object.entries(PROFILE_SECTIONS as Record<string, Spec>).flatMap(([p, spec]) => allSections(spec).map((s) => [p, s])))(
     "%s.md §%s is still read by its engine",
     (profile, section) => {
       const text = engineText(OWNER[profile] ?? profile);
@@ -735,7 +737,7 @@ describe("profile sections", () => {
   // In a workflow, a backticked heading with no marker belongs to the last profile cited before it;
   // in a skill it is a heading the skill itself writes (a journal or issue template), not a citation.
   const PROFILES = Object.keys(PROFILE_SECTIONS);
-  const sectionsOf = (p: string): string[] => (PROFILE_SECTIONS as Record<string, { sections: string[] }>)[p].sections;
+  const sectionsOf = (p: string): string[] => allSections((PROFILE_SECTIONS as Record<string, Spec>)[p]);
   const ownProfile = (file: string) => (file === "skills/sapu/subagent-brief.md" ? "worker" : PROFILES.find((p) => file.startsWith(`skills/${p}/`)));
   const NAMES = PROFILES.join("|");
   const MARKER = new RegExp(

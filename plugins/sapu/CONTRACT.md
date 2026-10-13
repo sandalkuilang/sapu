@@ -743,6 +743,14 @@ behaviour. Section names are English and match exactly the headings `sapu-contra
 prints. `worker.md` is read by every worker/reviewer (Phase A fixers too), and holds the setup, test and
 verification commands in the worktree along with the protected targets.
 
+A section `profiles --list` marks `(optional)` may be left out: the engine reads a missing one as
+`none`, and `profiles` never reports it missing. Today that is one section:
+
+- **`worker.md` `## Code search`** — a command a worker (and forge) runs first, once, with the issue's
+  key terms, before any grep: it returns a `file:line` map of where those terms live and who calls them
+  (a code indexer's CLI, for example). `none`, or no section, means the worker starts with its batched
+  `rg` lookups instead. Example: `` `<indexer> search <terms>` `` — or `none: no code index in this repo`.
+
 ## Engine defects go upstream
 
 A defect of the engine that a sweep or a skill hits in a consuming repo — a skill's rule, the guard,

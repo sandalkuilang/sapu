@@ -897,10 +897,11 @@ const PLUGIN_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
  * (tests/engine.test.ts proves every entry is still referenced as `§<section>` by that skill).
  * A profile marked optional may be absent; a present one must carry every section. A large profile
  * may be split into topic files `<skill>-<topic>.md`; the sections of all of them count.
+ * `optionalSections` are read when present and never required: a profile without one reads as `none`.
  */
 export const PROFILE_SECTIONS = {
   sapu: { optional: false, sections: ["Context", "Security", "Context economy", "Step 0", "Verification", "Merge", "Wave", "End-of-wave net", "Finish"] },
-  worker: { optional: false, sections: ["Setup", "Red areas", "Test DB", "Protected targets", "Test", "Verification", "Teardown"] },
+  worker: { optional: false, sections: ["Setup", "Red areas", "Test DB", "Protected targets", "Test", "Verification", "Teardown"], optionalSections: ["Code search"] },
   forge: { optional: false, sections: ["Token discipline", "Labels", "Worktree", "Tests", "Merge gate", "After merge", "Team", "Invariant domains", "Invariants", "Security bar", "Bypass classes", "Research dossier", "Inline review", "Decisions", "Incidents"] },
   argus: {
     optional: true,
@@ -1971,7 +1972,10 @@ function main(argv) {
   }
   if (cmd === "profiles") {
     if (arg === "--list") {
-      for (const [s, spec] of Object.entries(PROFILE_SECTIONS)) process.stdout.write(`.claude/sapu/${s}.md${spec.optional ? " (optional)" : ""}: ${spec.sections.map((h) => `## ${h}`).join(" | ")}\n`);
+      for (const [s, spec] of Object.entries(PROFILE_SECTIONS)) {
+        const heads = [...spec.sections.map((h) => `## ${h}`), ...(spec.optionalSections ?? []).map((h) => `## ${h} (optional)`)];
+        process.stdout.write(`.claude/sapu/${s}.md${spec.optional ? " (optional)" : ""}: ${heads.join(" | ")}\n`);
+      }
       return;
     }
     if (!here) fail("not inside a git repository");

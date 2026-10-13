@@ -131,7 +131,7 @@ claude plugin marketplace add sandalkuilang/sapu
 claude plugin install sapu@sapu --scope project
 ```
 
-A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once. From a version before 2.12.0, read [what changes](docs/usage.md#upgrading-from-a-version-before-2120) first; from a version before 2.11.0 or 2.10.0, read [those](docs/usage.md#upgrading-from-a-version-before-2110) [notes](docs/usage.md#upgrading-from-a-version-before-2100) too.
+A new install also installs its dependency [senior-dev-team](#senior-dev-team) at the same scope. Upgrading from a version before 2.6.0? `update` does not add new dependencies: run `claude plugin install senior-dev-team@sapu --scope user` once. From a version before 2.13.0, read [what changes](docs/usage.md#upgrading-from-a-version-before-2130) first; from a version before 2.12.0, 2.11.0 or 2.10.0, read [those](docs/usage.md#upgrading-from-a-version-before-2120) [notes](docs/usage.md#upgrading-from-a-version-before-2110) [too](docs/usage.md#upgrading-from-a-version-before-2100).
 
 **3 · Start a new session in that repo, then**
 
