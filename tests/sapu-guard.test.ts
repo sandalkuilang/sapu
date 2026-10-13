@@ -4103,6 +4103,14 @@ describe("sapu-guard — the context budget of a ladder worker, on the step budg
     expect(wt({ transcript_path: "/p/s1.jsonl" })).toBeNull();
   });
 
+  it("finds a Workflow agent's transcript under subagents/workflows/<run>/", () => {
+    const wt = workerTranscript as (i: Record<string, unknown>) => string | null;
+    const run = join(box, "s2", "subagents", "workflows", "wf_x");
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, "agent-b7.jsonl"), "");
+    expect(wt({ transcript_path: join(box, "s2.jsonl"), agent_id: "b7" })).toBe(join(run, "agent-b7.jsonl"));
+  });
+
   it("reaches a worker through decide(); a non-worker session is never counted", () => {
     const r = join(box, "repo");
     mkdirSync(join(r, ".claude"), { recursive: true });

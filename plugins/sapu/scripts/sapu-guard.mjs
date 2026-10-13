@@ -3028,15 +3028,28 @@ export const CONTEXT_EVERY_CALLS = 5;
 /**
  * A worker's own transcript: `agent_transcript_path` when the host gives it, else
  * <session>/subagents/agent-<agent_id>.jsonl beside the session's `transcript_path` (a subagent's hook
- * gets the main session's transcript there; that layout was read on disk, not documented). Never the
- * main session's transcript itself: the orchestrator's context is not the worker's.
+ * gets the main session's transcript there), or <session>/subagents/workflows/<run>/agent-<agent_id>.jsonl
+ * for a Workflow's agents (sapu-wave's workers); both layouts were read on disk, not documented. Never
+ * the main session's transcript itself: the orchestrator's context is not the worker's.
  */
 export function workerTranscript(input) {
   if (typeof input.agent_transcript_path === "string" && input.agent_transcript_path) return input.agent_transcript_path;
   const t = input.transcript_path;
   const id = input.agent_id;
   if (typeof t !== "string" || !t || typeof id !== "string" || !id) return null;
-  return path.basename(t) === `agent-${id}.jsonl` ? t : path.join(t.replace(/\.jsonl$/, ""), "subagents", `agent-${id}.jsonl`);
+  const name = `agent-${id}.jsonl`;
+  if (path.basename(t) === name) return t;
+  const sub = path.join(t.replace(/\.jsonl$/, ""), "subagents");
+  const direct = path.join(sub, name);
+  if (fs.existsSync(direct)) return direct;
+  try {
+    const wf = path.join(sub, "workflows");
+    for (const run of fs.readdirSync(wf)) {
+      const p = path.join(wf, run, name);
+      if (fs.existsSync(p)) return p;
+    }
+  } catch { /* no Workflow runs in this session */ }
+  return direct;
 }
 
 /** The context of the last assistant turn in transcript `file` (input + cache read + cache creation tokens), from its tail; null when there is none. */
