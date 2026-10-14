@@ -1558,9 +1558,9 @@ describe("tuning: what the engine derives from the machine and the model, and wh
 
   it("the step budget and the context limits default as before and follow `tuning`; the limits are fractions of the context window", () => {
     const d = resolveTuning(FIXTURE_CONTRACT);
-    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "high", workerTier: null, contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "haiku", contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
     const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextBudget: { soft: 90_000 }, contextWindow: 200_000 } });
-    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "high", workerTier: null, contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "haiku", contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.5 } } }).contextLimits).toEqual({ session: 500_000, phaseA: 600_000 });
   });
 
@@ -1574,6 +1574,10 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     [{ contextBudget: 5 }, /tuning\.contextBudget must be an object/],
     [{ workerTier: "haiku" }, /tuning\.workerTier must be "sonnet-medium"/],
     [{ workerTier: "sapu:sapu-opus-high" }, /tuning\.workerTier must be "sonnet-medium"/],
+    [{ workerCeiling: "sonnet-medium" }, /tuning\.workerCeiling must be "sonnet-high"/],
+    [{ workerCeiling: "sonnet" }, /tuning\.workerCeiling must be "sonnet-high"/],
+    [{ scoutTier: "sonnet-medium" }, /tuning\.scoutTier must be "haiku"/],
+    [{ scoutTier: "sapu:sapu-haiku-medium" }, /tuning\.scoutTier must be "haiku"/],
     [{ reviewEffort: "low" }, /tuning\.reviewEffort must be "medium" or "high"/],
     [{ reviewEffort: 5 }, /tuning\.reviewEffort must be "medium" or "high"/],
     [{ codeSearchFirst: { refusals: -1 } }, /tuning\.codeSearchFirst\.refusals must be a whole number/],

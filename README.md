@@ -81,7 +81,7 @@
 
 #### 🔍 Independent review.
 
-Every PR is reviewed by an agent that is not its author: the `qa` specialist (by default `senior-dev-team:senior-qa-reviewer`) at Opus/high on every tier, an adversarial Opus pair on 🔴 (a Phase A PR that only changes tests is reviewed by the orchestrator itself).
+Every PR is reviewed by an agent that is not its author: the `qa` specialist (by default `senior-dev-team:senior-qa-reviewer`) at Opus/medium on every tier (Opus/high with `tuning.reviewEffort: "high"`), an adversarial Opus pair on 🔴 (a Phase A PR that only changes tests is reviewed by the orchestrator itself).
 
 </td>
     <td width="33%" valign="top">

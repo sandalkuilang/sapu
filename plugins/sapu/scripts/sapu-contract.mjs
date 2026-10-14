@@ -112,7 +112,7 @@ export const DEFAULT_SPECIALISTS = {
 };
 const builtIn = (role) => DEFAULT_SPECIALISTS[role];
 /** A worker of the plugin's ladder, under any plugin prefix (the same pattern as SAPU_AGENT in sapu-guard.mjs). */
-export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
+export const LADDER_AGENT = /(^|:)sapu-(sonnet|opus|haiku)-(low|medium|high)$/;
 /**
  * Why `t` cannot be a specialist, or null. A reviewer must be a dedicated agent with its own
  * model: `general-purpose` inherits the session's, and a ladder worker is a worker, not a reviewer.
@@ -781,7 +781,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "high", workerTier: null, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "haiku", contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -794,6 +794,8 @@ export function resolveTuning(c) {
     codeSearchFirst: { ...DEFAULT_TUNING.codeSearchFirst, ...(t.codeSearchFirst || {}) },
     reviewEffort: t.reviewEffort ?? DEFAULT_TUNING.reviewEffort,
     workerTier: t.workerTier ?? DEFAULT_TUNING.workerTier,
+    workerCeiling: t.workerCeiling ?? DEFAULT_TUNING.workerCeiling,
+    scoutTier: t.scoutTier ?? DEFAULT_TUNING.scoutTier,
     contextWindow: window,
     contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
   };
@@ -816,6 +818,8 @@ function tuningProblems(t) {
     }
   }
   if ("workerTier" in t && t.workerTier !== null && !["sonnet-medium", "sonnet-high", "opus-medium", "opus-high"].includes(t.workerTier)) errs.push('tuning.workerTier must be "sonnet-medium", "sonnet-high", "opus-medium" or "opus-high" (or absent)');
+  if ("workerCeiling" in t && t.workerCeiling !== null && !["sonnet-high", "opus-medium", "opus-high"].includes(t.workerCeiling)) errs.push('tuning.workerCeiling must be "sonnet-high" (default), "opus-medium" or "opus-high" (or absent; the 🔴 floor is Sonnet/high)');
+  if ("scoutTier" in t && t.scoutTier !== null && !["haiku", "off"].includes(t.scoutTier)) errs.push('tuning.scoutTier must be "haiku" (default) or "off" (or absent)');
   if ("reviewEffort" in t && !["medium", "high"].includes(t.reviewEffort)) errs.push('tuning.reviewEffort must be "medium" or "high" (the reviewers always run on Opus)');
   if ("codeSearchFirst" in t) {
     const g = t.codeSearchFirst;
@@ -2069,7 +2073,7 @@ function main(argv) {
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, policy: resolvePolicy(contract) } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, workerCeiling: resolveTuning(contract).workerCeiling, scoutTier: resolveTuning(contract).scoutTier, policy: resolvePolicy(contract) } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }

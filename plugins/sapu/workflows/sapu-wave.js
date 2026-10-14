@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.19.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.20.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -57,6 +57,7 @@ const MODEL = {
   'sapu:sapu-sonnet-high': ['sonnet', 'high'],
   'sapu:sapu-opus-medium': ['opus', 'medium'],
   'sapu:sapu-opus-high': ['opus', 'high'],
+  'sapu:sapu-haiku-medium': ['haiku', 'medium'], // a scout only (tuning.scoutTier), never on LADDER
 }
 const RED_FLOOR = 'sapu:sapu-sonnet-high'
 // Specialists are named by ROLE; the contract maps each role to a subagent type (wave-args
@@ -69,7 +70,7 @@ const DEFAULT_SPECIALISTS = { qa: 'senior-dev-team:senior-qa-reviewer', architec
 const PAIR_MODEL = ['opus', 'high']
 // A specialist is a dedicated agent with its own model: never general-purpose (it inherits the
 // session model) nor a ladder worker (LADDER_AGENT in sapu-contract.mjs, SAPU_AGENT in the guard).
-const LADDER_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/
+const LADDER_AGENT = /(^|:)sapu-(sonnet|opus|haiku)-(low|medium|high)$/
 const notSpecialist = (t) => t === 'general-purpose' || LADDER_AGENT.test(t)
 const MAX_FIX_CYCLES = 2 // 🟢/🟡; and every tier's first cycles
 // 🔴 may go on past MAX_FIX_CYCLES, up to MAX_FIX_CYCLES_RED, only while it converges: each review
@@ -118,13 +119,18 @@ const S = C.specialists
 // The repo's policy (sapu-contract.mjs wave-args resolves it; an older caller without it = the defaults).
 const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, prePr: null }
 // The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
-// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check follows tuning.workerTier, else stays PAIR_MODEL.
-const REVIEW_MODEL = ['opus', C.reviewEffort === 'medium' ? 'medium' : 'high']
+// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default medium; "high" raises it); the pre-PR check follows tuning.workerTier, else the rung of the item's own worker.
+const REVIEW_MODEL = ['opus', C.reviewEffort === 'high' ? 'high' : 'medium']
 // tuning.workerTier (a ladder entry such as "sonnet-medium"): every author, scout and fixer of the wave starts there, whatever
 // the item says and below the red floor; an ESCALATE still climbs the ladder from it. Absent = the item's own worker.
 const WORKER_TIER = typeof C.workerTier === 'string' && LADDER.includes(`sapu:sapu-${C.workerTier}`) ? `sapu:sapu-${C.workerTier}` : null
+// tuning.workerCeiling ("sonnet-high" default | "opus-medium" | "opus-high"): no author or fixer climbs above it; an item assigned higher is clamped down to it,
+// and an ESCALATE at the ceiling blocks for a human. Absent = the top of the ladder. The reviewers are not workers and ignore it.
+const CEILING = typeof C.workerCeiling === 'string' && LADDER.includes(`sapu:sapu-${C.workerCeiling}`) ? `sapu:sapu-${C.workerCeiling}` : RED_FLOOR // default: workers never reach Opus
 const PREPR_AGENT = 'general-purpose'
-const PREPR_MODEL = WORKER_TIER ? WORKER_TIER.replace('sapu:sapu-', '').split('-') : PAIR_MODEL
+// The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
+// (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.
+const prePrModel = (state) => (WORKER_TIER ? MODEL[WORKER_TIER] : CEILING === RED_FLOOR && MODEL[state.worker]?.[0] === 'sonnet' ? MODEL[state.worker] : null) ?? PAIR_MODEL
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
 for (const r of ROLES) if (typeof S[r] !== 'string' || !S[r].trim()) throw new Error(`args.contract.specialists.${r} must be a subagent type`)
@@ -152,6 +158,7 @@ const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker'
 // instead of failing the whole wave on a spelling the orchestrator then has to retry.
 for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
 if (WORKER_TIER) for (const it of input.items) if (it && typeof it === 'object') it.worker = WORKER_TIER
+for (const it of input.items) if (it && typeof it.worker === 'string' && LADDER.indexOf(it.worker) > LADDER.indexOf(CEILING)) it.worker = CEILING
 const RENAMED = { npmCi: 'cleanInstall' }
 for (const it of input.items) {
   const unknown = Object.keys(it && typeof it === 'object' ? it : {}).filter((k) => !ITEM_KEYS.includes(k))
@@ -300,7 +307,7 @@ const testSlot = limiter(runners)
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
 const trailRow = (state, step, agent, result) => {
-  const model = (MODEL[agent] || (agent === PREPR_AGENT ? PREPR_MODEL : REVIEW_MODEL)).join('/')
+  const model = (MODEL[agent] || (agent === PREPR_AGENT ? prePrModel(state) : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
   log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
@@ -309,9 +316,11 @@ const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number
 // The scout only reads and writes a plan; the builder that follows (the author's tier) checks every snippet of it
 // against the code and the reviewers check the PR. So an Opus lane scouts one model down, at the same effort.
 const SCOUT_OF = { 'sapu:sapu-opus-medium': 'sapu:sapu-sonnet-medium', 'sapu:sapu-opus-high': 'sapu:sapu-sonnet-high' }
-const scoutOf = (w) => SCOUT_OF[w] || w
+// tuning.scoutTier "haiku" (default): every scout runs on Haiku/medium whatever the author's tier; the builder still checks each snippet. "off" = as above.
+const SCOUT_TIER = C.scoutTier === 'off' ? null : 'sapu:sapu-haiku-medium'
+const scoutOf = (w) => SCOUT_TIER || SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
-const stepUp = (w) => LADDER[Math.min(idx(w) + 1, LADDER.length - 1)]
+const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
 const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}`).join('\n')
 // An agent's label is the run panel's Agent column: the issue, then the effort (the panel's Model
@@ -604,7 +613,7 @@ async function runItem(item) {
     if (r.status === 'escalate') question = `${r.escalate_question} — ${r.escalate_at || '?'}`
   }
   if (question) {
-    if (state.worker === LADDER[LADDER.length - 1]) return done('blocked', { reason: `ESCALATE from the top of the ladder: ${question}` })
+    if (state.worker === CEILING) return done('blocked', { reason: `ESCALATE from the top of the ladder${CEILING === LADDER[LADDER.length - 1] ? '' : ' (tuning.workerCeiling)'}: ${question}` })
     state.escalated = true
     state.worker = stepUp(state.worker)
     r = await runWorker(state.worker, {
@@ -695,7 +704,7 @@ async function runItem(item) {
   const prePrUntilZero = async () => {
     for (;;) {
       const round = ++prePrRound
-      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PREPR_MODEL[0], effort: PREPR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: tag(item, PREPR_MODEL[1], `${P.prePr.run} ${round}`) })
+      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: prePrModel(state)[0], effort: prePrModel(state)[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: tag(item, prePrModel(state)[1], `${P.prePr.run} ${round}`) })
       if (!pr) return done('died', { reason: `${P.prePr.run} round ${round} returned nothing` })
       const open = pr.findings.filter((f) => P.prePr.severities.includes(f.severity))
       const counted = P.prePr.severities.reduce((n, k) => n + (pr.counts[k] || 0), 0)
