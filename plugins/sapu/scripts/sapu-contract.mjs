@@ -781,7 +781,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "high", contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "high", workerTier: null, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -793,6 +793,7 @@ export function resolveTuning(c) {
     contextBudget: { ...DEFAULT_TUNING.contextBudget, ...(t.contextBudget || {}) },
     codeSearchFirst: { ...DEFAULT_TUNING.codeSearchFirst, ...(t.codeSearchFirst || {}) },
     reviewEffort: t.reviewEffort ?? DEFAULT_TUNING.reviewEffort,
+    workerTier: t.workerTier ?? DEFAULT_TUNING.workerTier,
     contextWindow: window,
     contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
   };
@@ -814,6 +815,7 @@ function tuningProblems(t) {
       if (key === "stepBudget" && Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
     }
   }
+  if ("workerTier" in t && t.workerTier !== null && !["sonnet-medium", "sonnet-high", "opus-medium", "opus-high"].includes(t.workerTier)) errs.push('tuning.workerTier must be "sonnet-medium", "sonnet-high", "opus-medium" or "opus-high" (or absent)');
   if ("reviewEffort" in t && !["medium", "high"].includes(t.reviewEffort)) errs.push('tuning.reviewEffort must be "medium" or "high" (the reviewers always run on Opus)');
   if ("codeSearchFirst" in t) {
     const g = t.codeSearchFirst;
@@ -2067,7 +2069,7 @@ function main(argv) {
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, policy: resolvePolicy(contract) } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, policy: resolvePolicy(contract) } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }

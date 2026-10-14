@@ -166,6 +166,38 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls[1].opts).toMatchObject({ model: "opus", effort: "high" });
   });
 
+  it("tuning.workerTier puts the scout, the author and the fixer of every item on that tier, red included; reviewers and the pre-PR check are untouched", async () => {
+    const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
+    const items = [item(45, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" }), item(46, { tier: "yellow", worker: "sapu:sapu-opus-medium" })];
+    const { calls, scouts } = await runWave({ main: MAIN, contract: tier, items }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(c.prompt.includes("#46") ? 46 : 45, { head_sha: fixSha(c, n) });
+      return n <= 2 ? finding(false) : clean;
+    });
+    for (const s of scouts) expect(s.opts, "scout").toMatchObject({ agentType: "sapu:sapu-sonnet-medium", model: "sonnet", effort: "medium" });
+    const authors = calls.filter((c) => c.opts.phase === "Implement" || c.opts.phase === "Fix");
+    expect(authors.length).toBeGreaterThan(2);
+    for (const a of authors) expect(a.opts, `${a.opts.phase}`).toMatchObject({ agentType: "sapu:sapu-sonnet-medium", model: "sonnet", effort: "medium" });
+    for (const r of calls.filter((c) => c.opts.phase === "Review")) expect(r.opts, "review").toMatchObject({ model: "opus", effort: "high" });
+  });
+
+  it("without tuning.workerTier red is still never below the floor, and a junk workerTier changes nothing", async () => {
+    await expect(runWave({ main: MAIN, items: [item(47, { tier: "red", worker: "sapu:sapu-sonnet-medium", domainReviewer: "db" })] }, () => clean)).rejects.toThrow(/red is never below/);
+    for (const workerTier of [undefined, null, "haiku", 3]) {
+      const { scouts } = await runWave({ main: MAIN, contract: { ...CONTRACT, workerTier }, items: [item(48, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(48)));
+      expect(scouts[0].opts.agentType, String(workerTier)).toBe("sapu:sapu-sonnet-high");
+    }
+  });
+
+  it("an ESCALATE from the forced tier still climbs the ladder from it", async () => {
+    const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
+    const { calls } = await runWave({ main: MAIN, contract: tier, items: [item(49, { worker: "sapu:sapu-opus-high" })] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n === 1 ? opened(49, { status: "escalate", pr_number: 0, escalate_question: "q", escalate_at: "a.ts:1" }) : opened(49);
+    });
+    const authors = calls.filter((c) => c.opts.phase === "Implement").map((c) => c.opts.agentType);
+    expect(authors).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
+  });
+
   it("tuning.reviewEffort medium runs the reviewers (qa, the red pair, delta rounds) on Opus/medium; the builder and the pre-PR check keep their effort", async () => {
     const medium = { ...CONTRACT, reviewEffort: "medium" };
     const { calls } = await runWave({ main: MAIN, contract: medium, items: [item(43, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
