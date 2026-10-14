@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.17.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.18.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -120,6 +120,9 @@ const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, preP
 // The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
 // The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check stays PAIR_MODEL.
 const REVIEW_MODEL = ['opus', C.reviewEffort === 'medium' ? 'medium' : 'high']
+// tuning.workerTier (a ladder entry such as "sonnet-medium"): every author, scout and fixer of the wave starts there, whatever
+// the item says and below the red floor; an ESCALATE still climbs the ladder from it. Absent = the item's own worker.
+const WORKER_TIER = typeof C.workerTier === 'string' && LADDER.includes(`sapu:sapu-${C.workerTier}`) ? `sapu:sapu-${C.workerTier}` : null
 const PREPR_AGENT = 'general-purpose'
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
@@ -147,6 +150,7 @@ const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker'
 // A worker named without the plugin prefix (`sapu-sonnet-high`) is the same ladder agent: accept it
 // instead of failing the whole wave on a spelling the orchestrator then has to retry.
 for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
+if (WORKER_TIER) for (const it of input.items) if (it && typeof it === 'object') it.worker = WORKER_TIER
 const RENAMED = { npmCi: 'cleanInstall' }
 for (const it of input.items) {
   const unknown = Object.keys(it && typeof it === 'object' ? it : {}).filter((k) => !ITEM_KEYS.includes(k))
@@ -159,7 +163,7 @@ for (const it of input.items) {
   if (!Number.isInteger(it.issue)) throw new Error(`item without an integer issue: ${JSON.stringify(it)}`)
   if (!LADDER.includes(it.worker)) throw new Error(`#${it.issue}: unknown worker ${it.worker}`)
   if (!['green', 'yellow', 'red'].includes(it.tier)) throw new Error(`#${it.issue}: tier must be green|yellow|red`)
-  if (it.tier === 'red' && LADDER.indexOf(it.worker) < LADDER.indexOf(RED_FLOOR)) throw new Error(`#${it.issue}: red is never below ${RED_FLOOR}`)
+  if (it.tier === 'red' && !WORKER_TIER && LADDER.indexOf(it.worker) < LADDER.indexOf(RED_FLOOR)) throw new Error(`#${it.issue}: red is never below ${RED_FLOOR}`)
   if (it.tier === 'red' && !DOMAIN_ROLES.includes(it.domainReviewer)) throw new Error(`#${it.issue}: red needs a domainReviewer role from ${DOMAIN_ROLES.join(', ')}`)
   if (it.tracker !== undefined && !/^F\d+$/i.test(it.tracker)) throw new Error(`#${it.issue}: tracker must look like F3`)
   const id = `issue${it.issue}${it.tracker ? it.tracker.toLowerCase() : ''}`
@@ -660,7 +664,7 @@ async function runItem(item) {
       before = keys.size
       state.cycles++
       let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
-      if (state.tier === 'red') fixer = atLeast(fixer, RED_FLOOR)
+      if (state.tier === 'red' && !WORKER_TIER) fixer = atLeast(fixer, RED_FLOOR)
       const sinceSha = state.headSha
       r = await runWorker(fixer, {
         cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}`),
