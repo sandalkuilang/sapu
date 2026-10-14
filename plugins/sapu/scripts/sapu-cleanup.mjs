@@ -8,6 +8,17 @@
 // same name, a closed issue): a reused name, a later local commit or a second attempt would be lost.
 // Every deleted branch keeps its tip under refs/sapu-trash/<branch> (hidden from `git branch`), so
 // even a wrong merge record loses nothing. No origin/<base> stops the script before any plan.
+// Two more classes pile up on the remote, because no merged PR ever names them, and are deleted (the
+// remote branch, and a local copy with the same tip) only with a proof of their own:
+//   - a CLOSED, unmerged PR's head (a superseded attempt): the branch tip is still the PR's head, and
+//     every issue the PR or the branch name links is closed, or a merged PR closes one of them;
+//   - a branch with no PR (a `wip: handoff` snapshot, a workflow branch): every commit in
+//     origin/<base>..tip other than a `wip: handoff` one has its subject in a commit message of
+//     origin/<base> (a squash merge leaves no ancestor), and the issues it names are all closed.
+// Neither is deleted while any worktree has the branch checked out, while the local and remote tips
+// differ, or while one commit is unmatched; the tip is saved under refs/sapu-trash first, so
+// `git push origin refs/sapu-trash/<branch>:refs/heads/<branch>` brings a remote branch back.
+//
 // Never touched: the base, the main checkout's branch, an open PR's head, a --keep name, a branch
 // outside sapu's own names (`<type>/issue-<N>-…`, `worktree-wf_*`, `worktree-agent-*`, `sapu-*`;
 // --all lifts this). A worktree is removed only when it has no uncommitted or untracked change, no
@@ -26,8 +37,36 @@ import fs from "node:fs";
 import path from "node:path";
 import { findMain, loadContract, lockProblems, resolvePolicy } from "./sapu-contract.mjs";
 
-export const SAPU_BRANCH = /^((feat|fix|perf|refactor|chore|docs|test|ci|build|style)\/issue-\d+|worktree-(wf_|agent-)|sapu-)/;
+export const SAPU_BRANCH = /^((feat|fix|perf|refactor|chore|docs|test|ci|build|style|wip)\/issue-\d+|worktree-(wf_|agent-)|sapu-)/;
 const ACTIVE_MS = 60 * 60 * 1000;
+const HANDOFF = /^wip: handoff/;
+const MIN_SUBJECT = 12; // a shorter subject ("fix") would match almost any base commit
+
+/** The issue a branch name carries: `<type>/issue-<N>-…`. */
+export const branchIssues = (name) => {
+  const m = /\/issue-(\d+)/.exec(name);
+  return m ? [Number(m[1])] : [];
+};
+
+const issueList = (ns) => `issue${ns.length > 1 ? "s" : ""} ${ns.map((n) => "#" + n).join(", ")}`;
+
+/**
+ * The network-backed proof for a branch no merged PR covers, or null: its closed PR (the tip is still that
+ * PR's head; its issues closed, or one closed by a merged PR), else its commits all found in the base.
+ */
+function extraProof({ name, tip, closed, mergedIssues, issues, covered }) {
+  const done = (n) => issues[n] === "closed";
+  const c = closed[name];
+  if (c && c.oid === tip) {
+    const linked = [...new Set([...c.issues, ...branchIssues(name)])];
+    if (linked.length && linked.every(done)) return `closed PR #${c.number}, ${issueList(linked)} closed`;
+    const twin = linked.find((n) => mergedIssues.has(n));
+    if (twin !== undefined) return `closed PR #${c.number}, a merged PR closes issue #${twin}`;
+  }
+  const v = covered[name];
+  if (v && v.unmatched === 0 && v.issues.length && v.issues.every(done)) return `no PR, ${v.matched} commit(s) found in the base${v.handoff ? ` and ${v.handoff} handoff` : ""}, ${issueList(v.issues)} closed`;
+  return null;
+}
 
 /**
  * The plan, from facts only (no git, no gh): [{ branch, action: "delete"|"keep", why, worktree }].
@@ -38,21 +77,38 @@ const ACTIVE_MS = 60 * 60 * 1000;
  * @param {Set<string>} f.inBase branch names whose tip is in origin/<base>
  * @param {Set<string>} f.reach commits that are, or are ancestors of, heads of PRs merged into <base>
  * @param {Set<string>} f.open heads of open PRs
+ * @param {{name: string, tip: string}[]} [f.remotes] origin's branches (the base excluded)
+ * @param {Record<string, {number: number, oid: string, issues: number[]}>} [f.closed] closed, unmerged PRs by head branch
+ * @param {Set<number>} [f.mergedIssues] issues a merged PR closes
+ * @param {Record<number, "open"|"closed">} [f.issues] issue states
+ * @param {Record<string, {matched: number, unmatched: number, handoff: number, issues: number[]}>} [f.covered] commit proofs
  */
-export function plan({ branches, worktrees, unsafe, inBase, reach, open, base, mainBranch, keep = [], all = false }) {
+export function plan({ branches, remotes = [], worktrees, unsafe, inBase, reach, open, base, mainBranch, keep = [], all = false, closed = {}, mergedIssues = new Set(), issues = {}, covered = {} }) {
   const out = [];
-  for (const { name, tip } of branches) {
+  const local = new Map(branches.map((b) => [b.name, b.tip]));
+  const remote = new Map(remotes.map((b) => [b.name, b.tip]));
+  for (const name of new Set([...local.keys(), ...remote.keys()])) {
     if (name === base || name === mainBranch) continue;
+    const L = local.get(name) ?? null;
+    const R = remote.get(name) ?? null;
     const worktree = worktrees[name] || "";
     const keepIt = (why) => out.push({ branch: name, action: "keep", why, worktree });
     if (keep.includes(name)) keepIt("--keep");
-    else if (!all && !SAPU_BRANCH.test(name)) keepIt("not a sapu branch (--all to include)");
-    else if (open.has(name)) keepIt("open PR");
+    else if (!all && !SAPU_BRANCH.test(name)) {
+      if (L) keepIt("not a sapu branch (--all to include)"); // a remote-only branch of someone else is not listed
+    } else if (open.has(name)) keepIt("open PR");
     else {
-      const proof = inBase.has(name) ? `in ${base}` : reach.has(tip) ? "every commit is in a PR merged into " + base : null;
-      if (!proof) keepIt("not proven merged");
-      else if (worktree && unsafe[worktree]) keepIt(`its worktree ${unsafe[worktree]} (${worktree})`);
-      else out.push({ branch: name, action: "delete", why: proof, worktree });
+      const proof = L && (inBase.has(name) ? `in ${base}` : reach.has(L) ? "every commit is in a PR merged into " + base : null);
+      if (proof) {
+        if (worktree && unsafe[worktree]) keepIt(`its worktree ${unsafe[worktree]} (${worktree})`);
+        else out.push({ branch: name, action: "delete", why: proof, worktree });
+        continue;
+      }
+      const tip = R ?? L;
+      const why = L && R && L !== R ? null : extraProof({ name, tip, closed, mergedIssues, issues, covered });
+      if (!why) keepIt("not proven merged");
+      else if (worktree) keepIt(`checked out in worktree ${worktree}`);
+      else out.push({ branch: name, action: "delete", why, worktree: "", remote: R !== null, local: L !== null, tip });
     }
   }
   return out;
@@ -145,7 +201,37 @@ export function gitFacts(main, base, mergedOids, now = Date.now()) {
     .map((l) => l.split(" ")[0]);
   const reach = new Set(local.length ? (tryRun("git", ["-C", main, "rev-list", "--stdin"], main, local.join("\n") + "\n") || "").split("\n").filter(Boolean) : []);
   const mainBranch = tryRun("git", ["-C", main, "symbolic-ref", "--short", "HEAD"], main) || "";
-  return { branches, worktrees, unsafe, inBase, reach, mainBranch };
+  const remotes = run("git", ["-C", main, "for-each-ref", "--format=%(refname:lstrip=3) %(objectname)", "refs/remotes/origin"], main)
+    .split("\n")
+    .filter((l) => l && !l.startsWith("HEAD "))
+    .map((l) => {
+      const [name, tip] = l.split(" ");
+      return { name, tip };
+    })
+    .filter((b) => b.name !== base);
+  return { branches, remotes, worktrees, unsafe, inBase, reach, mainBranch };
+}
+
+/**
+ * Whether a branch's commits are all in the base though none is an ancestor (a squash merge): its non-merge
+ * commits in origin/<base>..<tip>, `wip: handoff` ones counted apart, each other subject (at least
+ * MIN_SUBJECT characters) searched, as a fixed string, in the commit messages of origin/<base>. `refs` are
+ * the `#N` numbers its commit messages carry.
+ */
+export function coverage(main, base, tip) {
+  const range = `origin/${base}..${tip}`;
+  const subjects = (tryRun("git", ["-C", main, "log", "--no-merges", "--format=%s", range], main) || "").split("\n").filter(Boolean);
+  let matched = 0;
+  let unmatched = 0;
+  let handoff = 0;
+  for (const subject of subjects) {
+    if (HANDOFF.test(subject)) handoff++;
+    else if (subject.length >= MIN_SUBJECT && tryRun("git", ["-C", main, "log", `origin/${base}`, "--fixed-strings", `--grep=${subject}`, "--max-count=1", "--format=%H"], main)) matched++;
+    else unmatched++;
+  }
+  const body = tryRun("git", ["-C", main, "log", "--no-merges", "--format=%B", range], main) || "";
+  const refs = [...new Set([...body.matchAll(/#(\d+)/g)].map((m) => Number(m[1])))];
+  return { matched, unmatched, handoff, refs };
 }
 
 /** --apply, --all, --keep <b> / --keep=<b>; anything else is an error. */
@@ -160,6 +246,51 @@ export function parseArgs(argv) {
     else throw new Error(`unknown argument "${a}" (usage: [--apply] [--all] [--keep <branch>]...)`);
   }
   return o;
+}
+
+/**
+ * Prints each step and, with `apply`, carries it out: the tip goes to refs/sapu-trash first, then the
+ * worktree, the remote branch (`git push origin --delete`) and the local branch go. Returns the counts.
+ */
+export function carryOut(MAIN, steps, apply, log = console.log) {
+  let deleted = 0;
+  let removed = 0;
+  const label = (st) => (st.remote ? `origin/${st.branch}${st.local ? " + local" : ""}` : st.branch);
+  for (const s of steps) {
+    if (s.action === "keep") {
+      log(`KEEP   ${s.branch} — ${s.why}`);
+      continue;
+    }
+    if (!apply) {
+      log(`DELETE ${label(s)} — ${s.why}${s.worktree ? ` (+ worktree ${s.worktree})` : ""}`);
+      continue;
+    }
+    // every deleted tip is kept: `git branch <name> refs/sapu-trash/<name>` restores it
+    if (tryRun("git", ["-C", MAIN, "update-ref", `refs/sapu-trash/${s.branch}`, s.tip || `refs/heads/${s.branch}`], MAIN) === null) {
+      log(`KEEP   ${s.branch} — could not save its tip to refs/sapu-trash`);
+      continue;
+    }
+    if (s.worktree) {
+      if (!removeWorktree(MAIN, s.worktree)) {
+        log(`KEEP   ${s.branch} — its worktree could not be removed (${s.worktree})`);
+        continue;
+      }
+      removed++;
+    }
+    if (s.remote && tryRun("git", ["-C", MAIN, "push", "-q", "origin", "--delete", s.branch], MAIN) === null) {
+      log(`KEEP   ${s.branch} — git push origin --delete failed`);
+      continue;
+    }
+    if (s.remote && !s.local) {
+      deleted++;
+      log(`DELETE ${label(s)} — ${s.why}`);
+    } else if (tryRun("git", ["-C", MAIN, "branch", "-D", s.branch], MAIN) === null) log(`KEEP   ${s.branch} — git branch -D failed`);
+    else {
+      deleted++;
+      log(`DELETE ${label(s)} — ${s.why}`);
+    }
+  }
+  return { deleted, removed };
 }
 
 function main(argv) {
@@ -177,36 +308,24 @@ function main(argv) {
   const merged = gh("pr", "list", "--state", "merged", "--base", base, "--limit", "1000", "--json", "headRefOid");
   const open = new Set(gh("pr", "list", "--state", "open", "--limit", "1000", "--json", "headRefName").map((p) => p.headRefName));
   const facts = gitFacts(MAIN, base, merged.map((p) => p.headRefOid));
-  const steps = plan({ ...facts, open, base, keep, all });
-  let deleted = 0;
-  let removed = 0;
-  for (const s of steps) {
-    if (s.action === "keep") {
-      console.log(`KEEP   ${s.branch} — ${s.why}`);
-      continue;
-    }
-    if (!apply) {
-      console.log(`DELETE ${s.branch} — ${s.why}${s.worktree ? ` (+ worktree ${s.worktree})` : ""}`);
-      continue;
-    }
-    // every deleted tip is kept: `git branch <name> refs/sapu-trash/<name>` restores it
-    if (tryRun("git", ["-C", MAIN, "update-ref", `refs/sapu-trash/${s.branch}`, `refs/heads/${s.branch}`], MAIN) === null) {
-      console.log(`KEEP   ${s.branch} — could not save its tip to refs/sapu-trash`);
-      continue;
-    }
-    if (s.worktree) {
-      if (!removeWorktree(MAIN, s.worktree)) {
-        console.log(`KEEP   ${s.branch} — its worktree could not be removed (${s.worktree})`);
-        continue;
-      }
-      removed++;
-    }
-    if (tryRun("git", ["-C", MAIN, "branch", "-D", s.branch], MAIN) === null) console.log(`KEEP   ${s.branch} — git branch -D failed`);
-    else {
-      deleted++;
-      console.log(`DELETE ${s.branch} — ${s.why}`);
-    }
+  // the network proofs: closed, unmerged PRs; issues closed by a merged PR; every issue's state; commits found in the base
+  const closed = {};
+  for (const p of gh("pr", "list", "--state", "closed", "--limit", "1000", "--json", "number,headRefName,headRefOid,mergedAt,closingIssuesReferences")) {
+    if (!p.mergedAt && (!closed[p.headRefName] || closed[p.headRefName].number < p.number)) closed[p.headRefName] = { number: p.number, oid: p.headRefOid, issues: (p.closingIssuesReferences || []).map((i) => i.number) };
   }
+  const mergedIssues = new Set(gh("pr", "list", "--state", "merged", "--base", base, "--limit", "1000", "--json", "closingIssuesReferences").flatMap((p) => (p.closingIssuesReferences || []).map((i) => i.number)));
+  const issues = Object.fromEntries(gh("issue", "list", "--state", "all", "--limit", "1000", "--json", "number,state").map((i) => [i.number, i.state === "CLOSED" ? "closed" : "open"]));
+  const covered = {};
+  const tips = new Map([...facts.branches, ...facts.remotes].map((b) => [b.name, b.tip]));
+  for (const [name, tip] of tips) {
+    if (name === base || name === facts.mainBranch || open.has(name) || (!all && !SAPU_BRANCH.test(name)) || facts.inBase.has(name) || facts.reach.has(tip)) continue;
+    const v = coverage(MAIN, base, tip);
+    // the issue a branch names; else the issues its commit messages mention (a PR number is no issue: it is not in `issues`)
+    const named = branchIssues(name);
+    covered[name] = { ...v, issues: named.length ? named : v.refs.filter((n) => n in issues) };
+  }
+  const steps = plan({ ...facts, open, base, keep, all, closed, mergedIssues, issues, covered });
+  const { deleted, removed } = carryOut(MAIN, steps, apply);
   const planned = steps.filter((s) => s.action === "delete");
   const n = apply ? deleted : planned.length;
   const w = apply ? removed : planned.filter((s) => s.worktree).length;

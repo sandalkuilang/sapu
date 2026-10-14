@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
+import { branchIssues, carryOut, coverage, gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
 
 type Step = { branch: string; action: string; why: string; worktree: string };
 const by = (steps: Step[]) => Object.fromEntries(steps.map((s) => [s.branch, `${s.action}: ${s.why}`]));
@@ -172,5 +172,185 @@ describe("sapu-cleanup — the agent-memory link Claude Code puts in a worktree 
     symlinkSync(join(main, ".claude/agent-memory"), join(wt3, ".claude/agent-memory"));
     writeFileSync(join(wt3, "new.txt"), "x");
     expect(worktreeUnsafe(wt3, later, main)).toMatch(/uncommitted or untracked/);
+  });
+});
+
+describe("sapu-cleanup — stale remote branches: a closed PR's head, and a branch no PR names", () => {
+  const remoteOnly = (name: string, tip = name) => ({ remotes: [{ name, tip }] });
+  const closedPr = (over: Record<string, unknown> = {}) => ({ number: 40, oid: "t1", issues: [12], ...over });
+
+  it("knows the issue a branch name carries, and the wip/ handoff names", () => {
+    expect(branchIssues("fix/issue-12-x")).toEqual([12]);
+    expect(branchIssues("wip/issue-7-handoff")).toEqual([7]);
+    expect(branchIssues("worktree-wf_ab-3")).toEqual([]);
+    expect("wip/issue-7-handoff").toMatch(SAPU_BRANCH);
+  });
+
+  it("deletes a closed PR's head only while the tip is still that head and its issues are closed (or a merged PR closes one)", () => {
+    const f = (over: Record<string, unknown> = {}) => facts({ ...remoteOnly("fix/issue-12-a", "t1"), closed: { "fix/issue-12-a": closedPr() }, issues: { 12: "closed" }, ...over });
+    const out = plan(f());
+    expect(by(out)).toEqual({ "fix/issue-12-a": "delete: closed PR #40, issue #12 closed" });
+    expect(out[0]).toMatchObject({ remote: true, local: false, tip: "t1" });
+    // the issue was closed as not planned, or by a duplicate: still closed
+    // the tip moved after the PR closed: later commits are in no PR
+    expect(by(plan(f({ remotes: [{ name: "fix/issue-12-a", tip: "t2" }] })))).toEqual({ "fix/issue-12-a": "keep: not proven merged" });
+    // the issue is open, and no merged PR closes it
+    expect(by(plan(f({ issues: { 12: "open" } })))).toEqual({ "fix/issue-12-a": "keep: not proven merged" });
+    // the issue is open but a merged PR closes it: the replacement landed
+    expect(by(plan(f({ issues: { 12: "open" }, mergedIssues: new Set([12]) })))).toEqual({ "fix/issue-12-a": "delete: closed PR #40, a merged PR closes issue #12" });
+    // an unknown issue state proves nothing
+    expect(by(plan(f({ issues: {} })))).toEqual({ "fix/issue-12-a": "keep: not proven merged" });
+    // never: an open PR's head, --keep
+    expect(by(plan(f({ open: new Set(["fix/issue-12-a"]) })))).toEqual({ "fix/issue-12-a": "keep: open PR" });
+    expect(by(plan({ ...f(), keep: ["fix/issue-12-a"] }))).toEqual({ "fix/issue-12-a": "keep: --keep" });
+  });
+
+  it("a closed PR's head with a local copy: both go when the tips agree; a differing local tip or a checked-out worktree keeps it", () => {
+    const f = (over: Record<string, unknown> = {}) => facts({ branches: [{ name: "fix/issue-12-a", tip: "t1" }], ...remoteOnly("fix/issue-12-a", "t1"), closed: { "fix/issue-12-a": closedPr() }, issues: { 12: "closed" }, ...over });
+    expect(plan(f())[0]).toMatchObject({ action: "delete", remote: true, local: true });
+    expect(by(plan(f({ branches: [{ name: "fix/issue-12-a", tip: "t9" }] })))).toEqual({ "fix/issue-12-a": "keep: not proven merged" });
+    expect(by(plan(f({ worktrees: { "fix/issue-12-a": "/wt/a" } })))).toEqual({ "fix/issue-12-a": "keep: checked out in worktree /wt/a" });
+    // a clean, idle worktree does not make it deletable either: the issue says "locked or not"
+    expect(by(plan(f({ worktrees: { "fix/issue-12-a": "/wt/a" }, unsafe: {} })))).toEqual({ "fix/issue-12-a": "keep: checked out in worktree /wt/a" });
+  });
+
+  it("deletes a branch no PR names when every commit but the handoff ones is found in the base and its issues are closed", () => {
+    const f = (v: Record<string, unknown>, over: Record<string, unknown> = {}) => facts({ ...remoteOnly("wip/issue-9-handoff", "w1"), issues: { 9: "closed" }, covered: { "wip/issue-9-handoff": { matched: 2, unmatched: 0, handoff: 1, issues: [9], ...v } }, ...over });
+    expect(by(plan(f({})))).toEqual({ "wip/issue-9-handoff": "delete: no PR, 2 commit(s) found in the base and 1 handoff, issue #9 closed" });
+    expect(by(plan(f({ matched: 0, handoff: 3 })))).toEqual({ "wip/issue-9-handoff": "delete: no PR, 0 commit(s) found in the base and 3 handoff, issue #9 closed" });
+    // one commit not in the base: report it, keep the branch
+    expect(by(plan(f({ unmatched: 1 })))).toEqual({ "wip/issue-9-handoff": "keep: not proven merged" });
+    // the issue is open, or no issue is named
+    expect(by(plan(f({}, { issues: { 9: "open" } })))).toEqual({ "wip/issue-9-handoff": "keep: not proven merged" });
+    expect(by(plan(f({ issues: [] })))).toEqual({ "wip/issue-9-handoff": "keep: not proven merged" });
+    // a worktree has it checked out
+    expect(by(plan(f({}, { worktrees: { "wip/issue-9-handoff": "/wt/w" } })))).toEqual({ "wip/issue-9-handoff": "keep: checked out in worktree /wt/w" });
+    // an open PR uses it
+    expect(by(plan(f({}, { open: new Set(["wip/issue-9-handoff"]) })))).toEqual({ "wip/issue-9-handoff": "keep: open PR" });
+    // a workflow branch with only a PR-less handoff, its issue found in its commit messages
+    expect(by(plan(facts({ ...remoteOnly("worktree-wf_ab-3", "w2"), issues: { 15: "closed" }, covered: { "worktree-wf_ab-3": { matched: 1, unmatched: 0, handoff: 1, issues: [15] } } })))).toEqual({ "worktree-wf_ab-3": "delete: no PR, 1 commit(s) found in the base and 1 handoff, issue #15 closed" });
+  });
+
+  it("lists a remote-only sapu branch it cannot prove, and says nothing of someone else's remote branch", () => {
+    const out = plan(facts({ remotes: [{ name: "fix/issue-3-x", tip: "a" }, { name: "dependabot/npm/foo", tip: "b" }] }));
+    expect(by(out)).toEqual({ "fix/issue-3-x": "keep: not proven merged" });
+    expect(by(plan(facts({ remotes: [{ name: "dependabot/npm/foo", tip: "b" }], all: true, issues: {}, closed: {} })))).toEqual({ "dependabot/npm/foo": "keep: not proven merged" });
+  });
+
+  it("a local-only closed-PR branch is deleted locally, with no remote step", () => {
+    const out = plan(facts({ branches: [{ name: "fix/issue-12-a", tip: "t1" }], closed: { "fix/issue-12-a": closedPr() }, issues: { 12: "closed" } }));
+    expect(out[0]).toMatchObject({ action: "delete", remote: false, local: true });
+  });
+});
+
+describe("sapu-cleanup — coverage and remotes on a real repository", () => {
+  const top = realpathSync(mkdtempSync(join(tmpdir(), "sapu-cleanup-cov-")));
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const origin = join(top, "origin.git");
+  const main = join(top, "main");
+  g(top, "init", "-q", "--bare", "-b", "main", origin);
+  g(top, "clone", "-q", origin, main);
+  const commit = (f: string, msg: string) => {
+    writeFileSync(join(main, f), f);
+    g(main, "add", f);
+    g(main, "commit", "-q", "-m", msg);
+  };
+  commit("a", "initial commit of the repo");
+  // the base after a squash merge: the PR's commit subjects are listed in the squash commit's body
+  commit("s", "feat(hr): separation record (#41)\n\n* feat(hr): add the separation record table\n* test(hr): cover the separation record");
+  g(main, "push", "-q", "origin", "HEAD:main");
+  // the branch, from before the squash: handoff snapshots plus the PR's original commits
+  g(main, "checkout", "-q", "-b", "wip/issue-9-handoff", "HEAD~1");
+  commit("b1", "feat(hr): add the separation record table");
+  commit("b2", "wip: handoff 1 (#9)");
+  commit("b3", "test(hr): cover the separation record");
+  commit("b4", "fix");
+  g(main, "push", "-q", "origin", "wip/issue-9-handoff");
+  g(main, "checkout", "-q", "main");
+  g(main, "fetch", "-q", "origin");
+
+  it("counts matched, handoff and unmatched commits; a short subject never matches", () => {
+    const tip = g(main, "rev-parse", "wip/issue-9-handoff");
+    const v = coverage(main, "main", tip);
+    expect(v).toMatchObject({ matched: 2, handoff: 1, unmatched: 1 }); // "fix" is 3 characters: unmatched
+    expect(v.refs).toEqual([9]);
+    g(main, "checkout", "-q", "-b", "tmp", tip);
+    g(main, "reset", "-q", "--hard", "HEAD~1"); // without the short-subject commit
+    expect(coverage(main, "main", g(main, "rev-parse", "HEAD"))).toMatchObject({ matched: 2, handoff: 1, unmatched: 0 });
+    g(main, "checkout", "-q", "main");
+  });
+
+  it("a commit absent from the base is unmatched, and a base-only tip has nothing to prove", () => {
+    g(main, "checkout", "-q", "-b", "lone", "main");
+    commit("z", "feat(hr): something never merged anywhere");
+    expect(coverage(main, "main", g(main, "rev-parse", "lone"))).toMatchObject({ matched: 0, unmatched: 1, handoff: 0 });
+    g(main, "checkout", "-q", "main");
+    expect(coverage(main, "main", "main")).toMatchObject({ matched: 0, unmatched: 0, handoff: 0 });
+  });
+
+  it("gitFacts lists origin's branches except the base", () => {
+    const f = gitFacts(main, "main", [], Date.now());
+    expect(f.remotes.map((b: { name: string }) => b.name).sort()).toEqual(["wip/issue-9-handoff"]);
+  });
+});
+
+describe("sapu-cleanup — carrying out a remote deletion on a real origin", () => {
+  const top = realpathSync(mkdtempSync(join(tmpdir(), "sapu-cleanup-del-")));
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const origin = join(top, "origin.git");
+  const main = join(top, "main");
+  g(top, "init", "-q", "--bare", "-b", "main", origin);
+  g(top, "clone", "-q", origin, main);
+  const commit = (f: string, msg: string) => {
+    writeFileSync(join(main, f), f);
+    g(main, "add", f);
+    g(main, "commit", "-q", "-m", msg);
+  };
+  commit("a", "initial commit of the repo");
+  g(main, "push", "-q", "origin", "HEAD:main");
+  for (const b of ["fix/issue-12-old", "wip/issue-9-handoff"]) {
+    g(main, "checkout", "-q", "-b", b, "main");
+    commit(b.replace("/", "_"), `wip: handoff snapshot for ${b}`);
+    g(main, "push", "-q", "origin", b);
+  }
+  g(main, "checkout", "-q", "main");
+  const onOrigin = (b: string) => g(main, "ls-remote", "--heads", "origin", b) !== "";
+  const logged = (steps: unknown[], apply: boolean) => {
+    const lines: string[] = [];
+    const r = carryOut(main, steps, apply, (l: string) => lines.push(l));
+    return { ...r, lines };
+  };
+  const stale = () => {
+    g(main, "fetch", "-q", "--prune", "origin");
+    const f = gitFacts(main, "main", [], Date.now());
+    const tip = (b: string) => f.remotes.find((r: { name: string }) => r.name === b).tip;
+    return plan({ ...f, open: new Set(), base: "main", closed: { "fix/issue-12-old": { number: 40, oid: tip("fix/issue-12-old"), issues: [12] } }, issues: { 12: "closed", 9: "closed" }, covered: { "wip/issue-9-handoff": { matched: 0, unmatched: 0, handoff: 1, issues: [9] } } });
+  };
+
+  it("the plan alone (no --apply) deletes nothing and names each proof", () => {
+    const steps = stale();
+    expect(by(steps)).toEqual({ "fix/issue-12-old": "delete: closed PR #40, issue #12 closed", "wip/issue-9-handoff": "delete: no PR, 0 commit(s) found in the base and 1 handoff, issue #9 closed" });
+    const r = logged(steps, false);
+    expect(r.lines).toEqual(["DELETE origin/fix/issue-12-old + local — closed PR #40, issue #12 closed", "DELETE origin/wip/issue-9-handoff + local — no PR, 0 commit(s) found in the base and 1 handoff, issue #9 closed"]);
+    expect(r.deleted).toBe(0);
+    expect(onOrigin("fix/issue-12-old") && onOrigin("wip/issue-9-handoff")).toBe(true);
+  });
+
+  it("--apply deletes the remote branch, keeps its tip under refs/sapu-trash, and the branch can be pushed back", () => {
+    const tip = g(main, "rev-parse", "origin/fix/issue-12-old");
+    const r = logged(stale(), true);
+    expect(r.deleted).toBe(2);
+    expect(onOrigin("fix/issue-12-old") || onOrigin("wip/issue-9-handoff")).toBe(false);
+    expect(g(main, "rev-parse", "refs/sapu-trash/fix/issue-12-old")).toBe(tip);
+    expect(g(main, "branch", "--list", "fix/issue-12-old")).toBe(""); // the local copy went with it
+    g(main, "push", "-q", "origin", "refs/sapu-trash/fix/issue-12-old:refs/heads/fix/issue-12-old");
+    expect(onOrigin("fix/issue-12-old")).toBe(true);
+  });
+
+  it("a remote deletion git refuses is reported and counted as kept", () => {
+    const lines: string[] = [];
+    const r = carryOut(main, [{ branch: "fix/issue-404-gone", action: "delete", why: "x", worktree: "", remote: true, local: false, tip: g(main, "rev-parse", "HEAD") }], true, (l: string) => lines.push(l));
+    expect(r.deleted).toBe(0);
+    expect(lines).toEqual(["KEEP   fix/issue-404-gone — git push origin --delete failed"]);
   });
 });
