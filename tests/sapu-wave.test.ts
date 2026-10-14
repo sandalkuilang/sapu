@@ -69,7 +69,7 @@ const MAIN = "/repo/main";
 const PLUGIN = "/plugins/sapu";
 // What sapu-contract.mjs wave-args passes on (the fixture has no `specialists`: every role is built in).
 const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = FIXTURE_CONTRACT;
-const CONTRACT = { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists: resolveSpecialists(FIXTURE_CONTRACT) };
+const CONTRACT = { workerCeiling: "opus-high", scoutTier: "off", reviewEffort: "high", repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists: resolveSpecialists(FIXTURE_CONTRACT) };
 const QA = "senior-dev-team:senior-qa-reviewer";
 const DB = "senior-dev-team:senior-fullstack-database-engineer";
 const ARCHITECT = "senior-dev-team:senior-software-architect";
@@ -188,6 +188,33 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     }
   });
 
+  it("tuning.scoutTier \"haiku\" moves only the scout to Haiku/medium; the author keeps its tier, and junk changes nothing", async () => {
+    const { calls, scouts } = await runWave({ main: MAIN, contract: { ...CONTRACT, scoutTier: "haiku" }, items: [item(50, { worker: "sapu:sapu-opus-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(50)));
+    expect(scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-haiku-medium", model: "haiku", effort: "medium" });
+    expect(calls.find((c) => c.opts.phase === "Implement")!.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
+    const r = await runWave({ main: MAIN, contract: { ...CONTRACT, scoutTier: "off" }, items: [item(51, { worker: "sapu:sapu-opus-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(51)));
+    expect(r.scouts[0].opts.agentType).toBe("sapu:sapu-sonnet-high");
+    // no tuning keys at all = the defaults: Haiku scout, Sonnet author (an Opus item is clamped), Opus/medium reviewers
+    const { workerCeiling, scoutTier, reviewEffort, ...bare } = CONTRACT;
+    const d = await runWave({ main: MAIN, contract: bare, items: [item(53, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(53)));
+    expect(d.scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-haiku-medium", model: "haiku" });
+    for (const c of d.calls) {
+      if (c.opts.phase === "Implement" || c.opts.phase === "Fix") expect(c.opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", model: "sonnet" });
+      if (c.opts.phase === "Review") expect(c.opts).toMatchObject({ model: "opus", effort: "medium" });
+    }
+  });
+
+  it("tuning.workerCeiling clamps an Opus item to the ceiling, escalation stops there and blocks, reviewers stay Opus", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high" };
+    const { calls } = await runWave({ main: MAIN, contract: cap, items: [item(52, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => {
+      if (c.opts.phase === "Review") return clean;
+      return opened(52, { status: "escalate", pr_number: 0, escalate_question: "q", escalate_at: "a.ts:1" });
+    });
+    const authors = calls.filter((c) => c.opts.phase === "Implement" || c.opts.phase === "Fix");
+    expect(authors.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high"]);
+    for (const c of calls) if (c.opts.phase !== "Review") expect(c.opts.model, c.opts.phase).not.toBe("opus");
+  });
+
   it("an ESCALATE from the forced tier still climbs the ladder from it", async () => {
     const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
     const { calls } = await runWave({ main: MAIN, contract: tier, items: [item(49, { worker: "sapu:sapu-opus-high" })] }, (c, n) => {
@@ -214,10 +241,10 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(builder?.opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", effort: "high" });
   });
 
-  it("anything but 'medium' (absent, 'high', junk) keeps the reviewers on Opus/high", async () => {
-    for (const reviewEffort of [undefined, "high", "low", 3]) {
+  it("only 'high' raises the reviewers to Opus/high; absent, 'medium' and junk run them on Opus/medium (the default)", async () => {
+    for (const reviewEffort of [undefined, "medium", "low", 3, "high"]) {
       const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, reviewEffort }, items: [item(44)] }, (c) => (c.opts.phase === "Review" ? clean : opened(44)));
-      for (const r of calls.filter((c) => c.opts.phase === "Review")) expect(r.opts, String(reviewEffort)).toMatchObject({ model: "opus", effort: "high" });
+      for (const r of calls.filter((c) => c.opts.phase === "Review")) expect(r.opts, String(reviewEffort)).toMatchObject({ model: "opus", effort: reviewEffort === "high" ? "high" : "medium" });
     }
   });
 
@@ -1065,7 +1092,7 @@ describe("sapu-wave — agent registry drift", () => {
   });
 
   it("the plugin ships the ladder workers and the journey lane's explorer and Curator, nothing else; every role defaults to a senior-dev-team agent, a declared dependency", () => {
-    expect(agentFiles.filter((f) => !/^sapu-(sonnet|opus)-/.test(f))).toEqual(["curator.md", "ui-explorer.md"]);
+    expect(agentFiles.filter((f) => !/^sapu-(sonnet|opus|haiku)-/.test(f))).toEqual(["curator.md", "ui-explorer.md"]);
     const manifest = JSON.parse(readFileSync(join(ROOT, "plugins/sapu/.claude-plugin/plugin.json"), "utf8"));
     expect(manifest.dependencies).toContain("senior-dev-team");
     const market = JSON.parse(readFileSync(join(ROOT, ".claude-plugin/marketplace.json"), "utf8"));
@@ -1189,11 +1216,11 @@ describe("sapu-wave — the repo's pre-PR command (policy.prePr): fresh rounds u
   const phases = (calls: Call[]) => calls.map((c) => c.opts.phase);
 
   it("the pre-PR check runs on tuning.workerTier when set, on Opus/high otherwise", async () => {
-    for (const [workerTier, want] of [["sonnet-medium", { model: "sonnet", effort: "medium" }], [undefined, { model: "opus", effort: "high" }]] as const) {
-      const { calls } = await runWave({ main: MAIN, contract: { ...withPolicy({ prePr: PRE }), workerTier }, items: [item(40)] }, (c) =>
+    for (const [workerTier, workerCeiling, worker, want] of [["sonnet-medium", undefined, "sapu:sapu-sonnet-medium", { model: "sonnet", effort: "medium" }], [undefined, "sonnet-high", "sapu:sapu-sonnet-medium", { model: "sonnet", effort: "medium" }], [undefined, "sonnet-high", "sapu:sapu-sonnet-high", { model: "sonnet", effort: "high" }], [undefined, "opus-high", "sapu:sapu-sonnet-medium", { model: "opus", effort: "high" }]] as const) {
+      const { calls } = await runWave({ main: MAIN, contract: { ...withPolicy({ prePr: PRE }), workerTier, workerCeiling }, items: [item(40, { worker })] }, (c) =>
         c.opts.phase === "Review" ? clean : c.opts.phase === "Pre-PR" ? pre(0, 0, 0, true) : opened(40),
       );
-      expect(calls.find((c) => c.opts.phase === "Pre-PR")!.opts, String(workerTier)).toMatchObject(want);
+      expect(calls.find((c) => c.opts.phase === "Pre-PR")!.opts, `${workerTier}/${workerCeiling}`).toMatchObject(want);
     }
   });
 

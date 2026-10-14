@@ -198,7 +198,7 @@ const UNKNOWN = Symbol("unknown-dir");
 const MAX_DEPTH = 6;
 
 /** The plugin's own worker ladder: the only subagents that never run without a contract. */
-export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus)-(low|medium|high)$/;
+export const SAPU_AGENT = /(^|:)sapu-(sonnet|opus|haiku)-(low|medium|high)$/;
 
 /** The argus journey lane's explorer. */
 export const EXPLORER_AGENT = /(^|:)ui-explorer$/;
