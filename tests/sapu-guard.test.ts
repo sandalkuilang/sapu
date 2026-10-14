@@ -1829,6 +1829,8 @@ describe("sapu-guard — the step budget of a ladder worker (subagent-brief.md p
     const out = calls(m, "a1", STEP_SOFT + 1);
     expect(refused(out)).toEqual([STEP_SOFT]);
     expect(out[STEP_SOFT - 1]).toMatch(/STEP BUDGET.*handoff.*Re-issue/s);
+    // the reminder asks for what the next worker needs: the note and the files read but not changed
+    expect(out[STEP_SOFT - 1]).toMatch(/handoff_note and learned \(the files you read and did not change/);
   });
 
   it("reminds every STEP_EVERY calls past the soft limit, and every STEP_EVERY_LATE past STEP_HARD", () => {

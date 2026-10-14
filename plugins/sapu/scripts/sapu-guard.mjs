@@ -3125,7 +3125,7 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
   } catch {
     return null; // a reminder that cannot be recorded would repeat on every call: let it through
   }
-  const handOff = `Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha and a handoff_note. A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes.`;
+  const handOff = `Unless your PR is a few steps from opened (fixer: pushed), hand off now (brief point 11): WIP commit from your worktree (git add -A && git commit -m 'wip: handoff', unpushed), teardown, return status "handoff" with branch, head_sha, a handoff_note and learned (the files you read and did not change, one \"path:lines — what matters\" each). A fresh worker of your tier continues on a clean context. A few steps from done? Re-issue this call; it passes.`;
   return stepDue
     ? `STEP BUDGET: ${n} tool calls. ${handOff} Reminders come every ${EVERY} calls, every ${LATE} past ${HARD}.`
     : `CONTEXT BUDGET (${Math.round(tokens / 1000)}k tokens): every turn re-sends your context. ${handOff} Reminders come every ${context.every} calls.`;

@@ -383,6 +383,43 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(calls[1].prompt).not.toContain("HEAD:worktree-agent-a1b2");
   });
 
+  it("a handoff hands over what the last worker learned about files it left alone, and the next worker is told to trust it", async () => {
+    const learned = ["apps/api/leave.service.ts:120-180 — balance is accrued daily", "packages/db/schema.prisma:2310 — LeaveBalance.accrued exists"];
+    const { calls } = await runWave({ main: MAIN, items: [item(38)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n === 1 ? opened(38, { status: "handoff", pr_number: 0, head_sha: "sha-wip", handoff_note: "left: x", learned }) : opened(38);
+    });
+    const next = calls[1].prompt;
+    expect(next).toContain("Files it read and did not change");
+    expect(next).toContain("Trust these and open one only to change it");
+    for (const l of learned) expect(next).toContain(`- ${l}`);
+    expect(next.indexOf("left: x")).toBeLessThan(next.indexOf("Files it read"));
+  });
+
+  it("no `learned`, an empty or a malformed one adds nothing to the next prompt; a long one is capped", async () => {
+    const run = async (extra: Record<string, unknown>) => {
+      const { calls } = await runWave({ main: MAIN, items: [item(39)] }, (c, n) => {
+        if (c.opts.phase === "Review") return clean;
+        return n === 1 ? opened(39, { status: "handoff", pr_number: 0, head_sha: "sha-wip", handoff_note: "left: x", ...extra }) : opened(39);
+      });
+      return calls[1].prompt as string;
+    };
+    for (const extra of [{}, { learned: [] }, { learned: "not a list" }, { learned: [null, 3, "", "   "] }]) expect(await run(extra), JSON.stringify(extra)).not.toContain("Files it read");
+    const many = Array.from({ length: 20 }, (_, i) => `f${i}.ts:1 — ${"x".repeat(300)}`);
+    const p = await run({ learned: many });
+    expect(p.match(/^- f\d+\.ts/gm)).toHaveLength(12);
+    expect(p).not.toContain("x".repeat(201));
+    expect(p).toContain("f11.ts:1");
+    expect(p).not.toContain("f12.ts:1");
+  });
+
+  it("`learned` is part of the worker schema but not required, so an older worker's answer still validates", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(40)] }, (c) => (c.opts.phase === "Review" ? clean : opened(40)));
+    const schema = calls[0].opts.schema as { properties: Record<string, { type?: string }>; required: string[] };
+    expect(schema.properties.learned.type).toBe("array");
+    expect(schema.required).not.toContain("learned");
+  });
+
   it("a handoff continues on a fresh agent of the SAME tier, from the WIP commit and the note", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(31)] }, (c, n) => {
       if (c.opts.phase === "Review") return clean;

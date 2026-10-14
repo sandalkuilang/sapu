@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.16.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.17.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -90,6 +90,10 @@ const findingKey = (f) => {
 // and hands off. A handoff with a new commit is progress and continues; two in a row without one
 // is a stall (blocked); MAX_HANDOFFS is the ceiling against a runaway loop.
 const MAX_HANDOFFS = 5
+// What a handoff worker learned about files it read and left alone: the next worker is told to trust it, so
+// each line is capped (a long answer is the model's, not data) and a malformed one is dropped.
+const LEARNED_MAX = 12
+const learnedLines = (r) => (Array.isArray(r && r.learned) ? r.learned : []).filter((x) => typeof x === 'string' && x.trim()).slice(0, LEARNED_MAX).map((x) => x.trim().slice(0, 200))
 // The scout's plan is all a builder starts with, so it is capped: past PLAN_CAP bytes (or with no
 // size reported) the builder is told to read only its first PLAN_LINES lines (truncated, not
 // re-asked: a second scout would pay the exploration again). The script cannot read files, so the
@@ -196,6 +200,7 @@ const WORKER_SCHEMA = {
     escalate_at: { type: 'string', description: 'status=escalate: the file:line that triggered it' },
     blocked_reason: { type: 'string', description: 'status=blocked: what was tried, what was read, which evidence is missing' },
     handoff_note: { type: 'string', description: 'status=handoff: done (commits), left (in order), the failing test + best hypothesis, commands that worked; at most 10 lines' },
+    learned: { type: 'array', items: { type: 'string' }, description: 'status=handoff: what you learned about files you read and did NOT change, one string each, "path:lines — what matters" (at most 12); the next worker will not re-read them' },
     security_gaps: { type: 'array', items: { type: 'string' }, description: `out-of-scope security gaps (the orchestrator files them under ${EPIC})` },
     outside_writes: { type: 'array', items: { type: 'string' }, description: `every write outside your worktree and ${C.testResources}; when unsure, list it` },
     pr_trust: { type: 'string', description: '"" when you opened no PR, or when `sapu-contract.mjs pr-trust <your PR>` exited 0 after your last PR body edit (brief point 9); otherwise its JSON "reason"' },
@@ -549,7 +554,7 @@ async function runItem(item) {
     let prev = state.headSha || ''
     for (let h = 0; ; h++) {
       const extra = h
-        ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, task].filter(Boolean).join('\n')
+        ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, learnedLines(r).length ? `Files it read and did not change (path:lines — what matters). Trust these and open one only to change it:\n${learnedLines(r).map((l) => '- ' + l).join('\n')}` : '', task].filter(Boolean).join('\n')
         : cont ? `${continueOn(state)}\n${task}` : task
       r = await testSlot(() => agent(workerPrompt(item, state, who, extra, step.startsWith('Implement')), opts(who, {
         isolation: 'worktree', schema: WORKER_SCHEMA, phase, label: h ? `${label} · handoff ${h}` : label,
