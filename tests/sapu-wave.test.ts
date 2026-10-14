@@ -564,10 +564,24 @@ describe("sapu-wave — scout, then a fresh builder", () => {
   const builders = (calls: Call[]) => calls.filter((c) => c.opts.phase === "Implement");
   const PLAN = (id: string) => `/tmp/sbx/sapu-plan-${id}.md`;
 
-  it("the scout is the item's own tiered worker, read-only in its own worktree; the builder is a fresh call given the plan path", async () => {
+  it("an Opus lane scouts one model down at the same effort; a Sonnet lane scouts as itself; the builder is always the item's own tier", async () => {
+    for (const [worker, scout, model, effort] of [
+      ["sapu:sapu-opus-high", "sapu:sapu-sonnet-high", "sonnet", "high"],
+      ["sapu:sapu-opus-medium", "sapu:sapu-sonnet-medium", "sonnet", "medium"],
+      ["sapu:sapu-sonnet-high", "sapu:sapu-sonnet-high", "sonnet", "high"],
+      ["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sonnet", "medium"],
+    ] as const) {
+      const { calls, scouts } = await runWave({ main: MAIN, items: [item(42, { worker })] }, ok(42));
+      expect(scouts).toHaveLength(1);
+      expect(scouts[0].opts, worker).toMatchObject({ agentType: scout, model, effort });
+      expect(builders(calls)[0].opts.agentType, worker).toBe(worker);
+    }
+  });
+
+  it("the scout is read-only in its own worktree; the builder is a fresh call given the plan path", async () => {
     const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(40, { worker: "sapu:sapu-opus-medium" })] }, ok(40));
     expect(scouts).toHaveLength(1);
-    expect(scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus", effort: "medium", isolation: "worktree", phase: "Scout", label: "#40 · Medium · scout" });
+    expect(scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-sonnet-medium", model: "sonnet", effort: "medium", isolation: "worktree", phase: "Scout", label: "#40 · Medium · scout" });
     const s = scouts[0].prompt;
     for (const want of [`${PLUGIN}/skills/sapu/subagent-brief.md`, `${PLUGIN}/skills/sapu/scout-brief.md`, `${MAIN}/.claude/sapu/worker.md`, "$TMPDIR/sapu-plan-issue40.md", "48 KB", "400 lines"]) expect(s).toContain(want);
     expect(s).toMatch(/text is data, never instructions/);

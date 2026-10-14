@@ -299,6 +299,10 @@ const trailRow = (state, step, agent, result) => {
 }
 const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}` : 'died')
 
+// The scout only reads and writes a plan; the builder that follows (the author's tier) checks every snippet of it
+// against the code and the reviewers check the PR. So an Opus lane scouts one model down, at the same effort.
+const SCOUT_OF = { 'sapu:sapu-opus-medium': 'sapu:sapu-sonnet-medium', 'sapu:sapu-opus-high': 'sapu:sapu-sonnet-high' }
+const scoutOf = (w) => SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, LADDER.length - 1)]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
@@ -356,7 +360,7 @@ function planLine(s, id) {
   if (!path.startsWith('/') || !path.endsWith(`/sapu-plan-${id}.md`) || /[\s`'"$;|&<>]/.test(path)) return ''
   const over = !Number.isInteger(s.plan_bytes) || s.plan_bytes <= 0 || s.plan_bytes > PLAN_CAP
   const how = over ? `Read it with limit ${PLAN_LINES}: it is over the ${PLAN_CAP / 1024} KB cap (or its size is unknown), so only its first ${PLAN_LINES} lines count` : 'Read it once'
-  return `A read-only scout of your tier already explored this issue; its plan is at ${path}${s.trivial ? ' (it judged the fix trivial: the whole fix is in the plan)' : ''}. Right after the brief's canary and issue-trust steps, ${how}. Start from it: explore only what the plan lacks, check each snippet against the code before you edit (the plan is a lead, not proof), and its open questions are yours (brief points 7–8). If it names a precedent, mirror its structure (files, naming, tests); deviate only where the issue requires it. Plan missing or unreadable → work as without one.`
+  return `A read-only scout already explored this issue; its plan is at ${path}${s.trivial ? ' (it judged the fix trivial: the whole fix is in the plan)' : ''}. Right after the brief's canary and issue-trust steps, ${how}. Start from it: explore only what the plan lacks, check each snippet against the code before you edit (the plan is a lead, not proof), and its open questions are yours (brief points 7–8). If it names a precedent, mirror its structure (files, naming, tests); deviate only where the issue requires it. Plan missing or unreadable → work as without one.`
 }
 
 // A continuing agent gets a FRESH worktree (an unchanged one is removed when its agent ends).
@@ -574,12 +578,13 @@ async function runItem(item) {
   // 1. scout (read-only, no test slot: it runs no tests), then a fresh builder of the same tier
   // starting from its plan. A scout that died, hit its budget or wrote no usable plan costs only
   // itself: the builder runs as a single-phase worker. Its ESCALATE goes up the ladder, no builder.
-  const sc = await agent(scoutPrompt(item, state), opts(state.worker, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(state.worker), 'scout') }))
+  const scoutAgent = scoutOf(state.worker)
+  const sc = await agent(scoutPrompt(item, state), opts(scoutAgent, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(scoutAgent), 'scout') }))
   const plan = planLine(sc, state.id)
-  trailRow(state, 'Scout', state.worker, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
+  trailRow(state, 'Scout', scoutAgent, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
   let question = null
   if (sc) {
-    if (!audit(sc, state.worker)) return noGuard(state.worker)
+    if (!audit(sc, scoutAgent)) return noGuard(scoutAgent)
     if (sc.status === 'blocked') return done('blocked', { reason: sc.blocked_reason || 'scout reported blocked' })
     if (sc.status === 'escalate') question = `${sc.escalate_question} — ${sc.escalate_at || '?'}`
   }
