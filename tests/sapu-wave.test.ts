@@ -166,7 +166,7 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls[1].opts).toMatchObject({ model: "opus", effort: "high" });
   });
 
-  it("tuning.workerTier puts the scout, the author and the fixer of every item on that tier, red included; reviewers and the pre-PR check are untouched", async () => {
+  it("tuning.workerTier puts the scout, the author and the fixer of every item on that tier, red included, and the pre-PR check follows it; reviewers are untouched", async () => {
     const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
     const items = [item(45, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" }), item(46, { tier: "yellow", worker: "sapu:sapu-opus-medium" })];
     const { calls, scouts } = await runWave({ main: MAIN, contract: tier, items }, (c, n) => {
@@ -1187,6 +1187,15 @@ describe("sapu-wave — the repo's pre-PR command (policy.prePr): fresh rounds u
     pasted,
   });
   const phases = (calls: Call[]) => calls.map((c) => c.opts.phase);
+
+  it("the pre-PR check runs on tuning.workerTier when set, on Opus/high otherwise", async () => {
+    for (const [workerTier, want] of [["sonnet-medium", { model: "sonnet", effort: "medium" }], [undefined, { model: "opus", effort: "high" }]] as const) {
+      const { calls } = await runWave({ main: MAIN, contract: { ...withPolicy({ prePr: PRE }), workerTier }, items: [item(40)] }, (c) =>
+        c.opts.phase === "Review" ? clean : c.opts.phase === "Pre-PR" ? pre(0, 0, 0, true) : opened(40),
+      );
+      expect(calls.find((c) => c.opts.phase === "Pre-PR")!.opts, String(workerTier)).toMatchObject(want);
+    }
+  });
 
   it("clean on the first round: pasted, ready, run by an agent that has the Skill tool", async () => {
     const { out, calls } = await runWave({ main: MAIN, contract: withPolicy({ prePr: PRE }), items: [item(41)] }, (c) =>

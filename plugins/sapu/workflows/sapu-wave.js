@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.18.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.19.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -118,12 +118,13 @@ const S = C.specialists
 // The repo's policy (sapu-contract.mjs wave-args resolves it; an older caller without it = the defaults).
 const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, prePr: null }
 // The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
-// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check stays PAIR_MODEL.
+// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check follows tuning.workerTier, else stays PAIR_MODEL.
 const REVIEW_MODEL = ['opus', C.reviewEffort === 'medium' ? 'medium' : 'high']
 // tuning.workerTier (a ladder entry such as "sonnet-medium"): every author, scout and fixer of the wave starts there, whatever
 // the item says and below the red floor; an ESCALATE still climbs the ladder from it. Absent = the item's own worker.
 const WORKER_TIER = typeof C.workerTier === 'string' && LADDER.includes(`sapu:sapu-${C.workerTier}`) ? `sapu:sapu-${C.workerTier}` : null
 const PREPR_AGENT = 'general-purpose'
+const PREPR_MODEL = WORKER_TIER ? WORKER_TIER.replace('sapu:sapu-', '').split('-') : PAIR_MODEL
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
 for (const r of ROLES) if (typeof S[r] !== 'string' || !S[r].trim()) throw new Error(`args.contract.specialists.${r} must be a subagent type`)
@@ -299,7 +300,7 @@ const testSlot = limiter(runners)
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
 const trailRow = (state, step, agent, result) => {
-  const model = (MODEL[agent] || (agent === PREPR_AGENT ? PAIR_MODEL : REVIEW_MODEL)).join('/')
+  const model = (MODEL[agent] || (agent === PREPR_AGENT ? PREPR_MODEL : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
   log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
@@ -694,7 +695,7 @@ async function runItem(item) {
   const prePrUntilZero = async () => {
     for (;;) {
       const round = ++prePrRound
-      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: tag(item, PAIR_MODEL[1], `${P.prePr.run} ${round}`) })
+      const pr = await agent(prePrPrompt(item, state, round), { agentType: PREPR_AGENT, model: PREPR_MODEL[0], effort: PREPR_MODEL[1], schema: PREPR_SCHEMA, phase: 'Pre-PR', label: tag(item, PREPR_MODEL[1], `${P.prePr.run} ${round}`) })
       if (!pr) return done('died', { reason: `${P.prePr.run} round ${round} returned nothing` })
       const open = pr.findings.filter((f) => P.prePr.severities.includes(f.severity))
       const counted = P.prePr.severities.reduce((n, k) => n + (pr.counts[k] || 0), 0)
