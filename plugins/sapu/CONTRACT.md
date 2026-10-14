@@ -192,7 +192,7 @@ calls), `contextBudget` (`soft`, default 200000: the worker context, in tokens, 
 reminder comes; `every`, default 10: tool calls between its repeats), `codeSearchFirst` (`refusals`, default 0 = off:
 with a number N, a ladder worker's first search is refused until it has run the command the profile's `## Code search` names,
 and a search over a whole tree after that, at most N times per worker; it applies only when that section names a command
-whose program is on `PATH`), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
+whose program is on `PATH`), `reviewEffort` (`"high"` default, or `"medium"`: the effort the reviewers, the 🟢/🟡 QA specialist and the 🔴 pair with their delta rounds, run at; always on Opus, the pre-PR check stays at high), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
 (`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.

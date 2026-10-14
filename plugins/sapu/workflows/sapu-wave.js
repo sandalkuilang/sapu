@@ -118,6 +118,8 @@ const S = C.specialists
 // The repo's policy (sapu-contract.mjs wave-args resolves it; an older caller without it = the defaults).
 const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, prePr: null }
 // The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
+// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check stays PAIR_MODEL.
+const REVIEW_MODEL = ['opus', C.reviewEffort === 'medium' ? 'medium' : 'high']
 const PREPR_AGENT = 'general-purpose'
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
@@ -293,7 +295,7 @@ const testSlot = limiter(runners)
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
 const trailRow = (state, step, agent, result) => {
-  const model = (MODEL[agent] || PAIR_MODEL).join('/')
+  const model = (MODEL[agent] || (agent === PREPR_AGENT ? PAIR_MODEL : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
   log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
@@ -412,8 +414,8 @@ async function review(item, state, delta, only) {
   // `only` = just these reviewers (a domain half the first pair lacked).
   const reviewers = only || (pair ? [S.qa, state.domainReviewer] : [S.qa])
   const call = (r) => () => {
-    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: tag(item, PAIR_MODEL[1], `${roleOf(r)}${delta ? ' delta' : ''}`) }
-    const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra })
+    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: tag(item, REVIEW_MODEL[1], `${roleOf(r)}${delta ? ' delta' : ''}`) }
+    const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: REVIEW_MODEL[0], effort: REVIEW_MODEL[1], ...extra })
     // Only the 🔴 pair counts against the test-runner limit: a lone 🟢/🟡 review never queues behind workers.
     return pair ? testSlot(run) : run()
   }

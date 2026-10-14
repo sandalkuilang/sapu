@@ -166,6 +166,29 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls[1].opts).toMatchObject({ model: "opus", effort: "high" });
   });
 
+  it("tuning.reviewEffort medium runs the reviewers (qa, the red pair, delta rounds) on Opus/medium; the builder and the pre-PR check keep their effort", async () => {
+    const medium = { ...CONTRACT, reviewEffort: "medium" };
+    const { calls } = await runWave({ main: MAIN, contract: medium, items: [item(43, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(43, { head_sha: fixSha(c, n) });
+      return n <= 2 ? finding(false) : clean;
+    });
+    const reviews = calls.filter((c) => c.opts.phase === "Review");
+    expect(reviews.length).toBeGreaterThanOrEqual(4); // the pair, then the pair again on the fix's delta
+    for (const r of reviews) {
+      expect(r.opts, r.opts.agentType).toMatchObject({ model: "opus", effort: "medium" });
+      expect(r.opts.label).toMatch(/Medium/);
+    }
+    const builder = calls.find((c) => c.opts.phase === "Implement");
+    expect(builder?.opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", effort: "high" });
+  });
+
+  it("anything but 'medium' (absent, 'high', junk) keeps the reviewers on Opus/high", async () => {
+    for (const reviewEffort of [undefined, "high", "low", 3]) {
+      const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, reviewEffort }, items: [item(44)] }, (c) => (c.opts.phase === "Review" ? clean : opened(44)));
+      for (const r of calls.filter((c) => c.opts.phase === "Review")) expect(r.opts, String(reviewEffort)).toMatchObject({ model: "opus", effort: "high" });
+    }
+  });
+
   it("yellow gets specialists.qa; red gets the adversarial pair on the full diff, both clean", async () => {
     const { out, calls } = await runWave(
       {
