@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.16.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.17.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -90,6 +90,10 @@ const findingKey = (f) => {
 // and hands off. A handoff with a new commit is progress and continues; two in a row without one
 // is a stall (blocked); MAX_HANDOFFS is the ceiling against a runaway loop.
 const MAX_HANDOFFS = 5
+// What a handoff worker learned about files it read and left alone: the next worker is told to trust it, so
+// each line is capped (a long answer is the model's, not data) and a malformed one is dropped.
+const LEARNED_MAX = 12
+const learnedLines = (r) => (Array.isArray(r && r.learned) ? r.learned : []).filter((x) => typeof x === 'string' && x.trim()).slice(0, LEARNED_MAX).map((x) => x.trim().slice(0, 200))
 // The scout's plan is all a builder starts with, so it is capped: past PLAN_CAP bytes (or with no
 // size reported) the builder is told to read only its first PLAN_LINES lines (truncated, not
 // re-asked: a second scout would pay the exploration again). The script cannot read files, so the
@@ -114,6 +118,8 @@ const S = C.specialists
 // The repo's policy (sapu-contract.mjs wave-args resolves it; an older caller without it = the defaults).
 const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, prePr: null }
 // The agent that runs the repo's pre-PR command: it needs the Skill tool, which ladder workers lack.
+// The reviewers (qa and the domain half) run on Opus at the contract's tuning.reviewEffort (default high); the pre-PR check stays PAIR_MODEL.
+const REVIEW_MODEL = ['opus', C.reviewEffort === 'medium' ? 'medium' : 'high']
 const PREPR_AGENT = 'general-purpose'
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
@@ -196,6 +202,7 @@ const WORKER_SCHEMA = {
     escalate_at: { type: 'string', description: 'status=escalate: the file:line that triggered it' },
     blocked_reason: { type: 'string', description: 'status=blocked: what was tried, what was read, which evidence is missing' },
     handoff_note: { type: 'string', description: 'status=handoff: done (commits), left (in order), the failing test + best hypothesis, commands that worked; at most 10 lines' },
+    learned: { type: 'array', items: { type: 'string' }, description: 'status=handoff: what you learned about files you read and did NOT change, one string each, "path:lines — what matters" (at most 12); the next worker will not re-read them' },
     security_gaps: { type: 'array', items: { type: 'string' }, description: `out-of-scope security gaps (the orchestrator files them under ${EPIC})` },
     outside_writes: { type: 'array', items: { type: 'string' }, description: `every write outside your worktree and ${C.testResources}; when unsure, list it` },
     pr_trust: { type: 'string', description: '"" when you opened no PR, or when `sapu-contract.mjs pr-trust <your PR>` exited 0 after your last PR body edit (brief point 9); otherwise its JSON "reason"' },
@@ -288,12 +295,16 @@ const testSlot = limiter(runners)
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
 const trailRow = (state, step, agent, result) => {
-  const model = (MODEL[agent] || PAIR_MODEL).join('/')
+  const model = (MODEL[agent] || (agent === PREPR_AGENT ? PAIR_MODEL : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
   log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
 const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}` : 'died')
 
+// The scout only reads and writes a plan; the builder that follows (the author's tier) checks every snippet of it
+// against the code and the reviewers check the PR. So an Opus lane scouts one model down, at the same effort.
+const SCOUT_OF = { 'sapu:sapu-opus-medium': 'sapu:sapu-sonnet-medium', 'sapu:sapu-opus-high': 'sapu:sapu-sonnet-high' }
+const scoutOf = (w) => SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, LADDER.length - 1)]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
@@ -351,7 +362,7 @@ function planLine(s, id) {
   if (!path.startsWith('/') || !path.endsWith(`/sapu-plan-${id}.md`) || /[\s`'"$;|&<>]/.test(path)) return ''
   const over = !Number.isInteger(s.plan_bytes) || s.plan_bytes <= 0 || s.plan_bytes > PLAN_CAP
   const how = over ? `Read it with limit ${PLAN_LINES}: it is over the ${PLAN_CAP / 1024} KB cap (or its size is unknown), so only its first ${PLAN_LINES} lines count` : 'Read it once'
-  return `A read-only scout of your tier already explored this issue; its plan is at ${path}${s.trivial ? ' (it judged the fix trivial: the whole fix is in the plan)' : ''}. Right after the brief's canary and issue-trust steps, ${how}. Start from it: explore only what the plan lacks, check each snippet against the code before you edit (the plan is a lead, not proof), and its open questions are yours (brief points 7–8). If it names a precedent, mirror its structure (files, naming, tests); deviate only where the issue requires it. Plan missing or unreadable → work as without one.`
+  return `A read-only scout already explored this issue; its plan is at ${path}${s.trivial ? ' (it judged the fix trivial: the whole fix is in the plan)' : ''}. Right after the brief's canary and issue-trust steps, ${how}. Start from it: explore only what the plan lacks, check each snippet against the code before you edit (the plan is a lead, not proof), and its open questions are yours (brief points 7–8). If it names a precedent, mirror its structure (files, naming, tests); deviate only where the issue requires it. Plan missing or unreadable → work as without one.`
 }
 
 // A continuing agent gets a FRESH worktree (an unchanged one is removed when its agent ends).
@@ -373,7 +384,7 @@ function reviewPrompt(item, state, reviewer, delta) {
     `Read-only: never change code, commit, merge, or \`gh pr checkout\`. Then \`gh pr diff ${state.pr} --name-only\` (\`gh\` fails in the sandbox → \`git fetch -q origin ${BASE} && git diff --stat origin/${BASE}...${state.headSha}\`: this PR's commits are already in the shared object store), then read only the files your decision needs, a few files' diff per command (\`git diff origin/${BASE}...${state.headSha} -- <files>\`), never the whole-PR diff at once: it overflows into a saved file you then read again. Never run the test suite or the gate — the merge gate runs them; test evidence = the test's \`file:line\`.`,
     `You need no database: the merge gate runs every test. Real env files (\`.env*\`) are never read (the guard refuses it), so never look in them for a URL or a secret; reason from the diff, the tests' code and the profile.`,
     `Checklist: ${PLUGIN}/skills/forge/reference.md §Inline review, plus the repo profile ${PROFILES}/forge.md — work every angle. Match the diff against the acceptance criteria of issue #${item.issue} (its issue-trust verdict) like a stranger: a green gate is not proof the AC are met. A diff that deletes tests: every control tested must still have a test that runs, otherwise = a finding.`,
-    'Finding = a defect that can be triggered with the input/state you name. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
+    'Finding = a defect that can be triggered with the input/state you name. Name its class (the rule broken) and give EVERY location of it in the diff in the where field, never one example. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
     C.redAreas
       ? `Run \`git fetch -q origin ${BASE}; ${C.redAreas} --ref ${state.headSha}\` and report its result as is: red_area_ran = true only when its JSON was printed.`
       : 'This repo has no red-area classifier: red_area_ran = true, red_areas = [].',
@@ -391,7 +402,7 @@ function reviewPrompt(item, state, reviewer, delta) {
     lines.push('Read the PR body\'s Attack plan section first (missing = a finding): every row has a test that exists and proves its scenario, both ways. Then review beyond it.')
   }
   if (delta) {
-    lines.push(`This is a RE-review: check only the commits after ${delta.sinceSha} against the findings below, and whether the fix opens a new defect:\n${listFindings(delta.findings)}`)
+    lines.push(`This is a RE-review: check only the commits after ${delta.sinceSha} against the findings below, whether the fix opens a new defect, and whether another instance of a fixed finding's class is left in the PR's diff:\n${listFindings(delta.findings)}`)
   }
   lines.push('comment_markdown, in the language CLAUDE.md sets for people (default English): what was checked, findings + their status, the decision. Never write the Notes heading — the script adds it from `notes`.')
   return lines.join('\n')
@@ -403,8 +414,8 @@ async function review(item, state, delta, only) {
   // `only` = just these reviewers (a domain half the first pair lacked).
   const reviewers = only || (pair ? [S.qa, state.domainReviewer] : [S.qa])
   const call = (r) => () => {
-    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: tag(item, PAIR_MODEL[1], `${roleOf(r)}${delta ? ' delta' : ''}`) }
-    const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: PAIR_MODEL[0], effort: PAIR_MODEL[1], ...extra })
+    const extra = { schema: REVIEW_SCHEMA, phase: 'Review', label: tag(item, REVIEW_MODEL[1], `${roleOf(r)}${delta ? ' delta' : ''}`) }
+    const run = () => agent(reviewPrompt(item, state, r, delta), { agentType: r, model: REVIEW_MODEL[0], effort: REVIEW_MODEL[1], ...extra })
     // Only the 🔴 pair counts against the test-runner limit: a lone 🟢/🟡 review never queues behind workers.
     return pair ? testSlot(run) : run()
   }
@@ -549,7 +560,7 @@ async function runItem(item) {
     let prev = state.headSha || ''
     for (let h = 0; ; h++) {
       const extra = h
-        ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, task].filter(Boolean).join('\n')
+        ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, learnedLines(r).length ? `Files it read and did not change (path:lines — what matters). Trust these and open one only to change it:\n${learnedLines(r).map((l) => '- ' + l).join('\n')}` : '', task].filter(Boolean).join('\n')
         : cont ? `${continueOn(state)}\n${task}` : task
       r = await testSlot(() => agent(workerPrompt(item, state, who, extra, step.startsWith('Implement')), opts(who, {
         isolation: 'worktree', schema: WORKER_SCHEMA, phase, label: h ? `${label} · handoff ${h}` : label,
@@ -569,12 +580,13 @@ async function runItem(item) {
   // 1. scout (read-only, no test slot: it runs no tests), then a fresh builder of the same tier
   // starting from its plan. A scout that died, hit its budget or wrote no usable plan costs only
   // itself: the builder runs as a single-phase worker. Its ESCALATE goes up the ladder, no builder.
-  const sc = await agent(scoutPrompt(item, state), opts(state.worker, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(state.worker), 'scout') }))
+  const scoutAgent = scoutOf(state.worker)
+  const sc = await agent(scoutPrompt(item, state), opts(scoutAgent, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(scoutAgent), 'scout') }))
   const plan = planLine(sc, state.id)
-  trailRow(state, 'Scout', state.worker, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
+  trailRow(state, 'Scout', scoutAgent, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
   let question = null
   if (sc) {
-    if (!audit(sc, state.worker)) return noGuard(state.worker)
+    if (!audit(sc, scoutAgent)) return noGuard(scoutAgent)
     if (sc.status === 'blocked') return done('blocked', { reason: sc.blocked_reason || 'scout reported blocked' })
     if (sc.status === 'escalate') question = `${sc.escalate_question} — ${sc.escalate_at || '?'}`
   }
@@ -652,7 +664,7 @@ async function runItem(item) {
       const sinceSha = state.headSha
       r = await runWorker(fixer, {
         cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}`),
-        task: `Fix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
+        task: `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed for every other instance of that class and fix those in the same round (never code the PR did not touch). Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
       })
       if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
       if (!absorb(r, fixer)) return noGuard(fixer)

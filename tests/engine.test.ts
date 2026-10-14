@@ -578,7 +578,7 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
   "skills/sapu/SKILL.md": 41_100, // +scout → builder and the handoff progress rule in B3
-  "skills/sapu/subagent-brief.md": 14_400, // +batched exploration: one call per round of lookups saves whole turns
+  "skills/sapu/subagent-brief.md": 14_500, // +batched exploration: one call per round of lookups saves whole turns; +handoff `learned`: the next worker skips re-reading what the last one read
   "skills/sapu/scout-brief.md": 4_000, // read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
