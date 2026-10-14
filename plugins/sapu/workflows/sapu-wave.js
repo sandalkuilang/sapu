@@ -378,7 +378,7 @@ function reviewPrompt(item, state, reviewer, delta) {
     `Read-only: never change code, commit, merge, or \`gh pr checkout\`. Then \`gh pr diff ${state.pr} --name-only\` (\`gh\` fails in the sandbox → \`git fetch -q origin ${BASE} && git diff --stat origin/${BASE}...${state.headSha}\`: this PR's commits are already in the shared object store), then read only the files your decision needs, a few files' diff per command (\`git diff origin/${BASE}...${state.headSha} -- <files>\`), never the whole-PR diff at once: it overflows into a saved file you then read again. Never run the test suite or the gate — the merge gate runs them; test evidence = the test's \`file:line\`.`,
     `You need no database: the merge gate runs every test. Real env files (\`.env*\`) are never read (the guard refuses it), so never look in them for a URL or a secret; reason from the diff, the tests' code and the profile.`,
     `Checklist: ${PLUGIN}/skills/forge/reference.md §Inline review, plus the repo profile ${PROFILES}/forge.md — work every angle. Match the diff against the acceptance criteria of issue #${item.issue} (its issue-trust verdict) like a stranger: a green gate is not proof the AC are met. A diff that deletes tests: every control tested must still have a test that runs, otherwise = a finding.`,
-    'Finding = a defect that can be triggered with the input/state you name. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
+    'Finding = a defect that can be triggered with the input/state you name. Name its class (the rule broken) and give EVERY location of it in the diff in the where field, never one example. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
     C.redAreas
       ? `Run \`git fetch -q origin ${BASE}; ${C.redAreas} --ref ${state.headSha}\` and report its result as is: red_area_ran = true only when its JSON was printed.`
       : 'This repo has no red-area classifier: red_area_ran = true, red_areas = [].',
@@ -396,7 +396,7 @@ function reviewPrompt(item, state, reviewer, delta) {
     lines.push('Read the PR body\'s Attack plan section first (missing = a finding): every row has a test that exists and proves its scenario, both ways. Then review beyond it.')
   }
   if (delta) {
-    lines.push(`This is a RE-review: check only the commits after ${delta.sinceSha} against the findings below, and whether the fix opens a new defect:\n${listFindings(delta.findings)}`)
+    lines.push(`This is a RE-review: check only the commits after ${delta.sinceSha} against the findings below, whether the fix opens a new defect, and whether another instance of a fixed finding's class is left in the PR's diff:\n${listFindings(delta.findings)}`)
   }
   lines.push('comment_markdown, in the language CLAUDE.md sets for people (default English): what was checked, findings + their status, the decision. Never write the Notes heading — the script adds it from `notes`.')
   return lines.join('\n')
@@ -657,7 +657,7 @@ async function runItem(item) {
       const sinceSha = state.headSha
       r = await runWorker(fixer, {
         cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}`),
-        task: `Fix ALL of the review findings below. Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
+        task: `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed for every other instance of that class and fix those in the same round (never code the PR did not touch). Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
       })
       if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
       if (!absorb(r, fixer)) return noGuard(fixer)

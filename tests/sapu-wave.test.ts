@@ -383,6 +383,22 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(calls[1].prompt).not.toContain("HEAD:worktree-agent-a1b2");
   });
 
+  it("the fixer fixes the CLASS of a finding inside the PR's own diff, the full reviewer reports every location, the delta reviewer looks for a class left over", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(41)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(41, { head_sha: fixSha(c, n) });
+      return c.prompt.includes("RE-review") ? clean : finding(false); // the first round has a finding, the delta round is clean
+    });
+    const fixer = calls.find((c) => c.opts.phase === "Fix");
+    expect(fixer?.prompt).toContain("search the lines THIS PR changed for every other instance of that class");
+    expect(fixer?.prompt).toContain("never code the PR did not touch");
+    const reviews = calls.filter((c) => c.opts.phase === "Review");
+    expect(reviews.length).toBeGreaterThan(0);
+    for (const c of reviews) expect(c.prompt).toContain("Name its class (the rule broken) and give EVERY location of it in the diff in the where field, never one example");
+    const delta = calls.filter((c) => c.prompt.includes("RE-review"));
+    expect(delta.length).toBeGreaterThan(0);
+    for (const c of delta) expect(c.prompt).toContain("whether another instance of a fixed finding's class is left in the PR's diff");
+  });
+
   it("a handoff hands over what the last worker learned about files it left alone, and the next worker is told to trust it", async () => {
     const learned = ["apps/api/leave.service.ts:120-180 — balance is accrued daily", "packages/db/schema.prisma:2310 — LeaveBalance.accrued exists"];
     const { calls } = await runWave({ main: MAIN, items: [item(38)] }, (c, n) => {
