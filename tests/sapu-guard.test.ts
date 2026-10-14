@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
-import { BIG_READ_BYTES, checkBigRead, codeSearchCommand, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -4139,5 +4139,88 @@ describe("sapu-guard — the context budget of a ladder worker, on the step budg
     expect(refused(worker)).toEqual([5]);
     expect(worker[4]).toMatch(/CONTEXT BUDGET \(240k tokens\)/);
     expect(refused(Array.from({ length: 12 }, () => call("senior-dev-team:senior-qa-reviewer", "rv")))).toEqual([]);
+  });
+});
+
+describe("sapu-guard — code search first: a worker's searches wait for the repo's code search (opt-in, generic)", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-gate-")));
+  const state = join(box, "state");
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const git = (repo: string, ...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { stdio: "ignore" });
+  // `node` stands in for the code-search program: it is on every PATH the tests run on; `idx-absent` is on none.
+  const repo = (name: string, codeSearch: string | null, tuning: unknown = { codeSearchFirst: { refusals: 3 } }) => {
+    const r = join(box, name);
+    mkdirSync(join(r, ".claude/sapu"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    commitContract(r, { ...FIXTURE_CONTRACT, tuning });
+    writeFileSync(join(r, ".claude/sapu/worker.md"), `# worker\n\n## Setup\n\`npm ci\`\n\n${codeSearch ?? ""}\n## Teardown\n\`npm run teardown\`\n`);
+    const w = join(r, ".claude/worktrees/w");
+    git(r, "worktree", "add", "-q", "--detach", w);
+    return { r, w };
+  };
+  const G = repo("g", "## Code search\n\nRun first: `node find <terms>`.\n");
+  const gate = checkCodeSearchFirst as (i: Record<string, unknown>) => string | null;
+  let sid = 0;
+  const worker = (main = G.r, refusals = 3, agent_id = "a1") => {
+    const session_id = `gate-${++sid}`;
+    return (tool_name: string, tool_input: Record<string, unknown> = {}, ctx: unknown = null) => gate({ input: { session_id, agent_id, tool_name, tool_input }, ti: tool_input, ctx, main, refusals, dir: state });
+  };
+  const bash = (command: string): [string, Record<string, unknown>] => ["Bash", { command }];
+
+  it("tells a search from other work, and a search over a whole tree from one file", () => {
+    const s = searchShape as (c: string) => { search: boolean; wide: boolean };
+    for (const c of ["grep -rn foo apps/", "grep -nR foo .", "rg foo", "rg -n foo src", "cd /w && find . -name '*.ts'", "ag foo", "grep --recursive x ."]) expect(s(c), c).toEqual({ search: true, wide: true });
+    for (const c of ["grep -n foo a.ts", "rg foo a.ts", "egrep 'a|b' src/x.ts"]) expect(s(c), c).toEqual({ search: true, wide: false });
+    for (const c of ["npm test 2>&1 | grep FAIL", "git log | grep fix", "sed -n 1,5p a.ts", "git status", "cat a.ts"]) expect(s(c), c).toEqual({ search: false, wide: false });
+  });
+
+  it("refuses a worker's first search until it has run the code search, then lets it through", () => {
+    const go = worker(G.r, 20);
+    expect(go(...bash("grep -n foo a.ts"))).toMatch(/^before searching, run the repo's code search once: `node find <terms>`\./);
+    expect(go("Grep", { pattern: "x" })).toMatch(/before searching/);
+    expect(go("Glob", { pattern: "**/*.ts" })).toMatch(/before searching/);
+    expect(go("Bash", { command: "x" }, [{ command: "rg foo" }])).toMatch(/before searching/);
+    // other work is not a search
+    for (const c of [bash("git status"), bash("npm test 2>&1 | grep FAIL"), ["Read", { file_path: "a.ts" }], ["Edit", { file_path: "a.ts" }]] as [string, Record<string, unknown>][]) expect(go(...c), String(c[1].command ?? c[0])).toBeNull();
+    // the code search itself, alone or in a batch with a grep, ends the wait
+    const other = worker();
+    expect(other(...bash("cd /w && node find Invoice total; grep -n x a.ts"))).toBeNull();
+    expect(other(...bash("grep -n foo a.ts"))).toBeNull();
+  });
+
+  it("after the code search, only a search over a whole tree is refused; a file it names may be grepped", () => {
+    const go = worker(G.r, 20);
+    expect(go(...bash("node find Invoice"))).toBeNull();
+    expect(go(...bash("grep -n foo src/a.ts"))).toBeNull();
+    expect(go("Grep", { pattern: "x", path: "src/a.ts" })).toBeNull();
+    for (const c of ["grep -rn foo apps/", "rg foo", "find . -name '*.ts'"]) expect(go(...bash(c)), c).toMatch(/a search over a whole tree is what the repo's code search does in one call: `node find <terms>`/);
+    expect(go("Grep", { pattern: "x" })).toMatch(/whole tree/);
+    expect(go("Glob", { pattern: "**/*.ts" })).toMatch(/whole tree/);
+  });
+
+  it("can never lock a worker out: after `refusals` refusals the call goes through; each worker counts alone", () => {
+    const go = worker(G.r, 2);
+    expect([1, 2, 3, 4].map(() => go(...bash("grep -rn foo ."))).map((r) => (r ? 1 : 0))).toEqual([1, 1, 0, 0]);
+    expect(worker(G.r, 2, "a2")(...bash("grep -rn foo ."))).toMatch(/\(1 of 2; after that the call goes through\)/);
+  });
+
+  it("is off unless asked, and for a repo without a usable code search", () => {
+    expect(worker(G.r, 0)(...bash("grep -rn foo ."))).toBeNull(); // refusals 0 = off (the default)
+    const N = repo("n", "## Code search\n\nnone: no index here\n");
+    const P = repo("p", null);
+    const A = repo("a", "## Code search\n\nRun first: `idx-absent find <terms>`.\n"); // not installed here
+    for (const r of [N, P, A]) expect(worker(r.r)(...bash("grep -rn foo ."))).toBeNull();
+    expect(gate({ input: { session_id: "s", tool_name: "Bash", tool_input: {} }, ti: {}, main: null, refusals: 3, dir: state })).toBeNull();
+  });
+
+  it("decide() applies it to a ladder worker only, from the contract's tuning, and leaves a reviewer alone", () => {
+    const run = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+    const call = (agent_type: string, command: string, sid: string) => decide({ session_id: `${run}-${sid}`, agent_id: "w1", agent_type, tool_name: "Bash", tool_input: { command }, cwd: G.w });
+    expect(call("sapu:sapu-sonnet-medium", "grep -rn foo .", "d1")).toMatch(/before searching, run the repo's code search once/);
+    expect(call("sapu:sapu-sonnet-medium", "node find Invoice", "d1")).toBeNull();
+    expect(call("sapu:sapu-sonnet-medium", "grep -n foo a.ts", "d1")).toBeNull();
+    expect(call("senior-dev-team:senior-qa-reviewer", "grep -rn foo .", "d2")).toBeNull();
+    const D = repo("d", "## Code search\n\nRun first: `node find <terms>`.\n", {}); // no tuning key: off
+    expect(decide({ session_id: `${run}-d3`, agent_id: "w1", agent_type: "sapu:sapu-sonnet-medium", tool_name: "Bash", tool_input: { command: "grep -rn foo ." }, cwd: D.w })).toBeNull();
   });
 });

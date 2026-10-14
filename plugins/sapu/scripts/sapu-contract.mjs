@@ -781,7 +781,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -791,6 +791,7 @@ export function resolveTuning(c) {
   return {
     stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
     contextBudget: { ...DEFAULT_TUNING.contextBudget, ...(t.contextBudget || {}) },
+    codeSearchFirst: { ...DEFAULT_TUNING.codeSearchFirst, ...(t.codeSearchFirst || {}) },
     contextWindow: window,
     contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
   };
@@ -810,6 +811,14 @@ function tuningProblems(t) {
       for (const k of Object.keys(DEFAULT_TUNING[key])) if (k in s && !(Number.isInteger(s[k]) && s[k] >= 1)) errs.push(`tuning.${key}.${k} must be a whole number of ${unit}, at least 1`);
       const r = { ...DEFAULT_TUNING[key], ...s };
       if (key === "stepBudget" && Number.isInteger(r.hard) && Number.isInteger(r.soft) && r.hard < r.soft) errs.push("tuning.stepBudget.hard must not be below soft");
+    }
+  }
+  if ("codeSearchFirst" in t) {
+    const g = t.codeSearchFirst;
+    if (!g || typeof g !== "object" || Array.isArray(g)) errs.push("tuning.codeSearchFirst must be an object");
+    else {
+      known(g, "tuning.codeSearchFirst", Object.keys(DEFAULT_TUNING.codeSearchFirst));
+      if ("refusals" in g && !(Number.isInteger(g.refusals) && g.refusals >= 0)) errs.push("tuning.codeSearchFirst.refusals must be a whole number of refused calls per worker (0 = off)");
     }
   }
   if ("contextWindow" in t && !(Number.isInteger(t.contextWindow) && t.contextWindow >= 10_000)) errs.push("tuning.contextWindow must be a token count (the model's context window, at least 10000)");

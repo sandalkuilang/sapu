@@ -1558,9 +1558,9 @@ describe("tuning: what the engine derives from the machine and the model, and wh
 
   it("the step budget and the context limits default as before and follow `tuning`; the limits are fractions of the context window", () => {
     const d = resolveTuning(FIXTURE_CONTRACT);
-    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
     const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextBudget: { soft: 90_000 }, contextWindow: 200_000 } });
-    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.5 } } }).contextLimits).toEqual({ session: 500_000, phaseA: 600_000 });
   });
 
@@ -1572,6 +1572,10 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     [{ contextBudget: { every: 2.5 } }, /tuning\.contextBudget\.every must be a whole number/],
     [{ contextBudget: { hard: 10 } }, /tuning\.contextBudget: unknown key "hard"/],
     [{ contextBudget: 5 }, /tuning\.contextBudget must be an object/],
+    [{ codeSearchFirst: { refusals: -1 } }, /tuning\.codeSearchFirst\.refusals must be a whole number/],
+    [{ codeSearchFirst: { refusals: 1.5 } }, /tuning\.codeSearchFirst\.refusals must be a whole number/],
+    [{ codeSearchFirst: { first: true } }, /tuning\.codeSearchFirst: unknown key "first"/],
+    [{ codeSearchFirst: 3 }, /tuning\.codeSearchFirst must be an object/],
     [{ contextWindow: 5000 }, /tuning\.contextWindow must be a token count/],
     [{ contextLimits: { session: 75 } }, /tuning\.contextLimits\.session must be a fraction/],
     [{ workers: 8 }, /tuning: unknown key "workers"/],

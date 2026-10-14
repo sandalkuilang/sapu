@@ -189,7 +189,10 @@ uses `gateWorkers`. The cores are the host's (`os.cpus()`), not a container's cg
 CPU-limited container pass `--workers` yourself. What depends on the repo and the model is the optional `tuning` object, every key
 optional: `stepBudget` (`soft`, `every`, `hard`, `everyLate`: the guard's worker reminders, in tool
 calls), `contextBudget` (`soft`, default 200000: the worker context, in tokens, at which the same
-reminder comes; `every`, default 10: tool calls between its repeats), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
+reminder comes; `every`, default 10: tool calls between its repeats), `codeSearchFirst` (`refusals`, default 0 = off:
+with a number N, a ladder worker's first search is refused until it has run the command the profile's `## Code search` names,
+and a search over a whole tree after that, at most N times per worker; it applies only when that section names a command
+whose program is on `PATH`), `contextWindow` (the orchestrator model's context window, in tokens) and `contextLimits`
 (`session`, `phaseA`: fractions of that window where a session stops between waves, and where Phase
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.
@@ -820,7 +823,9 @@ could use them.
   `usage` in the tail of its own transcript: `agent_transcript_path`, else
   `<session>/subagents/agent-<agent_id>.jsonl` beside `transcript_path`, never the main session's)
   on every 5th counted call; from the call that first sees `tuning.contextBudget.soft`, it refuses
-  one call as a `CONTEXT BUDGET (<n>k tokens)` reminder, every `every` calls after. A step and a
+  one call as a `CONTEXT BUDGET (<n>k tokens)` reminder, every `every` calls after. `tuning.codeSearchFirst.refusals` > 0 adds a refusal of its own on the same path (the first search before the
+  profile's code search has run; later `grep -r`, `rg`, `find` and `Glob` over a tree), at most that many per worker, so it can
+  never lock one out; state is `gate-<session>-<agent>.json` beside the nudge files. A step and a
   context reminder due together refuse one call; a handoff command passes either. No transcript, or
   none readable, means no context reminder. The count
   needs the hook input's `agent_id` and a writable counter, and switches itself off without them, so

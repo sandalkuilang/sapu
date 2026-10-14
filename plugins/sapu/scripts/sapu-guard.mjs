@@ -3244,6 +3244,94 @@ export function nudge(input, dir = NUDGE_DIR) {
   return say;
 }
 
+// CODE SEARCH FIRST, enforced (opt-in: tuning.codeSearchFirst.refusals). Measured over a long sweep: the profile and
+// the brief both said "run the repo's code search first" and 11 of 4,183 worker calls did; a reminder changed nothing
+// (17 of 18 ignored). So the hook refuses: a worker's first search, until it has run the command `worker.md`
+// §Code search names; afterwards a search that sweeps a whole tree (grep -r, rg, find, Glob). A single-file grep stays.
+// Generic: it applies only where the profile names a command and that command's program is on PATH.
+const GATE_SEARCHERS = new Set([...SEARCHERS, "find"]);
+
+const onPath = (prog) =>
+  (process.env.PATH || "").split(path.delimiter).some((d) => {
+    try {
+      fs.accessSync(path.join(d, prog), fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+/** What a shell command's searches are: `search` (any grep-like or find at the head of a segment) and `wide` (one that sweeps a tree). */
+export function searchShape(command) {
+  let search = false;
+  let wide = false;
+  const segs = String(command).replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''").split(/&&|\|\||;|\n/).map((s) => s.trim()).filter(Boolean);
+  for (const seg of segs) {
+    const words = seg.split("|")[0].trim().split(/\s+/).filter((w) => !/^[A-Za-z_]\w*=/.test(w));
+    const prog = path.basename(words[0] || "");
+    if (!GATE_SEARCHERS.has(prog)) continue;
+    search = true;
+    const args = words.slice(1);
+    const operands = args.filter((a) => !/^-/.test(a) && a !== "''");
+    if (prog === "find") wide = true;
+    else if (prog === "rg" || prog === "ag" || prog === "ack") wide ||= !operands.some((a) => /\.[A-Za-z0-9]+$/.test(a));
+    else wide ||= args.some((a) => /^-[A-Za-z]*[rR]|^--recursive$/.test(a));
+  }
+  return { search, wide };
+}
+
+export const GATE_DEFAULT_REFUSALS = 3;
+
+/**
+ * Why a ladder worker's search is refused until it has used the repo's code search, or null. `refusals` is the
+ * cap per worker (0 = off): past it the call goes through, so the rule can never lock a worker out.
+ */
+export function checkCodeSearchFirst({ input, ti = {}, ctx = null, main, refusals, dir = NUDGE_DIR }) {
+  const tool = input.tool_name;
+  if (!refusals || !main || typeof input.session_id !== "string" || !input.session_id) return null;
+  const cmd = codeSearchCommand(main);
+  if (!cmd) return null;
+  const head = searchHead(cmd);
+  if (!onPath(head.split(/\s+/)[0])) return null;
+  const commands = ctx ? ctx.map((c) => c.command).filter((c) => typeof c === "string") : tool === "Bash" && typeof ti.command === "string" ? [ti.command] : [];
+  let search = false;
+  let wide = false;
+  if (tool === "Grep") {
+    search = true;
+    wide = !(typeof ti.path === "string" && /\.[A-Za-z0-9]+$/.test(ti.path));
+  } else if (tool === "Glob") search = wide = true;
+  else for (const c of commands) {
+    const sh = searchShape(c);
+    search ||= sh.search;
+    wide ||= sh.wide;
+  }
+  const file = path.join(dir, "gate-" + `${input.session_id}-${input.agent_id || ""}`.replace(/[^\w.-]/g, "_") + ".json");
+  let s = { used: false, refused: 0 };
+  try {
+    s = { ...s, ...JSON.parse(fs.readFileSync(file, "utf8")) };
+  } catch {}
+  const save = () => {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(s));
+    } catch {}
+  };
+  if (commands.some((c) => c.includes(head))) {
+    if (!s.used) {
+      s.used = true;
+      save();
+    }
+    return null;
+  }
+  if (!(s.used ? wide : search) || s.refused >= refusals) return null;
+  s.refused++;
+  save();
+  const left = `(${s.refused} of ${refusals}; after that the call goes through)`;
+  return s.used
+    ? `a search over a whole tree is what the repo's code search does in one call: \`${cmd}\`. Grep a file it names instead. ${left}`
+    : `before searching, run the repo's code search once: \`${cmd}\`. It answers where/who-calls in one call; then grep or read the files it names. ${left}`;
+}
+
 // ponytail: 24 KB is about 6k tokens, which every later turn re-sends; past it a ranged read is the
 // cheaper call. Images (an issue's screenshots, read whole by design) are exempt, so are the plugin's
 // own files and the repo's sapu contract and profiles, which a worker reads whole on purpose.
@@ -3907,6 +3995,8 @@ export function decide(input) {
   // A contract that exists but is broken stops every subagent. No contract at all stops a sapu
   // worker (it never works without one); other subagents keep the engine floor until /sapu:init lands.
   if (error && (!missing || SAPU_AGENT.test(input.agent_type || ""))) return `the repo's sapu contract is unreadable, so nothing is allowed: ${error}`;
+  const first = worker ? checkCodeSearchFirst({ input, ti, ctx, main, refusals: resolveTuning(contract).codeSearchFirst.refusals }) : null;
+  if (first) return first;
   return worker ? stepBudget({ main, agentId: input.agent_id, tool, command: ti.command, steps: rules.steps, context: rules.context, transcript: workerTranscript(input) }) : null;
 }
 
