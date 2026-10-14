@@ -640,8 +640,14 @@ A cleanup runs `node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-cleanup.mjs"` from the 
 The journey lane's run directories, `.argus/live/<runId>/` in the main checkout (a run's logs, its candidates' repros, RED tests and screenshots), are kept after `down` and nothing removes them: delete old ones yourself once the issues they evidence are settled.
 
 The script deletes a local branch only when both hold:
-- **It is one of sapu's own:** `<type>/issue-<N>-…` (a worker's branch), `worktree-wf_*`, `worktree-agent-*` or `sapu-*`.
+- **It is one of sapu's own:** `<type>/issue-<N>-…` (a worker's branch, `wip/issue-<N>-…` handoff snapshots included), `worktree-wf_*`, `worktree-agent-*` or `sapu-*`.
 - **Every commit of it is proven merged:** its tip is in the base branch, or its tip is (or is an ancestor of) the head of a PR merged into the base. Nothing weaker counts: a merged PR with the same name or a closed issue would lose a reused name, a later local commit or a second attempt. Every deleted branch keeps its tip under `refs/sapu-trash/<branch>` (hidden from `git branch`; `git branch <name> refs/sapu-trash/<name>` brings it back).
+
+Two more kinds of branch never get a merged PR, so they pile up on the remote; the script deletes them (the remote branch, and a local copy with the same tip) with a proof of their own:
+- **A closed, unmerged PR's head** (a superseded attempt): the branch tip is still that PR's head, and every issue the PR or the branch name links is closed (completed or not planned), or a merged PR closes one of them.
+- **A branch no PR names** (a `wip: handoff` snapshot, a workflow branch): every commit in `origin/<base>..<tip>` other than a `wip: handoff` one has its subject (at least 12 characters) in a commit message of the base, which a squash merge leaves behind, and the issues it names (in its branch name, else in its commit messages) are all closed. A commit not found in the base keeps the branch.
+
+Neither is deleted while any worktree has the branch checked out, while the local and remote tips differ, or while an open PR uses it. The plan (no `--apply`) lists each candidate with its proof and deletes nothing. A deleted remote branch keeps its tip under `refs/sapu-trash/<branch>`; `git push origin refs/sapu-trash/<branch>:refs/heads/<branch>` brings it back.
 
 It never touches the base branch, the branch the main checkout is on, a branch with an open PR, or a branch it cannot prove merged. A branch's worktree is removed only when it has no uncommitted or untracked change, no ignored env file (`.env*`), no agent memory written inside it, is not the script's own directory and saw no git activity in the last hour (never `--force`); otherwise the branch stays too. The agent-memory link Claude Code puts in a worktree (set up by `/sapu:init`) is not a change: removing the worktree removes only the link. With policy `cleanup: "never"` the script refuses to run.
 
