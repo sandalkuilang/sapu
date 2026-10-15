@@ -179,7 +179,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 ```
 
 **Version coupling.** `mergeMethod`, `host`, `tuning` and `guard.databases` need plugin
-**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**; `gate.diff` and `gate.testFiles` need the plugin that introduced them. An older plugin refuses them as unknown keys: the
+**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**; `gate.diff` and `gate.testFiles` plugin **≥ 2.22.0**. An older plugin refuses them as unknown keys: the
 contract reads as broken, and the guard then blocks every subagent.
 
 ### Tuning
