@@ -19,6 +19,11 @@
 //   - a first implementation is two phases: a read-only scout writes a capped plan, then a FRESH builder
 //     of the same tier starts from it (the exploration residue never rides along); a scout ESCALATE
 //     goes up the ladder with no builder; fix cycles and escalated workers stay single-phase;
+//   - big work is sliced: when the scout's plan names `slices` (ordered; scout-brief.md says when), the Implement step runs
+//     once per slice, each a FRESH builder continuing from the previous one's head SHA and told only its own slice; only the
+//     last opens the PR (earlier ones commit + push and return `slice_done`). Handoff limits apply per slice. 0-1 slice = one builder;
+//   - a fix round with many findings across files (more than FIX_GROUP_MIN_FINDINGS, over 1 file) runs one fixer per file group,
+//     in turn, then ONE delta re-review over all of them; the cycle count is per review round, not per group;
 //   - a worker past its step or context budget hands off to a fresh agent of the same tier while each
 //     handoff brings a new commit: two in a row without one = blocked, and never past MAX_HANDOFFS;
 //   - the guard hook must answer the canary, or the item stops.
@@ -81,8 +86,9 @@ const MAX_FIX_CYCLES_RED = 5
 // and its whole claim, normalised. Wrongly "the same" would block a PR whose findings were fixed, so
 // it errs the other way: a re-worded repeat counts as new (MAX_FIX_CYCLES_RED still bounds the loop).
 let uncomparable = 0
+const fileOf = (f) => String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/\s+line\s+\d+.*$/, '').replace(/#l\d+.*$/, '').replace(/:l?\d+.*$/, '').trim()
 const findingKey = (f) => {
-  const file = String(f.file_line).toLowerCase().replace(/\s*\(line[^)]*\)/g, '').replace(/\s+line\s+\d+.*$/, '').replace(/#l\d+.*$/, '').replace(/:l?\d+.*$/, '').trim()
+  const file = fileOf(f)
   const claim = String(f.claim).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
   return claim ? `${file}|${claim}` : `${file}|#${++uncomparable}` // no comparable claim: never "the same" as any other
 }
@@ -91,6 +97,12 @@ const findingKey = (f) => {
 // and hands off. A handoff with a new commit is progress and continues; two in a row without one
 // is a stall (blocked); MAX_HANDOFFS is the ceiling against a runaway loop.
 const MAX_HANDOFFS = 5
+// Slices the scout may name for one issue (scout-brief.md decides when to slice): past this the first MAX_SLICES are built and the
+// trail says so; more builders in a row is a sign the issue should have been split into issues. The scout's strings are capped before they enter a prompt.
+const MAX_SLICES = 6
+// A fix round goes to one fixer per file group only when it has more findings than one fixer finishes in its step budget AND they
+// span more than one file; a handful of findings stay with one fixer (it sees the whole class at once, and a group costs a start-up).
+const FIX_GROUP_MIN_FINDINGS = 6
 // What a handoff worker learned about files it read and left alone: the next worker is told to trust it, so
 // each line is capped (a long answer is the model's, not data) and a malformed one is dropped.
 const LEARNED_MAX = 12
@@ -198,7 +210,7 @@ const specialistFor = (areas) => {
 const WORKER_SCHEMA = {
   type: 'object',
   properties: {
-    status: { type: 'string', enum: ['pr_opened', 'escalate', 'blocked', 'handoff'] },
+    status: { type: 'string', enum: ['pr_opened', 'escalate', 'blocked', 'handoff', 'slice_done'] }, // slice_done: a non-last slice committed + pushed, no PR (the prompt says so)
     guard_active: { type: 'boolean', description: 'true only if `echo sapu-guard-canary` was BLOCKED by the hook' },
     step_budget: { type: 'string', description: 'the step_budget the canary\'s block message told you to report ("counting" or "off: …"); "off: canary not blocked" when it was not' },
     pr_number: { type: 'integer', description: '0 when no PR was opened' },
@@ -236,6 +248,14 @@ const SCOUT_SCHEMA = {
     plan_path: { type: 'string', description: 'the absolute path of your plan file ($TMPDIR expanded); "" when you wrote none' },
     plan_bytes: { type: 'integer', description: '`wc -c` of the plan file after your last write; 0 when none' },
     trivial: { type: 'boolean', description: 'true only when the whole fix is written out in the plan itself' },
+    slices: {
+      type: 'array', description: 'optional, in build order: only when the work is too big for one builder (scout-brief.md point 3); the plan has a "## Slice k: <title>" section per slice. Omit for one builder.',
+      items: { type: 'object', required: ['title', 'files', 'plan_section'], properties: {
+        title: { type: 'string' }, files: { type: 'array', items: { type: 'string' } },
+        plan_section: { type: 'string', description: 'the exact heading of this slice\'s section in your plan file' },
+        note: { type: 'string', description: 'one line: what this slice leaves for the later ones' },
+      } },
+    },
     escalate_question: WORKER_SCHEMA.properties.escalate_question,
     escalate_at: WORKER_SCHEMA.properties.escalate_at,
     blocked_reason: WORKER_SCHEMA.properties.blocked_reason,
@@ -390,6 +410,18 @@ function continueOn(state) {
     ? `then \`git push origin HEAD:${state.branch}\` (without force)${state.pr ? `; PR #${state.pr} already exists, never open a new PR` : '; no PR yet: open one as usual'}`
     : 'then create your own forge branch (brief point 1) before you push and open the PR'
   return `Take over the previous work in your new worktree: \`git reset --hard ${state.headSha}\`, do the work, ${push}.`
+}
+
+// The task of one slice's builder: only its part of the plan, what is already committed, and whether it opens the PR.
+function sliceTask(sl, slices, i) {
+  const last = i === slices.length - 1
+  return [
+    `This issue is built in ${slices.length} slices, one fresh builder each. Yours is slice ${i + 1}/${slices.length}: "${sl.title}"${sl.files.length ? ` (files: ${sl.files.join(', ')})` : ''}${sl.note ? `. ${sl.note}` : ''}.`,
+    `Of the plan read only its ## Goal and ${sl.section ? `the section "${sl.section}"` : 'your slice\'s section'}, not the other slices' sections. Do this slice only; the tests it adds or touches must pass.`,
+    i ? `Earlier slices are done and committed on the branch: ${slices.slice(0, i).map((x) => x.title).join('; ')}.` : '',
+    last ? 'You are the last slice: when it is done, open the PR for the WHOLE issue (it covers every slice) as the brief says.'
+      : 'Commit and push to your branch (without force) and open NO PR: a later slice does. Return status "slice_done" with branch and head_sha.',
+  ].filter(Boolean).join('\n')
 }
 
 function reviewPrompt(item, state, reviewer, delta) {
@@ -569,7 +601,7 @@ async function runItem(item) {
   // `task` = the step's own instructions; `cont` = the first agent already takes over existing work.
   // A handoff that committed nothing since the previous one is a stall: two in a row → blocked;
   // MAX_HANDOFFS bounds a run that keeps committing.
-  const runWorker = async (who, { task, cont, step, phase, label }) => {
+  const runWorker = async (who, { task, cont, step, phase, label, pr = true }) => {
     let r = null
     let stalls = 0
     let prev = state.headSha || ''
@@ -577,7 +609,7 @@ async function runItem(item) {
       const extra = h
         ? [continueOn(state), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, learnedLines(r).length ? `Files it read and did not change (path:lines — what matters). Trust these and open one only to change it:\n${learnedLines(r).map((l) => '- ' + l).join('\n')}` : '', task].filter(Boolean).join('\n')
         : cont ? `${continueOn(state)}\n${task}` : task
-      r = await testSlot(() => agent(workerPrompt(item, state, who, extra, step.startsWith('Implement')), opts(who, {
+      r = await testSlot(() => agent(workerPrompt(item, state, who, extra, pr && step.startsWith('Implement')), opts(who, {
         isolation: 'worktree', schema: WORKER_SCHEMA, phase, label: h ? `${label} · handoff ${h}` : label,
       })))
       trailRow(state, h ? `${step} (handoff ${h})` : step, who, workerResult(r))
@@ -599,6 +631,11 @@ async function runItem(item) {
   const sc = await agent(scoutPrompt(item, state), opts(scoutAgent, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(scoutAgent), 'scout') }))
   const plan = planLine(sc, state.id)
   trailRow(state, 'Scout', scoutAgent, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
+  // Slices need a usable plan (the builder reads its slice's section); malformed entries are dropped, the rest capped.
+  const clip = (x, n) => String(x ?? '').trim().slice(0, n)
+  const named = plan && sc && sc.status === 'planned' && Array.isArray(sc.slices) ? sc.slices.filter((x) => x && typeof x.title === 'string' && x.title.trim()) : []
+  const slices = named.slice(0, MAX_SLICES).map((x) => ({ title: clip(x.title, 100), section: clip(x.plan_section, 100), files: (Array.isArray(x.files) ? x.files : []).filter((f) => typeof f === 'string').slice(0, 12).map((f) => clip(f, 120)), note: clip(x.note, 300) }))
+  if (named.length > 1) trailRow(state, 'Slices', scoutAgent, named.length > MAX_SLICES ? `${named.length} named, built the first ${MAX_SLICES} only` : `${named.length} slices`)
   let question = null
   if (sc) {
     if (!audit(sc, scoutAgent)) return noGuard(scoutAgent)
@@ -607,11 +644,25 @@ async function runItem(item) {
   }
   // 2. implement, with at most one escalation step up the ladder
   let r
-  if (!question) {
-    r = await runWorker(state.worker, { step: 'Implement', phase: 'Implement', label: tag(item, effortOf(state.worker)), task: plan })
+  // One slice or none = one builder. Several: a fresh builder per slice, in order, each continuing from the last head SHA.
+  const sliced = slices.length > 1
+  let left = [] // the slices an ESCALATE leaves unfinished: the escalated worker takes them all
+  for (let i = 0; !question && i < (sliced ? slices.length : 1); i++) {
+    const sl = sliced ? slices[i] : null
+    const last = !sliced || i === slices.length - 1
+    const name = sl ? `slice ${i + 1}/${slices.length}` : ''
+    const before = state.headSha
+    r = await runWorker(state.worker, {
+      step: sl ? `Implement ${name}` : 'Implement', phase: 'Implement', label: tag(item, effortOf(state.worker), name), cont: i > 0, pr: last,
+      task: sl ? [plan, sliceTask(sl, slices, i)].join('\n') : plan,
+    })
     if (!r) return done('died', { reason: 'worker returned nothing; before a retry look for its PR with `gh pr list --head <branch> --json number,isCrossRepository` — only a same-repo PR that `sapu-contract.mjs pr-trust <N>` passes is its (a fork can use any branch name)' })
     if (!absorb(r, state.worker)) return noGuard(state.worker)
-    if (r.status === 'escalate') question = `${r.escalate_question} — ${r.escalate_at || '?'}`
+    if (r.status === 'escalate') { question = `${r.escalate_question} — ${r.escalate_at || '?'}`; left = sliced ? slices.slice(i) : [] }
+    else if (!last) {
+      if (r.status === 'blocked') return done('blocked', { reason: `${name}: ${r.blocked_reason || 'worker reported blocked'}` })
+      if (state.headSha === before) return done('blocked', { reason: `${name} committed nothing (status ${r.status})` })
+    }
   }
   if (question) {
     if (state.worker === CEILING) return done('blocked', { reason: `ESCALATE from the top of the ladder${CEILING === LADDER[LADDER.length - 1] ? '' : ' (tuning.workerCeiling)'}: ${question}` })
@@ -619,7 +670,7 @@ async function runItem(item) {
     state.worker = stepUp(state.worker)
     r = await runWorker(state.worker, {
       cont: true, step: 'Implement (escalated)', phase: 'Implement', label: tag(item, effortOf(state.worker), 'escalated'),
-      task: [`The previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`, plan].filter(Boolean).join('\n'),
+      task: [`The previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`, left.length ? `The issue was built in slices; these are not finished (their sections are in the plan), do them all yourself in order, then open the PR: ${left.map((x) => x.title).join('; ')}` : '', plan].filter(Boolean).join('\n'),
     })
     if (!r) return done('died', { reason: 'escalated worker returned nothing' })
     if (!absorb(r, state.worker)) return noGuard(state.worker)
@@ -674,18 +725,26 @@ async function runItem(item) {
       if (why) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
       before = keys.size
       state.cycles++
-      let fixer = rv.findings.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
-      if (state.tier === 'red' && !WORKER_TIER) fixer = atLeast(fixer, RED_FLOOR)
       const sinceSha = state.headSha
-      r = await runWorker(fixer, {
-        cont: true, step: `Fix ${state.cycles}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}`),
-        task: `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed for every other instance of that class and fix those in the same round (never code the PR did not touch). Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(rv.findings)}`,
-      })
-      if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}` })
-      if (!absorb(r, fixer)) return noGuard(fixer)
-      if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}` })
-      if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}` })
-      if (refusal(r)) return prRefused(refusal(r))
+      // Many findings over several files go to one fixer per file, in turn; a fixer's context grows with every file it opens.
+      const byFile = new Map()
+      for (const f of rv.findings) byFile.set(fileOf(f), [...(byFile.get(fileOf(f)) || []), f])
+      const groups = rv.findings.length > FIX_GROUP_MIN_FINDINGS && byFile.size > 1 ? [...byFile.values()] : [rv.findings]
+      for (const [g, fs] of groups.entries()) {
+        const sinceGroup = state.headSha
+        let fixer = fs.some((f) => f.invariant_domain) ? stepUp(state.worker) : state.worker
+        if (state.tier === 'red' && !WORKER_TIER) fixer = atLeast(fixer, RED_FLOOR)
+        const part = groups.length > 1 ? ` (group ${g + 1}/${groups.length})` : ''
+        r = await runWorker(fixer, {
+          cont: true, step: `Fix ${state.cycles}${part}`, phase: 'Fix', label: tag(item, effortOf(fixer), `fix ${state.cycles}${part}`),
+          task: `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch). Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(fs)}`,
+        })
+        if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}${part}` })
+        if (!absorb(r, fixer)) return noGuard(fixer)
+        if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}${part}` })
+        if (state.headSha === sinceGroup) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}${part}` })
+        if (refusal(r)) return prRefused(refusal(r))
+      }
       rv = await reviewWithRaise(item, state, { sinceSha, findings: rv.findings })
       if (rv.dead) return done('died', { reason: deadReviewers(rv.dead, `delta reviewer in cycle ${state.cycles}`) })
       if (rv.untrusted) return distrusted(rv.untrusted)

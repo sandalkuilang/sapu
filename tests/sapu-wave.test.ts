@@ -1297,3 +1297,152 @@ describe("sapu-wave — the repo's pre-PR command (policy.prePr): fresh rounds u
     expect(calls[0].prompt).toMatch(/Leave no trace of sapu/);
   });
 });
+
+// ---- #84 slices and #85 fixer groups ---------------------------------------------------------------
+const sliceList = (n: number) => Array.from({ length: n }, (_, i) => ({ title: `part ${i + 1}`, files: [`f${i + 1}.ts`], plan_section: `## Slice ${i + 1}: part ${i + 1}`, note: `n${i + 1}` }));
+const slicedScout = (n: number) => (c: Call) => planned(c, { slices: sliceList(n) });
+const implementCalls = (calls: Call[]) => calls.filter((c) => c.opts.phase === "Implement");
+const stepNames = (r: Item) => (r.trail as string[][]).map((t) => t[0]);
+const multi = (files: string[], per = 1) => ({
+  ...clean,
+  verdict: "findings",
+  notes: [],
+  findings: files.flatMap((f) => Array.from({ length: per }, (_, k) => ({ file_line: `${f}:${k + 1}`, claim: `c ${f} ${k}`, failure_scenario: "f", invariant_domain: false }))),
+  comment_markdown: "found",
+});
+
+describe("sapu-wave — sliced implementation (#84)", () => {
+  it("3 slices: 3 builders in order, each continuing from the last SHA, the PR only from the last", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(60)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n < 3 ? opened(60, { status: "slice_done", pr_number: 0, pr_url: "", head_sha: `sha-s${n}` }) : opened(60, { head_sha: "sha-s3" });
+    }, slicedScout(3));
+    const impl = implementCalls(calls);
+    expect(impl).toHaveLength(3);
+    expect(impl[0].prompt).toContain("slice 1/3");
+    expect(impl[0].prompt).not.toContain("git reset --hard");
+    expect(impl[1].prompt).toContain("git reset --hard sha-s1");
+    expect(impl[2].prompt).toContain("git reset --hard sha-s2");
+    expect(impl[1].prompt).toContain("Earlier slices are done and committed on the branch: part 1");
+    expect(impl[1].prompt).toContain('"## Slice 2: part 2"');
+    expect(impl[1].prompt).not.toContain("part 3");
+    expect(impl[0].prompt).toContain("open NO PR");
+    expect(impl[1].prompt).toContain("open NO PR");
+    expect(impl[2].prompt).toContain("open the PR for the WHOLE issue");
+    expect(impl[2].prompt).not.toContain("open NO PR");
+    expect(impl[0].opts.label).toContain("slice 1/3");
+    expect(out[0].trail).toEqual(expect.arrayContaining([
+      ["Slices", "sapu:sapu-sonnet-medium", "sonnet/medium", "3 slices"],
+      ["Implement slice 1/3", "sapu:sapu-sonnet-medium", "sonnet/medium", "slice_done"],
+      ["Implement slice 3/3", "sapu:sapu-sonnet-medium", "sonnet/medium", `pr_opened PR #${1060}`],
+    ]));
+    expect(out[0]).toMatchObject({ status: "ready", pr: 1060 });
+  });
+
+  it("one slice, or none: exactly one builder with the plain plan task", async () => {
+    for (const scout of [slicedScout(1), (c: Call) => planned(c)]) {
+      const { out, calls } = await runWave({ main: MAIN, items: [item(61)] }, (c) => (c.opts.phase === "Review" ? clean : opened(61)), scout);
+      const impl = implementCalls(calls);
+      expect(impl).toHaveLength(1);
+      expect(impl[0].prompt).not.toContain("slice");
+      expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review"]);
+    }
+  });
+
+  it("more slices than the maximum: the first 6 are built and the trail says so", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(62)] }, (c, n) =>
+      c.opts.phase === "Review" ? clean : n < 6 ? opened(62, { status: "slice_done", pr_number: 0, head_sha: `sha-s${n}` }) : opened(62, { head_sha: "sha-s6" }), slicedScout(9));
+    expect(implementCalls(calls)).toHaveLength(6);
+    expect(implementCalls(calls)[5].prompt).toContain("slice 6/6");
+    expect(out[0].trail).toContainEqual(["Slices", "sapu:sapu-sonnet-medium", "sonnet/medium", "9 named, built the first 6 only"]);
+  });
+
+  it("a handoff inside a slice continues the SAME slice with a fresh builder, then the next slice follows", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(63)] }, (c) => {
+      if (c.opts.phase === "Review") return clean;
+      const slice = Number(/slice (\d)\/2/.exec(c.prompt)?.[1]);
+      if (slice === 1) return c.prompt.includes("handed off") ? opened(63, { status: "slice_done", pr_number: 0, head_sha: "sha-s1" }) : opened(63, { status: "handoff", pr_number: 0, head_sha: "sha-h1", handoff_note: "half" });
+      return opened(63, { head_sha: "sha-s2" });
+    }, slicedScout(2));
+    const impl = implementCalls(calls);
+    expect(impl).toHaveLength(3);
+    expect(impl[1].prompt).toContain("handed off");
+    expect(impl[1].prompt).toContain("slice 1/2");
+    expect(impl[2].prompt).toContain("slice 2/2");
+    expect(impl[2].prompt).toContain("git reset --hard sha-s1");
+    expect(stepNames(out[0])).toContain("Implement slice 1/2 (handoff 1)");
+    expect(out[0].status).toBe("ready");
+  });
+
+  it("a non-last slice that commits nothing, or is blocked, stops the item", async () => {
+    const same = await runWave({ main: MAIN, items: [item(64)] }, () => opened(64, { status: "slice_done", pr_number: 0, head_sha: "sha-a" }), slicedScout(3));
+    expect(same.out[0]).toMatchObject({ status: "blocked" });
+    expect(String(same.out[0].reason)).toContain("slice 2/3 committed nothing");
+    expect(implementCalls(same.calls)).toHaveLength(2);
+    const blocked = await runWave({ main: MAIN, items: [item(65)] }, () => opened(65, { status: "blocked", pr_number: 0, blocked_reason: "no db" }), slicedScout(3));
+    expect(blocked.out[0]).toMatchObject({ status: "blocked", reason: "slice 1/3: no db" });
+  });
+
+  it("an escalate in a slice goes up the ladder and the escalated worker takes the unfinished slices", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(66)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      if (n === 1) return opened(66, { status: "slice_done", pr_number: 0, head_sha: "sha-s1" });
+      if (n === 2) return opened(66, { status: "escalate", pr_number: 0, escalate_question: "which?", escalate_at: "x.ts:1", head_sha: "sha-s1b" });
+      return opened(66, { head_sha: "sha-end" });
+    }, slicedScout(3));
+    const impl = implementCalls(calls);
+    expect(impl).toHaveLength(3);
+    expect(impl[2].opts.agentType).toBe("sapu:sapu-sonnet-high");
+    expect(impl[2].prompt).toContain("part 2; part 3");
+    expect(impl[2].prompt).not.toContain("part 1;");
+    expect(out[0]).toMatchObject({ status: "ready", escalated: true });
+  });
+});
+
+describe("sapu-wave — one fixer per file group (#85)", () => {
+  const shaOf = (c: Call, n: number) => (c.opts.phase === "Fix" ? `sha-g${n}` : "sha-a");
+
+  it("findings across 3 files (more than 6): 3 fixers in turn, each from the last SHA, then ONE delta review; one cycle", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(70)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? multi(["a.ts", "b.ts", "c.ts"], 3) : clean) : opened(70, { head_sha: shaOf(c, n) }));
+    const fixes = calls.filter((c) => c.opts.phase === "Fix");
+    expect(fixes).toHaveLength(3);
+    expect(fixes[0].prompt).toContain("git reset --hard sha-a");
+    expect(fixes[1].prompt).toContain("git reset --hard sha-g1");
+    expect(fixes[2].prompt).toContain("git reset --hard sha-g2");
+    expect(fixes[0].prompt).toContain("a.ts:1");
+    expect(fixes[0].prompt).not.toContain("b.ts:");
+    expect(fixes[0].prompt).toContain("in a.ts (other files have their own fixer)");
+    const reviews = calls.filter((c) => c.opts.phase === "Review");
+    expect(reviews).toHaveLength(2);
+    expect(reviews[1].prompt).toContain("commits after sha-a"); // the delta covers every group
+    expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review", "Fix 1 (group 1/3)", "Fix 1 (group 2/3)", "Fix 1 (group 3/3)", "Review (delta)"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 1 });
+  });
+
+  it("the tier rule applies per group: only the group with an invariant-domain finding steps up", async () => {
+    const rev = multi(["a.ts", "b.ts"], 4);
+    rev.findings[5].invariant_domain = true; // a b.ts finding
+    const { calls } = await runWave({ main: MAIN, items: [item(71)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? rev : clean) : opened(71, { head_sha: shaOf(c, n) }));
+    expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
+  });
+
+  it("few findings (6 or fewer), or all in one file: one fixer, as before", async () => {
+    for (const rev of [multi(["a.ts", "b.ts", "c.ts"], 2), multi(["a.ts"], 8)]) {
+      const { out, calls } = await runWave({ main: MAIN, items: [item(72)] }, (c, n) =>
+        c.opts.phase === "Review" ? (n === 1 ? rev : clean) : opened(72, { head_sha: shaOf(c, n) }));
+      expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(1);
+      expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).not.toContain("other files have their own fixer");
+      expect(stepNames(out[0])).toContain("Fix 1");
+    }
+  });
+
+  it("a group that pushes no new commit stops the item before the next group", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(73)] }, (c) =>
+      c.opts.phase === "Review" ? multi(["a.ts", "b.ts", "c.ts"], 3) : opened(73, { head_sha: c.opts.phase === "Fix" ? "sha-g1" : "sha-a" }));
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(2); // group 2 repeats group 1's SHA
+    expect(out[0]).toMatchObject({ status: "blocked" });
+    expect(String(out[0].reason)).toContain("group 2/3");
+  });
+});
