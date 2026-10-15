@@ -138,6 +138,8 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
     "summaryStart": "^Gate summary",    // regex: the gate log from this line down = the summary in the merge comment
     "redIf": "^⊘.*(migration-drift)",   // optional, null = none: a matching summary line = red even on exit 0
     "infra": "pg_isready -h localhost -p 5432", // optional key: a quick, read-only probe (no background process holding its output) that exits 0 when the test infrastructure is up; every wave-args runs it in <MAIN> and refuses a lane while it fails
+    "diff": "scripts/gate-diff.sh",     // optional: the part of the merge gate the worker's diff touches (the repo selects); the worker runs it before its PR, in its worktree, with SAPU_BASE=<baseBranch> (so `git diff origin/$SAPU_BASE...HEAD`); never replaces gate.fast; must differ from gate.merge
+    "testFiles": "npx vitest run",      // optional: what `sapu-merge.sh <PR> --alone` runs; the failing test files of the PR's last red gate are appended as arguments (§--alone)
     "smokeCheck": true                  // OPTIONAL (default false): sapu-merge.sh also gates on the argus smoke suite's CI run (§The smoke check)
   },
 
@@ -177,7 +179,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 ```
 
 **Version coupling.** `mergeMethod`, `host`, `tuning` and `guard.databases` need plugin
-**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**. An older plugin refuses them as unknown keys: the
+**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**; `gate.diff` and `gate.testFiles` plugin **≥ 2.22.0**. An older plugin refuses them as unknown keys: the
 contract reads as broken, and the guard then blocks every subagent.
 
 ### Tuning
@@ -549,7 +551,7 @@ MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `b
 
 ### Merge hooks
 
-`gate.merge` and `mergeAfter` are run by `sapu-merge.sh` with this env:
+`gate.merge`, `mergeAfter` and `gate.testFiles` (`--alone`) are run by `sapu-merge.sh` with this env:
 
 | Env | Content |
 |---|---|
@@ -561,6 +563,15 @@ MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `b
 | `SAPU_OUTCOME` | `mergeAfter` only: `merged` or `not-merged` |
 | `SAPU_FF_OK` | `mergeAfter` only: `1` when the main checkout was fast-forwarded |
 | `SAPU_MAIN_OLD_HEAD` | `mergeAfter` only: the main checkout's HEAD before the fast-forward |
+
+**`--alone`** (`sapu-merge.sh <PR> --alone [--workers N]`, SKILL.md A5's "red files pass alone"): on the kept
+worktree of the PR's last red gate, and only while its tree is still the one that gate ran on, it runs
+`gate.testFiles` with that gate's `failed=` test files appended as arguments (cwd = the worktree; the same
+protected-word rules as `gate.merge`), and appends `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red|setup-failed`
+to `<MAIN>/.git/sapu-gates.log`. Exit 0 = green, 2 = red, 1 = `setup-failed` (`gate.testFiles` exited 75: it does its own setup/teardown and could not start, not a verdict); a dirty worktree is refused; it merges, pushes and comments nothing, and needs
+no review comment. The line's 4th field is `alone`, not `green|red`, so it is no gate run: the flake verdict
+(proof must come from ANOTHER PR's red-then-green on one tree) and the scorecard's gate count ignore it.
+`gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` is only for `--alone`.
 
 `gate.merge`: exit 0 = green. It may prepare dependencies/DB in the PR worktree before running
 its gate. All its output goes to the log. **Exit 75** (`EX_TEMPFAIL`) means the gate could not even

@@ -137,6 +137,11 @@ describe("gates log", () => {
     expect(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual({ runs: 4, red: 2, knownFlake: 1, setupFailed: 1, minutes: 20.6 });
     expect(gatesInWindow("", "a", "z")).toEqual({ runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 });
   });
+
+  it("does not count sapu-merge.sh --alone lines as gate runs", () => {
+    const alone = "2026-10-01T01:05:00Z 3081 aaa alone gate=30s failed=a.test.ts tree=t alone=green";
+    expect(gatesInWindow(`${log}\n${alone}`, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z"));
+  });
 });
 
 describe("wall-clock", () => {

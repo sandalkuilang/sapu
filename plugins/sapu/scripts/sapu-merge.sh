@@ -10,6 +10,7 @@
 #
 # USAGE (from the main checkout or any of its worktrees)
 #   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]
+#   sapu-merge.sh <PR> --alone [--workers N]
 #
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
 #                          "Notes (recorded, not filed)". The gate summary is appended to a
@@ -19,6 +20,11 @@
 #                          worker is running tests).
 #   --smoke-wait M         with the contract's gate.smokeCheck: the minutes to wait, after the gate, for an
 #                          argus smoke run on the PR's head that is still running (default 90; 0 = do not wait).
+#   --alone                SKILL.md A5's "red files pass alone" check, scripted so its result reaches the gates log: on the
+#                          kept worktree of PR's LAST red gate (same tree, else refused), run ONLY that gate's failing test
+#                          files through the contract's gate.testFiles (the files are appended as arguments), and append
+#                          `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red` to the gates log.
+#                          Exit 0 = green, 2 = red. Merges, pushes and relabels nothing; takes no review comment.
 #   --dry-run              run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, smoke check, worktree resolution) and print the plan; no
 #                          side effects besides fetching origin/<base>, which the checks read.
@@ -69,18 +75,20 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
     --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
+    --alone) ALONE=1; shift ;;
     -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
   esac
 done
-[ -n "$PR" ] && [ -n "$COMMENT_FILE" ] || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]"
+[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run] | <PR> --alone [--workers N]"
+[ "$ALONE" = 0 ] || { [ -z "$COMMENT_FILE" ] && [ "$DRY" = 0 ] || die "--alone takes no review comment file and no --dry-run"; }
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
 case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
 command -v jq >/dev/null || die "jq is required"
@@ -153,8 +161,12 @@ protect() { # <command>
   (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
 }
 P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
-P_AFTER=""; P_RED=""
+P_AFTER=""; P_RED=""; P_ALONE=""
 if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
+if [ "$ALONE" = 1 ]; then
+  [ -n "$(cget .gate.testFiles)" ] || die "--alone needs gate.testFiles in the contract on origin/$BASE (CONTRACT.md): the command that runs the failing test files, which are appended to it"
+  P_ALONE="$(protect "$(cget .gate.testFiles)")" || die "cannot read which file gate.testFiles runs (see above)"
+fi
 if [ -n "$RED_AREAS" ]; then P_RED="$(protect "$RED_AREAS")" || die "cannot read which file redAreas runs (see above)"; fi
 
 # The repo path a protected command pins, or nothing.
@@ -189,7 +201,7 @@ run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
 main_mismatch() {
   local -a p=("$CONTRACT_FILE") bad=()
   local c x r have ok
-  for c in "$P_GATE" "$P_AFTER" "$P_RED"; do
+  for c in "$P_GATE" "$P_AFTER" "$P_RED" "$P_ALONE"; do
     x="$(protected_path "$c")"
     [ -z "$x" ] || p+=("$x")
   done
@@ -260,8 +272,9 @@ NWO="$(gh repo view "$REPO" --json nameWithOwner -q .nameWithOwner 2>/dev/null |
 [ "$NWO" = "$REPO" ] || check_fail "repo resolves to '${NWO:-none}', need $REPO"
 
 # --- 2. review comment (A3.5 may not be skipped) ---------------------------------------------
-[ -f "$COMMENT_FILE" ] || check_fail "review comment file not found: $COMMENT_FILE"
-if [ -f "$COMMENT_FILE" ] && ! grep -qF "$HEADING" "$COMMENT_FILE"; then
+if [ "$ALONE" = 1 ]; then :
+elif [ ! -f "$COMMENT_FILE" ]; then check_fail "review comment file not found: $COMMENT_FILE"
+elif ! grep -qF "$HEADING" "$COMMENT_FILE"; then
   check_fail "review comment lacks the literal heading '$HEADING' (A3.5 step 4)"
 fi
 
@@ -327,7 +340,7 @@ smoke_say() { # <verdict JSON>: its lines, on stderr
   local l
   while IFS= read -r l; do [ -z "$l" ] || say "$l"; done < <(jq -r '.lines[]?' <<<"$1")
 }
-if [ "$SMOKE_CHECK" = true ]; then
+if [ "$SMOKE_CHECK" = true ] && [ "$ALONE" = 0 ]; then
   SV="$(smoke_verdict 0)" || SV=""
   case "$(jq -r '.verdict // empty' <<<"${SV:-null}" 2>/dev/null)" in
     green|excused|no-wiring) SMOKE=done; smoke_say "$SV" ;;
@@ -345,7 +358,8 @@ fi
 # stops this merge. A list at its limit may be cut short, and a child whose verdict cannot be read
 # may be a trusted one: both stop the merge rather than let --delete-branch close a PR unseen.
 CHILD_LIMIT=1000
-CHILDREN="$(gh pr list --repo "$REPO" --state open --base "$HEAD" --limit "$CHILD_LIMIT" --json number --jq '.[].number' 2>/dev/null)" \
+CHILDREN=""
+[ "$ALONE" = 1 ] || CHILDREN="$(gh pr list --repo "$REPO" --state open --base "$HEAD" --limit "$CHILD_LIMIT" --json number --jq '.[].number' 2>/dev/null)" \
   || die "cannot list the child PRs based on $HEAD"
 [ "$(printf '%s\n' $CHILDREN | grep -c . || true)" -lt "$CHILD_LIMIT" ] || die "$CHILD_LIMIT or more child PRs are based on $HEAD: the list may be cut short; retarget them by hand first"
 for c in $CHILDREN; do
@@ -379,6 +393,8 @@ if [ -n "$WT" ]; then
     check_fail "worktree $WT is dirty"
   fi
 else
+  # --alone is read-only: with no kept worktree there is nothing to run on, and nothing (not even a prune) is touched.
+  [ "$ALONE" = 0 ] || die "PR #$PR has no kept worktree: the alone check runs on the tree its red gate left"
   WT="$MAIN/.claude/worktrees/wt-pr-$PR"
   CREATED_WT=1
   plan "git worktree add --no-track $WT from origin/$HEAD"
@@ -387,6 +403,40 @@ else
     if [ "$DRY" = 1 ]; then check_fail "path $WT already exists (a real run would prune stale registrations first)"
     else git -C "$MAIN" worktree prune; [ ! -e "$WT" ] || check_fail "path $WT already exists"; fi
   fi
+fi
+
+# --- 4b. --alone: SKILL.md A5's "red files pass alone" check, recorded in the gates log ----------------------------
+# Runs on the tree of this PR's LAST red gate (a red gate keeps the worktree) and nothing else: no sync, no push, no
+# merge, no comment, no relabel. The line it appends has `alone` where a gate run has green|red, so the flake proof below
+# (and sapu-metrics' gate count) never read it: a same-PR red -> green is no proof, that PR may have caused the flake.
+if [ "$ALONE" = 1 ]; then
+  GATES_LOG="$GITDIR/sapu-gates.log"
+  [ "$CREATED_WT" = 0 ] && [ -d "$WT" ] || die "PR #$PR has no kept worktree ($WT): the alone check runs on the tree its red gate left"
+  MISMATCH="$(main_mismatch)"
+  [ -z "$MISMATCH" ] || die "$(mismatch_msg "$MISMATCH")"
+  # The PR's latest gate run (an alone line is not one) must be red and name its failing files.
+  LAST="$(awk -v pr="$PR" '$2 == pr && ($4 == "green" || $4 == "red" || $4 == "setup-failed") { l = $0 } END { print l }' "$GATES_LOG" 2>/dev/null || true)"
+  read -r -a REC <<<"$LAST"
+  [ "${REC[3]:-}" = red ] && [[ "${REC[5]:-}" == failed=* ]] && [[ "${REC[6]:-}" == tree=* ]] || die "the latest gate run of PR #$PR in $GATES_LOG is not a red one (${LAST:-none}): nothing to check alone"
+  [ "${REC[5]}" != failed=- ] || die "the red gate of PR #$PR named no failing test file: nothing to run alone"
+  RTREE="${REC[6]#tree=}"
+  [ "$(git -C "$WT" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null || echo -)" = "$RTREE" ] \
+    || die "worktree $WT is not the tree the red gate ran on ($RTREE): a re-run or an edit moved it, so the check would prove nothing about that gate"
+  IFS=, read -r -a AF <<<"${REC[5]#failed=}"
+  for f in "${AF[@]}"; do case "$f" in -*) die "failing file '$f' looks like an option: not passing it to gate.testFiles" ;; esac; done
+  SHA="$(git -C "$WT" rev-parse HEAD)"
+  ALOG="$(mktemp "${TMPDIR:-/tmp}/gate-alone-pr$PR.XXXXXX")" || die "cannot create the log in ${TMPDIR:-/tmp}"
+  say "alone check running at $SHA: ${AF[*]} — log: $ALOG"
+  ARC=0; ASTART=$SECONDS
+  SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
+    run_contract "$WT" "$WT" "$P_ALONE" "${AF[@]}" >"$ALOG" 2>&1 || ARC=$?
+  # 75 (EX_TEMPFAIL) = gate.testFiles could not even start: no verdict either way.
+  ARES=green; [ "$ARC" = 0 ] || ARES=red; [ "$ARC" != 75 ] || ARES=setup-failed
+  { printf '%s %s %s alone gate=%ss failed=%s tree=%s alone=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$((SECONDS - ASTART))" "${REC[5]#failed=}" "$RTREE" "$ARES" >>"$GATES_LOG"; } 2>/dev/null \
+    || say "warning: could not record the alone check in $GATES_LOG"
+  [ "$ARES" != setup-failed ] || die "alone: gate.testFiles could not start (exit 75), not a verdict on the red files — log: $ALOG"
+  if [ "$ARES" = green ]; then say "alone: green — the red files pass alone on tree $RTREE (recorded; nothing merged, and a same-PR red -> green is no flake proof)"; exit 0; fi
+  say "alone: RED (exit $ARC) — the red files fail alone too on tree $RTREE: not a flake. Log: $ALOG"; exit 2
 fi
 
 # --- 5..: everything below has side effects; a dry run stops here with the plan -------------

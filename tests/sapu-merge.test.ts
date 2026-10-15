@@ -200,8 +200,8 @@ exec "${REAL_GIT}" "$@"
   writeFileSync(comment, "Review tier: green\n\nclean\n\n## Notes (recorded, not filed)\n- none\n");
   const WT = join(MAIN, ".claude/worktrees/wt-pr-7");
 
-  const run = (extra: Record<string, string> = {}, args: string[] = []) => {
-    const r = spawnSync("bash", [MERGE, "7", comment, ...args], { cwd: MAIN, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 64 << 20 });
+  const run = (extra: Record<string, string> = {}, args: string[] = [], noComment = false) => {
+    const r = spawnSync("bash", [MERGE, "7", ...(noComment ? [] : [comment]), ...args], { cwd: MAIN, env: { ...env, ...extra }, encoding: "utf8", maxBuffer: 64 << 20 });
     return { status: r.status, err: r.stderr, out: r.stdout };
   };
   const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : "");
@@ -1261,5 +1261,85 @@ describe("sapu-merge.sh — the argus smoke check (gate.smokeCheck, opt-in)", ()
 
   it("--smoke-wait takes whole minutes", () => {
     expect(harness().run({}, ["--smoke-wait", "x"]).err).toMatch(/--smoke-wait must be a number of minutes/);
+  });
+});
+
+describe("sapu-merge.sh --alone — A5's red-files-alone check, recorded in the gates log", () => {
+  const ALONE = `#!/usr/bin/env bash\necho "alone ran in $PWD: $*" > "$SAPU_MAIN/.git/alone.out"\nexit "\${HX_ALONE_RC:-0}"\n`;
+  const FAILS = " FAIL  apps/a.test.ts > orders > races\nFAILED tests/test_b.py::test_x - AssertionError";
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+  const GATE_KEYS = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+  const redHarness = () => {
+    const h = harness({ contract: { gate: { ...GATE_KEYS, testFiles: "scripts/alone.sh --run" } }, main: { "scripts/alone.sh": ALONE } });
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }).status).toBe(2);
+    return h;
+  };
+
+  it("green: runs only the last red gate's failing files through gate.testFiles, appends an alone line on the same tree, merges nothing", () => {
+    const h = redHarness();
+    const before = gates(h);
+    const r = h.run({}, ["--alone"], true);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/alone: green/);
+    expect(readFileSync(join(h.MAIN, ".git/alone.out"), "utf8")).toBe(`alone ran in ${realpathSync(h.WT)}: --run apps/a.test.ts tests/test_b.py\n`);
+    const redTree = /tree=([0-9a-f]{40})/.exec(before[0])![1];
+    expect(gates(h)).toEqual([...before, expect.stringMatching(new RegExp(` 7 [0-9a-f]{40} alone gate=\\d+s failed=apps/a\\.test\\.ts,tests/test_b\\.py tree=${redTree} alone=green$`))]);
+    expect(h.gh()).not.toMatch(/pr merge|pr comment|pr edit|issue edit/);
+    expect(existsSync(h.WT)).toBe(true);
+  });
+
+  it("red: exit 2 and alone=red in the ledger", () => {
+    const h = redHarness();
+    const r = h.run({ HX_ALONE_RC: "1" }, ["--alone"], true);
+    expect(r.status).toBe(2);
+    expect(gates(h).at(-1)).toMatch(/ alone gate=\d+s failed=\S+ tree=[0-9a-f]{40} alone=red$/);
+  });
+
+  it("never changes the flake verdict: a same-PR red -> green stays unknown, the alone line is no proof", () => {
+    const h = redHarness();
+    expect(h.run({}, ["--alone"], true).status).toBe(0);
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }); // the red gate again, after an alone=green
+    expect(r.err).toMatch(/verdict: unknown — not proven flaky/);
+    expect(r.err).not.toMatch(/known-flake/);
+  });
+
+  it("another PR's alone=green line is no proof either (it is not a green gate)", () => {
+    const h = redHarness();
+    writeFileSync(
+      join(h.MAIN, ".git/sapu-gates.log"),
+      "2026-10-01T01:00:00Z 5 aaa red gate=4s failed=apps/a.test.ts,tests/test_b.py tree=t5 verdict=unknown\n2026-10-01T01:10:00Z 5 bbb alone gate=4s failed=apps/a.test.ts,tests/test_b.py tree=t5 alone=green\n",
+    );
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }).err).toMatch(/verdict: unknown/);
+  });
+
+  it("exit 75 from gate.testFiles: alone=setup-failed in the ledger, exit 1, 'could not start, not a verdict'", () => {
+    const h = redHarness();
+    const r = h.run({ HX_ALONE_RC: "75" }, ["--alone"], true);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/could not start .*not a verdict/);
+    expect(gates(h).at(-1)).toMatch(/ alone=setup-failed$/);
+  });
+
+  it("refuses a worktree with uncommitted changes, staged or not", () => {
+    const h = redHarness();
+    writeFileSync(join(h.WT, "wip.txt"), "x\n");
+    execFileSync(REAL_GIT, ["-C", h.WT, "add", "wip.txt"]);
+    expect(h.run({}, ["--alone"], true).err).toMatch(/is dirty/);
+  });
+
+  it("refuses: no gate.testFiles, a latest gate that is green or has no kept worktree, a worktree moved off the red tree", () => {
+    const plain = harness();
+    expect(plain.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }).status).toBe(2);
+    expect(plain.run({}, ["--alone"], true).err).toMatch(/--alone needs gate\.testFiles/);
+
+    const g = harness({ contract: { gate: { ...GATE_KEYS, testFiles: "scripts/alone.sh" } }, main: { "scripts/alone.sh": ALONE } });
+    expect(g.run().status).toBe(0);
+    expect(g.run({}, ["--alone"], true).err).toMatch(/no kept worktree/);
+
+    const h = redHarness();
+    writeFileSync(join(h.WT, "extra.txt"), "x\n");
+    execFileSync(REAL_GIT, ["-C", h.WT, "add", "-A"]);
+    execFileSync(REAL_GIT, ["-C", h.WT, "-c", "user.email=a@b.c", "-c", "user.name=t", "commit", "-q", "-m", "moved"]);
+    expect(h.run({}, ["--alone"], true).err).toMatch(/not the tree the red gate ran on/);
   });
 });

@@ -252,10 +252,12 @@ export function validate(c) {
   need(typeof c.gitEmail === "string" && /^[^@\s]+@[^@\s]+$/.test(c.gitEmail), "gitEmail must be an email");
   need(typeof c.baseBranch === "string" && /^[\w./-]+$/.test(c.baseBranch), "baseBranch must be a branch name");
   if (c.gate && typeof c.gate === "object") {
-    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck"]);
+    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck", "diff", "testFiles"]);
     need(!("infra" in c.gate) || c.gate.infra === null || isStr(c.gate.infra), "gate.infra must be a command or null");
     // Opt-in: sapu-merge.sh gates on the argus smoke suite's CI run only when the base branch's contract says so.
     need(!("smokeCheck" in c.gate) || typeof c.gate.smokeCheck === "boolean", "gate.smokeCheck must be true or false (omit it for false)");
+    // Optional worker-side slice of the merge gate (SAPU_BASE = origin/<base>) and the command --alone appends failing test files to.
+    for (const k of ["diff", "testFiles"]) need(!(k in c.gate) || isStr(c.gate[k]), `gate.${k} must be a command (omit it for none)`);
     need(isStr(c.gate.fast), "gate.fast must be a command");
     need(isStr(c.gate.merge), "gate.merge must be a command");
     need(isRegex(c.gate.summaryStart), "gate.summaryStart must be a valid regex");
@@ -2070,6 +2072,16 @@ function main(argv) {
         const last = (`${r.stderr || ""}`.trim() || `${r.stdout || ""}`.trim()).split("\n").pop().slice(0, 200);
         fail(`test infrastructure is down: gate.infra (${infra}) ${how}${last ? ` — ${last}` : ""}. Bring it up as the profile's Step 0 says, then build the lane again.`);
       }
+    }
+    // gate.diff is run by every worker before its PR: a command the guard refuses (the merge gate's words or script)
+    // would cost each worker a refused step and never run. Judged by the guard itself, never a copy of its matcher (a copy
+    // drifts: npx/env prefixes, run aliases, script paths). A child process because the guard imports this module.
+    const diffGate = contract.gate && contract.gate.diff;
+    if (isStr(diffGate)) {
+      const probe = `import { check, compileRules } from ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts/sapu-guard.mjs"))}; const [c, m, d] = JSON.parse(process.argv[1]); process.stdout.write(check({ command: d, cwd: m + "/.claude/worktrees/sapu-gate-diff-probe", main: m, rules: compileRules(c) }) || "");`;
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe, JSON.stringify([contract, mainDir, diffGate])], { encoding: "utf8", timeout: 30_000 });
+      if (r.status !== 0) fail(`could not check gate.diff against the guard: ${`${r.stderr || r.error || ""}`.trim().split("\n").pop()}`);
+      if (r.stdout.trim()) fail(`gate.diff (${diffGate}) would be refused to every worker by the guard: ${r.stdout.trim()} Give gate.diff a command that is not the merge gate.`);
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);

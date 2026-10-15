@@ -75,13 +75,13 @@ export default {
     s += text(lx + 18, ly + 28, `${c("Lane", "tb c-violet")}  — one Workflow call per issue  ${m("sapu-wave.js")}`, "t");
     s += text(lx + 18, ly + 48, "own worktree · ≤ lanes in flight (1–4, per machine) · refilled as each returns", "cap");
     const iy = ly + 66, ih = 66, inx = lx + 18;
-    s += box(inx, iy, 140, ih, "scout → builder", ["plan → fresh TDD · PR"]);
+    s += box(inx, iy, 140, ih, "scout → builder", ["plan → builder per slice · PR"]);
     s += arrow([[inx + 144, iy + ih / 2], [inx + 162, iy + ih / 2]]);
     s += box(inx + 166, iy, 140, ih, "review by tier", ["never the author"]);
     s += arrow([[inx + 310, iy + ih / 2], [inx + 328, iy + ih / 2]], "ar-g");
     s += box(inx + 332, iy, 110, ih, "ready PR", ["not merged here"], "k-green");
     s += arrow([[inx + 236, iy + ih + 2], [inx + 236, iy + ih + 18], [inx + 70, iy + ih + 18], [inx + 70, iy + ih + 4]], "ar-a");
-    s += text(inx + 246, iy + ih + 22, "findings → fix + delta re-review", "cap c-amber");
+    s += text(inx + 246, iy + ih + 22, "findings → fix groups + re-review", "cap c-amber");
 
     // rules
     let ry2 = iy + ih + 48;
