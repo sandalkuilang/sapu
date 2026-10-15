@@ -26,7 +26,10 @@
 //     in turn, then ONE delta re-review over all of them; the cycle count is per review round, not per group;
 //   - a worker past its step or context budget hands off to a fresh agent of the same tier while each
 //     handoff brings a new commit: two in a row without one = blocked, and never past MAX_HANDOFFS;
-//   - the guard hook must answer the canary, or the item stops.
+//   - the guard hook must answer the canary, or the item stops;
+//   - the lane's branch is fixed once, from the issue number and title (branchFor), and every worker (builder, slices, handoffs,
+//     fixers, escalated) is told that one name: a successor that invented its own would scatter the lane over branches;
+//   - a worker taking over existing work first runs the typecheck and the failing test its note names, and reports it in `state_check`.
 //
 // WHAT IT DOES NOT DO: merge. Items come back "ready" with the review comment; the orchestrator
 // writes it to a file and runs sapu-merge.sh (only the orchestrator merges).
@@ -38,7 +41,9 @@
 //               specialists },                         // role -> subagent type, resolved by wave-args
 //   maxTestRunners?: 2,
 //   items: [{ issue, title, tier: "green"|"yellow"|"red", worker: <LADDER entry>,
-//             cleanInstall?: bool, tracker?: "F3", domainReviewer?: <DOMAIN_ROLES entry, required for red> }]
+//             cleanInstall?: bool, tracker?: "F3", domainReviewer?: <DOMAIN_ROLES entry, required for red>,
+//             resume?: { branch, headSha, pr?, note? } }]  // a lane that came back blocked (e.g. on handoffs): no scout; no pr = the
+//                                  // Implement step continues from headSha (note in the task); a pr = straight to review, then pre-PR
 // }
 
 export const meta = {
@@ -165,7 +170,7 @@ if (input.items.length > 4) throw new Error('a wave holds at most 4 items')
 if (!Number.isInteger(runners) || runners < 1 || runners > 4) throw new Error('maxTestRunners must be an integer 1..4')
 // An unknown key is a typo or a stale name, and ignoring it silently drops what it meant
 // (a stale `npmCi: true` would run a dependency change in a shared wave without its clean install).
-const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker', 'domainReviewer']
+const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker', 'domainReviewer', 'resume']
 // A worker named without the plugin prefix (`sapu-sonnet-high`) is the same ladder agent: accept it
 // instead of failing the whole wave on a spelling the orchestrator then has to retry.
 for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
@@ -186,6 +191,17 @@ for (const it of input.items) {
   if (it.tier === 'red' && !WORKER_TIER && LADDER.indexOf(it.worker) < LADDER.indexOf(RED_FLOOR)) throw new Error(`#${it.issue}: red is never below ${RED_FLOOR}`)
   if (it.tier === 'red' && !DOMAIN_ROLES.includes(it.domainReviewer)) throw new Error(`#${it.issue}: red needs a domainReviewer role from ${DOMAIN_ROLES.join(', ')}`)
   if (it.tracker !== undefined && !/^F\d+$/i.test(it.tracker)) throw new Error(`#${it.issue}: tracker must look like F3`)
+  if (it.resume !== undefined) {
+    const rs = it.resume
+    if (!rs || typeof rs !== 'object' || Array.isArray(rs)) throw new Error(`#${it.issue}: resume must be { branch, headSha, pr?, note? }`)
+    const bad = Object.keys(rs).filter((k) => !['branch', 'headSha', 'pr', 'note'].includes(k))
+    if (bad.length) throw new Error(`#${it.issue}: resume has unknown key(s) ${bad.join(', ')}; allowed: branch, headSha, pr, note`)
+    // the branch and SHA end up in shell commands in the workers' prompts: safe characters only
+    if (typeof rs.branch !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(rs.branch) || rs.branch.includes('..')) throw new Error(`#${it.issue}: resume.branch must be a branch name (letters, digits, . _ / -)`)
+    if (typeof rs.headSha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(rs.headSha)) throw new Error(`#${it.issue}: resume.headSha must be a commit SHA (7-40 hex)`)
+    if (rs.pr !== undefined && (!Number.isInteger(rs.pr) || rs.pr < 1)) throw new Error(`#${it.issue}: resume.pr must be a positive integer`)
+    if (rs.note !== undefined && typeof rs.note !== 'string') throw new Error(`#${it.issue}: resume.note must be a string`)
+  }
   const id = `issue${it.issue}${it.tracker ? it.tracker.toLowerCase() : ''}`
   if (ids.has(id)) throw new Error(`${id} appears twice in the wave`)
   ids.add(id)
@@ -226,6 +242,7 @@ const WORKER_SCHEMA = {
     escalate_at: { type: 'string', description: 'status=escalate: the file:line that triggered it' },
     blocked_reason: { type: 'string', description: 'status=blocked: what was tried, what was read, which evidence is missing' },
     handoff_note: { type: 'string', description: 'status=handoff: done (commits), left (in order), the failing test + best hypothesis, commands that worked; at most 10 lines' },
+    state_check: { type: 'string', description: 'a worker taking over existing work: ONE line, what the typecheck and the failing test its note names showed before you changed anything' },
     learned: { type: 'array', items: { type: 'string' }, description: 'status=handoff: what you learned about files you read and did NOT change, one string each, "path:lines — what matters" (at most 12); the next worker will not re-read them' },
     security_gaps: { type: 'array', items: { type: 'string' }, description: `out-of-scope security gaps (the orchestrator files them under ${EPIC})` },
     outside_writes: { type: 'array', items: { type: 'string' }, description: `every write outside your worktree and ${C.testResources}; when unsure, list it` },
@@ -331,7 +348,7 @@ const trailRow = (state, step, agent, result) => {
   state.trail.push([step, agent, model, result])
   log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
-const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}` : 'died')
+const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}${typeof r.state_check === 'string' && r.state_check.trim() ? ` · state: ${r.state_check.trim().slice(0, 200)}` : ''}` : 'died')
 
 // The scout only reads and writes a plan; the builder that follows (the author's tier) checks every snippet of it
 // against the code and the reviewers check the PR. So an Opus lane scouts one model down, at the same effort.
@@ -366,6 +383,7 @@ function workerPrompt(item, state, worker, extra, implementing) {
   // label often does not foresee one) is worked as 🔴 from there, and the review starts with the pair.
   // Implement steps only: a fixer's result never raises the tier (the reviewers' check does), so asking it costs a step for nothing.
   if (C.redAreas && implementing) lines.push(`Before you push for the PR, from your worktree on your last commit: \`git fetch -q origin ${BASE}; ${C.redAreas} --ref HEAD\`; report its redAreas in red_areas.${item.tier === 'red' ? '' : ` Any → this item is 🔴 now: the tier label of brief point 9 is red, and the PR body gets the 🔴 sections (brief point 1, forge §\`needs-ai\`).`}`)
+  if (!state.headSha) lines.push(`Your branch for this issue is \`${laneBranch(state)}\` (brief point 1: \`git switch -c\` with exactly this name, push \`HEAD:${laneBranch(state)}\`); return it in \`branch\`.`)
   if (item.cleanInstall) lines.push('This issue changes dependencies or the schema → use the clean-install setup from the repo profile (brief point 3).')
   if (item.tracker) lines.push(`Your scope is ONLY finding ${item.tracker}; PR body \`Refs #${item.issue} (${item.tracker})\`, not \`Closes\`.`)
   if (P.merge === 'human') lines.push('This repo is merged by people, not sapu: open the PR as a draft (`gh pr create --draft`); it leaves draft only when every check, the review and the pre-PR command are clean.')
@@ -403,13 +421,22 @@ function planLine(s, id) {
 // A continuing agent gets a FRESH worktree (an unchanged one is removed when its agent ends).
 // Git objects and refs are shared by every worktree of the repo, so the previous agent's commit
 // is reachable by SHA even if it was never pushed (a WIP commit can fail the pre-push gate).
+// The lane's one branch name, `<type>/issue-<N>-<slug>` (brief point 1): fixed before the first worker so no handoff, slice or fixer
+// invents another. Safe characters only (it lands in a shell command), bounded, deterministic. `feat` because the engine does not know
+// the change type; the name is a label, the convention only asks for a stable, valid one. A resumed lane keeps its own.
+const branchFor = (item) => {
+  const slug = String(item.title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 40).replace(/-+$/, '')
+  return `feat/issue-${item.issue}${item.tracker ? `-${item.tracker.toLowerCase()}` : ''}${slug ? `-${slug}` : ''}`
+}
+// Once a worker has returned a real branch (a PR head, or a name it pushed) that is the lane's, so a deviating worker splits nothing
+// afterwards; until then every worker gets the pinned name. A deviation is recorded in `branchWarnings` (state.branch stays the truth).
+const laneBranch = (state) => (state.branch && !state.branch.startsWith('worktree-agent-') ? state.branch : state.pinned)
+
 function continueOn(state) {
-  if (!state.headSha) return 'Your worktree is new and there is no commit for this issue yet: start like a first worker (brief points 1–2).'
-  const named = state.branch && !state.branch.startsWith('worktree-agent-')
-  const push = named
-    ? `then \`git push origin HEAD:${state.branch}\` (without force)${state.pr ? `; PR #${state.pr} already exists, never open a new PR` : '; no PR yet: open one as usual'}`
-    : 'then create your own forge branch (brief point 1) before you push and open the PR'
-  return `Take over the previous work in your new worktree: \`git reset --hard ${state.headSha}\`, do the work, ${push}.`
+  const b = laneBranch(state)
+  const open = state.pr ? `PR #${state.pr} already exists, never open a new PR` : 'no PR yet: open one as usual'
+  if (!state.headSha) return `Your worktree is new and there is no commit for this issue yet: start like a first worker (brief points 1–2); your branch is \`${b}\`, no other name.`
+  return `Take over the previous work in your new worktree: \`git reset --hard ${state.headSha}\`, \`git switch -c ${b}\` (that name, no other), FIRST run the typecheck and the failing test the note names (none named: the diff's tests) and put what they showed, in one line, in \`state_check\`; a mismatch with the note is reported, not fixed first. Then do the work, then \`git push origin HEAD:${b}\` (without force); ${open}.`
 }
 
 // The task of one slice's builder: only its part of the plan, what is already committed, and whether it opens the PR.
@@ -556,9 +583,10 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], trail: [] }
   const comments = []
   const notes = []
+  const branchSeen = new Set()
   const reviewComment = () => [
     `Review tier: ${state.tier}${state.redAreas ? ` (red areas: ${state.redAreas.join(', ')})` : ''}`,
     ...comments,
@@ -570,7 +598,7 @@ async function runItem(item) {
     issue: state.issue, tracker: item.tracker, status, tier: state.tier, redAreas: state.redAreas, worker: state.worker,
     escalated: state.escalated, cycles: state.cycles, pr: state.pr, branch: state.branch,
     securityGaps: state.securityGaps, outsideWrites: state.outsideWrites, ranCleanInstall: state.ranCleanInstall,
-    modelWarnings: state.modelWarnings, budgetWarnings: state.budgetWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
+    modelWarnings: state.modelWarnings, budgetWarnings: state.budgetWarnings, branchWarnings: state.branchWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
   })
   // What every ladder agent's return proves (scout and worker alike): its gaps and outside writes,
   // its model, the step budget counting it, and the guard (the return value).
@@ -589,7 +617,12 @@ async function runItem(item) {
   const absorb = (r, who) => {
     const guarded = audit(r, who)
     state.ranCleanInstall = state.ranCleanInstall || !!r.ran_clean_install
-    if (r.branch) state.branch = r.branch
+    if (r.branch) {
+      // The lane has one branch (branchFor); a worker that returns another is recorded once, the PR's real head still wins.
+      if (r.branch !== laneBranch(state) && !branchSeen.has(r.branch)) state.branchWarnings.push(`${who} returned branch ${r.branch}, the lane's is ${laneBranch(state)}`)
+      branchSeen.add(r.branch)
+      state.branch = r.branch
+    }
     if (r.pr_number) { state.pr = r.pr_number; state.prUrl = r.pr_url }
     if (r.head_sha) state.headSha = r.head_sha
     if (r.assumptions) state.assumptions = r.assumptions
@@ -627,10 +660,17 @@ async function runItem(item) {
   // 1. scout (read-only, no test slot: it runs no tests), then a fresh builder of the same tier
   // starting from its plan. A scout that died, hit its budget or wrote no usable plan costs only
   // itself: the builder runs as a single-phase worker. Its ESCALATE goes up the ladder, no builder.
+  // A resumed lane (item.resume) has its commits already: no scout, the first step is the continuation.
+  const resume = item.resume
+  const resumedPr = !!(resume && resume.pr)
+  if (resume) {
+    Object.assign(state, { branch: resume.branch, headSha: resume.headSha, pr: resume.pr })
+    trailRow(state, 'Resume', state.worker, `${resume.branch} @ ${resume.headSha.slice(0, 7)}, ${resume.pr ? `PR #${resume.pr}: straight to review` : 'no PR yet: Implement continues'}`)
+  }
   const scoutAgent = scoutOf(state.worker)
-  const sc = await agent(scoutPrompt(item, state), opts(scoutAgent, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(scoutAgent), 'scout') }))
+  const sc = resume ? null : await agent(scoutPrompt(item, state), opts(scoutAgent, { isolation: 'worktree', schema: SCOUT_SCHEMA, phase: 'Scout', label: tag(item, effortOf(scoutAgent), 'scout') }))
   const plan = planLine(sc, state.id)
-  trailRow(state, 'Scout', scoutAgent, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
+  if (!resume) trailRow(state, 'Scout', scoutAgent, !sc ? 'died' : `${sc.status}${plan ? `, plan ${Number.isInteger(sc.plan_bytes) ? `${Math.ceil(sc.plan_bytes / 1024)} KB` : 'size unknown'}${plan.includes(`limit ${PLAN_LINES}`) ? ' (over the cap: truncated)' : ''}${sc.trivial ? ', trivial' : ''}` : ', no plan'}`)
   // Slices need a usable plan (the builder reads its slice's section); malformed entries are dropped, the rest capped.
   const clip = (x, n) => String(x ?? '').trim().slice(0, n)
   const named = plan && sc && sc.status === 'planned' && Array.isArray(sc.slices) ? sc.slices.filter((x) => x && typeof x.title === 'string' && x.title.trim()) : []
@@ -643,18 +683,19 @@ async function runItem(item) {
     if (sc.status === 'escalate') question = `${sc.escalate_question} — ${sc.escalate_at || '?'}`
   }
   // 2. implement, with at most one escalation step up the ladder
-  let r
+  // A resumed lane with a PR skips the Implement step: the review reads the PR as it stands.
+  let r = resumedPr ? { status: 'pr_opened', red_areas: [] } : undefined
   // One slice or none = one builder. Several: a fresh builder per slice, in order, each continuing from the last head SHA.
   const sliced = slices.length > 1
   let left = [] // the slices an ESCALATE leaves unfinished: the escalated worker takes them all
-  for (let i = 0; !question && i < (sliced ? slices.length : 1); i++) {
+  for (let i = 0; !question && !resumedPr && i < (sliced ? slices.length : 1); i++) {
     const sl = sliced ? slices[i] : null
     const last = !sliced || i === slices.length - 1
     const name = sl ? `slice ${i + 1}/${slices.length}` : ''
     const before = state.headSha
     r = await runWorker(state.worker, {
-      step: sl ? `Implement ${name}` : 'Implement', phase: 'Implement', label: tag(item, effortOf(state.worker), name), cont: i > 0, pr: last,
-      task: sl ? [plan, sliceTask(sl, slices, i)].join('\n') : plan,
+      step: sl ? `Implement ${name}` : 'Implement', phase: 'Implement', label: tag(item, effortOf(state.worker), name), cont: i > 0 || !!resume, pr: last,
+      task: sl ? [plan, sliceTask(sl, slices, i)].join('\n') : resume ? `This lane came back blocked and is resumed from its commits.${resume.note ? ` The note from whoever stopped it — do not redo what it says is done: ${resume.note.slice(0, 1500)}` : ''}` : plan,
     })
     if (!r) return done('died', { reason: 'worker returned nothing; before a retry look for its PR with `gh pr list --head <branch> --json number,isCrossRepository` — only a same-repo PR that `sapu-contract.mjs pr-trust <N>` passes is its (a fork can use any branch name)' })
     if (!absorb(r, state.worker)) return noGuard(state.worker)

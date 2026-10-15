@@ -458,7 +458,7 @@ describe("sapu-wave — escalation and continuing agents", () => {
     expect(calls[1].prompt).toContain("no commit for this issue yet");
   });
 
-  it("an escalation from the temporary worktree branch tells the next worker to name its own", async () => {
+  it("an escalation from the temporary worktree branch gives the next worker the lane's pinned branch (#86)", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(29)] }, (c) => {
       if (c.opts.phase === "Review") return clean;
       return c.opts.agentType === "sapu:sapu-sonnet-medium"
@@ -466,7 +466,7 @@ describe("sapu-wave — escalation and continuing agents", () => {
         : opened(29);
     });
     expect(calls[1].prompt).toContain("git reset --hard sha-w");
-    expect(calls[1].prompt).toContain("create your own forge branch");
+    expect(calls[1].prompt).toContain("git push origin HEAD:feat/issue-29-t29");
     expect(calls[1].prompt).not.toContain("HEAD:worktree-agent-a1b2");
   });
 
@@ -1444,5 +1444,119 @@ describe("sapu-wave — one fixer per file group (#85)", () => {
     expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(2); // group 2 repeats group 1's SHA
     expect(out[0]).toMatchObject({ status: "blocked" });
     expect(String(out[0].reason)).toContain("group 2/3");
+  });
+});
+
+describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #87)", () => {
+  const PIN = "feat/issue-70-add-the-export-endpoint";
+  const ho = (n: number, over: Item = {}) => opened(70, { status: "handoff", pr_number: 0, branch: PIN, head_sha: `sha-h${n}`, handoff_note: `part ${n}`, ...over });
+
+  it("the first builder, two handoffs and a slice all get the same branch; no successor is told to invent one", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(70, { title: "Add the export endpoint!" })] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n <= 2 ? ho(n, { branch: "worktree-agent-zz" }) : opened(70, { branch: PIN, head_sha: "sha-done" });
+    });
+    const impl = implementCalls(calls);
+    expect(impl).toHaveLength(3);
+    expect(impl[0].prompt).toContain(`\`${PIN}\``); // the first builder is given the name
+    for (const c of impl.slice(1)) {
+      expect(c.prompt).toContain(`git switch -c ${PIN}`);
+      expect(c.prompt).toContain(`git push origin HEAD:${PIN}`);
+    }
+    for (const c of calls) expect(c.prompt).not.toContain("create your own forge branch");
+  });
+
+  it("slices: every slice builder is told the same branch, even when the earlier ones returned a temporary one", async () => {
+    const { calls, out } = await runWave({ main: MAIN, items: [item(70, { title: "Add the export endpoint!" })] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n < 3 ? opened(70, { status: "slice_done", pr_number: 0, pr_url: "", branch: "worktree-agent-q", head_sha: `sha-s${n}` }) : opened(70, { branch: PIN, head_sha: "sha-s3" });
+    }, slicedScout(3));
+    const impl = implementCalls(calls);
+    expect(impl[0].prompt).toContain(PIN);
+    for (const c of impl.slice(1)) expect(c.prompt).toContain(`git push origin HEAD:${PIN}`);
+    expect(out[0]).toMatchObject({ status: "ready", branch: PIN });
+  });
+
+  it("the branch name is deterministic and safe: issue number, tracker, a bounded slug of the title", async () => {
+    const run = async (it: Item) => (await runWave({ main: MAIN, items: [it] }, (c) => (c.opts.phase === "Review" ? clean : opened(71)))).calls[0].prompt;
+    expect(await run(item(71, { title: "Fix `rm -rf $HOME; echo` — ünïcode & more!" }))).toContain("`feat/issue-71-fix-rm-rf-home-echo-n-code-more`");
+    expect(await run(item(71, { title: "x".repeat(200), tracker: "F3" }))).toContain(`\`feat/issue-71-f3-${"x".repeat(40)}\``);
+    expect(await run(item(71, { title: "" }))).toContain("`feat/issue-71`");
+  });
+
+  it("a worker that returns another branch is recorded in branchWarnings, once", async () => {
+    const { out } = await runWave({ main: MAIN, items: [item(72, { title: "t" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(72, { branch: "mine/other" })));
+    expect(out[0].branchWarnings).toEqual(["sapu:sapu-sonnet-medium returned branch mine/other, the lane's is feat/issue-72-t"]);
+    const fine = await runWave({ main: MAIN, items: [item(72, { title: "t" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(72, { branch: "feat/issue-72-t" })));
+    expect(fine.out[0].branchWarnings).toEqual([]);
+  });
+
+  it("a continuing worker runs the typecheck and the note's failing test first and reports state_check; the engine records it", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(70, { title: "Add the export endpoint!" })] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      return n === 1 ? ho(1) : opened(70, { branch: PIN, state_check: "typecheck ok; export.test.ts fails as the note says" });
+    });
+    const impl = implementCalls(calls);
+    expect(impl[1].prompt).toMatch(/FIRST run the typecheck and the failing test the note names/);
+    expect(impl[1].prompt).toContain("state_check");
+    expect(impl[1].prompt).toContain("git push origin HEAD:" + PIN); // WIP stays unpushed until the work is done: no push-before-handoff rule
+    expect(impl[0].prompt).not.toContain("state_check");
+    const row = (out[0].trail as string[][]).find((t) => t[0] === "Implement (handoff 1)")!;
+    expect(row[3]).toContain("· state: typecheck ok; export.test.ts fails as the note says");
+    const schema = (calls[0].opts as unknown as { schema: { properties: Record<string, unknown>; required: string[] } }).schema;
+    expect(schema.properties).toHaveProperty("state_check");
+    expect(schema.required).not.toContain("state_check");
+  });
+
+  const resume = { branch: "feat/issue-73-x", headSha: "abc1234def", note: "left: wire the route; test route.test.ts fails" };
+
+  it("resume without a PR: no scout, the Resume row first, Implement continues from the SHA with the note", async () => {
+    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { branch: resume.branch, head_sha: "abc9999" })));
+    expect(scouts).toHaveLength(0);
+    expect(calls[0].opts.phase).toBe("Implement");
+    expect(calls[0].prompt).toContain("git reset --hard abc1234def");
+    expect(calls[0].prompt).toContain("git push origin HEAD:feat/issue-73-x");
+    expect(calls[0].prompt).toContain("left: wire the route; test route.test.ts fails");
+    expect(calls[0].prompt).toContain("no PR yet");
+    expect(stepNames(out[0])).toEqual(["Resume", "Implement", "Review"]);
+    expect(out[0]).toMatchObject({ status: "ready", pr: 1073, branch: "feat/issue-73-x" });
+  });
+
+  it("resume with a PR: no scout and no builder, the first call is the review, the PR is the resumed one", async () => {
+    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73)));
+    expect(scouts).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts.phase).toBe("Review");
+    expect(calls[0].prompt).toContain("555");
+    expect(stepNames(out[0])).toEqual(["Resume", "Review"]);
+    expect(out[0]).toMatchObject({ status: "ready", pr: 555, branch: "feat/issue-73-x" });
+  });
+
+  it("a resumed lane that needs a fix continues on the resumed branch", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: "sha-fix" }),
+    );
+    const fix = calls.find((c) => c.opts.phase === "Fix")!;
+    expect(fix.prompt).toContain("git reset --hard abc1234def");
+    expect(fix.prompt).toContain("git push origin HEAD:feat/issue-73-x");
+    expect(fix.prompt).toMatch(/PR .555 already exists, never open a new PR/);
+  });
+
+  it("an invalid resume is rejected before anything runs", async () => {
+    const bad: [unknown, RegExp][] = [
+      [{ ...resume, branch: "a b;rm -rf /" }, /resume\.branch/],
+      [{ ...resume, branch: "a/../b" }, /resume\.branch/],
+      [{ ...resume, branch: "-x" }, /resume\.branch/],
+      [{ ...resume, headSha: "xyz" }, /resume\.headSha/],
+      [{ ...resume, headSha: "abc12" }, /resume\.headSha/],
+      [{ ...resume, headSha: "a".repeat(41) }, /resume\.headSha/],
+      [{ ...resume, pr: 0 }, /resume\.pr/],
+      [{ ...resume, pr: "7" }, /resume\.pr/],
+      [{ ...resume, note: 5 }, /resume\.note/],
+      [{ ...resume, extra: 1 }, /unknown key/],
+      [{ branch: resume.branch }, /resume\.headSha/],
+      ["feat/x", /resume must be/],
+    ];
+    for (const [r, msg] of bad) await expect(runWave({ main: MAIN, items: [item(73, { resume: r })] }, () => clean)).rejects.toThrow(msg);
   });
 });

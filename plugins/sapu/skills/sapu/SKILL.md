@@ -166,6 +166,7 @@ After the script succeeds: sync ONLY the open PRs that share files with the one 
 - The next issue waits while it (may) share files with a lane in flight or an unmerged `ready` PR (`gh pr diff <N> --name-only`).
 - An issue changing dependencies or the schema (its paths: profile §Wave) → SOLO: launched when no lane runs, nothing beside it, `cleanInstall: true` (brief point 3).
 - Per issue: `{ issue, title, tier: "green"|"yellow"|"red", worker }` from the B2 table, `tracker: "Fx"` for a tracker issue, and for 🔴 `domainReviewer` = the domain **role** touched (`architect`/`db`/`developer`/`ux`, brief point 7 roster).
+- A lane `blocked` on handoffs: call sapu-wave again with `resume: { branch, headSha, pr?, note? }` on its item (no scout; no `pr` = Implement continues from the SHA, a `pr` = straight to review), not by hand through the Agent tool. A result's `branchWarnings` names a worker that left the lane's pinned branch.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args   # from <MAIN>: {"main","pluginRoot","contract"}

@@ -577,8 +577,8 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 41_300, // +the --alone check line in A5; +scout → builder and the handoff progress rule in B3
-  "skills/sapu/subagent-brief.md": 14_850, // +gate.diff in point 6; +slice_done: a non-last slice opens no PR; +batched exploration: one call per round of lookups saves whole turns; +handoff `learned`: the next worker skips re-reading what the last one read
+  "skills/sapu/SKILL.md": 41_550, // +the --alone check line in A5; +scout → builder and the handoff progress rule in B3; +the B3 `resume` bullet
+  "skills/sapu/subagent-brief.md": 15_050, // +the pinned branch, the continuing worker's `state_check` and the test-first commit (RED proof survives a handoff); +gate.diff in point 6; +slice_done: a non-last slice opens no PR; +batched exploration: one call per round of lookups saves whole turns; +handoff `learned`: the next worker skips re-reading what the last one read
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
