@@ -1312,6 +1312,21 @@ describe("sapu-merge.sh --alone — A5's red-files-alone check, recorded in the 
     expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }).err).toMatch(/verdict: unknown/);
   });
 
+  it("exit 75 from gate.testFiles: alone=setup-failed in the ledger, exit 1, 'could not start, not a verdict'", () => {
+    const h = redHarness();
+    const r = h.run({ HX_ALONE_RC: "75" }, ["--alone"], true);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/could not start .*not a verdict/);
+    expect(gates(h).at(-1)).toMatch(/ alone=setup-failed$/);
+  });
+
+  it("refuses a worktree with uncommitted changes, staged or not", () => {
+    const h = redHarness();
+    writeFileSync(join(h.WT, "wip.txt"), "x\n");
+    execFileSync(REAL_GIT, ["-C", h.WT, "add", "wip.txt"]);
+    expect(h.run({}, ["--alone"], true).err).toMatch(/is dirty/);
+  });
+
   it("refuses: no gate.testFiles, a latest gate that is green or has no kept worktree, a worktree moved off the red tree", () => {
     const plain = harness();
     expect(plain.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS }).status).toBe(2);

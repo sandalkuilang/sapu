@@ -266,7 +266,15 @@ export function validate(c) {
     if (isStr(c.gate.fast) && isStr(c.gate.merge)) {
       const norm = (x) => x.trim().split(/\s+/).join(" ");
       need(norm(c.gate.fast) !== norm(c.gate.merge), "gate.fast must differ from gate.merge (workers may never run the merge gate)");
-      if (isStr(c.gate.diff)) need(norm(c.gate.diff) !== norm(c.gate.merge), "gate.diff must differ from gate.merge (workers may never run the merge gate)");
+      if (isStr(c.gate.diff)) {
+        // The guard denies the merge gate's words (gateRules in sapu-guard.mjs) unless the command carries the extra words the fast gate adds to it.
+        const d = norm(c.gate.diff).split(" ");
+        const m = norm(c.gate.merge).split(" ");
+        const f = norm(c.gate.fast).split(" ");
+        const allow = f.length > m.length && m.every((w, i) => f[i] === w) ? f.slice(m.length) : [];
+        const denied = m.every((w, i) => d[i] === w) && !(allow.length && allow.every((w) => d.includes(w)));
+        need(!denied, "gate.diff must differ from gate.merge (workers may never run the merge gate: the guard would refuse a command that starts with it)");
+      }
     }
   } else errs.push("gate must be an object");
   need(c.redAreas === null || isStr(c.redAreas), "redAreas must be a command or null");

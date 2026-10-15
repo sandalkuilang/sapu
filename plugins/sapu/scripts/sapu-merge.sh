@@ -393,6 +393,8 @@ if [ -n "$WT" ]; then
     check_fail "worktree $WT is dirty"
   fi
 else
+  # --alone is read-only: with no kept worktree there is nothing to run on, and nothing (not even a prune) is touched.
+  [ "$ALONE" = 0 ] || die "PR #$PR has no kept worktree: the alone check runs on the tree its red gate left"
   WT="$MAIN/.claude/worktrees/wt-pr-$PR"
   CREATED_WT=1
   plan "git worktree add --no-track $WT from origin/$HEAD"
@@ -428,9 +430,11 @@ if [ "$ALONE" = 1 ]; then
   ARC=0; ASTART=$SECONDS
   SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
     run_contract "$WT" "$WT" "$P_ALONE" "${AF[@]}" >"$ALOG" 2>&1 || ARC=$?
-  ARES=green; [ "$ARC" = 0 ] || ARES=red
+  # 75 (EX_TEMPFAIL) = gate.testFiles could not even start: no verdict either way.
+  ARES=green; [ "$ARC" = 0 ] || ARES=red; [ "$ARC" != 75 ] || ARES=setup-failed
   { printf '%s %s %s alone gate=%ss failed=%s tree=%s alone=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$((SECONDS - ASTART))" "${REC[5]#failed=}" "$RTREE" "$ARES" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the alone check in $GATES_LOG"
+  [ "$ARES" != setup-failed ] || die "alone: gate.testFiles could not start (exit 75), not a verdict on the red files — log: $ALOG"
   if [ "$ARES" = green ]; then say "alone: green — the red files pass alone on tree $RTREE (recorded; nothing merged, and a same-PR red -> green is no flake proof)"; exit 0; fi
   say "alone: RED (exit $ARC) — the red files fail alone too on tree $RTREE: not a flake. Log: $ALOG"; exit 2
 fi

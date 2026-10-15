@@ -155,6 +155,7 @@ describe("validate", () => {
     ["a smoke check flag that is not a boolean", (c: any) => (c.gate.smokeCheck = "yes"), /gate\.smokeCheck must be true or false/],
     ["a gate.diff that is not a command", (c: any) => (c.gate.diff = true), /gate\.diff must be a command/],
     ["an empty gate.diff", (c: any) => (c.gate.diff = "  "), /gate\.diff must be a command/],
+    ["a gate.diff that extends gate.merge, which the guard refuses", (c: any) => ((c.gate.merge = "npm run gate"), (c.gate.fast = "npm run check"), (c.gate.diff = "npm run gate -- --diff")), /gate\.diff must differ from gate\.merge/],
     ["a gate.diff equal to gate.merge", (c: any) => (c.gate.diff = ` ${c.gate.merge}  `), /gate\.diff must differ from gate\.merge/],
     ["a gate.testFiles that is not a command", (c: any) => (c.gate.testFiles = ["vitest"]), /gate\.testFiles must be a command/],
   ])("refuses %s", (_what, mutate, msg) => {

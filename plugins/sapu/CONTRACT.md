@@ -567,8 +567,8 @@ MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `b
 **`--alone`** (`sapu-merge.sh <PR> --alone [--workers N]`, SKILL.md A5's "red files pass alone"): on the kept
 worktree of the PR's last red gate, and only while its tree is still the one that gate ran on, it runs
 `gate.testFiles` with that gate's `failed=` test files appended as arguments (cwd = the worktree; the same
-protected-word rules as `gate.merge`), and appends `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red`
-to `<MAIN>/.git/sapu-gates.log`. Exit 0 = green, 2 = red; it merges, pushes and comments nothing, and needs
+protected-word rules as `gate.merge`), and appends `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red|setup-failed`
+to `<MAIN>/.git/sapu-gates.log`. Exit 0 = green, 2 = red, 1 = `setup-failed` (`gate.testFiles` exited 75: it does its own setup/teardown and could not start, not a verdict); a dirty worktree is refused; it merges, pushes and comments nothing, and needs
 no review comment. The line's 4th field is `alone`, not `green|red`, so it is no gate run: the flake verdict
 (proof must come from ANOTHER PR's red-then-green on one tree) and the scorecard's gate count ignore it.
 `gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` is only for `--alone`.
