@@ -642,9 +642,11 @@ async function runItem(item) {
         if (!branchSeen.has(r.branch)) state.branchWarnings.push(`${who} returned an invalid branch name, ignored`)
         branchSeen.add(r.branch)
       } else {
-        if (r.branch !== laneBranch(state) && !branchSeen.has(r.branch)) state.branchWarnings.push(`${who} returned branch ${r.branch}, the lane's is ${laneBranch(state)}`)
+        if (r.branch !== laneBranch(state) && !r.branch.startsWith(`${laneBranch(state)}-`) && !branchSeen.has(r.branch)) state.branchWarnings.push(`${who} returned branch ${r.branch}, the lane's is ${laneBranch(state)}`)
         branchSeen.add(r.branch)
-        if (state.pr || r.branch === laneBranch(state)) state.branch = r.branch
+        // `<lane>-<n>` = the brief's answer to a stale origin branch of that name (point 1): the lane moves to it, or the next worker pushes to the stale one.
+        const suffixed = r.branch.startsWith(`${laneBranch(state)}-`) && /^\d+$/.test(r.branch.slice(laneBranch(state).length + 1))
+        if (state.pr || r.branch === laneBranch(state) || suffixed) state.branch = r.branch
       }
     }
     if (r.head_sha) state.headSha = r.head_sha
@@ -662,7 +664,7 @@ async function runItem(item) {
     let stalls = 0
     let prev = state.headSha || ''
     for (let h = 0; ; h++) {
-      if (step.startsWith('Implement') && ++state.builders > MAX_LANE_BUILDERS) return { ...r, status: 'blocked', guard_active: true, blocked_reason: `${MAX_LANE_BUILDERS} builder agents started in this lane already (slices and handoffs): the work is too big for one lane` }
+      if (step.startsWith('Implement') && ++state.builders > MAX_LANE_BUILDERS) return { status: 'blocked', guard_active: true, step_budget: 'counting (no agent ran: the lane builder cap)', head_sha: state.headSha, blocked_reason: `${MAX_LANE_BUILDERS} builder agents started in this lane already (slices and handoffs): the work is too big for one lane` }
       const extra = h
         ? [continueOn(state, { check: true, pr }), `The previous ${who} handed off at its step budget (brief point 11). Its note — do not redo what it says is done: ${r.handoff_note || '(none)'}`, learnedLines(r).length ? `Files it read and did not change (path:lines — what matters). Trust these and open one only to change it:\n${learnedLines(r).map((l) => '- ' + l).join('\n')}` : '', task].filter(Boolean).join('\n')
         : cont ? `${continueOn(state, { check, pr })}\n${task}` : task
@@ -709,7 +711,7 @@ async function runItem(item) {
   // A resumed lane with a PR goes straight to review, so no builder would prove the guard: one cheap agent does, and checks the SHA.
   if (resumedPr) {
     const prove = 'sapu:sapu-haiku-medium'
-    const v = await testSlot(() => agent(workerPrompt(item, state, prove, `This is a verification step, not work: change nothing, commit nothing. After the canary, run \`gh pr view ${resume.pr} --json headRefOid\` and return status "pr_opened", pr_number ${resume.pr}, branch ${resume.branch}, head_sha = that headRefOid (full SHA), summary "verified".`, false), opts(prove, {
+    const v = await testSlot(() => agent(workerPrompt(item, state, prove, `This is a verification step, not work: change nothing, commit nothing. After the canary, run \`gh pr view ${resume.pr} --json headRefOid,headRefName,state\` and return status "pr_opened", pr_number ${resume.pr}, branch = its headRefName, head_sha = its headRefOid (full SHA), summary = its state (OPEN, CLOSED or MERGED), each exactly as GitHub printed it.`, false), opts(prove, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Resume', label: tag(item, effortOf(prove), 'resume check'),
     })))
     trailRow(state, 'Resume check', prove, workerResult(v))
@@ -717,6 +719,8 @@ async function runItem(item) {
     if (!audit(v, prove)) return noGuard(prove)
     const actual = typeof v.head_sha === 'string' ? v.head_sha.trim().toLowerCase() : ''
     if (!actual.startsWith(resume.headSha.toLowerCase())) return done('blocked', { reason: `resume.headSha is not the PR head (${actual || 'unreadable'})` })
+    if (v.branch !== resume.branch) return done('blocked', { reason: `PR #${resume.pr} is not on resume.branch (its head branch: ${v.branch || 'unreadable'})` })
+    if (String(v.summary || '').trim().toUpperCase() !== 'OPEN') return done('blocked', { reason: `PR #${resume.pr} is not open (${String(v.summary || 'unreadable').slice(0, 20)})` })
   }
   // 2. implement, with at most one escalation step up the ladder
   // A resumed lane with a PR skips the Implement step: the review reads the PR as it stands.

@@ -266,15 +266,6 @@ export function validate(c) {
     if (isStr(c.gate.fast) && isStr(c.gate.merge)) {
       const norm = (x) => x.trim().split(/\s+/).join(" ");
       need(norm(c.gate.fast) !== norm(c.gate.merge), "gate.fast must differ from gate.merge (workers may never run the merge gate)");
-      if (isStr(c.gate.diff)) {
-        // The guard denies the merge gate's words (gateRules in sapu-guard.mjs) unless the command carries the extra words the fast gate adds to it.
-        const d = norm(c.gate.diff).split(" ");
-        const m = norm(c.gate.merge).split(" ");
-        const f = norm(c.gate.fast).split(" ");
-        const allow = f.length > m.length && m.every((w, i) => f[i] === w) ? f.slice(m.length) : [];
-        const denied = m.every((w, i) => d[i] === w) && !(allow.length && allow.every((w) => d.includes(w)));
-        need(!denied, "gate.diff must differ from gate.merge (workers may never run the merge gate: the guard would refuse a command that starts with it)");
-      }
     }
   } else errs.push("gate must be an object");
   need(c.redAreas === null || isStr(c.redAreas), "redAreas must be a command or null");
@@ -2081,6 +2072,16 @@ function main(argv) {
         const last = (`${r.stderr || ""}`.trim() || `${r.stdout || ""}`.trim()).split("\n").pop().slice(0, 200);
         fail(`test infrastructure is down: gate.infra (${infra}) ${how}${last ? ` — ${last}` : ""}. Bring it up as the profile's Step 0 says, then build the lane again.`);
       }
+    }
+    // gate.diff is run by every worker before its PR: a command the guard refuses (the merge gate's words or script)
+    // would cost each worker a refused step and never run. Judged by the guard itself, never a copy of its matcher (a copy
+    // drifts: npx/env prefixes, run aliases, script paths). A child process because the guard imports this module.
+    const diffGate = contract.gate && contract.gate.diff;
+    if (isStr(diffGate)) {
+      const probe = `import { check, compileRules } from ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts/sapu-guard.mjs"))}; const [c, m, d] = JSON.parse(process.argv[1]); process.stdout.write(check({ command: d, cwd: m + "/.claude/worktrees/sapu-gate-diff-probe", main: m, rules: compileRules(c) }) || "");`;
+      const r = spawnSync(process.execPath, ["--input-type=module", "-e", probe, JSON.stringify([contract, mainDir, diffGate])], { encoding: "utf8", timeout: 30_000 });
+      if (r.status !== 0) fail(`could not check gate.diff against the guard: ${`${r.stderr || r.error || ""}`.trim().split("\n").pop()}`);
+      if (r.stdout.trim()) fail(`gate.diff (${diffGate}) would be refused to every worker by the guard: ${r.stdout.trim()} Give gate.diff a command that is not the merge gate.`);
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);

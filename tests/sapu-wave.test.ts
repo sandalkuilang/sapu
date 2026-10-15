@@ -1523,12 +1523,13 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
   });
 
   it("resume with a PR: no scout and no builder, the first call is the review, the PR is the resumed one", async () => {
-    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000` })));
+    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000`, branch: resume.branch, summary: "OPEN" })));
     expect(scouts).toHaveLength(0);
     // one cheap agent proves the guard canary and that resume.headSha is the PR head; then the review
     expect(calls.map((c) => c.opts.phase)).toEqual(["Resume", "Review"]);
     expect(calls[0].opts.agentType).toBe("sapu:sapu-haiku-medium");
-    expect(calls[0].prompt).toContain("gh pr view 555 --json headRefOid");
+    expect(calls[0].prompt).toContain("gh pr view 555 --json headRefOid,headRefName,state");
+    expect(calls[0].prompt).not.toContain(`branch ${resume.branch}`); // read from GitHub, never echoed from the prompt
     expect(calls[1].prompt).toContain("555");
     expect(stepNames(out[0])).toEqual(["Resume", "Resume check", "Review"]);
     expect(out[0]).toMatchObject({ status: "ready", pr: 555, branch: "feat/issue-73-x" });
@@ -1536,12 +1537,33 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
 
   it("a resumed lane that needs a fix continues on the resumed branch", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c, n) =>
-      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix" }),
+      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix", summary: "OPEN" }),
     );
     const fix = calls.find((c) => c.opts.phase === "Fix")!;
     expect(fix.prompt).toContain("git reset --hard abc1234def");
     expect(fix.prompt).toContain("git push origin HEAD:feat/issue-73-x");
     expect(fix.prompt).toMatch(/PR .555 already exists, never open a new PR/);
+  });
+
+  it("the resume check blocks a PR that is closed or on another branch (N4)", async () => {
+    const run = (over: Item) => runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0`, branch: resume.branch, summary: "OPEN", ...over })));
+    const closed = await run({ summary: "MERGED" });
+    expect(closed.out[0]).toMatchObject({ status: "blocked", reason: expect.stringMatching(/PR .555 is not open \(MERGED\)/) });
+    expect(closed.calls.some((c) => c.opts.phase === "Review")).toBe(false);
+    const other = await run({ branch: "feat/other" });
+    expect(other.out[0]).toMatchObject({ status: "blocked", reason: expect.stringMatching(/not on resume\.branch \(its head branch: feat\/other\)/) });
+  });
+
+  it("a slice that met a stale origin branch moves the lane to <branch>-<n>; later slices push there (N1)", async () => {
+    const sc = (c: Call) => planned(c, { slices: [{ title: "a", files: ["a.ts"], plan_section: "## Slice 1: a" }, { title: "b", files: ["b.ts"], plan_section: "## Slice 2: b" }] });
+    const { out, calls } = await runWave({ main: MAIN, items: [item(73)] }, (c, n) => {
+      if (c.opts.phase === "Review") return clean;
+      const pinned = /Your branch for this issue is `([^`]+)`/.exec(c.prompt)?.[1] ?? "";
+      return n === 1 ? opened(73, { status: "slice_done", pr_number: 0, branch: `${pinned}-2`, head_sha: "sha-s1" }) : opened(73, { head_sha: "sha-s2", branch: undefined });
+    }, sc);
+    const slice2 = calls.filter((c) => c.opts.phase === "Implement")[1];
+    expect(slice2.prompt).toMatch(/git push origin HEAD:feat\/issue-73-[^\s\`]*-2\b/);
+    expect(out[0].branchWarnings).toEqual([]);
   });
 
   it("an invalid resume is rejected before anything runs", async () => {

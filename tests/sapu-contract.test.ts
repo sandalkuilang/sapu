@@ -155,8 +155,6 @@ describe("validate", () => {
     ["a smoke check flag that is not a boolean", (c: any) => (c.gate.smokeCheck = "yes"), /gate\.smokeCheck must be true or false/],
     ["a gate.diff that is not a command", (c: any) => (c.gate.diff = true), /gate\.diff must be a command/],
     ["an empty gate.diff", (c: any) => (c.gate.diff = "  "), /gate\.diff must be a command/],
-    ["a gate.diff that extends gate.merge, which the guard refuses", (c: any) => ((c.gate.merge = "npm run gate"), (c.gate.fast = "npm run check"), (c.gate.diff = "npm run gate -- --diff")), /gate\.diff must differ from gate\.merge/],
-    ["a gate.diff equal to gate.merge", (c: any) => (c.gate.diff = ` ${c.gate.merge}  `), /gate\.diff must differ from gate\.merge/],
     ["a gate.testFiles that is not a command", (c: any) => (c.gate.testFiles = ["vitest"]), /gate\.testFiles must be a command/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
@@ -813,6 +811,17 @@ describe("loadContract and the CLI", () => {
     expect(Object.keys(w)).toEqual(["main", "pluginRoot", "profiles", "contract"]);
     expect(w.pluginRoot).toMatch(/plugins\/sapu$/);
     expect(w.contract).not.toHaveProperty("guard");
+  });
+
+  it("`wave-args` refuses a gate.diff the guard would refuse every worker (judged by the guard itself)", () => {
+    const withDiff = (gate: object) => commit(repo, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, gate: { ...FIXTURE_CONTRACT.gate, ...gate } }) });
+    withDiff({ merge: "npm run gate", fast: "npm run check", diff: "npm run gate -- --diff" }); // extends the merge gate
+    expect(cli(repo, ["wave-args"]).err).toMatch(/gate\.diff \(npm run gate -- --diff\) would be refused to every worker by the guard/);
+    withDiff({ merge: "npx vitest run", fast: "npm run check", diff: "vitest run --changed" }); // npx peeled: the guard's matcher, not a word prefix
+    expect(cli(repo, ["wave-args"]).err).toMatch(/would be refused to every worker/);
+    withDiff({ merge: "npm run gate", fast: "npm run check", diff: "npm run gate:diff" }); // a different script passes
+    expect(cli(repo, ["wave-args"]).status).toBe(0);
+    withDiff({});
   });
 
   it("`wave-args` refuses to build a lane while the contract's gate.infra probe fails", () => {
