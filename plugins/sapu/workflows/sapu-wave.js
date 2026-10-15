@@ -38,7 +38,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.20.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.21.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -57,7 +57,7 @@ const MODEL = {
   'sapu:sapu-sonnet-high': ['sonnet', 'high'],
   'sapu:sapu-opus-medium': ['opus', 'medium'],
   'sapu:sapu-opus-high': ['opus', 'high'],
-  'sapu:sapu-haiku-medium': ['haiku', 'medium'], // a scout only (tuning.scoutTier), never on LADDER
+  'sapu:sapu-haiku-medium': ['haiku', 'medium'], // a scout only (tuning.scoutTier "haiku"), never on LADDER
 }
 const RED_FLOOR = 'sapu:sapu-sonnet-high'
 // Specialists are named by ROLE; the contract maps each role to a subagent type (wave-args
@@ -316,8 +316,9 @@ const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number
 // The scout only reads and writes a plan; the builder that follows (the author's tier) checks every snippet of it
 // against the code and the reviewers check the PR. So an Opus lane scouts one model down, at the same effort.
 const SCOUT_OF = { 'sapu:sapu-opus-medium': 'sapu:sapu-sonnet-medium', 'sapu:sapu-opus-high': 'sapu:sapu-sonnet-high' }
-// tuning.scoutTier "haiku" (default): every scout runs on Haiku/medium whatever the author's tier; the builder still checks each snippet. "off" = as above.
-const SCOUT_TIER = C.scoutTier === 'off' ? null : 'sapu:sapu-haiku-medium'
+// tuning.scoutTier: "sonnet-high" (default) or "haiku": every scout runs there whatever the author's tier, because the plan is the lever
+// that sets how much the builder re-explores; the builder still checks each snippet. "off" = as above (one model down from an Opus lane).
+const SCOUT_TIER = C.scoutTier === 'off' ? null : C.scoutTier === 'haiku' ? 'sapu:sapu-haiku-medium' : 'sapu:sapu-sonnet-high'
 const scoutOf = (w) => SCOUT_TIER || SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]

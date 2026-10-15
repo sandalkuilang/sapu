@@ -194,10 +194,15 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     expect(calls.find((c) => c.opts.phase === "Implement")!.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
     const r = await runWave({ main: MAIN, contract: { ...CONTRACT, scoutTier: "off" }, items: [item(51, { worker: "sapu:sapu-opus-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(51)));
     expect(r.scouts[0].opts.agentType).toBe("sapu:sapu-sonnet-high");
-    // no tuning keys at all = the defaults: Haiku scout, Sonnet author (an Opus item is clamped), Opus/medium reviewers
+    // no tuning keys at all = the defaults: Sonnet/high scout, Sonnet author (an Opus item is clamped), Opus/medium reviewers
     const { workerCeiling, scoutTier, reviewEffort, ...bare } = CONTRACT;
     const d = await runWave({ main: MAIN, contract: bare, items: [item(53, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(53)));
-    expect(d.scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-haiku-medium", model: "haiku" });
+    expect(d.scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", model: "sonnet", effort: "high" });
+    // the scout is Sonnet/high even for an item whose author runs on Sonnet/medium; junk falls back to the default, "haiku" opts into Haiku
+    for (const [scoutTier, want] of [[undefined, "sapu:sapu-sonnet-high"], ["sonnet", "sapu:sapu-sonnet-high"], ["haiku", "sapu:sapu-haiku-medium"]] as const) {
+      const g = await runWave({ main: MAIN, contract: { ...bare, scoutTier }, items: [item(54, { worker: "sapu:sapu-sonnet-medium" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(54)));
+      expect(g.scouts[0].opts.agentType, String(scoutTier)).toBe(want);
+    }
     for (const c of d.calls) {
       if (c.opts.phase === "Implement" || c.opts.phase === "Fix") expect(c.opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", model: "sonnet" });
       if (c.opts.phase === "Review") expect(c.opts).toMatchObject({ model: "opus", effort: "medium" });

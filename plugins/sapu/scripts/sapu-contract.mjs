@@ -781,7 +781,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "haiku", contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -819,7 +819,7 @@ function tuningProblems(t) {
   }
   if ("workerTier" in t && t.workerTier !== null && !["sonnet-medium", "sonnet-high", "opus-medium", "opus-high"].includes(t.workerTier)) errs.push('tuning.workerTier must be "sonnet-medium", "sonnet-high", "opus-medium" or "opus-high" (or absent)');
   if ("workerCeiling" in t && t.workerCeiling !== null && !["sonnet-high", "opus-medium", "opus-high"].includes(t.workerCeiling)) errs.push('tuning.workerCeiling must be "sonnet-high" (default), "opus-medium" or "opus-high" (or absent; the 🔴 floor is Sonnet/high)');
-  if ("scoutTier" in t && t.scoutTier !== null && !["haiku", "off"].includes(t.scoutTier)) errs.push('tuning.scoutTier must be "haiku" (default) or "off" (or absent)');
+  if ("scoutTier" in t && t.scoutTier !== null && !["sonnet-high", "haiku", "off"].includes(t.scoutTier)) errs.push('tuning.scoutTier must be "sonnet-high" (default), "haiku" or "off" (or absent)');
   if ("reviewEffort" in t && !["medium", "high"].includes(t.reviewEffort)) errs.push('tuning.reviewEffort must be "medium" or "high" (the reviewers always run on Opus)');
   if ("codeSearchFirst" in t) {
     const g = t.codeSearchFirst;
