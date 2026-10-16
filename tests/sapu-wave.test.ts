@@ -1792,4 +1792,30 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(delta.prompt).toContain("[rule unbounded-read]");
     expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).toContain("a.ts:1 — c — f [rule unbounded-read]");
   });
+
+  it("F6: the same rule with a reworded claim at cycle 2 → the second fix is ONE redesign step on opus-high, counted as a cycle", async () => {
+    const reviews = [ruled("unbounded-read", "reads the whole file"), ruled("Unbounded-Read", "slurps the upload into memory"), clean];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(230)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(230, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    const [normal, redesign] = calls.filter((c) => c.opts.phase === "Fix");
+    expect(normal.prompt).toContain("Fix ALL of the review findings below");
+    expect(redesign.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high", isolation: "worktree" });
+    expect(redesign.prompt).toContain("Findings of class `unbounded-read` came back after a fix: patching instances does not converge.");
+    expect(redesign.prompt).toContain("Replace them with ONE structural rule that makes the class impossible in the lines this PR changed (a single choke point, a type, an invariant check).");
+    expect(redesign.prompt).toContain("Keep the tests of every earlier finding of this class green, add one test for the class.");
+    expect(redesign.prompt).toContain("slurps the upload into memory");
+    expect(redesign.prompt).not.toContain("Fix ALL of the review findings below");
+    expect(redesign.opts.label).toMatch(/redesign 2/);
+    expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review", "Fix 1", "Review (delta)", "Redesign 2", "Review (delta)"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 2 });
+  });
+
+  it("F6: under /sapu opus the redesign runs on the opus floor", async () => {
+    const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
+    const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(231)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(231, { head_sha: fixSha(c, n) }));
+    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus" });
+  });
 });
