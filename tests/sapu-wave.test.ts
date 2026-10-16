@@ -1841,7 +1841,15 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
       c.opts.phase === "Review" ? reviews[n - 1] : opened(241, { head_sha: fixSha(c, n) }));
     expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3); // two fixes + the redesign, never a fourth
     expect(out[0]).toMatchObject({ status: "blocked", cycles: 3 });
-    expect(String(out[0].reason)).toMatch(/findings still open, after 2 fix cycles/);
+    expect(String(out[0].reason)).toMatch(/findings still open, after 3 fix cycles/); // the real count: two fixes + the redesign
+  });
+
+  it("F6 (L4): the 'still recurs' reason names every redesigned rule that came back", async () => {
+    const reviews = [ruledMany([["rule-a", "a1"], ["rule-b", "b1"]]), ruledMany([["rule-a", "a2"], ["rule-b", "b2"]]), ruledMany([["rule-a", "a3"], ["rule-b", "b3"]])];
+    const { out } = await runWave({ main: MAIN, items: [item(242)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(242, { head_sha: fixSha(c, n) }));
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toContain("class rule-a, rule-b still recurs after a redesign: owner decision");
   });
 
   it("F6: the same class again after the redesign → blocked 'class <rule> still recurs after a redesign: owner decision', no third fix", async () => {

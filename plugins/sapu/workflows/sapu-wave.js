@@ -824,7 +824,7 @@ async function runItem(item) {
       const redesign = recurring.length > 0 && state.redesignedRules.length === 0
       const cap =state.tier === 'red' ? MAX_FIX_CYCLES_RED : MAX_FIX_CYCLES
       const why =
-        state.cycles >= cap ? `after ${cap} fix cycles`
+        state.cycles >= cap ? `after ${state.cycles} fix cycles` // the real count: a redesign past the cap makes it cap + 1
         : state.cycles < MAX_FIX_CYCLES ? null
         : before !== null && keys.size >= before ? `not converging: ${keys.size} finding(s) after ${before} the round before (cycle ${state.cycles})`
         : [...seen.values()].some((n) => n >= 3) ? `a finding was reported by three reviews in a row (cycle ${state.cycles})`
