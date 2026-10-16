@@ -577,8 +577,8 @@ describe("issue and PR text reaches an agent only through the trust commands", (
 
 // Every skill file is loaded into an agent's context on every run: growth costs tokens forever.
 const BUDGETS: Record<string, number> = {
-  "skills/sapu/SKILL.md": 42_625, // +--closes in A5 and the flake-signature note (lane B; the budget was already over at HEAD); +the --alone check line in A5; +scout → builder and the handoff progress rule in B3; +the B3 `resume` bullet
-  "skills/sapu/subagent-brief.md": 15_352, // +point 9: never "to close #N" in prose (--closes); +the `-2` suffix when the pinned branch is a stale earlier run; +the pinned branch, the continuing worker's `state_check` and the test-first commit (RED proof survives a handoff); +gate.diff in point 6; +slice_done: a non-last slice opens no PR; +batched exploration: one call per round of lookups saves whole turns; +handoff `learned`: the next worker skips re-reading what the last one read
+  "skills/sapu/SKILL.md": 43_353, // +the brake rule, class redesign and orchestrator context reminder (2.24.0 lanes A, C); +--closes in A5 and the flake-signature note (lane B; the budget was already over at HEAD); +the --alone check line in A5; +scout → builder and the handoff progress rule in B3; +the B3 `resume` bullet
+  "skills/sapu/subagent-brief.md": 15_555, // +slice_done vs pr_opened for a fixer and pr_state for the resume check (2.24.0 lane A); +point 9: never "to close #N" in prose (--closes); +the `-2` suffix when the pinned branch is a stale earlier run; +the pinned branch, the continuing worker's `state_check` and the test-first commit (RED proof survives a handoff); +gate.diff in point 6; +slice_done: a non-last slice opens no PR; +batched exploration: one call per round of lookups saves whole turns; +handoff `learned`: the next worker skips re-reading what the last one read
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
