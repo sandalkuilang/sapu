@@ -1719,4 +1719,9 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
       expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in \/dev-review round 1/);
     });
   });
+
+  it("F1 doc: brief point 10 tells a fixer on an existing PR to return pr_opened", () => {
+    const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
+    expect(brief).toContain("A fixer pushing to an existing PR returns `pr_opened` (`slice_done` is accepted too)");
+  });
 });
