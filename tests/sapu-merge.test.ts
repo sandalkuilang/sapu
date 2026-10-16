@@ -668,6 +668,60 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
   });
 });
 
+describe("sapu-merge.sh — a real runner's failure output is read into file@sig (live probe)", () => {
+  const ROOT = join(__dirname, "..");
+  // Each runner is run on a tiny failing project; its REAL output goes to the script as the gate's output. A runner that
+  // is not installed here skips its test (the title says what it needs): the format it prints is then unverified.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VITEST")));
+  const has = (cmd: string, ...args: string[]) => spawnSync(cmd, args, { stdio: "ignore" }).status === 0;
+  const sandbox = (files: Record<string, string>) => {
+    const d = join(top, `live${++n}`);
+    mkdirSync(d, { recursive: true });
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(d, f), text);
+    return d;
+  };
+  const output = (cwd: string, cmd: string, args: string[]) => {
+    const r = spawnSync(cmd, args, { cwd, env: { ...env, FORCE_COLOR: "0", NO_COLOR: "1", CI: "1" }, encoding: "utf8" });
+    return `${r.stdout}${r.stderr}`;
+  };
+  const recorded = (out: string) => {
+    const h = harness();
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out }).status).toBe(2);
+    return readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").trim().split("\n").at(-1)!;
+  };
+
+  it("vitest (this repo's runner): each failing file with its first error line", () => {
+    const d = sandbox({
+      "a.test.ts": `import { it, expect } from "vitest";\nit("orders races", () => { expect(1 + 1).toBe(3); });\nit("second", () => { throw new Error("boom 4711 at /tmp/x/y.ts"); });\n`,
+      "b.test.ts": `import { it, expect } from "vitest";\nit("b one", () => { expect("abc").toEqual("abd"); });\n`,
+    });
+    symlinkSync(join(ROOT, "node_modules"), join(d, "node_modules"));
+    const out = output(d, join(ROOT, "node_modules/.bin/vitest"), ["run"]);
+    expect(out).toMatch(/ FAIL {2}a\.test\.ts > orders races\nAssertionError: expected 2 to be 3/); // the probe produced a real failure
+    expect(recorded(out)).toContain(
+      ` failed=a.test.ts@${sigOf("AssertionError: expected N to be N // Object.is equality")},b.test.ts@${sigOf("AssertionError: expected Q to deeply equal Q")} `,
+    );
+  });
+
+  it.skipIf(!existsSync(join(ROOT, "node_modules/.bin/jest")))("jest (skipped: not installed here)", () => {
+    const d = sandbox({ "t.test.js": `it("adds", () => { expect(1 + 1).toBe(3); });\n`, "package.json": "{}" });
+    const out = output(d, join(ROOT, "node_modules/.bin/jest"), []);
+    expect(recorded(out)).toMatch(/ failed=\S*t\.test\.js@[0-9a-f]{8} /);
+  });
+
+  it.skipIf(!has("python3", "-m", "pytest", "--version"))("pytest (skipped: python3 -m pytest not installed here)", () => {
+    const d = sandbox({ "test_t.py": "def test_x():\n    assert 1 + 1 == 3\n" });
+    const out = output(d, "python3", ["-m", "pytest", "-q", "test_t.py"]);
+    expect(recorded(out)).toMatch(/ failed=test_t\.py@[0-9a-f]{8} /);
+  });
+
+  it.skipIf(!has("go", "version"))("go test (skipped: go not installed here)", () => {
+    const d = sandbox({ "go.mod": "module example.com/t\n\ngo 1.21\n", "t_test.go": 'package t\nimport "testing"\nfunc TestX(t *testing.T) { if 1+1 != 3 { t.Fatalf("expected 3 got %d", 1+1) } }\n' });
+    const out = output(d, "go", ["test", "./..."]);
+    expect(recorded(out)).toMatch(/ failed=example\.com\/t@[0-9a-f]{8} /);
+  });
+});
+
 const cpuCount = () => osCpus().length;
 
 describe("sapu-merge.sh — gate workers come from the machine", () => {
