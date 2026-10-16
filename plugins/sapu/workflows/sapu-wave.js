@@ -159,8 +159,8 @@ const WORKER_TIER = OPUS_FLOOR && TIER_SET && LADDER.indexOf(TIER_SET) < LADDER.
 // and an ESCALATE at the ceiling blocks for a human. Absent = the top of the ladder. The reviewers are not workers and ignore it.
 const CEILING = OPUS_FLOOR ? LADDER[LADDER.length - 1] : typeof C.workerCeiling === 'string' && LADDER.includes(`sapu:sapu-${C.workerCeiling}`) ? `sapu:sapu-${C.workerCeiling}` : RED_FLOOR // default: workers never reach Opus
 // The one redesign step of a lane (F6): a finding class that came back after a fix cycle is replaced by a structural rule instead of patched
-// again. Opus/high, or the opus floor under `/sapu opus`.
-const REDESIGN_AGENT = OPUS_FLOOR || 'sapu:sapu-opus-high'
+// again. Always Opus/high, under `/sapu opus` too (its floor is Opus/medium; the redesign is never below Opus/high).
+const REDESIGN_AGENT = 'sapu:sapu-opus-high'
 const PREPR_AGENT = 'general-purpose'
 // The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
 // (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.
@@ -381,7 +381,11 @@ const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
 const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}${ruleOf(f) ? ` [rule ${ruleOf(f)}]` : ''}`).join('\n')
-const redesignTask = (rules, fs) => `Findings of class ${rules.map((x) => `\`${x}\``).join(', ')} came back after a fix: patching instances does not converge. Replace them with ONE structural rule that makes the class impossible in the lines this PR changed (a single choke point, a type, an invariant check). Keep the tests of every earlier finding of this class green, add one test for the class. Fix any other finding below in the same commit.\n${listFindings(fs)}`
+// The guard clauses of every fix prompt, the redesign's too: tests of the attack and of the legitimate case, the PR's own tests rerun,
+// a business-policy choice goes to the owner, and the previous author's assumptions are checked against the findings.
+const fixGuards = (state) => ` Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}`
+// `earlier` = Map rule -> the findings of that class reported before this review (the history of each redesigned class)
+const redesignTask = (rules, fs, state, earlier) => `Findings of class ${rules.map((x) => `\`${x}\``).join(', ')} came back after a fix: patching instances does not converge. Replace them with ONE structural rule that makes the class impossible in the lines this PR changed (a single choke point, a type, an invariant check). Keep the tests of every earlier finding of this class green, add one test for the class. Fix any other finding below in the same commit.${fixGuards(state)}${rules.map((x) => (earlier.get(x) || []).length ? `\nEarlier findings of class \`${x}\` (keep their tests green):\n${listFindings(earlier.get(x))}` : '').join('')}\nFindings now:\n${listFindings(fs)}`
 // An agent's label is the run panel's Agent column: the issue, then the effort (the panel's Model
 // column shows the model but never the effort), then only what tells two rows of a phase apart.
 const effortOf = (agentType) => (MODEL[agentType] || PAIR_MODEL)[1]
@@ -610,7 +614,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, fixedRules: new Map(), redesignedRules: [], trail: [] }
   const comments = []
   const notes = []
   const branchSeen = new Set()
@@ -809,7 +813,6 @@ async function runItem(item) {
     let seen = new Map() // finding key -> reviews in a row that reported it
     let before = null // the previous review's count of distinct findings
     let tier = state.tier
-    const fixedRules = new Set() // the finding classes (their `rule`) a fix cycle of this loop already addressed
     while (!rv.clean) {
       // a tier raised mid-loop brings a new reviewer set: convergence starts over against it
       if (state.tier !== tier) { tier = state.tier; seen = new Map(); before = null }
@@ -818,12 +821,14 @@ async function runItem(item) {
       for (const k of keys) seen.set(k, (seen.get(k) || 0) + 1)
       // F6: a class a fix cycle addressed and this review reports again (the exact claim may be reworded) → one structural redesign per lane
       // instead of another patch. It is checked before the cap below, so a lane at its cap still gets its one redesign and a review.
-      const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => fixedRules.has(x))
-      if (recurring.length > 0 && state.redesigned) return done('blocked', { reason: `class ${recurring[0]} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
-      const redesign = recurring.length > 0 && !state.redesigned
+      const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => state.fixedRules.has(x))
+      // After the redesign only a recurrence of a class that WAS redesigned is the owner's call; any other class follows the normal cap and convergence rules.
+      const stillRecurs = recurring.filter((x) => state.redesignedRules.includes(x))
+      if (stillRecurs.length > 0) return done('blocked', { reason: `class ${stillRecurs.join(', ')} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
+      const redesign = recurring.length > 0 && state.redesignedRules.length === 0
       const cap =state.tier === 'red' ? MAX_FIX_CYCLES_RED : MAX_FIX_CYCLES
       const why =
-        state.cycles >= cap ? `after ${cap} fix cycles`
+        state.cycles >= cap ? `after ${state.cycles} fix cycles` // the real count: a redesign past the cap makes it cap + 1
         : state.cycles < MAX_FIX_CYCLES ? null
         : before !== null && keys.size >= before ? `not converging: ${keys.size} finding(s) after ${before} the round before (cycle ${state.cycles})`
         : [...seen.values()].some((n) => n >= 3) ? `a finding was reported by three reviews in a row (cycle ${state.cycles})`
@@ -831,8 +836,9 @@ async function runItem(item) {
       if (why && !redesign) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
       before = keys.size
       state.cycles++
-      if (redesign) state.redesigned = true // at most once per lane
-      for (const f of rv.findings) if (ruleOf(f)) fixedRules.add(ruleOf(f))
+      if (redesign) state.redesignedRules.push(...recurring) // at most once per lane
+      const earlier = new Map(recurring.map((x) => [x, state.fixedRules.get(x)]))
+      for (const f of rv.findings) if (ruleOf(f)) state.fixedRules.set(ruleOf(f), [...(state.fixedRules.get(ruleOf(f)) || []), f])
       const sinceSha = state.headSha
       // Many findings over several files go to one fixer per file, in turn; a fixer's context grows with every file it opens.
       const byFile = new Map()
@@ -854,7 +860,7 @@ async function runItem(item) {
         const part = groups.length > 1 ? ` (group ${g + 1}/${groups.length})` : ''
         r = await runWorker(fixer, {
           cont: true, step: redesign ? `Redesign ${state.cycles}` : `Fix ${state.cycles}${part}`, phase: 'Fix', label: tag(item, effortOf(fixer), redesign ? `redesign ${state.cycles}` : `fix ${state.cycles}${part}`),
-          task: redesign ? redesignTask(recurring, fs) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch).${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''} Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes; then rerun every test this PR added, and verify as in brief point 6. A finding whose fix needs a business-policy choice the issue does not settle (how existing data or periods are treated, say) is not yours to make: return status "blocked" with blocked_reason = the one question for the owner.${state.assumptions ? `\nThe previous author's assumptions — check each against the findings: ${state.assumptions}` : ''}\n${listFindings(fs)}`,
+          task: redesign ? redesignTask(recurring, fs, state, earlier) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch).${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''}${fixGuards(state)}\n${listFindings(fs)}`,
         })
         if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}${part}` })
         if (!absorb(r, fixer)) return noGuard(fixer)

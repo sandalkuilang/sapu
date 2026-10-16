@@ -199,6 +199,8 @@ whose program is on `PATH`), `workerTier` (absent by default: a ladder entry suc
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.
 
+The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling` (deliberate: one Opus/high run per lane at most costs less than repeated patch rounds on a recurring finding class).
+
 ### Specialist agents
 
 The engine calls specialists by **role**, never by the name of an agent that exists on only one machine:
@@ -252,9 +254,9 @@ Opus/high. A repo that maps roles to its own agents is responsible for those age
 **Findings carry a `rule`.** Every reviewer finding in a wave names the rule it breaks (`rule`, kebab-case, at
 most 40 characters, e.g. `unbounded-read`), and reuses an earlier finding's rule name for the same class. When
 a rule is reported again after a fix cycle addressed it (matched case-insensitively, by exact name), the lane does
-not patch again: one redesign step (`sapu:sapu-opus-high`, the opus floor under `/sapu opus`) replaces the
+not patch again: one redesign step (always `sapu:sapu-opus-high`, under `/sapu opus` too) replaces the
 instances with one structural rule. It counts as a fix cycle, runs at most once per lane and before the cycle cap.
-A rule that recurs after it blocks the lane: `class <rule> still recurs after a redesign: owner decision`.
+Only a rule that WAS redesigned and recurs blocks the lane: `class <rule> still recurs after a redesign: owner decision`; any other rule follows the normal cap and convergence rules.
 The convergence rules on the exact claim (red: fewer findings per round, none in three reviews in a row) are unchanged.
 
 ### Trusted authors (public repositories)

@@ -1812,11 +1812,37 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "ready", cycles: 2 });
   });
 
-  it("F6: under /sapu opus the redesign runs on the opus floor", async () => {
+  it("F6 (L1): the redesign task carries the fix prompt's guard clauses and lists the earlier findings of the redesigned class", async () => {
+    const reviews = [ruled("unbounded-read", "reads the whole file", "a.ts:1"), ruled("unbounded-read", "slurps the upload into memory", "b.ts:9"), clean];
+    const { calls } = await runWave({ main: MAIN, items: [item(233)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(233, { head_sha: fixSha(c, n), assumptions: "leavers stop accruing from their end date" }));
+    const [normal, redesign] = calls.filter((c) => c.opts.phase === "Fix");
+    for (const clause of [
+      "Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes",
+      "rerun every test this PR added, and verify as in brief point 6",
+      'return status "blocked" with blocked_reason = the one question for the owner',
+      "The previous author's assumptions — check each against the findings: leavers stop accruing from their end date",
+    ]) {
+      expect(normal.prompt).toContain(clause);
+      expect(redesign.prompt).toContain(clause);
+    }
+    expect(redesign.prompt).toContain("Earlier findings of class `unbounded-read`");
+    expect(redesign.prompt).toContain("a.ts:1 — reads the whole file"); // the cycle-1 finding, kept in the lane's history
+    expect(redesign.prompt).toContain("b.ts:9 — slurps the upload into memory"); // the finding that came back
+  });
+
+  it("F6 (M1): under /sapu opus the redesign still runs on opus-high, never the opus-medium floor", async () => {
     const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
     const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(231)] }, (c, n) =>
       c.opts.phase === "Review" ? reviews[n - 1] : opened(231, { head_sha: fixSha(c, n) }));
-    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus" });
+    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
+  });
+
+  it("F6 (M2): the redesign is above workerTier and workerCeiling on purpose: workerTier sonnet-medium + a recurring rule → the redesign runs opus-high", async () => {
+    const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
+    const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, workerTier: "sonnet-medium", workerCeiling: "sonnet-medium" }, items: [item(232)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(232, { head_sha: fixSha(c, n) }));
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
   });
 
   it("F6: a lane at its cap still gets its one redesign and a review; clean → ready with 3 cycles", async () => {
@@ -1834,7 +1860,15 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
       c.opts.phase === "Review" ? reviews[n - 1] : opened(241, { head_sha: fixSha(c, n) }));
     expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3); // two fixes + the redesign, never a fourth
     expect(out[0]).toMatchObject({ status: "blocked", cycles: 3 });
-    expect(String(out[0].reason)).toMatch(/findings still open, after 2 fix cycles/);
+    expect(String(out[0].reason)).toMatch(/findings still open, after 3 fix cycles/); // the real count: two fixes + the redesign
+  });
+
+  it("F6 (L4): the 'still recurs' reason names every redesigned rule that came back", async () => {
+    const reviews = [ruledMany([["rule-a", "a1"], ["rule-b", "b1"]]), ruledMany([["rule-a", "a2"], ["rule-b", "b2"]]), ruledMany([["rule-a", "a3"], ["rule-b", "b3"]])];
+    const { out } = await runWave({ main: MAIN, items: [item(242)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(242, { head_sha: fixSha(c, n) }));
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toContain("class rule-a, rule-b still recurs after a redesign: owner decision");
   });
 
   it("F6: the same class again after the redesign → blocked 'class <rule> still recurs after a redesign: owner decision', no third fix", async () => {
@@ -1873,24 +1907,57 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
   });
 
-  it("F6 (red): the redesign runs once per lane; two recurring classes go in one step; a later class that recurs blocks", async () => {
+  const redQa = (rounds: unknown[], issue: number) => {
     let qa = 0;
-    const rounds = [
+    return runWave({ main: MAIN, items: [item(issue, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(issue, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === QA ? rounds[Math.min(qa++, rounds.length - 1)] : clean;
+    });
+  };
+
+  it("F6 (red): the redesign runs once per lane; two recurring classes go in one step; a later class that recurs is under the normal convergence rules", async () => {
+    const { out, calls } = await redQa([
       ruledMany([["rule-a", "claim a"], ["rule-b", "claim b"], ["rule-c", "claim c"]]),
       ruledMany([["rule-a", "claim a reworded"], ["rule-b", "claim b reworded"]]), // a and b came back → the redesign
       ruled("rule-d", "claim d"),
-      ruled("rule-d", "claim d reworded"), // d came back after a normal fix, but the lane's redesign is spent → blocked
-    ];
-    const { out, calls } = await runWave({ main: MAIN, items: [item(262, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
-      if (c.opts.phase !== "Review") return opened(262, { head_sha: fixSha(c, n) });
-      return c.opts.agentType === QA ? rounds[Math.min(qa++, rounds.length - 1)] : clean;
-    });
+      ruled("rule-d", "claim d reworded"), // d came back after a normal fix; the redesign is spent and d was not redesigned → not converging, not "still recurs"
+    ], 262);
     const fixes = calls.filter((c) => c.opts.phase === "Fix");
     expect(fixes.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high", "sapu:sapu-sonnet-high"]);
     expect(fixes[1].prompt).toContain("Findings of class `rule-a`, `rule-b` came back after a fix");
     expect(fixes.filter((c) => c.prompt.includes("ONE structural rule"))).toHaveLength(1);
     expect(out[0]).toMatchObject({ status: "blocked", tier: "red", cycles: 3 });
-    expect(String(out[0].reason)).toContain("class rule-d still recurs after a redesign: owner decision");
+    expect(String(out[0].reason)).toMatch(/not converging/);
+    expect(String(out[0].reason)).not.toMatch(/still recurs/);
+  });
+
+  it("F6 (M3): after the redesign only a rule that WAS redesigned blocks: red 4 findings → 2 → redesign → 1 other rule continues", async () => {
+    const { out, calls } = await redQa([
+      ruledMany([["rule-a", "a"], ["rule-b", "b"], ["rule-c", "c"], ["rule-d", "d"]]),
+      ruledMany([["rule-a", "a reworded"], ["rule-b", "b reworded"]]), // a and b recur → the redesign
+      ruled("rule-c", "c reworded"), // c came back, but it was not redesigned: normal rules, 1 < 2 findings → another fix
+      clean,
+    ], 263);
+    expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high", "sapu:sapu-sonnet-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+  });
+
+  it("F6 (L3): the fixed-rules set lives in the lane, so a class fixed before the pre-PR phase and reported again by the delta review after it is redesigned", async () => {
+    const PRE = { run: "/dev-review", severities: ["critical", "medium", "low"], paste: "body" };
+    const prePrOut = (dirty: boolean) => ({
+      counts: { critical: 0, medium: dirty ? 1 : 0, low: 0 },
+      findings: dirty ? [{ severity: "medium", where: "b.ts:2", what: "med" }] : [],
+      output_file: "/tmp/dev-review.md",
+      pasted: !dirty,
+    });
+    const reviews = [ruled("unbounded-read", "a"), clean, ruled("unbounded-read", "b reworded"), clean];
+    const { out, calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, policy: { merge: "sapu", traces: "visible", fileIssues: true, prePr: PRE } }, items: [item(264)] }, (c, n) => {
+      if (c.opts.phase === "Review") return reviews[n - 1];
+      if (c.opts.phase === "Pre-PR") return prePrOut(n === 1);
+      return opened(264, { head_sha: fixSha(c, n) });
+    });
+    expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready" });
   });
 
   it("F6 docs: SKILL names the brake rule and the redesign; CONTRACT documents the finding rule", () => {
@@ -1900,5 +1967,18 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
     expect(contract).toContain("**Findings carry a `rule`.**");
     expect(contract).toContain("class <rule> still recurs after a redesign: owner decision");
+  });
+
+  it("F6 docs (L2): SKILL says a brake-blocked lane is not resumed through items[].resume either", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toContain("A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue. It is not resumed through `items[].resume` either: only the owner, or a fresh lane with a revised issue, takes it further.");
+  });
+
+  it("F6 docs (M2): CONTRACT and SKILL document the redesign as the exception above workerTier and workerCeiling", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
+    const exception = "The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling`";
+    expect(contract).toContain(exception);
+    expect(skill).toContain(exception);
   });
 });
