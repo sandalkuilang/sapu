@@ -550,6 +550,50 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf("Error: boom now")} `);
   });
 
+  describe("known-flake needs the same error, not only the same file", () => {
+    const proven = (row: string, out: string) => {
+      const h = harness();
+      seed(h, ...provenBy(5, row));
+      return { h, r: h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out }) };
+    };
+
+    it("same file, same error (the numbers differ between the runs): known-flake", () => {
+      const { r } = proven(A_ROW, " FAIL  apps/a.test.ts > t\nAssertionError: expected 99 to be 100");
+      expect(r.err).toMatch(/verdict: known-flake — .*apps\/a\.test\.ts \(PR #5\)/);
+    });
+
+    it("same file flaky elsewhere but a DIFFERENT error: unknown, and the output says to treat it as real", () => {
+      const { h, r } = proven(A_ROW, " FAIL  apps/a.test.ts > t\nTypeError: cannot read properties of undefined (reading 'id')");
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).toMatch(/apps\/a\.test\.ts: same file flaky in PR #5, but a different error: treat as real/);
+      expect(gates(h).at(-1)).toMatch(/ verdict=unknown$/);
+    });
+
+    it("a ledger row from before the signatures (no @) proves nothing and raises no 'different error' note", () => {
+      const { r } = proven("apps/a.test.ts", A_FAIL);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).not.toMatch(/different error/);
+    });
+
+    it("no error line read (@-) never matches, not even a ledger row recorded as @-", () => {
+      const { h, r } = proven("apps/a.test.ts@-", " FAIL  apps/a.test.ts > t");
+      expect(gates(h).at(-1)).toMatch(/ failed=apps\/a\.test\.ts@- /);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).not.toMatch(/known-flake|different error/);
+    });
+
+    it("a run with no error line is not proven by a row that has one, and gets no 'different error' note", () => {
+      const { r } = proven(A_ROW, " FAIL  apps/a.test.ts > t");
+      expect(r.err).toMatch(/verdict: unknown/);
+      expect(r.err).not.toMatch(/known-flake|different error/);
+    });
+
+    it("the proven file does not carry a second file with another error", () => {
+      const { r } = proven(A_ROW, `${A_FAIL}\nFAILED tests/test_b.py::test_x - AssertionError: assert 1 == 2`);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: tests\/test_b\.py; proven flaky: apps\/a\.test\.ts \(PR #5\)/);
+    });
+  });
+
   it("a failure line no file could be read from (pytest ERROR, a path with a space) or a vitest Unhandled Error keeps the verdict unknown", () => {
     for (const extra of ["ERROR tests/test_c.py::test_setup - fixture", " FAIL  |db| apps/api/pay roll.test.ts > x", "⎯⎯ Unhandled Errors ⎯⎯\nVitest caught 1 unhandled error"]) {
       const h = harness();

@@ -753,15 +753,24 @@ if [ -n "$RED" ]; then
       else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)
     }
     END { for (k in red) if (k in green) { split(k, p, " "); n = split(red[k], f, ","); for (i = 1; i <= n; i++) if (f[i] != "") print f[i], "#" p[1] } }')"
-  VERDICT=unknown; SEEN=(); NEW=()
+  VERDICT=unknown; SEEN=(); NEW=(); DIFF=()
   if [ -n "$TESTS" ]; then
     IFS=, read -r -a TS <<<"$TESTS"
     for t in "${TS[@]}"; do
-      fl="${t%@*}"
-      prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
-      if [ -n "$prs" ]; then SEEN+=("$fl (PR $prs)"); else NEW+=("$fl"); fi
+      fl="${t%@*}"; prs=""
+      # Proven = this exact `file@sig` failed another PR's red gate on a tree that then went green. `file@-` (no error
+      # line read) never matches, and a row from before the signatures (no `@`) is never equal: both stay unknown.
+      if [ "${t##*@}" != "-" ]; then prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"; fi
+      if [ -n "$prs" ]; then SEEN+=("$fl (PR $prs)"); continue; fi
+      NEW+=("$fl")
+      # The same file flaky elsewhere, but with another error line: say so, because that is the case to read twice.
+      other="$(awk -v f="$fl" '{ n = $1; g = ""
+        if (match(n, /@([0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]|-)$/)) { g = substr(n, RSTART + 1); n = substr(n, 1, RSTART - 1) }
+        if (n == f && g != "" && g != "-") print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
+      [ "${t##*@}" = "-" ] || [ -z "$other" ] || DIFF+=("$fl: same file flaky in PR $other, but a different error: treat as real")
     done
   fi
+  DIFF_NOTE="${DIFF[0]:+; $(IFS=';'; printf '%s' "${DIFF[*]}")}"
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
@@ -772,9 +781,9 @@ if [ -n "$RED" ]; then
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
-  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$LIVE_NOTE"
+  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$DIFF_NOTE$LIVE_NOTE"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
-  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$LIVE_NOTE"; fi
+  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$DIFF_NOTE$LIVE_NOTE"; fi
   exit 2
 fi
 gate_record green -
