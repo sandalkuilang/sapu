@@ -778,6 +778,87 @@ describe("sapu-merge.sh — a lockfile that changed in <MAIN> is handed to merge
   });
 });
 
+describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no other", () => {
+  it.each([
+    [["--closes"], /--closes needs a value/],
+    [["--closes", "x"], /--closes must be an issue number or none, got 'x'/],
+    [["--closes", "07"], /--closes must be an issue number or none/],
+    [["--alone", "--closes", "7"], /--closes does not apply to --alone/],
+  ])("%j is a usage error", (args, msg) => {
+    const h = harness();
+    const r = h.run({}, args, args.includes("--alone"));
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(msg);
+  });
+
+  const two = { closing: [{ number: 7, repository: "owner/app" }, { number: 8, repository: "owner/app" }], body: "Closes #7, #8" };
+  const none = { closing: [], body: "Refs #7 (F1)" };
+
+  it("closes exactly {N}: passes", () => {
+    const h = harness();
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/pr merge 7/);
+  });
+
+  it("closes {N, x}: refused before the gate, naming the issue and the Refs fix", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('PR closes #8, not only its lane issue #7: change it to "Refs #8" (brief point 9)');
+    expect(h.gateLog()).toBe("");
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.after()).toEqual([]);
+  });
+
+  it("closes {} with --closes N: refused, it does not close its lane issue", () => {
+    const h = harness({ prJson: none });
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/PR does not close its lane issue #7 \(it closes: none\)/);
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("closes {x} with --closes N: refused for the stray issue", () => {
+    const h = harness({ prJson: { closing: [{ number: 8, repository: "owner/app" }], body: "Closes #8" }, issues: { 8: { author: "owner" } } });
+    expect(h.run({}, ["--closes", "7"]).err).toContain('PR closes #8, not only its lane issue #7: change it to "Refs #8"');
+  });
+
+  it("--closes none: closes {} passes", () => {
+    const h = harness({ prJson: none });
+    const r = h.run({}, ["--closes", "none"]);
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/pr merge 7/);
+  });
+
+  it("--closes none: closes {x} is refused, a tracker-finding lane must use Refs", () => {
+    const h = harness();
+    const r = h.run({}, ["--closes", "none"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('PR closes #7, but its lane has no issue to close (--closes none): change it to "Refs #7" (brief point 9)');
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("prose that closes another issue ('to close #8') is caught like a closing reference", () => {
+    const h = harness({ prJson: { closing: [{ number: 7, repository: "owner/app" }], body: "Closes #7\n\nThis is also to close #8." }, issues: { 8: { author: "owner" } } });
+    expect(h.run({}, ["--closes", "7"]).err).toContain("PR closes #8, not only its lane issue #7");
+  });
+
+  it("--dry-run reports the refusal as a problem and changes nothing", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run({}, ["--dry-run", "--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/WOULD REFUSE: PR closes #8, not only its lane issue #7/);
+  });
+
+  it("without the flag nothing is judged and the set is printed", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(r.err).toContain("PR #7 closes: #7, #8 (no --closes: not checked against a lane issue)");
+  });
+});
+
 const cpuCount = () => osCpus().length;
 
 describe("sapu-merge.sh — gate workers come from the machine", () => {

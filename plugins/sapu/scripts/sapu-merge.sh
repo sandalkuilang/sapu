@@ -9,7 +9,7 @@
 # comment is still mandatory.
 #
 # USAGE (from the main checkout or any of its worktrees)
-#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]
+#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run]
 #   sapu-merge.sh <PR> --alone [--workers N]
 #
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
@@ -25,6 +25,9 @@
 #                          files through the contract's gate.testFiles (the files are appended as arguments), and append
 #                          `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red` to the gates log.
 #                          Exit 0 = green, 2 = red. Merges, pushes and relabels nothing; takes no review comment.
+#   --closes <N>|none      the lane's issue (from sapu-wave.js's result), or `none` for a tracker-finding lane (it uses Refs).
+#                          The merge is refused, before the gate, unless the issues the PR closes (pr-trust's `closes`) are
+#                          exactly {N} ({} for none). Without it the set is printed and nothing is judged.
 #   --dry-run              run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, smoke check, worktree resolution) and print the plan; no
 #                          side effects besides fetching origin/<base>, which the checks read.
@@ -75,20 +78,23 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
     --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --alone) ALONE=1; shift ;;
-    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
+    --closes) [ $# -ge 2 ] || die "--closes needs a value (the lane's issue number, or none)"; CLOSES="$2"; shift 2 ;;
+    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
   esac
 done
-[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run] | <PR> --alone [--workers N]"
+[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run] | <PR> --alone [--workers N]"
 [ "$ALONE" = 0 ] || { [ -z "$COMMENT_FILE" ] && [ "$DRY" = 0 ] || die "--alone takes no review comment file and no --dry-run"; }
+[ "$ALONE" = 0 ] || [ -z "$CLOSES" ] || die "--closes does not apply to --alone"
+case "$CLOSES" in none|"") ;; 0*|*[!0-9]*) die "--closes must be an issue number or none, got '$CLOSES'" ;; esac
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
 case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
 command -v jq >/dev/null || die "jq is required"
@@ -344,6 +350,25 @@ plan "trust OK: author $(jget .author.login) (id $(jget .author.id)), $(jget .co
 [ "$(jget .isDraft)" != "true" ] || check_fail "PR #$PR is a draft"
 [ "$PR_BASE" = "$BASE" ] || check_fail "PR #$PR base is '$PR_BASE', not $BASE (retarget/merge parent first)"
 case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; esac
+
+# --- 3b. a lane's PR closes its own issue and no other (--closes) -----------------------------------------------
+# Prose such as "to close #3521" closes that issue on merge, whichever lane wrote it. The orchestrator passes the lane's
+# issue (or `none` for a tracker-finding lane, which uses Refs); ISSUES is what pr-trust read: GitHub's closing
+# references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR sapu did not start) nothing is judged.
+CLOSE_LIST="$(awk 'NF { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
+if [ "$ALONE" = 0 ]; then
+  if [ -z "$CLOSES" ]; then
+    say "PR #$PR closes: ${CLOSE_LIST:-none} (no --closes: not checked against a lane issue)"
+  else
+    WANT=""; [ "$CLOSES" = none ] || WANT="$CLOSES"
+    EXTRA="$(awk -v w="$WANT" 'NF && $1 != w { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
+    if [ -n "$EXTRA" ] && [ -n "$WANT" ]; then check_fail "PR closes $EXTRA, not only its lane issue #$WANT: change it to \"Refs $EXTRA\" (brief point 9)"
+    elif [ -n "$EXTRA" ]; then check_fail "PR closes $EXTRA, but its lane has no issue to close (--closes none): change it to \"Refs $EXTRA\" (brief point 9)"
+    elif [ -n "$WANT" ] && ! awk -v w="$WANT" '$1 == w { f = 1 } END { exit !f }' <<<"$ISSUES"; then
+      check_fail "PR does not close its lane issue #$WANT (it closes: ${CLOSE_LIST:-none}): put \"Closes #$WANT\" in the body"
+    fi
+  fi
+fi
 
 # --- 3c. the argus smoke check (SMOKE CHECK above) ----------------------------------------------
 # Judged on the head the trust check read, by sapu-smoke-gate.mjs (one JSON verdict; a reason on stderr when it
