@@ -1915,6 +1915,24 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
   });
 
+  it("F6 (L3): the fixed-rules set lives in the lane, so a class fixed before the pre-PR phase and reported again by the delta review after it is redesigned", async () => {
+    const PRE = { run: "/dev-review", severities: ["critical", "medium", "low"], paste: "body" };
+    const prePrOut = (dirty: boolean) => ({
+      counts: { critical: 0, medium: dirty ? 1 : 0, low: 0 },
+      findings: dirty ? [{ severity: "medium", where: "b.ts:2", what: "med" }] : [],
+      output_file: "/tmp/dev-review.md",
+      pasted: !dirty,
+    });
+    const reviews = [ruled("unbounded-read", "a"), clean, ruled("unbounded-read", "b reworded"), clean];
+    const { out, calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, policy: { merge: "sapu", traces: "visible", fileIssues: true, prePr: PRE } }, items: [item(264)] }, (c, n) => {
+      if (c.opts.phase === "Review") return reviews[n - 1];
+      if (c.opts.phase === "Pre-PR") return prePrOut(n === 1);
+      return opened(264, { head_sha: fixSha(c, n) });
+    });
+    expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready" });
+  });
+
   it("F6 docs: SKILL names the brake rule and the redesign; CONTRACT documents the finding rule", () => {
     const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
     expect(skill).toContain("A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue.");

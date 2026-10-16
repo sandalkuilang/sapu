@@ -610,7 +610,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, redesignedRules: [], trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, fixedRules: new Map(), redesignedRules: [], trail: [] }
   const comments = []
   const notes = []
   const branchSeen = new Set()
@@ -809,7 +809,6 @@ async function runItem(item) {
     let seen = new Map() // finding key -> reviews in a row that reported it
     let before = null // the previous review's count of distinct findings
     let tier = state.tier
-    const fixedRules = new Set() // the finding classes (their `rule`) a fix cycle of this loop already addressed
     while (!rv.clean) {
       // a tier raised mid-loop brings a new reviewer set: convergence starts over against it
       if (state.tier !== tier) { tier = state.tier; seen = new Map(); before = null }
@@ -818,7 +817,7 @@ async function runItem(item) {
       for (const k of keys) seen.set(k, (seen.get(k) || 0) + 1)
       // F6: a class a fix cycle addressed and this review reports again (the exact claim may be reworded) → one structural redesign per lane
       // instead of another patch. It is checked before the cap below, so a lane at its cap still gets its one redesign and a review.
-      const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => fixedRules.has(x))
+      const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => state.fixedRules.has(x))
       // After the redesign only a recurrence of a class that WAS redesigned is the owner's call; any other class follows the normal cap and convergence rules.
       const stillRecurs = recurring.filter((x) => state.redesignedRules.includes(x))
       if (stillRecurs.length > 0) return done('blocked', { reason: `class ${stillRecurs.join(', ')} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
@@ -834,7 +833,7 @@ async function runItem(item) {
       before = keys.size
       state.cycles++
       if (redesign) state.redesignedRules.push(...recurring) // at most once per lane
-      for (const f of rv.findings) if (ruleOf(f)) fixedRules.add(ruleOf(f))
+      for (const f of rv.findings) if (ruleOf(f)) state.fixedRules.set(ruleOf(f), [...(state.fixedRules.get(ruleOf(f)) || []), f])
       const sinceSha = state.headSha
       // Many findings over several files go to one fixer per file, in turn; a fixer's context grows with every file it opens.
       const byFile = new Map()
