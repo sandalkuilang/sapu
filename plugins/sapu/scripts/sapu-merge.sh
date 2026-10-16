@@ -423,6 +423,9 @@ if [ "$ALONE" = 1 ]; then
   [ "$(git -C "$WT" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null || echo -)" = "$RTREE" ] \
     || die "worktree $WT is not the tree the red gate ran on ($RTREE): a re-run or an edit moved it, so the check would prove nothing about that gate"
   IFS=, read -r -a AF <<<"${REC[5]#failed=}"
+  # The ledger names `file@sig` (sig_of): the test command gets the file alone.
+  SIGRE='@([0-9a-f]{8}|-)$'
+  for i in "${!AF[@]}"; do if [[ "${AF[$i]}" =~ $SIGRE ]]; then AF[$i]="${AF[$i]%@*}"; fi; done
   for f in "${AF[@]}"; do case "$f" in -*) die "failing file '$f' looks like an option: not passing it to gate.testFiles" ;; esac; done
   SHA="$(git -C "$WT" rev-parse HEAD)"
   ALOG="$(mktemp "${TMPDIR:-/tmp}/gate-alone-pr$PR.XXXXXX")" || die "cannot create the log in ${TMPDIR:-/tmp}"
@@ -591,7 +594,7 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<file@sig,…|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
 # steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
 # (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
@@ -615,6 +618,22 @@ live_overlap() { # <gate start epoch> <gate end epoch>
 LIVE=""
 if live_overlap "$GATE_T0" "$(date +%s)"; then LIVE=1; fi
 LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
+# The first error line of a failing test, normalised, as an 8-hex signature (`-` = none read). `cksum` is POSIX
+# (macOS and Linux print the same CRC), unlike sha1sum (no macOS) or shasum (a perl script some Linux images lack).
+# Normalised: quoted strings, absolute paths, hex runs, numbers and durations drop out, so two runs of one flaky
+# failure give one signature while a different assertion gives another.
+sig_of() { # <error line or empty>
+  [ -n "$1" ] || { printf -- '-'; return 0; }
+  local n
+  n="$(printf '%s' "$1" | sed -E \
+    -e 's/"[^"]*"/Q/g' -e "s/'[^']*'/Q/g" -e 's/`[^`]*`/Q/g' \
+    -e 's#(^|[^[:alnum:]_.-])(/[^[:space:]/]+)+#\1P#g' \
+    -e 's/0x[0-9a-fA-F]+/H/g' -e 's/[0-9a-fA-F]{8,}/H/g' \
+    -e 's/[0-9]+(\.[0-9]+)*/N/g' -e 's/N(ms|us|ns|s|m)([^[:alpha:]]|$)/D\2/g' \
+    -e 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  printf '%08x' "$(printf '%s' "$n" | cksum | cut -d' ' -f1)"
+}
+
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
   { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
@@ -664,20 +683,55 @@ if [ -n "$RED" ]; then
   MOCHA="$(awk -v wt="$WT/" '
     function flush() { if (want) print "X"; want = 0 }
     /^  [0-9]+ failing$/ { flush(); failing = 1; next }
-    failing && /^  [0-9]+\) / { flush(); want = 1; next }
+    failing && /^  [0-9]+\) / { flush(); want = 1; err = ""; next }
     want {
       line = $0
+      if (err == "" && line ~ /Error|assert|Expected|expected|panic|FAIL:/) err = line
       while (match(line, /(file:\/\/)?\/[^ ()]+/)) {
         f = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
         sub(/^file:\/\//, "", f); sub(/:[0-9]+:[0-9]+$/, "", f)
         if (index(f, wt) != 1 || f ~ /\/node_modules\//) continue
         f = substr(f, length(wt) + 1)
-        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f); want = 0; break }
+        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f "\t" err); want = 0; break }
       }
     }
     END { flush() }' <<<"$CLEAN")"
-  FILES="$( { printf '%s\n' "$FILES"; sed -n 's/^F //p' <<<"$MOCHA"; } | grep . || true)"
-  TESTS="$(printf '%s\n' "$FILES" | grep . | sort -u | paste -sd, - || true)"
+  FILES="$( { printf '%s\n' "$FILES"; awk -F'\t' '/^F /{ print substr($1, 3) }' <<<"$MOCHA"; } | grep . || true)"
+  NAMES="$(printf '%s\n' "$FILES" | grep . | sort -u || true)"
+  # Each failing file's FIRST ERROR LINE (the flake ledger's `file@sig`; see sig_of). Per runner, where the error is:
+  # vitest/jest ` FAIL  <file> > …`: the first Error|assert|Expected|expected|panic|FAIL: line within 12 lines after
+  # the header; pytest `FAILED <file>::… - <message>`: the message on that line; go test `FAIL\t<pkg>\t<n>s`: the first
+  # such line since the previous header (go prints a package's output before its FAIL line); mocha: the first such
+  # line of the failure's block. Another runner, or no such line: no error line read (`@-`), which never proves a flake.
+  ERRS=""
+  if [ -n "$NAMES" ]; then
+    ERRS="$( { awk '
+      BEGIN { re = "Error|assert|Expected|expected|panic|FAIL:" }
+      FNR == NR { want[$0] = 1; next }
+      { line[++n] = $0 }
+      END {
+        for (i = 1; i <= n; i++) {
+          l = line[i]; nm = ""; k = ""
+          if (l ~ /^FAILED /) { nm = substr(l, 8); sub(/::.*$/, "", nm); k = "py" }
+          else if (l ~ /^FAIL\t/) { split(l, t, "\t"); nm = t[2]; k = "go" }
+          else if (l ~ /^[[:space:]]*FAIL[[:space:]]/) { nm = l; sub(/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?/, "", nm); sub(/[[:space:]].*$/, "", nm); k = "js" }
+          if (nm != "" && (nm in want)) { kind[i] = k; name[i] = nm }
+        }
+        for (i = 1; i <= n; i++) {
+          if (kind[i] == "" || (name[i] in done)) continue
+          e = ""
+          if (kind[i] == "py") { p = index(line[i], " - "); if (p) e = substr(line[i], p + 3) }
+          else if (kind[i] == "js") { for (j = i + 1; j <= n && j <= i + 12 && kind[j] == ""; j++) if (line[j] ~ re) { e = line[j]; break } }
+          else { b = 0; for (j = i - 1; j >= 1; j--) if (kind[j] != "") { b = j; break } for (j = b + 1; j < i; j++) if (line[j] ~ re) { e = line[j]; break } }
+          if (e != "") { done[name[i]] = 1; print name[i] "\t" e }
+        }
+      }' <(printf '%s\n' "$NAMES") <(printf '%s\n' "$CLEAN"); sed -n 's/^F //p' <<<"$MOCHA"; } )"
+  fi
+  TESTS=""
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    TESTS="${TESTS:+$TESTS,}$nm@$(sig_of "$(awk -F'\t' -v n="$nm" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }' <<<"$ERRS")")"
+  done <<<"$NAMES"
   # A failure line no file was read from (pytest ERROR, a path with a space, a Go package that did
   # not build, a mocha failure outside the tests) or an unhandled error outside any test = something
   # besides the named tests failed: never known-flake.
@@ -703,8 +757,9 @@ if [ -n "$RED" ]; then
   if [ -n "$TESTS" ]; then
     IFS=, read -r -a TS <<<"$TESTS"
     for t in "${TS[@]}"; do
+      fl="${t%@*}"
       prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
-      if [ -n "$prs" ]; then SEEN+=("$t (PR $prs)"); else NEW+=("$t"); fi
+      if [ -n "$prs" ]; then SEEN+=("$fl (PR $prs)"); else NEW+=("$fl"); fi
     done
   fi
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
