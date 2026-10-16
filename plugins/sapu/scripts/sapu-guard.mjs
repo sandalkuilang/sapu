@@ -3133,13 +3133,14 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
 
 // ORCHESTRATOR CONTEXT, ENFORCED (F7). `tuning.contextLimits.session` was only ever compared by SKILL text
 // against sapu-metrics; nothing measured the orchestrator. The main session's own tool calls are counted
-// (one byte per call in <tmp>/sapu-session/<session_id>: no git spawn on the 9 calls in 10 that only count),
+// (one byte per call in <tmp>/sapu-session-<uid>/<session_id>: no git spawn on the 9 calls in 10 that only count),
 // and on every SESSION_EVERY-th call the guard reads the main transcript's last-turn context the way the
 // worker context budget does (contextTokens). At or above the contract's limit that one call is refused as a
 // reminder to end the wave and ask for a new session; re-issuing it passes (the next call is never a multiple),
 // and it repeats every SESSION_EVERY calls. Nothing is refused for good. Off without a session id, a
 // transcript path, a readable contract or a readable transcript.
-export const SESSION_DIR = path.join(os.tmpdir(), "sapu-session");
+// Per user: the shared temp dir may hold another user's directory of that name (not writable, or prunable by us).
+export const SESSION_DIR = path.join(os.tmpdir(), `sapu-session-${process.getuid?.() ?? "u"}`);
 export const SESSION_EVERY = 10;
 
 /**
@@ -3166,7 +3167,7 @@ export function sessionContext(input, dir = SESSION_DIR) {
     const limit = resolveTuning(contract).contextLimits.session;
     const tokens = contextTokens(transcript);
     if (tokens === null || tokens < limit) return null;
-    return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: finish the current wave, rewrite sapu-sweep-state, and ask the owner for a new /sapu:sapu session (SKILL §Sessions and waves)`;
+    return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: in a sapu sweep finish the current wave, rewrite sapu-sweep-state and ask the owner for a new /sapu:sapu session; otherwise start a fresh session (SKILL §Sessions and waves)`;
   } catch {
     return null;
   }
