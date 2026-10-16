@@ -594,6 +594,19 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     });
   });
 
+  it.each([
+    ["numbers", "AssertionError: expected 12 to be 99", "AssertionError: expected N to be N"],
+    ["quoted strings", `AssertionError: expected 'abc' to deeply equal "x y"`, "AssertionError: expected Q to deeply equal Q"],
+    ["an absolute path", "Error: ENOENT: no such file or directory, open /var/folders/ab/cd/T/x.json", "Error: ENOENT: no such file or directory, open P"],
+    ["durations", "Error: Timeout of 5000ms exceeded after 1.5s", "Error: Timeout of D exceeded after D"],
+    ["hex", "Error: bad id 3f2a9c1b77aa0 at 0xdeadbeef", "Error: bad id H at H"],
+    ["whitespace", "Error:   boom\t  now", "Error: boom now"],
+  ])("the signature drops %s from the first error line", (_what, line, normalised) => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${line}` });
+    expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf(normalised)} `);
+  });
+
   it("a failure line no file could be read from (pytest ERROR, a path with a space) or a vitest Unhandled Error keeps the verdict unknown", () => {
     for (const extra of ["ERROR tests/test_c.py::test_setup - fixture", " FAIL  |db| apps/api/pay roll.test.ts > x", "⎯⎯ Unhandled Errors ⎯⎯\nVitest caught 1 unhandled error"]) {
       const h = harness();
