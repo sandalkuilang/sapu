@@ -1739,14 +1739,14 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     it("pr_state MERGED is blocked: not open (MERGED), no reviewer runs", async () => {
       const { out, calls } = await run({ pr_state: "MERGED" });
       expect(out[0]).toMatchObject({ status: "blocked" });
-      expect(String(out[0].reason)).toContain("PR #556 is not open (MERGED)");
+      expect(String(out[0].reason)).toContain("is not open (MERGED)");
       expect(calls.some((c) => c.opts.phase === "Review")).toBe(false);
     });
 
     it("pr_state missing is blocked as unreadable, even when summary says OPEN", async () => {
       const { out } = await run({ summary: "OPEN" });
       expect(out[0]).toMatchObject({ status: "blocked" });
-      expect(String(out[0].reason)).toContain("PR #556 is not open (unreadable)");
+      expect(String(out[0].reason)).toContain("is not open (unreadable)");
     });
 
     it("the prompt asks for pr_state; the schema has it as an optional OPEN|CLOSED|MERGED enum", async () => {

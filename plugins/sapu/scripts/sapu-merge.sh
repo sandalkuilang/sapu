@@ -388,9 +388,9 @@ plan "trust OK: author $(jget .author.login) (id $(jget .author.id)), $(jget .co
 case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; esac
 
 # --- 3b. a lane's PR closes its own issue and no other (--closes) -----------------------------------------------
-# Prose such as "to close #3521" closes that issue on merge, whichever lane wrote it. The orchestrator passes the lane's
+# Prose such as "to close #N" closes that issue on merge, whichever lane wrote it. The orchestrator passes the lane's
 # issue (or `none` for a tracker-finding lane, which uses Refs); ISSUES is what pr-trust read: GitHub's closing
-# references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR sapu did not start) nothing is judged.
+# references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR started outside sapu) nothing is judged.
 # Why a set of closed issues (one number per line) is not exactly the lane's (--closes), or nothing when it is. Also read
 # again right before the merge (step 8): the body may be edited while the gate runs.
 closes_problem() { # <issues>
