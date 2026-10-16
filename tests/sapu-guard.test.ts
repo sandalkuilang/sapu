@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
@@ -4269,7 +4269,12 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(SESSION_EVERY).toBe(10);
     const out = calls(repo(), transcript(120_000), sid("core"), 31);
     expect(refused(out)).toEqual([10, 20, 30]);
-    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: finish the current wave, rewrite sapu-sweep-state, and ask the owner for a new /sapu:sapu session (SKILL §Sessions and waves)");
+    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: in a sapu sweep finish the current wave, rewrite sapu-sweep-state and ask the owner for a new /sapu:sapu session; otherwise start a fresh session (SKILL §Sessions and waves)");
+  });
+
+  it("keeps its counters in a per-user directory, so another user's file in the shared temp dir is never read or pruned", () => {
+    expect(basename(SESSION_DIR)).toBe(`sapu-session-${process.getuid?.() ?? "u"}`);
+    expect(dirname(SESSION_DIR)).toBe(tmpdir());
   });
 
   it("is quiet under the limit, and exactly at the limit it fires", () => {
@@ -4354,8 +4359,8 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
       }
     };
     for (let i = 1; i <= 9; i++) expect(hook(), `call ${i}`).toBe(0);
-    expect(hook()).toMatch(/^sapu-guard: BLOCKED — orchestrator context 120k ≥ contextLimits\.session 100k: finish the current wave/);
+    expect(hook()).toMatch(/^sapu-guard: BLOCKED — orchestrator context 120k ≥ contextLimits\.session 100k: in a sapu sweep finish the current wave/);
     expect(hook()).toBe(0);
-    rmSync(join(tmp, "sapu-session"), { recursive: true, force: true });
+    rmSync(join(tmp, `sapu-session-${process.getuid?.() ?? "u"}`), { recursive: true, force: true });
   });
 });

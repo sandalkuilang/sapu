@@ -538,6 +538,15 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(gates(h).at(-1)).toContain(` failed=${file}@${sigOf(normalised)} `);
   });
 
+  it("a gate log with an invalid UTF-8 byte (in the log and in the error line) still gives a red verdict and a ledger row: sed and awk read it in the C locale", () => {
+    const bytes = `echo "preparing"; printf 'bad \\377\\376 bytes\\n'; printf ' FAIL  apps/a.test.ts > t\\nAssertionError: expected \\377 to be 2\\n'; printf 'FAILED tests/test_b.py::test_x - AssertionError: assert \\376 == 2\\n'`;
+    const h = harness({ main: { "scripts/gate.sh": GATE.replace('echo "preparing"', bytes) } });
+    const r = h.run({ HX_GATE_RC: "1", LC_ALL: "en_US.UTF-8", LANG: "en_US.UTF-8" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/GATE RED/);
+    expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=apps\/a\.test\.ts@[0-9a-f]{8},tests\/test_b\.py@[0-9a-f]{8} tree=[0-9a-f]{40} verdict=unknown$/)]);
+  });
+
   it("a run that printed the file but no error line within reach records @-", () => {
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${"filler\n".repeat(13)}AssertionError: far too late` });
@@ -548,6 +557,29 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t\nError:   boom\t  now" });
     expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf("Error: boom now")} `);
+  });
+
+  it("go: the error line is read from the failing package's own block, not from an earlier step's line that matches (two failing tests -> two sigs)", () => {
+    const h = harness();
+    const out = [
+      "ok  \texample.com/app/util\t0.003s",
+      "lint: 0 problems, as expected",
+      "--- FAIL: TestRefund (0.01s)",
+      "    pay_test.go:12: boom",
+      "FAIL",
+      "FAIL\texample.com/app/pay\t0.012s",
+      "ok  \texample.com/app/auth\t0.004s",
+      "lint: 0 problems, as expected",
+      "--- FAIL: TestCart (0.02s)",
+      "    cart_test.go:3: boom",
+      "FAIL",
+      "FAIL\texample.com/app/cart\t0.004s",
+    ].join("\n");
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out });
+    const row = gates(h).at(-1) ?? "";
+    expect(row).toContain(`example.com/app/pay@${sigOf("--- FAIL: TestRefund (D)")}`);
+    expect(row).toContain(`example.com/app/cart@${sigOf("--- FAIL: TestCart (D)")}`);
+    expect(sigOf("--- FAIL: TestRefund (D)")).not.toBe(sigOf("--- FAIL: TestCart (D)"));
   });
 
   describe("known-flake needs the same error, not only the same file", () => {
@@ -776,6 +808,84 @@ describe("sapu-merge.sh — a lockfile that changed in <MAIN> is handed to merge
     const h = harness({ contract: { mergeAfter: null } });
     expect(h.run({ HX_GH_LANDS: "1" }).err).not.toMatch(/lockfile/);
   });
+
+  describe("the state survives runs that stop before the gate (<GITDIR>/sapu-deps-synced)", () => {
+    const synced = (h: { MAIN: string }) => join(h.MAIN, ".git/sapu-deps-synced");
+    const head = (h: { git: (...a: string[]) => string }) => h.git("rev-parse", "HEAD").trim();
+    const STALE = /WARNING: lockfile changed \(yarn\.lock\): <MAIN> dependencies are stale/;
+
+    it("mergeAfter null: a fast-forward that pulled a lockfile, then a --closes refusal before the gate: the warning is printed, once", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const first = h.run({}, ["--closes", "none"]);
+      expect(first.status).toBe(1);
+      expect(first.err).toMatch(/PR closes #7, but its lane has no issue to close/);
+      expect(first.err).toMatch(STALE);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(head(h));
+      const second = h.run({}, ["--closes", "none"]);
+      expect(second.status).toBe(1);
+      expect(second.err).not.toMatch(/lockfile/);
+    });
+
+    it("mergeAfter null: a new lockfile change after the sync is warned about again, and only that one", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      h.run({}, ["--closes", "none"]);
+      h.pushToOrigin({ "Cargo.lock": "x\n" });
+      const r = h.run({}, ["--closes", "none"]);
+      expect(r.err).toMatch(/WARNING: lockfile changed \(Cargo\.lock\):/);
+      expect(r.err).not.toMatch(/yarn\.lock/);
+    });
+
+    it("mergeAfter null: --alone, which never reaches the gate, says it too", () => {
+      const h = harness({ contract: { mergeAfter: null, gate: { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘", testFiles: "scripts/gate.sh" } } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const r = h.run({}, ["--alone"], true);
+      expect(r.status).toBe(1);
+      expect(r.err).toMatch(STALE);
+    });
+
+    it("mergeAfter set but not run (a refusal before the gate): the warning says so, nothing is marked as synced, and the next merge hands mergeAfter the lockfile", () => {
+      const h = withHook();
+      const before = head(h);
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const first = h.run({}, ["--closes", "none"]);
+      expect(first.status).toBe(1);
+      expect(first.err).toMatch(/WARNING: lockfile changed \(yarn\.lock\): <MAIN> dependencies are stale; mergeAfter did not run/);
+      expect(h.after()).toEqual([]);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(before); // the point deps were last known good at, not <MAIN>'s new HEAD
+      const second = h.run({ HX_GH_LANDS: "1" }, ["--closes", "7"]);
+      expect(second.status).toBe(0);
+      expect(h.after()).toEqual(["lock=[yarn.lock] ff=1 outcome=merged"]);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(head(h));
+    });
+
+    it("a merge whose mergeAfter succeeded marks <MAIN>'s HEAD as synced; one whose mergeAfter failed does not", () => {
+      const ok = withHook({ pr: { "yarn.lock": "x\n" } });
+      expect(ok.run({ HX_GH_LANDS: "1" }).status).toBe(0);
+      expect(readFileSync(synced(ok), "utf8").trim()).toBe(head(ok));
+      const bad = harness({ main: { "scripts/after.sh": `${AFTER_LOCK}exit "\${HX_AFTER_RC:-0}"\n` }, pr: { "yarn.lock": "x\n" } });
+      const before = head(bad);
+      expect(bad.run({ HX_GH_LANDS: "1", HX_AFTER_RC: "1" }).status).toBe(3);
+      expect(readFileSync(synced(bad), "utf8").trim()).toBe(before);
+      expect(head(bad)).not.toBe(before);
+    });
+
+    it("a marker naming a sha git does not know falls back to this run's start", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      writeFileSync(synced(h), `${"0".repeat(40)}\n`);
+      expect(h.run({}, ["--closes", "none"]).err).toMatch(STALE);
+    });
+
+    it("--dry-run neither warns nor records anything", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const r = h.run({}, ["--dry-run"]);
+      expect(r.err).not.toMatch(/lockfile/);
+      expect(existsSync(synced(h))).toBe(false);
+    });
+  });
 });
 
 describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no other", () => {
@@ -783,6 +893,7 @@ describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no oth
     [["--closes"], /--closes needs a value/],
     [["--closes", "x"], /--closes must be an issue number or none, got 'x'/],
     [["--closes", "07"], /--closes must be an issue number or none/],
+    [["--closes", ""], /--closes must be an issue number or none, got ''/],
     [["--alone", "--closes", "7"], /--closes does not apply to --alone/],
   ])("%j is a usage error", (args, msg) => {
     const h = harness();
@@ -842,6 +953,52 @@ describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no oth
   it("prose that closes another issue ('to close #8') is caught like a closing reference", () => {
     const h = harness({ prJson: { closing: [{ number: 7, repository: "owner/app" }], body: "Closes #7\n\nThis is also to close #8." }, issues: { 8: { author: "owner" } } });
     expect(h.run({}, ["--closes", "7"]).err).toContain("PR closes #8, not only its lane issue #7");
+  });
+
+  describe("the closing set is read again right before the merge (the body may be edited while the gate runs)", () => {
+    // The gate swaps in the PR snapshot at $HX_EDIT, as an edit of the body made while it ran.
+    const editing = () => ({ "scripts/gate.sh": GATE.replace('echo "preparing"', 'echo "preparing"\n[ -z "${HX_EDIT:-}" ] || cp "$HX_EDIT/graphql_pr_7.json" "$HX_API/graphql_pr_7.json"') });
+    const edit = (h: { bare: string; dir: string }, body: string, closing: number[]) => {
+      const oid = execFileSync(REAL_GIT, ["-C", h.bare, "rev-parse", "refs/heads/feat/x"], { encoding: "utf8" }).trim();
+      writePr(join(h.dir, "edited"), "owner/app", 7, {
+        author: "owner",
+        headRefOid: oid,
+        body,
+        closing: closing.map((number) => ({ number, repository: "owner/app" })),
+        commits: [{ oid, authors: [{ email: FIXTURE_CONTRACT.gitEmail, user: "owner" }] }],
+      });
+      return { HX_EDIT: join(h.dir, "edited") };
+    };
+
+    it("a body edited during the gate to close another issue: not merged, nothing posted, worktree kept", () => {
+      const h = harness({ main: editing(), issues: { 8: { author: "owner" } } });
+      const r = h.run(edit(h, "Closes #7\n\nalso to close #8", [7, 8]), ["--closes", "7"]);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain("the PR body changed while the gate ran: PR closes #8, not only its lane issue #7");
+      expect(h.gh()).not.toMatch(/pr merge/);
+      expect(h.after()).toEqual([expect.stringMatching(/^not-merged /)]);
+      expect(existsSync(h.WT)).toBe(true);
+    });
+
+    it("an edit during the gate that drops the lane's own issue is refused too", () => {
+      const h = harness({ main: editing() });
+      const r = h.run(edit(h, "Refs #7", []), ["--closes", "7"]);
+      expect(r.status).toBe(1);
+      expect(r.err).toMatch(/the PR body changed while the gate ran: PR does not close its lane issue #7/);
+      expect(h.gh()).not.toMatch(/pr merge/);
+    });
+
+    it("an edit that leaves the set as it was merges", () => {
+      const h = harness({ main: editing() });
+      const r = h.run(edit(h, "Closes #7\n\nreworded", [7]), ["--closes", "7"]);
+      expect(r.status).toBe(0);
+      expect(h.gh()).toMatch(/pr merge 7/);
+    });
+
+    it("without --closes the body is not judged, edited or not", () => {
+      const h = harness({ main: editing(), issues: { 8: { author: "owner" } } });
+      expect(h.run(edit(h, "Closes #7, #8", [7, 8])).status).toBe(0);
+    });
   });
 
   it("--dry-run reports the refusal as a problem and changes nothing", () => {
