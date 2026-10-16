@@ -1759,4 +1759,9 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
       expect(schema.required).not.toContain("pr_state");
     });
   });
+
+  it("F2 doc: brief point 10 lists pr_state as set only on request", () => {
+    const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
+    expect(brief).toContain("`pr_state` (OPEN, CLOSED or MERGED; only when your prompt asks for the PR's state)");
+  });
 });
