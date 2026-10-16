@@ -1836,4 +1836,24 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "blocked", cycles: 3 });
     expect(String(out[0].reason)).toMatch(/findings still open, after 2 fix cycles/);
   });
+
+  it("F6: the same class again after the redesign → blocked 'class <rule> still recurs after a redesign: owner decision', no third fix", async () => {
+    const reviews = [ruled("unbounded-read", "one"), ruled("unbounded-read", "two"), ruled("unbounded-read", "three")];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(250)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(250, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toContain("class unbounded-read still recurs after a redesign: owner decision");
+    expect(String(out[0].reason)).toContain("a.ts:1 — three"); // the open findings follow, for the owner
+  });
+
+  it("F6: a different class after the redesign is not a recurrence (its own cap still applies)", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-a", "a2"), ruled("rule-d", "d1"), clean];
+    const { out } = await runWave({ main: MAIN, items: [item(251)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(251, { head_sha: fixSha(c, n) }));
+    // review 3 reports rule-d at cycles 2 (cap 2): blocked by the cap, not by the class brake
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toMatch(/after 2 fix cycles/);
+    expect(String(out[0].reason)).not.toMatch(/still recurs/);
+  });
 });

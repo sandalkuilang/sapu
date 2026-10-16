@@ -819,6 +819,7 @@ async function runItem(item) {
       // F6: a class a fix cycle addressed and this review reports again (the exact claim may be reworded) → one structural redesign per lane
       // instead of another patch. It is checked before the cap below, so a lane at its cap still gets its one redesign and a review.
       const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => fixedRules.has(x))
+      if (recurring.length > 0 && state.redesigned) return done('blocked', { reason: `class ${recurring[0]} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
       const redesign = recurring.length > 0 && !state.redesigned
       const cap =state.tier === 'red' ? MAX_FIX_CYCLES_RED : MAX_FIX_CYCLES
       const why =
