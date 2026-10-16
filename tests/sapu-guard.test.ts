@@ -4321,4 +4321,21 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     mkdirSync(outside, { recursive: true });
     expect(refused(calls(outside, transcript(900_000), sid("outside"), 30))).toEqual([]);
   });
+
+  it("leaves workers, the explorer and the curator to their own paths, with or without an agent_id", () => {
+    const r = repo();
+    const t = transcript(900_000);
+    // a subagent (agent_id) never gets the orchestrator's reminder; the ladder worker's own budget needs its own transcript
+    for (const agent_type of ["sapu:sapu-sonnet-high", "senior-dev-team:senior-qa-reviewer"]) {
+      const out = calls(r, t, sid(`sub2-${agent_type}`), 30, { agent_id: "x2", agent_type });
+      expect(out.every((x) => !x || !/orchestrator context/.test(x))).toBe(true);
+    }
+    // agent_type alone (a host that dropped agent_id): worker, explorer and curator are never the orchestrator
+    for (const agent_type of ["sapu:sapu-opus-high", "ui-explorer", "sapu:curator"]) {
+      const out = calls(r, t, sid(`noid-${agent_type}`), 30, { agent_type });
+      expect(out.every((x) => !x || !/orchestrator context/.test(x)), agent_type).toBe(true);
+    }
+    // a --agent main session (agent_type but no agent_id) IS the orchestrator
+    expect(refused(calls(r, t, sid("mainagent"), 10, { agent_type: "reviewer" }))).toEqual([10]);
+  });
 });

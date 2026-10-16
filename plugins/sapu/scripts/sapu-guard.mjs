@@ -3994,14 +3994,17 @@ export function decide(input) {
   const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
   if (home) return home;
   // The orchestrator itself (F7): its context is measured every SESSION_EVERY calls, reminder only.
-  const session = input.agent_id ? null : sessionContext(input);
+  // Not a subagent: agent_id marks one, and a worker, the explorer or the curator keeps that by agent_type alone
+  // (a host that dropped agent_id would otherwise count them as the orchestrator).
+  const subagent = input.agent_id || [SAPU_AGENT, EXPLORER_AGENT, CURATOR_AGENT].some((re) => re.test(input.agent_type || ""));
+  const session = subagent ? null : sessionContext(input);
   if (session) return session;
   if (DISPATCH_TOOLS.has(tool)) return null;
   // A subagent's hook input carries agent_id ("present only when the hook fires inside a subagent
   // call", hooks reference); a main session started with --agent carries agent_type alone and is the
   // orchestrator. A ladder worker or the explorer is never a main session: their type alone keeps the
   // floor, so a host that dropped agent_id would not unguard them (and the worker canary still fires).
-  if (!(input.agent_id || [SAPU_AGENT, EXPLORER_AGENT, CURATOR_AGENT].some((re) => re.test(input.agent_type || "")))) return null;
+  if (!subagent) return null;
   const ctx = ctxCalls(tool, ti);
   const other = !ctx && (tool === "Monitor" || tool === "PowerShell" || /^mcp__/.test(tool || ""));
   if (tool !== "Bash" && !FILE_TOOLS.has(tool) && !SEARCH_TOOLS.has(tool) && !ctx && !other) return null;
