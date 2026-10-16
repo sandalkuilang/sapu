@@ -1969,6 +1969,11 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(contract).toContain("class <rule> still recurs after a redesign: owner decision");
   });
 
+  it("F6 docs (L2): SKILL says a brake-blocked lane is not resumed through items[].resume either", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toContain("A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue. It is not resumed through `items[].resume` either: only the owner, or a fresh lane with a revised issue, takes it further.");
+  });
+
   it("F6 docs (M2): CONTRACT and SKILL document the redesign as the exception above workerTier and workerCeiling", () => {
     const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
     const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
