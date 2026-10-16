@@ -48,41 +48,13 @@
 //   node scripts/sapu-metrics.ts --marker <run-marker> [--main <MAIN>] …   finds the transcript itself
 //     (findTranscript: under $CLAUDE_CONFIG_DIR, else ~/.claude, the newest one holding the marker)
 // Exit: 0 = ok, 1 = worse than baseline by more than 50%, 2 = usage error.
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findTranscript, projectDir } from "./sapu-contract.mjs";
 
-/**
- * Where Claude Code keeps the session transcripts of checkout `main`: `<config>/projects/<slug>/`,
- * `<config>` = $CLAUDE_CONFIG_DIR, else ~/.claude; `<slug>` = the absolute path with every
- * non-alphanumeric character replaced by `-` (`/srv/src/app` → `-srv-src-app`).
- */
-export function projectDir(main: string, env: Record<string, string | undefined> = process.env): string {
-  const config = env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), ".claude");
-  return join(config, "projects", main.replace(/[^A-Za-z0-9]/g, "-"));
-}
-
-/**
- * This session's transcript: of the 20 newest in projectDir, the newest that holds `marker` (the
- * sweep's run marker, echoed at its Step 0); the newest file alone may be a parallel session's.
- * null when none holds it.
- */
-export function findTranscript(main: string, marker: string, env: Record<string, string | undefined> = process.env): string | null {
-  const dir = projectDir(main, env);
-  let names: string[];
-  try {
-    names = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
-  } catch {
-    return null;
-  }
-  const newest = names
-    .map((n) => join(dir, n))
-    .map((p) => ({ p, t: statSync(p).mtimeMs }))
-    .sort((a, b) => b.t - a.t)
-    .slice(0, 20);
-  return newest.find(({ p }) => readFileSync(p, "utf8").includes(marker))?.p ?? null;
-}
+// projectDir and findTranscript live in sapu-contract.mjs (session-status reads the same transcript).
+export { findTranscript, projectDir };
 
 export const WORSE_FACTOR = 1.5;
 

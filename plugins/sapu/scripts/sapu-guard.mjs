@@ -191,7 +191,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, agentFiledLabel, checkoutRoot, contractHome, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, checkoutRoot, contextTokens, contractHome, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+
+export { contextTokens };
 
 const UNKNOWN = Symbol("unknown-dir");
 /** Deeper nesting (bash -c inside eval inside $( ) ...) is blocked: never parsed, never allowed. */
@@ -3020,9 +3022,6 @@ export function stepProbe({ main, agentId }) {
   }
 }
 
-// ponytail: a worker's last usage sits at the end of its transcript; a 256 KB tail holds several turns
-// without reading a transcript that grows to megabytes, and only every CONTEXT_EVERY_CALLS-th call reads it.
-const TRANSCRIPT_TAIL = 256 * 1024;
 export const CONTEXT_EVERY_CALLS = 5;
 
 /**
@@ -3052,32 +3051,6 @@ export function workerTranscript(input) {
   return direct;
 }
 
-/** The context of the last assistant turn in transcript `file` (input + cache read + cache creation tokens), from its tail; null when there is none. */
-export function contextTokens(file) {
-  let fd;
-  try {
-    fd = fs.openSync(file, "r");
-    const size = fs.fstatSync(fd).size;
-    const len = Math.min(size, TRANSCRIPT_TAIL);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString("utf8").split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"usage"')) continue;
-      let u;
-      try {
-        u = JSON.parse(lines[i])?.message?.usage;
-      } catch {
-        continue; // the tail's first line is cut, and a line may be half-written
-      }
-      if (u && typeof u === "object") return [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
-    }
-  } catch {
-  } finally {
-    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
-  }
-  return null;
-}
 
 export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNING.stepBudget, context = DEFAULT_TUNING.contextBudget, transcript = null }) {
   if (!main || typeof agentId !== "string" || !agentId) return null;
@@ -3136,7 +3109,7 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
 // (one byte per call in <tmp>/sapu-session-<uid>/<session_id>: no git spawn on the 9 calls in 10 that only count),
 // and on every SESSION_EVERY-th call the guard reads the main transcript's last-turn context the way the
 // worker context budget does (contextTokens). At or above the contract's limit that one call is refused as a
-// reminder to end the wave and ask for a new session; re-issuing it passes (the next call is never a multiple),
+// reminder to end the wave and hand over to a successor session; re-issuing it passes (the next call is never a multiple),
 // and it repeats every SESSION_EVERY calls. Nothing is refused for good. Off without a session id, a
 // transcript path, a readable contract or a readable transcript.
 // Per user: the shared temp dir may hold another user's directory of that name (not writable, or prunable by us).
@@ -3167,7 +3140,7 @@ export function sessionContext(input, dir = SESSION_DIR) {
     const limit = resolveTuning(contract).contextLimits.session;
     const tokens = contextTokens(transcript);
     if (tokens === null || tokens < limit) return null;
-    return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: in a sapu sweep finish the current wave, rewrite sapu-sweep-state and ask the owner for a new /sapu:sapu session; otherwise start a fresh session (SKILL §Sessions and waves)`;
+    return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: in a sapu sweep finish the current wave, check sapu-contract.mjs session-status, rewrite sapu-sweep-state, sweep release and start the successor /sapu:sapu session yourself; otherwise start a fresh session (SKILL §Sessions and waves)`;
   } catch {
     return null;
   }

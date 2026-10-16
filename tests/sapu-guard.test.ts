@@ -4269,7 +4269,7 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(SESSION_EVERY).toBe(10);
     const out = calls(repo(), transcript(120_000), sid("core"), 31);
     expect(refused(out)).toEqual([10, 20, 30]);
-    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: in a sapu sweep finish the current wave, rewrite sapu-sweep-state and ask the owner for a new /sapu:sapu session; otherwise start a fresh session (SKILL §Sessions and waves)");
+    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: in a sapu sweep finish the current wave, check sapu-contract.mjs session-status, rewrite sapu-sweep-state, sweep release and start the successor /sapu:sapu session yourself; otherwise start a fresh session (SKILL §Sessions and waves)");
   });
 
   it("keeps its counters in a per-user directory, so another user's file in the shared temp dir is never read or pruned", () => {
@@ -4291,9 +4291,9 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(refused(calls(r, t, s, 20))).toEqual([]);
   });
 
-  it("takes the limit from the contract's tuning (default window 1M x 0.75 = 750k)", () => {
-    expect(refused(calls(repo({}), transcript(700_000), sid("def1"), 10))).toEqual([]);
-    expect(refused(calls(repo({}), transcript(760_000), sid("def2"), 10))).toEqual([10]);
+  it("takes the limit from the contract's tuning (default window 1M x 0.95 = 950k)", () => {
+    expect(refused(calls(repo({}), transcript(940_000), sid("def1"), 10))).toEqual([]);
+    expect(refused(calls(repo({}), transcript(960_000), sid("def2"), 10))).toEqual([10]);
   });
 
   it("counts per session id, so a second session starts its own count", () => {
