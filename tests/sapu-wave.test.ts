@@ -1818,4 +1818,22 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
       c.opts.phase === "Review" ? reviews[n - 1] : opened(231, { head_sha: fixSha(c, n) }));
     expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus" });
   });
+
+  it("F6: a lane at its cap still gets its one redesign and a review; clean → ready with 3 cycles", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-b", "b1"), ruled("rule-b", "b2 reworded"), clean];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(240)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(240, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+  });
+
+  it("F6: anything still open after the redesign's review hits the cap as today", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-b", "b1"), ruled("rule-b", "b2"), ruled("rule-c", "c1")];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(241)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(241, { head_sha: fixSha(c, n) }));
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3); // two fixes + the redesign, never a fourth
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 3 });
+    expect(String(out[0].reason)).toMatch(/findings still open, after 2 fix cycles/);
+  });
 });

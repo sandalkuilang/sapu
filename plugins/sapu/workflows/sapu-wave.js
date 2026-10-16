@@ -827,7 +827,7 @@ async function runItem(item) {
         : before !== null && keys.size >= before ? `not converging: ${keys.size} finding(s) after ${before} the round before (cycle ${state.cycles})`
         : [...seen.values()].some((n) => n >= 3) ? `a finding was reported by three reviews in a row (cycle ${state.cycles})`
         : null
-      if (why) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
+      if (why && !redesign) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
       before = keys.size
       state.cycles++
       if (redesign) state.redesigned = true // at most once per lane
