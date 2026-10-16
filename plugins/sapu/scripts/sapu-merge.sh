@@ -23,7 +23,7 @@
 #   --alone                SKILL.md A5's "red files pass alone" check, scripted so its result reaches the gates log: on the
 #                          kept worktree of PR's LAST red gate (same tree, else refused), run ONLY that gate's failing test
 #                          files through the contract's gate.testFiles (the files are appended as arguments), and append
-#                          `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red` to the gates log.
+#                          `<time> <PR> <SHA> alone gate=<s>s failed=<file@sig,…> tree=<tree> alone=green|red` to the gates log.
 #                          Exit 0 = green, 2 = red. Merges, pushes and relabels nothing; takes no review comment.
 #   --closes <N>|none      the lane's issue (from sapu-wave.js's result), or `none` for a tracker-finding lane (it uses Refs).
 #                          The merge is refused, before the gate, unless the issues the PR closes (pr-trust's `closes`) are
