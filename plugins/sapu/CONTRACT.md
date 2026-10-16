@@ -249,6 +249,14 @@ is forced to Opus/high per call, whatever agent is mapped. On the other paths (s
 sent with `model: "opus"`, and its effort = its agent's frontmatter — the senior-dev-team defaults are all
 Opus/high. A repo that maps roles to its own agents is responsible for those agents' effort.
 
+**Findings carry a `rule`.** Every reviewer finding in a wave names the rule it breaks (`rule`, kebab-case, at
+most 40 characters, e.g. `unbounded-read`), and reuses an earlier finding's rule name for the same class. When
+a rule is reported again after a fix cycle addressed it (matched case-insensitively, by exact name), the lane does
+not patch again: one redesign step (`sapu:sapu-opus-high`, the opus floor under `/sapu opus`) replaces the
+instances with one structural rule. It counts as a fix cycle, runs at most once per lane and before the cycle cap.
+A rule that recurs after it blocks the lane: `class <rule> still recurs after a redesign: owner decision`.
+The convergence rules on the exact claim (red: fewer findings per round, none in three reviews in a row) are unchanged.
+
 ### Trusted authors (public repositories)
 
 Once a repo is public, anyone can open a PR or an issue and comment on both, and sapu is

@@ -1892,4 +1892,13 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "blocked", tier: "red", cycles: 3 });
     expect(String(out[0].reason)).toContain("class rule-d still recurs after a redesign: owner decision");
   });
+
+  it("F6 docs: SKILL names the brake rule and the redesign; CONTRACT documents the finding rule", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toContain("A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue.");
+    expect(skill).toContain("a finding class (its `rule`) that comes back after a fix cycle gets ONE Opus/high redesign step per lane");
+    const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
+    expect(contract).toContain("**Findings carry a `rule`.**");
+    expect(contract).toContain("class <rule> still recurs after a redesign: owner decision");
+  });
 });
