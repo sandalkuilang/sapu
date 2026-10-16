@@ -159,8 +159,8 @@ const WORKER_TIER = OPUS_FLOOR && TIER_SET && LADDER.indexOf(TIER_SET) < LADDER.
 // and an ESCALATE at the ceiling blocks for a human. Absent = the top of the ladder. The reviewers are not workers and ignore it.
 const CEILING = OPUS_FLOOR ? LADDER[LADDER.length - 1] : typeof C.workerCeiling === 'string' && LADDER.includes(`sapu:sapu-${C.workerCeiling}`) ? `sapu:sapu-${C.workerCeiling}` : RED_FLOOR // default: workers never reach Opus
 // The one redesign step of a lane (F6): a finding class that came back after a fix cycle is replaced by a structural rule instead of patched
-// again. Opus/high, or the opus floor under `/sapu opus`.
-const REDESIGN_AGENT = OPUS_FLOOR || 'sapu:sapu-opus-high'
+// again. Always Opus/high, under `/sapu opus` too (its floor is Opus/medium; the redesign is never below Opus/high).
+const REDESIGN_AGENT = 'sapu:sapu-opus-high'
 const PREPR_AGENT = 'general-purpose'
 // The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
 // (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.

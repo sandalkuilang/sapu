@@ -1812,11 +1812,11 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "ready", cycles: 2 });
   });
 
-  it("F6: under /sapu opus the redesign runs on the opus floor", async () => {
+  it("F6 (M1): under /sapu opus the redesign still runs on opus-high, never the opus-medium floor", async () => {
     const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
     const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(231)] }, (c, n) =>
       c.opts.phase === "Review" ? reviews[n - 1] : opened(231, { head_sha: fixSha(c, n) }));
-    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus" });
+    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
   });
 
   it("F6: a lane at its cap still gets its one redesign and a review; clean → ready with 3 cycles", async () => {
