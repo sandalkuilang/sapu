@@ -538,6 +538,15 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(gates(h).at(-1)).toContain(` failed=${file}@${sigOf(normalised)} `);
   });
 
+  it("a gate log with an invalid UTF-8 byte (in the log and in the error line) still gives a red verdict and a ledger row: sed and awk read it in the C locale", () => {
+    const bytes = `echo "preparing"; printf 'bad \\377\\376 bytes\\n'; printf ' FAIL  apps/a.test.ts > t\\nAssertionError: expected \\377 to be 2\\n'; printf 'FAILED tests/test_b.py::test_x - AssertionError: assert \\376 == 2\\n'`;
+    const h = harness({ main: { "scripts/gate.sh": GATE.replace('echo "preparing"', bytes) } });
+    const r = h.run({ HX_GATE_RC: "1", LC_ALL: "en_US.UTF-8", LANG: "en_US.UTF-8" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/GATE RED/);
+    expect(gates(h)).toEqual([expect.stringMatching(/ red gate=\d+s failed=apps\/a\.test\.ts@[0-9a-f]{8},tests\/test_b\.py@[0-9a-f]{8} tree=[0-9a-f]{40} verdict=unknown$/)]);
+  });
+
   it("a run that printed the file but no error line within reach records @-", () => {
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${"filler\n".repeat(13)}AssertionError: far too late` });

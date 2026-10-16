@@ -716,7 +716,7 @@ LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
 sig_of() { # <error line or empty>
   [ -n "$1" ] || { printf -- '-'; return 0; }
   local n
-  n="$(printf '%s' "$1" | sed -E \
+  n="$(printf '%s' "$1" | LC_ALL=C sed -E \
     -e 's/"[^"]*"/Q/g' -e "s/'[^']*'/Q/g" -e 's/`[^`]*`/Q/g' \
     -e 's#(^|[^[:alnum:]_.-])(/[^[:space:]/]+)+#\1P#g' \
     -e 's/0x[0-9a-fA-F]+/H/g' -e 's/[0-9a-fA-F]{8,}/H/g' \
@@ -746,7 +746,7 @@ RED=""
 if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$SUMMARY"; then RED="${RED:+$RED; }a summary line matches gate.redIf ($RED_IF)"; fi
 [ -n "$SUMMARY" ] || RED="${RED:+$RED; }no gate summary in log (gate.summaryStart: $SUMMARY_START)"
 if [ -n "$RED" ]; then
-  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
+  FAILED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | LC_ALL=C sed -E 's/ [0-9][0-9.]*s$//' | paste -sd, - || true)"
   say "GATE RED ($RED) failed: ${FAILED:-see log} — log: $LOG — worktree $WT kept"
   # The failing test FILES, from anywhere in the log, colour codes stripped: per runner, a file
   # where it names one, else its most stable name for the failing unit. Go `FAIL\t<package>\t<n>s`
@@ -758,9 +758,11 @@ if [ -n "$RED" ]; then
   # file (mocha prints absolute paths). Only a name without a space or comma is taken (the ledger
   # is space- and comma-separated); one line, one runner (`t` stops at the first that matched).
   # ponytail: these formats only; another runner records failed=- and gets no verdict.
-  CLEAN="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG")"
+  # LC_ALL=C on every sed that reads the log: macOS sed dies on an invalid UTF-8 byte ("illegal byte sequence"), and a gate
+  # that printed one (a binary in a test's output) must still get its red verdict and its ledger row.
+  CLEAN="$(LC_ALL=C sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g' "$LOG")"
   TAB=$'\t'
-  FILES="$(sed -nE \
+  FILES="$(LC_ALL=C sed -nE \
     -e '/^FAIL[[:space:]].*\[(build|setup) failed\]$/d' \
     -e "s/^FAIL${TAB}([^[:space:],]+)${TAB}[0-9.]+s\$/\\1/p" -e t \
     -e 's/^[[:space:]]*FAIL \[[^]]*\] ([^[:space:],]+) ([^[:space:],]+)$/\1\/\2/p' -e t \
@@ -771,7 +773,7 @@ if [ -n "$RED" ]; then
     -e 's/^(\[ERROR\] )?Tests run: .*<<< (FAILURE|ERROR)!( -+)? in ([^[:space:],]+)[[:space:]]*$/\4/p' -e t \
     -e 's/^([^[:space:],>]+) > .* FAILED$/\1/p' <<<"$CLEAN")"
   # mocha: one line per failure, `F <file>` or `X` (no test file under the worktree in its stack).
-  MOCHA="$(awk -v wt="$WT/" '
+  MOCHA="$(LC_ALL=C awk -v wt="$WT/" '
     function flush() { if (want) print "X"; want = 0 }
     /^  [0-9]+ failing$/ { flush(); failing = 1; next }
     failing && /^  [0-9]+\) / { flush(); want = 1; err = ""; next }
@@ -796,7 +798,7 @@ if [ -n "$RED" ]; then
   # line of the failure's block. Another runner, or no such line: no error line read (`@-`), which never proves a flake.
   ERRS=""
   if [ -n "$NAMES" ]; then
-    ERRS="$( { awk '
+    ERRS="$( { LC_ALL=C awk '
       BEGIN { re = "Error|assert|Expected|expected|panic|FAIL:" }
       FNR == NR { want[$0] = 1; next }
       { line[++n] = $0 }
@@ -827,7 +829,7 @@ if [ -n "$RED" ]; then
   TESTS=""
   while IFS= read -r nm; do
     [ -n "$nm" ] || continue
-    TESTS="${TESTS:+$TESTS,}$nm@$(sig_of "$(awk -F'\t' -v n="$nm" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }' <<<"$ERRS")")"
+    TESTS="${TESTS:+$TESTS,}$nm@$(sig_of "$(LC_ALL=C awk -F'\t' -v n="$nm" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }' <<<"$ERRS")")"
   done <<<"$NAMES"
   # A failure line no file was read from (pytest ERROR, a path with a space, a Go package that did
   # not build, a mocha failure outside the tests) or an unhandled error outside any test = something
@@ -871,9 +873,9 @@ if [ -n "$RED" ]; then
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
-  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
+  STEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -viE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' || true)"
   # …or a test word beside a non-test tool (lint test files, build:test, tsc -p tsconfig.test.json)
-  STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
+  STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
