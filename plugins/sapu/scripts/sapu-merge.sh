@@ -665,6 +665,9 @@ LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
 # (macOS and Linux print the same CRC), unlike sha1sum (no macOS) or shasum (a perl script some Linux images lack).
 # Normalised: quoted strings, absolute paths, hex runs, numbers and durations drop out, so two runs of one flaky
 # failure give one signature while a different assertion gives another.
+# ponytail: collision ceiling. Values inside an assertion drop out too, so `expected 3 to be 2` and `expected 0 to be 2` share
+# one signature; bounded by the one re-run rule (a failure is re-run once before it is called a flake). Upgrade path: a
+# per-runner structured reporter.
 sig_of() { # <error line or empty>
   [ -n "$1" ] || { printf -- '-'; return 0; }
   local n
