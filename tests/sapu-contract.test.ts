@@ -40,6 +40,9 @@ import {
   SWEEP_TTL_MS,
   sweepHold,
   sweepRelease,
+  openBacklog,
+  sessionStatus,
+  sessionVerdict,
   protectedCommand,
   gateProtectionWarning,
   bodyRefs,
@@ -1582,9 +1585,9 @@ describe("tuning: what the engine derives from the machine and the model, and wh
 
   it("the step budget and the context limits default as before and follow `tuning`; the limits are fractions of the context window", () => {
     const d = resolveTuning(FIXTURE_CONTRACT);
-    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 1_000_000, contextLimits: { session: 750_000, phaseA: 600_000 } });
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 1_000_000, contextLimits: { session: 950_000, phaseA: 600_000 } });
     const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextBudget: { soft: 90_000 }, contextWindow: 200_000 } });
-    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 200_000, contextLimits: { session: 150_000, phaseA: 120_000 } });
+    expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 200_000, contextLimits: { session: 190_000, phaseA: 120_000 } });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.5 } } }).contextLimits).toEqual({ session: 500_000, phaseA: 600_000 });
   });
 
@@ -1621,7 +1624,7 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     execFileSync("git", ["init", "-q", r]);
     commit(r, { ".claude/sapu.json": JSON.stringify({ ...FIXTURE_CONTRACT, tuning: { contextWindow: 200_000 } }) });
     const out = JSON.parse(cli(r, ["tuning"]).out);
-    expect(out.contextLimits).toEqual({ session: 150_000, phaseA: 120_000 });
+    expect(out.contextLimits).toEqual({ session: 190_000, phaseA: 120_000 });
     expect(out.stepBudget.soft).toBe(120);
     expect(out.gateWorkers).toBeGreaterThanOrEqual(1);
   });
@@ -2005,7 +2008,13 @@ describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", (
     expect(second.err).toMatch(/another sapu sweep holds this repo: sapu-run-a, last heartbeat 0 min ago.*stop.*sweep clear/s);
     expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toMatchObject({ held: true, owner: "sapu-run-a", fresh: true });
     expect(cli(repo, ["sweep", "release", "sapu-run-b"]).status).toBe(1);
-    expect(cli(repo, ["sweep", "release", "sapu-run-a"]).status).toBe(0);
+    // No contract, no transcript: nothing proves the session may end, so release needs --force and logs it.
+    const kept = cli(repo, ["sweep", "release", "sapu-run-a"]);
+    expect(kept.status).toBe(1);
+    expect(kept.err).toMatch(/session-status says continue \(context unmeasured of 950k, backlog unreadable\).*--force/);
+    expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force"]).status).toBe(1); // a reason is required
+    expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force", "owner stopped the sweep"]).status).toBe(0);
+    expect(readFileSync(join(repo, ".git/sapu-sweep.log"), "utf8")).toMatch(/forced release sapu-run-a verdict=continue context unmeasured.*reason: owner stopped the sweep\n$/);
     expect(JSON.parse(cli(repo, ["sweep", "status"]).out)).toEqual({ held: false });
     expect(cli(repo, ["sweep", "hold", "sapu-run-b"]).status).toBe(0);
     const cleared = cli(repo, ["sweep", "clear"]);
@@ -2185,5 +2194,54 @@ describe("gate.merge self-location: the idioms that find the tree, not a file me
   it("warns on Perl's FindBin", () => {
     expect(warn("perl scripts/gate.pl", "use FindBin;\nchdir \"$FindBin::Bin/..\" or die;\nsystem('npm test');\n")).toMatch(/\$FindBin::Bin/);
     expect(warn("perl scripts/gate.pl", "use FindBin qw($RealBin);\nchdir \"$RealBin/..\";\n")).toMatch(/\$FindBin::Bin/);
+  });
+});
+
+describe("session-status: code decides continue / handoff / finish", () => {
+  const box = mkdtempSync(join(tmpdir(), "sapu-session-status-"));
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const full = { prs: [7], issues: [] };
+
+  it("finishes on an empty backlog, hands over at the limit, else continues; unknowns never end a session", () => {
+    expect(sessionVerdict({ context: 10, limit: 100, backlog: { prs: [], issues: [] } })).toBe("finish");
+    expect(sessionVerdict({ context: 100, limit: 100, backlog: full })).toBe("handoff");
+    expect(sessionVerdict({ context: 99, limit: 100, backlog: full })).toBe("continue");
+    expect(sessionVerdict({ context: null, limit: 100, backlog: full })).toBe("continue");
+    expect(sessionVerdict({ context: 500, limit: 100, backlog: null })).toBe("handoff");
+    expect(sessionVerdict({ context: 1, limit: 100, backlog: null })).toBe("continue");
+  });
+
+  it("counts open PRs but argus/ and issues without a parked or needs-owner label", () => {
+    const gh = (args: string[]) => (args[0] === "pr"
+      ? [{ number: 1, headRefName: "fix/a" }, { number: 2, headRefName: "argus/smoke" }]
+      : [{ number: 3, labels: [] }, { number: 4, labels: [{ name: "agent:blocked" }] }, { number: 5, labels: [{ name: "ARGUS:needs-owner" }] }, { number: 6, labels: [{ name: "wontfix" }] }]);
+    expect(openBacklog({ repo: "o/r" }, gh)).toEqual({ prs: [1], issues: [3] });
+    expect(openBacklog({ repo: "o/r" }, () => { throw new Error("gh down"); })).toBeNull();
+    expect(openBacklog(null, gh)).toBeNull();
+  });
+
+  it("measures the transcript that holds the run marker", () => {
+    const main = join(box, "repo");
+    mkdirSync(main, { recursive: true });
+    const dir = join(box, "cfg/projects", main.replace(/[^A-Za-z0-9]/g, "-"));
+    mkdirSync(dir, { recursive: true });
+    const usage = (n: number) => JSON.stringify({ message: { usage: { input_tokens: 1, cache_read_input_tokens: n - 1 } } });
+    writeFileSync(join(dir, "s.jsonl"), `{"marker":"sapu-run-z"}\n${usage(960_000)}\n`);
+    const env = { CLAUDE_CONFIG_DIR: join(box, "cfg") };
+    expect(sessionStatus(main, "sapu-run-z", { env })).toMatchObject({ verdict: "handoff", context: 960_000, limit: 950_000, backlog: null });
+    expect(sessionStatus(main, "sapu-run-z", { env, phaseA: true })).toMatchObject({ verdict: "handoff", limit: 600_000 });
+    expect(sessionStatus(main, "sapu-run-other", { env })).toMatchObject({ verdict: "continue", context: null, transcript: null });
+  });
+
+  it("no session-ending 'ask the owner' outside POLICY GAP: the session hands over to its successor itself", () => {
+    const files = ["plugins/sapu/skills/sapu/SKILL.md", "plugins/sapu/scripts/sapu-guard.mjs", "plugins/sapu/scripts/sapu-contract.mjs", "plugins/sapu/workflows/sapu-wave.js", "docs/usage.md"];
+    const ask = /\bask(s|ed|ing)?\b[^.\n]{0,20}\bowner\b|asks? you to start a new/i;
+    for (const f of files) {
+      const bad = readFileSync(join(__dirname, "..", f), "utf8").split("\n").map((l, i) => [i + 1, l] as const).filter(([, l]) => ask.test(l) && !/POLICY GAP/.test(l));
+      expect(bad.map(([n]) => `${f}:${n}`), f).toEqual([]);
+    }
+    const skill = readFileSync(join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toMatch(/session-status <marker>/);
+    expect(skill).toMatch(/start the successor session yourself/);
   });
 });

@@ -40,7 +40,11 @@
 //   sapu-contract.mjs sweep hold|release <run-marker>   one /sapu sweep per repo (ONE SWEEP PER REPO):
 //                                 hold = take or refresh <MAIN>/.git/sapu-sweep.json (the heartbeat), exit 1
 //                                 while another session's heartbeat is fresh; release = remove it, holder only
+//                                 and only when session-status allows it (--force "<reason>" overrides, logged
+//                                 in <MAIN>/.git/sapu-sweep.log)
 //   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
+//   sapu-contract.mjs session-status <run-marker> [--phase-a]   {verdict, context, limit, backlog, transcript}:
+//                                 continue | handoff | finish for this sweep session (sessionStatus)
 //   sapu-contract.mjs main        prints <MAIN>, the main checkout (findMain: also for a submodule or a
 //                                 --separate-git-dir checkout, where git lists its git directory first)
 //   sapu-contract.mjs stack       the guard /sapu:init proposes for the checkout (detectStack): its
@@ -783,7 +787,7 @@ export function gateWorkers({ cpus, busy }) {
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
  * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 1_000_000, contextLimits: { session: 0.75, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 } };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -1491,6 +1495,103 @@ export function sweepRelease(main, owner) {
   return { released: true };
 }
 
+// SESSION HANDOFF, DECIDED BY CODE. Whether a sweep session runs the next wave, hands over to a successor
+// session or finishes the sweep was the orchestrator's own reading of sapu-metrics; it stopped early and
+// waited on the owner. sessionStatus measures both facts itself (the session transcript's last-turn context,
+// the open backlog on GitHub) and `sweep release` refuses while the verdict is "continue".
+
+/** Where Claude Code keeps checkout `main`'s transcripts: <$CLAUDE_CONFIG_DIR, else ~/.claude>/projects/<the path, every non-alphanumeric as ->. */
+export function projectDir(main, env = process.env) {
+  const config = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), ".claude");
+  return path.join(config, "projects", main.replace(/[^A-Za-z0-9]/g, "-"));
+}
+
+/** This session's transcript: of the 20 newest in projectDir, the newest holding `marker` (the newest alone may be a parallel session's); null when none does. */
+export function findTranscript(main, marker, env = process.env) {
+  const dir = projectDir(main, env);
+  let names;
+  try {
+    names = fs.readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+  } catch {
+    return null;
+  }
+  const newest = names.map((n) => path.join(dir, n)).map((p) => ({ p, t: fs.statSync(p).mtimeMs })).sort((a, b) => b.t - a.t).slice(0, 20);
+  return newest.find(({ p }) => fs.readFileSync(p, "utf8").includes(marker))?.p ?? null;
+}
+
+// ponytail: a worker's last usage sits at the end of its transcript; a 256 KB tail holds several turns
+// without reading a transcript that grows to megabytes, and only every CONTEXT_EVERY_CALLS-th call reads it.
+const TRANSCRIPT_TAIL = 256 * 1024;
+
+/** The context of the last assistant turn in transcript `file` (input + cache read + cache creation tokens), from its tail; null when there is none. */
+export function contextTokens(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, TRANSCRIPT_TAIL);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      let u;
+      try {
+        u = JSON.parse(lines[i])?.message?.usage;
+      } catch {
+        continue; // the tail's first line is cut, and a line may be half-written
+      }
+      if (u && typeof u === "object") return [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+    }
+  } catch {
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+  return null;
+}
+
+// ponytail: label triage only (B1's first cut). An open item B2 skips for another reason (untrusted author,
+// SKIP-STABLE checkpoint, missing credentials) still counts, so a sweep that ends with only those left
+// releases with --force and names them. Upgrade path: a triage record the release checks, if that gets routine.
+const PARKED = /parked|blocked|wontfix|won't fix|discussion/i;
+
+/** The open backlog of contract `c`: PRs (not an `argus/` owner-only branch) and issues without a parked label; null when gh cannot say. */
+export function openBacklog(c, gh = ghJson) {
+  if (!c || !isStr(c.repo)) return null;
+  try {
+    const prs = gh(["pr", "list", "--repo", c.repo, "--state", "open", "--limit", "300", "--json", "number,headRefName"]).filter((p) => !String(p.headRefName).startsWith("argus/")).map((p) => p.number);
+    const owner = needsOwnerLabel(c).toLowerCase();
+    const issues = gh(["issue", "list", "--repo", c.repo, "--state", "open", "--limit", "300", "--json", "number,labels"])
+      .filter((i) => !(i.labels || []).some((l) => PARKED.test(l.name) || lc(l.name) === owner))
+      .map((i) => i.number);
+    return { prs, issues };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The verdict for a sweep session: "finish" (the backlog is empty: §Finish), "handoff" (context at or past the
+ * limit: rewrite sapu-sweep-state, release, start the successor session), else "continue" (the next wave here).
+ * An unmeasured context or an unreadable backlog never ends a session: it reads as "continue".
+ */
+export function sessionVerdict({ context, limit, backlog }) {
+  if (backlog && !backlog.prs.length && !backlog.issues.length) return "finish";
+  if (context !== null && context >= limit) return "handoff";
+  return "continue";
+}
+
+/** sessionVerdict for run `marker` in checkout `main`, measured: {verdict, context, limit, backlog, transcript}. */
+export function sessionStatus(main, marker, { phaseA = false, env = process.env, gh = ghJson } = {}) {
+  const { contract } = loadContract(main);
+  const limits = resolveTuning(contract).contextLimits;
+  const limit = phaseA ? limits.phaseA : limits.session;
+  const transcript = findTranscript(main, marker, env);
+  const context = transcript ? contextTokens(transcript) : null;
+  const backlog = openBacklog(contract, gh);
+  return { verdict: sessionVerdict({ context, limit, backlog }), context, limit, backlog, transcript };
+}
+
 // THE GUARD /sapu:init PROPOSES. The engine floor knows JS package managers, Prisma and Postgres; every
 // other ecosystem's destructive commands are blocked by the contract's guard.deny, and every other
 // engine's dev database by guard.databases. detectStack reads the checkout (marker files, Compose
@@ -1894,8 +1995,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "main", "stack", "tuning"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker>|sweep status|clear|main|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "session-status", "main", "stack", "tuning"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker> [--force <reason>]|session-status <run-marker> [--phase-a]|sweep status|clear|main|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -1962,8 +2063,10 @@ function main(argv) {
   if (cmd === "sweep") {
     // ONE SWEEP PER REPO (above). No contract needed: the marker lives in <MAIN>/.git.
     const [verb, owner] = rest;
-    if (!["hold", "release", "status", "clear"].includes(verb) || ((verb === "hold" || verb === "release") && !SWEEP_OWNER.test(owner ?? ""))) {
-      fail("usage: sapu-contract.mjs sweep hold|release <run-marker> | sweep status|clear (run-marker: letters, digits, . _ : -)");
+    const fi = rest.indexOf("--force");
+    const force = fi < 0 ? null : (rest[fi + 1] ?? "").trim();
+    if (!["hold", "release", "status", "clear"].includes(verb) || ((verb === "hold" || verb === "release") && !SWEEP_OWNER.test(owner ?? "")) || (fi >= 0 && (verb !== "release" || !force))) {
+      fail("usage: sapu-contract.mjs sweep hold|release <run-marker> | sweep release <run-marker> [--phase-a] [--force \"<reason>\"] | sweep status|clear (run-marker: letters, digits, . _ : -)");
     }
     if (!mainDir) fail("not inside a git repository");
     const script = fileURLToPath(import.meta.url);
@@ -1974,6 +2077,15 @@ function main(argv) {
       fs.rmSync(sweepFile(mainDir), { force: true });
       process.stdout.write(s.held ? `removed ${sweepFile(mainDir)} (held by ${s.owner ?? "an unreadable marker"}${s.beat ? `, last heartbeat ${s.agoMin} min ago` : ""})\n` : "no sweep marker\n");
     } else if (verb === "release") {
+      const held = sweepStatus(mainDir);
+      if (held.held && held.owner !== owner && !held.corrupt) fail(`the sweep marker is held by ${held.owner}, not ${owner}: left as it is`);
+      // A session ends only on a verdict that says so (SESSION HANDOFF, DECIDED BY CODE); --force is logged.
+      const st = sessionStatus(mainDir, owner, { phaseA: rest.includes("--phase-a") });
+      const said = `context ${st.context === null ? "unmeasured" : `${Math.round(st.context / 1000)}k`} of ${Math.round(st.limit / 1000)}k, backlog ${st.backlog ? `PRs [${st.backlog.prs.join(", ")}] issues [${st.backlog.issues.join(", ")}]` : "unreadable"}`;
+      if (st.verdict === "continue" && !force) {
+        fail(`session-status says continue (${said}): run the next wave in this session. A session ends at the context limit (handoff) or on an empty backlog (finish). To stop anyway: --force "<reason>", logged in ${path.join(path.dirname(sweepFile(mainDir)), "sapu-sweep.log")}`);
+      }
+      if (force) fs.appendFileSync(path.join(path.dirname(sweepFile(mainDir)), "sapu-sweep.log"), `${new Date().toISOString()} forced release ${owner} verdict=${st.verdict} ${said} reason: ${force.replace(/\s+/g, " ")}\n`);
       const r = sweepRelease(mainDir, owner);
       if (!r.released) fail(`the sweep marker is held by ${r.holder}, not ${owner}: left as it is`);
       process.stdout.write(`${JSON.stringify(r)}\n`);
@@ -1985,6 +2097,13 @@ function main(argv) {
       if (r.tookOver) process.stderr.write(`sapu-contract: took over a stale sweep marker of ${r.tookOver.owner ?? "an unreadable marker"}${r.tookOver.agoMin != null ? ` (last heartbeat ${r.tookOver.agoMin} min ago)` : ""}\n`);
       process.stdout.write(`${JSON.stringify(r)}\n`);
     }
+    return;
+  }
+  if (cmd === "session-status") {
+    const marker = rest[0];
+    if (!SWEEP_OWNER.test(marker ?? "")) fail("usage: sapu-contract.mjs session-status <run-marker> [--phase-a]");
+    if (!mainDir) fail("not inside a git repository");
+    process.stdout.write(`${JSON.stringify(sessionStatus(mainDir, marker, { phaseA: rest.includes("--phase-a") }))}\n`);
     return;
   }
   if (cmd === "home") {
