@@ -5,11 +5,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
-import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, SESSION_DIR, SESSION_EVERY, sessionContext, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -4224,5 +4224,143 @@ describe("sapu-guard — code search first: a worker's searches wait for the rep
     expect(call("senior-dev-team:senior-qa-reviewer", "grep -rn foo .", "d2")).toBeNull();
     const D = repo("d", "## Code search\n\nRun first: `node find <terms>`.\n", {}); // no tuning key: off
     expect(decide({ session_id: `${run}-d3`, agent_id: "w1", agent_type: "sapu:sapu-sonnet-medium", tool_name: "Bash", tool_input: { command: "grep -rn foo ." }, cwd: D.w })).toBeNull();
+  });
+});
+
+describe("sapu-guard — the orchestrator's context reminder at contextLimits.session (F7)", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-orch-")));
+  const run = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const sids: string[] = [];
+  afterAll(() => {
+    rmSync(box, { recursive: true, force: true });
+    for (const s of sids) rmSync(join(SESSION_DIR, s.replace(/[^\w.-]/g, "_")), { force: true });
+  });
+  let k = 0;
+  /** A repo with a committed contract; the window is 200k and session 0.5, so the limit is 100k tokens. */
+  const repo = (tuning: unknown = { contextWindow: 200_000, contextLimits: { session: 0.5 } }, withContract = true) => {
+    const r = join(box, `r${++k}`);
+    mkdirSync(join(r, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    if (withContract) commitContract(r, { ...FIXTURE_CONTRACT, tuning });
+    else execFileSync("git", ["-C", r, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], { stdio: "ignore" });
+    return r;
+  };
+  /** A main-session transcript whose last assistant turn carried `ctx` context tokens. */
+  const transcript = (ctx: number) => {
+    const f = join(box, `t${++k}.jsonl`);
+    const turn = (n: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 2, cache_read_input_tokens: n - 502, cache_creation_input_tokens: 500, output_tokens: 900 } } });
+    writeFileSync(f, [turn(1000), turn(ctx), JSON.stringify({ type: "user", message: { content: "x" } }), ""].join("\n"));
+    return f;
+  };
+  const sid = (name: string) => {
+    const s = `${run}-${name}`;
+    sids.push(s);
+    return s;
+  };
+  /** n main-session Bash calls (no agent_id) through decide(); the 1-based numbers of the refused ones. */
+  const calls = (r: string, t: string, session: string, n: number, extra: Record<string, unknown> = {}) => {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(decide({ session_id: session, tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t, ...extra }));
+    return out;
+  };
+  const refused = (out: (string | null)[]) => out.flatMap((x, i) => (x ? [i + 1] : []));
+
+  it("refuses call 10 above the limit with the spec's reminder, lets the re-issue pass, and repeats every 10 calls", () => {
+    expect(SESSION_EVERY).toBe(10);
+    const out = calls(repo(), transcript(120_000), sid("core"), 31);
+    expect(refused(out)).toEqual([10, 20, 30]);
+    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: in a sapu sweep finish the current wave, rewrite sapu-sweep-state and ask the owner for a new /sapu:sapu session; otherwise start a fresh session (SKILL §Sessions and waves)");
+  });
+
+  it("keeps its counters in a per-user directory, so another user's file in the shared temp dir is never read or pruned", () => {
+    expect(basename(SESSION_DIR)).toBe(`sapu-session-${process.getuid?.() ?? "u"}`);
+    expect(dirname(SESSION_DIR)).toBe(tmpdir());
+  });
+
+  it("is quiet under the limit, and exactly at the limit it fires", () => {
+    expect(refused(calls(repo(), transcript(99_999), sid("under"), 30))).toEqual([]);
+    expect(refused(calls(repo(), transcript(100_000), sid("at"), 10))).toEqual([10]);
+  });
+
+  it("measures again at each 10th call: the context falling under the limit ends the reminders", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const s = sid("drop");
+    expect(refused(calls(r, t, s, 10))).toEqual([10]);
+    writeFileSync(t, readFileSync(transcript(40_000)));
+    expect(refused(calls(r, t, s, 20))).toEqual([]);
+  });
+
+  it("takes the limit from the contract's tuning (default window 1M x 0.75 = 750k)", () => {
+    expect(refused(calls(repo({}), transcript(700_000), sid("def1"), 10))).toEqual([]);
+    expect(refused(calls(repo({}), transcript(760_000), sid("def2"), 10))).toEqual([10]);
+  });
+
+  it("counts per session id, so a second session starts its own count", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    expect(refused(calls(r, t, sid("a"), 9))).toEqual([]);
+    expect(refused(calls(r, t, sid("b"), 9))).toEqual([]);
+    expect(refused(calls(r, t, sid("a"), 1))).toEqual([1]);
+  });
+
+  it("does nothing without a session_id, a transcript_path, or a readable transcript, and never throws", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const noSession = Array.from({ length: 20 }, () => decide({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t }));
+    expect(refused(noSession)).toEqual([]);
+    const noPath = Array.from({ length: 20 }, () => decide({ session_id: sid("np"), tool_name: "Bash", tool_input: { command: "ls" }, cwd: r }));
+    expect(refused(noPath)).toEqual([]);
+    expect(refused(calls(r, join(box, "missing.jsonl"), sid("miss"), 20))).toEqual([]);
+    expect(sessionContext({ session_id: sid("x"), transcript_path: t, cwd: join(box, "no-such-dir") })).toBeNull();
+  });
+
+  it("does nothing in a repo without a sapu contract, or with an unreadable one", () => {
+    const none = repo({}, false);
+    expect(refused(calls(none, transcript(900_000), sid("nocontract"), 30))).toEqual([]);
+    const broken = repo();
+    writeFileSync(join(broken, ".claude/sapu.json"), "{ not json");
+    execFileSync("git", ["-C", broken, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "break"], { stdio: "ignore" });
+    expect(refused(calls(broken, transcript(900_000), sid("broken"), 30))).toEqual([]);
+    const outside = join(box, "not-a-repo");
+    mkdirSync(outside, { recursive: true });
+    expect(refused(calls(outside, transcript(900_000), sid("outside"), 30))).toEqual([]);
+  });
+
+  it("leaves workers, the explorer and the curator to their own paths, with or without an agent_id", () => {
+    const r = repo();
+    const t = transcript(900_000);
+    // a subagent (agent_id) never gets the orchestrator's reminder; the ladder worker's own budget needs its own transcript
+    for (const agent_type of ["sapu:sapu-sonnet-high", "senior-dev-team:senior-qa-reviewer"]) {
+      const out = calls(r, t, sid(`sub2-${agent_type}`), 30, { agent_id: "x2", agent_type });
+      expect(out.every((x) => !x || !/orchestrator context/.test(x))).toBe(true);
+    }
+    // agent_type alone (a host that dropped agent_id): worker, explorer and curator are never the orchestrator
+    for (const agent_type of ["sapu:sapu-opus-high", "ui-explorer", "sapu:curator"]) {
+      const out = calls(r, t, sid(`noid-${agent_type}`), 30, { agent_type });
+      expect(out.every((x) => !x || !/orchestrator context/.test(x)), agent_type).toBe(true);
+    }
+    // a --agent main session (agent_type but no agent_id) IS the orchestrator
+    expect(refused(calls(r, t, sid("mainagent"), 10, { agent_type: "reviewer" }))).toEqual([10]);
+  });
+
+  it("through the hook process: the 10th call exits 2 with the reminder on stderr, the 11th exits 0", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const tmp = join(box, "tmp-e2e");
+    mkdirSync(tmp, { recursive: true });
+    const session = sid("e2e");
+    const hook = () => {
+      try {
+        execFileSync("node", [GUARD], { input: JSON.stringify({ session_id: session, tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t }), env: { ...process.env, TMPDIR: tmp }, stdio: ["pipe", "pipe", "pipe"] });
+        return 0;
+      } catch (e) {
+        return (e as { status: number; stderr: Buffer }).status === 2 ? (e as { stderr: Buffer }).stderr.toString() : -1;
+      }
+    };
+    for (let i = 1; i <= 9; i++) expect(hook(), `call ${i}`).toBe(0);
+    expect(hook()).toMatch(/^sapu-guard: BLOCKED — orchestrator context 120k ≥ contextLimits\.session 100k: in a sapu sweep finish the current wave/);
+    expect(hook()).toBe(0);
+    rmSync(join(tmp, `sapu-session-${process.getuid?.() ?? "u"}`), { recursive: true, force: true });
   });
 });

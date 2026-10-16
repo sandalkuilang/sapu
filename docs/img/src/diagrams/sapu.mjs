@@ -13,7 +13,7 @@ const box = (x, y, w, h, title, subs, cls = "card", { mono = [] } = {}) =>
   subs.map((s, i) => text(x + w / 2, y + 47 + i * 17, s, mono.includes(i) ? "cap mono" : "cap", "middle")).join("");
 
 export default {
-  h: 1714,
+  h: 1733,
   title: A11Y.title,
   desc: A11Y.desc,
   label: A11Y.label,
@@ -70,7 +70,7 @@ export default {
     s += lines(X + 16, ly + 78, ["SKIP · DUPLICATE", "POLICY GAP", "WORK (tier + worker)"], "cap", 19);
     s += arrow([[X + 152, ly + 90], [X + 170, ly + 90]]);
     // lane frame
-    const lx = X + 174, lw = 478, lh = 512;
+    const lx = X + 174, lw = 478, lh = 531;
     s += rect(lx, ly, lw, lh, "k-violet", 16);
     s += text(lx + 18, ly + 28, `${c("Lane", "tb c-violet")}  — one Workflow call per issue  ${m("sapu-wave.js")}`, "t");
     s += text(lx + 18, ly + 48, "own worktree · ≤ lanes in flight (1–4, per machine) · refilled as each returns", "cap");
@@ -97,11 +97,12 @@ export default {
     s += lines(inx, ry2, [
       "each review reports fewer findings than the one before, and no",
       "finding is reported by three reviews in a row; else blocked (reason)",
+      `a finding ${b("class")} back after its fix → one ${b("redesign")} (Opus/high); back again → owner`,
       `${b("ESCALATE", "tb")} → one step up the ladder, once; then blocked`,
       `past its ${b("step budget")} → handoff: WIP commit, then a fresh worker`,
       "of the same tier goes on while each brings a commit (≤ 5 per step)",
     ], "cap", 19);
-    ry2 += 5 * 19 + 14;
+    ry2 += 6 * 19 + 14;
     s += `<line x1="${inx}" y1="${ry2 - 6}" x2="${inx + 442}" y2="${ry2 - 6}" class="rule"/>`;
     s += text(inx, ry2 + 14, "REVIEWER · NEVER THE AUTHOR, NEVER A LADDER WORKER", "lbl");
     ry2 += 26;
