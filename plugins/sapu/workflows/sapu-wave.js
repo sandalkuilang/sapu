@@ -147,10 +147,14 @@ const P = C.policy || { merge: 'sapu', traces: 'visible', fileIssues: true, preP
 const REVIEW_MODEL = ['opus', C.reviewEffort === 'high' ? 'high' : 'medium']
 // tuning.workerTier (a ladder entry such as "sonnet-medium"): every author, scout and fixer of the wave starts there, whatever
 // the item says and below the red floor; an ESCALATE still climbs the ladder from it. Absent = the item's own worker.
-const WORKER_TIER = typeof C.workerTier === 'string' && LADDER.includes(`sapu:sapu-${C.workerTier}`) ? `sapu:sapu-${C.workerTier}` : null
+// `/sapu opus` (wave-args --opus → contract.modelFloor "opus"): Opus/medium is the floor for every scout, author, fixer and the
+// pre-PR check, and the ceiling is the top of the ladder; a Sonnet tuning.workerTier is ignored. Absent = the tuning as configured.
+const OPUS_FLOOR = C.modelFloor === 'opus' ? 'sapu:sapu-opus-medium' : null
+const TIER_SET = typeof C.workerTier === 'string' && LADDER.includes(`sapu:sapu-${C.workerTier}`) ? `sapu:sapu-${C.workerTier}` : null
+const WORKER_TIER = OPUS_FLOOR && TIER_SET && LADDER.indexOf(TIER_SET) < LADDER.indexOf(OPUS_FLOOR) ? null : TIER_SET
 // tuning.workerCeiling ("sonnet-high" default | "opus-medium" | "opus-high"): no author or fixer climbs above it; an item assigned higher is clamped down to it,
 // and an ESCALATE at the ceiling blocks for a human. Absent = the top of the ladder. The reviewers are not workers and ignore it.
-const CEILING = typeof C.workerCeiling === 'string' && LADDER.includes(`sapu:sapu-${C.workerCeiling}`) ? `sapu:sapu-${C.workerCeiling}` : RED_FLOOR // default: workers never reach Opus
+const CEILING = OPUS_FLOOR ? LADDER[LADDER.length - 1] : typeof C.workerCeiling === 'string' && LADDER.includes(`sapu:sapu-${C.workerCeiling}`) ? `sapu:sapu-${C.workerCeiling}` : RED_FLOOR // default: workers never reach Opus
 const PREPR_AGENT = 'general-purpose'
 // The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
 // (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.
@@ -183,6 +187,7 @@ const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker'
 for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
 if (WORKER_TIER) for (const it of input.items) if (it && typeof it === 'object') it.worker = WORKER_TIER
 for (const it of input.items) if (it && typeof it.worker === 'string' && LADDER.indexOf(it.worker) > LADDER.indexOf(CEILING)) it.worker = CEILING
+if (OPUS_FLOOR) for (const it of input.items) if (it && LADDER.includes(it.worker) && LADDER.indexOf(it.worker) < LADDER.indexOf(OPUS_FLOOR)) it.worker = OPUS_FLOOR
 const RENAMED = { npmCi: 'cleanInstall' }
 for (const it of input.items) {
   const unknown = Object.keys(it && typeof it === 'object' ? it : {}).filter((k) => !ITEM_KEYS.includes(k))
@@ -362,7 +367,7 @@ const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number
 const SCOUT_OF = { 'sapu:sapu-opus-medium': 'sapu:sapu-sonnet-medium', 'sapu:sapu-opus-high': 'sapu:sapu-sonnet-high' }
 // tuning.scoutTier: "sonnet-high" (default) or "haiku": every scout runs there whatever the author's tier, because the plan is the lever
 // that sets how much the builder re-explores; the builder still checks each snippet. "off" = as above (one model down from an Opus lane).
-const SCOUT_TIER = C.scoutTier === 'off' ? null : C.scoutTier === 'haiku' ? 'sapu:sapu-haiku-medium' : 'sapu:sapu-sonnet-high'
+const SCOUT_TIER = OPUS_FLOOR || (C.scoutTier === 'off' ? null : C.scoutTier === 'haiku' ? 'sapu:sapu-haiku-medium' : 'sapu:sapu-sonnet-high')
 const scoutOf = (w) => SCOUT_TIER || SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]
@@ -710,7 +715,7 @@ async function runItem(item) {
   }
   // A resumed lane with a PR goes straight to review, so no builder would prove the guard: one cheap agent does, and checks the SHA.
   if (resumedPr) {
-    const prove = 'sapu:sapu-haiku-medium'
+    const prove = OPUS_FLOOR || 'sapu:sapu-haiku-medium'
     const v = await testSlot(() => agent(workerPrompt(item, state, prove, `This is a verification step, not work: change nothing, commit nothing. After the canary, run \`gh pr view ${resume.pr} --json headRefOid,headRefName,state\` and return status "pr_opened", pr_number ${resume.pr}, branch = its headRefName, head_sha = its headRefOid (full SHA), summary = its state (OPEN, CLOSED or MERGED), each exactly as GitHub printed it.`, false), opts(prove, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Resume', label: tag(item, effortOf(prove), 'resume check'),
     })))

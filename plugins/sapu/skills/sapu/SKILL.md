@@ -47,6 +47,8 @@ Long processes (merge gate, `sapu-merge.sh`, agents) run in the background (`run
 
 Pick a `sapu:sapu-*` agent (its effort is in its frontmatter); never `general-purpose` for tiered workers/reviewers — it inherits the session model.
 
+**Run mode (the argument).** `/sapu` or `/sapu sonnet` = the contract's tuning as configured. `/sapu opus` = Opus is the floor for the whole run: call `wave-args --opus` (the wave then floors every scout, author, fixer, resume check and pre-PR check at `sapu:sapu-opus-medium` and lifts the ceiling to `sapu:sapu-opus-high`), and every `Agent` call below that would say `model: "sonnet"` or `"haiku"` says `model: "opus"` instead; the worker ladder starts at `sapu:sapu-opus-medium`. Carry the mode into the `sapu-sweep-state` memory so a continued session keeps it.
+
 - **Consequence** = the tier label (contract `labels.tierPrefix` + `green|yellow|red`) → decides **who reviews**, never lowered: 🟢/🟡 one QA specialist (`specialists.qa`, Opus/high), 🔴 an Opus reviewer pair (`needs-ai`). No label → classify with forge §Risk tiers; in doubt → one up.
 - **Difficulty** = judged by the orchestrator from the issue/PR text at triage (B2 / A3) → decides **who writes the code**.
 
@@ -169,7 +171,7 @@ After the script succeeds: sync ONLY the open PRs that share files with the one 
 - A lane `blocked` on handoffs: call sapu-wave again with `resume: { branch, headSha, pr?, note? }` on its item (no scout; no `pr` = Implement continues from the SHA, a `pr` = straight to review), not by hand through the Agent tool. A result's `branchWarnings` names a worker that left the lane's pinned branch.
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args   # from <MAIN>: {"main","pluginRoot","contract"}
+node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args [--opus]   # from <MAIN>: {"main","pluginRoot","contract"}; --opus only in /sapu opus
 ```
 ```js
 Workflow({ name: "sapu:sapu-wave", args: { ...<output wave-args>, items: [...] } })  // by name: a plugin scriptPath is refused
