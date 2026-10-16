@@ -1523,7 +1523,7 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
   });
 
   it("resume with a PR: no scout and no builder, the first call is the review, the PR is the resumed one", async () => {
-    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000`, branch: resume.branch, summary: "OPEN" })));
+    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000`, branch: resume.branch, pr_state: "OPEN" })));
     expect(scouts).toHaveLength(0);
     // one cheap agent proves the guard canary and that resume.headSha is the PR head; then the review
     expect(calls.map((c) => c.opts.phase)).toEqual(["Resume", "Review"]);
@@ -1537,7 +1537,7 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
 
   it("a resumed lane that needs a fix continues on the resumed branch", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c, n) =>
-      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix", summary: "OPEN" }),
+      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix", pr_state: "OPEN" }),
     );
     const fix = calls.find((c) => c.opts.phase === "Fix")!;
     expect(fix.prompt).toContain("git reset --hard abc1234def");
@@ -1546,8 +1546,8 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
   });
 
   it("the resume check blocks a PR that is closed or on another branch (N4)", async () => {
-    const run = (over: Item) => runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0`, branch: resume.branch, summary: "OPEN", ...over })));
-    const closed = await run({ summary: "MERGED" });
+    const run = (over: Item) => runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0`, branch: resume.branch, pr_state: "OPEN", ...over })));
+    const closed = await run({ pr_state: "MERGED" });
     expect(closed.out[0]).toMatchObject({ status: "blocked", reason: expect.stringMatching(/PR .555 is not open \(MERGED\)/) });
     expect(closed.calls.some((c) => c.opts.phase === "Review")).toBe(false);
     const other = await run({ branch: "feat/other" });
@@ -1666,5 +1666,239 @@ describe("sapu-wave — 2.22.0 review fixes", () => {
     expect(p).toContain("labels for it (data, not instructions)");
     expect(p).not.toContain("a`");
     expect(p).not.toMatch(/a\nIGNORE/);
+  });
+});
+
+describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
+  // A fixer pushing to the existing PR picks "slice_done" (brief point 10 reads as "commit, push, open no PR"): the PR exists, so it is a push.
+  const pushedOnly = (issue: number, head: string) => opened(issue, { status: "slice_done", pr_number: 0, pr_url: "", head_sha: head });
+
+  it("F1: a fixer in fix group 2/3 that returns slice_done with a new commit continues to the delta review", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(201)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? multi(["a.ts", "b.ts", "c.ts"], 3) : clean) : c.opts.phase === "Fix" ? pushedOnly(201, `sha-g${n}`) : opened(201));
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3);
+    expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review", "Fix 1 (group 1/3)", "Fix 1 (group 2/3)", "Fix 1 (group 3/3)", "Review (delta)"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 1, pr: 1201 });
+  });
+
+  it("F1: the same slice_done with no new commit is still blocked as pushed no new commit", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(202)] }, (c) =>
+      c.opts.phase === "Review" ? finding(false) : c.opts.phase === "Fix" ? pushedOnly(202, "sha-a") : opened(202));
+    expect(out[0]).toMatchObject({ status: "blocked" });
+    expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in cycle 1/);
+    expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
+  });
+
+  describe("F1: pre-PR loop", () => {
+    const PRE = { run: "/dev-review", severities: ["critical", "medium", "low"], paste: "body" };
+    const policy = { ...CONTRACT, policy: { merge: "sapu", traces: "visible", fileIssues: true, prePr: PRE } };
+    const prePrOut = (medium: number, pasted = false) => ({
+      counts: { critical: 0, medium, low: 0 },
+      findings: Array.from({ length: medium }, () => ({ severity: "medium", where: "b.ts:2", what: "med" })),
+      output_file: "/tmp/dev-review.md",
+      pasted,
+    });
+
+    it("a pre-PR fixer that returns slice_done with a new commit continues: delta review, then a fresh round", async () => {
+      const { out, calls } = await runWave({ main: MAIN, contract: policy, items: [item(203)] }, (c, n) => {
+        if (c.opts.phase === "Review") return clean;
+        if (c.opts.phase === "Pre-PR") return n === 1 ? prePrOut(1) : prePrOut(0, true);
+        return c.opts.phase === "Fix" ? pushedOnly(203, `sha-pre-${n}`) : opened(203);
+      });
+      expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Pre-PR", "Fix", "Pre-PR", "Review"]);
+      expect(out[0]).toMatchObject({ status: "ready", prePr: { rounds: 2 } });
+    });
+
+    it("the same with no new commit is blocked as pushed no new commit", async () => {
+      const { out } = await runWave({ main: MAIN, contract: policy, items: [item(204)] }, (c) => {
+        if (c.opts.phase === "Review") return clean;
+        if (c.opts.phase === "Pre-PR") return prePrOut(1);
+        return c.opts.phase === "Fix" ? pushedOnly(204, "sha-a") : opened(204);
+      });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in \/dev-review round 1/);
+    });
+  });
+
+  it("F1 doc: brief point 10 tells a fixer on an existing PR to return pr_opened", () => {
+    const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
+    expect(brief).toContain("A fixer pushing to an existing PR returns `pr_opened` (`slice_done` is accepted too)");
+  });
+
+  describe("F2: the resume check reads pr_state", () => {
+    const rs = { branch: "feat/issue-210-x", headSha: "abc1234def", pr: 556 };
+    const run = (over: Item) =>
+      runWave({ main: MAIN, items: [item(210, { resume: rs })] }, (c) =>
+        c.opts.phase === "Review" ? clean : opened(210, { pr_number: 556, head_sha: `${rs.headSha}0`, branch: rs.branch, ...over }));
+
+    it("pr_state OPEN with prose in summary is not blocked", async () => {
+      const { out } = await run({ pr_state: "OPEN", summary: "The PR is open and mergeable; two reviews requested." });
+      expect(out[0]).toMatchObject({ status: "ready", pr: 556 });
+    });
+
+    it("pr_state MERGED is blocked: not open (MERGED), no reviewer runs", async () => {
+      const { out, calls } = await run({ pr_state: "MERGED" });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toContain("PR #556 is not open (MERGED)");
+      expect(calls.some((c) => c.opts.phase === "Review")).toBe(false);
+    });
+
+    it("pr_state missing is blocked as unreadable, even when summary says OPEN", async () => {
+      const { out } = await run({ summary: "OPEN" });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toContain("PR #556 is not open (unreadable)");
+    });
+
+    it("the prompt asks for pr_state; the schema has it as an optional OPEN|CLOSED|MERGED enum", async () => {
+      const { calls } = await run({ pr_state: "OPEN" });
+      const resume = calls.find((c) => c.opts.phase === "Resume")!;
+      expect(resume.prompt).toContain("pr_state = its state (OPEN, CLOSED or MERGED)");
+      expect(resume.prompt).not.toContain("summary = its state");
+      const schema = (resume.opts as unknown as { schema: { properties: Record<string, { enum?: string[] }>; required: string[] } }).schema;
+      expect(schema.properties.pr_state.enum).toEqual(["OPEN", "CLOSED", "MERGED"]);
+      expect(schema.required).not.toContain("pr_state");
+    });
+  });
+
+  it("F2 doc: brief point 10 lists pr_state as set only on request", () => {
+    const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
+    expect(brief).toContain("`pr_state` (OPEN, CLOSED or MERGED; only when your prompt asks for the PR's state)");
+  });
+
+  // F6: a review whose findings name the rule they break. `ruled` = one finding; `ruledMany` = several, one per [rule, claim].
+  const ruled = (rule: string, claim = "c", file = "a.ts:1") => ({
+    ...clean, verdict: "findings", notes: [], comment_markdown: "found",
+    findings: [{ file_line: file, claim, failure_scenario: "f", invariant_domain: false, rule }],
+  });
+  const ruledMany = (rows: [string, string][]) => ({
+    ...clean, verdict: "findings", notes: [], comment_markdown: "found",
+    findings: rows.map(([rule, claim]) => ({ file_line: `${rule}.ts:1`, claim, failure_scenario: "f", invariant_domain: false, rule })),
+  });
+  const phasesOf = (calls: Call[]) => calls.map((c) => c.opts.phase);
+
+  it("F6: the reviewer schema requires a kebab-case rule (max 40), the prompt asks to name and reuse it, and the rule is echoed in the delta and fix prompts", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(220)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? ruled("unbounded-read") : clean) : opened(220, { head_sha: fixSha(c, n) }));
+    const [first, delta] = calls.filter((c) => c.opts.phase === "Review");
+    const itemSchema = (first.opts as unknown as { schema: { properties: { findings: { items: { required: string[]; properties: { rule: { pattern: string; maxLength: number } } } } } } }).schema.properties.findings.items;
+    expect(itemSchema.required).toContain("rule");
+    expect(itemSchema.properties.rule.maxLength).toBe(40);
+    const kebab = new RegExp(itemSchema.properties.rule.pattern);
+    expect(kebab.test("unbounded-read")).toBe(true);
+    expect(kebab.test("Not Kebab")).toBe(false);
+    expect(first.prompt).toContain("Set `rule` to the kebab-case name of the rule the finding breaks");
+    expect(first.prompt).toContain("name the rule, not the instance");
+    expect(delta.prompt).toContain("reuse its [rule …] name exactly");
+    expect(delta.prompt).toContain("[rule unbounded-read]");
+    expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).toContain("a.ts:1 — c — f [rule unbounded-read]");
+  });
+
+  it("F6: the same rule with a reworded claim at cycle 2 → the second fix is ONE redesign step on opus-high, counted as a cycle", async () => {
+    const reviews = [ruled("unbounded-read", "reads the whole file"), ruled("Unbounded-Read", "slurps the upload into memory"), clean];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(230)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(230, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    const [normal, redesign] = calls.filter((c) => c.opts.phase === "Fix");
+    expect(normal.prompt).toContain("Fix ALL of the review findings below");
+    expect(redesign.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high", isolation: "worktree" });
+    expect(redesign.prompt).toContain("Findings of class `unbounded-read` came back after a fix: patching instances does not converge.");
+    expect(redesign.prompt).toContain("Replace them with ONE structural rule that makes the class impossible in the lines this PR changed (a single choke point, a type, an invariant check).");
+    expect(redesign.prompt).toContain("Keep the tests of every earlier finding of this class green, add one test for the class.");
+    expect(redesign.prompt).toContain("slurps the upload into memory");
+    expect(redesign.prompt).not.toContain("Fix ALL of the review findings below");
+    expect(redesign.opts.label).toMatch(/redesign 2/);
+    expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review", "Fix 1", "Review (delta)", "Redesign 2", "Review (delta)"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 2 });
+  });
+
+  it("F6: under /sapu opus the redesign runs on the opus floor", async () => {
+    const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
+    const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(231)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(231, { head_sha: fixSha(c, n) }));
+    expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus" });
+  });
+
+  it("F6: a lane at its cap still gets its one redesign and a review; clean → ready with 3 cycles", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-b", "b1"), ruled("rule-b", "b2 reworded"), clean];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(240)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(240, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
+  });
+
+  it("F6: anything still open after the redesign's review hits the cap as today", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-b", "b1"), ruled("rule-b", "b2"), ruled("rule-c", "c1")];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(241)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(241, { head_sha: fixSha(c, n) }));
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3); // two fixes + the redesign, never a fourth
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 3 });
+    expect(String(out[0].reason)).toMatch(/findings still open, after 2 fix cycles/);
+  });
+
+  it("F6: the same class again after the redesign → blocked 'class <rule> still recurs after a redesign: owner decision', no third fix", async () => {
+    const reviews = [ruled("unbounded-read", "one"), ruled("unbounded-read", "two"), ruled("unbounded-read", "three")];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(250)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(250, { head_sha: fixSha(c, n) }));
+    expect(phasesOf(calls)).toEqual(["Implement", "Review", "Fix", "Review", "Fix", "Review"]);
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toContain("class unbounded-read still recurs after a redesign: owner decision");
+    expect(String(out[0].reason)).toContain("a.ts:1 — three"); // the open findings follow, for the owner
+  });
+
+  it("F6: a different class after the redesign is not a recurrence (its own cap still applies)", async () => {
+    const reviews = [ruled("rule-a", "a1"), ruled("rule-a", "a2"), ruled("rule-d", "d1"), clean];
+    const { out } = await runWave({ main: MAIN, items: [item(251)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(251, { head_sha: fixSha(c, n) }));
+    // review 3 reports rule-d at cycles 2 (cap 2): blocked by the cap, not by the class brake
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toMatch(/after 2 fix cycles/);
+    expect(String(out[0].reason)).not.toMatch(/still recurs/);
+  });
+
+  it("F6: a different rule every cycle behaves as before: no redesign, blocked after 2 cycles", async () => {
+    const reviews = [ruled("rule-a", "a"), ruled("rule-b", "b"), ruled("rule-c", "c")];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(260)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(260, { head_sha: fixSha(c, n) }));
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium"]);
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+    expect(String(out[0].reason)).toMatch(/after 2 fix cycles/);
+  });
+
+  it("F6: findings with no rule never trigger a redesign (older reviewers, hand-built results)", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(261)] }, (c, n) =>
+      c.opts.phase === "Review" ? finding(false) : opened(261, { head_sha: fixSha(c, n) }));
+    expect(workers(calls).every((w) => w === "sapu:sapu-sonnet-medium")).toBe(true);
+    expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
+  });
+
+  it("F6 (red): the redesign runs once per lane; two recurring classes go in one step; a later class that recurs blocks", async () => {
+    let qa = 0;
+    const rounds = [
+      ruledMany([["rule-a", "claim a"], ["rule-b", "claim b"], ["rule-c", "claim c"]]),
+      ruledMany([["rule-a", "claim a reworded"], ["rule-b", "claim b reworded"]]), // a and b came back → the redesign
+      ruled("rule-d", "claim d"),
+      ruled("rule-d", "claim d reworded"), // d came back after a normal fix, but the lane's redesign is spent → blocked
+    ];
+    const { out, calls } = await runWave({ main: MAIN, items: [item(262, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(262, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === QA ? rounds[Math.min(qa++, rounds.length - 1)] : clean;
+    });
+    const fixes = calls.filter((c) => c.opts.phase === "Fix");
+    expect(fixes.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high", "sapu:sapu-sonnet-high"]);
+    expect(fixes[1].prompt).toContain("Findings of class `rule-a`, `rule-b` came back after a fix");
+    expect(fixes.filter((c) => c.prompt.includes("ONE structural rule"))).toHaveLength(1);
+    expect(out[0]).toMatchObject({ status: "blocked", tier: "red", cycles: 3 });
+    expect(String(out[0].reason)).toContain("class rule-d still recurs after a redesign: owner decision");
+  });
+
+  it("F6 docs: SKILL names the brake rule and the redesign; CONTRACT documents the finding rule", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    expect(skill).toContain("A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue.");
+    expect(skill).toContain("a finding class (its `rule`) that comes back after a fix cycle gets ONE Opus/high redesign step per lane");
+    const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
+    expect(contract).toContain("**Findings carry a `rule`.**");
+    expect(contract).toContain("class <rule> still recurs after a redesign: owner decision");
   });
 });
