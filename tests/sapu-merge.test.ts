@@ -868,6 +868,52 @@ describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no oth
     expect(h.run({}, ["--closes", "7"]).err).toContain("PR closes #8, not only its lane issue #7");
   });
 
+  describe("the closing set is read again right before the merge (the body may be edited while the gate runs)", () => {
+    // The gate swaps in the PR snapshot at $HX_EDIT, as an edit of the body made while it ran.
+    const editing = () => ({ "scripts/gate.sh": GATE.replace('echo "preparing"', 'echo "preparing"\n[ -z "${HX_EDIT:-}" ] || cp "$HX_EDIT/graphql_pr_7.json" "$HX_API/graphql_pr_7.json"') });
+    const edit = (h: { bare: string; dir: string }, body: string, closing: number[]) => {
+      const oid = execFileSync(REAL_GIT, ["-C", h.bare, "rev-parse", "refs/heads/feat/x"], { encoding: "utf8" }).trim();
+      writePr(join(h.dir, "edited"), "owner/app", 7, {
+        author: "owner",
+        headRefOid: oid,
+        body,
+        closing: closing.map((number) => ({ number, repository: "owner/app" })),
+        commits: [{ oid, authors: [{ email: FIXTURE_CONTRACT.gitEmail, user: "owner" }] }],
+      });
+      return { HX_EDIT: join(h.dir, "edited") };
+    };
+
+    it("a body edited during the gate to close another issue: not merged, nothing posted, worktree kept", () => {
+      const h = harness({ main: editing(), issues: { 8: { author: "owner" } } });
+      const r = h.run(edit(h, "Closes #7\n\nalso to close #8", [7, 8]), ["--closes", "7"]);
+      expect(r.status).toBe(1);
+      expect(r.err).toContain("the PR body changed while the gate ran: PR closes #8, not only its lane issue #7");
+      expect(h.gh()).not.toMatch(/pr merge/);
+      expect(h.after()).toEqual([expect.stringMatching(/^not-merged /)]);
+      expect(existsSync(h.WT)).toBe(true);
+    });
+
+    it("an edit during the gate that drops the lane's own issue is refused too", () => {
+      const h = harness({ main: editing() });
+      const r = h.run(edit(h, "Refs #7", []), ["--closes", "7"]);
+      expect(r.status).toBe(1);
+      expect(r.err).toMatch(/the PR body changed while the gate ran: PR does not close its lane issue #7/);
+      expect(h.gh()).not.toMatch(/pr merge/);
+    });
+
+    it("an edit that leaves the set as it was merges", () => {
+      const h = harness({ main: editing() });
+      const r = h.run(edit(h, "Closes #7\n\nreworded", [7]), ["--closes", "7"]);
+      expect(r.status).toBe(0);
+      expect(h.gh()).toMatch(/pr merge 7/);
+    });
+
+    it("without --closes the body is not judged, edited or not", () => {
+      const h = harness({ main: editing(), issues: { 8: { author: "owner" } } });
+      expect(h.run(edit(h, "Closes #7, #8", [7, 8])).status).toBe(0);
+    });
+  });
+
   it("--dry-run reports the refusal as a problem and changes nothing", () => {
     const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
     const r = h.run({}, ["--dry-run", "--closes", "7"]);

@@ -355,18 +355,27 @@ case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; e
 # Prose such as "to close #3521" closes that issue on merge, whichever lane wrote it. The orchestrator passes the lane's
 # issue (or `none` for a tracker-finding lane, which uses Refs); ISSUES is what pr-trust read: GitHub's closing
 # references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR sapu did not start) nothing is judged.
+# Why a set of closed issues (one number per line) is not exactly the lane's (--closes), or nothing when it is. Also read
+# again right before the merge (step 8): the body may be edited while the gate runs.
+closes_problem() { # <issues>
+  local want="" list extra
+  [ "$CLOSES" = none ] || want="$CLOSES"
+  list="$(awk 'NF { printf "%s#%s", s, $1; s = ", " }' <<<"$1")"
+  extra="$(awk -v w="$want" 'NF && $1 != w { printf "%s#%s", s, $1; s = ", " }' <<<"$1")"
+  if [ -n "$extra" ] && [ -n "$want" ]; then printf 'PR closes %s, not only its lane issue #%s: change it to "Refs %s" (brief point 9)' "$extra" "$want" "$extra"
+  elif [ -n "$extra" ]; then printf 'PR closes %s, but its lane has no issue to close (--closes none): change it to "Refs %s" (brief point 9)' "$extra" "$extra"
+  elif [ -n "$want" ] && ! awk -v w="$want" '$1 == w { f = 1 } END { exit !f }' <<<"$1"; then
+    printf 'PR does not close its lane issue #%s (it closes: %s): put "Closes #%s" in the body' "$want" "${list:-none}" "$want"
+  fi
+  return 0
+}
 CLOSE_LIST="$(awk 'NF { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
 if [ "$ALONE" = 0 ]; then
   if [ "$CLOSES_SET" = 0 ]; then
     say "PR #$PR closes: ${CLOSE_LIST:-none} (no --closes: not checked against a lane issue)"
   else
-    WANT=""; [ "$CLOSES" = none ] || WANT="$CLOSES"
-    EXTRA="$(awk -v w="$WANT" 'NF && $1 != w { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
-    if [ -n "$EXTRA" ] && [ -n "$WANT" ]; then check_fail "PR closes $EXTRA, not only its lane issue #$WANT: change it to \"Refs $EXTRA\" (brief point 9)"
-    elif [ -n "$EXTRA" ]; then check_fail "PR closes $EXTRA, but its lane has no issue to close (--closes none): change it to \"Refs $EXTRA\" (brief point 9)"
-    elif [ -n "$WANT" ] && ! awk -v w="$WANT" '$1 == w { f = 1 } END { exit !f }' <<<"$ISSUES"; then
-      check_fail "PR does not close its lane issue #$WANT (it closes: ${CLOSE_LIST:-none}): put \"Closes #$WANT\" in the body"
-    fi
+    CLOSE_PROBLEM="$(closes_problem "$ISSUES")"
+    [ -z "$CLOSE_PROBLEM" ] || check_fail "$CLOSE_PROBLEM"
   fi
 fi
 
@@ -888,6 +897,14 @@ fi
 # Issues closed by the PR body (ISSUES, read at 3b): every issue number in a Closes/Fixes/Resolves
 # list ("Closes #1, #2 and #3"); 'Refs #N' is deliberately not relabelled.
 
+# --closes: the body may have been edited while the gate ran (minutes), so the closing set is read again right before
+# the merge, from the same pr-trust verdict; one that changed, or cannot be read, is not merged.
+if [ "$CLOSES_SET" = 1 ]; then
+  PR_NOW="$(trust_of "$PR")"
+  [ "$(jq -r '.trusted' <<<"$PR_NOW")" = true ] || die "PR #$PR is no longer trusted or readable just before the merge ($(jq -r '.rule // "unreadable"' <<<"$PR_NOW")): not merged — worktree $WT kept"
+  CLOSE_PROBLEM="$(closes_problem "$(jq -r '.closes[]?' <<<"$PR_NOW")")"
+  [ -z "$CLOSE_PROBLEM" ] || die "the PR body changed while the gate ran: $CLOSE_PROBLEM — not merged, worktree $WT kept"
+fi
 # --match-head-commit: a commit pushed while the gate ran must NOT ride along ungated; if the
 # PR head moved, GitHub refuses and the worktree stays for a re-run.
 ACTIVE="$(gh api user --jq .login 2>/dev/null || true)"
