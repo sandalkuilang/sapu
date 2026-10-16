@@ -1880,24 +1880,39 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "blocked", cycles: 2 });
   });
 
-  it("F6 (red): the redesign runs once per lane; two recurring classes go in one step; a later class that recurs blocks", async () => {
+  const redQa = (rounds: unknown[], issue: number) => {
     let qa = 0;
-    const rounds = [
+    return runWave({ main: MAIN, items: [item(issue, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(issue, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === QA ? rounds[Math.min(qa++, rounds.length - 1)] : clean;
+    });
+  };
+
+  it("F6 (red): the redesign runs once per lane; two recurring classes go in one step; a later class that recurs is under the normal convergence rules", async () => {
+    const { out, calls } = await redQa([
       ruledMany([["rule-a", "claim a"], ["rule-b", "claim b"], ["rule-c", "claim c"]]),
       ruledMany([["rule-a", "claim a reworded"], ["rule-b", "claim b reworded"]]), // a and b came back → the redesign
       ruled("rule-d", "claim d"),
-      ruled("rule-d", "claim d reworded"), // d came back after a normal fix, but the lane's redesign is spent → blocked
-    ];
-    const { out, calls } = await runWave({ main: MAIN, items: [item(262, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
-      if (c.opts.phase !== "Review") return opened(262, { head_sha: fixSha(c, n) });
-      return c.opts.agentType === QA ? rounds[Math.min(qa++, rounds.length - 1)] : clean;
-    });
+      ruled("rule-d", "claim d reworded"), // d came back after a normal fix; the redesign is spent and d was not redesigned → not converging, not "still recurs"
+    ], 262);
     const fixes = calls.filter((c) => c.opts.phase === "Fix");
     expect(fixes.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high", "sapu:sapu-sonnet-high"]);
     expect(fixes[1].prompt).toContain("Findings of class `rule-a`, `rule-b` came back after a fix");
     expect(fixes.filter((c) => c.prompt.includes("ONE structural rule"))).toHaveLength(1);
     expect(out[0]).toMatchObject({ status: "blocked", tier: "red", cycles: 3 });
-    expect(String(out[0].reason)).toContain("class rule-d still recurs after a redesign: owner decision");
+    expect(String(out[0].reason)).toMatch(/not converging/);
+    expect(String(out[0].reason)).not.toMatch(/still recurs/);
+  });
+
+  it("F6 (M3): after the redesign only a rule that WAS redesigned blocks: red 4 findings → 2 → redesign → 1 other rule continues", async () => {
+    const { out, calls } = await redQa([
+      ruledMany([["rule-a", "a"], ["rule-b", "b"], ["rule-c", "c"], ["rule-d", "d"]]),
+      ruledMany([["rule-a", "a reworded"], ["rule-b", "b reworded"]]), // a and b recur → the redesign
+      ruled("rule-c", "c reworded"), // c came back, but it was not redesigned: normal rules, 1 < 2 findings → another fix
+      clean,
+    ], 263);
+    expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high", "sapu:sapu-sonnet-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 3 });
   });
 
   it("F6 docs: SKILL names the brake rule and the redesign; CONTRACT documents the finding rule", () => {

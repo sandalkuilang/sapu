@@ -610,7 +610,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, redesignedRules: [], trail: [] }
   const comments = []
   const notes = []
   const branchSeen = new Set()
@@ -819,8 +819,10 @@ async function runItem(item) {
       // F6: a class a fix cycle addressed and this review reports again (the exact claim may be reworded) → one structural redesign per lane
       // instead of another patch. It is checked before the cap below, so a lane at its cap still gets its one redesign and a review.
       const recurring = [...new Set(rv.findings.map(ruleOf).filter(Boolean))].filter((x) => fixedRules.has(x))
-      if (recurring.length > 0 && state.redesigned) return done('blocked', { reason: `class ${recurring[0]} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
-      const redesign = recurring.length > 0 && !state.redesigned
+      // After the redesign only a recurrence of a class that WAS redesigned is the owner's call; any other class follows the normal cap and convergence rules.
+      const stillRecurs = recurring.filter((x) => state.redesignedRules.includes(x))
+      if (stillRecurs.length > 0) return done('blocked', { reason: `class ${stillRecurs.join(', ')} still recurs after a redesign: owner decision\n${listFindings(rv.findings)}` })
+      const redesign = recurring.length > 0 && state.redesignedRules.length === 0
       const cap =state.tier === 'red' ? MAX_FIX_CYCLES_RED : MAX_FIX_CYCLES
       const why =
         state.cycles >= cap ? `after ${cap} fix cycles`
@@ -831,7 +833,7 @@ async function runItem(item) {
       if (why && !redesign) return done('blocked', { reason: `findings still open, ${why}:\n${listFindings(rv.findings)}` })
       before = keys.size
       state.cycles++
-      if (redesign) state.redesigned = true // at most once per lane
+      if (redesign) state.redesignedRules.push(...recurring) // at most once per lane
       for (const f of rv.findings) if (ruleOf(f)) fixedRules.add(ruleOf(f))
       const sinceSha = state.headSha
       // Many findings over several files go to one fixer per file, in turn; a fixer's context grows with every file it opens.

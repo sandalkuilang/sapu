@@ -256,7 +256,7 @@ most 40 characters, e.g. `unbounded-read`), and reuses an earlier finding's rule
 a rule is reported again after a fix cycle addressed it (matched case-insensitively, by exact name), the lane does
 not patch again: one redesign step (always `sapu:sapu-opus-high`, under `/sapu opus` too) replaces the
 instances with one structural rule. It counts as a fix cycle, runs at most once per lane and before the cycle cap.
-A rule that recurs after it blocks the lane: `class <rule> still recurs after a redesign: owner decision`.
+Only a rule that WAS redesigned and recurs blocks the lane: `class <rule> still recurs after a redesign: owner decision`; any other rule follows the normal cap and convergence rules.
 The convergence rules on the exact claim (red: fewer findings per round, none in three reviews in a row) are unchanged.
 
 ### Trusted authors (public repositories)
