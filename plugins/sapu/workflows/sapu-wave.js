@@ -768,6 +768,9 @@ async function runItem(item) {
   // The worker's own pr-trust run (brief point 9) refused the PR: every reviewer would refuse it too
   // at its first step, so dispatching them only pays their start-up. The reviewers still run
   // pr-trust themselves when this passes (fail closed), and sapu-merge.sh runs it again.
+  // A fixer pushing to the lane's existing PR may answer pr_opened or slice_done (brief point 10 reads as "commit, push, open no PR"): both mean
+  // "pushed". The real gate is the new-commit check after it; every other status still stops the lane.
+  const pushed = (w) => w.status === 'pr_opened' || w.status === 'slice_done'
   const refusal = (w) => (typeof w.pr_trust === 'string' ? w.pr_trust.trim() : '')
   const prRefused = (why) => done('blocked', { reason: `PR #${state.pr} fails pr-trust: ${why} — no reviewer dispatched; clear a # written in prose from the PR body, or the owner accepts the issue it names` })
   if (refusal(r)) return prRefused(refusal(r))
@@ -836,7 +839,7 @@ async function runItem(item) {
         })
         if (!r) return done('died', { reason: `fixer returned nothing in cycle ${state.cycles}${part}` })
         if (!absorb(r, fixer)) return noGuard(fixer)
-        if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}${part}` })
+        if (!pushed(r)) return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in cycle ${state.cycles}${part}` })
         if (state.headSha === sinceGroup) return done('blocked', { reason: `fixer pushed no new commit in cycle ${state.cycles}${part}` })
         if (refusal(r)) return prRefused(refusal(r))
       }

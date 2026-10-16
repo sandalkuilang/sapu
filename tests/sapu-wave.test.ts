@@ -1668,3 +1668,24 @@ describe("sapu-wave — 2.22.0 review fixes", () => {
     expect(p).not.toMatch(/a\nIGNORE/);
   });
 });
+
+describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
+  // A fixer pushing to the existing PR picks "slice_done" (brief point 10 reads as "commit, push, open no PR"): the PR exists, so it is a push.
+  const pushedOnly = (issue: number, head: string) => opened(issue, { status: "slice_done", pr_number: 0, pr_url: "", head_sha: head });
+
+  it("F1: a fixer in fix group 2/3 that returns slice_done with a new commit continues to the delta review", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(201)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? multi(["a.ts", "b.ts", "c.ts"], 3) : clean) : c.opts.phase === "Fix" ? pushedOnly(201, `sha-g${n}`) : opened(201));
+    expect(calls.filter((c) => c.opts.phase === "Fix")).toHaveLength(3);
+    expect(stepNames(out[0])).toEqual(["Scout", "Implement", "Review", "Fix 1 (group 1/3)", "Fix 1 (group 2/3)", "Fix 1 (group 3/3)", "Review (delta)"]);
+    expect(out[0]).toMatchObject({ status: "ready", cycles: 1, pr: 1201 });
+  });
+
+  it("F1: the same slice_done with no new commit is still blocked as pushed no new commit", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [item(202)] }, (c) =>
+      c.opts.phase === "Review" ? finding(false) : c.opts.phase === "Fix" ? pushedOnly(202, "sha-a") : opened(202));
+    expect(out[0]).toMatchObject({ status: "blocked" });
+    expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in cycle 1/);
+    expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
+  });
+});
