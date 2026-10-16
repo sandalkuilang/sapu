@@ -2085,7 +2085,7 @@ function main(argv) {
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, workerCeiling: resolveTuning(contract).workerCeiling, scoutTier: resolveTuning(contract).scoutTier, policy: resolvePolicy(contract) } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, workerCeiling: resolveTuning(contract).workerCeiling, scoutTier: resolveTuning(contract).scoutTier, ...(process.argv.includes("--opus") ? { modelFloor: "opus" } : {}), policy: resolvePolicy(contract) } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }
