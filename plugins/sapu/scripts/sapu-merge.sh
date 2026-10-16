@@ -744,7 +744,7 @@ if [ -n "$RED" ]; then
   # Each failing file's FIRST ERROR LINE (the flake ledger's `file@sig`; see sig_of). Per runner, where the error is:
   # vitest/jest ` FAIL  <file> > …`: the first Error|assert|Expected|expected|panic|FAIL: line within 12 lines after
   # the header; pytest `FAILED <file>::… - <message>`: the message on that line; go test `FAIL\t<pkg>\t<n>s`: the first
-  # such line since the previous header (go prints a package's output before its FAIL line); mocha: the first such
+  # `--- FAIL:` (else `panic:`) line since the previous go result header of any kind (go prints a package's output before its FAIL line); mocha: the first such
   # line of the failure's block. Another runner, or no such line: no error line read (`@-`), which never proves a flake.
   ERRS=""
   if [ -n "$NAMES" ]; then
@@ -765,7 +765,13 @@ if [ -n "$RED" ]; then
           e = ""
           if (kind[i] == "py") { p = index(line[i], " - "); if (p) e = substr(line[i], p + 3) }
           else if (kind[i] == "js") { for (j = i + 1; j <= n && j <= i + 12 && kind[j] == ""; j++) if (line[j] ~ re) { e = line[j]; break } }
-          else { b = 0; for (j = i - 1; j >= 1; j--) if (kind[j] != "") { b = j; break } for (j = b + 1; j < i; j++) if (line[j] ~ re) { e = line[j]; break } }
+          else {
+            # go: the window starts after the LAST go result header of ANY kind (ok|FAIL|?), so a line of an earlier step
+            # ("lint: 0 problems, as expected") is never read; in it the first `--- FAIL:` line, else a `panic:` line.
+            b = 0; for (j = i - 1; j >= 1; j--) if (line[j] ~ /^(ok|FAIL|\?)[[:space:]]/) { b = j; break }
+            for (j = b + 1; j < i; j++) if (line[j] ~ /^--- FAIL:/) { e = line[j]; break }
+            if (e == "") for (j = b + 1; j < i; j++) if (line[j] ~ /^panic:/) { e = line[j]; break }
+          }
           if (e != "") { done[name[i]] = 1; print name[i] "\t" e }
         }
       }' <(printf '%s\n' "$NAMES") <(printf '%s\n' "$CLEAN"); sed -n 's/^F //p' <<<"$MOCHA"; } )"

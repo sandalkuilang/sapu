@@ -550,6 +550,29 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf("Error: boom now")} `);
   });
 
+  it("go: the error line is read from the failing package's own block, not from an earlier step's line that matches (two failing tests -> two sigs)", () => {
+    const h = harness();
+    const out = [
+      "ok  \texample.com/app/util\t0.003s",
+      "lint: 0 problems, as expected",
+      "--- FAIL: TestRefund (0.01s)",
+      "    pay_test.go:12: boom",
+      "FAIL",
+      "FAIL\texample.com/app/pay\t0.012s",
+      "ok  \texample.com/app/auth\t0.004s",
+      "lint: 0 problems, as expected",
+      "--- FAIL: TestCart (0.02s)",
+      "    cart_test.go:3: boom",
+      "FAIL",
+      "FAIL\texample.com/app/cart\t0.004s",
+    ].join("\n");
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out });
+    const row = gates(h).at(-1) ?? "";
+    expect(row).toContain(`example.com/app/pay@${sigOf("--- FAIL: TestRefund (D)")}`);
+    expect(row).toContain(`example.com/app/cart@${sigOf("--- FAIL: TestCart (D)")}`);
+    expect(sigOf("--- FAIL: TestRefund (D)")).not.toBe(sigOf("--- FAIL: TestCart (D)"));
+  });
+
   describe("known-flake needs the same error, not only the same file", () => {
     const proven = (row: string, out: string) => {
       const h = harness();
