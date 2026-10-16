@@ -1688,4 +1688,35 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in cycle 1/);
     expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
   });
+
+  describe("F1: pre-PR loop", () => {
+    const PRE = { run: "/dev-review", severities: ["critical", "medium", "low"], paste: "body" };
+    const policy = { ...CONTRACT, policy: { merge: "sapu", traces: "visible", fileIssues: true, prePr: PRE } };
+    const prePrOut = (medium: number, pasted = false) => ({
+      counts: { critical: 0, medium, low: 0 },
+      findings: Array.from({ length: medium }, () => ({ severity: "medium", where: "b.ts:2", what: "med" })),
+      output_file: "/tmp/dev-review.md",
+      pasted,
+    });
+
+    it("a pre-PR fixer that returns slice_done with a new commit continues: delta review, then a fresh round", async () => {
+      const { out, calls } = await runWave({ main: MAIN, contract: policy, items: [item(203)] }, (c, n) => {
+        if (c.opts.phase === "Review") return clean;
+        if (c.opts.phase === "Pre-PR") return n === 1 ? prePrOut(1) : prePrOut(0, true);
+        return c.opts.phase === "Fix" ? pushedOnly(203, `sha-pre-${n}`) : opened(203);
+      });
+      expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Pre-PR", "Fix", "Pre-PR", "Review"]);
+      expect(out[0]).toMatchObject({ status: "ready", prePr: { rounds: 2 } });
+    });
+
+    it("the same with no new commit is blocked as pushed no new commit", async () => {
+      const { out } = await runWave({ main: MAIN, contract: policy, items: [item(204)] }, (c) => {
+        if (c.opts.phase === "Review") return clean;
+        if (c.opts.phase === "Pre-PR") return prePrOut(1);
+        return c.opts.phase === "Fix" ? pushedOnly(204, "sha-a") : opened(204);
+      });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toMatch(/fixer pushed no new commit in \/dev-review round 1/);
+    });
+  });
 });

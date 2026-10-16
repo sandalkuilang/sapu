@@ -879,7 +879,7 @@ async function runItem(item) {
       })
       if (!r) return done('died', { reason: `fixer returned nothing in ${P.prePr.run} round ${round}` })
       if (!absorb(r, state.worker)) return noGuard(state.worker)
-      if (r.status !== 'pr_opened') return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in ${P.prePr.run} round ${round}` })
+      if (!pushed(r)) return done('blocked', { reason: r.blocked_reason || `fixer stopped (${r.status}) in ${P.prePr.run} round ${round}` })
       if (state.headSha === sinceSha) return done('blocked', { reason: `fixer pushed no new commit in ${P.prePr.run} round ${round}` })
       if (refusal(r)) return prRefused(refusal(r))
       fixedByPrePr.push(...open)
