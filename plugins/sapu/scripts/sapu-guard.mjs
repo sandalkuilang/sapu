@@ -3161,7 +3161,8 @@ export function sessionContext(input, dir = SESSION_DIR) {
     }
     if (n % SESSION_EVERY) return null;
     const main = findMain(input.cwd || process.cwd());
-    const { contract } = loadContract(main);
+    const { contract, missing, error } = loadContract(main);
+    if (!contract || missing || error) return null;
     const limit = resolveTuning(contract).contextLimits.session;
     const tokens = contextTokens(transcript);
     if (tokens === null || tokens < limit) return null;

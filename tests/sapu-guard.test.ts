@@ -4309,4 +4309,16 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(refused(calls(r, join(box, "missing.jsonl"), sid("miss"), 20))).toEqual([]);
     expect(sessionContext({ session_id: sid("x"), transcript_path: t, cwd: join(box, "no-such-dir") })).toBeNull();
   });
+
+  it("does nothing in a repo without a sapu contract, or with an unreadable one", () => {
+    const none = repo({}, false);
+    expect(refused(calls(none, transcript(900_000), sid("nocontract"), 30))).toEqual([]);
+    const broken = repo();
+    writeFileSync(join(broken, ".claude/sapu.json"), "{ not json");
+    execFileSync("git", ["-C", broken, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "break"], { stdio: "ignore" });
+    expect(refused(calls(broken, transcript(900_000), sid("broken"), 30))).toEqual([]);
+    const outside = join(box, "not-a-repo");
+    mkdirSync(outside, { recursive: true });
+    expect(refused(calls(outside, transcript(900_000), sid("outside"), 30))).toEqual([]);
+  });
 });
