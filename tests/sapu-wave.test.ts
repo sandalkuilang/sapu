@@ -1523,7 +1523,7 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
   });
 
   it("resume with a PR: no scout and no builder, the first call is the review, the PR is the resumed one", async () => {
-    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000`, branch: resume.branch, summary: "OPEN" })));
+    const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0000`, branch: resume.branch, pr_state: "OPEN" })));
     expect(scouts).toHaveLength(0);
     // one cheap agent proves the guard canary and that resume.headSha is the PR head; then the review
     expect(calls.map((c) => c.opts.phase)).toEqual(["Resume", "Review"]);
@@ -1537,7 +1537,7 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
 
   it("a resumed lane that needs a fix continues on the resumed branch", async () => {
     const { calls } = await runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c, n) =>
-      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix", summary: "OPEN" }),
+      c.opts.phase === "Review" ? (n === 1 ? finding(false) : clean) : opened(73, { pr_number: 555, branch: resume.branch, head_sha: c.opts.phase === "Resume" ? `${resume.headSha}0` : "sha-fix", pr_state: "OPEN" }),
     );
     const fix = calls.find((c) => c.opts.phase === "Fix")!;
     expect(fix.prompt).toContain("git reset --hard abc1234def");
@@ -1546,8 +1546,8 @@ describe("sapu-wave — one pinned branch per lane, state check, resume (#86, #8
   });
 
   it("the resume check blocks a PR that is closed or on another branch (N4)", async () => {
-    const run = (over: Item) => runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0`, branch: resume.branch, summary: "OPEN", ...over })));
-    const closed = await run({ summary: "MERGED" });
+    const run = (over: Item) => runWave({ main: MAIN, items: [item(73, { resume: { ...resume, pr: 555 } })] }, (c) => (c.opts.phase === "Review" ? clean : opened(73, { head_sha: `${resume.headSha}0`, branch: resume.branch, pr_state: "OPEN", ...over })));
+    const closed = await run({ pr_state: "MERGED" });
     expect(closed.out[0]).toMatchObject({ status: "blocked", reason: expect.stringMatching(/PR .555 is not open \(MERGED\)/) });
     expect(closed.calls.some((c) => c.opts.phase === "Review")).toBe(false);
     const other = await run({ branch: "feat/other" });
@@ -1723,5 +1723,40 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
   it("F1 doc: brief point 10 tells a fixer on an existing PR to return pr_opened", () => {
     const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
     expect(brief).toContain("A fixer pushing to an existing PR returns `pr_opened` (`slice_done` is accepted too)");
+  });
+
+  describe("F2: the resume check reads pr_state", () => {
+    const rs = { branch: "feat/issue-210-x", headSha: "abc1234def", pr: 556 };
+    const run = (over: Item) =>
+      runWave({ main: MAIN, items: [item(210, { resume: rs })] }, (c) =>
+        c.opts.phase === "Review" ? clean : opened(210, { pr_number: 556, head_sha: `${rs.headSha}0`, branch: rs.branch, ...over }));
+
+    it("pr_state OPEN with prose in summary is not blocked", async () => {
+      const { out } = await run({ pr_state: "OPEN", summary: "The PR is open and mergeable; two reviews requested." });
+      expect(out[0]).toMatchObject({ status: "ready", pr: 556 });
+    });
+
+    it("pr_state MERGED is blocked: not open (MERGED), no reviewer runs", async () => {
+      const { out, calls } = await run({ pr_state: "MERGED" });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toContain("PR #556 is not open (MERGED)");
+      expect(calls.some((c) => c.opts.phase === "Review")).toBe(false);
+    });
+
+    it("pr_state missing is blocked as unreadable, even when summary says OPEN", async () => {
+      const { out } = await run({ summary: "OPEN" });
+      expect(out[0]).toMatchObject({ status: "blocked" });
+      expect(String(out[0].reason)).toContain("PR #556 is not open (unreadable)");
+    });
+
+    it("the prompt asks for pr_state; the schema has it as an optional OPEN|CLOSED|MERGED enum", async () => {
+      const { calls } = await run({ pr_state: "OPEN" });
+      const resume = calls.find((c) => c.opts.phase === "Resume")!;
+      expect(resume.prompt).toContain("pr_state = its state (OPEN, CLOSED or MERGED)");
+      expect(resume.prompt).not.toContain("summary = its state");
+      const schema = (resume.opts as unknown as { schema: { properties: Record<string, { enum?: string[] }>; required: string[] } }).schema;
+      expect(schema.properties.pr_state.enum).toEqual(["OPEN", "CLOSED", "MERGED"]);
+      expect(schema.required).not.toContain("pr_state");
+    });
   });
 });

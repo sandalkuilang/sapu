@@ -243,6 +243,7 @@ const WORKER_SCHEMA = {
     step_budget: { type: 'string', description: 'the step_budget the canary\'s block message told you to report ("counting" or "off: …"); "off: canary not blocked" when it was not' },
     pr_number: { type: 'integer', description: '0 when no PR was opened' },
     pr_url: { type: 'string' },
+    pr_state: { type: 'string', enum: ['OPEN', 'CLOSED', 'MERGED'], description: 'only when your prompt asks for the PR\'s state (a resume check): `state` of `gh pr view`, exactly as GitHub printed it; leave out otherwise' },
     branch: { type: 'string', description: 'your branch (pushed or not); "" when you committed nothing' },
     head_sha: { type: 'string', description: 'your last commit, pushed or a local WIP commit; "" when you committed nothing' },
     worktree_path: { type: 'string' },
@@ -716,7 +717,7 @@ async function runItem(item) {
   // A resumed lane with a PR goes straight to review, so no builder would prove the guard: one cheap agent does, and checks the SHA.
   if (resumedPr) {
     const prove = OPUS_FLOOR || 'sapu:sapu-haiku-medium'
-    const v = await testSlot(() => agent(workerPrompt(item, state, prove, `This is a verification step, not work: change nothing, commit nothing. After the canary, run \`gh pr view ${resume.pr} --json headRefOid,headRefName,state\` and return status "pr_opened", pr_number ${resume.pr}, branch = its headRefName, head_sha = its headRefOid (full SHA), summary = its state (OPEN, CLOSED or MERGED), each exactly as GitHub printed it.`, false), opts(prove, {
+    const v = await testSlot(() => agent(workerPrompt(item, state, prove, `This is a verification step, not work: change nothing, commit nothing. After the canary, run \`gh pr view ${resume.pr} --json headRefOid,headRefName,state\` and return status "pr_opened", pr_number ${resume.pr}, branch = its headRefName, head_sha = its headRefOid (full SHA), pr_state = its state (OPEN, CLOSED or MERGED), each exactly as GitHub printed it.`, false), opts(prove, {
       isolation: 'worktree', schema: WORKER_SCHEMA, phase: 'Resume', label: tag(item, effortOf(prove), 'resume check'),
     })))
     trailRow(state, 'Resume check', prove, workerResult(v))
@@ -725,7 +726,8 @@ async function runItem(item) {
     const actual = typeof v.head_sha === 'string' ? v.head_sha.trim().toLowerCase() : ''
     if (!actual.startsWith(resume.headSha.toLowerCase())) return done('blocked', { reason: `resume.headSha is not the PR head (${actual || 'unreadable'})` })
     if (v.branch !== resume.branch) return done('blocked', { reason: `PR #${resume.pr} is not on resume.branch (its head branch: ${v.branch || 'unreadable'})` })
-    if (String(v.summary || '').trim().toUpperCase() !== 'OPEN') return done('blocked', { reason: `PR #${resume.pr} is not open (${String(v.summary || 'unreadable').slice(0, 20)})` })
+    const prState = typeof v.pr_state === 'string' ? v.pr_state.trim().toUpperCase() : ''
+    if (prState !== 'OPEN') return done('blocked', { reason: `PR #${resume.pr} is not open (${prState || 'unreadable'})` })
   }
   // 2. implement, with at most one escalation step up the ladder
   // A resumed lane with a PR skips the Implement step: the review reads the PR as it stands.
