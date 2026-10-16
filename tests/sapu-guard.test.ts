@@ -4338,4 +4338,24 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     // a --agent main session (agent_type but no agent_id) IS the orchestrator
     expect(refused(calls(r, t, sid("mainagent"), 10, { agent_type: "reviewer" }))).toEqual([10]);
   });
+
+  it("through the hook process: the 10th call exits 2 with the reminder on stderr, the 11th exits 0", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const tmp = join(box, "tmp-e2e");
+    mkdirSync(tmp, { recursive: true });
+    const session = sid("e2e");
+    const hook = () => {
+      try {
+        execFileSync("node", [GUARD], { input: JSON.stringify({ session_id: session, tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t }), env: { ...process.env, TMPDIR: tmp }, stdio: ["pipe", "pipe", "pipe"] });
+        return 0;
+      } catch (e) {
+        return (e as { status: number; stderr: Buffer }).status === 2 ? (e as { stderr: Buffer }).stderr.toString() : -1;
+      }
+    };
+    for (let i = 1; i <= 9; i++) expect(hook(), `call ${i}`).toBe(0);
+    expect(hook()).toMatch(/^sapu-guard: BLOCKED — orchestrator context 120k ≥ contextLimits\.session 100k: finish the current wave/);
+    expect(hook()).toBe(0);
+    rmSync(join(tmp, "sapu-session"), { recursive: true, force: true });
+  });
 });
