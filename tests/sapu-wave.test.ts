@@ -1812,6 +1812,25 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(out[0]).toMatchObject({ status: "ready", cycles: 2 });
   });
 
+  it("F6 (L1): the redesign task carries the fix prompt's guard clauses and lists the earlier findings of the redesigned class", async () => {
+    const reviews = [ruled("unbounded-read", "reads the whole file", "a.ts:1"), ruled("unbounded-read", "slurps the upload into memory", "b.ts:9"), clean];
+    const { calls } = await runWave({ main: MAIN, items: [item(233)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(233, { head_sha: fixSha(c, n), assumptions: "leavers stop accruing from their end date" }));
+    const [normal, redesign] = calls.filter((c) => c.opts.phase === "Fix");
+    for (const clause of [
+      "Each finding: a RED test of the attack AND a test that the legitimate case on the other side of the same rule still passes",
+      "rerun every test this PR added, and verify as in brief point 6",
+      'return status "blocked" with blocked_reason = the one question for the owner',
+      "The previous author's assumptions — check each against the findings: leavers stop accruing from their end date",
+    ]) {
+      expect(normal.prompt).toContain(clause);
+      expect(redesign.prompt).toContain(clause);
+    }
+    expect(redesign.prompt).toContain("Earlier findings of class `unbounded-read`");
+    expect(redesign.prompt).toContain("a.ts:1 — reads the whole file"); // the cycle-1 finding, kept in the lane's history
+    expect(redesign.prompt).toContain("b.ts:9 — slurps the upload into memory"); // the finding that came back
+  });
+
   it("F6 (M1): under /sapu opus the redesign still runs on opus-high, never the opus-medium floor", async () => {
     const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
     const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(231)] }, (c, n) =>
