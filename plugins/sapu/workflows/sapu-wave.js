@@ -48,7 +48,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.24.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.24.1 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
@@ -249,7 +249,7 @@ const WORKER_SCHEMA = {
     step_budget: { type: 'string', description: 'the step_budget the canary\'s block message told you to report ("counting" or "off: …"); "off: canary not blocked" when it was not' },
     pr_number: { type: 'integer', description: '0 when no PR was opened' },
     pr_url: { type: 'string' },
-    pr_state: { type: 'string', enum: ['OPEN', 'CLOSED', 'MERGED'], description: 'only when your prompt asks for the PR\'s state (a resume check): `state` of `gh pr view`, exactly as GitHub printed it; leave out otherwise' },
+    pr_state: { type: 'string', enum: ['OPEN', 'CLOSED', 'MERGED'], description: 'only when your prompt asks for the PR\'s state (a resume check): `state` of `gh pr view --json state`, exactly as GitHub printed it; leave out otherwise' },
     branch: { type: 'string', description: 'your branch (pushed or not); "" when you committed nothing' },
     head_sha: { type: 'string', description: 'your last commit, pushed or a local WIP commit; "" when you committed nothing' },
     worktree_path: { type: 'string' },

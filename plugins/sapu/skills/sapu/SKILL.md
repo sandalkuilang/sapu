@@ -143,7 +143,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-merge.sh" <N> <review-comment-file> [--
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-merge.sh" <N> <review-comment-file> --dry-run   # plan + read-only checks, no side effects
 ```
 
-Pass `--closes <issue>` for a lane PR (the item's `issue`) and `--closes none` for a tracker-finding lane (`tracker` set; its PR uses `Refs`); a Phase A PR sapu did not start gets no flag. A refusal ("PR closes #x, not only its lane issue") means: fix the body to `Refs #x` with `gh pr edit`, run again.
+Pass `--closes <issue>` for a lane PR (the item's `issue`) and `--closes none` for a tracker-finding lane (`tracker` set; its PR uses `Refs`); a Phase A PR started outside sapu gets no flag. A refusal ("PR closes #x, not only its lane issue") means: fix the body to `Refs #x` with `gh pr edit`, run again.
 
 The script does every step itself, skipping none, in the order `${CLAUDE_PLUGIN_ROOT}/CONTRACT.md` §`sapu-merge.sh`, step by step lists: contract + scope lock → review heading → trust (`pr-trust`: an UNTRUSTED PR never reaches a worktree) → child PRs retargeted → PR worktree → sync → red-area check (`Review tier: red`) → **`gate.merge`** → push + comment + `gh pr merge --<mergeMethod> --delete-branch --match-head-commit <gated SHA>` → relabel → ff of `<MAIN>` → `mergeAfter` (exactly once on every exit after the gate starts); each failure = non-zero exit + a one-line reason. It holds a lock (`<MAIN>/.git/sapu-merge.lock` — orphaned after SIGKILL: `rmdir` it by hand, its message names the path): one run at a time.
 
