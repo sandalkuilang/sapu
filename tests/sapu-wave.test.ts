@@ -1819,6 +1819,13 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     expect(calls.filter((c) => c.opts.phase === "Fix")[1].opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
   });
 
+  it("F6 (M2): the redesign is above workerTier and workerCeiling on purpose: workerTier sonnet-medium + a recurring rule → the redesign runs opus-high", async () => {
+    const reviews = [ruled("unbounded-read", "a"), ruled("unbounded-read", "b"), clean];
+    const { calls } = await runWave({ main: MAIN, contract: { ...CONTRACT, workerTier: "sonnet-medium", workerCeiling: "sonnet-medium" }, items: [item(232)] }, (c, n) =>
+      c.opts.phase === "Review" ? reviews[n - 1] : opened(232, { head_sha: fixSha(c, n) }));
+    expect(workers(calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+  });
+
   it("F6: a lane at its cap still gets its one redesign and a review; clean → ready with 3 cycles", async () => {
     const reviews = [ruled("rule-a", "a1"), ruled("rule-b", "b1"), ruled("rule-b", "b2 reworded"), clean];
     const { out, calls } = await runWave({ main: MAIN, items: [item(240)] }, (c, n) =>
@@ -1900,5 +1907,13 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
     expect(contract).toContain("**Findings carry a `rule`.**");
     expect(contract).toContain("class <rule> still recurs after a redesign: owner decision");
+  });
+
+  it("F6 docs (M2): CONTRACT and SKILL document the redesign as the exception above workerTier and workerCeiling", () => {
+    const skill = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/SKILL.md"), "utf8");
+    const contract = readFileSync(join(ROOT, "plugins/sapu/CONTRACT.md"), "utf8");
+    const exception = "The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling`";
+    expect(contract).toContain(exception);
+    expect(skill).toContain(exception);
   });
 });

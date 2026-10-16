@@ -172,6 +172,7 @@ After the script succeeds: sync ONLY the open PRs that share files with the one 
 - Per issue: `{ issue, title, tier: "green"|"yellow"|"red", worker }` from the B2 table, `tracker: "Fx"` for a tracker issue, and for 🔴 `domainReviewer` = the domain **role** touched (`architect`/`db`/`developer`/`ux`, brief point 7 roster).
 - A lane `blocked` on handoffs: call sapu-wave again with `resume: { branch, headSha, pr?, note? }` on its item (no scout; no `pr` = Implement continues from the SHA, a `pr` = straight to review), not by hand through the Agent tool. A result's `branchWarnings` names a worker that left the lane's pinned branch.
 - A lane blocked by the brake (fix cycles, not converging, or a recurring class) is never continued with hand-run fixers: its next step is the owner, or a fresh lane with a revised issue.
+- The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling` (deliberate: one Opus/high run per lane at most costs less than repeated patch rounds on a recurring finding class).
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/sapu-contract.mjs" wave-args [--opus]   # from <MAIN>: {"main","pluginRoot","contract"}; --opus only in /sapu opus

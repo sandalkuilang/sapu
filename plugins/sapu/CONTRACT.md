@@ -199,6 +199,8 @@ whose program is on `PATH`), `workerTier` (absent by default: a ladder entry suc
 A hands over to a new session). `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.
 
+The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling` (deliberate: one Opus/high run per lane at most costs less than repeated patch rounds on a recurring finding class).
+
 ### Specialist agents
 
 The engine calls specialists by **role**, never by the name of an agent that exists on only one machine:
