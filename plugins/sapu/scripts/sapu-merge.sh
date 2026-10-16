@@ -9,7 +9,7 @@
 # comment is still mandatory.
 #
 # USAGE (from the main checkout or any of its worktrees)
-#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run]
+#   sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run]
 #   sapu-merge.sh <PR> --alone [--workers N]
 #
 #   <review-comment-file>  the A3.5 review summary; must contain the literal heading
@@ -25,6 +25,9 @@
 #                          files through the contract's gate.testFiles (the files are appended as arguments), and append
 #                          `<time> <PR> <SHA> alone gate=<s>s failed=<files> tree=<tree> alone=green|red` to the gates log.
 #                          Exit 0 = green, 2 = red. Merges, pushes and relabels nothing; takes no review comment.
+#   --closes <N>|none      the lane's issue (from sapu-wave.js's result), or `none` for a tracker-finding lane (it uses Refs).
+#                          The merge is refused, before the gate, unless the issues the PR closes (pr-trust's `closes`) are
+#                          exactly {N} ({} for none). Without it the set is printed and nothing is judged.
 #   --dry-run              run the read-only checks (contract, scope lock, comment
 #                          heading, PR lookup, trust, smoke check, worktree resolution) and print the plan; no
 #                          side effects besides fetching origin/<base>, which the checks read.
@@ -75,20 +78,23 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
     --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --alone) ALONE=1; shift ;;
-    -h|--help) sed -n '2,55p' "$0"; exit 0 ;;
+    --closes) [ $# -ge 2 ] || die "--closes needs a value (the lane's issue number, or none)"; CLOSES="$2"; shift 2 ;;
+    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
   esac
 done
-[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--dry-run] | <PR> --alone [--workers N]"
+[ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run] | <PR> --alone [--workers N]"
 [ "$ALONE" = 0 ] || { [ -z "$COMMENT_FILE" ] && [ "$DRY" = 0 ] || die "--alone takes no review comment file and no --dry-run"; }
+[ "$ALONE" = 0 ] || [ -z "$CLOSES" ] || die "--closes does not apply to --alone"
+case "$CLOSES" in none|"") ;; 0*|*[!0-9]*) die "--closes must be an issue number or none, got '$CLOSES'" ;; esac
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
 case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
 command -v jq >/dev/null || die "jq is required"
@@ -229,11 +235,28 @@ mismatch_msg() { # <files>
 # --- shared state + exit trap --------------------------------------------------------------------
 LOCK=""; LOCK_HELD=0
 AFTER_PENDING=0   # 1 from the moment gate.merge starts until mergeAfter has run once
-WT=""; MAIN_OLD_HEAD=""; FF_OK=0; AFTER_FAILED=0
+WT=""; MAIN_OLD_HEAD=""; MAIN_START_HEAD=""; FF_OK=0; AFTER_FAILED=0
+
+# A dependency lockfile that changed in <MAIN> leaves its installed dependencies stale, and the next worktree gate runs
+# on them ("module not found"). The engine installs nothing (the command belongs to the repo): it tells mergeAfter.
+# Matched by basename, at any depth (apps/web/pnpm-lock.yaml). A path with a comma is left out: the list is comma-separated.
+LOCKFILES="package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb Cargo.lock go.sum poetry.lock uv.lock Pipfile.lock Gemfile.lock composer.lock"
+lockfiles_changed() { # the lockfiles <MAIN>'s HEAD moved over since this run began (any fast-forward of it), comma-separated
+  local now; now="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$MAIN_START_HEAD" ] || [ -z "$now" ] || [ "$now" = "$MAIN_START_HEAD" ]; then return 0; fi
+  git -C "$MAIN" -c core.quotePath=false diff --name-only "$MAIN_START_HEAD" "$now" 2>/dev/null | awk -v names="$LOCKFILES" '
+    BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+    { b = $0; sub(/^.*\//, "", b) }
+    (b in ok) && index($0, ",") == 0 && !seen[$0]++ { print }' | paste -sd, - || true
+}
 
 run_after() { # <merged|not-merged>
   AFTER_PENDING=0
-  [ -n "$MERGE_AFTER" ] || return 0
+  local lock; lock="$(lockfiles_changed)"
+  if [ -z "$MERGE_AFTER" ]; then
+    [ -z "$lock" ] || say "WARNING: lockfile changed ($lock): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)"
+    return 0
+  fi
   # The gate may have run for minutes: re-check that <MAIN>'s copy is still origin's.
   local bad; bad="$(main_mismatch)"
   if [ -n "$bad" ]; then
@@ -243,7 +266,7 @@ run_after() { # <merged|not-merged>
   fi
   # cwd <MAIN>; a hook <MAIN> does not have yet runs from the PR worktree, which exists on every path here.
   SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
-    SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" \
+    SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" SAPU_LOCKFILES_CHANGED="$lock" \
     run_contract "$MAIN" "$WT" "$P_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
 }
 
@@ -284,6 +307,7 @@ fi
 # someone did it by hand. Step 9's rules exactly (--ff-only, base branch, clean tree, under the lock);
 # origin/<base> is what the hooks are checked against anyway. Dirty or diverged: left alone, refused below.
 FF_PLANNED=0
+MAIN_START_HEAD="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)" # lockfiles_changed() reads what moves <MAIN> from here on
 if [ "$(git -C "$MAIN" rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ] \
   && [ "$(git -C "$MAIN" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = "$BASE" ] \
   && [ -z "$(git -C "$MAIN" status --porcelain -- . ':(exclude).claude/worktrees' 2>/dev/null || echo 'status failed')" ] \
@@ -326,6 +350,25 @@ plan "trust OK: author $(jget .author.login) (id $(jget .author.id)), $(jget .co
 [ "$(jget .isDraft)" != "true" ] || check_fail "PR #$PR is a draft"
 [ "$PR_BASE" = "$BASE" ] || check_fail "PR #$PR base is '$PR_BASE', not $BASE (retarget/merge parent first)"
 case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; esac
+
+# --- 3b. a lane's PR closes its own issue and no other (--closes) -----------------------------------------------
+# Prose such as "to close #3521" closes that issue on merge, whichever lane wrote it. The orchestrator passes the lane's
+# issue (or `none` for a tracker-finding lane, which uses Refs); ISSUES is what pr-trust read: GitHub's closing
+# references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR sapu did not start) nothing is judged.
+CLOSE_LIST="$(awk 'NF { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
+if [ "$ALONE" = 0 ]; then
+  if [ -z "$CLOSES" ]; then
+    say "PR #$PR closes: ${CLOSE_LIST:-none} (no --closes: not checked against a lane issue)"
+  else
+    WANT=""; [ "$CLOSES" = none ] || WANT="$CLOSES"
+    EXTRA="$(awk -v w="$WANT" 'NF && $1 != w { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
+    if [ -n "$EXTRA" ] && [ -n "$WANT" ]; then check_fail "PR closes $EXTRA, not only its lane issue #$WANT: change it to \"Refs $EXTRA\" (brief point 9)"
+    elif [ -n "$EXTRA" ]; then check_fail "PR closes $EXTRA, but its lane has no issue to close (--closes none): change it to \"Refs $EXTRA\" (brief point 9)"
+    elif [ -n "$WANT" ] && ! awk -v w="$WANT" '$1 == w { f = 1 } END { exit !f }' <<<"$ISSUES"; then
+      check_fail "PR does not close its lane issue #$WANT (it closes: ${CLOSE_LIST:-none}): put \"Closes #$WANT\" in the body"
+    fi
+  fi
+fi
 
 # --- 3c. the argus smoke check (SMOKE CHECK above) ----------------------------------------------
 # Judged on the head the trust check read, by sapu-smoke-gate.mjs (one JSON verdict; a reason on stderr when it
@@ -423,6 +466,9 @@ if [ "$ALONE" = 1 ]; then
   [ "$(git -C "$WT" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null || echo -)" = "$RTREE" ] \
     || die "worktree $WT is not the tree the red gate ran on ($RTREE): a re-run or an edit moved it, so the check would prove nothing about that gate"
   IFS=, read -r -a AF <<<"${REC[5]#failed=}"
+  # The ledger names `file@sig` (sig_of): the test command gets the file alone.
+  SIGRE='@([0-9a-f]{8}|-)$'
+  for i in "${!AF[@]}"; do if [[ "${AF[$i]}" =~ $SIGRE ]]; then AF[$i]="${AF[$i]%@*}"; fi; done
   for f in "${AF[@]}"; do case "$f" in -*) die "failing file '$f' looks like an option: not passing it to gate.testFiles" ;; esac; done
   SHA="$(git -C "$WT" rev-parse HEAD)"
   ALOG="$(mktemp "${TMPDIR:-/tmp}/gate-alone-pr$PR.XXXXXX")" || die "cannot create the log in ${TMPDIR:-/tmp}"
@@ -591,7 +637,7 @@ GATE_SECS=$((SECONDS - GATE_START))
 # Every gate run, red too, is one line of <MAIN>/.git/sapu-gates.log: the flake ledger a red run is
 # judged against, and the scorecard's gate count (sapu-metrics --gates-log). The merges log holds
 # merges only, so without this a red run left no trace once its $TMPDIR log was overwritten.
-#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<files|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
+#   <time> <PR> <SHA> <green|red|setup-failed> gate=<s>s failed=<file@sig,…|-> tree=<tree>[ verdict=<v>][ steps=<✗ summary steps>][ live=1]
 # steps= keeps a red run's failed summary steps (spaces as _) even when no test file failed
 # (npm audit, verify:cyber): failed=- alone left the ledger blind to what went red.
 # The tree, not the SHA: a rebase changes the SHA of the very same code.
@@ -615,6 +661,22 @@ live_overlap() { # <gate start epoch> <gate end epoch>
 LIVE=""
 if live_overlap "$GATE_T0" "$(date +%s)"; then LIVE=1; fi
 LIVE_NOTE="${LIVE:+ (this gate ran beside a journey cycle)}"
+# The first error line of a failing test, normalised, as an 8-hex signature (`-` = none read). `cksum` is POSIX
+# (macOS and Linux print the same CRC), unlike sha1sum (no macOS) or shasum (a perl script some Linux images lack).
+# Normalised: quoted strings, absolute paths, hex runs, numbers and durations drop out, so two runs of one flaky
+# failure give one signature while a different assertion gives another.
+sig_of() { # <error line or empty>
+  [ -n "$1" ] || { printf -- '-'; return 0; }
+  local n
+  n="$(printf '%s' "$1" | sed -E \
+    -e 's/"[^"]*"/Q/g' -e "s/'[^']*'/Q/g" -e 's/`[^`]*`/Q/g' \
+    -e 's#(^|[^[:alnum:]_.-])(/[^[:space:]/]+)+#\1P#g' \
+    -e 's/0x[0-9a-fA-F]+/H/g' -e 's/[0-9a-fA-F]{8,}/H/g' \
+    -e 's/[0-9]+(\.[0-9]+)*/N/g' -e 's/N(ms|us|ns|s|m)([^[:alpha:]]|$)/D\2/g' \
+    -e 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  printf '%08x' "$(printf '%s' "$n" | cksum | cut -d' ' -f1)"
+}
+
 gate_record() { # <green|red|setup-failed> <failed tests or -> [verdict] [failed steps]
   { printf '%s %s %s %s gate=%ss failed=%s tree=%s%s%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$1" "$GATE_SECS" "$2" "$TREE" "${3:+ verdict=$3}" "${4:+ steps=${4// /_}}" "${LIVE:+ live=1}" >>"$GATES_LOG"; } 2>/dev/null \
     || say "warning: could not record the gate run in $GATES_LOG"
@@ -664,20 +726,55 @@ if [ -n "$RED" ]; then
   MOCHA="$(awk -v wt="$WT/" '
     function flush() { if (want) print "X"; want = 0 }
     /^  [0-9]+ failing$/ { flush(); failing = 1; next }
-    failing && /^  [0-9]+\) / { flush(); want = 1; next }
+    failing && /^  [0-9]+\) / { flush(); want = 1; err = ""; next }
     want {
       line = $0
+      if (err == "" && line ~ /Error|assert|Expected|expected|panic|FAIL:/) err = line
       while (match(line, /(file:\/\/)?\/[^ ()]+/)) {
         f = substr(line, RSTART, RLENGTH); line = substr(line, RSTART + RLENGTH)
         sub(/^file:\/\//, "", f); sub(/:[0-9]+:[0-9]+$/, "", f)
         if (index(f, wt) != 1 || f ~ /\/node_modules\//) continue
         f = substr(f, length(wt) + 1)
-        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f); want = 0; break }
+        if (f ~ /(^|\/)(test|tests|spec|specs|__tests__)\// || f ~ /[._-](test|spec)\.[A-Za-z0-9]+$/) { print (f ~ /,/ ? "X" : "F " f "\t" err); want = 0; break }
       }
     }
     END { flush() }' <<<"$CLEAN")"
-  FILES="$( { printf '%s\n' "$FILES"; sed -n 's/^F //p' <<<"$MOCHA"; } | grep . || true)"
-  TESTS="$(printf '%s\n' "$FILES" | grep . | sort -u | paste -sd, - || true)"
+  FILES="$( { printf '%s\n' "$FILES"; awk -F'\t' '/^F /{ print substr($1, 3) }' <<<"$MOCHA"; } | grep . || true)"
+  NAMES="$(printf '%s\n' "$FILES" | grep . | sort -u || true)"
+  # Each failing file's FIRST ERROR LINE (the flake ledger's `file@sig`; see sig_of). Per runner, where the error is:
+  # vitest/jest ` FAIL  <file> > …`: the first Error|assert|Expected|expected|panic|FAIL: line within 12 lines after
+  # the header; pytest `FAILED <file>::… - <message>`: the message on that line; go test `FAIL\t<pkg>\t<n>s`: the first
+  # such line since the previous header (go prints a package's output before its FAIL line); mocha: the first such
+  # line of the failure's block. Another runner, or no such line: no error line read (`@-`), which never proves a flake.
+  ERRS=""
+  if [ -n "$NAMES" ]; then
+    ERRS="$( { awk '
+      BEGIN { re = "Error|assert|Expected|expected|panic|FAIL:" }
+      FNR == NR { want[$0] = 1; next }
+      { line[++n] = $0 }
+      END {
+        for (i = 1; i <= n; i++) {
+          l = line[i]; nm = ""; k = ""
+          if (l ~ /^FAILED /) { nm = substr(l, 8); sub(/::.*$/, "", nm); k = "py" }
+          else if (l ~ /^FAIL\t/) { split(l, t, "\t"); nm = t[2]; k = "go" }
+          else if (l ~ /^[[:space:]]*FAIL[[:space:]]/) { nm = l; sub(/^[[:space:]]*FAIL[[:space:]]+(\|[^|]*\|[[:space:]]+)?/, "", nm); sub(/[[:space:]].*$/, "", nm); k = "js" }
+          if (nm != "" && (nm in want)) { kind[i] = k; name[i] = nm }
+        }
+        for (i = 1; i <= n; i++) {
+          if (kind[i] == "" || (name[i] in done)) continue
+          e = ""
+          if (kind[i] == "py") { p = index(line[i], " - "); if (p) e = substr(line[i], p + 3) }
+          else if (kind[i] == "js") { for (j = i + 1; j <= n && j <= i + 12 && kind[j] == ""; j++) if (line[j] ~ re) { e = line[j]; break } }
+          else { b = 0; for (j = i - 1; j >= 1; j--) if (kind[j] != "") { b = j; break } for (j = b + 1; j < i; j++) if (line[j] ~ re) { e = line[j]; break } }
+          if (e != "") { done[name[i]] = 1; print name[i] "\t" e }
+        }
+      }' <(printf '%s\n' "$NAMES") <(printf '%s\n' "$CLEAN"); sed -n 's/^F //p' <<<"$MOCHA"; } )"
+  fi
+  TESTS=""
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    TESTS="${TESTS:+$TESTS,}$nm@$(sig_of "$(awk -F'\t' -v n="$nm" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }' <<<"$ERRS")")"
+  done <<<"$NAMES"
   # A failure line no file was read from (pytest ERROR, a path with a space, a Go package that did
   # not build, a mocha failure outside the tests) or an unhandled error outside any test = something
   # besides the named tests failed: never known-flake.
@@ -699,14 +796,24 @@ if [ -n "$RED" ]; then
       else if ($4 == "red" && $6 ~ /^failed=/ && $6 != "failed=-") red[k] = red[k] "," substr($6, 8)
     }
     END { for (k in red) if (k in green) { split(k, p, " "); n = split(red[k], f, ","); for (i = 1; i <= n; i++) if (f[i] != "") print f[i], "#" p[1] } }')"
-  VERDICT=unknown; SEEN=(); NEW=()
+  VERDICT=unknown; SEEN=(); NEW=(); DIFF=()
   if [ -n "$TESTS" ]; then
     IFS=, read -r -a TS <<<"$TESTS"
     for t in "${TS[@]}"; do
-      prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
-      if [ -n "$prs" ]; then SEEN+=("$t (PR $prs)"); else NEW+=("$t"); fi
+      fl="${t%@*}"; prs=""
+      # Proven = this exact `file@sig` failed another PR's red gate on a tree that then went green. `file@-` (no error
+      # line read) never matches, and a row from before the signatures (no `@`) is never equal: both stay unknown.
+      if [ "${t##*@}" != "-" ]; then prs="$(awk -v t="$t" '$1 == t { print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"; fi
+      if [ -n "$prs" ]; then SEEN+=("$fl (PR $prs)"); continue; fi
+      NEW+=("$fl")
+      # The same file flaky elsewhere, but with another error line: say so, because that is the case to read twice.
+      other="$(awk -v f="$fl" '{ n = $1; g = ""
+        if (match(n, /@([0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]|-)$/)) { g = substr(n, RSTART + 1); n = substr(n, 1, RSTART - 1) }
+        if (n == f && g != "" && g != "-") print $2 }' <<<"$PROVEN" | sort -u | paste -sd, -)"
+      [ "${t##*@}" = "-" ] || [ -z "$other" ] || DIFF+=("$fl: same file flaky in PR $other, but a different error: treat as real")
     done
   fi
+  DIFF_NOTE="${DIFF[0]:+; $(IFS=';'; printf '%s' "${DIFF[*]}")}"
   case "$RED" in *gate.redIf*|*"no gate summary"*) NONTEST="$RED" ;; *) NONTEST="" ;; esac
   [ -z "$OTHER" ] || NONTEST="${NONTEST:+$NONTEST; }$OTHER"
   # A ✗ summary step whose name is not a test runner's (lint, typecheck, build): not only tests failed.
@@ -717,9 +824,9 @@ if [ -n "$RED" ]; then
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
   if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
-  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$LIVE_NOTE"
+  elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$DIFF_NOTE$LIVE_NOTE"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
-  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$LIVE_NOTE"; fi
+  else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$DIFF_NOTE$LIVE_NOTE"; fi
   exit 2
 fi
 gate_record green -

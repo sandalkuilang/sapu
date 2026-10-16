@@ -6,7 +6,7 @@
 // github.com URL, while the real remote stays the bare repo). Nothing here touches the network or
 // a real GitHub repo.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { cpus as osCpus, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,18 @@ const MERGE = join(__dirname, "../plugins/sapu/scripts/sapu-merge.sh");
 const REAL_GIT = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
 const top = realpathSync(mkdtempSync(join(tmpdir(), "sapu-merge-")));
 afterAll(() => rmSync(top, { recursive: true, force: true }));
+
+/**
+ * The signature sapu-merge.sh records after `@` for a failing test's first error line: POSIX `cksum` of the line
+ * AFTER normalisation (quoted strings -> Q, absolute paths -> P, hex runs -> H, numbers -> N, durations -> D), as 8
+ * hex digits. Tests pass the normalised text, so the sig is pinned independently of the script's sed.
+ */
+const sigOf = (normalised: string) => Number(execFileSync("cksum", { input: normalised, encoding: "utf8" }).split(" ")[0]).toString(16).padStart(8, "0");
+const A_SIG = sigOf("AssertionError: expected N to be N");
+const B_SIG = sigOf("AssertionError: assert N == N");
+/** apps/a.test.ts failing with its first error line, as vitest prints it; and the ledger token that run records. */
+const A_FAIL = " FAIL  apps/a.test.ts > t\nAssertionError: expected 1 to be 2";
+const A_ROW = `apps/a.test.ts@${A_SIG}`;
 
 const GATE = `#!/usr/bin/env bash
 echo "gate ran: $0 in $PWD"
@@ -107,6 +119,7 @@ function harness({
     HX_GH_LOG: join(dir, "gh.log"),
     HX_AFTER_LOG: join(dir, "after.log"),
     HX_API: join(dir, "api"),
+    HX_BARE: bare,
     HX_CLAUDE_JSON: JSON.stringify([{ id: "sapu@sapu", scope: "project" }]),
   });
   const stub = (name: string, body: string) => writeFileSync(join(bin, name), body, { mode: 0o755 });
@@ -130,7 +143,11 @@ case "$1 $2" in
   "pr list") [ -f "$HX_API/pr_list.json" ] && jq -r '.[].number' "$HX_API/pr_list.json" ;;
   "pr comment"|"pr edit"|"issue edit") ;;
   "run download") d=""; while [ $# -gt 0 ]; do [ "$1" = --dir ] && d="$2"; shift; done; [ ! -d "$HX_API/artifacts" ] || cp -R "$HX_API/artifacts/." "$d/" ;;
-  "pr merge") [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2; exit "\${HX_GH_MERGE_RC:-0}" ;;
+  "pr merge")
+    [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2
+    # HX_GH_LANDS=1: the merge really lands on origin (the PR branch becomes the base), as GitHub's rebase merge would.
+    [ -z "\${HX_GH_LANDS:-}" ] || "${REAL_GIT}" -C "$HX_BARE" update-ref refs/heads/main refs/heads/feat/x
+    exit "\${HX_GH_MERGE_RC:-0}" ;;
   *) echo "gh stub: unexpected: $*" >&2; exit 1 ;;
 esac
 `,
@@ -402,7 +419,8 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     `2026-10-01T01:00:00Z ${pr} aaa red gate=400s failed=${files} tree=${tree} verdict=unknown`,
     `2026-10-01T01:10:00Z ${pr} bbb green gate=400s failed=- tree=${tree}`,
   ];
-  const FAILS = " FAIL  apps/a.test.ts > orders > races\nFAILED tests/test_b.py::test_x - AssertionError\n FAIL  apps/a.test.ts > orders > again";
+  const FAILS =
+    " FAIL  apps/a.test.ts > orders > races\nAssertionError: expected 1 to be 2\nFAILED tests/test_b.py::test_x - AssertionError: assert 1 == 2\n FAIL  apps/a.test.ts > orders > again";
 
   it("green: one line with no failing tests and the gated tree", () => {
     const h = harness();
@@ -414,7 +432,7 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h = harness();
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
     expect(r.status).toBe(2);
-    expect(gates(h)).toEqual([expect.stringMatching(/ 7 [0-9a-f]{40} red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py tree=[0-9a-f]{40} verdict=unknown$/)]);
+    expect(gates(h)).toEqual([expect.stringMatching(new RegExp(` 7 [0-9a-f]{40} red gate=\\d+s failed=apps/a\\.test\\.ts@${A_SIG},tests/test_b\\.py@${B_SIG} tree=[0-9a-f]{40} verdict=unknown$`))]);
     expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts, tests\/test_b\.py/);
   });
 
@@ -443,14 +461,14 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     const h = harness();
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out(h.WT) });
     expect(r.status).toBe(2);
-    expect(gates(h)).toEqual([expect.stringMatching(new RegExp(` red gate=\\d+s failed=${failed.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} tree=[0-9a-f]{40} verdict=unknown$`))]);
+    expect(gates(h)).toEqual([expect.stringMatching(new RegExp(` red gate=\\d+s failed=${failed.split(",").map((f) => `${f.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}@(?:-|[0-9a-f]{8})`).join(",")} tree=[0-9a-f]{40} verdict=unknown$`))]);
     expect(r.err).toMatch(/verdict: unknown — not proven flaky/);
   });
 
   it("a runner's entry proven flaky elsewhere is known-flake, like a file", () => {
     const h = harness();
-    seed(h, ...provenBy(5, "example.com/app/pay"));
-    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: "FAIL\texample.com/app/pay\t0.012s" }).err).toMatch(/verdict: known-flake — .*example\.com\/app\/pay \(PR #5\)/);
+    seed(h, ...provenBy(5, `example.com/app/pay@${sigOf("--- FAIL: TestRefund (D)")}`));
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: "--- FAIL: TestRefund (0.01s)\n    pay_test.go:12: boom\nFAIL\nFAIL\texample.com/app/pay\t0.012s" }).err).toMatch(/verdict: known-flake — .*example\.com\/app\/pay \(PR #5\)/);
   });
 
   it.each([
@@ -460,7 +478,7 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     ["a mocha failure in a hook outside the worktree", () => "  1 failing\n\n  1) \"before all\" hook:\n     Error: boom\n      at /elsewhere/test/setup.js:1:1\n"],
   ] as const)("%s keeps the verdict unknown: something besides a readable test failed", (_what, extra) => {
     const h = harness();
-    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    seed(h, ...provenBy(5, A_ROW));
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${typeof extra === "string" ? extra : extra(h.WT)}` });
     expect(r.err).toMatch(/verdict: unknown \(not only tests failed: /);
   });
@@ -468,27 +486,27 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
   it("an rspec, mocha or JUnit summary step is a test step", () => {
     for (const step of ["✗ rspec 3.0s", "✗ mocha 2.0s", "✗ junit 9.0s"]) {
       const h = harness();
-      seed(h, ...provenBy(5, "apps/a.test.ts"));
-      expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: step }).err, step).toMatch(/verdict: known-flake/);
+      seed(h, ...provenBy(5, A_ROW));
+      expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: step }).err, step).toMatch(/verdict: known-flake/);
     }
   });
 
   it("a vitest project label, colour codes, an empty FAIL line and a path with a space are never taken for a file", () => {
     const h = harness();
     h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  |db| apps/api/new.test.ts > breaks\n\x1b[31m FAIL \x1b[39m |pure| src/c.test.ts > x\n FAIL \n FAIL  src/my file.test.ts > y" });
-    expect(gates(h)).toEqual([expect.stringMatching(/ failed=apps\/api\/new\.test\.ts,src\/c\.test\.ts tree=/)]);
+    expect(gates(h)).toEqual([expect.stringMatching(/ failed=apps\/api\/new\.test\.ts@-,src\/c\.test\.ts@- tree=/)]);
   });
 
   it("known-flake only when every failing file is PROVEN flaky: red, then green on the same tree, in another PR; still no merge", () => {
     const h = harness();
-    seed(h, ...provenBy(5, "apps/a.test.ts"), ...provenBy(6, "x.test.ts,tests/test_b.py"));
+    seed(h, ...provenBy(5, A_ROW), ...provenBy(6, `x.test.ts@${A_SIG},tests/test_b.py@${B_SIG}`));
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: FAILS });
     expect(r.status).toBe(2);
     expect(h.gh()).not.toMatch(/pr merge/);
     expect(r.err).toMatch(/verdict: known-flake/);
     expect(r.err).toMatch(/apps\/a\.test\.ts \(PR #5\)/);
     expect(r.err).toMatch(/tests\/test_b\.py \(PR #6\)/);
-    expect(gates(h).at(-1)).toMatch(/ red gate=\d+s failed=apps\/a\.test\.ts,tests\/test_b\.py tree=[0-9a-f]{40} verdict=known-flake$/);
+    expect(gates(h).at(-1)).toMatch(new RegExp(` red gate=\\d+s failed=apps/a\\.test\\.ts@${A_SIG},tests/test_b\\.py@${B_SIG} tree=[0-9a-f]{40} verdict=known-flake$`));
   });
 
   it("a file that failed another PR's gate but never went green on that tree is not proven: that PR may really have broken it", () => {
@@ -509,10 +527,90 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.err).toMatch(/verdict: unknown/);
   });
 
+  it.each([
+    ["vitest/jest: the first error line after the header", () => A_FAIL, "apps/a.test.ts", "AssertionError: expected N to be N"],
+    ["pytest: the message on the FAILED line", () => "FAILED tests/test_b.py::test_x - AssertionError: assert 1 == 2", "tests/test_b.py", "AssertionError: assert N == N"],
+    ["go test: the first error line since the previous header (a package's output comes before its FAIL line)", () => "--- FAIL: TestRefund (0.01s)\n    pay_test.go:12: boom\nFAIL\nFAIL\texample.com/app/pay\t0.012s", "example.com/app/pay", "--- FAIL: TestRefund (D)"],
+    ["mocha: the first error line of the failure's block", (wt: string) => `  1 failing\n\n  1) Pay\n       refunds:\n     AssertionError [ERR_ASSERTION]: boom\n      at Context.<anonymous> (file://${wt}/test/pay.spec.mjs:5:14)\n`, "test/pay.spec.mjs", "AssertionError [ERR_ASSERTION]: boom"],
+  ] as const)("the signature of %s", (_runner, out, file, normalised) => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out(h.WT) });
+    expect(gates(h).at(-1)).toContain(` failed=${file}@${sigOf(normalised)} `);
+  });
+
+  it("a run that printed the file but no error line within reach records @-", () => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${"filler\n".repeat(13)}AssertionError: far too late` });
+    expect(gates(h).at(-1)).toContain(" failed=apps/a.test.ts@- ");
+  });
+
+  it("an error line containing a tab is hashed whole", () => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t\nError:   boom\t  now" });
+    expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf("Error: boom now")} `);
+  });
+
+  describe("known-flake needs the same error, not only the same file", () => {
+    const proven = (row: string, out: string) => {
+      const h = harness();
+      seed(h, ...provenBy(5, row));
+      return { h, r: h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out }) };
+    };
+
+    it("same file, same error (the numbers differ between the runs): known-flake", () => {
+      const { r } = proven(A_ROW, " FAIL  apps/a.test.ts > t\nAssertionError: expected 99 to be 100");
+      expect(r.err).toMatch(/verdict: known-flake — .*apps\/a\.test\.ts \(PR #5\)/);
+    });
+
+    it("same file flaky elsewhere but a DIFFERENT error: unknown, and the output says to treat it as real", () => {
+      const { h, r } = proven(A_ROW, " FAIL  apps/a.test.ts > t\nTypeError: cannot read properties of undefined (reading 'id')");
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).toMatch(/apps\/a\.test\.ts: same file flaky in PR #5, but a different error: treat as real/);
+      expect(gates(h).at(-1)).toMatch(/ verdict=unknown$/);
+    });
+
+    it("a ledger row from before the signatures (no @) proves nothing and raises no 'different error' note", () => {
+      const { r } = proven("apps/a.test.ts", A_FAIL);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).not.toMatch(/different error/);
+    });
+
+    it("no error line read (@-) never matches, not even a ledger row recorded as @-", () => {
+      const { h, r } = proven("apps/a.test.ts@-", " FAIL  apps/a.test.ts > t");
+      expect(gates(h).at(-1)).toMatch(/ failed=apps\/a\.test\.ts@- /);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: apps\/a\.test\.ts/);
+      expect(r.err).not.toMatch(/known-flake|different error/);
+    });
+
+    it("a run with no error line is not proven by a row that has one, and gets no 'different error' note", () => {
+      const { r } = proven(A_ROW, " FAIL  apps/a.test.ts > t");
+      expect(r.err).toMatch(/verdict: unknown/);
+      expect(r.err).not.toMatch(/known-flake|different error/);
+    });
+
+    it("the proven file does not carry a second file with another error", () => {
+      const { r } = proven(A_ROW, `${A_FAIL}\nFAILED tests/test_b.py::test_x - AssertionError: assert 1 == 2`);
+      expect(r.err).toMatch(/verdict: unknown — not proven flaky: tests\/test_b\.py; proven flaky: apps\/a\.test\.ts \(PR #5\)/);
+    });
+  });
+
+  it.each([
+    ["numbers", "AssertionError: expected 12 to be 99", "AssertionError: expected N to be N"],
+    ["quoted strings", `AssertionError: expected 'abc' to deeply equal "x y"`, "AssertionError: expected Q to deeply equal Q"],
+    ["an absolute path", "Error: ENOENT: no such file or directory, open /var/folders/ab/cd/T/x.json", "Error: ENOENT: no such file or directory, open P"],
+    ["durations", "Error: Timeout of 5000ms exceeded after 1.5s", "Error: Timeout of D exceeded after D"],
+    ["hex", "Error: bad id 3f2a9c1b77aa0 at 0xdeadbeef", "Error: bad id H at H"],
+    ["whitespace", "Error:   boom\t  now", "Error: boom now"],
+  ])("the signature drops %s from the first error line", (_what, line, normalised) => {
+    const h = harness();
+    h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${line}` });
+    expect(gates(h).at(-1)).toContain(` failed=apps/a.test.ts@${sigOf(normalised)} `);
+  });
+
   it("a failure line no file could be read from (pytest ERROR, a path with a space) or a vitest Unhandled Error keeps the verdict unknown", () => {
     for (const extra of ["ERROR tests/test_c.py::test_setup - fixture", " FAIL  |db| apps/api/pay roll.test.ts > x", "⎯⎯ Unhandled Errors ⎯⎯\nVitest caught 1 unhandled error"]) {
       const h = harness();
-      seed(h, ...provenBy(5, "apps/a.test.ts"));
+      seed(h, ...provenBy(5, A_ROW));
       const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: ` FAIL  apps/a.test.ts > t\n${extra}` });
       expect(r.err, extra).toMatch(/verdict: unknown \(not only tests failed: /);
     }
@@ -520,27 +618,27 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
 
   it("a red that is not only tests (a gate.redIf line) is never known-flake, even with every test proven", () => {
     const h = harness();
-    seed(h, ...provenBy(5, "apps/a.test.ts"));
+    seed(h, ...provenBy(5, A_ROW));
     const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_BIG: "1" });
     expect(r.err).toMatch(/verdict: unknown \(not only tests failed: .*gate\.redIf/);
   });
 
   it("a failed non-test summary step (lint, typecheck) keeps the verdict unknown; a failed test step does not", () => {
     const h = harness();
-    seed(h, ...provenBy(5, "apps/a.test.ts"));
-    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ lint 2.1s" }).err).toMatch(/verdict: unknown \(not only tests failed: a non-test step failed: lint/);
+    seed(h, ...provenBy(5, A_ROW));
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ lint 2.1s" }).err).toMatch(/verdict: unknown \(not only tests failed: a non-test step failed: lint/);
     const h2 = harness();
-    seed(h2, ...provenBy(5, "apps/a.test.ts"));
-    expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ vitest 30.2s" }).err).toMatch(/verdict: known-flake/);
+    seed(h2, ...provenBy(5, A_ROW));
+    expect(h2.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ vitest 30.2s" }).err).toMatch(/verdict: known-flake/);
     const h3 = harness();
-    seed(h3, ...provenBy(5, "apps/a.test.ts"));
-    expect(h3.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ lint test files 3.0s" }).err).toMatch(/a non-test step failed: lint test files/);
+    seed(h3, ...provenBy(5, A_ROW));
+    expect(h3.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ lint test files 3.0s" }).err).toMatch(/a non-test step failed: lint test files/);
     const h4 = harness();
-    seed(h4, ...provenBy(5, "apps/a.test.ts"));
-    expect(h4.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ api specs 4.0s" }).err).toMatch(/verdict: known-flake/);
+    seed(h4, ...provenBy(5, A_ROW));
+    expect(h4.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ api specs 4.0s" }).err).toMatch(/verdict: known-flake/);
     const h5 = harness();
-    seed(h5, ...provenBy(5, "apps/a.test.ts"));
-    expect(h5.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t", HX_GATE_SUMMARY: "✗ Unit Tests (api) 3.0s\n✗ E2E 9.1s" }).err).toMatch(/verdict: known-flake/);
+    seed(h5, ...provenBy(5, A_ROW));
+    expect(h5.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ Unit Tests (api) 3.0s\n✗ E2E 9.1s" }).err).toMatch(/verdict: known-flake/);
   }, 60_000); // five full merge runs: 17-19 s on a loaded machine, too close to the file's 20 s
 
   it("a red gate that printed no test names: recorded with failed=- and an unknown verdict", () => {
@@ -567,6 +665,197 @@ describe("sapu-merge.sh — every gate run is recorded, a red one with its faili
     expect(r.status).toBe(0);
     expect(r.err).toMatch(/warning: could not record the gate run/);
     expect(r.err).not.toMatch(/Is a directory|No such file/);
+  });
+});
+
+describe("sapu-merge.sh — a real runner's failure output is read into file@sig (live probe)", () => {
+  const ROOT = join(__dirname, "..");
+  // Each runner is run on a tiny failing project; its REAL output goes to the script as the gate's output. A runner that
+  // is not installed here skips its test (the title says what it needs): the format it prints is then unverified.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VITEST")));
+  const has = (cmd: string, ...args: string[]) => spawnSync(cmd, args, { stdio: "ignore" }).status === 0;
+  const sandbox = (files: Record<string, string>) => {
+    const d = join(top, `live${++n}`);
+    mkdirSync(d, { recursive: true });
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(d, f), text);
+    return d;
+  };
+  const output = (cwd: string, cmd: string, args: string[]) => {
+    const r = spawnSync(cmd, args, { cwd, env: { ...env, FORCE_COLOR: "0", NO_COLOR: "1", CI: "1" }, encoding: "utf8" });
+    return `${r.stdout}${r.stderr}`;
+  };
+  const recorded = (out: string) => {
+    const h = harness();
+    expect(h.run({ HX_GATE_RC: "1", HX_GATE_OUT: out }).status).toBe(2);
+    return readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").trim().split("\n").at(-1)!;
+  };
+
+  it("vitest (this repo's runner): each failing file with its first error line", () => {
+    const d = sandbox({
+      "a.test.ts": `import { it, expect } from "vitest";\nit("orders races", () => { expect(1 + 1).toBe(3); });\nit("second", () => { throw new Error("boom 4711 at /tmp/x/y.ts"); });\n`,
+      "b.test.ts": `import { it, expect } from "vitest";\nit("b one", () => { expect("abc").toEqual("abd"); });\n`,
+    });
+    symlinkSync(join(ROOT, "node_modules"), join(d, "node_modules"));
+    const out = output(d, join(ROOT, "node_modules/.bin/vitest"), ["run"]);
+    expect(out).toMatch(/ FAIL {2}a\.test\.ts > orders races\nAssertionError: expected 2 to be 3/); // the probe produced a real failure
+    expect(recorded(out)).toContain(
+      ` failed=a.test.ts@${sigOf("AssertionError: expected N to be N // Object.is equality")},b.test.ts@${sigOf("AssertionError: expected Q to deeply equal Q")} `,
+    );
+  });
+
+  it.skipIf(!existsSync(join(ROOT, "node_modules/.bin/jest")))("jest (skipped: not installed here)", () => {
+    const d = sandbox({ "t.test.js": `it("adds", () => { expect(1 + 1).toBe(3); });\n`, "package.json": "{}" });
+    const out = output(d, join(ROOT, "node_modules/.bin/jest"), []);
+    expect(recorded(out)).toMatch(/ failed=\S*t\.test\.js@[0-9a-f]{8} /);
+  });
+
+  it.skipIf(!has("python3", "-m", "pytest", "--version"))("pytest (skipped: python3 -m pytest not installed here)", () => {
+    const d = sandbox({ "test_t.py": "def test_x():\n    assert 1 + 1 == 3\n" });
+    const out = output(d, "python3", ["-m", "pytest", "-q", "test_t.py"]);
+    expect(recorded(out)).toMatch(/ failed=test_t\.py@[0-9a-f]{8} /);
+  });
+
+  it.skipIf(!has("go", "version"))("go test (skipped: go not installed here)", () => {
+    const d = sandbox({ "go.mod": "module example.com/t\n\ngo 1.21\n", "t_test.go": 'package t\nimport "testing"\nfunc TestX(t *testing.T) { if 1+1 != 3 { t.Fatalf("expected 3 got %d", 1+1) } }\n' });
+    const out = output(d, "go", ["test", "./..."]);
+    expect(recorded(out)).toMatch(/ failed=example\.com\/t@[0-9a-f]{8} /);
+  });
+});
+
+describe("sapu-merge.sh — a lockfile that changed in <MAIN> is handed to mergeAfter", () => {
+  const AFTER_LOCK = `#!/usr/bin/env bash\necho "lock=[$SAPU_LOCKFILES_CHANGED] ff=$SAPU_FF_OK outcome=$SAPU_OUTCOME" >> "$HX_AFTER_LOG"\n`;
+  const withHook = (extra: Parameters<typeof harness>[0] = {}) => harness({ main: { "scripts/after.sh": AFTER_LOCK }, ...extra });
+
+  it("a merge that changes package-lock.json: mergeAfter sees it, with the fast-forward done", () => {
+    const h = withHook({ pr: { "package-lock.json": "{}\n" } });
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(r.status).toBe(0);
+    expect(h.after()).toEqual(["lock=[package-lock.json] ff=1 outcome=merged"]);
+  });
+
+  it("no lockfile in the merge: the variable is empty and nothing is said", () => {
+    const h = withHook();
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(h.after()).toEqual(["lock=[] ff=1 outcome=merged"]);
+    expect(r.err).not.toMatch(/lockfile/);
+  });
+
+  it("matches by basename at any depth, lists each once, and ignores names that only look alike", () => {
+    const h = withHook({
+      pr: { "apps/web/pnpm-lock.yaml": "x\n", "go.sum": "x\n", "docs/yarn.lock.md": "x\n", "my-package-lock.json": "x\n", "src/code.ts": "x\n" },
+    });
+    h.run({ HX_GH_LANDS: "1" });
+    expect(h.after()).toEqual(["lock=[apps/web/pnpm-lock.yaml,go.sum] ff=1 outcome=merged"]);
+  });
+
+  it.each(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock"])(
+    "%s is a lockfile",
+    (name) => {
+      const h = withHook({ pr: { [name]: "x\n" } });
+      h.run({ HX_GH_LANDS: "1" });
+      expect(h.after()).toEqual([`lock=[${name}] ff=1 outcome=merged`]);
+    },
+  );
+
+  it("a lockfile pulled in by the fast-forward BEFORE the gate (a PR merged outside) is reported too, even when this gate goes red", () => {
+    const h = withHook();
+    h.pushToOrigin({ "yarn.lock": "x\n" });
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(h.after()).toEqual(["lock=[yarn.lock] ff=0 outcome=not-merged"]);
+  });
+
+  it("a lockfile changed and mergeAfter null: a loud line says the dependencies are stale", () => {
+    const h = harness({ contract: { mergeAfter: null }, pr: { "package-lock.json": "{}\n" } });
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(r.status).toBe(0);
+    expect(r.err).toContain("WARNING: lockfile changed (package-lock.json): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)");
+  });
+
+  it("mergeAfter null and no lockfile change: no line", () => {
+    const h = harness({ contract: { mergeAfter: null } });
+    expect(h.run({ HX_GH_LANDS: "1" }).err).not.toMatch(/lockfile/);
+  });
+});
+
+describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no other", () => {
+  it.each([
+    [["--closes"], /--closes needs a value/],
+    [["--closes", "x"], /--closes must be an issue number or none, got 'x'/],
+    [["--closes", "07"], /--closes must be an issue number or none/],
+    [["--alone", "--closes", "7"], /--closes does not apply to --alone/],
+  ])("%j is a usage error", (args, msg) => {
+    const h = harness();
+    const r = h.run({}, args, args.includes("--alone"));
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(msg);
+  });
+
+  const two = { closing: [{ number: 7, repository: "owner/app" }, { number: 8, repository: "owner/app" }], body: "Closes #7, #8" };
+  const none = { closing: [], body: "Refs #7 (F1)" };
+
+  it("closes exactly {N}: passes", () => {
+    const h = harness();
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/pr merge 7/);
+  });
+
+  it("closes {N, x}: refused before the gate, naming the issue and the Refs fix", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('PR closes #8, not only its lane issue #7: change it to "Refs #8" (brief point 9)');
+    expect(h.gateLog()).toBe("");
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.after()).toEqual([]);
+  });
+
+  it("closes {} with --closes N: refused, it does not close its lane issue", () => {
+    const h = harness({ prJson: none });
+    const r = h.run({}, ["--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/PR does not close its lane issue #7 \(it closes: none\)/);
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("closes {x} with --closes N: refused for the stray issue", () => {
+    const h = harness({ prJson: { closing: [{ number: 8, repository: "owner/app" }], body: "Closes #8" }, issues: { 8: { author: "owner" } } });
+    expect(h.run({}, ["--closes", "7"]).err).toContain('PR closes #8, not only its lane issue #7: change it to "Refs #8"');
+  });
+
+  it("--closes none: closes {} passes", () => {
+    const h = harness({ prJson: none });
+    const r = h.run({}, ["--closes", "none"]);
+    expect(r.status).toBe(0);
+    expect(h.gh()).toMatch(/pr merge 7/);
+  });
+
+  it("--closes none: closes {x} is refused, a tracker-finding lane must use Refs", () => {
+    const h = harness();
+    const r = h.run({}, ["--closes", "none"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('PR closes #7, but its lane has no issue to close (--closes none): change it to "Refs #7" (brief point 9)');
+    expect(h.gateLog()).toBe("");
+  });
+
+  it("prose that closes another issue ('to close #8') is caught like a closing reference", () => {
+    const h = harness({ prJson: { closing: [{ number: 7, repository: "owner/app" }], body: "Closes #7\n\nThis is also to close #8." }, issues: { 8: { author: "owner" } } });
+    expect(h.run({}, ["--closes", "7"]).err).toContain("PR closes #8, not only its lane issue #7");
+  });
+
+  it("--dry-run reports the refusal as a problem and changes nothing", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run({}, ["--dry-run", "--closes", "7"]);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/WOULD REFUSE: PR closes #8, not only its lane issue #7/);
+  });
+
+  it("without the flag nothing is judged and the set is printed", () => {
+    const h = harness({ prJson: two, issues: { 8: { author: "owner" } } });
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(r.err).toContain("PR #7 closes: #7, #8 (no --closes: not checked against a lane issue)");
   });
 });
 
@@ -1058,7 +1347,7 @@ describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and n
   const now = () => Math.floor(Date.now() / 1000);
   const proof = (redTail: string) =>
     [
-      `2026-10-01T01:00:00Z 5 aaa red gate=400s failed=apps/a.test.ts tree=t5 verdict=unknown${redTail}`,
+      `2026-10-01T01:00:00Z 5 aaa red gate=400s failed=${A_ROW} tree=t5 verdict=unknown${redTail}`,
       "2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5",
     ].map((l) => `${l}\n`).join("");
 
@@ -1086,7 +1375,7 @@ describe("sapu-merge.sh — a gate beside a journey cycle is marked live=1 and n
   it("control: the same proof without live=1 is a known-flake", () => {
     const h = harness();
     writeFileSync(join(h.MAIN, ".git/sapu-gates.log"), proof(""));
-    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: " FAIL  apps/a.test.ts > t" });
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL });
     expect(r.err).toMatch(/verdict: known-flake/);
   });
 
@@ -1283,7 +1572,7 @@ describe("sapu-merge.sh --alone — A5's red-files-alone check, recorded in the 
     expect(r.err).toMatch(/alone: green/);
     expect(readFileSync(join(h.MAIN, ".git/alone.out"), "utf8")).toBe(`alone ran in ${realpathSync(h.WT)}: --run apps/a.test.ts tests/test_b.py\n`);
     const redTree = /tree=([0-9a-f]{40})/.exec(before[0])![1];
-    expect(gates(h)).toEqual([...before, expect.stringMatching(new RegExp(` 7 [0-9a-f]{40} alone gate=\\d+s failed=apps/a\\.test\\.ts,tests/test_b\\.py tree=${redTree} alone=green$`))]);
+    expect(gates(h)).toEqual([...before, expect.stringMatching(new RegExp(` 7 [0-9a-f]{40} alone gate=\\d+s failed=apps/a\\.test\\.ts@-,tests/test_b\\.py@[0-9a-f]{8} tree=${redTree} alone=green$`))]);
     expect(h.gh()).not.toMatch(/pr merge|pr comment|pr edit|issue edit/);
     expect(existsSync(h.WT)).toBe(true);
   });
