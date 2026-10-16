@@ -1764,4 +1764,32 @@ describe("sapu-wave — 2.24.0 engine fixes (F1, F2, F6)", () => {
     const brief = readFileSync(join(ROOT, "plugins/sapu/skills/sapu/subagent-brief.md"), "utf8");
     expect(brief).toContain("`pr_state` (OPEN, CLOSED or MERGED; only when your prompt asks for the PR's state)");
   });
+
+  // F6: a review whose findings name the rule they break. `ruled` = one finding; `ruledMany` = several, one per [rule, claim].
+  const ruled = (rule: string, claim = "c", file = "a.ts:1") => ({
+    ...clean, verdict: "findings", notes: [], comment_markdown: "found",
+    findings: [{ file_line: file, claim, failure_scenario: "f", invariant_domain: false, rule }],
+  });
+  const ruledMany = (rows: [string, string][]) => ({
+    ...clean, verdict: "findings", notes: [], comment_markdown: "found",
+    findings: rows.map(([rule, claim]) => ({ file_line: `${rule}.ts:1`, claim, failure_scenario: "f", invariant_domain: false, rule })),
+  });
+  const phasesOf = (calls: Call[]) => calls.map((c) => c.opts.phase);
+
+  it("F6: the reviewer schema requires a kebab-case rule (max 40), the prompt asks to name and reuse it, and the rule is echoed in the delta and fix prompts", async () => {
+    const { calls } = await runWave({ main: MAIN, items: [item(220)] }, (c, n) =>
+      c.opts.phase === "Review" ? (n === 1 ? ruled("unbounded-read") : clean) : opened(220, { head_sha: fixSha(c, n) }));
+    const [first, delta] = calls.filter((c) => c.opts.phase === "Review");
+    const itemSchema = (first.opts as unknown as { schema: { properties: { findings: { items: { required: string[]; properties: { rule: { pattern: string; maxLength: number } } } } } } }).schema.properties.findings.items;
+    expect(itemSchema.required).toContain("rule");
+    expect(itemSchema.properties.rule.maxLength).toBe(40);
+    const kebab = new RegExp(itemSchema.properties.rule.pattern);
+    expect(kebab.test("unbounded-read")).toBe(true);
+    expect(kebab.test("Not Kebab")).toBe(false);
+    expect(first.prompt).toContain("Set `rule` to the kebab-case name of the rule the finding breaks");
+    expect(first.prompt).toContain("name the rule, not the instance");
+    expect(delta.prompt).toContain("reuse its [rule …] name exactly");
+    expect(delta.prompt).toContain("[rule unbounded-read]");
+    expect(calls.find((c) => c.opts.phase === "Fix")!.prompt).toContain("a.ts:1 — c — f [rule unbounded-read]");
+  });
 });

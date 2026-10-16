@@ -97,6 +97,9 @@ const findingKey = (f) => {
   const claim = String(f.claim).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
   return claim ? `${file}|${claim}` : `${file}|#${++uncomparable}` // no comparable claim: never "the same" as any other
 }
+// A finding's CLASS: the kebab-case rule its reviewer named. Matched case-insensitively and exactly; a finding with no rule (an older
+// reviewer, a hand-built result) has no class and so never counts as a recurrence.
+const ruleOf = (f) => String(f.rule ?? '').toLowerCase().trim()
 // Each worker step re-sends its whole, growing context, so a 200-step run costs far more than two
 // 100-step ones. Past the step or context budget (subagent-brief.md point 11) a worker commits WIP
 // and hands off. A handoff with a new commit is progress and continues; two in a row without one
@@ -320,8 +323,9 @@ const REVIEW_SCHEMA = {
           claim: { type: 'string' },
           failure_scenario: { type: 'string', description: 'the inputs/state that trigger it' },
           invariant_domain: { type: 'boolean', description: C.invariantDomains },
+          rule: { type: 'string', pattern: '^[a-z0-9]+(-[a-z0-9]+)*$', maxLength: 40, description: 'kebab-case name of the RULE this finding breaks, not of the instance (e.g. unbounded-read, clock-before-lock); reuse the rule name of an earlier finding of the same class' },
         },
-        required: ['file_line', 'claim', 'failure_scenario', 'invariant_domain'],
+        required: ['file_line', 'claim', 'failure_scenario', 'invariant_domain', 'rule'],
       },
     },
     notes: { type: 'array', items: { type: 'string' }, description: 'style ideas and out-of-scope observations: recorded, not worked' },
@@ -373,7 +377,7 @@ const scoutOf = (w) => SCOUT_TIER || SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
 const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
-const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}`).join('\n')
+const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}${ruleOf(f) ? ` [rule ${ruleOf(f)}]` : ''}`).join('\n')
 // An agent's label is the run panel's Agent column: the issue, then the effort (the panel's Model
 // column shows the model but never the effort), then only what tells two rows of a phase apart.
 const effortOf = (agentType) => (MODEL[agentType] || PAIR_MODEL)[1]
@@ -477,7 +481,7 @@ function reviewPrompt(item, state, reviewer, delta) {
     `Read-only: never change code, commit, merge, or \`gh pr checkout\`. Then \`gh pr diff ${state.pr} --name-only\` (\`gh\` fails in the sandbox → \`git fetch -q origin ${BASE} && git diff --stat origin/${BASE}...${state.headSha}\`: this PR's commits are already in the shared object store), then read only the files your decision needs, a few files' diff per command (\`git diff origin/${BASE}...${state.headSha} -- <files>\`), never the whole-PR diff at once: it overflows into a saved file you then read again. Never run the test suite or the gate — the merge gate runs them; test evidence = the test's \`file:line\`.`,
     `You need no database: the merge gate runs every test. Real env files (\`.env*\`) are never read (the guard refuses it), so never look in them for a URL or a secret; reason from the diff, the tests' code and the profile.`,
     `Checklist: ${PLUGIN}/skills/forge/reference.md §Inline review, plus the repo profile ${PROFILES}/forge.md — work every angle. Match the diff against the acceptance criteria of issue #${item.issue} (its issue-trust verdict) like a stranger: a green gate is not proof the AC are met. A diff that deletes tests: every control tested must still have a test that runs, otherwise = a finding.`,
-    'Finding = a defect that can be triggered with the input/state you name. Name its class (the rule broken) and give EVERY location of it in the diff in the where field, never one example. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
+    'Finding = a defect that can be triggered with the input/state you name. Name its class (the rule broken) and give EVERY location of it in the diff in the where field, never one example. Set `rule` to the kebab-case name of the rule the finding breaks (at most 40 chars, e.g. unbounded-read, clock-before-lock): name the rule, not the instance. When the findings of an earlier round are listed below and yours is the same class as one of them, reuse its [rule …] name exactly. Style and out-of-scope ideas = notes. Out-of-scope security gaps = security_gaps.',
     C.redAreas
       ? `Run \`git fetch -q origin ${BASE}; ${C.redAreas} --ref ${state.headSha}\` and report its result as is: red_area_ran = true only when its JSON was printed.`
       : 'This repo has no red-area classifier: red_area_ran = true, red_areas = [].',
