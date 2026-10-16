@@ -229,11 +229,28 @@ mismatch_msg() { # <files>
 # --- shared state + exit trap --------------------------------------------------------------------
 LOCK=""; LOCK_HELD=0
 AFTER_PENDING=0   # 1 from the moment gate.merge starts until mergeAfter has run once
-WT=""; MAIN_OLD_HEAD=""; FF_OK=0; AFTER_FAILED=0
+WT=""; MAIN_OLD_HEAD=""; MAIN_START_HEAD=""; FF_OK=0; AFTER_FAILED=0
+
+# A dependency lockfile that changed in <MAIN> leaves its installed dependencies stale, and the next worktree gate runs
+# on them ("module not found"). The engine installs nothing (the command belongs to the repo): it tells mergeAfter.
+# Matched by basename, at any depth (apps/web/pnpm-lock.yaml). A path with a comma is left out: the list is comma-separated.
+LOCKFILES="package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb Cargo.lock go.sum poetry.lock uv.lock Pipfile.lock Gemfile.lock composer.lock"
+lockfiles_changed() { # the lockfiles <MAIN>'s HEAD moved over since this run began (any fast-forward of it), comma-separated
+  local now; now="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$MAIN_START_HEAD" ] || [ -z "$now" ] || [ "$now" = "$MAIN_START_HEAD" ]; then return 0; fi
+  git -C "$MAIN" -c core.quotePath=false diff --name-only "$MAIN_START_HEAD" "$now" 2>/dev/null | awk -v names="$LOCKFILES" '
+    BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+    { b = $0; sub(/^.*\//, "", b) }
+    (b in ok) && index($0, ",") == 0 && !seen[$0]++ { print }' | paste -sd, - || true
+}
 
 run_after() { # <merged|not-merged>
   AFTER_PENDING=0
-  [ -n "$MERGE_AFTER" ] || return 0
+  local lock; lock="$(lockfiles_changed)"
+  if [ -z "$MERGE_AFTER" ]; then
+    [ -z "$lock" ] || say "WARNING: lockfile changed ($lock): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)"
+    return 0
+  fi
   # The gate may have run for minutes: re-check that <MAIN>'s copy is still origin's.
   local bad; bad="$(main_mismatch)"
   if [ -n "$bad" ]; then
@@ -243,7 +260,7 @@ run_after() { # <merged|not-merged>
   fi
   # cwd <MAIN>; a hook <MAIN> does not have yet runs from the PR worktree, which exists on every path here.
   SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
-    SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" \
+    SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" SAPU_LOCKFILES_CHANGED="$lock" \
     run_contract "$MAIN" "$WT" "$P_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
 }
 
@@ -284,6 +301,7 @@ fi
 # someone did it by hand. Step 9's rules exactly (--ff-only, base branch, clean tree, under the lock);
 # origin/<base> is what the hooks are checked against anyway. Dirty or diverged: left alone, refused below.
 FF_PLANNED=0
+MAIN_START_HEAD="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)" # lockfiles_changed() reads what moves <MAIN> from here on
 if [ "$(git -C "$MAIN" rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ] \
   && [ "$(git -C "$MAIN" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = "$BASE" ] \
   && [ -z "$(git -C "$MAIN" status --porcelain -- . ':(exclude).claude/worktrees' 2>/dev/null || echo 'status failed')" ] \

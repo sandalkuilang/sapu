@@ -722,6 +722,62 @@ describe("sapu-merge.sh — a real runner's failure output is read into file@sig
   });
 });
 
+describe("sapu-merge.sh — a lockfile that changed in <MAIN> is handed to mergeAfter", () => {
+  const AFTER_LOCK = `#!/usr/bin/env bash\necho "lock=[$SAPU_LOCKFILES_CHANGED] ff=$SAPU_FF_OK outcome=$SAPU_OUTCOME" >> "$HX_AFTER_LOG"\n`;
+  const withHook = (extra: Parameters<typeof harness>[0] = {}) => harness({ main: { "scripts/after.sh": AFTER_LOCK }, ...extra });
+
+  it("a merge that changes package-lock.json: mergeAfter sees it, with the fast-forward done", () => {
+    const h = withHook({ pr: { "package-lock.json": "{}\n" } });
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(r.status).toBe(0);
+    expect(h.after()).toEqual(["lock=[package-lock.json] ff=1 outcome=merged"]);
+  });
+
+  it("no lockfile in the merge: the variable is empty and nothing is said", () => {
+    const h = withHook();
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(h.after()).toEqual(["lock=[] ff=1 outcome=merged"]);
+    expect(r.err).not.toMatch(/lockfile/);
+  });
+
+  it("matches by basename at any depth, lists each once, and ignores names that only look alike", () => {
+    const h = withHook({
+      pr: { "apps/web/pnpm-lock.yaml": "x\n", "go.sum": "x\n", "docs/yarn.lock.md": "x\n", "my-package-lock.json": "x\n", "src/code.ts": "x\n" },
+    });
+    h.run({ HX_GH_LANDS: "1" });
+    expect(h.after()).toEqual(["lock=[apps/web/pnpm-lock.yaml,go.sum] ff=1 outcome=merged"]);
+  });
+
+  it.each(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "go.sum", "poetry.lock", "uv.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock"])(
+    "%s is a lockfile",
+    (name) => {
+      const h = withHook({ pr: { [name]: "x\n" } });
+      h.run({ HX_GH_LANDS: "1" });
+      expect(h.after()).toEqual([`lock=[${name}] ff=1 outcome=merged`]);
+    },
+  );
+
+  it("a lockfile pulled in by the fast-forward BEFORE the gate (a PR merged outside) is reported too, even when this gate goes red", () => {
+    const h = withHook();
+    h.pushToOrigin({ "yarn.lock": "x\n" });
+    const r = h.run({ HX_GATE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(h.after()).toEqual(["lock=[yarn.lock] ff=0 outcome=not-merged"]);
+  });
+
+  it("a lockfile changed and mergeAfter null: a loud line says the dependencies are stale", () => {
+    const h = harness({ contract: { mergeAfter: null }, pr: { "package-lock.json": "{}\n" } });
+    const r = h.run({ HX_GH_LANDS: "1" });
+    expect(r.status).toBe(0);
+    expect(r.err).toContain("WARNING: lockfile changed (package-lock.json): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)");
+  });
+
+  it("mergeAfter null and no lockfile change: no line", () => {
+    const h = harness({ contract: { mergeAfter: null } });
+    expect(h.run({ HX_GH_LANDS: "1" }).err).not.toMatch(/lockfile/);
+  });
+});
+
 const cpuCount = () => osCpus().length;
 
 describe("sapu-merge.sh — gate workers come from the machine", () => {
