@@ -3131,6 +3131,46 @@ export function stepBudget({ main, agentId, tool, command, steps = DEFAULT_TUNIN
     : `CONTEXT BUDGET (${Math.round(tokens / 1000)}k tokens): every turn re-sends your context. ${handOff} Reminders come every ${context.every} calls.`;
 }
 
+// ORCHESTRATOR CONTEXT, ENFORCED (F7). `tuning.contextLimits.session` was only ever compared by SKILL text
+// against sapu-metrics; nothing measured the orchestrator. The main session's own tool calls are counted
+// (one byte per call in <tmp>/sapu-session/<session_id>: no git spawn on the 9 calls in 10 that only count),
+// and on every SESSION_EVERY-th call the guard reads the main transcript's last-turn context the way the
+// worker context budget does (contextTokens). At or above the contract's limit that one call is refused as a
+// reminder to end the wave and ask for a new session; re-issuing it passes (the next call is never a multiple),
+// and it repeats every SESSION_EVERY calls. Nothing is refused for good. Off without a session id, a
+// transcript path, a readable contract or a readable transcript.
+export const SESSION_DIR = path.join(os.tmpdir(), "sapu-session");
+export const SESSION_EVERY = 10;
+
+/**
+ * The reminder to refuse one orchestrator call with, or null. Never throws: a failed check lets the call through.
+ * @param {{ session_id?: string, transcript_path?: string, cwd?: string, agent_id?: string }} input
+ */
+export function sessionContext(input, dir = SESSION_DIR) {
+  try {
+    const id = input.session_id;
+    const transcript = input.transcript_path;
+    if (typeof id !== "string" || !id || typeof transcript !== "string" || !transcript) return null;
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, id.replace(/[^\w.-]/g, "_"));
+    fs.appendFileSync(file, ".");
+    const n = fs.statSync(file).size;
+    if (n === 1) for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      if (Date.now() - fs.statSync(p).mtimeMs > STEP_PRUNE_MS) fs.rmSync(p, { force: true });
+    }
+    if (n % SESSION_EVERY) return null;
+    const main = findMain(input.cwd || process.cwd());
+    const { contract } = loadContract(main);
+    const limit = resolveTuning(contract).contextLimits.session;
+    const tokens = contextTokens(transcript);
+    if (tokens === null || tokens < limit) return null;
+    return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: finish the current wave, rewrite sapu-sweep-state, and ask the owner for a new /sapu:sapu session (SKILL §Sessions and waves)`;
+  } catch {
+    return null;
+  }
+}
+
 // EXPLORATION, ENFORCED. Measured on ladder-worker transcripts: the brief's "explore in one call, run
 // §Code search first" was ignored (about 190 one-per-turn grep/sed/cat calls, two code-search calls),
 // and whole-file Reads of large files (a 42 KB source, a 1 MB PDF) rode along on every later turn.
@@ -3951,7 +3991,11 @@ export function decide(input) {
     if (why) return why;
   }
   const home = mayLeaveHome(input) ? checkHomeSafe(input) : null;
-  if (home || DISPATCH_TOOLS.has(tool)) return home;
+  if (home) return home;
+  // The orchestrator itself (F7): its context is measured every SESSION_EVERY calls, reminder only.
+  const session = input.agent_id ? null : sessionContext(input);
+  if (session) return session;
+  if (DISPATCH_TOOLS.has(tool)) return null;
   // A subagent's hook input carries agent_id ("present only when the hook fires inside a subagent
   // call", hooks reference); a main session started with --agent carries agent_type alone and is the
   // orchestrator. A ladder worker or the explorer is never a main session: their type alone keeps the

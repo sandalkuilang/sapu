@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { check as checkUntyped, checkExplorerBash, checkExplorerRead, checkOther as checkOtherUntyped, explorerArgv, checkFile as checkFileUntyped, checkSearch as checkSearchUntyped, compileRules, CURATOR_AGENT, decide as decideUntyped, EXPLORER_AGENT, WRAPPER, STEP_EVERY, STEP_EVERY_LATE, STEP_HARD, STEP_SOFT, stepBudget as stepBudgetUntyped, stepProbe as stepProbeUntyped } from "../plugins/sapu/scripts/sapu-guard.mjs";
-import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
+import { BIG_READ_BYTES, checkBigRead, checkCodeSearchFirst, codeSearchCommand, searchShape, CONTEXT_EVERY_CALLS, contextTokens, lookupKind, nudge, SESSION_DIR, SESSION_EVERY, sessionContext, workerTranscript } from "../plugins/sapu/scripts/sapu-guard.mjs";
 import { detectStack } from "../plugins/sapu/scripts/sapu-contract.mjs";
 import { FIXTURE_CONTRACT } from "./fixture-contract";
 
@@ -4224,5 +4224,89 @@ describe("sapu-guard — code search first: a worker's searches wait for the rep
     expect(call("senior-dev-team:senior-qa-reviewer", "grep -rn foo .", "d2")).toBeNull();
     const D = repo("d", "## Code search\n\nRun first: `node find <terms>`.\n", {}); // no tuning key: off
     expect(decide({ session_id: `${run}-d3`, agent_id: "w1", agent_type: "sapu:sapu-sonnet-medium", tool_name: "Bash", tool_input: { command: "grep -rn foo ." }, cwd: D.w })).toBeNull();
+  });
+});
+
+describe("sapu-guard — the orchestrator's context reminder at contextLimits.session (F7)", { timeout: 30_000 }, () => {
+  const box = realpathSync(mkdtempSync(join(tmpdir(), "sapu-orch-")));
+  const run = `${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const sids: string[] = [];
+  afterAll(() => {
+    rmSync(box, { recursive: true, force: true });
+    for (const s of sids) rmSync(join(SESSION_DIR, s.replace(/[^\w.-]/g, "_")), { force: true });
+  });
+  let k = 0;
+  /** A repo with a committed contract; the window is 200k and session 0.5, so the limit is 100k tokens. */
+  const repo = (tuning: unknown = { contextWindow: 200_000, contextLimits: { session: 0.5 } }, withContract = true) => {
+    const r = join(box, `r${++k}`);
+    mkdirSync(join(r, ".claude"), { recursive: true });
+    execFileSync("git", ["init", "-q", r]);
+    if (withContract) commitContract(r, { ...FIXTURE_CONTRACT, tuning });
+    else execFileSync("git", ["-C", r, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], { stdio: "ignore" });
+    return r;
+  };
+  /** A main-session transcript whose last assistant turn carried `ctx` context tokens. */
+  const transcript = (ctx: number) => {
+    const f = join(box, `t${++k}.jsonl`);
+    const turn = (n: number) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 2, cache_read_input_tokens: n - 502, cache_creation_input_tokens: 500, output_tokens: 900 } } });
+    writeFileSync(f, [turn(1000), turn(ctx), JSON.stringify({ type: "user", message: { content: "x" } }), ""].join("\n"));
+    return f;
+  };
+  const sid = (name: string) => {
+    const s = `${run}-${name}`;
+    sids.push(s);
+    return s;
+  };
+  /** n main-session Bash calls (no agent_id) through decide(); the 1-based numbers of the refused ones. */
+  const calls = (r: string, t: string, session: string, n: number, extra: Record<string, unknown> = {}) => {
+    const out: (string | null)[] = [];
+    for (let i = 0; i < n; i++) out.push(decide({ session_id: session, tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t, ...extra }));
+    return out;
+  };
+  const refused = (out: (string | null)[]) => out.flatMap((x, i) => (x ? [i + 1] : []));
+
+  it("refuses call 10 above the limit with the spec's reminder, lets the re-issue pass, and repeats every 10 calls", () => {
+    expect(SESSION_EVERY).toBe(10);
+    const out = calls(repo(), transcript(120_000), sid("core"), 31);
+    expect(refused(out)).toEqual([10, 20, 30]);
+    expect(out[9]).toBe("orchestrator context 120k ≥ contextLimits.session 100k: finish the current wave, rewrite sapu-sweep-state, and ask the owner for a new /sapu:sapu session (SKILL §Sessions and waves)");
+  });
+
+  it("is quiet under the limit, and exactly at the limit it fires", () => {
+    expect(refused(calls(repo(), transcript(99_999), sid("under"), 30))).toEqual([]);
+    expect(refused(calls(repo(), transcript(100_000), sid("at"), 10))).toEqual([10]);
+  });
+
+  it("measures again at each 10th call: the context falling under the limit ends the reminders", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const s = sid("drop");
+    expect(refused(calls(r, t, s, 10))).toEqual([10]);
+    writeFileSync(t, readFileSync(transcript(40_000)));
+    expect(refused(calls(r, t, s, 20))).toEqual([]);
+  });
+
+  it("takes the limit from the contract's tuning (default window 1M x 0.75 = 750k)", () => {
+    expect(refused(calls(repo({}), transcript(700_000), sid("def1"), 10))).toEqual([]);
+    expect(refused(calls(repo({}), transcript(760_000), sid("def2"), 10))).toEqual([10]);
+  });
+
+  it("counts per session id, so a second session starts its own count", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    expect(refused(calls(r, t, sid("a"), 9))).toEqual([]);
+    expect(refused(calls(r, t, sid("b"), 9))).toEqual([]);
+    expect(refused(calls(r, t, sid("a"), 1))).toEqual([1]);
+  });
+
+  it("does nothing without a session_id, a transcript_path, or a readable transcript, and never throws", () => {
+    const r = repo();
+    const t = transcript(120_000);
+    const noSession = Array.from({ length: 20 }, () => decide({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: r, transcript_path: t }));
+    expect(refused(noSession)).toEqual([]);
+    const noPath = Array.from({ length: 20 }, () => decide({ session_id: sid("np"), tool_name: "Bash", tool_input: { command: "ls" }, cwd: r }));
+    expect(refused(noPath)).toEqual([]);
+    expect(refused(calls(r, join(box, "missing.jsonl"), sid("miss"), 20))).toEqual([]);
+    expect(sessionContext({ session_id: sid("x"), transcript_path: t, cwd: join(box, "no-such-dir") })).toBeNull();
   });
 });
