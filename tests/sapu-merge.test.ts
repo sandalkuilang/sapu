@@ -799,6 +799,84 @@ describe("sapu-merge.sh — a lockfile that changed in <MAIN> is handed to merge
     const h = harness({ contract: { mergeAfter: null } });
     expect(h.run({ HX_GH_LANDS: "1" }).err).not.toMatch(/lockfile/);
   });
+
+  describe("the state survives runs that stop before the gate (<GITDIR>/sapu-deps-synced)", () => {
+    const synced = (h: { MAIN: string }) => join(h.MAIN, ".git/sapu-deps-synced");
+    const head = (h: { git: (...a: string[]) => string }) => h.git("rev-parse", "HEAD").trim();
+    const STALE = /WARNING: lockfile changed \(yarn\.lock\): <MAIN> dependencies are stale/;
+
+    it("mergeAfter null: a fast-forward that pulled a lockfile, then a --closes refusal before the gate: the warning is printed, once", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const first = h.run({}, ["--closes", "none"]);
+      expect(first.status).toBe(1);
+      expect(first.err).toMatch(/PR closes #7, but its lane has no issue to close/);
+      expect(first.err).toMatch(STALE);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(head(h));
+      const second = h.run({}, ["--closes", "none"]);
+      expect(second.status).toBe(1);
+      expect(second.err).not.toMatch(/lockfile/);
+    });
+
+    it("mergeAfter null: a new lockfile change after the sync is warned about again, and only that one", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      h.run({}, ["--closes", "none"]);
+      h.pushToOrigin({ "Cargo.lock": "x\n" });
+      const r = h.run({}, ["--closes", "none"]);
+      expect(r.err).toMatch(/WARNING: lockfile changed \(Cargo\.lock\):/);
+      expect(r.err).not.toMatch(/yarn\.lock/);
+    });
+
+    it("mergeAfter null: --alone, which never reaches the gate, says it too", () => {
+      const h = harness({ contract: { mergeAfter: null, gate: { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘", testFiles: "scripts/gate.sh" } } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const r = h.run({}, ["--alone"], true);
+      expect(r.status).toBe(1);
+      expect(r.err).toMatch(STALE);
+    });
+
+    it("mergeAfter set but not run (a refusal before the gate): the warning says so, nothing is marked as synced, and the next merge hands mergeAfter the lockfile", () => {
+      const h = withHook();
+      const before = head(h);
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const first = h.run({}, ["--closes", "none"]);
+      expect(first.status).toBe(1);
+      expect(first.err).toMatch(/WARNING: lockfile changed \(yarn\.lock\): <MAIN> dependencies are stale; mergeAfter did not run/);
+      expect(h.after()).toEqual([]);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(before); // the point deps were last known good at, not <MAIN>'s new HEAD
+      const second = h.run({ HX_GH_LANDS: "1" }, ["--closes", "7"]);
+      expect(second.status).toBe(0);
+      expect(h.after()).toEqual(["lock=[yarn.lock] ff=1 outcome=merged"]);
+      expect(readFileSync(synced(h), "utf8").trim()).toBe(head(h));
+    });
+
+    it("a merge whose mergeAfter succeeded marks <MAIN>'s HEAD as synced; one whose mergeAfter failed does not", () => {
+      const ok = withHook({ pr: { "yarn.lock": "x\n" } });
+      expect(ok.run({ HX_GH_LANDS: "1" }).status).toBe(0);
+      expect(readFileSync(synced(ok), "utf8").trim()).toBe(head(ok));
+      const bad = harness({ main: { "scripts/after.sh": `${AFTER_LOCK}exit "\${HX_AFTER_RC:-0}"\n` }, pr: { "yarn.lock": "x\n" } });
+      const before = head(bad);
+      expect(bad.run({ HX_GH_LANDS: "1", HX_AFTER_RC: "1" }).status).toBe(3);
+      expect(readFileSync(synced(bad), "utf8").trim()).toBe(before);
+      expect(head(bad)).not.toBe(before);
+    });
+
+    it("a marker naming a sha git does not know falls back to this run's start", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      writeFileSync(synced(h), `${"0".repeat(40)}\n`);
+      expect(h.run({}, ["--closes", "none"]).err).toMatch(STALE);
+    });
+
+    it("--dry-run neither warns nor records anything", () => {
+      const h = harness({ contract: { mergeAfter: null } });
+      h.pushToOrigin({ "yarn.lock": "x\n" });
+      const r = h.run({}, ["--dry-run"]);
+      expect(r.err).not.toMatch(/lockfile/);
+      expect(existsSync(synced(h))).toBe(false);
+    });
+  });
 });
 
 describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no other", () => {

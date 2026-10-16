@@ -240,21 +240,38 @@ WT=""; MAIN_OLD_HEAD=""; MAIN_START_HEAD=""; FF_OK=0; AFTER_FAILED=0
 # A dependency lockfile that changed in <MAIN> leaves its installed dependencies stale, and the next worktree gate runs
 # on them ("module not found"). The engine installs nothing (the command belongs to the repo): it tells mergeAfter.
 # Matched by basename, at any depth (apps/web/pnpm-lock.yaml). A path with a comma is left out: the list is comma-separated.
+# <GITDIR>/sapu-deps-synced holds the <MAIN> commit whose dependencies were last reported or synced (written after
+# mergeAfter succeeded, or after the stale-dependencies WARNING was printed): a change is diffed from there, so one pulled in
+# by a run that stopped before its mergeAfter (a refusal before the gate, a red smoke check, --alone) is not lost, and one
+# already reported is not reported twice. Missing or unreadable: this run's start.
 LOCKFILES="package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock bun.lock bun.lockb Cargo.lock go.sum poetry.lock uv.lock Pipfile.lock Gemfile.lock composer.lock"
-lockfiles_changed() { # the lockfiles <MAIN>'s HEAD moved over since this run began (any fast-forward of it), comma-separated
+DEPS_SYNCED="$GITDIR/sapu-deps-synced"
+deps_base() { # the commit to diff <MAIN>'s HEAD from
+  local s=""
+  [ ! -f "$DEPS_SYNCED" ] || s="$(head -n 1 "$DEPS_SYNCED" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ "$s" =~ ^[0-9a-f]{40,64}$ ]] && git -C "$MAIN" cat-file -e "$s^{commit}" 2>/dev/null; then printf '%s' "$s"; else printf '%s' "$MAIN_START_HEAD"; fi
+}
+deps_mark() { # <MAIN>'s HEAD is now the commit its dependencies were last reported or synced at
   local now; now="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)"
-  if [ -z "$MAIN_START_HEAD" ] || [ -z "$now" ] || [ "$now" = "$MAIN_START_HEAD" ]; then return 0; fi
-  git -C "$MAIN" -c core.quotePath=false diff --name-only "$MAIN_START_HEAD" "$now" 2>/dev/null | awk -v names="$LOCKFILES" '
+  [ -n "$now" ] || return 0
+  { printf '%s\n' "$now" >"$DEPS_SYNCED"; } 2>/dev/null || say "warning: could not record the synced dependencies in $DEPS_SYNCED"
+}
+lockfiles_changed() { # the lockfiles <MAIN>'s HEAD moved over since deps_base, comma-separated
+  local base now; base="$(deps_base)"; now="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$base" ] || [ -z "$now" ] || [ "$now" = "$base" ]; then return 0; fi
+  git -C "$MAIN" -c core.quotePath=false diff --name-only "$base" "$now" 2>/dev/null | awk -v names="$LOCKFILES" '
     BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
     { b = $0; sub(/^.*\//, "", b) }
     (b in ok) && index($0, ",") == 0 && !seen[$0]++ { print }' | paste -sd, - || true
 }
 
+AFTER_RAN=0
 run_after() { # <merged|not-merged>
-  AFTER_PENDING=0
+  AFTER_PENDING=0; AFTER_RAN=1
   local lock; lock="$(lockfiles_changed)"
   if [ -z "$MERGE_AFTER" ]; then
     [ -z "$lock" ] || say "WARNING: lockfile changed ($lock): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)"
+    deps_mark
     return 0
   fi
   # The gate may have run for minutes: re-check that <MAIN>'s copy is still origin's.
@@ -265,15 +282,31 @@ run_after() { # <merged|not-merged>
     return 0
   fi
   # cwd <MAIN>; a hook <MAIN> does not have yet runs from the PR worktree, which exists on every path here.
-  SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
+  if SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
     SAPU_OUTCOME="$1" SAPU_FF_OK="$FF_OK" SAPU_MAIN_OLD_HEAD="$MAIN_OLD_HEAD" SAPU_LOCKFILES_CHANGED="$lock" \
-    run_contract "$MAIN" "$WT" "$P_AFTER" || { AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; }
+    run_contract "$MAIN" "$WT" "$P_AFTER"; then deps_mark
+  else AFTER_FAILED=1; say "WARNING: mergeAfter ($MERGE_AFTER) failed with outcome=$1 — read its output above"; fi
+}
+
+# A run that stopped before the gate (a refusal, --alone) never reaches run_after, yet <MAIN> may have moved: the
+# pre-gate fast-forward can pull in a lockfile change. Say so now. Without mergeAfter that is the whole report (and the
+# state is marked reported); with one, it stays unmarked so the next merge hands mergeAfter the change.
+warn_unsynced_deps() {
+  local lock; lock="$(lockfiles_changed)"
+  [ -n "$lock" ] || return 0
+  if [ -z "$MERGE_AFTER" ]; then
+    say "WARNING: lockfile changed ($lock): <MAIN> dependencies are stale; set mergeAfter to install them (CONTRACT §mergeAfter)"
+    deps_mark
+  else
+    say "WARNING: lockfile changed ($lock): <MAIN> dependencies are stale; mergeAfter did not run in this run (it gets SAPU_LOCKFILES_CHANGED in the next merge), or install them now"
+  fi
 }
 
 on_exit() {
   local rc=$?
   trap - EXIT
   [ "$AFTER_PENDING" = 0 ] || run_after not-merged
+  [ "$LOCK_HELD" = 0 ] || [ "$AFTER_RAN" = 1 ] || warn_unsynced_deps
   [ "$LOCK_HELD" = 0 ] || rmdir "$LOCK" 2>/dev/null || true
   exit "$rc"
 }
@@ -308,6 +341,9 @@ fi
 # origin/<base> is what the hooks are checked against anyway. Dirty or diverged: left alone, refused below.
 FF_PLANNED=0
 MAIN_START_HEAD="$(git -C "$MAIN" rev-parse HEAD 2>/dev/null || true)" # lockfiles_changed() reads what moves <MAIN> from here on
+# No marker yet: <MAIN>'s dependencies are taken as synced at this run's start, so a later run that stopped early
+# does not lose what the fast-forward below pulls in (deps_base; a dry run records nothing).
+[ "$DRY" = 1 ] || [ -f "$DEPS_SYNCED" ] || [ -z "$MAIN_START_HEAD" ] || { printf '%s\n' "$MAIN_START_HEAD" >"$DEPS_SYNCED"; } 2>/dev/null || true
 if [ "$(git -C "$MAIN" rev-parse HEAD 2>/dev/null)" != "$BASE_SHA" ] \
   && [ "$(git -C "$MAIN" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" = "$BASE" ] \
   && [ -z "$(git -C "$MAIN" status --porcelain -- . ':(exclude).claude/worktrees' 2>/dev/null || echo 'status failed')" ] \
