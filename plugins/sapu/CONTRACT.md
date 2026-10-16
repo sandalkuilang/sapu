@@ -693,6 +693,10 @@ skipping none (each failure = non-zero exit + a one-line reason):
 14. `mergeAfter` — called exactly once on EVERY exit path after the gate starts, also when red —
     and ONLY THEN, on the merge path, remove the worktree.
 
+`--closes <N>|none` (after the trust and state checks of step 5, before the smoke check and any side effect): the PR must close exactly the issue `<N>` (`none`: no issue), judged on `closes`, the set `pr-trust` read (GitHub's closing references plus the body's `Closes/Fixes/Resolves` lists, prose such as "to close #8" included). Any other result is refused before the gate with a message naming the stray issue and the `Refs` fix (a blocker under `--dry-run`); without the flag the set is printed and nothing is judged. It does not apply to `--alone`.
+
+**The flake ledger.** `<MAIN>/.git/sapu-gates.log` records `failed=<file>@<sig>,…` for a red run. `sig` is the first error line of that file's failure (vitest/jest, pytest, go test, mocha), normalised (quoted strings, absolute paths, hex, digits and durations dropped) and hashed with `cksum` (CRC32) to 8 hex digits; `@-` = no error line read (any other runner, or none within reach). The proof and a `known-flake` verdict compare `file@sig`: `@-` and rows written without `@` (older ledgers) never prove anything, and the same file flaky elsewhere with another error stays `unknown` with a note to treat it as real.
+
 It holds a lock (`<MAIN>/.git/sapu-merge.lock`): one run at a time. `--dry-run` runs steps 1–6
 read-only (a trust refusal stops it like a real run; a red smoke check is one of its refusals) and
 prints the plan; it changes nothing.
