@@ -78,14 +78,14 @@ die() { printf 'sapu-merge: %s\n' "$*" >&2; exit 1; }
 say() { printf 'sapu-merge: %s\n' "$*" >&2; }
 
 # --- args ---------------------------------------------------------------------------------
-PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""
+PR=""; COMMENT_FILE=""; WORKERS=""; DRY=0; SMOKE_WAIT=90; ALONE=0; CLOSES=""; CLOSES_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --workers) [ $# -ge 2 ] || die "--workers needs a value"; WORKERS="$2"; shift 2 ;;
     --smoke-wait) [ $# -ge 2 ] || die "--smoke-wait needs a value"; SMOKE_WAIT="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --alone) ALONE=1; shift ;;
-    --closes) [ $# -ge 2 ] || die "--closes needs a value (the lane's issue number, or none)"; CLOSES="$2"; shift 2 ;;
+    --closes) [ $# -ge 2 ] || die "--closes needs a value (the lane's issue number, or none)"; CLOSES="$2"; CLOSES_SET=1; shift 2 ;;
     -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$COMMENT_FILE" ]; then COMMENT_FILE="$1"; else die "unexpected argument $1"; fi; shift ;;
@@ -93,8 +93,8 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PR" ] && { [ -n "$COMMENT_FILE" ] || [ "$ALONE" = 1 ]; } || die "usage: sapu-merge.sh <PR> <review-comment-file> [--workers N] [--smoke-wait M] [--closes <N>|none] [--dry-run] | <PR> --alone [--workers N]"
 [ "$ALONE" = 0 ] || { [ -z "$COMMENT_FILE" ] && [ "$DRY" = 0 ] || die "--alone takes no review comment file and no --dry-run"; }
-[ "$ALONE" = 0 ] || [ -z "$CLOSES" ] || die "--closes does not apply to --alone"
-case "$CLOSES" in none|"") ;; 0*|*[!0-9]*) die "--closes must be an issue number or none, got '$CLOSES'" ;; esac
+[ "$ALONE" = 0 ] || [ "$CLOSES_SET" = 0 ] || die "--closes does not apply to --alone"
+[ "$CLOSES_SET" = 0 ] || case "$CLOSES" in none) ;; ""|0*|*[!0-9]*) die "--closes must be an issue number or none, got '$CLOSES'" ;; esac
 case "$PR" in ''|*[!0-9]*) die "PR must be a number, got '$PR'" ;; esac
 case "$SMOKE_WAIT" in ''|*[!0-9]*) die "--smoke-wait must be a number of minutes, got '$SMOKE_WAIT'" ;; esac
 command -v jq >/dev/null || die "jq is required"
@@ -357,7 +357,7 @@ case "$HEAD" in "$BASE"|main|master) check_fail "PR head branch is '$HEAD'" ;; e
 # references plus the body's Closes/Fixes/Resolves lists. Without the flag (a PR sapu did not start) nothing is judged.
 CLOSE_LIST="$(awk 'NF { printf "%s#%s", s, $1; s = ", " }' <<<"$ISSUES")"
 if [ "$ALONE" = 0 ]; then
-  if [ -z "$CLOSES" ]; then
+  if [ "$CLOSES_SET" = 0 ]; then
     say "PR #$PR closes: ${CLOSE_LIST:-none} (no --closes: not checked against a lane issue)"
   else
     WANT=""; [ "$CLOSES" = none ] || WANT="$CLOSES"

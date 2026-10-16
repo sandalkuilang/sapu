@@ -806,6 +806,7 @@ describe("sapu-merge.sh --closes — a lane's PR closes its own issue and no oth
     [["--closes"], /--closes needs a value/],
     [["--closes", "x"], /--closes must be an issue number or none, got 'x'/],
     [["--closes", "07"], /--closes must be an issue number or none/],
+    [["--closes", ""], /--closes must be an issue number or none, got ''/],
     [["--alone", "--closes", "7"], /--closes does not apply to --alone/],
   ])("%j is a usage error", (args, msg) => {
     const h = harness();
