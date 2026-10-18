@@ -111,7 +111,7 @@ Guard hook on subagents' shell, file and MCP tools, scope lock per machine, trus
 
 #### 🧽 Tidies up only what is proven done.
 
-Per the repo's policy (end of the sweep, every session, or never), sapu deletes only its own branches that are proven merged, with their clean worktrees, and keeps each deleted tip under `refs/sapu-trash/`.
+Per the repo's policy (end of the sweep, every session, or never), sapu deletes only its own branches that are proven merged, with their clean worktrees, and keeps each deleted tip under `refs/sapu-trash/` for 14 days.
 
 </td>
   </tr>

@@ -232,7 +232,7 @@
   <text x="796" y="1475" class="tb" text-anchor="middle">final report</text>
   <text x="796" y="1495" class="cap" text-anchor="middle">PR + issue tables, metrics</text>
   <text x="796" y="1512" class="cap" text-anchor="middle">engine defects → plugin repo</text>
-  <text x="80" y="1550" class="cap">Cleanup = <tspan class="mono">sapu-cleanup.mjs</tspan> (plan, then <tspan class="mono">--apply</tspan>) when <tspan class="mono">policy.cleanup</tspan>, set once in /sapu:init, says so: only sapu's own branches</text>
+  <text x="80" y="1550" class="cap">Cleanup = <tspan class="mono">sapu-cleanup.mjs</tspan>: branches after every merge, worktrees too per <tspan class="mono">policy.cleanup</tspan>: only sapu's own branches</text>
 <text x="80" y="1569" class="cap">(<tspan class="mono">&lt;type&gt;/issue-&lt;N&gt;-…</tspan>, <tspan class="mono">worktree-wf_*</tspan>, <tspan class="mono">worktree-agent-*</tspan>, <tspan class="mono">sapu-*</tspan>) proven merged; worktrees only when clean, never --force.</text>
   <rect x="32" y="1604" width="856" height="86" rx="14" class="k-red" />
   <rect x="48" y="1620" width="34" height="34" rx="9.5625" class="tile-red"/>
