@@ -572,7 +572,7 @@ superseded_wip() { # <commit-ish>
   printf '%s\n' "$revs" | awk -F'\t' -v e="$GIT_EMAIL" 'tolower($1) != tolower(e) || tolower($2) !~ /^wip([^a-z]|$)/ { bad = 1 } END { exit bad }'
 }
 keep_superseded() { # <sha>
-  git -C "$MAIN" update-ref "refs/sapu-trash/superseded-wip/$1" "$1" || die "could not save superseded WIP $1 to refs/sapu-trash"
+  git -C "$MAIN" update-ref --create-reflog "refs/sapu-trash/superseded-wip/$1" "$1" || die "could not save superseded WIP $1 to refs/sapu-trash"
   say "superseded handoff WIP $1 dropped from $HEAD (kept at refs/sapu-trash/superseded-wip/$1)"
 }
 
@@ -1017,7 +1017,7 @@ if [ "$(printf '%s' "$CONTRACT" | jq -r '.policy.cleanup // "finish"')" != never
   while read -r wb; do
     [ -n "$wb" ] || continue
     git -C "$MAIN" merge-base --is-ancestor "refs/heads/$wb" "$PR_OID" 2>/dev/null || continue
-    if git -C "$MAIN" update-ref "refs/sapu-trash/$wb" "refs/heads/$wb" && git -C "$MAIN" branch -D "$wb" >/dev/null 2>&1; then
+    if git -C "$MAIN" update-ref --create-reflog "refs/sapu-trash/$wb" "refs/heads/$wb" && git -C "$MAIN" branch -D "$wb" >/dev/null 2>&1; then
       say "deleted worker branch $wb (in the merged PR; tip under refs/sapu-trash/$wb)"
     fi
   done < <(git -C "$MAIN" for-each-ref --format='%(refname:short)' 'refs/heads/worktree-wf_*' 'refs/heads/worktree-agent-*')

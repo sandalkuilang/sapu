@@ -7,7 +7,8 @@
 // no commit of the branch is missing from what was merged. Nothing weaker counts (a merged PR of the
 // same name, a closed issue): a reused name, a later local commit or a second attempt would be lost.
 // Every deleted branch keeps its tip under refs/sapu-trash/<branch> (hidden from `git branch`), so
-// even a wrong merge record loses nothing. No origin/<base> stops the script before any plan.
+// even a wrong merge record loses nothing — for TRASH_DAYS: --apply then deletes the older trash refs
+// (saved when their reflog says; one with no reflog, from before 2.26, by its tip's commit date). No origin/<base> stops the script before any plan.
 // Two more classes pile up on the remote, because no merged PR ever names them, and are deleted (the
 // remote branch, and a local copy with the same tip) only with a proof of their own:
 //   - a CLOSED, unmerged PR's head (a superseded attempt): the branch tip is still the PR's head, and
@@ -34,7 +35,7 @@
 // --branches-only removes no worktree and keeps any branch checked out in one: sapu-merge.sh runs it so after
 // every merge, while other lanes may still be using their worktrees.
 // Without --apply it changes no branch or worktree (it still fetches with --prune and prunes stale
-// worktree records) and prints the plan. Last line: `🧹 branches: N deleted, M kept; worktrees: X removed`.
+// worktree records) and prints the plan. Last line: `🧹 branches: N deleted, M kept; worktrees: X removed; trash: T expired (older than 14 days)`.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
@@ -43,6 +44,7 @@ import { findMain, loadContract, lockProblems, resolvePolicy } from "./sapu-cont
 
 export const SAPU_BRANCH = /^((feat|fix|perf|refactor|chore|docs|test|ci|build|style|wip)\/issue-\d+|worktree-(wf_|agent-)|sapu-)/;
 const ACTIVE_MS = 60 * 60 * 1000;
+export const TRASH_DAYS = 14;
 const HANDOFF = /^wip: handoff/;
 const MIN_SUBJECT = 12; // a shorter subject ("fix") would match almost any base commit
 
@@ -261,6 +263,18 @@ export function coverage(main, base, tip) {
   return { matched, unmatched, handoff, refs };
 }
 
+/** The refs/sapu-trash refs saved more than `days` ago: by their reflog's date, else (no reflog) their tip's commit date. */
+export function expiredTrash(main, now = Date.now(), days = TRASH_DAYS) {
+  const refs = (tryRun("git", ["-C", main, "for-each-ref", "--format=%(refname) %(committerdate:unix)", "refs/sapu-trash"], main) || "").split("\n").filter(Boolean);
+  return refs
+    .map((l) => l.split(" "))
+    .filter(([ref, committed]) => {
+      const saved = /@\{(\d+)\}/.exec(tryRun("git", ["-C", main, "reflog", "show", "--date=unix", "--format=%gd", "-n", "1", ref], main) || "");
+      return now - Number(saved ? saved[1] : committed) * 1000 > days * 86_400_000;
+    })
+    .map(([ref]) => ref);
+}
+
 /** --branches-only (after each merge, while other lanes may still use their worktrees): no worktree is removed, nor the branch checked out in it. */
 export const branchesOnlySteps = (steps) =>
   steps.filter((s) => !s.detached).map((s) => (s.action === "delete" && s.worktree ? { ...s, action: "keep", why: `checked out in worktree ${s.worktree} (--branches-only)` } : s));
@@ -307,7 +321,7 @@ export function carryOut(MAIN, steps, apply, log = console.log) {
       continue;
     }
     // every deleted tip is kept: `git branch <name> refs/sapu-trash/<name>` restores it
-    if (tryRun("git", ["-C", MAIN, "update-ref", `refs/sapu-trash/${s.branch}`, s.tip || `refs/heads/${s.branch}`], MAIN) === null) {
+    if (tryRun("git", ["-C", MAIN, "update-ref", "--create-reflog", `refs/sapu-trash/${s.branch}`, s.tip || `refs/heads/${s.branch}`], MAIN) === null) {
       log(`KEEP   ${s.branch} — could not save its tip to refs/sapu-trash`);
       continue;
     }
@@ -368,11 +382,14 @@ function main(argv) {
   const all_ = plan({ ...facts, open, base, keep, all, closed, mergedIssues, issues, covered });
   const steps = branchesOnly ? branchesOnlySteps(all_) : all_;
   const { deleted, removed } = carryOut(MAIN, steps, apply);
+  // the trash is a safety net, not an archive: its refs keep their commits alive
+  const expired = expiredTrash(MAIN);
+  if (apply && expired.length && tryRun("git", ["-C", MAIN, "update-ref", "--stdin"], MAIN, expired.map((r) => `delete ${r}\n`).join("")) === null) expired.length = 0;
   const planned = steps.filter((s) => s.action === "delete" && !s.detached);
   const n = apply ? deleted : planned.length;
   const w = apply ? removed : steps.filter((s) => s.action === "delete" && s.worktree).length;
   const kept = steps.filter((s) => s.action === "keep" && !s.branch.startsWith("(detached)")).length + (apply ? planned.length - deleted : 0);
-  console.log(`🧹 branches: ${n} ${apply ? "deleted" : "would be deleted (dry run, --apply to do it)"}, ${kept} kept; worktrees: ${w} ${apply ? "removed" : "would be removed"}`);
+  console.log(`🧹 branches: ${n} ${apply ? "deleted" : "would be deleted (dry run, --apply to do it)"}, ${kept} kept; worktrees: ${w} ${apply ? "removed" : "would be removed"}; trash: ${expired.length} ${apply ? "expired" : "would expire"} (older than ${TRASH_DAYS} days)`);
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) {

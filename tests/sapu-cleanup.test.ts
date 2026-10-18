@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { branchesOnlySteps, branchIssues, carryOut, coverage, gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
+import { branchesOnlySteps, branchIssues, carryOut, coverage, expiredTrash, gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
 
 type Step = { branch: string; action: string; why: string; worktree: string };
 const by = (steps: Step[]) => Object.fromEntries(steps.map((s) => [s.branch, `${s.action}: ${s.why}`]));
@@ -169,6 +169,24 @@ describe("sapu-cleanup — a real repository: no unmerged commit is ever proven 
     expect(worktreeUnsafe(wt, later, main)).toMatch(/env file/);
     writeFileSync(join(wt, "new.txt"), "x");
     expect(worktreeUnsafe(wt, later, main)).toMatch(/uncommitted or untracked/);
+  });
+});
+
+describe("sapu-cleanup — the trash expires", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "sapu-cleanup-trash-")));
+  const g = (env: Record<string, string>, ...a: string[]) => execFileSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...a], { cwd: repo, encoding: "utf8", env: { ...process.env, ...env } }).trim();
+  g({}, "init", "-q", "-b", "main");
+  const old = { GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z" };
+  g(old, "commit", "-q", "--allow-empty", "-m", "old");
+  const tip = g({}, "rev-parse", "HEAD");
+
+  it("by the date it was saved (its reflog), else by its tip's commit date; never a fresh one", () => {
+    g({}, "update-ref", "refs/sapu-trash/legacy", tip); // before 2.26: no reflog
+    g({}, "update-ref", "--create-reflog", "refs/sapu-trash/fresh", tip); // saved now, old commit
+    g(old, "update-ref", "--create-reflog", "refs/sapu-trash/stale", tip); // saved in 2020
+    const now = Date.now();
+    expect(expiredTrash(repo, now).sort()).toEqual(["refs/sapu-trash/legacy", "refs/sapu-trash/stale"]);
+    expect(expiredTrash(repo, now + 15 * 86_400_000).sort()).toEqual(["refs/sapu-trash/fresh", "refs/sapu-trash/legacy", "refs/sapu-trash/stale"]);
   });
 });
 
