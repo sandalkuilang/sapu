@@ -172,7 +172,7 @@ export default {
       if (i < 3) s += arrow([[x + sw + 4, fcy + fh / 2], [x + sw + 20, fcy + fh / 2]], i === 2 ? "ar-g" : "ar");
     });
     s += lines(X, fcy + fh + 28, [
-      `Cleanup = ${m("sapu-cleanup.mjs")} (plan, then ${m("--apply")}) when ${m("policy.cleanup")}, set once in /sapu:init, says so: only sapu's own branches`,
+      `Cleanup = ${m("sapu-cleanup.mjs")}: branches after every merge, worktrees too per ${m("policy.cleanup")}: only sapu's own branches`,
       `(${m("&lt;type&gt;/issue-&lt;N&gt;-…")}, ${m("worktree-wf_*")}, ${m("worktree-agent-*")}, ${m("sapu-*")}) proven merged; worktrees only when clean, never --force.`,
     ], "cap", 19);
 

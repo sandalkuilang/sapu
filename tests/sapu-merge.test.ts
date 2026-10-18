@@ -267,6 +267,35 @@ describe("sapu-merge.sh — exit paths", () => {
     expect(readFileSync(join(h.MAIN, ".git/sapu-merges.log"), "utf8")).toMatch(/^\d{4}-\d\d-\d\dT\S+Z 7 [0-9a-f]{40} gate=\d+s\n$/);
     expect(h.after()).toEqual([`merged wt=present src=${h.MAIN}/scripts/after.sh`]);
     expect(existsSync(h.WT)).toBe(false);
+    // every merge runs sapu-cleanup.mjs --apply --branches-only; here its scope lock refuses the harness's moved HOME: a warning, the merge stands
+    expect(r.err).toMatch(/warning: post-merge cleanup failed: sapu-cleanup: HOME is/);
+  });
+
+  it("deletes the lane's worker branches whose tips the PR carried; keeps one with a commit the PR lacks", () => {
+    const h = harness();
+    h.git("fetch", "-q", "origin", "feat/x:refs/remotes/origin/feat/x");
+    h.git("branch", "worktree-wf_t-1", "origin/feat/x");
+    h.git("branch", "worktree-agent-a1", "origin/feat/x~1");
+    const extra = h.git("commit-tree", "-p", "origin/feat/x", "-m", "not in the PR", "origin/feat/x^{tree}").trim();
+    h.git("branch", "worktree-wf_t-2", extra);
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/deleted worker branch worktree-wf_t-1 /);
+    expect(r.err).toMatch(/deleted worker branch worktree-agent-a1 /);
+    const left = h.git("for-each-ref", "--format=%(refname)", "refs/heads", "refs/sapu-trash");
+    expect(left).toMatch(/refs\/heads\/worktree-wf_t-2/);
+    expect(left).not.toMatch(/refs\/heads\/worktree-wf_t-1|refs\/heads\/worktree-agent-a1/);
+    expect(left).toMatch(/refs\/sapu-trash\/worktree-wf_t-1/);
+  });
+
+  it("policy cleanup never: no worker branch is deleted and no cleanup runs", () => {
+    const h = harness({ contract: { policy: { cleanup: "never" } } });
+    h.git("fetch", "-q", "origin", "feat/x:refs/remotes/origin/feat/x");
+    h.git("branch", "worktree-wf_t-1", "origin/feat/x");
+    const r = h.run();
+    expect(r.status).toBe(0);
+    expect(r.err).not.toMatch(/worker branch|cleanup/);
+    expect(h.git("for-each-ref", "--format=%(refname)", "refs/heads")).toMatch(/worktree-wf_t-1/);
   });
 
   it("red gate: exit 2, no merge, mergeAfter once with not-merged, worktree kept", () => {

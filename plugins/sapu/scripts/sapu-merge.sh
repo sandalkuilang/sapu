@@ -1006,9 +1006,32 @@ if ! git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1; then
   say "WARNING: merged, but could not remove worktree $WT — remove it by hand (git worktree remove --force)"
 fi
 git -C "$MAIN" branch -D "$HEAD" >/dev/null 2>&1 || true # best effort; may be checked out elsewhere
+# Leftovers pile up on the owner's disk unless every merge clears them; policy cleanup "never" skips all of it.
+CLEANUP=""
+if [ "$(printf '%s' "$CONTRACT" | jq -r '.policy.cleanup // "finish"')" != never ]; then
+  # A lane's Workflow agents each commit on a branch of their own (worktree-wf_*, worktree-agent-*) and push it
+  # to $HEAD; the harness removes their worktrees but keeps those branches, and the rebase above leaves their
+  # tips outside the merged head. One whose tip is in the head this run gated ($PR_OID) holds only commits
+  # this PR merged: it goes, its tip saved under refs/sapu-trash/. Never an older head of $HEAD (a force-push
+  # may have dropped its commits). One checked out in a worktree stays (branch -D refuses).
+  while read -r wb; do
+    [ -n "$wb" ] || continue
+    git -C "$MAIN" merge-base --is-ancestor "refs/heads/$wb" "$PR_OID" 2>/dev/null || continue
+    if git -C "$MAIN" update-ref "refs/sapu-trash/$wb" "refs/heads/$wb" && git -C "$MAIN" branch -D "$wb" >/dev/null 2>&1; then
+      say "deleted worker branch $wb (in the merged PR; tip under refs/sapu-trash/$wb)"
+    fi
+  done < <(git -C "$MAIN" for-each-ref --format='%(refname:short)' 'refs/heads/worktree-wf_*' 'refs/heads/worktree-agent-*')
+  # Every other branch sapu-cleanup.mjs proves merged; --branches-only: other lanes may still use their worktrees
+  # (those go at §Finish, or every session's end). Its full plan goes to stderr, the summary into the report.
+  if out="$(cd "$MAIN" && node "$SCRIPT_DIR/sapu-cleanup.mjs" --apply --branches-only 2>&1)"; then
+    printf '%s\n' "$out" | grep '^DELETE' >&2 || true
+    CLEANUP="$(printf '%s\n' "$out" | tail -1)"
+  else say "warning: post-merge cleanup failed: $(printf '%s\n' "$out" | tail -1)"; fi
+fi
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
 printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
   "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
+[ -z "$CLEANUP" ] || printf '%s\n' "$CLEANUP"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }

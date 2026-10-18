@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain ESM script without types
-import { branchIssues, carryOut, coverage, gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
+import { branchesOnlySteps, branchIssues, carryOut, coverage, gitFacts, parseArgs, plan, removeWorktree, SAPU_BRANCH, worktreeUnsafe } from "../plugins/sapu/scripts/sapu-cleanup.mjs";
 
 type Step = { branch: string; action: string; why: string; worktree: string };
 const by = (steps: Step[]) => Object.fromEntries(steps.map((s) => [s.branch, `${s.action}: ${s.why}`]));
@@ -52,8 +52,45 @@ describe("sapu-cleanup — plan", () => {
     expect(by(plan({ ...f, all: true }))["feature/login"]).toBe("delete: in main");
   });
 
+  it("--branches-only removes no worktree: a branch checked out in one stays, a detached one is not listed", () => {
+    expect(parseArgs(["--apply", "--branches-only"])).toEqual({ apply: true, all: false, keep: [], branchesOnly: true });
+    const steps = plan(facts({
+      branches: [{ name: "fix/issue-1-a", tip: "a" }, { name: "fix/issue-2-b", tip: "b" }],
+      inBase: new Set(["fix/issue-1-a", "fix/issue-2-b"]),
+      worktrees: { "fix/issue-2-b": "/m/.claude/worktrees/b" },
+      detached: [{ worktree: "/m/.claude/worktrees/qa", head: "h" }],
+      headsInBase: new Set(["h"]),
+    }));
+    expect(by(branchesOnlySteps(steps))).toEqual({ "fix/issue-1-a": "delete: in main", "fix/issue-2-b": "keep: checked out in worktree /m/.claude/worktrees/b (--branches-only)" });
+  });
+
+  it("an agent worktree's branch counts as sapu's own whatever its name; a detached agent worktree goes only with a merged HEAD", () => {
+    const f = facts({
+      branches: [{ name: "fix-3597", tip: "a" }],
+      inBase: new Set(["fix-3597"]),
+      worktrees: { "fix-3597": "/m/.claude/worktrees/x" },
+      owned: new Set(["fix-3597"]),
+      reach: new Set(["h2"]),
+      detached: [
+        { worktree: "/m/.claude/worktrees/qa1", head: "h1" },
+        { worktree: "/m/.claude/worktrees/qa2", head: "h2" },
+        { worktree: "/m/.claude/worktrees/qa3", head: "h3" },
+        { worktree: "/m/.claude/worktrees/qa4", head: "h1" },
+      ],
+      headsInBase: new Set(["h1"]),
+      unsafe: { "/m/.claude/worktrees/qa4": "saw git activity in the last hour (a session may still use it)" },
+    });
+    expect(by(plan(f))).toEqual({
+      "fix-3597": "delete: in main",
+      "(detached) /m/.claude/worktrees/qa1": "delete: HEAD in main",
+      "(detached) /m/.claude/worktrees/qa2": "delete: HEAD is in a PR merged into main",
+      "(detached) /m/.claude/worktrees/qa3": "keep: HEAD not proven merged",
+      "(detached) /m/.claude/worktrees/qa4": "keep: worktree saw git activity in the last hour (a session may still use it)",
+    });
+  });
+
   it("parses --keep both ways and refuses unknown arguments", () => {
-    expect(parseArgs(["--apply", "--keep", "a", "--keep=b"])).toEqual({ apply: true, all: false, keep: ["a", "b"] });
+    expect(parseArgs(["--apply", "--keep", "a", "--keep=b"])).toEqual({ apply: true, all: false, keep: ["a", "b"], branchesOnly: false });
     expect(() => parseArgs(["--aply"])).toThrow(/unknown argument/);
     expect(() => parseArgs(["--keep"])).toThrow(/unknown argument/);
   });
@@ -99,6 +136,19 @@ describe("sapu-cleanup — a real repository: no unmerged commit is ever proven 
       "fix/issue-5-more": "keep: not proven merged",
       "feat/issue-7-again": "keep: not proven merged",
     });
+  });
+
+  it("reads detached agent worktrees and their merged HEADs; an agent worktree's branch is owned", () => {
+    mkdirSync(join(main, ".claude/worktrees"), { recursive: true });
+    g(main, "worktree", "add", "-q", "--detach", join(main, ".claude/worktrees/qa-a"), "main");
+    g(main, "worktree", "add", "-q", "--detach", join(main, ".claude/worktrees/qa-c"), "feat/issue-7-again");
+    g(main, "worktree", "add", "-q", "--detach", join(top, "outside"), "main"); // not an agent worktree: never read
+    const f = gitFacts(main, "main", [head2], Date.now());
+    expect(f.detached.map((d: { worktree: string }) => d.worktree.replace(main, ""))).toEqual(["/.claude/worktrees/qa-a", "/.claude/worktrees/qa-c"]);
+    const steps = by(plan({ ...f, open: new Set(), base: "main" }));
+    expect(steps[`(detached) ${join(main, ".claude/worktrees/qa-a")}`]).toMatch(/^keep: worktree saw git activity/);
+    expect(steps[`(detached) ${join(main, ".claude/worktrees/qa-c")}`]).toBe("keep: HEAD not proven merged");
+    for (const w of [join(main, ".claude/worktrees/qa-a"), join(main, ".claude/worktrees/qa-c"), join(top, "outside")]) g(main, "worktree", "remove", "--force", w);
   });
 
   it("a worktree stays when dirty, untracked, holding an ignored env file, recently used or the cwd", () => {
