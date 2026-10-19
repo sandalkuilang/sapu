@@ -545,7 +545,7 @@ if [ "$ALONE" = 1 ]; then
     0) say "alone: green — the red files pass alone on tree $RTREE (recorded; nothing merged, and a same-PR red -> green is no flake proof)"; exit 0 ;;
     2) say "alone: RED — the red files fail alone too on tree $RTREE: not a flake. Log: $ALOG"; exit 2 ;;
     64) die "alone: refused (see above)" ;;
-    *) die "alone: gate.testFiles could not start (exit 75), not a verdict on the red files — log: ${ALOG:-none}" ;;
+    *) die "alone: gate.testFiles could not start (exit 75, or its log could not be created), not a verdict on the red files — log: ${ALOG:-none}" ;;
   esac
 fi
 

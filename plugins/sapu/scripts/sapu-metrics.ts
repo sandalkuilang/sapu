@@ -280,6 +280,8 @@ export interface GateRuns {
   setupFailed: number;
   /** Minutes spent in gates, one decimal. */
   minutes: number;
+  /** `alone` lines (--alone, and sapu-merge.sh's same-run retry): never gate runs, counted apart; green ones, minutes. */
+  alone: { runs: number; green: number; minutes: number };
 }
 
 /**
@@ -287,9 +289,17 @@ export interface GateRuns {
  * failed=<files|-> tree=<t> [verdict=<v>] [steps=<steps>]` per line) within [from, to].
  */
 export function gatesInWindow(log: string, from: string | undefined, to: string | undefined): GateRuns {
-  const g: GateRuns = { runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 };
+  const g: GateRuns = { runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0, alone: { runs: 0, green: 0, minutes: 0 } };
   let secs = 0;
+  let aloneSecs = 0;
   for (const l of log.split("\n")) {
+    const a = /^(\S+) \d+ \S+ alone gate=(\d+)s .* alone=(\S+)$/.exec(l);
+    if (a && !(from && a[1] < from) && !(to && a[1] > to)) {
+      g.alone.runs++;
+      aloneSecs += Number(a[2]);
+      if (a[3] === "green") g.alone.green++;
+      continue;
+    }
     const m = /^(\S+) \d+ \S+ (green|red|setup-failed) gate=(\d+)s(?: .*?verdict=(\S+))?/.exec(l);
     if (!m || (from && m[1] < from) || (to && m[1] > to)) continue;
     g.runs++;
@@ -299,6 +309,7 @@ export function gatesInWindow(log: string, from: string | undefined, to: string 
     if (m[4] === "known-flake") g.knownFlake++;
   }
   g.minutes = Math.round(secs / 6) / 10;
+  g.alone.minutes = Math.round(aloneSecs / 6) / 10;
   return g;
 }
 
@@ -487,7 +498,7 @@ function main(argv: readonly string[]): number {
     console.info(`tokens per PR:      ${perPr(m.tokensPerPr, fmt)}`);
     console.info(`cost per PR:        ${perPr(m.costPerPr, usd)}`);
     console.info(`wall-clock:         ${m.wallMinutes} min (waiting in gaps over ${WAIT_GAP_MIN} min: ${m.waitMinutes} min), ${perPr(m.mergedPrs > 0 ? (m.wallMinutes ?? 0) / m.mergedPrs : null, (n) => `${Math.round(n)} min`)} per PR`);
-    if (gates) console.info(`gate runs:          ${gates.runs} (${gates.red} red, ${gates.knownFlake} of them known-flake; ${gates.setupFailed} setup-failed), ${gates.minutes} min in gates`);
+    if (gates) console.info(`gate runs:          ${gates.runs} (${gates.red} red, ${gates.knownFlake} of them known-flake; ${gates.setupFailed} setup-failed), ${gates.minutes} min in gates; ${gates.alone.runs} alone/retry checks (${gates.alone.green} green), ${gates.alone.minutes} min`);
     if (withSubagents) {
       console.info("subagents (type | agents | steps | avg first-step context | total | cost):");
       for (const a of agents) {

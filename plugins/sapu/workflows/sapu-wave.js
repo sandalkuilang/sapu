@@ -364,14 +364,20 @@ const testSlot = limiter(runners)
 // clock and sees no per-agent tokens, so time and tokens stay in the Workflow panel.
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
-// A glyph per line so a watcher scans outcomes, not words: ✗ stopped, ● findings to fix, ✓ the step did its job.
-const mark = (result) => (/^(died|blocked|failed|error|escalate)/i.test(String(result)) ? '✗' : /finding|needs/i.test(String(result)) ? '●' : '✓')
+// A glyph per line so a watcher scans outcomes, not words: ✗ the lane stops here, ● it goes on but needs work (findings,
+// a pre-PR count above zero, an escalation up the ladder), ✓ the step did its job.
+const mark = (step, result) => {
+  const r = String(result)
+  if (step === 'Blocked' || /^(died|blocked|failed|error|untrusted)/i.test(r)) return '✗'
+  if (/finding|needs|^escalate/i.test(r) || (/^\d+C\/\d+M\/\d+L$/.test(r) && r !== '0C/0M/0L')) return '●'
+  return '✓'
+}
 // Who ran a step, short: a sapu tier is already its model/effort; a specialist is its role (qa, db, …).
 const who = (agent) => (agent in MODEL ? '' : `${roleOf(agent)} · `)
 const trailRow = (state, step, agent, result) => {
   const model = (MODEL[agent] || (agent === PREPR_AGENT ? prePrModel(state) : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
-  log(`${mark(result)} #${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step} · ${who(agent)}${model} → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
+  log(`${mark(step, result)} #${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step} · ${who(agent)}${model} → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
 const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}${typeof r.state_check === 'string' && r.state_check.trim() ? ` · state: ${r.state_check.trim().slice(0, 200)}` : ''}` : 'died')
 

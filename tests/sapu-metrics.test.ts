@@ -134,13 +134,14 @@ describe("gates log", () => {
   ].join("\n");
 
   it("counts every gate run inside the window, red and known-flake reds apart, and the minutes gated", () => {
-    expect(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual({ runs: 4, red: 2, knownFlake: 1, setupFailed: 1, minutes: 20.6 });
-    expect(gatesInWindow("", "a", "z")).toEqual({ runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0 });
+    expect(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual({ runs: 4, red: 2, knownFlake: 1, setupFailed: 1, minutes: 20.6, alone: { runs: 0, green: 0, minutes: 0 } });
+    expect(gatesInWindow("", "a", "z")).toEqual({ runs: 0, red: 0, knownFlake: 0, setupFailed: 0, minutes: 0, alone: { runs: 0, green: 0, minutes: 0 } });
   });
 
-  it("does not count sapu-merge.sh --alone lines as gate runs", () => {
-    const alone = "2026-10-01T01:05:00Z 3081 aaa alone gate=30s failed=a.test.ts tree=t alone=green";
-    expect(gatesInWindow(`${log}\n${alone}`, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z")).toEqual(gatesInWindow(log, "2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z"));
+  it("does not count alone lines (--alone, the same-run retry) as gate runs: they are counted apart", () => {
+    const alone = "2026-10-01T01:05:00Z 3081 aaa alone gate=30s failed=a.test.ts tree=t alone=green\n2026-10-01T01:06:00Z 3081 aaa alone gate=6s failed=a.test.ts tree=t alone=red\n2026-10-02T01:06:00Z 3081 aaa alone gate=6s failed=a.test.ts tree=t alone=green";
+    const w = ["2026-10-01T00:30:00Z", "2026-10-01T03:00:00Z"] as const;
+    expect(gatesInWindow(`${log}\n${alone}`, ...w)).toEqual({ ...gatesInWindow(log, ...w), alone: { runs: 2, green: 1, minutes: 0.6 } });
   });
 });
 

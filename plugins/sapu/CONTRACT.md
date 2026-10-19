@@ -140,7 +140,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
     "infra": "pg_isready -h localhost -p 5432", // optional key: a quick, read-only probe (no background process holding its output) that exits 0 when the test infrastructure is up; every wave-args runs it in <MAIN> and refuses a lane while it fails
     "diff": "scripts/gate-diff.sh",     // optional: the part of the merge gate the worker's diff touches (the repo selects); the worker runs it before its PR, in its worktree, with SAPU_BASE=<baseBranch> (so `git diff origin/$SAPU_BASE...HEAD`); never replaces gate.fast; must differ from gate.merge
     "testFiles": "npx vitest run",      // optional: runs given test files (appended as arguments; must exit non-zero when one is not run): `--alone` and the same-run retry (§--alone)
-    "testSteps": "^(npm test|vitest)",  // optional: the gate summary's ✗ step names that are test runs printing every failure as a FAIL line; with testFiles it turns on the same-run retry
+    "testSteps": "^(npm test|vitest)",  // optional, a POSIX ERE (grep -E: no \d, (?:…) or lookaround): the gate summary's ✗ step names that are test runs printing every failure as a FAIL line; with testFiles it turns on the same-run retry
     "smokeCheck": true                  // OPTIONAL (default false): sapu-merge.sh also gates on the argus smoke suite's CI run (§The smoke check)
   },
 

@@ -865,6 +865,15 @@ describe("sapu-wave — fix cycles", () => {
     expect(logs[6]).toBe(`■ #17 ready PR #${1017}`);
   });
 
+  it("each log line's glyph tells the outcome: ✗ the lane stops, ● it needs work, ✓ the step did its job", () => {
+    const src = /const mark = \(step, result\) => \{[\s\S]*?\n\}/.exec(SRC)![0];
+    const mark = new Function(`${src}; return mark`)() as (step: string, result: string) => string;
+    expect(mark("Blocked", "head abc1234")).toBe("✗");
+    for (const r of ["died", "blocked", "untrusted"]) expect(mark("Review", r), r).toBe("✗");
+    for (const r of ["1 finding(s)", "escalate", "2C/1M/0L", "0C/0M/1L"]) expect(mark("x", r), r).toBe("●");
+    for (const r of ["planned, plan 6 KB", "pr_opened PR #7", "clean", "0C/0M/0L", "handoff", "slice_done"]) expect(mark("x", r), r).toBe("✓");
+  });
+
   it("every phase an agent runs in is one meta.phases lists (else it lands in an undescribed group)", async () => {
     const src = readFileSync(join(ROOT, "plugins/sapu/workflows/sapu-wave.js"), "utf8");
     const listed = [...src.slice(0, src.indexOf("phases: [") + 2000).matchAll(/title: '([^']+)'/g)].map((m) => m[1]);
