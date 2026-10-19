@@ -910,9 +910,10 @@ if [ -n "$RED" ]; then
   # `alone`, never a flake proof.
   XSTEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' || true)"
   ALL_TEST=0
-  if [ -n "$TEST_STEPS" ] && [ -n "$XSTEPS" ]; then
+  # ONE ✗ step: its FAIL lines are then surely its own (two red test steps, one silent, would ride on the other's files).
+  if [ -n "$TEST_STEPS" ] && [ "$(grep -c . <<<"$XSTEPS")" = 1 ]; then
     XRC=0; grep -qvE -- "$TEST_STEPS" <<<"$XSTEPS" || XRC=$?
-    [ "$XRC" != 1 ] || ALL_TEST=1 # 1 = no ✗ step outside gate.testSteps; 0 = one is; 2 = the regex is not ERE
+    [ "$XRC" != 1 ] || ALL_TEST=1 # 1 = the ✗ step is in gate.testSteps; 0 = it is not; 2 = the regex is not ERE
   fi
   [ -n "$P_ALONE" ] && [ "$ALL_TEST" = 1 ] && [ -n "$TESTS" ] && [ -z "$NONTEST" ] || exit 2
   ARC=0; alone_run "$TESTS" "$TREE" || ARC=$?

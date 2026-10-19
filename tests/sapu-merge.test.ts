@@ -1885,6 +1885,7 @@ describe("sapu-merge.sh same-run retry — a red gate's failing test files run o
     ["a ✗ step outside gate.testSteps (a static check with a test word)", RETRY, "✓ npm test 1.0s\n✗ verify:test-isolation 1.0s"],
     ["a test step beside one outside gate.testSteps", RETRY, "✗ npm test 1.0s\n✗ verify:route-direct-test 1.0s"],
     ["a runner that prints no FAIL line (E2E) beside a named one", RETRY, "✗ Unit Tests (api) 1.0s\n✗ E2E 1.0s"],
+    ["two red test steps (one may have printed no FAIL line)", RETRY, "✗ npm test (full suite) 20s\n✗ Unit Tests (heavy) 30s"],
     ["no ✗ summary step at all", RETRY, ""],
     ["no gate.testSteps", { ...GATE_KEYS, testFiles: "scripts/alone.sh --run" }, "✗ npm test 3.0s"],
     ["no gate.testFiles", { ...GATE_KEYS, testSteps: "^npm test" }, "✗ npm test 3.0s"],

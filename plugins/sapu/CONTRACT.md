@@ -585,8 +585,8 @@ protected-word rules as `gate.merge`), and appends `<time> <PR> <SHA> alone gate
 to `<MAIN>/.git/sapu-gates.log`. Exit 0 = green, 2 = red, 1 = `setup-failed` (`gate.testFiles` exited 75: it does its own setup/teardown and could not start, not a verdict); a dirty worktree is refused; it merges, pushes and comments nothing, and needs
 no review comment. The line's 4th field is `alone`, not `green|red`, so it is no gate run: the flake verdict
 (proof must come from ANOTHER PR's red-then-green on one tree) and the scorecard's gate count ignore it.
-**Same-run retry** (plugin ≥ 2.27.0, when the contract has `gate.testFiles` and `gate.testSteps`): a red gate in
-which every ✗ summary step matches `gate.testSteps`, and only test files failed (no `gate.redIf` line, every failure
+**Same-run retry** (plugin ≥ 2.27.0, when the contract has `gate.testFiles` and `gate.testSteps`): a red gate whose
+ONE ✗ summary step matches `gate.testSteps`, and only test files failed (no `gate.redIf` line, every failure
 line has a readable file), runs `gate.testFiles` once more on those files, in the same run, on the same tree, before
 `mergeAfter` (so whatever `gate.merge` prepared, such as a throwaway DB, is still there), and appends the same `alone`
 line. It merges only a `known-flake` (every file proven flaky in another PR) whose files pass: the PR comment and the
