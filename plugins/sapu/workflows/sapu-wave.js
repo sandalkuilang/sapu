@@ -48,14 +48,15 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.26.0 — one sapu lane: one issue from worker to a merge-ready PR (senior review, fixes, pre-PR; never merges). Issue, tier, every step\'s result and the PR: this run\'s log',
+  description: 'sapu v2.27.0 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
-    { title: 'Scout', detail: 'read-only: the issue\'s worker explores and writes a compact plan' },
-    { title: 'Implement', detail: 'a fresh builder of the same tier implements from the plan, isolated worktree' },
-    { title: 'Review', detail: 'independent reviewer(s) by risk tier' },
-    { title: 'Fix', detail: 'the author fixes findings in a fresh worktree, then a delta re-review' },
-    { title: 'Pre-PR', detail: "the repo's pre-PR command, fresh rounds until zero" },
+    { title: 'Scout', detail: 'read-only: explores the issue, ends with a compact plan (and slices, when it is big)' },
+    { title: 'Resume', detail: 'a blocked lane picked up again: checks its branch, head and PR before going on' },
+    { title: 'Implement', detail: 'fresh builder(s) per slice in an isolated worktree, ends with the PR opened' },
+    { title: 'Review', detail: 'independent reviewers by risk tier (🔴 = senior pair), ends clean or with findings' },
+    { title: 'Fix', detail: 'the author fixes the findings, then a delta re-review; ends when nothing is left' },
+    { title: 'Pre-PR', detail: "the repo's pre-PR command in fresh rounds, ends at zero findings" },
   ],
 }
 
@@ -363,10 +364,20 @@ const testSlot = limiter(runners)
 // clock and sees no per-agent tokens, so time and tokens stay in the Workflow panel.
 // Every finished step is a row of the wave table AND a live log line: the run's card shows only
 // the static meta, so the log is where a watcher sees which issue is at which step.
+// A glyph per line so a watcher scans outcomes, not words: ✗ the lane stops here, ● it goes on but needs work (findings,
+// a pre-PR count above zero, an escalation up the ladder), ✓ the step did its job.
+const mark = (step, result) => {
+  const r = String(result)
+  if (step === 'Blocked' || /^(died|blocked|failed|error|untrusted)/i.test(r)) return '✗'
+  if (/finding|needs|^escalate/i.test(r) || (/^\d+C\/\d+M\/\d+L$/.test(r) && r !== '0C/0M/0L')) return '●'
+  return '✓'
+}
+// Who ran a step, short: a sapu tier is already its model/effort; a specialist is its role (qa, db, …).
+const who = (agent) => (agent in MODEL ? '' : `${roleOf(agent)} · `)
 const trailRow = (state, step, agent, result) => {
   const model = (MODEL[agent] || (agent === PREPR_AGENT ? prePrModel(state) : REVIEW_MODEL)).join('/')
   state.trail.push([step, agent, model, result])
-  log(`#${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step}: ${agent} (${model}) → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
+  log(`${mark(step, result)} #${state.issue}${state.tracker ? ` (${state.tracker})` : ''} ${step} · ${who(agent)}${model} → ${result}${state.pr && !String(result).includes(`#${state.pr}`) ? ` · PR #${state.pr}` : ''}`)
 }
 const workerResult = (r) => (r ? `${r.status}${r.pr_number ? ` PR #${r.pr_number}` : ''}${typeof r.state_check === 'string' && r.state_check.trim() ? ` · state: ${r.state_check.trim().slice(0, 200)}` : ''}` : 'died')
 
@@ -928,12 +939,12 @@ async function runItem(item) {
 }
 
 phase('Implement')
-log(`wave on ${REPO}: ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.tracker})` : ''}${i.title ? ` ${i.title}` : ''} — ${i.tier}, ${i.worker}`).join('; ')}; max ${runners} test-running agents`)
+log(`▶ wave on ${REPO} · max ${runners} test-running agents · ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.tracker})` : ''}${i.title ? ` ${i.title}` : ''} — ${i.tier}, ${(MODEL[i.worker] || [i.worker]).join('/')}`).join('; ')}`)
 const results = await parallel(input.items.map((item) => () => runItem(item)))
 const out = results.map((r, i) => r || { issue: input.items[i].issue, tracker: input.items[i].tracker, status: 'died', reason: 'item crashed inside the workflow' })
 for (const r of out) for (const w of r.modelWarnings || []) log(`WARNING #${r.issue}: ${w} — requested model not applied`)
 for (const r of out) for (const w of r.budgetWarnings || []) log(`WARNING #${r.issue}: step budget off — ${w}`)
-log(out.map((r) => `#${r.issue}${r.tracker ? ` (${r.tracker})` : ''} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}${r.reason ? `: ${String(r.reason).split('\n')[0]}` : ''}`).join('; '))
+log(out.map((r) => `${r.status === 'ready' ? '■' : '✗'} #${r.issue}${r.tracker ? ` (${r.tracker})` : ''} ${r.status}${r.pr ? ` PR #${r.pr}` : ''}${r.reason ? `: ${String(r.reason).split('\n')[0]}` : ''}`).join('; '))
 // The wave table: every agent call per issue, then the issue's outcome. `trail` is on each result too,
 // so the orchestrator can paste the same table in its report.
 const cell = (s) => String(s ?? '').replace(/\|/g, '/').replace(/\s+/g, ' ')

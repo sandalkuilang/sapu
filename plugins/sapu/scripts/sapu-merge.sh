@@ -25,6 +25,8 @@
 #                          files through the contract's gate.testFiles (the files are appended as arguments), and append
 #                          `<time> <PR> <SHA> alone gate=<s>s failed=<file@sig,…> tree=<tree> alone=green|red` to the gates log.
 #                          Exit 0 = green, 2 = red. Merges, pushes and relabels nothing; takes no review comment.
+#                          A merge run does the same by itself when the contract also has gate.testSteps (the same-run
+#                          retry at the end of the red branch, before mergeAfter); it merges only a known-flake that passes.
 #   --closes <N>|none      the lane's issue (from sapu-wave.js's result), or `none` for a tracker-finding lane (it uses Refs).
 #                          The merge is refused, before the gate, unless the issues the PR closes (pr-trust's `closes`) are
 #                          exactly {N} ({} for none). Without it the set is printed and nothing is judged.
@@ -142,7 +144,7 @@ HOST="$(cget .host)"
 if [ -n "$HOST" ] && [ "$HOST" != github.com ]; then export GH_HOST="$HOST"; fi
 # origin commits whose files <MAIN>'s copies may equal: the fetched origin/<base>, and after the merge the new one.
 TRUSTED=("$BASE_SHA")
-GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"
+GATE_MERGE="$(cget .gate.merge)"; SUMMARY_START="$(cget .gate.summaryStart)"; RED_IF="$(cget .gate.redIf)"; TEST_STEPS="$(cget .gate.testSteps)"
 RED_AREAS="$(cget .redAreas)"; MERGE_AFTER="$(cget .mergeAfter)"
 L_IN_PROGRESS="$(cget .labels.inProgress)"; L_DONE="$(cget .labels.done)"
 # The repo's policy (CONTRACT.md §Policy; absent = sapu merges, leaves its comment and labels).
@@ -167,11 +169,16 @@ protect() { # <command>
   (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
 }
 P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
-P_AFTER=""; P_RED=""; P_ALONE=""
+P_AFTER=""; P_RED=""; P_ALONE=""; RETRIED=""
 if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
 if [ "$ALONE" = 1 ]; then
   [ -n "$(cget .gate.testFiles)" ] || die "--alone needs gate.testFiles in the contract on origin/$BASE (CONTRACT.md): the command that runs the failing test files, which are appended to it"
-  P_ALONE="$(protect "$(cget .gate.testFiles)")" || die "cannot read which file gate.testFiles runs (see above)"
+fi
+# gate.testFiles also drives the same-run retry of a red gate's failing test files (7. below); there an unreadable
+# command only means no retry, never a stopped merge.
+if [ -n "$(cget .gate.testFiles)" ]; then
+  if [ "$ALONE" = 1 ]; then P_ALONE="$(protect "$(cget .gate.testFiles)")" || die "cannot read which file gate.testFiles runs (see above)"
+  else P_ALONE="$(protect "$(cget .gate.testFiles)")" || { say "warning: cannot read which file gate.testFiles runs: no same-run retry"; P_ALONE=""; }; fi
 fi
 if [ -n "$RED_AREAS" ]; then P_RED="$(protect "$RED_AREAS")" || die "cannot read which file redAreas runs (see above)"; fi
 
@@ -493,6 +500,28 @@ else
   fi
 fi
 
+# Run a red gate's failing test files (`file@sig,…`, as the gates log names them) once more through gate.testFiles on
+# $WT (tree <tree>), and append `<time> <PR> <SHA> alone gate=<s>s failed=<file@sig,…> tree=<tree> alone=green|red|setup-failed`
+# to the gates log. Sets ALOG. Returns 0 green, 2 red, 75 could not start, 64 a file name that looks like an option.
+SIGRE='@([0-9a-f]{8}|-)$'
+alone_run() { # <file@sig,…> <tree>
+  local -a af
+  local i f arc=0 res t0=$SECONDS
+  IFS=, read -r -a af <<<"$1"
+  # The ledger names `file@sig` (sig_of): the test command gets the file alone.
+  for i in "${!af[@]}"; do if [[ "${af[$i]}" =~ $SIGRE ]]; then af[$i]="${af[$i]%@*}"; fi; done
+  for f in "${af[@]}"; do case "$f" in -*) say "failing file '$f' looks like an option: not passing it to gate.testFiles"; return 64 ;; esac; done
+  ALOG="$(mktemp "${TMPDIR:-/tmp}/gate-alone-pr$PR.XXXXXX")" || { say "cannot create the log in ${TMPDIR:-/tmp}"; return 75; }
+  say "alone check running at $SHA: ${af[*]} — log: $ALOG"
+  SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
+    run_contract "$WT" "$WT" "$P_ALONE" "${af[@]}" >"$ALOG" 2>&1 || arc=$?
+  # 75 (EX_TEMPFAIL) = gate.testFiles could not even start: no verdict either way.
+  res=green; [ "$arc" = 0 ] || res=red; [ "$arc" != 75 ] || res=setup-failed
+  { printf '%s %s %s alone gate=%ss failed=%s tree=%s alone=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$((SECONDS - t0))" "$1" "$2" "$res" >>"$GITDIR/sapu-gates.log"; } 2>/dev/null \
+    || say "warning: could not record the alone check in $GITDIR/sapu-gates.log"
+  case "$res" in green) return 0 ;; red) return 2 ;; *) return 75 ;; esac
+}
+
 # --- 4b. --alone: SKILL.md A5's "red files pass alone" check, recorded in the gates log ----------------------------
 # Runs on the tree of this PR's LAST red gate (a red gate keeps the worktree) and nothing else: no sync, no push, no
 # merge, no comment, no relabel. The line it appends has `alone` where a gate run has green|red, so the flake proof below
@@ -510,24 +539,14 @@ if [ "$ALONE" = 1 ]; then
   RTREE="${REC[6]#tree=}"
   [ "$(git -C "$WT" rev-parse -q --verify 'HEAD^{tree}' 2>/dev/null || echo -)" = "$RTREE" ] \
     || die "worktree $WT is not the tree the red gate ran on ($RTREE): a re-run or an edit moved it, so the check would prove nothing about that gate"
-  IFS=, read -r -a AF <<<"${REC[5]#failed=}"
-  # The ledger names `file@sig` (sig_of): the test command gets the file alone.
-  SIGRE='@([0-9a-f]{8}|-)$'
-  for i in "${!AF[@]}"; do if [[ "${AF[$i]}" =~ $SIGRE ]]; then AF[$i]="${AF[$i]%@*}"; fi; done
-  for f in "${AF[@]}"; do case "$f" in -*) die "failing file '$f' looks like an option: not passing it to gate.testFiles" ;; esac; done
   SHA="$(git -C "$WT" rev-parse HEAD)"
-  ALOG="$(mktemp "${TMPDIR:-/tmp}/gate-alone-pr$PR.XXXXXX")" || die "cannot create the log in ${TMPDIR:-/tmp}"
-  say "alone check running at $SHA: ${AF[*]} — log: $ALOG"
-  ARC=0; ASTART=$SECONDS
-  SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
-    run_contract "$WT" "$WT" "$P_ALONE" "${AF[@]}" >"$ALOG" 2>&1 || ARC=$?
-  # 75 (EX_TEMPFAIL) = gate.testFiles could not even start: no verdict either way.
-  ARES=green; [ "$ARC" = 0 ] || ARES=red; [ "$ARC" != 75 ] || ARES=setup-failed
-  { printf '%s %s %s alone gate=%ss failed=%s tree=%s alone=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$((SECONDS - ASTART))" "${REC[5]#failed=}" "$RTREE" "$ARES" >>"$GATES_LOG"; } 2>/dev/null \
-    || say "warning: could not record the alone check in $GATES_LOG"
-  [ "$ARES" != setup-failed ] || die "alone: gate.testFiles could not start (exit 75), not a verdict on the red files — log: $ALOG"
-  if [ "$ARES" = green ]; then say "alone: green — the red files pass alone on tree $RTREE (recorded; nothing merged, and a same-PR red -> green is no flake proof)"; exit 0; fi
-  say "alone: RED (exit $ARC) — the red files fail alone too on tree $RTREE: not a flake. Log: $ALOG"; exit 2
+  ARC=0; alone_run "${REC[5]#failed=}" "$RTREE" || ARC=$?
+  case "$ARC" in
+    0) say "alone: green — the red files pass alone on tree $RTREE (recorded; nothing merged, and a same-PR red -> green is no flake proof)"; exit 0 ;;
+    2) say "alone: RED — the red files fail alone too on tree $RTREE: not a flake. Log: $ALOG"; exit 2 ;;
+    64) die "alone: refused (see above)" ;;
+    *) die "alone: gate.testFiles could not start (exit 75, or its log could not be created), not a verdict on the red files — log: ${ALOG:-none}" ;;
+  esac
 fi
 
 # --- 5..: everything below has side effects; a dry run stops here with the plan -------------
@@ -883,9 +902,33 @@ if [ -n "$RED" ]; then
   elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$DIFF_NOTE$LIVE_NOTE"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
   else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$DIFF_NOTE$LIVE_NOTE"; fi
-  exit 2
+  # Same-run retry (contract gate.testFiles + gate.testSteps): every ✗ summary step is one the contract names as a test
+  # run whose failures its runner prints as FAIL lines, and only test files failed → those files run once more, on this
+  # tree, before mergeAfter touches anything. It merges only a known-flake (every file proven flaky in ANOTHER PR): a
+  # file that passes alone is weaker evidence than a whole re-run under load, so for an unproven file it is only A5's
+  # alone check, scripted (green = one whole re-run is allowed; red = red again, no whole re-run). The retry's line is
+  # `alone`, never a flake proof.
+  XSTEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' || true)"
+  ALL_TEST=0
+  # ONE ✗ step: its FAIL lines are then surely its own (two red test steps, one silent, would ride on the other's files).
+  if [ -n "$TEST_STEPS" ] && [ "$(grep -c . <<<"$XSTEPS")" = 1 ]; then
+    XRC=0; grep -qvE -- "$TEST_STEPS" <<<"$XSTEPS" || XRC=$?
+    [ "$XRC" != 1 ] || ALL_TEST=1 # 1 = the ✗ step is in gate.testSteps; 0 = it is not; 2 = the regex is not ERE
+  fi
+  [ -n "$P_ALONE" ] && [ "$ALL_TEST" = 1 ] && [ -n "$TESTS" ] && [ -z "$NONTEST" ] || exit 2
+  ARC=0; alone_run "$TESTS" "$TREE" || ARC=$?
+  case "$ARC" in
+    0) if [ "$VERDICT" != known-flake ]; then
+         say "retry: green, but not every file is proven flaky — A5: one whole re-run is allowed. Log: $ALOG"; exit 2
+       fi
+       RETRIED="$(tr ',' '\n' <<<"$TESTS" | sed -E "s/$SIGRE//" | paste -sd, -)"
+       say "retry: green — the known-flake files pass on a second run on tree $TREE ($RETRIED): merging as green" ;;
+    2) say "retry: RED — the red test files fail again on tree $TREE: A5's red again (base check next; no whole re-run). Log: $ALOG"; exit 2 ;;
+    *) say "retry: no verdict (gate.testFiles could not run them) — the gate stays red. Log: ${ALOG:-none}"; exit 2 ;;
+  esac
+else
+  gate_record green -
 fi
-gate_record green -
 
 # The smoke check not settled before the gate (SMOKE CHECK above): judged now, waiting for a running one.
 if [ "$SMOKE_CHECK" = true ] && [ -z "$SMOKE" ]; then
@@ -906,6 +949,7 @@ FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 {
   cat "$COMMENT_FILE"
   printf '\n\n**Merge gate** (`%s`, workers=%s) at `%s`:\n\n```\n%s\n```\n' "$GATE_MERGE" "$WORKERS" "$SHA" "$SUMMARY"
+  [ -z "$RETRIED" ] || printf '\nRed on its first run only in these test files, which then passed on a same-tree retry (`gate.testFiles`): %s\n' "$RETRIED"
 } >"$FULL_COMMENT"
 if [ "$P_TRACES" = none ]; then
   # traces: none — the review and the gate summary stay on this machine; nothing on the PR says sapu.
@@ -1031,7 +1075,7 @@ fi
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
 printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
-  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}" "$L_DONE" "${RELABELED:- none}"
+  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}${RETRIED:+ (red only in known-flake $RETRIED, green on retry)}" "$L_DONE" "${RELABELED:- none}"
 [ -z "$CLEANUP" ] || printf '%s\n' "$CLEANUP"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }

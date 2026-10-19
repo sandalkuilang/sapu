@@ -159,6 +159,7 @@ describe("validate", () => {
     ["a gate.diff that is not a command", (c: any) => (c.gate.diff = true), /gate\.diff must be a command/],
     ["an empty gate.diff", (c: any) => (c.gate.diff = "  "), /gate\.diff must be a command/],
     ["a gate.testFiles that is not a command", (c: any) => (c.gate.testFiles = ["vitest"]), /gate\.testFiles must be a command/],
+    ["a gate.testSteps that is not a regex", (c: any) => (c.gate.testSteps = "(unclosed"), /gate\.testSteps must be a valid regex/],
   ])("refuses %s", (_what, mutate, msg) => {
     const c = clone();
     mutate(c);
@@ -202,12 +203,13 @@ describe("validate", () => {
   });
 });
 
-describe("gate.diff and gate.testFiles", () => {
+describe("gate.diff, gate.testFiles and gate.testSteps", () => {
   it("are optional (absent = none) and take a command each", () => {
     expect(validate(clone())).toEqual([]);
     const c = clone();
     c.gate.diff = "scripts/gate-diff.sh";
     c.gate.testFiles = "npx vitest run";
+    c.gate.testSteps = "^(npm test|vitest)";
     expect(validate(c)).toEqual([]);
   });
 });

@@ -854,15 +854,31 @@ describe("sapu-wave — fix cycles", () => {
     const { logs } = await runWave({ main: MAIN, items: [item(17)] }, (c, n) =>
       c.opts.phase === "Review" ? (n === 1 ? finding(true) : clean) : opened(17, { head_sha: fixSha(c, n) }),
     );
-    expect(logs[0]).toContain("#17 t17 — green, sapu:sapu-sonnet-medium");
+    expect(logs[0]).toMatch(/^▶ wave on \S+ · max \d+ test-running agents · #17 t17 — green, sonnet\/medium$/);
     expect(logs.slice(1, 6)).toEqual([
-      "#17 Scout: sapu:sapu-sonnet-medium (sonnet/medium) → planned, plan 6 KB",
-      `#17 Implement: sapu:sapu-sonnet-medium (sonnet/medium) → pr_opened PR #${1017}`,
-      `#17 Review: ${QA} (opus/high) → 1 finding(s) · PR #${1017}`,
-      `#17 Fix 1: sapu:sapu-sonnet-high (sonnet/high) → pr_opened PR #${1017}`,
-      `#17 Review (delta): ${QA} (opus/high) → clean · PR #${1017}`,
+      "✓ #17 Scout · sonnet/medium → planned, plan 6 KB",
+      `✓ #17 Implement · sonnet/medium → pr_opened PR #${1017}`,
+      `● #17 Review · qa · opus/high → 1 finding(s) · PR #${1017}`,
+      `✓ #17 Fix 1 · sonnet/high → pr_opened PR #${1017}`,
+      `✓ #17 Review (delta) · qa · opus/high → clean · PR #${1017}`,
     ]);
-    expect(logs[6]).toBe(`#17 ready PR #${1017}`);
+    expect(logs[6]).toBe(`■ #17 ready PR #${1017}`);
+  });
+
+  it("each log line's glyph tells the outcome: ✗ the lane stops, ● it needs work, ✓ the step did its job", () => {
+    const src = /const mark = \(step, result\) => \{[\s\S]*?\n\}/.exec(SRC)![0];
+    const mark = new Function(`${src}; return mark`)() as (step: string, result: string) => string;
+    expect(mark("Blocked", "head abc1234")).toBe("✗");
+    for (const r of ["died", "blocked", "untrusted"]) expect(mark("Review", r), r).toBe("✗");
+    for (const r of ["1 finding(s)", "escalate", "2C/1M/0L", "0C/0M/1L"]) expect(mark("x", r), r).toBe("●");
+    for (const r of ["planned, plan 6 KB", "pr_opened PR #7", "clean", "0C/0M/0L", "handoff", "slice_done"]) expect(mark("x", r), r).toBe("✓");
+  });
+
+  it("every phase an agent runs in is one meta.phases lists (else it lands in an undescribed group)", async () => {
+    const src = readFileSync(join(ROOT, "plugins/sapu/workflows/sapu-wave.js"), "utf8");
+    const listed = [...src.slice(0, src.indexOf("phases: [") + 2000).matchAll(/title: '([^']+)'/g)].map((m) => m[1]);
+    const used = new Set([...src.matchAll(/phase: '([^']+)'/g)].map((m) => m[1]));
+    for (const p of used) expect(listed, p).toContain(p);
   });
 
   it("labels each agent with the issue and its effort, plus only what tells rows of a phase apart", async () => {
@@ -874,7 +890,7 @@ describe("sapu-wave — fix cycles", () => {
 
   it("a stopped item's outcome line carries the first line of its reason", async () => {
     const { logs } = await runWave({ main: MAIN, items: [item(18)] }, () => ({ ...opened(18), status: "blocked", blocked_reason: "infra: postgres down\nmore" }));
-    expect(logs).toContain(`#18 blocked PR #${1018}: infra: postgres down`);
+    expect(logs).toContain(`✗ #18 blocked PR #${1018}: infra: postgres down`);
   });
 
   it("still open after 2 fix cycles → blocked, never a third", async () => {
