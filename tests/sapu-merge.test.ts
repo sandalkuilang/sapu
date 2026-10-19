@@ -1818,3 +1818,83 @@ describe("sapu-merge.sh --alone — A5's red-files-alone check, recorded in the 
     expect(h.run({}, ["--alone"], true).err).toMatch(/not the tree the red gate ran on/);
   });
 });
+
+describe("sapu-merge.sh same-run retry — a red gate's failing test files run once more through gate.testFiles", () => {
+  const ALONE = `#!/usr/bin/env bash\necho "retry ran in $PWD: $*" > "$SAPU_MAIN/.git/alone.out"\nexit "\${HX_ALONE_RC:-0}"\n`;
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+  const GATE_KEYS = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+  const RETRY = { ...GATE_KEYS, testFiles: "scripts/alone.sh --run", testSteps: "^(npm test|Unit Tests)" };
+  const h0 = (gate: object = RETRY, policy?: object) => harness({ contract: { gate, ...(policy ? { policy } : {}) }, main: { "scripts/alone.sh": ALONE } });
+  // apps/a.test.ts failed another PR's gate on a tree that then went green: proven flaky.
+  const proven = (h: { MAIN: string }) =>
+    writeFileSync(
+      join(h.MAIN, ".git/sapu-gates.log"),
+      `2026-10-01T01:00:00Z 5 aaa red gate=400s failed=${A_ROW} tree=t5 verdict=unknown\n2026-10-01T01:10:00Z 5 bbb green gate=400s failed=- tree=t5\n`,
+    );
+  const RED = { HX_GATE_RC: "1", HX_GATE_OUT: A_FAIL, HX_GATE_SUMMARY: "✗ npm test 3.0s" };
+  const ran = (h: { MAIN: string }) => existsSync(join(h.MAIN, ".git/alone.out"));
+
+  it("known-flake, green retry: merges; the ledger keeps the red line plus an alone=green line; comment and report say so", () => {
+    const h = h0(RETRY, { traces: "none" });
+    proven(h);
+    const r = h.run(RED);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/verdict: known-flake/);
+    expect(r.err).toMatch(/retry: green .*\(apps\/a\.test\.ts\): merging as green/);
+    expect(readFileSync(join(h.MAIN, ".git/alone.out"), "utf8")).toMatch(/: --run apps\/a\.test\.ts\n$/);
+    const g = gates(h).slice(2);
+    expect(g).toHaveLength(2);
+    expect(g[0]).toMatch(/ 7 [0-9a-f]{40} red .* verdict=known-flake/);
+    expect(g[1]).toMatch(/ 7 [0-9a-f]{40} alone gate=\d+s failed=\S+ tree=[0-9a-f]{40} alone=green$/);
+    expect(g[1].match(/tree=(\S+)/)![1]).toBe(g[0].match(/tree=(\S+)/)![1]);
+    expect(h.gh()).toMatch(/pr merge 7/);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-review-pr7.md"), "utf8")).toMatch(/same-tree retry .*: apps\/a\.test\.ts/);
+    expect(r.out).toMatch(/Gate: .*green on retry/);
+  });
+
+  it("not proven flaky, green retry: never merges — A5's alone check, one whole re-run allowed", () => {
+    const h = h0();
+    const r = h.run(RED);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/retry: green, but not every file is proven flaky/);
+    expect(gates(h).at(-1)).toMatch(/ alone=green$/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("red retry: exit 2, alone=red, nothing merged, mergeAfter runs not-merged", () => {
+    const h = h0();
+    proven(h);
+    const r = h.run({ ...RED, HX_ALONE_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/retry: RED/);
+    expect(gates(h).at(-1)).toMatch(/ alone=red$/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(h.after()[0]).toMatch(/^not-merged/);
+  });
+
+  it("a retry that cannot start (exit 75): the gate stays red, exit 2", () => {
+    const h = h0();
+    proven(h);
+    const r = h.run({ ...RED, HX_ALONE_RC: "75" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/retry: no verdict/);
+    expect(gates(h).at(-1)).toMatch(/ alone=setup-failed$/);
+  });
+
+  it.each([
+    ["a ✗ step outside gate.testSteps (a static check with a test word)", RETRY, "✓ npm test 1.0s\n✗ verify:test-isolation 1.0s"],
+    ["a test step beside one outside gate.testSteps", RETRY, "✗ npm test 1.0s\n✗ verify:route-direct-test 1.0s"],
+    ["a runner that prints no FAIL line (E2E) beside a named one", RETRY, "✗ Unit Tests (api) 1.0s\n✗ E2E 1.0s"],
+    ["no ✗ summary step at all", RETRY, ""],
+    ["no gate.testSteps", { ...GATE_KEYS, testFiles: "scripts/alone.sh --run" }, "✗ npm test 3.0s"],
+    ["no gate.testFiles", { ...GATE_KEYS, testSteps: "^npm test" }, "✗ npm test 3.0s"],
+  ] as const)("no retry, no merge: %s", (_what, gate, summary) => {
+    const h = h0(gate);
+    proven(h);
+    const r = h.run({ ...RED, HX_GATE_SUMMARY: summary });
+    expect(r.status).toBe(2);
+    expect(ran(h)).toBe(false);
+    expect(r.err).not.toMatch(/retry:/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+});
