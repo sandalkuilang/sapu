@@ -162,6 +162,8 @@ const CEILING = OPUS_FLOOR ? LADDER[LADDER.length - 1] : typeof C.workerCeiling 
 // The one redesign step of a lane (F6): a finding class that came back after a fix cycle is replaced by a structural rule instead of patched
 // again. Always Opus/high, under `/sapu opus` too (its floor is Opus/medium; the redesign is never below Opus/high).
 const REDESIGN_AGENT = 'sapu:sapu-opus-high'
+// The one answer to a 🟡 Opus scout's ESCALATE when the next ladder rung is weaker than that scout (see the escalation step).
+const SCOUT_DECIDER = 'sapu:sapu-opus-high'
 const PREPR_AGENT = 'general-purpose'
 // The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
 // (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.
@@ -736,6 +738,7 @@ async function runItem(item) {
   const slices = named.slice(0, MAX_SLICES).map((x) => ({ title: clip(x.title, 100), section: clip(x.plan_section, 100), files: (Array.isArray(x.files) ? x.files : []).filter((f) => typeof f === 'string').slice(0, 12).map((f) => clip(f, 120)), note: clip(x.note, 300) }))
   if (named.length > 1) trailRow(state, 'Slices', scoutAgent, named.length > MAX_SLICES ? `${named.length} named, built the first ${MAX_SLICES} only` : `${named.length} slices`)
   let question = null
+  const scoutAsked = !!sc && sc.status === 'escalate'
   if (sc) {
     if (!audit(sc, scoutAgent)) return noGuard(scoutAgent)
     if (sc.status === 'blocked') return done('blocked', { reason: sc.blocked_reason || 'scout reported blocked' })
@@ -781,15 +784,21 @@ async function runItem(item) {
     }
   }
   if (question) {
-    if (state.worker === CEILING) return done('blocked', { reason: `ESCALATE from the top of the ladder${CEILING === LADDER[LADDER.length - 1] ? '' : ' (tuning.workerCeiling)'}: ${question}` })
+    // A 🟡 scout that outranks the rung that would answer it (an Opus scout over a Sonnet ladder) hands its question to ONE
+    // Opus/high run, above workerTier and workerCeiling like the redesign: the answer never comes from a weaker model than the
+    // question. 🔴 keeps its rule (at the ceiling: the owner decides). The fixers that follow stay on the ladder.
+    const up = state.worker === CEILING ? null : stepUp(state.worker)
+    const decider = scoutAsked && state.tier === 'yellow' && idx(scoutAgent) >= 0 && (!up || idx(up) < idx(scoutAgent)) ? SCOUT_DECIDER : null
+    if (!up && !decider) return done('blocked', { reason: `ESCALATE from the top of the ladder${CEILING === LADDER[LADDER.length - 1] ? '' : ' (tuning.workerCeiling)'}: ${question}` })
     state.escalated = true
-    state.worker = stepUp(state.worker)
-    r = await runWorker(state.worker, {
-      cont: true, step: 'Implement (escalated)', phase: 'Implement', label: tag(item, effortOf(state.worker), 'escalated'),
+    if (up) state.worker = up
+    const who = decider || state.worker
+    r = await runWorker(who, {
+      cont: true, step: 'Implement (escalated)', phase: 'Implement', label: tag(item, effortOf(who), 'escalated'),
       task: [`The previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`, left.length ? `The issue was built in slices; these are not finished (their sections are in the plan), do them all yourself in order, then open the PR: ${left.map((x) => x.title).join('; ')}` : '', plan].filter(Boolean).join('\n'),
     })
     if (!r) return done('died', { reason: 'escalated worker returned nothing' })
-    if (!absorb(r, state.worker)) return noGuard(state.worker)
+    if (!absorb(r, who)) return noGuard(who)
     if (r.status === 'escalate') return done('blocked', { reason: `second ESCALATE: ${r.escalate_question} — ${r.escalate_at || '?'}` })
   }
   if (r.status === 'blocked') return done('blocked', { reason: r.blocked_reason || 'worker reported blocked' })

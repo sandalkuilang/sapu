@@ -731,6 +731,34 @@ describe("sapu-wave — scout, then a fresh builder", () => {
     expect(out[0].trail[0]).toEqual(["Scout", "sapu:sapu-sonnet-medium", "sonnet/medium", "planned, plan 1 KB, trivial"]);
   });
 
+  it("a 🟡 Opus scout's ESCALATE is answered by ONE Opus/high run above the ceiling, never a weaker rung; 🔴 still blocks for the owner; fixers stay on the ladder", async () => {
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
+    const esc = (c: Call) => planned(c, { status: "escalate", escalate_question: "which rounding?", escalate_at: "x.ts:9" });
+    const lane = (it: Item, scout = esc, builderEsc = false) =>
+      runWave({ main: MAIN, contract: bare, items: [it] }, (c, n) => {
+        if (c.opts.phase === "Review") return n === 1 ? finding(false) : clean;
+        if (builderEsc && n === 1 && c.opts.phase === "Implement") return opened(it.issue as number, { status: "escalate", pr_number: 0, escalate_question: "q", escalate_at: "a.ts:1" });
+        return opened(it.issue as number, { head_sha: fixSha(c, n) });
+      }, scout);
+    for (const worker of ["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]) {
+      const { out, calls, scouts } = await lane(item(70, { tier: "yellow", worker }));
+      expect(scouts[0].opts.agentType, worker).toBe("sapu:sapu-opus-medium");
+      const decider = calls.find((c) => c.opts.label === "#70 · High · escalated")!;
+      expect(decider.opts, worker).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high", phase: "Implement" });
+      expect(decider.prompt).toContain("stopped with ESCALATE: which rounding? — x.ts:9");
+      expect(calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType), worker).toEqual(["sapu:sapu-sonnet-high"]);
+      expect(out[0], worker).toMatchObject({ status: "ready", escalated: true, worker: "sapu:sapu-sonnet-high" });
+    }
+    const red = await lane(item(71, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" }));
+    expect(red.calls).toHaveLength(0);
+    expect(String(red.out[0].reason)).toContain("ESCALATE from the top of the ladder (tuning.workerCeiling): which rounding?");
+    // a 🟢 Sonnet scout and a 🟡 builder's own ESCALATE keep the ladder: the next rung up answers
+    const green = await lane(item(72));
+    expect(green.calls.find((c) => c.opts.label === "#72 · High · escalated")!.opts.agentType).toBe("sapu:sapu-sonnet-high");
+    const builder = await lane(item(73, { tier: "yellow" }), (c) => planned(c), true);
+    expect(workers(builder.calls).slice(0, 2)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
+  });
+
   it("scout ESCALATE → no builder of its tier: the next worker up gets the question and the plan, single-phase", async () => {
     const esc = (c: Call) => planned(c, { status: "escalate", escalate_question: "which rounding?", escalate_at: "x.ts:9" });
     const { out, calls, scouts } = await runWave({ main: MAIN, items: [item(42)] }, ok(42), esc);
