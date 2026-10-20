@@ -69,7 +69,7 @@ const MAIN = "/repo/main";
 const PLUGIN = "/plugins/sapu";
 // What sapu-contract.mjs wave-args passes on (the fixture has no `specialists`: every role is built in).
 const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = FIXTURE_CONTRACT;
-const CONTRACT = { workerCeiling: "opus-high", scoutTier: "off", reviewEffort: "high", repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists: resolveSpecialists(FIXTURE_CONTRACT) };
+const CONTRACT = { workerCeiling: "opus-high", scoutTier: "off", riskScoutTier: "off", reviewEffort: "high", repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists: resolveSpecialists(FIXTURE_CONTRACT) };
 const QA = "senior-dev-team:senior-qa-reviewer";
 const DB = "senior-dev-team:senior-fullstack-database-engineer";
 const ARCHITECT = "senior-dev-team:senior-software-architect";
@@ -188,16 +188,52 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     }
   });
 
+  it("tuning.riskScoutTier: by default a 🟡/🔴 item scouts on Opus/medium over scoutTier and a 🟢 one keeps scoutTier; \"off\" restores scoutTier; the builder keeps its own tier", async () => {
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
+    const OPUS = "sapu:sapu-opus-medium", SONNET = "sapu:sapu-sonnet-high", HAIKU = "sapu:sapu-haiku-medium";
+    const items = [item(60), item(61, { tier: "yellow" }), item(62, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })];
+    for (const [contract, want, why] of [
+      [bare, [SONNET, OPUS, OPUS], "defaults"],
+      [{ ...bare, riskScoutTier: "junk" }, [SONNET, OPUS, OPUS], "junk = the default"],
+      [{ ...bare, scoutTier: "haiku" }, [HAIKU, OPUS, OPUS], "haiku covers 🟢 only"],
+      [{ ...bare, riskScoutTier: "off" }, [SONNET, SONNET, SONNET], "off"],
+      [{ ...bare, riskScoutTier: "off", scoutTier: "haiku" }, [HAIKU, HAIKU, HAIKU], "off + haiku"],
+      [{ ...bare, modelFloor: "opus" }, [OPUS, OPUS, OPUS], "/sapu opus"],
+    ] as const) {
+      for (const [i, it] of items.entries()) {
+        const { calls, scouts } = await runWave({ main: MAIN, contract, items: [it] }, (c) => (c.opts.phase === "Review" ? clean : opened(it.issue)));
+        expect(scouts[0].opts.agentType, `${why} · ${it.tier}`).toBe(want[i]);
+        if (!("modelFloor" in contract)) expect(calls.find((c) => c.opts.phase === "Implement")!.opts.model, `${why} · ${it.tier} builder`).toBe("sonnet");
+      }
+    }
+  });
+
+  it("tuning.riskScoutTier by default: the tier at dispatch picks the scout (a 🟢 raised to 🔴 by review is not re-scouted), and workerTier moves the builder, not the scout", async () => {
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
+    const raised = await runWave({ main: MAIN, contract: bare, items: [item(63)] }, (c) =>
+      c.opts.phase !== "Review" ? opened(63) : solo(c) ? { ...clean, red_areas: ["payments"] } : clean,
+    );
+    expect(raised.calls.filter((c) => c.opts.phase === "Review").length, "the 🔴 pair ran").toBeGreaterThan(1);
+    expect(raised.scouts.map((s) => s.opts.agentType)).toEqual(["sapu:sapu-sonnet-high"]);
+    const tiered = { ...bare, workerTier: "sonnet-medium" };
+    for (const [it, scout] of [[item(64), "sapu:sapu-sonnet-high"], [item(65, { tier: "yellow" }), "sapu:sapu-opus-medium"]] as const) {
+      const { calls, scouts } = await runWave({ main: MAIN, contract: tiered, items: [it] }, (c) => (c.opts.phase === "Review" ? clean : opened(it.issue)));
+      expect(scouts[0].opts.agentType, it.tier).toBe(scout);
+      expect(scouts[0].prompt, it.tier).toContain("a FRESH builder on sonnet/medium");
+      expect(calls.find((c) => c.opts.phase === "Implement")!.opts.agentType, it.tier).toBe("sapu:sapu-sonnet-medium");
+    }
+  });
+
   it("tuning.scoutTier \"haiku\" moves only the scout to Haiku/medium; the author keeps its tier, and junk changes nothing", async () => {
     const { calls, scouts } = await runWave({ main: MAIN, contract: { ...CONTRACT, scoutTier: "haiku" }, items: [item(50, { worker: "sapu:sapu-opus-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(50)));
     expect(scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-haiku-medium", model: "haiku", effort: "medium" });
     expect(calls.find((c) => c.opts.phase === "Implement")!.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", model: "opus", effort: "high" });
     const r = await runWave({ main: MAIN, contract: { ...CONTRACT, scoutTier: "off" }, items: [item(51, { worker: "sapu:sapu-opus-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(51)));
     expect(r.scouts[0].opts.agentType).toBe("sapu:sapu-sonnet-high");
-    // no tuning keys at all = the defaults: Sonnet/high scout, Sonnet author (an Opus item is clamped), Opus/medium reviewers
-    const { workerCeiling, scoutTier, reviewEffort, ...bare } = CONTRACT;
+    // no tuning keys at all = the defaults: Opus/medium scout for a red item, Sonnet author (an Opus item is clamped), Opus/medium reviewers
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
     const d = await runWave({ main: MAIN, contract: bare, items: [item(53, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(53)));
-    expect(d.scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-sonnet-high", model: "sonnet", effort: "high" });
+    expect(d.scouts[0].opts).toMatchObject({ agentType: "sapu:sapu-opus-medium", model: "opus", effort: "medium" });
     // the scout is Sonnet/high even for an item whose author runs on Sonnet/medium; junk falls back to the default, "haiku" opts into Haiku
     for (const [scoutTier, want] of [[undefined, "sapu:sapu-sonnet-high"], ["sonnet", "sapu:sapu-sonnet-high"], ["haiku", "sapu:sapu-haiku-medium"]] as const) {
       const g = await runWave({ main: MAIN, contract: { ...bare, scoutTier }, items: [item(54, { worker: "sapu:sapu-sonnet-medium" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(54)));

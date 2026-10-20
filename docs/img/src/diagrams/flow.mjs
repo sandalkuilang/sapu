@@ -4,14 +4,14 @@ const steps = [
   ["lock", "violet", "STEP 0", "Scope lock", ["account, origin and", "allowed roots checked"]],
   ["pr", "blue", "PHASE A", "Drain open PRs", ["every open PR:", "review, fix or close"]],
   ["lanes", "violet", "PHASE B", "A lane per issue", ["forge worker in its", "own worktree, one PR"]],
-  ["eye", "amber", "REVIEW", "Never the author", ["qa at Opus/high;", "red: an Opus pair"]],
+  ["eye", "amber", "REVIEW", "Never the author", ["qa on Opus;", "red: an Opus pair"]],
   ["shieldcheck", "green", "MERGE", "Green gate only", [`${m("sapu-merge.sh")},`, "one PR at a time"]],
 ];
 
 export default {
   h: 420,
   title: "/sapu in 30 seconds",
-  desc: "Five steps from an open backlog to merged work. Step 0: the scope lock checks the gh account, origin and the allowed roots. Phase A: every open PR is reviewed, fixed or closed. Phase B: each open issue is one lane, where a forge worker in its own worktree opens a PR. Review: never by the author; the qa specialist at Opus/high, and an adversarial Opus pair on the red tier; findings go back to the worker in fix cycles. Merge: only on a green gate, through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped with a reason, or blocked with a reason.",
+  desc: "Five steps from an open backlog to merged work. Step 0: the scope lock checks the gh account, origin and the allowed roots. Phase A: every open PR is reviewed, fixed or closed. Phase B: each open issue is one lane, where a forge worker in its own worktree opens a PR. Review: never by the author; the qa specialist on Opus, and an adversarial Opus pair on the red tier; findings go back to the worker in fix cycles. Merge: only on a green gate, through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped with a reason, or blocked with a reason.",
   label: "/sapu in 30 seconds: scope lock, drain open PRs, one lane per issue, review by an agent that is not the author with fix cycles, and a merge only on a green gate through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped or blocked, each with a reason.",
   eyebrow: "ONE COMMAND · /sapu",
   heading: "From open backlog to merged work",

@@ -1,6 +1,6 @@
 ---
 name: sapu-opus-medium
-description: "sapu worker for 🟡/🔴 work whose judgment call the issue already bounds (e.g. a decided schema/migration/permission change) — Opus/medium. Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
+description: "sapu worker for 🟡/🔴 work whose judgment call the issue already bounds (e.g. a decided schema/migration/permission change); also the 🟡/🔴 scout (tuning.riskScoutTier) — Opus/medium. Model/effort rubric: skills/sapu/SKILL.md §Model & effort in the sapu plugin."
 model: opus
 effort: medium
 tools: Bash, Read, Edit, Write, Grep, Glob, Agent, ToolSearch, WebSearch, WebFetch, mcp__plugin_context-mode_context-mode__ctx_fetch_and_index, mcp__plugin_context-mode_context-mode__ctx_search, mcp__plugin_context-mode_context-mode__ctx_execute, mcp__plugin_context-mode_context-mode__ctx_batch_execute, StructuredOutput
