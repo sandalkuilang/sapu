@@ -108,7 +108,7 @@ export default {
     ry2 += 26;
     [t1, w1] = tier(inx, ry2, "green");
     [t2, w2] = tier(inx + w1 + 6, ry2, "yellow");
-    s += t1 + t2 + text(inx + w1 + w2 + 18, ry2 + 15, `→ the ${b("qa specialist")} at Opus/high`, "t");
+    s += t1 + t2 + text(inx + w1 + w2 + 18, ry2 + 15, `→ the ${b("qa specialist")} on Opus`, "t");
     ry2 += 30;
     const [t4, w4] = tier(inx, ry2, "red");
     s += t4 + text(inx + w4 + 12, ry2 + 15, `→ an adversarial ${b("Opus pair")}: qa + a domain specialist`, "t");

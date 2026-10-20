@@ -18,7 +18,7 @@ export default {
   desc:
     "senior-dev-team is a second plugin in the sapu marketplace: eight senior agents, each with one role, a fixed method and a Handoffs section. " +
     AGENTS.map(([, name, id, what, role]) => `${name} (${P}${id}): ${what}${role ? `; sapu role ${role}` : "; no default sapu role"}.`).join(" ") +
-    " sapu depends on the plugin and calls its specialists by role: the qa specialist reviews every PR at Opus/high and is never its author; a red-tier issue or a red-area diff gets an adversarial Opus pair, qa plus a domain specialist; a scoped /inspector run adds a read-only team review, product and ux in parallel, then qa and tests alone. A repo can map any role to its own agent through the optional specialists field of .claude/sapu.json; roles it does not name keep the default. Every agent runs on Opus at high effort with project-scoped memory, and follows the dispatching prompt's rules: read-only when told, never stops to ask the user, returns the structured output asked for, stays in its worktree.",
+    " sapu depends on the plugin and calls its specialists by role: the qa specialist reviews every PR on Opus and is never its author; a red-tier issue or a red-area diff gets an adversarial Opus pair, qa plus a domain specialist; a scoped /inspector run adds a read-only team review, product and ux in parallel, then qa and tests alone. A repo can map any role to its own agent through the optional specialists field of .claude/sapu.json; roles it does not name keep the default. Every agent runs on Opus at high effort with project-scoped memory, and follows the dispatching prompt's rules: read-only when told, never stops to ask the user, returns the structured output asked for, stays in its worktree.",
   label:
     "The senior-dev-team plugin: eight senior agents — product manager, software architect, full-stack developer, database engineer, UI/UX designer, QA analyst, QA reviewer and technical writer — and how sapu dispatches them by role: qa reviews every PR, a qa plus domain-specialist Opus pair reviews the red tier, and a scoped /inspector run adds a read-only team review. A repo can map any role to its own agent.",
   eyebrow: "PLUGIN · senior-dev-team",
@@ -58,7 +58,7 @@ export default {
     s += text(48, ry + 82, "sapu", "ttl");
     s += lines(48, ry + 102, ["orchestrator +", "forge workers"], "cap", 17);
     const rows = [
-      [["green", "yellow"], "Every PR", "the qa specialist reviews at Opus/high, never the PR's author"],
+      [["green", "yellow"], "Every PR", "the qa specialist reviews on Opus, never the PR's author"],
       [["red"], "Red tier or red-area diff", "an adversarial Opus pair: qa + a domain specialist"],
       [[], "/inspector, scoped run", "read-only team review: product + ux in parallel, then qa / tests"],
     ];

@@ -157,7 +157,7 @@
   <rect x="341" y="1014" width="63" height="22" rx="11" class="k-amber"/>
   <circle cx="353" cy="1025" r="4" class="f-amber"/>
   <text x="362" y="1029" class="chipt c-amber">yellow</text>
-  <text x="416" y="1029" class="t">→ the <tspan class="tb">qa specialist</tspan> at Opus/high</text>
+  <text x="416" y="1029" class="t">→ the <tspan class="tb">qa specialist</tspan> on Opus</text>
   <rect x="272" y="1044" width="50" height="22" rx="11" class="k-red"/>
   <circle cx="284" cy="1055" r="4" class="f-red"/>
   <text x="293" y="1059" class="chipt c-red">red</text>

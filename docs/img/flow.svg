@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" width="920" height="420" role="img" aria-label="/sapu in 30 seconds: scope lock, drain open PRs, one lane per issue, review by an agent that is not the author with fix cycles, and a merge only on a green gate through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped or blocked, each with a reason.">
   <title>/sapu in 30 seconds</title>
-  <desc>Five steps from an open backlog to merged work. Step 0: the scope lock checks the gh account, origin and the allowed roots. Phase A: every open PR is reviewed, fixed or closed. Phase B: each open issue is one lane, where a forge worker in its own worktree opens a PR. Review: never by the author; the qa specialist at Opus/high, and an adversarial Opus pair on the red tier; findings go back to the worker in fix cycles. Merge: only on a green gate, through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped with a reason, or blocked with a reason.</desc>
+  <desc>Five steps from an open backlog to merged work. Step 0: the scope lock checks the gh account, origin and the allowed roots. Phase A: every open PR is reviewed, fixed or closed. Phase B: each open issue is one lane, where a forge worker in its own worktree opens a PR. Review: never by the author; the qa specialist on Opus, and an adversarial Opus pair on the red tier; findings go back to the worker in fix cycles. Merge: only on a green gate, through sapu-merge.sh, one PR at a time. Every issue ends merged, skipped with a reason, or blocked with a reason.</desc>
   <style>
     text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;fill:#1e293b}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -78,7 +78,7 @@
   <g transform="translate(582.375,154.375) scale(0.8854166666666667)"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z M12 9.2a2.8 2.8 0 1 0 0.01 0" class="ico s-amber"/></g>
   <text x="576" y="206" class="lbl">REVIEW</text>
   <text x="576" y="228" class="ttl">Never the author</text>
-  <text x="576" y="249" class="cap">qa at Opus/high;</text>
+  <text x="576" y="249" class="cap">qa on Opus;</text>
 <text x="576" y="266" class="cap">red: an Opus pair</text>
   <path d="M717,207 L731,207" class="ar" marker-end="url(#mn)"/>
   <rect x="736" y="132" width="152" height="150" rx="12" class="card" filter="url(#sh)"/>
