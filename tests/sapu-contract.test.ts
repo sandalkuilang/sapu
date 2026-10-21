@@ -1606,12 +1606,12 @@ describe("tuning: what the engine derives from the machine and the model, and wh
 
   it("the step budget and the context limits default and follow `tuning`; the limits are fractions of the context window, at most contextCap tokens", () => {
     const d = resolveTuning(FIXTURE_CONTRACT);
-    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 350_000, phaseA: 350_000 }, contextCap: 350_000 });
+    expect(d).toEqual({ stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 350_000, phaseA: 221_053 }, contextCap: 350_000 });
     const t = resolveTuning({ ...FIXTURE_CONTRACT, tuning: { stepBudget: { soft: 60, every: 10 }, contextBudget: { soft: 90_000 }, contextWindow: 200_000 } });
     expect(t).toEqual({ stepBudget: { soft: 60, every: 10, hard: 170, everyLate: 5 }, contextBudget: { soft: 90_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 200_000, contextLimits: { session: 190_000, phaseA: 120_000 }, contextCap: 350_000 });
-    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.3 } } }).contextLimits).toEqual({ session: 300_000, phaseA: 350_000 });
+    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextLimits: { session: 0.3 } } }).contextLimits).toEqual({ session: 300_000, phaseA: 600_000 });
     expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextCap: null } }).contextLimits).toEqual({ session: 950_000, phaseA: 600_000 });
-    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextCap: 500_000 } })).toMatchObject({ contextLimits: { session: 500_000, phaseA: 500_000 }, contextCap: 500_000 });
+    expect(resolveTuning({ ...FIXTURE_CONTRACT, tuning: { contextCap: 500_000 } })).toMatchObject({ contextLimits: { session: 500_000, phaseA: 315_789 }, contextCap: 500_000 });
   });
 
   it.each([
@@ -1638,7 +1638,7 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     [{ codeSearchFirst: 3 }, /tuning\.codeSearchFirst must be an object/],
     [{ contextWindow: 5000 }, /tuning\.contextWindow must be a token count/],
     [{ contextLimits: { session: 75 } }, /tuning\.contextLimits\.session must be a fraction/],
-    [{ contextCap: 1000 }, /tuning\.contextCap must be a token count of at least 50000, or null/],
+    [{ contextCap: 150_000 }, /tuning\.contextCap must be a token count of at least 200000/],
     [{ contextCap: "350k" }, /tuning\.contextCap must be a token count/],
     [{ workers: 8 }, /tuning: unknown key "workers"/],
   ])("refuses tuning %j", (tuning, msg) => {
@@ -1649,11 +1649,11 @@ describe("tuning: what the engine derives from the machine and the model, and wh
     const hook = (command: string, extra: object = {}) => ({ type: "command", command, ...extra });
     const json = { hooks: {
       PostToolUse: [{ matcher: "Write|Edit", hooks: [hook("node graft.cjs post-edit", { async: true }), hook("node sync.cjs"), hook('in=$(cat); case "$in" in *agent_id*) exit 0;; esac; node g.cjs', { async: true })] }],
-      PreToolUse: [{ hooks: [hook("node pre.cjs", { async: true })] }],
+      PreToolUse: [{ hooks: [hook("TOKEN=abc123 node\n pre.cjs", { async: true })] }],
       SessionStart: [{ hooks: [hook("node start.cjs", { async: true })] }],
     } };
     expect(leakyAsyncHooks([{ where: "~/.claude/settings.json", json }, { where: "bad", json: null }])).toEqual([
-      "~/.claude/settings.json: PreToolUse * → node pre.cjs",
+      "~/.claude/settings.json: PreToolUse * → TOKEN=… node pre.cjs",
       "~/.claude/settings.json: PostToolUse Write|Edit → node graft.cjs post-edit",
     ]);
   });
@@ -2051,7 +2051,7 @@ describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", (
     // No contract, no transcript: nothing proves the session may end, so release needs --force and logs it.
     const kept = cli(repo, ["sweep", "release", "sapu-run-a"]);
     expect(kept.status).toBe(1);
-    expect(kept.err).toMatch(/session-status says continue \(context unmeasured of 950k, backlog unreadable\).*--force/);
+    expect(kept.err).toMatch(/session-status says continue \(context unmeasured of 350k, backlog unreadable\).*--force/);
     expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force"]).status).toBe(1); // a reason is required
     expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force", "owner stopped the sweep"]).status).toBe(0);
     expect(readFileSync(join(repo, ".git/sapu-sweep.log"), "utf8")).toMatch(/forced release sapu-run-a verdict=continue context unmeasured.*reason: owner stopped the sweep\n$/);
@@ -2268,8 +2268,8 @@ describe("session-status: code decides continue / handoff / finish", () => {
     const usage = (n: number) => JSON.stringify({ message: { usage: { input_tokens: 1, cache_read_input_tokens: n - 1 } } });
     writeFileSync(join(dir, "s.jsonl"), `{"marker":"sapu-run-z"}\n${usage(960_000)}\n`);
     const env = { CLAUDE_CONFIG_DIR: join(box, "cfg") };
-    expect(sessionStatus(main, "sapu-run-z", { env })).toMatchObject({ verdict: "handoff", context: 960_000, limit: 950_000, backlog: null });
-    expect(sessionStatus(main, "sapu-run-z", { env, phaseA: true })).toMatchObject({ verdict: "handoff", limit: 600_000 });
+    expect(sessionStatus(main, "sapu-run-z", { env })).toMatchObject({ verdict: "handoff", context: 960_000, limit: 350_000, backlog: null });
+    expect(sessionStatus(main, "sapu-run-z", { env, phaseA: true })).toMatchObject({ verdict: "handoff", limit: 221_053 });
     expect(sessionStatus(main, "sapu-run-other", { env })).toMatchObject({ verdict: "continue", context: null, transcript: null });
   });
 
