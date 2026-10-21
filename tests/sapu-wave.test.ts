@@ -256,6 +256,59 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     for (const c of calls) if (c.opts.phase !== "Review") expect(c.opts.model, c.opts.phase).not.toBe("opus");
   });
 
+  it("a worker moved by tuning.workerCeiling or workerTier is `workerMoved` in the result and the wave log, never a model warning", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high" };
+    const { out, logs } = await runWave({ main: MAIN, contract: cap, items: [item(53, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(53)));
+    expect(out[0]).toMatchObject({ workerMoved: "sapu:sapu-opus-high → sapu:sapu-sonnet-high (tuning.workerCeiling)", modelWarnings: [] });
+    expect(logs[0]).toContain("sonnet/high (moved: sapu:sapu-opus-high → sapu:sapu-sonnet-high (tuning.workerCeiling))");
+    expect(logs.some((l) => l.startsWith("WARNING"))).toBe(false);
+    const tier = await runWave({ main: MAIN, contract: { ...CONTRACT, workerTier: "sonnet-medium" }, items: [item(54, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(54)));
+    expect(tier.out[0].workerMoved).toBe("sapu:sapu-sonnet-high → sapu:sapu-sonnet-medium (tuning.workerTier)");
+    const kept = await runWave({ main: MAIN, contract: cap, items: [item(55, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(55)));
+    expect(kept.out[0].workerMoved).toBeUndefined();
+  });
+
+  it("a forced item (the owner's model:opus label) keeps its worker over workerCeiling and workerTier; its fixers never drop below it; an ESCALATE at the top blocks", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high", workerTier: "sonnet-medium" };
+    const { out, calls } = await runWave({ main: MAIN, contract: cap, items: [item(56, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db", forced: true })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(56, { head_sha: fixSha(c, n) });
+      return n <= 2 ? finding(true) : clean;
+    });
+    expect(calls.filter((c) => c.opts.phase === "Implement" || c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-opus-high", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", worker: "sapu:sapu-opus-high" });
+    expect(out[0].workerMoved).toBeUndefined();
+    const esc = await runWave({ main: MAIN, contract: cap, items: [item(57, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db", forced: true })] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(57, { status: "escalate", pr_number: 0, escalate_question: "which rounding?", escalate_at: "a.ts:1" }),
+    );
+    expect(esc.out[0]).toMatchObject({ status: "blocked", escalated: false });
+    expect(String(esc.out[0].reason)).toBe("ESCALATE from the top of the ladder: which rounding? — a.ts:1");
+    await expect(runWave({ main: MAIN, items: [item(58, { forced: "yes" })] }, () => clean)).rejects.toThrow("#58: forced must be true or false");
+    await expect(runWave({ main: MAIN, items: [item(59, { worker: "sapu:sapu-sonnet-medium", forced: true })] }, () => clean)).rejects.toThrow("#59: forced is the model:opus label, so its worker is sapu:sapu-opus-high");
+  });
+
+  it("a forced worker answers its own scout's ESCALATE instead of the lane blocking before it ran", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high" };
+    const { out, calls } = await runWave(
+      { main: MAIN, contract: cap, items: [item(63, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db", forced: true })] },
+      (c) => (c.opts.phase === "Review" ? clean : opened(63)),
+      (c) => planned(c, { status: "escalate", escalate_question: "which rounding?", escalate_at: "a.ts:1" }),
+    );
+    const impl = calls.filter((c) => c.opts.phase === "Implement");
+    expect(impl.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-opus-high"]);
+    expect(impl[0].prompt).toContain("The previous worker stopped with ESCALATE: which rounding? — a.ts:1");
+    expect(out[0]).toMatchObject({ status: "ready", escalated: true, worker: "sapu:sapu-opus-high" });
+  });
+
+  it("workerMoved names the orchestrator's pick through stacked moves, drops a chain that ends where it began, and covers /sapu opus", async () => {
+    const both = { ...CONTRACT, workerTier: "opus-medium", workerCeiling: "sonnet-high" };
+    const a = await runWave({ main: MAIN, contract: both, items: [item(64, { worker: "sapu:sapu-sonnet-medium" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(64)));
+    expect(a.out[0].workerMoved).toBe("sapu:sapu-sonnet-medium → sapu:sapu-sonnet-high (tuning.workerCeiling)");
+    const b = await runWave({ main: MAIN, contract: both, items: [item(65, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(65)));
+    expect(b.out[0].workerMoved).toBeUndefined();
+    const opus = await runWave({ main: MAIN, contract: { ...CONTRACT, modelFloor: "opus" }, items: [item(66)] }, (c) => (c.opts.phase === "Review" ? clean : opened(66)));
+    expect(opus.out[0].workerMoved).toBe("sapu:sapu-sonnet-medium → sapu:sapu-opus-medium (/sapu opus)");
+  });
+
   it("an ESCALATE from the forced tier still climbs the ladder from it", async () => {
     const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
     const { calls } = await runWave({ main: MAIN, contract: tier, items: [item(49, { worker: "sapu:sapu-opus-high" })] }, (c, n) => {

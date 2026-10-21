@@ -16,6 +16,7 @@
 //     could not run" counts as red (fail-closed; sapu-merge.sh re-checks at merge); the worker's
 //     own red-area check before its PR only ever raises the tier, so the pair can start at once;
 //   - at most 2 fix cycles (🔴: up to 5 while each review reports fewer findings), one escalation step, every continuing agent in its own worktree;
+//   - tuning.workerTier / workerCeiling move an item's worker only with `workerMoved` in its result; a `forced` item (the owner's label) never moves;
 //   - a first implementation is two phases: a read-only scout writes a capped plan, then a FRESH builder
 //     of the same tier starts from it (the exploration residue never rides along); a scout ESCALATE
 //     goes up the ladder with no builder; fix cycles and escalated workers stay single-phase;
@@ -48,7 +49,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.28.0 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
+  description: 'sapu v2.29.0 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: explores the issue, ends with a compact plan (and slices, when it is big)' },
@@ -167,7 +168,7 @@ const SCOUT_DECIDER = 'sapu:sapu-opus-high'
 const PREPR_AGENT = 'general-purpose'
 // The pre-PR check runs on tuning.workerTier; else, with tuning.workerCeiling set, on the rung of the item's own worker
 // (Sonnet/medium, Sonnet/high when the item is harder); else Opus/high.
-const prePrModel = (state) => (WORKER_TIER ? MODEL[WORKER_TIER] : CEILING === RED_FLOOR && MODEL[state.worker]?.[0] === 'sonnet' ? MODEL[state.worker] : null) ?? PAIR_MODEL
+const prePrModel = (state) => (WORKER_TIER && !state.forced ? MODEL[WORKER_TIER] : CEILING === RED_FLOOR && MODEL[state.worker]?.[0] === 'sonnet' ? MODEL[state.worker] : null) ?? PAIR_MODEL
 if (!S || typeof S !== 'object' || Array.isArray(S)) throw new Error('args.contract.specialists is missing: pass the output of sapu-contract.mjs wave-args (it resolves the role map)')
 for (const k of Object.keys(S)) if (!ROLES.includes(k)) throw new Error(`args.contract.specialists: unknown role ${k}; roles: ${ROLES.join(', ')}`)
 for (const r of ROLES) if (typeof S[r] !== 'string' || !S[r].trim()) throw new Error(`args.contract.specialists.${r} must be a subagent type`)
@@ -190,13 +191,24 @@ if (input.items.length > 4) throw new Error('a wave holds at most 4 items')
 if (!Number.isInteger(runners) || runners < 1 || runners > 4) throw new Error('maxTestRunners must be an integer 1..4')
 // An unknown key is a typo or a stale name, and ignoring it silently drops what it meant
 // (a stale `npmCi: true` would run a dependency change in a shared wave without its clean install).
-const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker', 'domainReviewer', 'resume']
+const ITEM_KEYS = ['issue', 'title', 'tier', 'worker', 'cleanInstall', 'tracker', 'domainReviewer', 'resume', 'forced']
 // A worker named without the plugin prefix (`sapu-sonnet-high`) is the same ladder agent: accept it
 // instead of failing the whole wave on a spelling the orchestrator then has to retry.
 for (const it of input.items) if (it && typeof it.worker === 'string' && !it.worker.includes(':') && LADDER.includes(`sapu:${it.worker}`)) it.worker = `sapu:${it.worker}`
-if (WORKER_TIER) for (const it of input.items) if (it && typeof it === 'object') it.worker = WORKER_TIER
-for (const it of input.items) if (it && typeof it.worker === 'string' && LADDER.indexOf(it.worker) > LADDER.indexOf(CEILING)) it.worker = CEILING
-if (OPUS_FLOOR) for (const it of input.items) if (it && LADDER.includes(it.worker) && LADDER.indexOf(it.worker) < LADDER.indexOf(OPUS_FLOOR)) it.worker = OPUS_FLOOR
+// `forced: true` = the owner's `model:opus` label picked this worker (SKILL.md §Label overrides): neither tuning.workerTier nor
+// tuning.workerCeiling moves it, since the label is the owner's word on this one issue and the tuning a default for all of them.
+// Every other move is kept per item as `workerMoved` in its result and the wave log: the orchestrator reports the worker that ran.
+const moved = new Map()
+// The first worker of a chain of moves is the one reported (the orchestrator's pick); a chain that ends where it began is no move.
+const moveWorker = (it, w, why) => {
+  const from = moved.get(it)?.from ?? it.worker
+  it.worker = w
+  if (w === from) moved.delete(it)
+  else moved.set(it, { from, text: `${from} → ${w} (${why})` })
+}
+if (WORKER_TIER) for (const it of input.items) if (it && typeof it === 'object' && it.forced !== true) moveWorker(it, WORKER_TIER, 'tuning.workerTier')
+for (const it of input.items) if (it && it.forced !== true && typeof it.worker === 'string' && LADDER.indexOf(it.worker) > LADDER.indexOf(CEILING)) moveWorker(it, CEILING, 'tuning.workerCeiling')
+if (OPUS_FLOOR) for (const it of input.items) if (it && LADDER.includes(it.worker) && LADDER.indexOf(it.worker) < LADDER.indexOf(OPUS_FLOOR)) moveWorker(it, OPUS_FLOOR, '/sapu opus')
 const RENAMED = { npmCi: 'cleanInstall' }
 for (const it of input.items) {
   const unknown = Object.keys(it && typeof it === 'object' ? it : {}).filter((k) => !ITEM_KEYS.includes(k))
@@ -212,6 +224,8 @@ for (const it of input.items) {
   if (it.tier === 'red' && !WORKER_TIER && LADDER.indexOf(it.worker) < LADDER.indexOf(RED_FLOOR)) throw new Error(`#${it.issue}: red is never below ${RED_FLOOR}`)
   if (it.tier === 'red' && !DOMAIN_ROLES.includes(it.domainReviewer)) throw new Error(`#${it.issue}: red needs a domainReviewer role from ${DOMAIN_ROLES.join(', ')}`)
   if (it.tracker !== undefined && !/^F\d+$/i.test(it.tracker)) throw new Error(`#${it.issue}: tracker must look like F3`)
+  if (it.forced !== undefined && typeof it.forced !== 'boolean') throw new Error(`#${it.issue}: forced must be true or false`)
+  if (it.forced === true && it.worker !== 'sapu:sapu-opus-high') throw new Error(`#${it.issue}: forced is the model:opus label, so its worker is sapu:sapu-opus-high`)
   if (it.resume !== undefined) {
     const rs = it.resume
     if (!rs || typeof rs !== 'object' || Array.isArray(rs)) throw new Error(`#${it.issue}: resume must be { branch, headSha, pr?, note? }`)
@@ -395,7 +409,8 @@ const SCOUT_TIER = OPUS_FLOOR || (C.scoutTier === 'off' ? null : C.scoutTier ===
 const RISK_SCOUT = C.riskScoutTier === 'off' ? null : 'sapu:sapu-opus-medium'
 const scoutOf = (w, tier) => ((tier === 'yellow' || tier === 'red') && RISK_SCOUT) || SCOUT_TIER || SCOUT_OF[w] || w
 const idx = (w) => LADDER.indexOf(w)
-const stepUp = (w) => LADDER[Math.min(idx(w) + 1, idx(CEILING))]
+// Never below w itself: a forced worker above the ceiling stays where it is.
+const stepUp = (w) => LADDER[Math.max(idx(w), Math.min(idx(w) + 1, idx(CEILING)))]
 const atLeast = (w, floor) => (idx(w) < idx(floor) ? floor : w)
 const listFindings = (fs) => fs.map((f, i) => `${i + 1}. ${f.file_line} — ${f.claim} — ${f.failure_scenario}${ruleOf(f) ? ` [rule ${ruleOf(f)}]` : ''}`).join('\n')
 // The guard clauses of every fix prompt, the redesign's too: tests of the attack and of the legitimate case, the PR's own tests rerun,
@@ -631,7 +646,7 @@ function prePrPrompt(item, state, round) {
 
 async function runItem(item) {
   const id = `issue${item.issue}${item.tracker ? item.tracker.toLowerCase() : ''}`
-  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, fixedRules: new Map(), redesignedRules: [], trail: [] }
+  const state = { id, issue: item.issue, tracker: item.tracker, title: item.title, tier: item.tier, domainReviewer: item.tier === 'red' ? S[item.domainReviewer] : undefined, worker: item.worker, forced: item.forced === true, escalated: false, cycles: 0, branch: '', pinned: item.resume ? item.resume.branch : branchFor(item), securityGaps: [], outsideWrites: [], ranCleanInstall: false, modelWarnings: [], budgetWarnings: [], branchWarnings: [], builders: 0, fixedRules: new Map(), redesignedRules: [], trail: [] }
   const comments = []
   const notes = []
   const branchSeen = new Set()
@@ -649,7 +664,7 @@ async function runItem(item) {
     issue: state.issue, headSha: state.headSha, tracker: item.tracker, status, tier: state.tier, redAreas: state.redAreas, worker: state.worker,
     escalated: state.escalated, cycles: state.cycles, pr: state.pr, branch: state.branch,
     securityGaps: state.securityGaps, outsideWrites: state.outsideWrites, ranCleanInstall: state.ranCleanInstall,
-    modelWarnings: state.modelWarnings, budgetWarnings: state.budgetWarnings, branchWarnings: state.branchWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
+    workerMoved: moved.get(item)?.text, modelWarnings: state.modelWarnings, budgetWarnings: state.budgetWarnings, branchWarnings: state.branchWarnings, trail: state.trail, reviewComment: comments.length ? reviewComment() : undefined, ...extra,
     }
   }
   // What every ladder agent's return proves (scout and worker alike): its gaps and outside writes,
@@ -787,12 +802,15 @@ async function runItem(item) {
     // A 🟡 scout that outranks the rung that would answer it (an Opus scout over a Sonnet ladder) hands its question to ONE
     // Opus/high run, above workerTier and workerCeiling like the redesign: the answer never comes from a weaker model than the
     // question. 🔴 keeps its rule (at the ceiling: the owner decides). The fixers that follow stay on the ladder.
-    const up = state.worker === CEILING ? null : stepUp(state.worker)
+    const up = stepUp(state.worker) === state.worker ? null : stepUp(state.worker)
     const decider = scoutAsked && state.tier === 'yellow' && idx(scoutAgent) >= 0 && (!up || idx(up) < idx(scoutAgent)) ? SCOUT_DECIDER : null
-    if (!up && !decider) return done('blocked', { reason: `ESCALATE from the top of the ladder${CEILING === LADDER[LADDER.length - 1] ? '' : ' (tuning.workerCeiling)'}: ${question}` })
+    // A forced worker above the ceiling outranks its own scout: it answers the scout's question itself instead of the lane blocking
+    // before the owner's chosen model ever ran.
+    const own = scoutAsked && !up && !decider && idx(state.worker) > idx(CEILING) ? state.worker : null
+    if (!up && !decider && !own) return done('blocked', { reason: `ESCALATE from the top of the ladder${idx(state.worker) === LADDER.length - 1 ? '' : ' (tuning.workerCeiling)'}: ${question}` })
     state.escalated = true
     if (up) state.worker = up
-    const who = decider || state.worker
+    const who = decider || own || state.worker
     r = await runWorker(who, {
       cont: true, step: 'Implement (escalated)', phase: 'Implement', label: tag(item, effortOf(who), 'escalated'),
       task: [`The previous worker stopped with ESCALATE: ${question}. Decide yourself (research the official docs when needed), write the decision + reason + source in the PR body, then finish this issue. ESCALATE again = blocked.`, left.length ? `The issue was built in slices; these are not finished (their sections are in the plan), do them all yourself in order, then open the PR: ${left.map((x) => x.title).join('; ')}` : '', plan].filter(Boolean).join('\n'),
@@ -952,7 +970,7 @@ async function runItem(item) {
 }
 
 phase('Implement')
-log(`▶ wave on ${REPO} · max ${runners} test-running agents · ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.tracker})` : ''}${i.title ? ` ${i.title}` : ''} — ${i.tier}, ${(MODEL[i.worker] || [i.worker]).join('/')}`).join('; ')}`)
+log(`▶ wave on ${REPO} · max ${runners} test-running agents · ${input.items.map((i) => `#${i.issue}${i.tracker ? ` (${i.tracker})` : ''}${i.title ? ` ${i.title}` : ''} — ${i.tier}, ${(MODEL[i.worker] || [i.worker]).join('/')}${moved.has(i) ? ` (moved: ${moved.get(i).text})` : ''}`).join('; ')}`)
 const results = await parallel(input.items.map((item) => () => runItem(item)))
 const out = results.map((r, i) => r || { issue: input.items[i].issue, tracker: input.items[i].tracker, status: 'died', reason: 'item crashed inside the workflow' })
 for (const r of out) for (const w of r.modelWarnings || []) log(`WARNING #${r.issue}: ${w} — requested model not applied`)

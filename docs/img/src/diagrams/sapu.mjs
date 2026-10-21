@@ -142,7 +142,7 @@ export default {
 
     // ---- end of session
     const sy = ys.sess;
-    s += sectionHead(sy, "↻", "End of each session", "context past its limit, a share of the model's window (contract tuning)");
+    s += sectionHead(sy, "↻", "End of each session", "context past its limit: a share of the window, at most 350k tokens (tuning)");
     const sw = (W - 3 * 24) / 4, scy = sy + 20, sh = 92;
     const sess = [
       ["session limit reached", ["checked between waves,", "never inside a lane"], "card", []],

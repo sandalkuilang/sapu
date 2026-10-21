@@ -191,7 +191,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { acceptedLabel, agentFiledLabel, checkoutRoot, contextTokens, contractHome, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning } from "./sapu-contract.mjs";
+import { acceptedLabel, agentFiledLabel, checkoutRoot, contextTokens, contractHome, DEFAULT_TUNING, findMain, gitCommonDir, isHandoffCommand, loadContract, needsOwnerLabel, resolveTuning, sweepStatus } from "./sapu-contract.mjs";
 
 export { contextTokens };
 
@@ -3120,6 +3120,12 @@ export const SESSION_EVERY = 10;
  * The reminder to refuse one orchestrator call with, or null. Never throws: a failed check lets the call through.
  * @param {{ session_id?: string, transcript_path?: string, cwd?: string, agent_id?: string }} input
  */
+/** Whether `transcript` is the session holding checkout `main`'s sweep marker (its run marker appears in it). */
+function holdsSweep(main, transcript) {
+  const s = sweepStatus(main);
+  return !!(s.held && s.owner && fs.readFileSync(transcript, "utf8").includes(s.owner));
+}
+
 export function sessionContext(input, dir = SESSION_DIR) {
   try {
     const id = input.session_id;
@@ -3140,6 +3146,9 @@ export function sessionContext(input, dir = SESSION_DIR) {
     const limit = resolveTuning(contract).contextLimits.session;
     const tokens = contextTokens(transcript);
     if (tokens === null || tokens < limit) return null;
+    // tuning.contextCap is a sweep's cost lever: a session that does not hold this repo's sweep marker keeps the window's own limit.
+    const uncapped = resolveTuning({ ...contract, tuning: { ...(contract.tuning || {}), contextCap: null } }).contextLimits.session;
+    if (tokens < uncapped && !holdsSweep(main, transcript)) return null;
     return `orchestrator context ${Math.round(tokens / 1000)}k ≥ contextLimits.session ${Math.round(limit / 1000)}k: in a sapu sweep finish the current wave, check sapu-contract.mjs session-status, rewrite sapu-sweep-state, sweep release and start the successor /sapu:sapu session yourself; otherwise start a fresh session (SKILL §Sessions and waves)`;
   } catch {
     return null;

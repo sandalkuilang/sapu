@@ -786,15 +786,19 @@ export function gateWorkers({ cpus, busy }) {
  * budget the guard enforces (a reminder at `soft` tool calls, every `every` up to `hard`, every
  * `everyLate` past it), the worker context budget (the same reminder once a worker's context reaches
  * `soft` tokens, then every `every` tool calls), and the orchestrator's context limits as fractions of the model's context
- * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`).
+ * window (`contextWindow` tokens), for a session (`session`) and for the end of Phase A (`phaseA`). `contextCap` (tokens,
+ * null = none) scales both down together until `session` is at most that: every orchestrator call re-reads its whole
+ * context, so on a large window a successor session that starts small costs less than going on.
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 } };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 }, contextCap: 350_000 };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
   const t = (c && c.tuning) || {};
   const window = t.contextWindow ?? DEFAULT_TUNING.contextWindow;
   const frac = { ...DEFAULT_TUNING.contextLimits, ...(t.contextLimits || {}) };
+  const cap = (t.contextCap === undefined ? DEFAULT_TUNING.contextCap : t.contextCap) ?? Infinity;
+  const scale = Math.min(1, cap / (window * frac.session));
   return {
     stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
     contextBudget: { ...DEFAULT_TUNING.contextBudget, ...(t.contextBudget || {}) },
@@ -805,7 +809,8 @@ export function resolveTuning(c) {
     scoutTier: t.scoutTier ?? DEFAULT_TUNING.scoutTier,
     riskScoutTier: t.riskScoutTier ?? DEFAULT_TUNING.riskScoutTier,
     contextWindow: window,
-    contextLimits: { session: Math.round(window * frac.session), phaseA: Math.round(window * frac.phaseA) },
+    contextLimits: { session: Math.round(window * frac.session * scale), phaseA: Math.round(window * frac.phaseA * scale) },
+    contextCap: cap === Infinity ? null : cap,
   };
 }
 
@@ -839,6 +844,7 @@ function tuningProblems(t) {
     }
   }
   if ("contextWindow" in t && !(Number.isInteger(t.contextWindow) && t.contextWindow >= 10_000)) errs.push("tuning.contextWindow must be a token count (the model's context window, at least 10000)");
+  if ("contextCap" in t && t.contextCap !== null && !(Number.isInteger(t.contextCap) && t.contextCap >= 200_000)) errs.push("tuning.contextCap must be a token count of at least 200000 (a fresh sweep session already starts past 100k), or null for no cap");
   if ("contextLimits" in t) {
     const l = t.contextLimits;
     if (!l || typeof l !== "object" || Array.isArray(l)) errs.push("tuning.contextLimits must be an object");
@@ -1071,6 +1077,39 @@ export function seniorDevTeamInstalled() {
   }
   if (!Array.isArray(list)) return null;
   return list.some((p) => p && typeof p.id === "string" && /^senior-dev-team@/.test(p.id) && p.enabled !== false && !(Array.isArray(p.errors) && p.errors.length));
+}
+
+/**
+ * Tool hooks that run `async` and do not skip subagents, from settings files `[{ where, json }]`: an async hook's answer is
+ * delivered to the main session, so its output for every Edit or Read a workflow agent makes lands in the orchestrator's
+ * context, which every later orchestrator call re-reads. A hook whose command names `agent_id` (the field a subagent's hook
+ * input carries) is taken to skip subagents.
+ */
+export function leakyAsyncHooks(sources) {
+  const out = [];
+  for (const { where, json } of sources) {
+    for (const ev of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+      for (const group of Array.isArray(json?.hooks?.[ev]) ? json.hooks[ev] : []) {
+        for (const h of Array.isArray(group?.hooks) ? group.hooks : []) {
+          // the command is shown on one line, cut short, with any VAR=value assignment masked (a token may sit there)
+          if (h && h.async === true && typeof h.command === "string" && !h.command.includes("agent_id")) out.push(`${where}: ${ev} ${group.matcher ?? "*"} → ${h.command.replace(/\s+/g, " ").replace(/\b([A-Za-z_]\w*)=\S+/g, "$1=…").slice(0, 80)}`);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function settingsSources(mainDir) {
+  const config = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  const files = [[path.join(config, "settings.json"), process.env.CLAUDE_CONFIG_DIR ? "$CLAUDE_CONFIG_DIR/settings.json" : "~/.claude/settings.json"], [path.join(mainDir, ".claude", "settings.json"), ".claude/settings.json"], [path.join(mainDir, ".claude", "settings.local.json"), ".claude/settings.local.json"]];
+  return files.flatMap(([file, where]) => {
+    try {
+      return [{ where, json: JSON.parse(fs.readFileSync(file, "utf8")) }];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /**
@@ -2146,6 +2185,9 @@ function main(argv) {
     const defaults = Object.entries(resolveSpecialists(contract)).filter(([, a]) => a.startsWith("senior-dev-team:")).map(([r]) => r);
     if (defaults.length && seniorDevTeamInstalled() === false) {
       process.stderr.write(`sapu-contract: WARNING the senior-dev-team plugin is not installed or not enabled, but the roles ${defaults.join(", ")} use its agents: \`claude plugin install senior-dev-team@<marketplace>\` (the marketplace sapu came from), or map those roles in \`specialists\`.\n`);
+    }
+    for (const h of leakyAsyncHooks(settingsSources(mainDir))) {
+      process.stderr.write(`sapu-contract: WARNING async tool hook that does not skip subagents (${h}): its output for every workflow agent's tool call lands in the orchestrator's context. Make it exit at once when its stdin JSON has "agent_id", or drop async.\n`);
     }
   }
   if (cmd === "get") {

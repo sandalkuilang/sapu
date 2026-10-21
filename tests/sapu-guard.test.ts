@@ -4291,9 +4291,18 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(refused(calls(r, t, s, 20))).toEqual([]);
   });
 
-  it("takes the limit from the contract's tuning (default window 1M x 0.95 = 950k)", () => {
-    expect(refused(calls(repo({}), transcript(940_000), sid("def1"), 10))).toEqual([]);
+  it("takes the limit from the contract's tuning: 1M x 0.95 = 950k, capped at contextCap 350k only for the session holding the sweep", () => {
+    expect(refused(calls(repo({}), transcript(360_000), sid("def1"), 10))).toEqual([]);
     expect(refused(calls(repo({}), transcript(960_000), sid("def2"), 10))).toEqual([10]);
+    const r = repo({});
+    const now = new Date().toISOString();
+    writeFileSync(join(r, ".git", "sapu-sweep.json"), JSON.stringify({ owner: "sapu-run-20261021-1557", started: now, beat: now, host: "h" }));
+    const other = transcript(360_000);
+    expect(refused(calls(r, other, sid("cap-other"), 10))).toEqual([]);
+    const sweep = transcript(360_000);
+    writeFileSync(sweep, `${JSON.stringify({ type: "user", message: { content: "MARK=sapu-run-20261021-1557" } })}\n${readFileSync(sweep, "utf8")}`);
+    expect(refused(calls(r, sweep, sid("cap-sweep"), 10))).toEqual([10]);
+    expect(refused(calls(r, transcript(340_000), sid("cap-under"), 10))).toEqual([]);
   });
 
   it("counts per session id, so a second session starts its own count", () => {
