@@ -256,6 +256,35 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     for (const c of calls) if (c.opts.phase !== "Review") expect(c.opts.model, c.opts.phase).not.toBe("opus");
   });
 
+  it("a worker moved by tuning.workerCeiling or workerTier is `workerMoved` in the result and the wave log, never a model warning", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high" };
+    const { out, logs } = await runWave({ main: MAIN, contract: cap, items: [item(53, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(53)));
+    expect(out[0]).toMatchObject({ workerMoved: "sapu:sapu-opus-high → sapu:sapu-sonnet-high (tuning.workerCeiling)", modelWarnings: [] });
+    expect(logs[0]).toContain("sonnet/high (moved: sapu:sapu-opus-high → sapu:sapu-sonnet-high (tuning.workerCeiling))");
+    expect(logs.some((l) => l.startsWith("WARNING"))).toBe(false);
+    const tier = await runWave({ main: MAIN, contract: { ...CONTRACT, workerTier: "sonnet-medium" }, items: [item(54, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(54)));
+    expect(tier.out[0].workerMoved).toBe("sapu:sapu-sonnet-high → sapu:sapu-sonnet-medium (tuning.workerTier)");
+    const kept = await runWave({ main: MAIN, contract: cap, items: [item(55, { worker: "sapu:sapu-sonnet-high" })] }, (c) => (c.opts.phase === "Review" ? clean : opened(55)));
+    expect(kept.out[0].workerMoved).toBeUndefined();
+  });
+
+  it("a forced item (the owner's model:opus label) keeps its worker over workerCeiling and workerTier; its fixers never drop below it; an ESCALATE at the top blocks", async () => {
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high", workerTier: "sonnet-medium" };
+    const { out, calls } = await runWave({ main: MAIN, contract: cap, items: [item(56, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db", forced: true })] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(56, { head_sha: fixSha(c, n) });
+      return n <= 2 ? finding(true) : clean;
+    });
+    expect(calls.filter((c) => c.opts.phase === "Implement" || c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-opus-high", "sapu:sapu-opus-high"]);
+    expect(out[0]).toMatchObject({ status: "ready", worker: "sapu:sapu-opus-high" });
+    expect(out[0].workerMoved).toBeUndefined();
+    const esc = await runWave({ main: MAIN, contract: cap, items: [item(57, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db", forced: true })] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(57, { status: "escalate", pr_number: 0, escalate_question: "which rounding?", escalate_at: "a.ts:1" }),
+    );
+    expect(esc.out[0]).toMatchObject({ status: "blocked", escalated: false });
+    expect(String(esc.out[0].reason)).toBe("ESCALATE from the top of the ladder: which rounding? — a.ts:1");
+    await expect(runWave({ main: MAIN, items: [item(58, { forced: "yes" })] }, () => clean)).rejects.toThrow("#58: forced must be true or false");
+  });
+
   it("an ESCALATE from the forced tier still climbs the ladder from it", async () => {
     const tier = { ...CONTRACT, workerTier: "sonnet-medium" };
     const { calls } = await runWave({ main: MAIN, contract: tier, items: [item(49, { worker: "sapu:sapu-opus-high" })] }, (c, n) => {
@@ -345,6 +374,33 @@ describe("sapu-wave — worker names", () => {
   });
 });
 
+describe("sapu-wave — the 🔴 domain half in delta rounds", () => {
+  const red = (issue: number) => item(issue, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" });
+  it("a clean domain half sits out the delta when no fixed finding is in an invariant domain; qa re-checks; the trail says so", async () => {
+    const { out, calls } = await runWave({ main: MAIN, items: [red(60)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(60, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === QA && n <= 2 ? finding(false) : clean;
+    });
+    expect(reviewers(calls).slice(0, 2).sort()).toEqual([DB, QA]);
+    expect(reviewers(calls).slice(2)).toEqual([QA]);
+    expect(out[0].status).toBe("ready");
+    expect(out[0].trail).toContainEqual(["Review (delta)", DB, "opus/high", "skipped: clean last round, no invariant-domain finding fixed"]);
+  });
+
+  it("the domain half re-checks the delta when a fixed finding is in an invariant domain, or when it had findings itself", async () => {
+    const inv = await runWave({ main: MAIN, items: [red(61)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(61, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === QA && n <= 2 ? finding(true) : clean;
+    });
+    expect(reviewers(inv.calls).slice(2).sort()).toEqual([DB, QA]);
+    const own = await runWave({ main: MAIN, items: [red(62)] }, (c, n) => {
+      if (c.opts.phase !== "Review") return opened(62, { head_sha: fixSha(c, n) });
+      return c.opts.agentType === DB && n <= 2 ? finding(false) : clean;
+    });
+    expect(reviewers(own.calls).slice(2).sort()).toEqual([DB, QA]);
+  });
+});
+
 describe("sapu-wave — red-area raise (fail-closed)", () => {
   it("a 🟢 diff touching a red area gets the Opus pair on top, and red fixers are ≥ sapu:sapu-sonnet-high", async () => {
     const { out, calls } = await runWave({ main: MAIN, items: [item(8)] }, (c, n) => {
@@ -355,7 +411,8 @@ describe("sapu-wave — red-area raise (fail-closed)", () => {
     expect(reviewers(calls).slice(0, 3).sort()).toEqual([DB, QA, QA]);
     expect(calls.find((c) => c.opts.agentType === QA && !solo(c))?.prompt).toContain("schema/migrations/seed");
     expect(calls.find((c) => c.opts.phase === "Fix")?.opts.agentType).toBe("sapu:sapu-sonnet-high");
-    expect(reviewers(calls).slice(3).sort()).toEqual([DB, QA]);
+    // the db half was clean and the fixed finding is outside the invariant domains: the delta is qa's alone
+    expect(reviewers(calls).slice(3)).toEqual([QA]);
     expect(out[0]).toMatchObject({ status: "ready", tier: "red", redAreas: ["schema/migrations/seed"] });
   });
 

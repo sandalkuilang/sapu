@@ -4291,9 +4291,9 @@ describe("sapu-guard — the orchestrator's context reminder at contextLimits.se
     expect(refused(calls(r, t, s, 20))).toEqual([]);
   });
 
-  it("takes the limit from the contract's tuning (default window 1M x 0.95 = 950k)", () => {
-    expect(refused(calls(repo({}), transcript(940_000), sid("def1"), 10))).toEqual([]);
-    expect(refused(calls(repo({}), transcript(960_000), sid("def2"), 10))).toEqual([10]);
+  it("takes the limit from the contract's tuning (default: 1M x 0.95, capped at contextCap 350k)", () => {
+    expect(refused(calls(repo({}), transcript(340_000), sid("def1"), 10))).toEqual([]);
+    expect(refused(calls(repo({}), transcript(360_000), sid("def2"), 10))).toEqual([10]);
   });
 
   it("counts per session id, so a second session starts its own count", () => {

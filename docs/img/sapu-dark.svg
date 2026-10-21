@@ -189,7 +189,7 @@
 <text x="142" y="1220" class="cap">end-of-wave net: full suite on <tspan class="mono">origin/&lt;base&gt;</tspan> every 4th merge + when the queue drains (profile: other cadence, or none)</text>
   <circle cx="46" cy="1271" r="14" fill="url(#brand)"/>
   <text x="46" y="1275.5" class="white" text-anchor="middle" style="font-size:13px;font-weight:700">↻</text>
-  <text x="80" y="1276"><tspan class="sec">End of each session</tspan><tspan class="sec2" dx="12">context past its limit, a share of the model's window (contract tuning)</tspan></text>
+  <text x="80" y="1276"><tspan class="sec">End of each session</tspan><tspan class="sec2" dx="12">context past its limit: a share of the window, at most 350k tokens (tuning)</tspan></text>
   <rect x="80" y="1296" width="184" height="92" rx="12" class="card" filter="url(#sh)"/>
   <text x="172" y="1323" class="tb" text-anchor="middle">session limit reached</text>
   <text x="172" y="1343" class="cap" text-anchor="middle">checked between waves,</text>
