@@ -909,7 +909,8 @@ if [ -n "$RED" ]; then
   # Never for a test-like ✗ step (e2e, playwright, a runner with no FAIL line): a flaky test is no network outage, and
   # 2.27.0 keeps those out of every retry. Never for a ✗ line with no step name (nothing to re-run by name).
   INFRA_LINE=""
-  XTESTLIKE="$(grep -ciE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' <<<"$XSTEPS" || true)"
+  # ponytail: by step name; a browser step named outside this list still counts as non-test (upgrade: per-step logs).
+  XTESTLIKE="$(grep -ciE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress|smoke|journey|journeys|integration|browser|a11y|lighthouse|storybook)([^[:alpha:]]|$)' <<<"$XSTEPS" || true)"
   XBLANK="$(grep -cE '^✗[[:space:]]*([0-9][0-9.]*s)?[[:space:]]*$' <<<"$SUMMARY" || true)" # from SUMMARY: $(…) drops a trailing empty line
   if [ -z "$TESTS" ] && [ -z "$OTHER" ] && [ -n "$XSTEPS" ] && [ "$XTESTLIKE" = 0 ] && [ "$XBLANK" = 0 ] && [[ "$RED" != *gate.redIf* ]] && [[ "$RED" != *"no gate summary"* ]]; then
     INFRA_LINE="$(grep -m1 -iE "$INFRA_RE" <<<"$CLEAN" | sed -E 's/^[[:space:]]+//' | cut -c1-200 || true)"
@@ -936,7 +937,7 @@ if [ -n "$RED" ]; then
     sleep "$IWAIT"
     SRES=green; SLOG=""
     while IFS= read -r st; do
-      case "$st" in -*) say "step '$st' looks like an option: not passing it to gate.step"; SRES=red; break ;; esac
+      case "$st" in -*) say "step '$st' looks like an option: not passing it to gate.step"; SRES=red; SLOG=""; break ;; esac
       SLOG="$(mktemp "${TMPDIR:-/tmp}/gate-step-pr$PR.XXXXXX")" || { SRES=setup-failed; break; }
       st0=$SECONDS; src=0
       SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \

@@ -1964,6 +1964,7 @@ describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs o
     ["no network error in the log", { HX_GATE_OUT: "lint: 3 problems" }],
     ["a gate.redIf line", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n⊘ cyber (no database)" }],
     ["a test-like ✗ step (E2E prints no FAIL line)", { HX_GATE_OUT: "[WebServer] Error: connect ECONNREFUSED 127.0.0.1:5432", HX_GATE_SUMMARY: "✗ e2e 40.0s" }],
+    ["a browser step named outside the runner words (smoke:journeys)", { HX_GATE_OUT: "[WebServer] Error: connect ECONNREFUSED 127.0.0.1:5432", HX_GATE_SUMMARY: "✗ smoke:journeys 40.0s" }],
     ["a ✗ line with no step name", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n✗   " }],
   ] as const)("not infra, no step re-run: %s", (_what, env) => {
     const h = h0();

@@ -600,7 +600,7 @@ again" (exit 2; the base check, no whole re-run). Name in `gate.testSteps` only 
 failure as a file line (vitest, jest, pytest, go test, …): a step that can fail without one (E2E, coverage, a static
 check with "test" in its name) must stay outside it, or the retry would pass over its failure.
 **Infra re-run** (plugin ≥ 2.30.0): a red gate with no failing test file, every failure line read, no `gate.redIf`
-line, no ✗ step that looks like a test run (`test`, `spec`, `e2e`, `playwright`, `cypress`, a runner's name) or has no name, and a network error in its log (`ETIMEDOUT`, `ECONNRESET`, `ECONNREFUSED`, `EAI_AGAIN`, `ENOTFOUND`,
+line, no ✗ step that looks like a test run (`test`, `spec`, `e2e`, `playwright`, `cypress`, `smoke`, `journey`, `integration`, `browser`, `a11y`, `lighthouse`, `storybook`, a runner's name) or has no name, and a network error in its log (`ETIMEDOUT`, `ECONNRESET`, `ECONNREFUSED`, `EAI_AGAIN`, `ENOTFOUND`,
 `ENETUNREACH`, `EHOSTUNREACH`, `socket hang up`, `network timeout`, `getaddrinfo`, `endpoint returned an error`, an
 HTTP 502/503/504) gets verdict `infra` in the gates log. With `gate.step`, after a pause (`SAPU_INFRA_WAIT` seconds,
 default 30) each ✗ summary step runs once more, by name, on the same tree, before `mergeAfter`; each run appends
