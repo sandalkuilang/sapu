@@ -1899,3 +1899,57 @@ describe("sapu-merge.sh same-run retry — a red gate's failing test files run o
     expect(h.gh()).not.toMatch(/pr merge/);
   });
 });
+
+describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs only its ✗ steps through gate.step", () => {
+  const STEP = `#!/usr/bin/env bash\necho "step $*" >> "$SAPU_MAIN/.git/step.out"\nexit "\${HX_STEP_RC:-0}"\n`;
+  const GATE_KEYS = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+  const h0 = (gate: object = { ...GATE_KEYS, step: "scripts/step.sh --one" }) => harness({ contract: { gate, policy: { traces: "none" } }, main: { "scripts/step.sh": STEP } });
+  const NET = { SAPU_INFRA_WAIT: "0", HX_GATE_RC: "1", HX_GATE_OUT: "npm warn audit network timeout at: https://registry.npmjs.org/-/npm/v1/security/advisories/bulk", HX_GATE_SUMMARY: "✗ npm audit 304.2s\n✗ verify:cyber 9.0s" };
+  const steps = (h: { MAIN: string }) => (existsSync(join(h.MAIN, ".git/step.out")) ? readFileSync(join(h.MAIN, ".git/step.out"), "utf8") : "");
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+
+  it("green re-run: each ✗ step once, by name, then merges; ledger keeps the infra red plus alone step lines", () => {
+    const h = h0();
+    const r = h.run(NET);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/verdict: infra — a network error, not the PR's code: npm warn audit network timeout/);
+    expect(r.err).toMatch(/retry: green — the infra-red steps pass .*\(npm audit,verify:cyber\): merging as green/);
+    expect(steps(h)).toBe("step --one npm audit\nstep --one verify:cyber\n");
+    const g = gates(h);
+    expect(g[0]).toMatch(/ red .* verdict=infra steps=npm_audit,verify:cyber$/);
+    expect(g[1]).toMatch(/ alone gate=\d+s failed=- tree=\S+ steps=npm_audit alone=green$/);
+    expect(h.gh()).toMatch(/pr merge 7/);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-review-pr7.md"), "utf8")).toMatch(/on a network error, which then passed on a same-tree re-run \(`gate.step`\): npm audit,verify:cyber/);
+    expect(r.out).toMatch(/red only on a network error in npm audit,verify:cyber, green on re-run/);
+  });
+
+  it("red re-run: exit 2, stops at the first red step, nothing merged", () => {
+    const h = h0();
+    const r = h.run({ ...NET, HX_STEP_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/retry: RED — an infra-red step fails again/);
+    expect(steps(h)).toBe("step --one npm audit\n");
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("no gate.step: verdict infra is said, no re-run, exit 2", () => {
+    const h = h0(GATE_KEYS);
+    const r = h.run(NET);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/verdict: infra/);
+    expect(r.err).toMatch(/no gate\.step in the contract/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it.each([
+    ["a failing test file beside the network error", { HX_GATE_OUT: `${NET.HX_GATE_OUT}\n${A_FAIL}`, HX_GATE_SUMMARY: "✗ npm test 3.0s" }],
+    ["no network error in the log", { HX_GATE_OUT: "lint: 3 problems" }],
+    ["a gate.redIf line", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n⊘ cyber (no database)" }],
+  ] as const)("not infra, no step re-run: %s", (_what, env) => {
+    const h = h0();
+    const r = h.run({ ...NET, ...env });
+    expect(r.status).toBe(2);
+    expect(r.err).not.toMatch(/verdict: infra/);
+    expect(steps(h)).toBe("");
+  });
+});

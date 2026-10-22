@@ -256,12 +256,12 @@ export function validate(c) {
   need(typeof c.gitEmail === "string" && /^[^@\s]+@[^@\s]+$/.test(c.gitEmail), "gitEmail must be an email");
   need(typeof c.baseBranch === "string" && /^[\w./-]+$/.test(c.baseBranch), "baseBranch must be a branch name");
   if (c.gate && typeof c.gate === "object") {
-    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck", "diff", "testFiles", "testSteps"]);
+    keys(c.gate, "gate", ["fast", "merge", "summaryStart", "redIf"], ["infra", "smokeCheck", "diff", "testFiles", "testSteps", "step"]);
     need(!("infra" in c.gate) || c.gate.infra === null || isStr(c.gate.infra), "gate.infra must be a command or null");
     // Opt-in: sapu-merge.sh gates on the argus smoke suite's CI run only when the base branch's contract says so.
     need(!("smokeCheck" in c.gate) || typeof c.gate.smokeCheck === "boolean", "gate.smokeCheck must be true or false (omit it for false)");
     // Optional worker-side slice of the merge gate (SAPU_BASE = origin/<base>) and the command --alone appends failing test files to.
-    for (const k of ["diff", "testFiles"]) need(!(k in c.gate) || isStr(c.gate[k]), `gate.${k} must be a command (omit it for none)`);
+    for (const k of ["diff", "testFiles", "step"]) need(!(k in c.gate) || isStr(c.gate[k]), `gate.${k} must be a command (omit it for none)`);
     need(isStr(c.gate.fast), "gate.fast must be a command");
     need(isStr(c.gate.merge), "gate.merge must be a command");
     need(isRegex(c.gate.summaryStart), "gate.summaryStart must be a valid regex");

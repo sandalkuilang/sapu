@@ -688,6 +688,12 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.30.0
+
+Nothing to do: start a new session. What behaves differently:
+- **A gate red only on a network error is re-run by step, not whole.** A red gate with no failing test whose log shows a network error (the npm advisory endpoint timing out, DNS, a 503) gets verdict `infra`. Add `gate.step` to the contract, a command that runs one gate summary step by its name, and `sapu-merge.sh` re-runs only those steps on the same tree after 30 s and merges when they pass, instead of a whole new gate. Without it the verdict is still said, and the orchestrator probes the endpoint before one whole re-run that does not count as the PR's.
+- **A worker may insist on a whole-tree search.** With `tuning.codeSearchFirst` on, a whole-tree search after the code search ran is refused once; sending the same call again unchanged now runs it (the code search missed a literal), instead of each resend burning one of the refusals.
+
 #### Upgrading from a version before 2.29.0
 
 Nothing to do: start a new session. What behaves differently:

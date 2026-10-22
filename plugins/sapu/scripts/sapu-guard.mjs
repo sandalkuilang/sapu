@@ -3348,11 +3348,17 @@ export function checkCodeSearchFirst({ input, ti = {}, ctx = null, main, refusal
     return null;
   }
   if (!(s.used ? wide : search) || s.refused >= refusals) return null;
+  // After the code search ran, a whole-tree search sent again unchanged is the worker's word that the code search
+  // missed it (a literal it does not index): it goes through. Measured: a counter alone taught a scout to resend the
+  // same command until the cap, two wasted steps on an 80k context.
+  const sig = commands.join("\n") || `${tool} ${JSON.stringify(ti)}`;
+  if (s.used && s.last === sig) return null;
   s.refused++;
+  s.last = sig;
   save();
-  const left = `(${s.refused} of ${refusals}; after that the call goes through)`;
+  const left = `(${s.refused} of ${refusals})`;
   return s.used
-    ? `a search over a whole tree is what the repo's code search does in one call: \`${cmd}\`. Grep a file it names instead. ${left}`
+    ? `a search over a whole tree is what the repo's code search does in one call: \`${cmd}\`. Grep a file it names instead; if the code search already missed what you need, send this same call again unchanged and it runs. ${left}`
     : `before searching, run the repo's code search once: \`${cmd}\`. It answers where/who-calls in one call; then grep or read the files it names. ${left}`;
 }
 

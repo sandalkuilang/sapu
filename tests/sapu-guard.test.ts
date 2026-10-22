@@ -4200,10 +4200,22 @@ describe("sapu-guard — code search first: a worker's searches wait for the rep
     expect(go("Glob", { pattern: "**/*.ts" })).toMatch(/whole tree/);
   });
 
+  it("after the code search, the same whole-tree search sent again unchanged goes through at once; a new one is refused", () => {
+    const go = worker(G.r, 20);
+    expect(go(...bash("node find Invoice"))).toBeNull();
+    expect(go(...bash("grep -rln biteship apps"))).toMatch(/send this same call again unchanged and it runs\. \(1 of 20\)/);
+    expect(go(...bash("grep -rln biteship apps"))).toBeNull();
+    expect(go(...bash("grep -rn courier apps"))).toMatch(/\(2 of 20\)/);
+    // before the code search ran, a resend changes nothing: the first search must be the code search
+    const pre = worker(G.r, 20);
+    expect(pre(...bash("grep -rn foo ."))).toMatch(/before searching/);
+    expect(pre(...bash("grep -rn foo ."))).toMatch(/before searching/);
+  });
+
   it("can never lock a worker out: after `refusals` refusals the call goes through; each worker counts alone", () => {
     const go = worker(G.r, 2);
     expect([1, 2, 3, 4].map(() => go(...bash("grep -rn foo ."))).map((r) => (r ? 1 : 0))).toEqual([1, 1, 0, 0]);
-    expect(worker(G.r, 2, "a2")(...bash("grep -rn foo ."))).toMatch(/\(1 of 2; after that the call goes through\)/);
+    expect(worker(G.r, 2, "a2")(...bash("grep -rn foo ."))).toMatch(/\(1 of 2\)/);
   });
 
   it("is off unless asked, and for a repo without a usable code search", () => {

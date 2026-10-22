@@ -141,6 +141,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
     "diff": "scripts/gate-diff.sh",     // optional: the part of the merge gate the worker's diff touches (the repo selects); the worker runs it before its PR, in its worktree, with SAPU_BASE=<baseBranch> (so `git diff origin/$SAPU_BASE...HEAD`); never replaces gate.fast; must differ from gate.merge
     "testFiles": "npx vitest run",      // optional: runs given test files (appended as arguments; must exit non-zero when one is not run): `--alone` and the same-run retry (§--alone)
     "testSteps": "^(npm test|vitest)",  // optional, a POSIX ERE (grep -E: no \d, (?:…) or lookaround): the gate summary's ✗ step names that are test runs printing every failure as a FAIL line; with testFiles it turns on the same-run retry
+    "step": "scripts/gate.sh --step",   // optional: re-runs ONE gate summary step by its name (appended as one argument; exit 0 green, 75 could not start): the infra re-run (§Infra re-run)
     "smokeCheck": true                  // OPTIONAL (default false): sapu-merge.sh also gates on the argus smoke suite's CI run (§The smoke check)
   },
 
@@ -180,7 +181,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
 ```
 
 **Version coupling.** `mergeMethod`, `host`, `tuning` and `guard.databases` need plugin
-**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**; `gate.diff` and `gate.testFiles` plugin **≥ 2.22.0**; `gate.testSteps` plugin **≥ 2.27.0**; `tuning.contextCap` plugin **≥ 2.29.0**. An older plugin refuses them as unknown keys: the
+**≥ 2.9.0**, `gate.smokeCheck` plugin **≥ 2.12.0**; `gate.diff` and `gate.testFiles` plugin **≥ 2.22.0**; `gate.testSteps` plugin **≥ 2.27.0**; `gate.step` plugin **≥ 2.30.0**; `tuning.contextCap` plugin **≥ 2.29.0**. An older plugin refuses them as unknown keys: the
 contract reads as broken, and the guard then blocks every subagent.
 
 ### Tuning
@@ -598,7 +599,16 @@ file a green retry is only A5's alone check (exit 2; one whole re-run is allowed
 again" (exit 2; the base check, no whole re-run). Name in `gate.testSteps` only steps whose runner prints every
 failure as a file line (vitest, jest, pytest, go test, …): a step that can fail without one (E2E, coverage, a static
 check with "test" in its name) must stay outside it, or the retry would pass over its failure.
-`gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` is for the merge script only.
+**Infra re-run** (plugin ≥ 2.30.0): a red gate with no failing test file, every failure line read, no `gate.redIf`
+line, and a network error in its log (`ETIMEDOUT`, `ECONNRESET`, `ECONNREFUSED`, `EAI_AGAIN`, `ENOTFOUND`,
+`ENETUNREACH`, `EHOSTUNREACH`, `socket hang up`, `network timeout`, `getaddrinfo`, `endpoint returned an error`, an
+HTTP 502/503/504) gets verdict `infra` in the gates log. With `gate.step`, after a pause (`SAPU_INFRA_WAIT` seconds,
+default 30) each ✗ summary step runs once more, by name, on the same tree, before `mergeAfter`; each run appends
+`<time> <PR> <SHA> alone gate=<s>s failed=- tree=<tree> steps=<step> alone=green|red|setup-failed`. Every step green =
+the tree passed every step, so it merges as green (the PR comment and the report name the steps); one red stops it
+(exit 2). Without `gate.step` the verdict is only said (exit 2). The signature list only decides whether to try:
+a step that is red for another reason is red again on the re-run.
+`gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` and `gate.step` are for the merge script only.
 
 `gate.merge`: exit 0 = green. It may prepare dependencies/DB in the PR worktree before running
 its gate. All its output goes to the log. **Exit 75** (`EX_TEMPFAIL`) means the gate could not even
