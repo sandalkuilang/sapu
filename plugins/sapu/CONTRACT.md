@@ -608,9 +608,10 @@ default 30) each ✗ summary step runs once more, by name, on the same tree, bef
 the tree passed every step, so it merges as green (the PR comment and the report name the steps); one red stops it
 (exit 2): `network error again` when that re-run's own output has one (still down), else `without a network error`
 (the step's own failure, the PR's defect). Its command is taken from `<MAIN>` only when that file matches
-`origin/<base>`, like `gate.merge`'s. Without `gate.step` the verdict is only said (exit 2). The signature list only decides whether to try:
+`origin/<base>`, like `gate.merge`'s. Without `gate.step` the verdict is only said (exit 2): once the endpoint answers, the orchestrator runs one
+whole re-run that does not count as the PR's, and red again on `infra` = BLOCKED with an `infra:` reason. The signature list only decides whether to try:
 a step that is red for another reason is red again on the re-run.
-`gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` and `gate.step` are for the merge script only.
+`gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` is for the merge script only. So is `gate.step`.
 
 `gate.merge`: exit 0 = green. It may prepare dependencies/DB in the PR worktree before running
 its gate. All its output goes to the log. **Exit 75** (`EX_TEMPFAIL`) means the gate could not even
