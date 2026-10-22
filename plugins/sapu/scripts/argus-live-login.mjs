@@ -199,6 +199,9 @@ const WATCH = `  const origins = new Set();
     const otp = page.locator("input[autocomplete=one-time-code]:visible");
     if (await otp.count()) return otp.first();
     if (loggedIn && (await visible(loggedIn(page)))) return null;
+    // A visible password field means the login form is still on screen (its app awaiting the
+    // sign-in), never a code step: its lone text field is the user field.
+    if (await page.locator("input[type=password]:visible").count()) return null;
     const one = page.locator("input[type=text]:visible, input[type=tel]:visible, input[type=number]:visible, input:not([type]):visible");
     return (await one.count()) === 1 ? one.first() : null;
   };

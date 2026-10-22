@@ -49,7 +49,7 @@
 
 export const meta = {
   name: 'sapu-wave',
-  description: 'sapu v2.30.0 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
+  description: 'sapu v2.30.1 — one issue to a merge-ready PR: scout → implement → tiered review → fix → pre-PR; never merges. Live progress: this run\'s log',
   whenToUse: 'Only from the sapu skill (SKILL.md §B3), with the wave table the orchestrator already triaged.',
   phases: [
     { title: 'Scout', detail: 'read-only: explores the issue, ends with a compact plan (and slices, when it is big)' },
