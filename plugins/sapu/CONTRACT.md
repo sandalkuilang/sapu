@@ -141,7 +141,7 @@ file instead: a seam for tests, never passed by the skills or `sapu-merge.sh`.
     "diff": "scripts/gate-diff.sh",     // optional: the part of the merge gate the worker's diff touches (the repo selects); the worker runs it before its PR, in its worktree, with SAPU_BASE=<baseBranch> (so `git diff origin/$SAPU_BASE...HEAD`); never replaces gate.fast; must differ from gate.merge
     "testFiles": "npx vitest run",      // optional: runs given test files (appended as arguments; must exit non-zero when one is not run): `--alone` and the same-run retry (§--alone)
     "testSteps": "^(npm test|vitest)",  // optional, a POSIX ERE (grep -E: no \d, (?:…) or lookaround): the gate summary's ✗ step names that are test runs printing every failure as a FAIL line; with testFiles it turns on the same-run retry
-    "step": "scripts/gate.sh --step",   // optional: re-runs ONE gate summary step by its name (appended as one argument; exit 0 green, 75 could not start): the infra re-run (§Infra re-run)
+    "step": "scripts/gate.sh --step",   // optional: re-runs ONE gate summary step by its name (appended as one argument; exit 0 green, 75 could not start; must exit non-zero for a name it does not know): the infra re-run (§Infra re-run)
     "smokeCheck": true                  // OPTIONAL (default false): sapu-merge.sh also gates on the argus smoke suite's CI run (§The smoke check)
   },
 
@@ -566,7 +566,7 @@ MySQL/MariaDB, MongoDB, Redis/Valkey) and Rails' `config/database.yml` names. `b
 
 ### Merge hooks
 
-`gate.merge`, `mergeAfter` and `gate.testFiles` (the same-run retry, `--alone`) are run by `sapu-merge.sh` with this env:
+`gate.merge`, `mergeAfter`, `gate.testFiles` (the same-run retry, `--alone`) and `gate.step` (the infra re-run) are run by `sapu-merge.sh` with this env:
 
 | Env | Content |
 |---|---|
@@ -600,13 +600,15 @@ again" (exit 2; the base check, no whole re-run). Name in `gate.testSteps` only 
 failure as a file line (vitest, jest, pytest, go test, …): a step that can fail without one (E2E, coverage, a static
 check with "test" in its name) must stay outside it, or the retry would pass over its failure.
 **Infra re-run** (plugin ≥ 2.30.0): a red gate with no failing test file, every failure line read, no `gate.redIf`
-line, and a network error in its log (`ETIMEDOUT`, `ECONNRESET`, `ECONNREFUSED`, `EAI_AGAIN`, `ENOTFOUND`,
+line, no ✗ step that looks like a test run (`test`, `spec`, `e2e`, `playwright`, `cypress`, a runner's name) or has no name, and a network error in its log (`ETIMEDOUT`, `ECONNRESET`, `ECONNREFUSED`, `EAI_AGAIN`, `ENOTFOUND`,
 `ENETUNREACH`, `EHOSTUNREACH`, `socket hang up`, `network timeout`, `getaddrinfo`, `endpoint returned an error`, an
 HTTP 502/503/504) gets verdict `infra` in the gates log. With `gate.step`, after a pause (`SAPU_INFRA_WAIT` seconds,
 default 30) each ✗ summary step runs once more, by name, on the same tree, before `mergeAfter`; each run appends
 `<time> <PR> <SHA> alone gate=<s>s failed=- tree=<tree> steps=<step> alone=green|red|setup-failed`. Every step green =
 the tree passed every step, so it merges as green (the PR comment and the report name the steps); one red stops it
-(exit 2). Without `gate.step` the verdict is only said (exit 2). The signature list only decides whether to try:
+(exit 2): `network error again` when that re-run's own output has one (still down), else `without a network error`
+(the step's own failure, the PR's defect). Its command is taken from `<MAIN>` only when that file matches
+`origin/<base>`, like `gate.merge`'s. Without `gate.step` the verdict is only said (exit 2). The signature list only decides whether to try:
 a step that is red for another reason is red again on the re-run.
 `gate.diff` is for workers (SAPU_BASE = `baseBranch`); `gate.testFiles` and `gate.step` are for the merge script only.
 

@@ -4210,6 +4210,9 @@ describe("sapu-guard — code search first: a worker's searches wait for the rep
     const pre = worker(G.r, 20);
     expect(pre(...bash("grep -rn foo ."))).toMatch(/before searching/);
     expect(pre(...bash("grep -rn foo ."))).toMatch(/before searching/);
+    // a refusal from before the code search is not one the worker may insist on afterwards
+    expect(pre(...bash("node find Invoice"))).toBeNull();
+    expect(pre(...bash("grep -rn foo ."))).toMatch(/whole tree/);
   });
 
   it("can never lock a worker out: after `refusals` refusals the call goes through; each worker counts alone", () => {

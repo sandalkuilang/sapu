@@ -211,14 +211,14 @@ run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
 }
 
 # The files the merge takes from <MAIN> — the contract and every protected word of gate.merge,
-# mergeAfter and redAreas — whose content in <MAIN> is not the blob origin/<base> holds,
+# mergeAfter, redAreas, gate.testFiles and gate.step — whose content in <MAIN> is not the blob origin/<base> holds,
 # comma-separated; empty when all match. Content, not git status: `git hash-object` reads the
 # file itself, so skip-worktree, assume-unchanged and a local commit hide nothing. A path origin
 # lacks is never run from <MAIN> (run_contract), so it is not compared.
 main_mismatch() {
   local -a p=("$CONTRACT_FILE") bad=()
   local c x r have ok
-  for c in "$P_GATE" "$P_AFTER" "$P_RED" "$P_ALONE"; do
+  for c in "$P_GATE" "$P_AFTER" "$P_RED" "$P_ALONE" "$P_STEP"; do
     x="$(protected_path "$c")"
     [ -z "$x" ] || p+=("$x")
   done
@@ -906,8 +906,12 @@ if [ -n "$RED" ]; then
   # network error (the registry, an advisory endpoint, DNS): the outside world, not the PR. Only a re-run proves it.
   # ponytail: a fixed list of network signatures; a contract key (gate.infraIf) if a repo's tools word them otherwise.
   INFRA_RE='ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|socket hang up|network timeout|getaddrinfo|endpoint returned an error|(HTTP|status|code)[ :]*5(02|03|04)([^0-9]|$)'
+  # Never for a test-like ✗ step (e2e, playwright, a runner with no FAIL line): a flaky test is no network outage, and
+  # 2.27.0 keeps those out of every retry. Never for a ✗ line with no step name (nothing to re-run by name).
   INFRA_LINE=""
-  if [ -z "$TESTS" ] && [ -z "$OTHER" ] && [ -n "$XSTEPS" ] && [[ "$RED" != *gate.redIf* ]] && [[ "$RED" != *"no gate summary"* ]]; then
+  XTESTLIKE="$(grep -ciE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress)([^[:alpha:]]|$)' <<<"$XSTEPS" || true)"
+  XBLANK="$(grep -cE '^✗[[:space:]]*([0-9][0-9.]*s)?[[:space:]]*$' <<<"$SUMMARY" || true)" # from SUMMARY: $(…) drops a trailing empty line
+  if [ -z "$TESTS" ] && [ -z "$OTHER" ] && [ -n "$XSTEPS" ] && [ "$XTESTLIKE" = 0 ] && [ "$XBLANK" = 0 ] && [[ "$RED" != *gate.redIf* ]] && [[ "$RED" != *"no gate summary"* ]]; then
     INFRA_LINE="$(grep -m1 -iE "$INFRA_RE" <<<"$CLEAN" | sed -E 's/^[[:space:]]+//' | cut -c1-200 || true)"
     [ -z "$INFRA_LINE" ] || VERDICT=infra
   fi
@@ -927,11 +931,11 @@ if [ -n "$RED" ]; then
   # green = the same tree passed every step of the gate, so it merges as green; one red = red, no whole re-run here.
   if [ "$VERDICT" = infra ]; then
     [ -n "$P_STEP" ] || { say "infra: no gate.step in the contract, so no same-run step re-run — A5: once the endpoint answers, one whole re-run (not counted as the PR's)"; exit 2; }
-    say "infra re-run in ${SAPU_INFRA_WAIT:-30}s: $(paste -sd, - <<<"$XSTEPS")"
-    sleep "${SAPU_INFRA_WAIT:-30}"
+    IWAIT="${SAPU_INFRA_WAIT:-30}"; [[ "$IWAIT" =~ ^[0-9]+$ ]] || IWAIT=30
+    say "infra re-run in ${IWAIT}s: $(paste -sd, - <<<"$XSTEPS")"
+    sleep "$IWAIT"
     SRES=green; SLOG=""
     while IFS= read -r st; do
-      [ -n "$st" ] || continue
       case "$st" in -*) say "step '$st' looks like an option: not passing it to gate.step"; SRES=red; break ;; esac
       SLOG="$(mktemp "${TMPDIR:-/tmp}/gate-step-pr$PR.XXXXXX")" || { SRES=setup-failed; break; }
       st0=$SECONDS; src=0
@@ -944,7 +948,14 @@ if [ -n "$RED" ]; then
     done <<<"$XSTEPS"
     case "$SRES" in
       green) RETRIED_STEPS="$(paste -sd, - <<<"$XSTEPS")"; say "retry: green — the infra-red steps pass on a re-run on tree $TREE ($RETRIED_STEPS): merging as green" ;;
-      red) say "retry: RED — an infra-red step fails again on tree $TREE (still down, or not infra after all): A5 — BLOCKED with an infra: reason, no whole re-run now. Log: ${SLOG:-none}"; exit 2 ;;
+      red)
+        # The re-run's own log is the step's alone: a network error there = still down; none = the step's own failure.
+        if [ -n "$SLOG" ] && grep -qiE "$INFRA_RE" "$SLOG" 2>/dev/null; then
+          say "retry: RED, network error again — the outside world is still down: A5 — BLOCKED with an infra: reason, no whole re-run now. Log: $SLOG"
+        else
+          say "retry: RED without a network error — the step fails on its own: the PR's defect (NEEDS-FIX), not infra. Log: ${SLOG:-none}"
+        fi
+        exit 2 ;;
       *) say "retry: no verdict (gate.step could not run) — the gate stays red. Log: ${SLOG:-none}"; exit 2 ;;
     esac
   fi

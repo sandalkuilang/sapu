@@ -3354,7 +3354,7 @@ export function checkCodeSearchFirst({ input, ti = {}, ctx = null, main, refusal
   const sig = commands.join("\n") || `${tool} ${JSON.stringify(ti)}`;
   if (s.used && s.last === sig) return null;
   s.refused++;
-  s.last = sig;
+  s.last = s.used ? sig : undefined; // only a refusal after the code search ran may be insisted on
   save();
   const left = `(${s.refused} of ${refusals})`;
   return s.used

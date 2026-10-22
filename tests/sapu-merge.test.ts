@@ -1923,14 +1923,32 @@ describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs o
     expect(r.out).toMatch(/red only on a network error in npm audit,verify:cyber, green on re-run/);
   });
 
-  it("red re-run: exit 2, stops at the first red step, nothing merged", () => {
+  it("red re-run: exit 2, stops at the first red step; its own output decides infra vs the PR's defect", () => {
     const h = h0();
     const r = h.run({ ...NET, HX_STEP_RC: "1" });
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/retry: RED — an infra-red step fails again/);
+    expect(r.err).toMatch(/retry: RED without a network error — the step fails on its own: the PR's defect \(NEEDS-FIX\)/);
     expect(steps(h)).toBe("step --one npm audit\n");
     expect(h.gh()).not.toMatch(/pr merge/);
+    const net = harness({ contract: { gate: { ...GATE_KEYS, step: "scripts/step.sh" } }, main: { "scripts/step.sh": "#!/usr/bin/env bash\necho 'npm error audit endpoint returned an error'\nexit 1\n" } });
+    expect(net.run(NET).err).toMatch(/retry: RED, network error again — the outside world is still down/);
   });
+
+  it("a gate.step file in <MAIN> that differs from origin stops the merge before the gate", () => {
+    const h = h0();
+    h.write({ "scripts/step.sh": "#!/usr/bin/env bash\necho LOCAL; exit 0\n" });
+    const r = h.run(NET);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/scripts\/step\.sh.*differs from origin\/main|differs from origin\/main.*scripts\/step\.sh/s);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("a non-numeric SAPU_INFRA_WAIT falls back to the default pause instead of failing the run", () => {
+    const h = h0();
+    const r = h.run({ ...NET, SAPU_INFRA_WAIT: "abc", HX_STEP_RC: "1" });
+    expect(r.err).toMatch(/infra re-run in 30s/);
+    expect(r.status).toBe(2);
+  }, 60_000);
 
   it("no gate.step: verdict infra is said, no re-run, exit 2", () => {
     const h = h0(GATE_KEYS);
@@ -1945,6 +1963,8 @@ describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs o
     ["a failing test file beside the network error", { HX_GATE_OUT: `${NET.HX_GATE_OUT}\n${A_FAIL}`, HX_GATE_SUMMARY: "✗ npm test 3.0s" }],
     ["no network error in the log", { HX_GATE_OUT: "lint: 3 problems" }],
     ["a gate.redIf line", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n⊘ cyber (no database)" }],
+    ["a test-like ✗ step (E2E prints no FAIL line)", { HX_GATE_OUT: "[WebServer] Error: connect ECONNREFUSED 127.0.0.1:5432", HX_GATE_SUMMARY: "✗ e2e 40.0s" }],
+    ["a ✗ line with no step name", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n✗   " }],
   ] as const)("not infra, no step re-run: %s", (_what, env) => {
     const h = h0();
     const r = h.run({ ...NET, ...env });
