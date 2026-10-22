@@ -204,14 +204,17 @@ describe("validate", () => {
   });
 });
 
-describe("gate.diff, gate.testFiles and gate.testSteps", () => {
+describe("gate.diff, gate.testFiles, gate.testSteps and gate.step", () => {
   it("are optional (absent = none) and take a command each", () => {
     expect(validate(clone())).toEqual([]);
     const c = clone();
     c.gate.diff = "scripts/gate-diff.sh";
     c.gate.testFiles = "npx vitest run";
     c.gate.testSteps = "^(npm test|vitest)";
+    c.gate.step = "scripts/gate.sh --step";
     expect(validate(c)).toEqual([]);
+    c.gate.step = 3;
+    expect(validate(c).join("\n")).toMatch(/gate\.step must be a command/);
   });
 });
 

@@ -1899,3 +1899,78 @@ describe("sapu-merge.sh same-run retry — a red gate's failing test files run o
     expect(h.gh()).not.toMatch(/pr merge/);
   });
 });
+
+describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs only its ✗ steps through gate.step", () => {
+  const STEP = `#!/usr/bin/env bash\necho "step $*" >> "$SAPU_MAIN/.git/step.out"\nexit "\${HX_STEP_RC:-0}"\n`;
+  const GATE_KEYS = { fast: "scripts/gate.sh --fast", merge: "scripts/gate.sh", summaryStart: "^Gate summary", redIf: "^⊘" };
+  const h0 = (gate: object = { ...GATE_KEYS, step: "scripts/step.sh --one" }) => harness({ contract: { gate, policy: { traces: "none" } }, main: { "scripts/step.sh": STEP } });
+  const NET = { SAPU_INFRA_WAIT: "0", HX_GATE_RC: "1", HX_GATE_OUT: "npm warn audit network timeout at: https://registry.npmjs.org/-/npm/v1/security/advisories/bulk", HX_GATE_SUMMARY: "✗ npm audit 304.2s\n✗ verify:cyber 9.0s" };
+  const steps = (h: { MAIN: string }) => (existsSync(join(h.MAIN, ".git/step.out")) ? readFileSync(join(h.MAIN, ".git/step.out"), "utf8") : "");
+  const gates = (h: { MAIN: string }) => readFileSync(join(h.MAIN, ".git/sapu-gates.log"), "utf8").split("\n").filter(Boolean);
+
+  it("green re-run: each ✗ step once, by name, then merges; ledger keeps the infra red plus alone step lines", () => {
+    const h = h0();
+    const r = h.run(NET);
+    expect(r.status).toBe(0);
+    expect(r.err).toMatch(/verdict: infra — a network error, not the PR's code: npm warn audit network timeout/);
+    expect(r.err).toMatch(/retry: green — the infra-red steps pass .*\(npm audit,verify:cyber\): merging as green/);
+    expect(steps(h)).toBe("step --one npm audit\nstep --one verify:cyber\n");
+    const g = gates(h);
+    expect(g[0]).toMatch(/ red .* verdict=infra steps=npm_audit,verify:cyber$/);
+    expect(g[1]).toMatch(/ alone gate=\d+s failed=- tree=\S+ steps=npm_audit alone=green$/);
+    expect(h.gh()).toMatch(/pr merge 7/);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-review-pr7.md"), "utf8")).toMatch(/on a network error, which then passed on a same-tree re-run \(`gate.step`\): npm audit,verify:cyber/);
+    expect(r.out).toMatch(/red only on a network error in npm audit,verify:cyber, green on re-run/);
+  });
+
+  it("red re-run: exit 2, stops at the first red step; its own output decides infra vs the PR's defect", () => {
+    const h = h0();
+    const r = h.run({ ...NET, HX_STEP_RC: "1" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/retry: RED without a network error — the step fails on its own: the PR's defect \(NEEDS-FIX\)/);
+    expect(steps(h)).toBe("step --one npm audit\n");
+    expect(h.gh()).not.toMatch(/pr merge/);
+    const net = harness({ contract: { gate: { ...GATE_KEYS, step: "scripts/step.sh" } }, main: { "scripts/step.sh": "#!/usr/bin/env bash\necho 'npm error audit endpoint returned an error'\nexit 1\n" } });
+    expect(net.run(NET).err).toMatch(/retry: RED, network error again — the outside world is still down/);
+  });
+
+  it("a gate.step file in <MAIN> that differs from origin stops the merge before the gate", () => {
+    const h = h0();
+    h.write({ "scripts/step.sh": "#!/usr/bin/env bash\necho LOCAL; exit 0\n" });
+    const r = h.run(NET);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/scripts\/step\.sh.*differs from origin\/main|differs from origin\/main.*scripts\/step\.sh/s);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("a non-numeric SAPU_INFRA_WAIT falls back to the default pause instead of failing the run", () => {
+    const h = h0();
+    const r = h.run({ ...NET, SAPU_INFRA_WAIT: "abc", HX_STEP_RC: "1" });
+    expect(r.err).toMatch(/infra re-run in 30s/);
+    expect(r.status).toBe(2);
+  }, 60_000);
+
+  it("no gate.step: verdict infra is said, no re-run, exit 2", () => {
+    const h = h0(GATE_KEYS);
+    const r = h.run(NET);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/verdict: infra/);
+    expect(r.err).toMatch(/no gate\.step in the contract/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it.each([
+    ["a failing test file beside the network error", { HX_GATE_OUT: `${NET.HX_GATE_OUT}\n${A_FAIL}`, HX_GATE_SUMMARY: "✗ npm test 3.0s" }],
+    ["no network error in the log", { HX_GATE_OUT: "lint: 3 problems" }],
+    ["a gate.redIf line", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n⊘ cyber (no database)" }],
+    ["a test-like ✗ step (E2E prints no FAIL line)", { HX_GATE_OUT: "[WebServer] Error: connect ECONNREFUSED 127.0.0.1:5432", HX_GATE_SUMMARY: "✗ e2e 40.0s" }],
+    ["a browser step named outside the runner words (smoke:journeys)", { HX_GATE_OUT: "[WebServer] Error: connect ECONNREFUSED 127.0.0.1:5432", HX_GATE_SUMMARY: "✗ smoke:journeys 40.0s" }],
+    ["a ✗ line with no step name", { HX_GATE_SUMMARY: "✗ npm audit 1.0s\n✗   " }],
+  ] as const)("not infra, no step re-run: %s", (_what, env) => {
+    const h = h0();
+    const r = h.run({ ...NET, ...env });
+    expect(r.status).toBe(2);
+    expect(r.err).not.toMatch(/verdict: infra/);
+    expect(steps(h)).toBe("");
+  });
+});

@@ -169,7 +169,7 @@ protect() { # <command>
   (cd "$MAIN" && node "$SCRIPT_DIR/sapu-contract.mjs" protect --ref "$BASE_SHA" -- "${w[@]}")
 }
 P_GATE="$(protect "$GATE_MERGE")" || die "cannot read which file gate.merge runs (see above)"
-P_AFTER=""; P_RED=""; P_ALONE=""; RETRIED=""
+P_AFTER=""; P_RED=""; P_ALONE=""; P_STEP=""; RETRIED=""; RETRIED_STEPS=""
 if [ -n "$MERGE_AFTER" ]; then P_AFTER="$(protect "$MERGE_AFTER")" || die "cannot read which file mergeAfter runs (see above)"; fi
 if [ "$ALONE" = 1 ]; then
   [ -n "$(cget .gate.testFiles)" ] || die "--alone needs gate.testFiles in the contract on origin/$BASE (CONTRACT.md): the command that runs the failing test files, which are appended to it"
@@ -179,6 +179,10 @@ fi
 if [ -n "$(cget .gate.testFiles)" ]; then
   if [ "$ALONE" = 1 ]; then P_ALONE="$(protect "$(cget .gate.testFiles)")" || die "cannot read which file gate.testFiles runs (see above)"
   else P_ALONE="$(protect "$(cget .gate.testFiles)")" || { say "warning: cannot read which file gate.testFiles runs: no same-run retry"; P_ALONE=""; }; fi
+fi
+# gate.step drives the same-run re-run of a red gate's infra-red steps (7. below); unreadable = no re-run, never a stop.
+if [ "$ALONE" = 0 ] && [ -n "$(cget .gate.step)" ]; then
+  P_STEP="$(protect "$(cget .gate.step)")" || { say "warning: cannot read which file gate.step runs: no infra re-run"; P_STEP=""; }
 fi
 if [ -n "$RED_AREAS" ]; then P_RED="$(protect "$RED_AREAS")" || die "cannot read which file redAreas runs (see above)"; fi
 
@@ -207,14 +211,14 @@ run_contract() { # <dir> <fallback-dir or ""> <protect JSON> [extra args...]
 }
 
 # The files the merge takes from <MAIN> — the contract and every protected word of gate.merge,
-# mergeAfter and redAreas — whose content in <MAIN> is not the blob origin/<base> holds,
+# mergeAfter, redAreas, gate.testFiles and gate.step — whose content in <MAIN> is not the blob origin/<base> holds,
 # comma-separated; empty when all match. Content, not git status: `git hash-object` reads the
 # file itself, so skip-worktree, assume-unchanged and a local commit hide nothing. A path origin
 # lacks is never run from <MAIN> (run_contract), so it is not compared.
 main_mismatch() {
   local -a p=("$CONTRACT_FILE") bad=()
   local c x r have ok
-  for c in "$P_GATE" "$P_AFTER" "$P_RED" "$P_ALONE"; do
+  for c in "$P_GATE" "$P_AFTER" "$P_RED" "$P_ALONE" "$P_STEP"; do
     x="$(protected_path "$c")"
     [ -z "$x" ] || p+=("$x")
   done
@@ -897,8 +901,24 @@ if [ -n "$RED" ]; then
   STEPS="$( { printf '%s\n' "$STEPS"; printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' | grep -iE '(^|[^[:alpha:]])(test|tests|spec|specs)([^[:alpha:]]|$)' | grep -iE 'lint|type|tsc|build|format'; } | grep . | paste -sd, - || true)"
   [ -z "$STEPS" ] || NONTEST="${NONTEST:+$NONTEST; }a non-test step failed: $STEPS"
   if [ -n "$TESTS" ] && [ "${#NEW[@]}" = 0 ] && [ -z "$NONTEST" ]; then VERDICT=known-flake; fi
+  XSTEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' || true)"
+  # infra = no failing test file, every failure line read, no gate.redIf / missing summary, and the log carries a
+  # network error (the registry, an advisory endpoint, DNS): the outside world, not the PR. Only a re-run proves it.
+  # ponytail: a fixed list of network signatures; a contract key (gate.infraIf) if a repo's tools word them otherwise.
+  INFRA_RE='ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|socket hang up|network timeout|getaddrinfo|endpoint returned an error|(HTTP|status|code)[ :]*5(02|03|04)([^0-9]|$)'
+  # Never for a test-like ✗ step (e2e, playwright, a runner with no FAIL line): a flaky test is no network outage, and
+  # 2.27.0 keeps those out of every retry. Never for a ✗ line with no step name (nothing to re-run by name).
+  INFRA_LINE=""
+  # ponytail: by step name; a browser step named outside this list still counts as non-test (upgrade: per-step logs).
+  XTESTLIKE="$(grep -ciE '(^|[^[:alpha:]])(test|tests|spec|specs|vitest|jest|pytest|rspec|mocha|junit|nextest|e2e|playwright|cypress|smoke|journey|journeys|integration|browser|a11y|lighthouse|storybook)([^[:alpha:]]|$)' <<<"$XSTEPS" || true)"
+  XBLANK="$(grep -cE '^✗[[:space:]]*([0-9][0-9.]*s)?[[:space:]]*$' <<<"$SUMMARY" || true)" # from SUMMARY: $(…) drops a trailing empty line
+  if [ -z "$TESTS" ] && [ -z "$OTHER" ] && [ -n "$XSTEPS" ] && [ "$XTESTLIKE" = 0 ] && [ "$XBLANK" = 0 ] && [[ "$RED" != *gate.redIf* ]] && [[ "$RED" != *"no gate summary"* ]]; then
+    INFRA_LINE="$(grep -m1 -iE "$INFRA_RE" <<<"$CLEAN" | sed -E 's/^[[:space:]]+//' | cut -c1-200 || true)"
+    [ -z "$INFRA_LINE" ] || VERDICT=infra
+  fi
   gate_record red "${TESTS:--}" "$VERDICT" "$(sed -E 's/(^|,)✗[[:space:]]*/\1/g' <<<"$FAILED")"
-  if [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
+  if [ "$VERDICT" = infra ]; then say "verdict: infra — a network error, not the PR's code: $INFRA_LINE$LIVE_NOTE"
+  elif [ -z "$TESTS" ]; then say "verdict: unknown (the log names no failing test)$LIVE_NOTE"
   elif [ -n "$NONTEST" ]; then say "verdict: unknown (not only tests failed: $NONTEST)$DIFF_NOTE$LIVE_NOTE"
   elif [ "$VERDICT" = known-flake ]; then say "verdict: known-flake — every failing test is proven flaky (red, then green on the same tree, in another PR): $(IFS=';'; printf '%s' "${SEEN[*]}")$LIVE_NOTE"
   else say "verdict: unknown — not proven flaky: $(printf '%s, ' "${NEW[@]}" | sed 's/, $//')${SEEN[0]:+; proven flaky: $(IFS=';'; printf '%s' "${SEEN[*]}")}$DIFF_NOTE$LIVE_NOTE"; fi
@@ -908,13 +928,45 @@ if [ -n "$RED" ]; then
   # file that passes alone is weaker evidence than a whole re-run under load, so for an unproven file it is only A5's
   # alone check, scripted (green = one whole re-run is allowed; red = red again, no whole re-run). The retry's line is
   # `alone`, never a flake proof.
-  XSTEPS="$(printf '%s\n' "$SUMMARY" | grep -E '^✗' | LC_ALL=C sed -E 's/^✗[[:space:]]*//; s/ [0-9][0-9.]*s$//' || true)"
+  # Infra re-run (contract gate.step): each ✗ step runs once more on this tree, after a pause, before mergeAfter. All
+  # green = the same tree passed every step of the gate, so it merges as green; one red = red, no whole re-run here.
+  if [ "$VERDICT" = infra ]; then
+    [ -n "$P_STEP" ] || { say "infra: no gate.step in the contract, so no same-run step re-run — A5: once the endpoint answers, one whole re-run (not counted as the PR's)"; exit 2; }
+    IWAIT="${SAPU_INFRA_WAIT:-30}"; [[ "$IWAIT" =~ ^[0-9]+$ ]] || IWAIT=30
+    say "infra re-run in ${IWAIT}s: $(paste -sd, - <<<"$XSTEPS")"
+    sleep "$IWAIT"
+    SRES=green; SLOG=""
+    while IFS= read -r st; do
+      case "$st" in -*) say "step '$st' looks like an option: not passing it to gate.step"; SRES=red; SLOG=""; break ;; esac
+      SLOG="$(mktemp "${TMPDIR:-/tmp}/gate-step-pr$PR.XXXXXX")" || { SRES=setup-failed; break; }
+      st0=$SECONDS; src=0
+      SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
+        run_contract "$WT" "$WT" "$P_STEP" "$st" >"$SLOG" 2>&1 || src=$?
+      sr=green; [ "$src" = 0 ] || sr=red; [ "$src" != 75 ] || sr=setup-failed
+      { printf '%s %s %s alone gate=%ss failed=- tree=%s steps=%s alone=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PR" "$SHA" "$((SECONDS - st0))" "$TREE" "${st// /_}" "$sr" >>"$GATES_LOG"; } 2>/dev/null \
+        || say "warning: could not record the step re-run in $GATES_LOG"
+      [ "$sr" = green ] || { SRES="$sr"; break; }
+    done <<<"$XSTEPS"
+    case "$SRES" in
+      green) RETRIED_STEPS="$(paste -sd, - <<<"$XSTEPS")"; say "retry: green — the infra-red steps pass on a re-run on tree $TREE ($RETRIED_STEPS): merging as green" ;;
+      red)
+        # The re-run's own log is the step's alone: a network error there = still down; none = the step's own failure.
+        if [ -n "$SLOG" ] && grep -qiE "$INFRA_RE" "$SLOG" 2>/dev/null; then
+          say "retry: RED, network error again — the outside world is still down: A5 — BLOCKED with an infra: reason, no whole re-run now. Log: $SLOG"
+        else
+          say "retry: RED without a network error — the step fails on its own: the PR's defect (NEEDS-FIX), not infra. Log: ${SLOG:-none}"
+        fi
+        exit 2 ;;
+      *) say "retry: no verdict (gate.step could not run) — the gate stays red. Log: ${SLOG:-none}"; exit 2 ;;
+    esac
+  fi
   ALL_TEST=0
   # ONE ✗ step: its FAIL lines are then surely its own (two red test steps, one silent, would ride on the other's files).
   if [ -n "$TEST_STEPS" ] && [ "$(grep -c . <<<"$XSTEPS")" = 1 ]; then
     XRC=0; grep -qvE -- "$TEST_STEPS" <<<"$XSTEPS" || XRC=$?
     [ "$XRC" != 1 ] || ALL_TEST=1 # 1 = the ✗ step is in gate.testSteps; 0 = it is not; 2 = the regex is not ERE
   fi
+  if [ -z "$RETRIED_STEPS" ]; then
   [ -n "$P_ALONE" ] && [ "$ALL_TEST" = 1 ] && [ -n "$TESTS" ] && [ -z "$NONTEST" ] || exit 2
   ARC=0; alone_run "$TESTS" "$TREE" || ARC=$?
   case "$ARC" in
@@ -926,6 +978,7 @@ if [ -n "$RED" ]; then
     2) say "retry: RED — the red test files fail again on tree $TREE: A5's red again (base check next; no whole re-run). Log: $ALOG"; exit 2 ;;
     *) say "retry: no verdict (gate.testFiles could not run them) — the gate stays red. Log: ${ALOG:-none}"; exit 2 ;;
   esac
+  fi
 else
   gate_record green -
 fi
@@ -949,6 +1002,7 @@ FULL_COMMENT="$(mktemp "${TMPDIR:-/tmp}/sapu-merge-comment-$PR.XXXXXX")"
 {
   cat "$COMMENT_FILE"
   printf '\n\n**Merge gate** (`%s`, workers=%s) at `%s`:\n\n```\n%s\n```\n' "$GATE_MERGE" "$WORKERS" "$SHA" "$SUMMARY"
+  [ -z "$RETRIED_STEPS" ] || printf '\nRed on its first run only in these steps, on a network error, which then passed on a same-tree re-run (`gate.step`): %s\n' "$RETRIED_STEPS"
   [ -z "$RETRIED" ] || printf '\nRed on its first run only in these test files, which then passed on a same-tree retry (`gate.testFiles`): %s\n' "$RETRIED"
 } >"$FULL_COMMENT"
 if [ "$P_TRACES" = none ]; then
@@ -1075,7 +1129,7 @@ fi
 
 # --- 10. report -------------------------------------------------------------------------------------------------------------------------
 printf 'PR #%s merged (%s)\nSHA: %s\nGate: %s\nMerged: yes\nRelabelled %s:%s\n' \
-  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}${RETRIED:+ (red only in known-flake $RETRIED, green on retry)}" "$L_DONE" "${RELABELED:- none}"
+  "$PR" "$METHOD" "$SHA" "${GATE_LINE:-$(printf '%s\n' "$SUMMARY" | tail -1)}${RETRIED:+ (red only in known-flake $RETRIED, green on retry)}${RETRIED_STEPS:+ (red only on a network error in $RETRIED_STEPS, green on re-run)}" "$L_DONE" "${RELABELED:- none}"
 [ -z "$CLEANUP" ] || printf '%s\n' "$CLEANUP"
 [ -z "$LEFTOVER" ] || printf 'WARNING leftover worktree (remove by hand): %s\n' "$LEFTOVER"
 [ "$AFTER_FAILED" = 0 ] || { say "merged, but mergeAfter failed: fix what it reported before the next merge"; exit 3; }
