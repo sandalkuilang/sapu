@@ -39,6 +39,8 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
+import { claimWatch, watcherRuns } from "../plugins/sapu/scripts/argus-live-watch.mjs";
+// @ts-expect-error — plain ESM script without types
 import { minimize } from "../plugins/sapu/scripts/argus-live-minimize.mjs";
 // @ts-expect-error — plain ESM script without types
 import { DEADLINE_EXIT, deadlineRefusal, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
@@ -3262,6 +3264,30 @@ describe("argus-live show", () => {
       for (const c of [left, other]) if (c.pid && alive(c.pid)) process.kill(c.pid, "SIGKILL");
     }
   }, 60_000);
+
+  it("show --follow: a recorded watcher whose start time cannot be read is left alone, and no claim is written without a start time of its own", () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const unreadable = () => undefined; // ps failed
+    // A live pid whose start time cannot be read now is alive-unknown: kept, not taken over. A readable different one is a reused pid.
+    const rec = { pid: process.pid, start: "ticks:1", port: 4321, dashboardPgid: null, dashboardStart: null };
+    expect(watcherRuns(rec, undefined, unreadable)).toBe(true);
+    expect(watcherRuns(rec, undefined, () => "ticks:2")).toBe(false);
+    mkdirSync(join(t.main, ".argus/live"), { recursive: true });
+    const raw = `${JSON.stringify(rec)}\n`;
+    writeFileSync(watch, raw);
+    expect(() => claimWatch(t.main, 1234, undefined, unreadable)).toThrow(/^failed: this watcher's start time cannot be read/);
+    expect(readFileSync(watch, "utf8")).toBe(raw); // the live record stands: nothing taken over, nothing written
+    rmSync(watch);
+    expect(() => claimWatch(t.main, 1234, undefined, unreadable)).toThrow(/^failed: /);
+    expect(existsSync(watch)).toBe(false); // never a record without a start time
+    // With a readable own start time the same alive-unknown record is reused: its URL comes back, the file is untouched.
+    const other = { ...rec, pid: process.ppid }; // another live process, whose start time ps cannot give
+    const otherRaw = `${JSON.stringify(other)}\n`;
+    writeFileSync(watch, otherRaw);
+    expect(claimWatch(t.main, 1234, undefined, (pid: number) => (pid === process.pid ? "ticks:7" : undefined))).toEqual({ live: other });
+    expect(readFileSync(watch, "utf8")).toBe(otherRaw);
+  });
 
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });

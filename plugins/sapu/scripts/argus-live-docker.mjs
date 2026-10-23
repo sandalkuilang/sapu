@@ -514,40 +514,45 @@ function eventTime(e) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-/** A secret's value on a command line: quoted (it may hold spaces) or one word. */
-const ARG = `"[^"]*"|'[^']*'|\\S+`;
+const SHELLS = new Set(["sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"]);
+const WRAPPERS = new Set(["env", "exec", "command", "nice", "timeout"]);
+const WRAPPER_ARG = /^(?:-n|-i|-?\d+(?:\.\d+)?[smhd]?)$/; // env -i, nice -n 5, timeout 30s
 
 /**
- * A command line with the secrets it carries masked as `***`; the program, its other arguments and any SQL stay.
- * The command is another process's, whose secrets the CLI's `redact` does not know, so it is masked by shape:
- * URL userinfo (up to the last `@` of the word, whatever it holds, `/` too), `Authorization:` and `Bearer`
- * credentials, env assignments whose name holds PASS, PWD, TOKEN, SECRET, KEY, AUTH or CREDENTIAL, `-p<value>`
- * (mysql), `--password`, `--pass`, `--token` and `--secret` with a value, and `-a <value>` of `redis-cli`.
+ * The program an exec runs, from the Action's text after `exec_create: ` (the daemon joins the argv with
+ * spaces): the basename of the first word; for a shell run with `-c`, of the first word of the inner command,
+ * after leading `NAME=value` assignments (a quoted value may hold spaces) and trivial wrappers (WRAPPERS).
+ * Null when that word is no plain program name. Another process's secrets cannot be listed by shape
+ * (`PASSWORD=x`, libpq `password=x`, `curl -u a:b`, `-p<value>`, a header, a JSON body …): never an argument is shown.
  */
-function maskCommand(cmd) {
-  return cmd
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)\S*@/gi, "$1***@")
-    .replace(/(authorization:\s*)(?:(?:basic|bearer|digest|token|negotiate|hmac)\s+)?[^\s"']+/gi, "$1***")
-    .replace(/\bbearer\s+[^\s"']+/gi, "Bearer ***")
-    .replace(new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*(?:PASS|PWD|TOKEN|SECRET|KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*)=(?:${ARG})?`, "gi"), "$1=***")
-    .replace(new RegExp(`(^|\\s)-p(?!-)(?:${ARG})`, "g"), "$1-p***")
-    .replace(new RegExp(`(--(?:password|pass|token|secret)(?:=|\\s+))(?:${ARG})`, "gi"), "$1***")
-    .replace(new RegExp(`(\\bredis-cli\\b[^;|&]*?\\s-a\\s+)(?:${ARG})`, "g"), "$1***");
-}
-
-/** An exec's command line (the Action's text after `exec_create: `): control characters out, secrets masked, cut to 120 characters. */
-function execCommand(action) {
-  const cmd = maskCommand(action.slice(action.indexOf(":") + 1).replace(/[\x00-\x1f\x7f]+/g, " ")).trim();
-  return cmd.length > 120 ? `${cmd.slice(0, 120)}…` : cmd;
+function execProgram(action) {
+  const words = action.slice(action.indexOf(":") + 1).split(/[\s\x00-\x1f\x7f]+/).filter(Boolean).map((w) => w.replace(/^["'(]+/, ""));
+  const base = (w) => w.split("/").pop();
+  let i = 0;
+  if (SHELLS.has(base(words[0] ?? ""))) {
+    let c = 1;
+    while (words[c]?.startsWith("-") && !/^-[A-Za-z]*c$/.test(words[c])) c++;
+    if (words[c]?.startsWith("-")) i = c + 1;
+  }
+  for (let wrapped = false; i < words.length; i++) {
+    const w = words[i];
+    if (wrapped && WRAPPER_ARG.test(w)) continue;
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
+      const q = /=(["'])/.exec(w);
+      if (q && !w.includes(q[1], q.index + 2)) while (++i < words.length && !words[i].endsWith(q[1]));
+    } else if (WRAPPERS.has(base(w))) wrapped = true;
+    else return /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}$/.test(base(w)) ? base(w) : null;
+  }
+  return null;
 }
 
 /**
- * What a refusal on an object outside the run adds after its leading text: the exec's command (`exec_*`
+ * What a refusal on an object outside the run adds after its leading text: the exec's program (`exec_*`
  * events), the event's time, and that the gate cannot tell who did it, with the follower's file (relative to `main`).
  */
 function whatHappened(e, action, { main, eventsFile }) {
   const time = eventTime(e);
-  const facts = [action.startsWith("exec_") ? `command: ${execCommand(action)}` : null, time ? `at ${time}` : null].filter(Boolean);
+  const facts = [action.startsWith("exec_") ? `exec of ${execProgram(action) ?? "an unnamed program"}` : null, time ? `at ${time}` : null].filter(Boolean);
   const file = eventsFile ? `; the docker events of this run are in ${path.relative(main, eventsFile)}` : "";
   return `${facts.length ? ` (${facts.join(", ")})` : ""}. The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too${file}`;
 }
@@ -576,7 +581,7 @@ function whatHappened(e, action, { main, eventsFile }) {
  * follower, the window from `since`. A `follower` group (its run.json record) that no longer runs leaves
  * the gate blind: refused. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no
  * daemon running, means nothing was created through it. Throws `refused: …` naming the object; one on an object
- * outside the run goes on to say what was done to it (whatHappened: an exec's command, masked and cut; when), that the
+ * outside the run goes on to say what was done to it (whatHappened: an exec's program, never its arguments; when), that the
  * gate cannot tell which process did it, and where the follower's file is.
  */
 export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null }) {

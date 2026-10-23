@@ -60,7 +60,7 @@ Each charter is its agent's whole prompt: no URL, password, session name or othe
 | Event | Action |
 |---|---|
 | `live up` refuses or fails | quote its step and message; it ran `down` itself; the cycle ends (argus picks another lane) |
-| `live up` refused by a Docker-gate finding on an object outside the run (a container action, exec, volume mount or destroy of something the run did not make) | read the command and time it names; when it is not the cycle's (other work on this machine), wait about 5 minutes once (the harness's monitor or until-loop, never a foreground sleep) and run `live up` once more; a second refusal ends the cycle, journalled with the command; never read or patch the engine to diagnose it |
+| `live up` refused by a Docker-gate finding on an object outside the run (a container action, exec, volume mount or destroy of something the run did not make) | read the named program and time; when it is not the cycle's (other work on this machine), wait about 5 minutes once (the harness's monitor or until-loop, never a foreground sleep) and run `live up` once more; a second refusal ends the cycle, journalled with the program; never read or patch the engine to diagnose it |
 | `refused: cycle <run> holds the lock until <time>` | another cycle runs: stop, naming it; never `down` a cycle you did not start |
 | `map-check` keeps no journey and no refresh is due | the cycle ends before `up`, listing the dropped journeys |
 | `map-check --merge` refused | the old map stays; the faults go to the journal |

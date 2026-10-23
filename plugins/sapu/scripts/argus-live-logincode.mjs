@@ -139,7 +139,7 @@ const WATCH = `  const origins = new Set();
   // (the one usable empty text-like input, a guess).
   let otpRule = null;
   const otpField = async () => {
-    const otp = page.locator("input[autocomplete=one-time-code]:visible");
+    const otp = page.locator("input[autocomplete='one-time-code' i]:visible");
     const said = await usable(otp, false);
     if (said.length) {
       otpRule = "one-time-code";

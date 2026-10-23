@@ -2279,7 +2279,7 @@ describe("argus-live instance — Compose and egress checks", () => {
           t.events.push(ev("container", "create", "c8", { name: "gate-tmp" }, 22), ev("volume", "mount", volume, { container: "c8", destination: "/data", driver: "local" }, 22), ev("container", "destroy", "c8", { name: "gate-tmp" }, 23));
           return gate(t);
         };
-        expect(mounted("owner_pgdata")).toBe("refused: during the cycle, container gate-tmp, which is not of the run's Compose project argus-run1, mounted volume owner_pgdata, which existed before it and is not the run's");
+        expect(mounted("owner_pgdata")).toMatch(/^refused: during the cycle, container gate-tmp, which is not of the run's Compose project argus-run1, mounted volume owner_pgdata, which existed before it and is not the run's \(at \S+Z\)\. The gate cannot tell which process did it/);
         expect(mounted("old_anon")).toMatch(/^refused: during the cycle, container gate-tmp, .* mounted volume old_anon, which existed before it/);
         expect(mounted(`${P}_pgdata`)).toBe("ok");
       });
@@ -2359,7 +2359,7 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it.each([
-      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(command: psql -c drop, at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
+      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(exec of psql, at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
       ...(["kill", "stop", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
       ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's \(at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
@@ -2390,56 +2390,55 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
     });
 
-    it("a refusal names the exec's command (control characters out, URL credentials masked, cut), its time, that it cannot tell who, and the follower's file relative to the main checkout", () => {
+    it("a refusal names the exec's program and time, that it cannot tell who, and the follower's file relative to the main checkout, never an argument", () => {
       const main = realpathSync(tempDir());
       const eventsFile = join(main, ".argus/live/run1/logs/docker-events.jsonl");
       mkdirSync(join(main, ".argus/live/run1/logs"), { recursive: true });
       const s = state();
-      const exec = ev("container", `exec_create: psql postgres://owner:s3cret@db:5432/app\t-c "CREATE DATABASE x"\n${"y".repeat(200)}`, "c0", { [LABEL]: "owner", name: "owner-db" }, 30);
+      const exec = ev("container", `exec_create: /usr/bin/psql postgres://owner:s3cret@db:5432/app\t-c "CREATE DATABASE x"\n${"y".repeat(200)}`, "c0", { [LABEL]: "owner", name: "owner-db" }, 30);
       writeFileSync(eventsFile, `${JSON.stringify(exec)}\n`);
       s.events = [];
       const why = gate(s, { main, eventsFile });
-      expect(why).toMatch(/^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(command: /);
-      expect(why).toContain('command: psql postgres://***@db:5432/app -c "CREATE DATABASE x" yyyy');
-      expect(why).not.toContain("s3cret");
+      expect(why).toMatch(/^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(exec of psql, at /);
+      expect(why).toContain(`(exec of psql, at ${new Date(T0 + 30_000).toISOString()})`);
+      for (const arg of ["s3cret", "postgres://", "CREATE", "yyyy", "-c"]) expect(why).not.toContain(arg);
       expect(why).not.toMatch(/[\x00-\x1f]/);
-      expect(why).toMatch(/y{50}…, at /); // cut at 120 characters
-      expect(why).not.toMatch(/y{100}/);
-      expect(why).toContain(`at ${new Date(T0 + 30_000).toISOString()})`);
       expect(why).toContain("The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too");
       expect(why.endsWith("; the docker events of this run are in .argus/live/run1/logs/docker-events.jsonl")).toBe(true);
     });
 
     it.each([
-      ["URL userinfo holding / and @", "psql postgres://app:pa/ss@w@db:5432/app -c select", "psql postgres://***@db:5432/app -c select"],
-      ["an env assignment holding PASS", "env PGPASSWORD=hunter2 psql -U app", "env PGPASSWORD=*** psql -U app"],
-      ["an env assignment holding TOKEN, quoted", 'API_TOKEN="a b c" node run.js', "API_TOKEN=*** node run.js"],
-      ["an env assignment holding KEY, SECRET, AUTH, PWD, CREDENTIAL, in any case", "aws_key=k1 APP_SECRET=s1 x_auth=a1 DB_PWD=p1 my_credentials=c1 true", "aws_key=*** APP_SECRET=*** x_auth=*** DB_PWD=*** my_credentials=*** true"],
-      ["mysql's attached -p", "mysql -u root -phunter2 app", "mysql -u root -p*** app"],
-      ["--password with = and with a space", "tool --password=hunter2 --password hunter3 run", "tool --password=*** --password *** run"],
-      ["--pass, --token and --secret", "tool --pass=a --token b --secret=c", "tool --pass=*** --token *** --secret=***"],
-      ["redis-cli -a", "redis-cli -h cache -a hunter2 ping", "redis-cli -h cache -a *** ping"],
-      ["an Authorization header", 'curl -H "Authorization: Basic dXNlcjpwdw==" http://x', 'curl -H "Authorization: ***" http://x'],
-      ["a Bearer token", "curl -H 'X-Auth: Bearer abc.def' http://x", "curl -H 'X-Auth: Bearer ***' http://x"],
-    ])("a refusal masks %s in the exec's command", (_what, command, shown) => {
+      ["a shell's inner command after an env assignment", 'sh -c PGPASSWORD=x psql -U a -c "CREATE DATABASE y"', "psql"],
+      ["a path and an attached mysql -p", "/usr/bin/mysql -pS3cret", "mysql"],
+      ["curl -u", "curl -u a:b http://h", "curl"],
+      ["a healthcheck-looking shell", "/bin/sh -c pg_isready -U x", "pg_isready"],
+      ["a login shell's flags before -c", "bash -lc API_TOKEN=t node run.js", "node"],
+      ["an assignment with a quoted value holding spaces", 'sh -c DB_PWD="a b c" psql -h db', "psql"],
+      ["env, assignments, nice and timeout wrappers", "dash -c env -i A=1 nice -n 5 timeout 30 redis-cli -a hunter2 ping", "redis-cli"],
+      ["a quoted inner command", "/bin/zsh -c (exec /opt/bin/sqlcmd -P hunter2", "sqlcmd"],
+      ["a header argument", "curl -H X-Api-Key:abc123 --api-key abc123 http://x", "curl"],
+      ["a program that is no shell, so its -c is an argument", "ssh -c aes128-ctr host", "ssh"],
+    ])("a refusal names the program of %s, and nothing else", (_what, command, program) => {
       const s = state();
       s.events.push(ev("container", `exec_create: ${command}`, "c0", { [LABEL]: "owner", name: "owner-db" }));
       const why = gate(s);
-      expect(why).toContain(`command: ${shown}`);
-      expect(why).not.toMatch(/hunter\d|pa\/ss|dXNlcjpwdw|abc\.def|\bs1\b|\bk1\b/);
+      expect(why).toMatch(new RegExp(`\\(exec of ${program}, at \\S+Z\\)`));
+      expect(why).not.toMatch(/hunter\d|S3cret|abc123|a b c|PGPASSWORD|API_TOKEN|a:b|CREATE|-U x|aes128|host|\bx\b/);
     });
 
-    it("a refusal keeps a command without secrets readable, its SQL too", () => {
+    it("a refusal does not guess a program from a word that is no plain name", () => {
       const s = state();
-      s.events.push(ev("container", 'exec_create: psql -U app -d postgres -qAtc CREATE DATABASE "x"', "c0", { [LABEL]: "owner", name: "owner-db" }));
-      expect(gate(s)).toContain('command: psql -U app -d postgres -qAtc CREATE DATABASE "x"');
+      s.events.push(ev("container", "exec_create: $(cat /run/secret)", "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toMatch(/\(exec of an unnamed program, at \S+Z\)/);
+      expect(why).not.toContain("secret");
     });
 
-    it("a refusal without a follower names no file; a short command is not cut", () => {
+    it("a refusal without a follower names no file; the program alone is named", () => {
       const s = state();
       s.events.push(ev("container", "exec_start: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }));
       const why = gate(s);
-      expect(why).toMatch(/\(command: psql -c drop, at \S+Z\)\. The gate cannot tell which process did it: .*counts too$/);
+      expect(why).toMatch(/\(exec of psql, at \S+Z\)\. The gate cannot tell which process did it: .*counts too$/);
     });
 
     describe("the events follower (the daemon replays only its last events to `docker events --since`)", () => {
