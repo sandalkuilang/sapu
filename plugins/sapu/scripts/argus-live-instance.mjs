@@ -589,7 +589,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
 
 /**
  * The CLI's `renew` (spec §8 `renew`): keeps the lock's deadline at least one `max_cycle_minutes` away
- * (renew; at the cap, or right after another renew, it stays where it is: `moved` false; a refused
+ * (renew; only at the cap, or within the same second as another renew, it stays where it is: `moved` false; a refused
  * renew is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run
  * as run.json records it, moved or not; a refusal → `down`, and the error rethrown. Returns
  * {runId, deadline, moved}.

@@ -249,11 +249,12 @@ export function staleRecords(main) {
 /**
  * Keep run `runId` alive for one more `maxCycleMinutes` from now: the new deadline is
  * min(max(deadline, now + max + the 15 min grace, as `takeLock` sets the first one), start + 3 × max +
- * the grace). A renew never moves it earlier, so one made soon after another, or at the cap, changes
- * nothing: it then neither rewrites the lock nor appends to the live log, and `moved` is false.
- * Otherwise it appends the new deadline to the live log, then rewrites the lock. Returns
- * {deadline, moved}. Throws `refused: …` when no lock exists, the lock names another run, its deadline
- * passed, or it changed meanwhile. `pause("claimed")` is a test seam.
+ * the grace). A renew never moves it earlier, so it changes nothing only at the cap, or within the same
+ * second as the renew before it (a renew seconds later moves the deadline by those seconds): it then
+ * neither rewrites the lock nor appends to the live log, and `moved` is false. Otherwise it appends the
+ * new deadline to the live log, then rewrites the lock. Returns {deadline, moved}. Throws `refused: …`
+ * when no lock exists, the lock names another run, its deadline passed, or it changed meanwhile.
+ * `pause("claimed")` is a test seam.
  */
 export function renew(main, { runId, maxCycleMinutes, now = Date.now(), pause = () => {} }) {
   runIdOk(runId);

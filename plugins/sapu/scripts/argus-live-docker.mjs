@@ -514,9 +514,30 @@ function eventTime(e) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-/** An exec's command line (the Action's text after `exec_create: `): control characters out, URL credentials masked, cut to 120 characters. */
+/** A secret's value on a command line: quoted (it may hold spaces) or one word. */
+const ARG = `"[^"]*"|'[^']*'|\\S+`;
+
+/**
+ * A command line with the secrets it carries masked as `***`; the program, its other arguments and any SQL stay.
+ * The command is another process's, whose secrets the CLI's `redact` does not know, so it is masked by shape:
+ * URL userinfo (up to the last `@` of the word, whatever it holds, `/` too), `Authorization:` and `Bearer`
+ * credentials, env assignments whose name holds PASS, PWD, TOKEN, SECRET, KEY, AUTH or CREDENTIAL, `-p<value>`
+ * (mysql), `--password`, `--pass`, `--token` and `--secret` with a value, and `-a <value>` of `redis-cli`.
+ */
+function maskCommand(cmd) {
+  return cmd
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)\S*@/gi, "$1***@")
+    .replace(/(authorization:\s*)(?:(?:basic|bearer|digest|token|negotiate|hmac)\s+)?[^\s"']+/gi, "$1***")
+    .replace(/\bbearer\s+[^\s"']+/gi, "Bearer ***")
+    .replace(new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*(?:PASS|PWD|TOKEN|SECRET|KEY|AUTH|CREDENTIAL)[A-Za-z0-9_]*)=(?:${ARG})?`, "gi"), "$1=***")
+    .replace(new RegExp(`(^|\\s)-p(?!-)(?:${ARG})`, "g"), "$1-p***")
+    .replace(new RegExp(`(--(?:password|pass|token|secret)(?:=|\\s+))(?:${ARG})`, "gi"), "$1***")
+    .replace(new RegExp(`(\\bredis-cli\\b[^;|&]*?\\s-a\\s+)(?:${ARG})`, "g"), "$1***");
+}
+
+/** An exec's command line (the Action's text after `exec_create: `): control characters out, secrets masked, cut to 120 characters. */
 function execCommand(action) {
-  const cmd = action.slice(action.indexOf(":") + 1).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1***@").trim();
+  const cmd = maskCommand(action.slice(action.indexOf(":") + 1).replace(/[\x00-\x1f\x7f]+/g, " ")).trim();
   return cmd.length > 120 ? `${cmd.slice(0, 120)}…` : cmd;
 }
 

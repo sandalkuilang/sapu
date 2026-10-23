@@ -58,11 +58,13 @@
 //                                candidate <k>'s repro, two of two (spec §10): run 1, and run 2 only when run 1
 //                                reproduced, each run's lines prefixed `run <i> `; the verdict last: REPRODUCED
 //                                step=… (exit 3, both runs), NOT REPRODUCED runs=<k>/<n> (exit 0) or HARNESS:
-//                                run <i>: … (exit 2); verdict.json in the candidate's records
+//                                run <i>: … (exit 2); verdict.json in the candidate's records; with less of the
+//                                cycle's time left than two runs need: `deadline: <n> min left, …` (exit 4), nothing run
 //   argus-live.mjs repro <slot>.<generation>.<k> --once
 //                                one run of candidate <k>'s repro on a fresh instance (spec §10): a line per
 //                                step in the wrapper's own words, what the page showed in a nonce fence,
-//                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2)
+//                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2); or, with less time
+//                                left than one run needs, `deadline: …` (exit 4), nothing run
 //   argus-live.mjs repro <slot>.<generation>.<k> --minimize
 //                                drop one role or step at a time from a reproduced repro, each try a run on a
 //                                fresh instance (spec §10 "Minimize"): a line per try (its label and exit), the
@@ -179,7 +181,7 @@ import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { report } from "./argus-live-report.mjs";
 import { minimize, redTestFile, savedValues } from "./argus-live-minimize.mjs";
-import { apiLevelHint, repro, runOnce } from "./argus-live-repro.mjs";
+import { DEADLINE_EXIT, apiLevelHint, deadlineRefusal, repro, runOnce } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
 import { browserHome, down, logsDir, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
@@ -466,6 +468,11 @@ try {
     // The return is fenced and masked as it is printed; masking whole lines again would cut the nonce.
     for (const line of intake(main, Number(args[0]), { secrets })) printMasked(line);
   } else if (cmd === "repro" && args.length === 2 && args[1] === "--once") {
+    const late = deadlineRefusal(main, args[0], 1);
+    if (late) {
+      print(late);
+      process.exit(DEADLINE_EXIT);
+    }
     // Each line is printed as it is made, already in the wrapper's words or fenced and masked (decision 8).
     const r = await runOnce(main, args[0], { say: printMasked });
     process.exit(r.code);

@@ -8,7 +8,7 @@ import { expandConfig, loadLive } from "./argus-live-config.mjs";
 import { readSeen, secretHits } from "./argus-live-ledger.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redTest } from "./argus-live-redtest.mjs";
-import { nextRun, reproRef, runOnce, writePrivate } from "./argus-live-repro.mjs";
+import { nextRun, reproRef, runNeedMs, runOnce, runRecords, writePrivate } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { redactIds, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { parseRepro, reductions } from "./argus-live-steps.mjs";
@@ -22,28 +22,6 @@ function liveOf(main) {
   const rec = readRun(main);
   return expandConfig(config, { ports: { ...((rec && rec.ports) ?? {}) }, secrets });
 }
-
-/** The candidate's run records in `dir` → `[{i, rec}]` by run number (an unreadable one left out). */
-function runRecords(dir) {
-  let names = [];
-  try {
-    names = fs.readdirSync(dir).filter((f) => /^run-[1-9][0-9]*\.json$/.test(f));
-  } catch {
-    names = [];
-  }
-  const out = [];
-  for (const f of names) {
-    try {
-      out.push({ i: Number(f.slice(4, -5)), rec: JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) });
-    } catch {
-      // unreadable: not a record
-    }
-  }
-  return out.sort((a, b) => a.i - b.i);
-}
-
-/** The least time a minimize run is taken to need before the lock's deadline. */
-const MIN_RUN_MS = 60_000;
 
 /**
  * Candidate `ref`'s repro minimized (spec §10 "Minimize"; decision 10) → `{code: 0, lines}`. Its base is the
@@ -96,7 +74,7 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   fs.rmSync(path.join(dir, "min.json"), { force: true });
   let next = nextRun(dir);
   // Each run needs the cycle and time: the longest run so far (a minute at least) before the lock's deadline.
-  const need = Math.max(MIN_RUN_MS, ...records.map((r) => (isObj(r.rec) && Number.isFinite(r.rec.ms) ? r.rec.ms : 0)));
+  const need = runNeedMs(dir);
   /** Why no run may start now: `down` (the lock names no run, or another), `deadline` (too little of it left), else null. */
   const cannotRun = () => {
     let lock = null;

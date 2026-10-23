@@ -2410,6 +2410,31 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(why.endsWith("; the docker events of this run are in .argus/live/run1/logs/docker-events.jsonl")).toBe(true);
     });
 
+    it.each([
+      ["URL userinfo holding / and @", "psql postgres://app:pa/ss@w@db:5432/app -c select", "psql postgres://***@db:5432/app -c select"],
+      ["an env assignment holding PASS", "env PGPASSWORD=hunter2 psql -U app", "env PGPASSWORD=*** psql -U app"],
+      ["an env assignment holding TOKEN, quoted", 'API_TOKEN="a b c" node run.js', "API_TOKEN=*** node run.js"],
+      ["an env assignment holding KEY, SECRET, AUTH, PWD, CREDENTIAL, in any case", "aws_key=k1 APP_SECRET=s1 x_auth=a1 DB_PWD=p1 my_credentials=c1 true", "aws_key=*** APP_SECRET=*** x_auth=*** DB_PWD=*** my_credentials=*** true"],
+      ["mysql's attached -p", "mysql -u root -phunter2 app", "mysql -u root -p*** app"],
+      ["--password with = and with a space", "tool --password=hunter2 --password hunter3 run", "tool --password=*** --password *** run"],
+      ["--pass, --token and --secret", "tool --pass=a --token b --secret=c", "tool --pass=*** --token *** --secret=***"],
+      ["redis-cli -a", "redis-cli -h cache -a hunter2 ping", "redis-cli -h cache -a *** ping"],
+      ["an Authorization header", 'curl -H "Authorization: Basic dXNlcjpwdw==" http://x', 'curl -H "Authorization: ***" http://x'],
+      ["a Bearer token", "curl -H 'X-Auth: Bearer abc.def' http://x", "curl -H 'X-Auth: Bearer ***' http://x"],
+    ])("a refusal masks %s in the exec's command", (_what, command, shown) => {
+      const s = state();
+      s.events.push(ev("container", `exec_create: ${command}`, "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toContain(`command: ${shown}`);
+      expect(why).not.toMatch(/hunter\d|pa\/ss|dXNlcjpwdw|abc\.def|\bs1\b|\bk1\b/);
+    });
+
+    it("a refusal keeps a command without secrets readable, its SQL too", () => {
+      const s = state();
+      s.events.push(ev("container", 'exec_create: psql -U app -d postgres -qAtc CREATE DATABASE "x"', "c0", { [LABEL]: "owner", name: "owner-db" }));
+      expect(gate(s)).toContain('command: psql -U app -d postgres -qAtc CREATE DATABASE "x"');
+    });
+
     it("a refusal without a follower names no file; a short command is not cut", () => {
       const s = state();
       s.events.push(ev("container", "exec_start: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }));
