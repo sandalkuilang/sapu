@@ -200,7 +200,10 @@ const WATCH = `  const origins = new Set();
     if (await otp.count()) return otp.first();
     if (loggedIn && (await visible(loggedIn(page)))) return null;
     const one = page.locator("input[type=text]:visible, input[type=tel]:visible, input[type=number]:visible, input:not([type]):visible");
-    return (await one.count()) === 1 ? one.first() : null;
+    if ((await one.count()) !== 1) return null;
+    // A code field is empty when it appears; a filled one is the user field of a login form still
+    // on screen while its app awaits the sign-in.
+    return (await one.first().inputValue()) ? null : one.first();
   };
 `;
 

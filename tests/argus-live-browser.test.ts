@@ -274,6 +274,17 @@ describe("argus-live logins", () => {
     expect(readdirSync(join(b.dir, ".playwright")).filter((f) => f.startsWith("run-"))).toEqual([]);
   }, 180_000);
 
+  it("a login form still on screen after its submit is not read as a one-time-code step", async () => {
+    // The page keeps its text user field visible while the app awaits its API: the lone text
+    // field beside a password field is the login form itself, not a code field.
+    const b = await browserRun();
+    const live = config(b);
+    const plan = loginPlan({ ...live, roles: { ...live.roles, slow: { login_url: "/login/slow", users: [{ user: "buyer1@example.test", password: PW }] } } }, "slow");
+    const s = await b.open("slow.1");
+    const res = await login({ main: b.main, runId: b.runId, session: s.name, account: "slow.1", user: "buyer1@example.test", password: PW, totpSecret: null, plan, js: cli.js, home: b.home, cwd: b.dir });
+    expect(res).toMatchObject({ ok: true });
+  }, 120_000);
+
   it("the login page is opened fresh each time", async () => {
     const b = await browserRun();
     const one = await signIn(b, "buyer", "buyer.1", "buyer1@example.test");

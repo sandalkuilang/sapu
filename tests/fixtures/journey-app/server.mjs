@@ -29,6 +29,8 @@
 //                 (RFC 6238: SHA-1, 30 s, 6 digits, window ±1; a time step already used for that user
 //                 → "code already used"); success redirects to $LOGIN_REDIRECT when set, else /
 //   /login/two-step  a text user field + "Continue", then the password page
+//   /login/slow   a text user field + password on one page; a submit keeps the form on screen
+//                 for 1500 ms before posting it (a client-side app awaiting its API and route)
 //   /             signed out: a "Sign in" button opening a <dialog> with the login form
 //   /orders/new   Quantity + an optional Note (at most 500 characters) + "Place order" → ORD-<n>,
 //                 /orders/<id> (data-testid=order-number, its JSON from /api/orders/<id>, the note
@@ -534,6 +536,16 @@ async function handle(req, res) {
   if (p === "/login/two-step" && req.method === "GET") {
     const { token, headers } = issue(req);
     const form = `<form method="post" action="/login"><input type="hidden" name="csrf" value="${token}"><label>Username or email <input type="text" name="user" autocomplete="username" required></label><button type="submit">Continue</button></form>`;
+    return send(res, 200, page("Sign in", form), headers);
+  }
+  if (p === "/login/slow" && req.method === "GET") {
+    const { token, headers } = issue(req);
+    const form =
+      `<form method="post" action="/login" onsubmit="event.preventDefault(); setTimeout(() => this.submit(), 1500)">` +
+      `<input type="hidden" name="csrf" value="${token}">` +
+      `<label>Username or email <input type="text" name="user" autocomplete="username" required></label>` +
+      `<label>Password <input type="password" name="password" autocomplete="current-password" required></label>` +
+      `<button type="submit">Sign in</button></form>`;
     return send(res, 200, page("Sign in", form), headers);
   }
   if (p === "/login/otp" && req.method === "GET") {
