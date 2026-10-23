@@ -226,6 +226,25 @@ export function dropLedgers(main, { keep }) {
   }
 }
 
+/** How many run directories `.argus/live/` keeps: the newest, so a later `report --run` or scrub can still read them. */
+export const KEEP_RUNS = 10;
+
+/**
+ * Removes the run directories under `.argus/live/` beyond the newest KEEP_RUNS, never `keep` (the new run's): `up`'s
+ * step 1, after its recovery, so only a run that is down goes. Run ids sort by their start time → the ids removed.
+ */
+export function dropOldRuns(main, { keep, max = KEEP_RUNS }) {
+  let names;
+  try {
+    names = fs.readdirSync(liveDir(main), { withFileTypes: true }).filter((d) => d.isDirectory() && RUN_ID.test(d.name) && d.name !== keep).map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const old = names.sort().slice(0, Math.max(0, names.length - (max - 1)));
+  for (const n of old) fs.rmSync(path.join(liveDir(main), n), { recursive: true, force: true });
+  return old;
+}
+
 /** An id's shape: 24+ characters of `[A-Za-z0-9_-]` holding a letter and a digit. */
 const idShaped = (v) => typeof v === "string" && /^[A-Za-z0-9_-]{24,}$/.test(v) && /[A-Za-z]/.test(v) && /[0-9]/.test(v);
 

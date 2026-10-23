@@ -3,11 +3,11 @@
 // drive (the fixture app, the run's proxy, slot 1) with the cleanup each of their tests ends with.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Server as HttpServer } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { expect } from "vitest";
 import { FIXTURE_CONTRACT } from "../fixture-contract";
 // @ts-expect-error — plain ESM script without types
@@ -86,8 +86,16 @@ export const tempDir = () => {
   return d;
 };
 
+/** Removes every tempDir, and what a run of a temp repo left in `$TMPDIR/sapu-live` (its worktree, HOME and setup log). */
 export const cleanTemps = () => {
-  while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
+  const live = join(tmpdir(), "sapu-live");
+  const left = existsSync(live) ? readdirSync(live) : [];
+  while (temps.length) {
+    const d = temps.pop()!;
+    rmSync(d, { recursive: true, force: true });
+    const name = `${basename(d)}-`;
+    for (const f of left) if (f.startsWith(name)) rmSync(join(live, f), { recursive: true, force: true });
+  }
 };
 
 export const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();

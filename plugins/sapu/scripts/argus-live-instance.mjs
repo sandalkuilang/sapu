@@ -38,7 +38,7 @@ import { expandConfig, LIVE_FILE, loadLive, portNames } from "./argus-live-confi
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
 import { checkEgress, egressAllowed } from "./argus-live-egress.mjs";
 import { hostOf, resolvesToLoopback } from "./argus-live-endpoints.mjs";
-import { dropLedgers } from "./argus-live-ledger.mjs";
+import { dropLedgers, dropOldRuns } from "./argus-live-ledger.mjs";
 import { iso, readLock, renew, takeLock } from "./argus-live-lock.mjs";
 import { membersOf, processTable, redact, run, runAsync, runPids, sameGroup, sameStart, startTime, stopRecordedGroups, tempBeside } from "./argus-live-proc.mjs";
 import { browserHome, down, guarded, logsDir, readRun, recover, replayStop, startReaper, updateRun, worktreeHeadFile, writeRunFiles } from "./argus-live-run.mjs";
@@ -332,9 +332,11 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     }
     // Every earlier run's secret ledger goes now: kept by its down for scrub, until this cycle began.
     dropLedgers(main, { keep: runId });
+    // Run records pile up (each holds logs, traces and screenshots): only the newest are kept.
+    const pruned = dropOldRuns(main, { keep: runId });
     save();
     state.reaper = startReaper(main, runId);
-    log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}`);
+    log(`step 1 lock: cycle ${runId} until ${iso(lock.deadline)}${lock.staleRuns.length ? `; recovered ${lock.staleRuns.map((l) => l.runId).join(", ")}` : ""}${pruned.length ? `; ${pruned.length} old run record(s) removed` : ""}`);
 
     step = "2 refusals";
     // The configuration's own faults first, in check's words (one function): the first one refuses.

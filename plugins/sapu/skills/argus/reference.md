@@ -280,7 +280,7 @@ On a dedup match whose `issue-trust` passed: **comment the new reproduction path
 | `live.json` | owner, through `/sapu:init` (tracked beside `config.yml`) | `argus-live.mjs` | the journey lane's isolated instance: setup, services, start entries, roles and their accounts, limits |
 | `live.env` | owner (the `env_file`; never tracked) | `argus-live.mjs` | the values `live.json`'s `${NAME}` references take; no agent reads it |
 | `journeys.json` | `argus-live.mjs map-check`, `visit` | SELECT (`select`) | the journey map: journeys, steps and their code anchors, `lastCycle`, `lastHead`, `filed` |
-| `live/` | `argus-live.mjs` | `argus-live.mjs` | journey cycles' lock, run records, returns, repro records, secret ledgers and logs: read only through its commands (journeys.md) |
+| `live/` | `argus-live.mjs` | `argus-live.mjs` | journey cycles' lock, run records (the newest 10 kept), returns, repro records, secret ledgers and logs: read only through its commands (journeys.md) |
 
 **`run.log` format**, date prefix included:
 `<date> cycle=<id> mode=<live|static> focus=<area> candidates=N confirmed=N declined=N dropped_on_minimize=K filed=N issues=#a,#b referred=N fraud=<surface>:<schemes>/<theft_blocked>/<concealment_blocked> negatives=<control>@<locator>[live|test|read] method=...`

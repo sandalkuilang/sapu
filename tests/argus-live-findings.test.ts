@@ -21,7 +21,7 @@ import { drift } from "../plugins/sapu/scripts/argus-live-drift.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, secretName, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
+import { appendLedger, appendSeen, dropLedgers, dropOldRuns, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, secretName, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, score, selectJourneys, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -488,6 +488,17 @@ describe("argus-live ledger", () => {
     expect(existsSync(ledgerFile(t.main, t.runId))).toBe(false);
     expect(existsSync(seenFile(t.main, t.runId))).toBe(true);
     expect(existsSync(join(t.main, ".argus/live", other, "logs", "secrets.jsonl"))).toBe(true);
+  });
+
+  it("up's step 1 keeps the newest run records and never the new run's", () => {
+    const main = committed();
+    const id = (i: number) => `${String(20000101000000 + i)}-0123abcd`;
+    for (let i = 1; i <= 13; i++) mkdirSync(join(main, ".argus/live", id(i), "logs"), { recursive: true });
+    mkdirSync(join(main, ".argus/live", "not-a-run"), { recursive: true });
+    // the new run is the oldest-looking id here: it stays whatever its place.
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([2, 3, 4].map(id));
+    expect(readdirSync(join(main, ".argus/live")).sort()).toEqual([...[1, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(id), "not-a-run"].sort());
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([]);
   });
 
   it("drainSessions marks what it could not drain", async () => {
