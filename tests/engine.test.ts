@@ -582,7 +582,7 @@ const BUDGETS: Record<string, number> = {
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
-  "agents/ui-explorer.md": 20_200, // +a blocking false assumption ends the walk at once (2.31.0)
+  "agents/ui-explorer.md": 20_500, // +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
   "agents/curator.md": 7_800,
   "skills/argus/journeys.md": 15_500, // +no visit for an aborted-on-seed journey (2.31.0)
   "skills/argus/SKILL.md": 43_185, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0)
