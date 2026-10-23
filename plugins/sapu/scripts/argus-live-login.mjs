@@ -185,7 +185,7 @@ const WATCH = `  const origins = new Set();
   };
   const failure = (e) => String((e && e.message) || e).split("\\n")[0].slice(0, 200);
   const limited = async () => status429 || LOCKOUT.test(await bodyText(page));
-  const done = async (state, error) => ({ state, status429, lockout: state !== "in" && LOCKOUT.test(await bodyText(page)), origins: [...origins], ...(error ? { error } : {}) });
+  const done = async (state, error, extra) => ({ state, status429, lockout: state !== "in" && LOCKOUT.test(await bodyText(page)), origins: [...origins], ...(error ? { error } : {}), ...extra });
   const TEXT = "input[type=text]:visible, input:not([type]):visible";
   const submit = async (field) => {
     const form = field.locator("xpath=ancestor::form[1]");
@@ -195,15 +195,55 @@ const WATCH = `  const origins = new Set();
     }
     return field.press("Enter");
   };
+  // Which of the inputs "loc" matches a person could type into → [[index, empty]], in one page-side
+  // evaluate. Playwright's :visible counts opacity 0, a click-through wrapper and a field taken out of
+  // reach as visible; here none of the input and its ancestors is see-through (opacity 0), inert or
+  // aria-hidden, and the input is neither visibility:hidden nor pointer-events:none (both inherit, so
+  // its computed value already holds its ancestors'). "strict" (a guess at a code field, not one that
+  // says it is) also drops a field out of the tab order (tabIndex -1) and a search box (type=search, role
+  // combobox or searchbox, aria-autocomplete): a command palette kept in the DOM is not a code field.
+  const usable = (loc, strict) =>
+    loc.evaluateAll((els, strict) => {
+      const open = (el) => {
+        const s = getComputedStyle(el);
+        if (s.visibility === "hidden" || s.pointerEvents === "none" || el.closest("[inert], [aria-hidden=true]")) return false;
+        for (let n = el; n; n = n.parentElement) if (Number(getComputedStyle(n).opacity) === 0) return false;
+        return true;
+      };
+      const role = (el) => String(el.getAttribute("role") || "").toLowerCase();
+      const search = (el) => el.type === "search" || role(el) === "combobox" || role(el) === "searchbox" || el.hasAttribute("aria-autocomplete");
+      return els.flatMap((el, i) => (open(el) && !(strict && (el.tabIndex === -1 || search(el))) ? [[i, el.value === ""]] : []));
+    }, strict);
+  // The rule behind the field otpField last returned: "one-time-code" (the page says so) or "fallback"
+  // (the one usable empty text-like input, a guess).
+  let otpRule = null;
   const otpField = async () => {
     const otp = page.locator("input[autocomplete=one-time-code]:visible");
-    if (await otp.count()) return otp.first();
+    const said = await usable(otp, false);
+    if (said.length) {
+      otpRule = "one-time-code";
+      return otp.nth(said[0][0]);
+    }
     if (loggedIn && (await visible(loggedIn(page)))) return null;
-    const one = page.locator("input[type=text]:visible, input[type=tel]:visible, input[type=number]:visible, input:not([type]):visible");
-    if ((await one.count()) !== 1) return null;
+    const any = page.locator("input[type=text]:visible, input[type=tel]:visible, input[type=number]:visible, input:not([type]):visible");
+    const fit = await usable(any, true);
     // A code field is empty when it appears; a filled one is the user field of a login form still
     // on screen while its app awaits the sign-in.
-    return (await one.first().inputValue()) ? null : one.first();
+    if (fit.length !== 1 || !fit[0][1]) return null;
+    otpRule = "fallback";
+    return any.nth(fit[0][0]);
+  };
+  // Where the page stands and which field it is: its URL path and the field's tag, type, name, id, role
+  // and aria-label, each cut to 80 characters, for the logins log. Never the field's value.
+  const describe = async (field) => {
+    try {
+      return await field.evaluate((el) => {
+        const cut = (v) => String(v || "").slice(0, 80);
+        return { path: cut(location.pathname), tag: cut(el.localName), type: cut(el.getAttribute("type")), name: cut(el.getAttribute("name")), id: cut(el.id), role: cut(el.getAttribute("role")), label: cut(el.getAttribute("aria-label")) };
+      });
+    } catch (e) {
+      return null;
+    }
   };
 `;
 
@@ -297,7 +337,9 @@ const STAGES = {
 `,
   // Opens the login page fresh, clicks P.open when set, fills the user field (an email input, else the
   // text input before the password field, else the single text input), submits it first when no password
-  // field shows (two-step), fills and submits the password, then waits for logged_in or a one-time-code field.
+  // field shows (two-step), fills and submits the password, then waits for logged_in or a one-time-code
+  // field (otpField: a field a person could use; one that does not say it takes a code gets logged_in one
+  // more window first). On "otp" it also returns `otp: {rule, path, tag, type, name, id, role, label}`.
   credentials: `${WATCH}  const pickUser = async () => {
     const email = page.locator("input[type=email]:visible");
     if (await email.count()) return email.first();
@@ -333,7 +375,14 @@ const STAGES = {
     }
     await pw.first().fill(P.password);
     await submit(pw.first());
-    const outcome = await settle(async () => ((await visible(loggedIn(page))) ? "in" : (await otpField()) ? "otp" : (await limited()) ? "failed" : null), P.settleMs);
+    let field = null;
+    const outcome = await settle(async () => ((await visible(loggedIn(page))) ? "in" : (field = await otpField()) ? "otp" : (await limited()) ? "failed" : null), P.settleMs);
+    if (outcome === "otp") {
+      // A guessed field may belong to a signed-in page whose logged_in waits on a call that has not
+      // returned: it gets one more window before the guess stands. A field that says it takes a code does not.
+      if (otpRule === "fallback" && (await settle(() => visible(loggedIn(page)), P.settleMs))) return await done("in");
+      return await done("otp", null, { otp: { rule: otpRule, ...(await describe(field)) } });
+    }
     return await done(outcome || "failed");
   } catch (e) {
     return await done("error", failure(e));
@@ -341,7 +390,7 @@ const STAGES = {
     unwatch();
   }
 `,
-  // Fills P.code into the one-time-code field (else the single visible text input), submits, waits for logged_in.
+  // Fills P.code into the one-time-code field (else the one usable empty text input), submits, waits for logged_in.
   otp: `${WATCH}  try {
     const field = await settle(otpField, P.settleMs);
     if (!field) return await done("no-form");
@@ -443,7 +492,8 @@ function targetFn(s) {
  * `signals`, `world` (the taste recorders, or null) and `capBytes`, and the target strings `loggedIn` and `open`): the text of an `async page =>
  * {…}` function. The payload enters as `const P = <JSON>;` only; `loggedIn` and `open` also become `(pg)
  * => <targetCode>` functions. A stage returns plain JSON: credentials and otp `{state:
- * "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?}`, probe `{in, origins}`,
+ * "in"|"otp"|"failed"|"no-form"|"error", status429, lockout, origins, error?, otp?}` (credentials' `otp`:
+ * `{rule: "one-time-code"|"fallback", path, tag, type, name, id, role, label}`, the field it stopped at), probe `{in, origins}`,
  * hook `{installed, world}` (false when the context had it; `world` null without `P.world`, else whether the taste
  * recorders' world was made), observe `{signals, loggedIn, url, aria, tabs, secrets}` (`secrets` the drain), shot
  * `{text, password, otp, error, unread}`.
@@ -534,6 +584,19 @@ function logDetail(main, runId, account, user, detail, secrets) {
   }
 }
 
+/**
+ * The one line saying where a credentials stage took the page for a one-time-code step (`otp` as the stage
+ * returned it): rule, URL path (a long id-like segment shown as `:id`) and field attributes, each cut to
+ * 80 characters. The page wrote them, so they are plain strings here; no value of any field is ever in it.
+ */
+function otpDetail(otp) {
+  const t = (v) => String(v ?? "").slice(0, 80);
+  if (!otp || typeof otp !== "object") return "no-totp-secret: the page asked for a one-time code; its field could not be described";
+  const path = t(otp.path).replace(/[A-Za-z0-9_-]{24,}/g, ":id");
+  const field = JSON.stringify({ tag: t(otp.tag), type: t(otp.type), name: t(otp.name), id: t(otp.id), role: t(otp.role), label: t(otp.label) });
+  return `no-totp-secret: one-time code step at ${path} taken by rule ${t(otp.rule)}, field ${field}`;
+}
+
 /** How long a stage may run: each of its waits is bounded by settle_ms, its actions by the CLI's timeouts. */
 const stageTimeout = (plan) => 4 * plan.settleMs + 60_000;
 
@@ -566,7 +629,9 @@ export function runFailures(main, runId) {
  * step reserved in the repo's TOTP file (totpFile, reserveStep) → `{ok: true, origins}` or `{ok: false,
  * reason, origins}`, reason `rejected`, `rate-limited` (a 429 or a lockout text), `no-login-form`,
  * `no-totp-secret` or `error: playwright` (fixed words: Playwright's own text, which may quote the page,
- * goes to the run's `logs/logins.log`, masked); `origins` = every origin the pages requested meanwhile. On
+ * goes to the run's `logs/logins.log`, masked, as does the field that was taken for a code step when
+ * there is no TOTP secret: the page's URL path, the field's tag, type, name, id, role and aria-label, and
+ * the rule that picked it, never its value); `origins` = every origin the pages requested meanwhile. On
  * success the session's request and console lists are cleared (`requests --clear`, `console --clear`),
  * so the login's traffic never reaches the explorer. A failure is recorded in `failures` under
  * `"<role>/<user>"` (by default runFailures: run.json `loginFailed`, the configured accounts'), and a user
@@ -586,8 +651,10 @@ export async function login({ main, runId, session, account, user, password, tot
   for (const o of r.origins ?? []) origins.add(o);
   let reason = null;
   if (r.state === "otp") {
-    if (!totpSecret) reason = "no-totp-secret";
-    else {
+    if (!totpSecret) {
+      reason = "no-totp-secret";
+      logDetail(main, runId, account, user, otpDetail(r.otp), { password });
+    } else {
       const step = await reserveStep(totpFile(main), totpSecret, { now, sleep: wait });
       r = await call("otp", { code: totp(totpSecret, step) });
       for (const o of r.origins ?? []) origins.add(o);
