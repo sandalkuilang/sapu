@@ -31,6 +31,14 @@
 //   /login/two-step  a text user field + "Continue", then the password page
 //   /login/slow   a text user field + password on one page; a submit keeps the form on screen
 //                 for 1500 ms before posting it (a client-side app awaiting its API and route)
+//   /login/variant?v=landing|landing-field|plain-otp
+//                 the /login form carrying a variant: "landing" signs in to /landing, "landing-field" to
+//                 /landing?field=visible, "plain-otp" sends a TOTP account to a code page whose field has
+//                 no autocomplete attribute
+//   /landing      signed in: a closed command palette (an empty combobox input, opacity 0 in a
+//                 pointer-events:none wrapper, tabindex -1) and, 1500 ms after load, the "Account" button
+//                 (a shell painted before its session call returned); ?field=visible has an empty,
+//                 usable text input "Quick note" in place of the palette
 //   /             signed out: a "Sign in" button opening a <dialog> with the login form
 //   /orders/new   Quantity + an optional Note (at most 500 characters) + "Place order" → ORD-<n>,
 //                 /orders/<id> (data-testid=order-number, its JSON from /api/orders/<id>, the note
@@ -246,9 +254,10 @@ function page(title, body, { user = null, header = true } = {}) {
 
 const toast = (text) => `<div role="status" id="toast">${esc(text)}</div><script>setTimeout(() => document.getElementById("toast").remove(), 1000);</script>`;
 
-const loginForm = (token, { action = "/login", user = null } = {}) =>
+const loginForm = (token, { action = "/login", user = null, variant = null } = {}) =>
   `<form method="post" action="${action}">` +
   `<input type="hidden" name="csrf" value="${token}">` +
+  (variant ? `<input type="hidden" name="variant" value="${variant}">` : "") +
   (user === null
     ? `<label>Email <input type="email" name="user" autocomplete="username" required></label>`
     : `<input type="hidden" name="user" value="${esc(user)}">`) +
@@ -316,9 +325,11 @@ function spend(req, form) {
 
 const LOCKED = "Too many attempts. Try again later.";
 
-function signIn(res, user) {
+const LANDINGS = new Map([["landing", "/landing"], ["landing-field", "/landing?field=visible"]]);
+
+function signIn(res, user, next) {
   const sid = newSession(user);
-  redirect(res, process.env.LOGIN_REDIRECT || "/", { "set-cookie": `sid=${sid}; Path=/; HttpOnly; SameSite=Lax` });
+  redirect(res, next || process.env.LOGIN_REDIRECT || "/", { "set-cookie": `sid=${sid}; Path=/; HttpOnly; SameSite=Lax` });
 }
 
 async function postLogin(req, res) {
@@ -340,11 +351,13 @@ async function postLogin(req, res) {
     return send(res, 401, page("Sign in", `<p role="alert">Wrong email or password.</p>${loginForm(token)}`), headers);
   }
   if (a.totp) {
-    pre.get(cookies(req).pre).otpUser = user;
+    const state = pre.get(cookies(req).pre);
+    state.otpUser = user;
+    state.plainOtp = form.get("variant") === "plain-otp";
     return redirect(res, "/login/otp");
   }
   failures.delete(user);
-  signIn(res, user);
+  signIn(res, user, LANDINGS.get(form.get("variant")));
 }
 
 async function postOtp(req, res) {
@@ -357,7 +370,7 @@ async function postOtp(req, res) {
   const used = readJson("totp-used.json", {});
   const again = (msg, status) => {
     const { token, headers } = issue(req);
-    send(res, status, page("Verify", `<p role="alert">${msg}</p>${otpForm(token)}`), headers);
+    send(res, status, page("Verify", `<p role="alert">${msg}</p>${otpForm(token, state.plainOtp)}`), headers);
   };
   if (step === undefined) return again("Wrong code.", 401);
   if (step <= (used[user] ?? -1)) return again("code already used", 401);
@@ -367,9 +380,9 @@ async function postOtp(req, res) {
   signIn(res, user);
 }
 
-const otpForm = (token) =>
+const otpForm = (token, plain = false) =>
   `<form method="post" action="/login/otp"><input type="hidden" name="csrf" value="${token}">` +
-  `<label>One-time code <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required></label>` +
+  `<label>One-time code <input type="text" name="code" inputmode="numeric"${plain ? "" : ' autocomplete="one-time-code"'} required></label>` +
   `<button type="submit">Verify</button></form>`;
 
 function leakPage(q) {
@@ -538,6 +551,20 @@ async function handle(req, res) {
     const form = `<form method="post" action="/login"><input type="hidden" name="csrf" value="${token}"><label>Username or email <input type="text" name="user" autocomplete="username" required></label><button type="submit">Continue</button></form>`;
     return send(res, 200, page("Sign in", form), headers);
   }
+  if (p === "/login/variant" && req.method === "GET") {
+    const variant = ["landing", "landing-field", "plain-otp"].find((v) => v === url.searchParams.get("v"));
+    if (!variant) return send(res, 404, "");
+    const { token, headers } = issue(req);
+    return send(res, 200, page("Sign in", loginForm(token, { variant })), headers);
+  }
+  if (p === "/landing" && req.method === "GET") {
+    return signedIn(() => {
+      const palette = `<div style="pointer-events: none"><div style="opacity: 0"><input role="combobox" aria-expanded="false" aria-label="Search commands" tabindex="-1"></div></div>`;
+      const note = url.searchParams.get("field") === "visible";
+      const shell = `<script>setTimeout(() => { const b = document.createElement("button"); b.type = "button"; b.textContent = "Account"; document.body.prepend(b); }, 1500);</script>`;
+      return send(res, 200, page("Landing", (note ? `<label>Quick note <input type="text" name="note"></label>` : palette) + shell, { user, header: false }));
+    });
+  }
   if (p === "/login/slow" && req.method === "GET") {
     const { token, headers } = issue(req);
     const form =
@@ -552,7 +579,7 @@ async function handle(req, res) {
     const state = pre.get(cookies(req).pre);
     if (!state || !state.otpUser) return redirect(res, "/login");
     const { token, headers } = issue(req);
-    return send(res, 200, page("Verify", otpForm(token)), headers);
+    return send(res, 200, page("Verify", otpForm(token, state.plainOtp)), headers);
   }
   if (p === "/login/otp" && req.method === "POST") return postOtp(req, res);
 
