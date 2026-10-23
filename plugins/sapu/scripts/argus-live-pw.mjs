@@ -11,7 +11,7 @@ import { slotDir } from "./argus-live-browser.mjs";
 import { expandConfig, loadLive, ROLE_FREE } from "./argus-live-config.mjs";
 import { loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs";
 import { fence } from "./argus-live-fence.mjs";
-import { codeCommand, runHook } from "./argus-live-hooks.mjs";
+import { CODE_USAGE, codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
 import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { submit } from "./argus-live-return.mjs";
@@ -85,11 +85,11 @@ export const COMMANDS = {
   "tab-close": { args: ["tab?"] },
   "dialog-accept": { args: ["text?"] },
   login: { args: ["text", "text"] },
-  code: { roleFree: true, args: ["text", "text?", "text?"] },
+  code: { roleFree: true, args: ["text+"], usage: CODE_USAGE },
   trigger: { roleFree: true, args: ["text+"] },
   facts: { roleFree: true, args: ["text"] },
   mail: { roleFree: true, args: [] },
-  submit: { roleFree: true, args: ["text"] },
+  submit: { roleFree: true, args: ["text"], flags: { "--check": bool } },
   source: { roleFree: true, args: [] },
 };
 
@@ -149,7 +149,7 @@ export function parsePw(argv) {
   const min = spec.args.filter((k) => !k.endsWith("?")).length;
   const many = spec.args.some((k) => k.endsWith("+"));
   const max = many ? Infinity : spec.args.length;
-  if (positionals.length < min || positionals.length > max) throw new Error(`refused: ${cmd} takes ${spec.args.length ? spec.args.join(" ") : "no argument"}`);
+  if (positionals.length < min || positionals.length > max) throw new Error(spec.usage ?? `refused: ${cmd} takes ${spec.args.length ? spec.args.join(" ") : "no argument"}`);
   if (cmd === "find" && (positionals.length > 0) === flags.some((x) => x.startsWith("--regex="))) throw new Error("refused: find takes a text or --regex=<pattern>, one of them");
   return { token, account, cmd, flags, positionals };
 }
@@ -293,7 +293,7 @@ function pngsIn(dir) {
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
  * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
  * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
- * the config is read (it needs only the slot). The role-free `code`, `trigger`, `facts` and `mail`
+ * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
  * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall); a
@@ -354,9 +354,12 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   const { rec: slotRec, lock: lockNow } = tokenSlot(main, argv[0]);
   // submit needs only the slot's record: past DEADLINE and BUDGET, never counted, and a .argus/live.json
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
+  // `submit --check` is the same validation printing `check: ok`: it writes nothing, retires nothing, and is
+  // never counted either (as a refused submit is not).
   if (word === "submit") {
     try {
-      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, parsePw(argv).positionals[0], { checks: () => returnChecks(main, slotRec) })] };
+      const p = parsePw(argv);
+      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, p.positionals[0], { checks: () => returnChecks(main, slotRec), check: p.flags.includes("--check") })] };
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       return { code: 1, out: [e.message] };

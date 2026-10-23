@@ -2470,6 +2470,18 @@ describe("argus-live map mode", () => {
     expect(lines[1]).toMatch(/^<<<RETURN-/);
   }, 30_000);
 
+  it("a map slot's submit --check validates the map, records nothing and leaves the token live", async () => {
+    const t = await mapped();
+    const m = await mintMapSlot(t.main, { slot: 1 });
+    const before = JSON.stringify(readRun(t.main));
+    expect(await pw(t.main, [m.token, "submit", "--check", JSON.stringify({ ...MAP, extra: 1 })])).toEqual({ code: 1, out: ['refused: return: the map: unknown key "extra"'] });
+    expect(await pw(t.main, [m.token, "submit", "--check", JSON.stringify(MAP)])).toEqual({ code: 0, out: ["check: ok"] });
+    expect(JSON.stringify(readRun(t.main))).toBe(before);
+    expect(() => intake(t.main, 1)).toThrow("refused: slot 1 has not submitted");
+    expect((await pw(t.main, [m.token, "code", "files", "src"])).out[1]).toBe("calls 1/120");
+    expect(await pw(t.main, [m.token, "submit", JSON.stringify(MAP)])).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 map journeys 1"] });
+  }, 30_000);
+
   it("validateMap holds the map's schema", () => {
     expect(validateMap(MAP)).toEqual({ value: MAP, errors: [] });
     const step = (x: Obj) => ({ ...MAP, journeys: [{ ...MAP.journeys[0], steps: [{ ...BUY, ...x }] }] });

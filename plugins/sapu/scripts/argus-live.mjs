@@ -46,7 +46,9 @@
 //   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]
 //                                the explorer's only way into a browser (spec §9): the page's answer in a
 //                                nonce fence, then the wrapper's own lines; exit 0 ran, 1 refused or
-//                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed
+//                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed;
+//                                `pw <token> submit --check <json>` validates a return and prints
+//                                `check: ok`, recording and retiring nothing
 //   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
 //                                enums and counts, then the return whole in a RETURN nonce fence
 //   argus-live.mjs repro <slot>.<generation>.<k>
