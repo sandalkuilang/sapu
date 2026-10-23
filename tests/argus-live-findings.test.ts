@@ -41,7 +41,7 @@ import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
 import { minimize } from "../plugins/sapu/scripts/argus-live-minimize.mjs";
 // @ts-expect-error — plain ESM script without types
-import { repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { DEADLINE_EXIT, deadlineRefusal, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -957,6 +957,33 @@ describe("argus-live repro — two of two", () => {
     expect([n.code, n.lines.at(-1)]).toEqual([0, "NOT REPRODUCED runs=0/1"]);
     expect(once0.calls).toHaveLength(1);
     expect(verdict(t)).toEqual({ runs: [0], verdict: "not-reproduced" });
+  });
+
+  it("refuses before a run when the deadline leaves less than two runs need: exit 4, no run, no verdict", async () => {
+    const t = returned([LIST]);
+    // 3 minutes left: two runs of a minute at least fit; 90 seconds do not.
+    setLock(t.main, { ...t.lock, deadline: now() + 90 });
+    const s = stub([3, 3]);
+    const said: string[] = [];
+    const r = await repro(t.main, t.refs[0], { once: s.once, say: (l: string) => said.push(l) });
+    expect([r.code, DEADLINE_EXIT]).toEqual([4, 4]);
+    expect(r.lines).toEqual(["deadline: 1 min left, a repro needs about 2"]);
+    expect(said).toEqual(r.lines);
+    expect(s.calls).toEqual([]);
+    expect(existsSync(join(t.dir(t.refs[0]), "verdict.json"))).toBe(false);
+    // One run (--once) needs a minute: 90 seconds fit, 30 do not.
+    expect(deadlineRefusal(t.main, t.refs[0], 1)).toBeNull();
+    setLock(t.main, { ...t.lock, deadline: now() + 30 });
+    expect(deadlineRefusal(t.main, t.refs[0], 1)).toBe("deadline: 0 min left, a repro needs about 1");
+    // The longest run recorded in this run is the estimate: a 5-minute run needs 10 for two.
+    mkdirSync(t.dir(t.refs[0]), { recursive: true });
+    writeFileSync(join(t.dir(t.refs[0]), "run-1.json"), `${JSON.stringify({ exit: 3, ms: 300_000 })}\n`);
+    setLock(t.main, { ...t.lock, deadline: now() + 9 * 60 });
+    expect(deadlineRefusal(t.main, t.refs[0], 2)).toBe("deadline: 8 min left, a repro needs about 10");
+    setLock(t.main, { ...t.lock, deadline: now() + 11 * 60 });
+    expect(deadlineRefusal(t.main, t.refs[0], 2)).toBeNull();
+    const ok = await repro(t.main, t.refs[0], { once: stub([3, 3]).once });
+    expect(ok.code).toBe(3);
   });
 
   it("a harness failure stops at once and is never counted as reproduced", async () => {
