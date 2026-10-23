@@ -197,22 +197,26 @@ const WATCH = `  const origins = new Set();
   };
   // Which of the inputs "loc" matches a person could type into → [[index, empty]], in one page-side
   // evaluate. Playwright's :visible counts opacity 0, a click-through wrapper and a field taken out of
-  // reach as visible; here none of the input and its ancestors is see-through (opacity 0), inert or
-  // aria-hidden, and the input is neither visibility:hidden nor pointer-events:none (both inherit, so
-  // its computed value already holds its ancestors'). "strict" (a guess at a code field, not one that
-  // says it is) also drops a field out of the tab order (tabIndex -1) and a search box (type=search, role
-  // combobox or searchbox, aria-autocomplete): a command palette kept in the DOM is not a code field.
+  // reach as visible. A field that says it is a code field (not "strict") is often drawn as an overlay
+  // (opacity 0 over digit boxes, under a modal library's aria-hidden wrapper), so it is dropped only
+  // when it or an ancestor is inert, or it is visibility:hidden. "strict" (a guess at a code field, not
+  // one that says it is) also drops a field with an opacity 0 or aria-hidden ancestor, pointer-events:none
+  // (visibility and pointer-events inherit, so the computed value already holds the ancestors'), a field
+  // out of the tab order (tabIndex -1) and a search box (type=search, role combobox or searchbox,
+  // aria-autocomplete): a command palette kept in the DOM is not a code field.
   const usable = (loc, strict) =>
     loc.evaluateAll((els, strict) => {
-      const open = (el) => {
-        const s = getComputedStyle(el);
-        if (s.visibility === "hidden" || s.pointerEvents === "none" || el.closest("[inert], [aria-hidden=true]")) return false;
-        for (let n = el; n; n = n.parentElement) if (Number(getComputedStyle(n).opacity) === 0) return false;
-        return true;
-      };
       const role = (el) => String(el.getAttribute("role") || "").toLowerCase();
       const search = (el) => el.type === "search" || role(el) === "combobox" || role(el) === "searchbox" || el.hasAttribute("aria-autocomplete");
-      return els.flatMap((el, i) => (open(el) && !(strict && (el.tabIndex === -1 || search(el))) ? [[i, el.value === ""]] : []));
+      const open = (el) => {
+        const s = getComputedStyle(el);
+        if (s.visibility === "hidden" || el.closest("[inert]")) return false;
+        if (!strict) return true;
+        if (s.pointerEvents === "none" || el.closest("[aria-hidden=true]")) return false;
+        for (let n = el; n; n = n.parentElement) if (Number(getComputedStyle(n).opacity) === 0) return false;
+        return el.tabIndex !== -1 && !search(el);
+      };
+      return els.flatMap((el, i) => (open(el) ? [[i, el.value === ""]] : []));
     }, strict);
   // The rule behind the field otpField last returned: "one-time-code" (the page says so) or "fallback"
   // (the one usable empty text-like input, a guess).

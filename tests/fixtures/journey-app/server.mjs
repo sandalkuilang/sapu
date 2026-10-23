@@ -31,10 +31,12 @@
 //   /login/two-step  a text user field + "Continue", then the password page
 //   /login/slow   a text user field + password on one page; a submit keeps the form on screen
 //                 for 1500 ms before posting it (a client-side app awaiting its API and route)
-//   /login/variant?v=landing|landing-field|plain-otp
+//   /login/variant?v=landing|landing-field|plain-otp|overlay-otp|hidden-otp
 //                 the /login form carrying a variant: "landing" signs in to /landing, "landing-field" to
 //                 /landing?field=visible, "plain-otp" sends a TOTP account to a code page whose field has
-//                 no autocomplete attribute
+//                 no autocomplete attribute, "overlay-otp" to one whose autocomplete=one-time-code field
+//                 is opacity 0 over drawn digit boxes, "hidden-otp" to one whose field sits in an
+//                 aria-hidden wrapper (a modal library's)
 //   /landing      signed in: a closed command palette (an empty combobox input, opacity 0 in a
 //                 pointer-events:none wrapper, tabindex -1) and, 1500 ms after load, the "Account" button
 //                 (a shell painted before its session call returned); ?field=visible has an empty,
@@ -325,6 +327,7 @@ function spend(req, form) {
 
 const LOCKED = "Too many attempts. Try again later.";
 
+const OTP_KINDS = ["plain-otp", "overlay-otp", "hidden-otp"];
 const LANDINGS = new Map([["landing", "/landing"], ["landing-field", "/landing?field=visible"]]);
 
 function signIn(res, user, next) {
@@ -353,7 +356,7 @@ async function postLogin(req, res) {
   if (a.totp) {
     const state = pre.get(cookies(req).pre);
     state.otpUser = user;
-    state.plainOtp = form.get("variant") === "plain-otp";
+    state.otpKind = OTP_KINDS.find((k) => k === form.get("variant")) || "";
     return redirect(res, "/login/otp");
   }
   failures.delete(user);
@@ -370,7 +373,7 @@ async function postOtp(req, res) {
   const used = readJson("totp-used.json", {});
   const again = (msg, status) => {
     const { token, headers } = issue(req);
-    send(res, status, page("Verify", `<p role="alert">${msg}</p>${otpForm(token, state.plainOtp)}`), headers);
+    send(res, status, page("Verify", `<p role="alert">${msg}</p>${otpForm(token, state.otpKind)}`), headers);
   };
   if (step === undefined) return again("Wrong code.", 401);
   if (step <= (used[user] ?? -1)) return again("code already used", 401);
@@ -380,10 +383,16 @@ async function postOtp(req, res) {
   signIn(res, user);
 }
 
-const otpForm = (token, plain = false) =>
-  `<form method="post" action="/login/otp"><input type="hidden" name="csrf" value="${token}">` +
-  `<label>One-time code <input type="text" name="code" inputmode="numeric"${plain ? "" : ' autocomplete="one-time-code"'} required></label>` +
-  `<button type="submit">Verify</button></form>`;
+const otpForm = (token, kind = "") => {
+  const field = `<input type="text" name="code" inputmode="numeric"${kind === "plain-otp" ? "" : ' autocomplete="one-time-code"'}${kind === "overlay-otp" ? ' aria-label="One-time code" style="position: absolute; inset: 0; opacity: 0"' : ""} required>`;
+  const code =
+    kind === "overlay-otp"
+      ? `<div style="position: relative; display: inline-block"><span>_ _ _ _ _ _</span>${field}</div>`
+      : kind === "hidden-otp"
+        ? `<div aria-hidden="true"><label>One-time code ${field}</label></div>`
+        : `<label>One-time code ${field}</label>`;
+  return `<form method="post" action="/login/otp"><input type="hidden" name="csrf" value="${token}">${code}<button type="submit">Verify</button></form>`;
+};
 
 function leakPage(q) {
   const port = (k) => (/^\d{1,5}$/.test(q.get(k) || "") ? Number(q.get(k)) : 0);
@@ -552,7 +561,7 @@ async function handle(req, res) {
     return send(res, 200, page("Sign in", form), headers);
   }
   if (p === "/login/variant" && req.method === "GET") {
-    const variant = ["landing", "landing-field", "plain-otp"].find((v) => v === url.searchParams.get("v"));
+    const variant = ["landing", "landing-field", ...OTP_KINDS].find((v) => v === url.searchParams.get("v"));
     if (!variant) return send(res, 404, "");
     const { token, headers } = issue(req);
     return send(res, 200, page("Sign in", loginForm(token, { variant })), headers);
@@ -579,7 +588,7 @@ async function handle(req, res) {
     const state = pre.get(cookies(req).pre);
     if (!state || !state.otpUser) return redirect(res, "/login");
     const { token, headers } = issue(req);
-    return send(res, 200, page("Verify", otpForm(token, state.plainOtp)), headers);
+    return send(res, 200, page("Verify", otpForm(token, state.otpKind)), headers);
   }
   if (p === "/login/otp" && req.method === "POST") return postOtp(req, res);
 
