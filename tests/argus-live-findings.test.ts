@@ -3180,6 +3180,62 @@ describe("argus-live show", () => {
     }
   }, 60_000);
 
+  it("a second show --follow prints the live watcher's URL and exits 0; a normal exit removes the record and says why", async () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      const rec = JSON.parse(readFileSync(watch, "utf8"));
+      expect(rec).toMatchObject({ pid: show.pid, port, dashboardPgid: null });
+      expect(rec.start).toBe(startTime(show.pid!));
+      expect(statSync(watch).mode & 0o777).toBe(0o600);
+      const second = spawnSync(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, encoding: "utf8", timeout: 20_000 });
+      expect({ code: second.status, out: second.stdout, err: second.stderr }).toEqual({ code: 0, out: `show: watching on http://localhost:${port}\n`, err: "" });
+      // the second start took nothing from the first: its record and its page stay.
+      expect(JSON.parse(readFileSync(watch, "utf8")).pid).toBe(show.pid);
+      expect((await fetchPage(port))!.status).toBe(200);
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+      expect(out.trimEnd().split("\n").pop()).toBe("show: stopped (SIGINT)");
+      expect(existsSync(watch)).toBe(false);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("show --follow after a watcher died ends the dashboard group it left and takes over; a group it cannot vouch for stays", async () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+    const dashboard = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    const left = dashboard();
+    const other = dashboard();
+    let show: ReturnType<typeof spawn> | undefined;
+    try {
+      // the dead watcher recorded `left` as its dashboard group; `other` is recorded with a start time that is not its own (a reused pid).
+      for (const [rec, pgid] of [[{ pid: dead, start: "ticks:1", port: 1, dashboardPgid: other.pid, dashboardStart: "ticks:1" }, other.pid], [{ pid: dead, start: "ticks:1", port: 1, dashboardPgid: left.pid, dashboardStart: startTime(left.pid!) }, left.pid]] as const) {
+        mkdirSync(join(t.main, ".argus/live"), { recursive: true });
+        writeFileSync(watch, `${JSON.stringify(rec)}\n`);
+        show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        show.stdout.on("data", (d) => (out += d));
+        expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+        expect(JSON.parse(readFileSync(watch, "utf8"))).toMatchObject({ pid: show.pid, port: Number(WATCHING.exec(out)![1]) });
+        if (pgid === left.pid) expect(await until(() => !alive(left.pid!), 10_000)).toBe(true);
+        else expect(alive(other.pid!)).toBe(true);
+        show.kill("SIGINT");
+        expect(await until(() => show!.exitCode !== null || show!.signalCode !== null, 10_000)).toBe(true);
+      }
+    } finally {
+      if (show && show.exitCode === null) show.kill("SIGKILL");
+      for (const c of [left, other]) if (c.pid && alive(c.pid)) process.kill(c.pid, "SIGKILL");
+    }
+  }, 60_000);
+
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });
     expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({ code: 1, out: "", err: "refused: no journey cycle is running\n" });

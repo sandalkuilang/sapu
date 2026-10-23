@@ -106,14 +106,17 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
  * runs, and SIGINT to its process group ends the CLI and its dashboard process both (to the CLI's pid
  * alone it leaves the dashboard running). So the CLI leads a process group of its own, and SIGINT,
  * SIGTERM and SIGHUP to this process (Ctrl-C, a kill, a closed terminal) go to that whole group, as does a
- * SIGTERM once the CLI ended (a dashboard it left). Nothing is recorded in run.json: it is the owner's own
- * process. Resolves to the CLI's exit status. `port` (0: a free one the CLI picks) and `until` (a check
- * polled each second that ends the CLI's group once true) serve `show --follow`.
+ * SIGTERM once the CLI ended (a dashboard it left). Nothing is recorded in run.json: the dashboard is not a
+ * run's process, and a SIGKILL of this process leaves its group behind (`onStart` lets `show --follow` record
+ * the group in its watcher record, argus-live-watch.mjs, for the next watcher to end). Resolves to the CLI's
+ * exit status. `port` (0: a free one the CLI picks), `until` (a check polled each second that ends the CLI's
+ * group once true) and `onStart` (called with the group's id once the CLI is spawned) serve `show --follow`.
  */
-export function showDashboard({ js, home, cwd, port = 0, until = null }) {
+export function showDashboard({ js, home, cwd, port = 0, until = null, onStart = null }) {
   cliDirs(home);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [js, "show", "--port", String(port)], { cwd, env: cliEnv(home), stdio: ["ignore", "inherit", "inherit"], detached: true });
+    if (onStart && child.pid) onStart(child.pid);
     const group = (sig) => {
       try {
         process.kill(-child.pid, sig);

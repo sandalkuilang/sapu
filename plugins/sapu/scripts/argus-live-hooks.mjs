@@ -72,9 +72,9 @@ export async function runHook(kind, name, values, { rec, live, runner = runAsync
   return { code: r.timedOut ? null : (r.status ?? null), stdout, events };
 }
 
-/** A pathspec as the explorer gives it → repo-relative, or a refusal: an absolute path must lie inside the worktree; no `..`, no leading `-` or `:`. */
+/** A pathspec as the explorer gives it → repo-relative, or a refusal (CODE_USAGE ends it): an absolute path must lie inside the worktree; no `..`, no leading `-` or `:`. */
 function pathspecOf(spec, worktree) {
-  const refuse = () => new Error(`refused: ${typeof spec === "string" && /^[\x20-\x7e]{1,200}$/.test(spec) ? spec : "that pathspec"} is not a path inside the worktree`);
+  const refuse = () => new Error(`refused: ${typeof spec === "string" && /^[\x20-\x7e]{1,200}$/.test(spec) ? spec : "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
   if (typeof spec !== "string" || spec === "" || spec.length > 1000 || /[\u0000-\u001f\u007f]/.test(spec)) throw refuse();
   let rel = spec;
   if (path.isAbsolute(spec)) {
