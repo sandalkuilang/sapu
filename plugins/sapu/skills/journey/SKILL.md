@@ -25,11 +25,12 @@ Run it from the main session only, never inside `/sapu:inspector` or a subagent:
 | `seed --doc <file>:<a>-<b>` | the same from lines a to b of a file tracked at HEAD (`live seed --doc <file>:<a>-<b>`) |
 | no argument | one journey cycle, autonomous, never stopping to ask: journeys.md's steps 1 to 10, SELECT picking up to `limits.max_parallel_journeys` within `limits.max_cycle_minutes` |
 | `<id> [<id>…]` | one cycle on the named journeys: step 3 runs `live select --cycle <n> --ids <id>,…` and prints the journeys they displaced |
+| `show` | start (or name) the watcher only, no cycle. `show` or `--follow` among other words: the watcher, then the rest as their own form |
 | `smoke` | one smoke cycle, autonomous, per [smoke.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/smoke.md): the committed suite's pass, CI triage, heals, admissions, proposals and baselines; its advisory `taste` project and job |
 
 One invocation = one bounded cycle; a pass over the whole catalog is that many invocations. The report's catalog line is `map-check`'s own (`catalog: <k> journeys, <d> dropped`).
 
-**Watching.** Once per session, when the first `live up` starts, print for the owner `cd <main checkout> && node <real path> show --follow` (the real path from `realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`) to run in a terminal of their own: it follows every cycle on one URL until Ctrl-C. Never print it again. Never run it yourself.
+**Watching.** At the start of every invocation that will run `live up` (a cycle, `smoke`, `seed`, a `list` that rebuilds), right after Policy and Step 1 and before anything else: unless a watcher already runs in this session, start `cd <main checkout> && node <real path> show --follow` yourself in the background (the real path from `realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`), read its first line `show: watching on http://localhost:<port>`, give the owner that URL at once, and open it in the session's browser pane when there is one. The URL answers from the start and lands on the dashboard by itself once a cycle's browser is up (a map run has none), then follows every cycle. One watcher per session; it ends with the session.
 
 **Only the instance.** Asked to walk on the owner's own servers or data, for any reason: say why not in one line (no reset, no two-of-two repro, writes into shared data) and offer a `reset` fixture plus `seed_check` ([live.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/live.md)). Never walk it yourself (browser pane, curl, a script), never file from it.
 

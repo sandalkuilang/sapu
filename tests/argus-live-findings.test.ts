@@ -3,8 +3,10 @@
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { get } from "node:http";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -3067,6 +3069,116 @@ describe("argus-live show", () => {
       if (show.exitCode === null) show.kill("SIGKILL");
     }
   }, 40_000);
+
+  // An HTTP GET to the port show --follow printed: {status, body}, or null while nothing there answers.
+  const fetchPage = (port: number, host = `127.0.0.1:${port}`) =>
+    new Promise<{ status: number; body: string; marker: string | undefined } | null>((ok) => {
+      const req = get({ host: "127.0.0.1", port, headers: { host } }, (res) => {
+        let body = "";
+        res.on("data", (d) => (body += d));
+        res.on("end", () => ok({ status: res.statusCode ?? 0, body, marker: res.headers["x-sapu-watch"] as string | undefined }));
+      });
+      req.on("error", () => ok(null));
+      req.setTimeout(1000, () => req.destroy());
+    });
+  const WATCHING = /show: watching on http:\/\/localhost:(\d+)\n/;
+
+  it("show --follow answers on its port while it waits: the state, the run's newest up step, escaped, refreshing", async () => {
+    const t = liveRun();
+    const logs = join(t.main, ".argus/live", t.runId, "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "up.log"), `step 1 lock: cycle ${t.runId}\nstep 3 environment: <script>alert("x")</script> & 'q'\nnot a step line\n`);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => out.startsWith("show: watching on http://localhost:"), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      const page = (await fetchPage(port))!;
+      expect(page.status).toBe(200);
+      // Every placeholder response carries the marker the page's script looks for; the refresh meta is the no-script fallback only.
+      expect(page.marker).toBe("waiting");
+      expect(page.body).toContain('<noscript><meta http-equiv="refresh" content="2"></noscript>');
+      expect(page.body).toContain("no journey cycle is running");
+      expect(page.body).toContain(`<p>run ${t.runId}</p>`);
+      // The newest step line only, every markup character escaped.
+      expect(page.body).toContain("<p>step 3 environment: &#60;script&#62;alert(&#34;x&#34;)&#60;/script&#62; &#38; &#39;q&#39;</p>");
+      expect(page.body).not.toContain("step 1 lock");
+      // One inline script, polling the page itself, with no data in it: the same text whatever the state.
+      const scripts = page.body.match(/<script>[\s\S]*?<\/script>/g) ?? [];
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0]).toContain('fetch(location.href,{cache:"no-store"})');
+      expect(scripts[0]).toContain("location.reload()");
+      for (const data of [t.runId, "step 3", "alert", "no journey cycle", "127.0.0.1", String(port)]) expect(scripts[0], data).not.toContain(data);
+      // A map run is told as one.
+      writeRunFiles(t.main, { runId: t.runId, mode: "map", instanceId: null, worktree: t.wt, groups: [], stops: [] });
+      const mapPage = (await fetchPage(port))!;
+      expect(mapPage.body).toContain("map mode: the explorer reads code only; nothing to watch until the walk&#39;s `up`");
+      expect(mapPage.body.match(/<script>[\s\S]*?<\/script>/g)).toEqual(scripts);
+      // The script itself: keeps polling through a network error, reloads once an answer lacks the marker, swaps the status in place while it has it.
+      const code = scripts[0].replace(/^<script>|<\/script>$/g, "");
+      const run = async (answer: () => Promise<unknown>) => {
+        let tick = () => {};
+        const s = { innerHTML: "old" };
+        const env = { reloads: 0, s };
+        runInNewContext(code, {
+          setInterval: (f: () => void) => (tick = f),
+          fetch: answer,
+          location: { href: "http://x/", reload: () => env.reloads++ },
+          document: { getElementById: () => s },
+          DOMParser: class {
+            parseFromString = (t: string) => ({ getElementById: () => ({ innerHTML: t }) });
+          },
+        });
+        await tick();
+        await new Promise((r) => setTimeout(r, 10));
+        return env;
+      };
+      const reply = (marker: string | null, text: string) => Promise.resolve({ headers: { get: () => marker }, text: () => Promise.resolve(text) });
+      expect(await run(() => Promise.reject(new Error("refused")))).toMatchObject({ reloads: 0, s: { innerHTML: "old" } });
+      expect(await run(() => reply(null, "dashboard"))).toMatchObject({ reloads: 1, s: { innerHTML: "old" } });
+      expect(await run(() => reply("waiting", "new status"))).toMatchObject({ reloads: 0, s: { innerHTML: "new status" } });
+      // Only a localhost Host header is answered (no DNS rebinding).
+      expect((await fetchPage(port, "evil.example"))!.status).toBe(403);
+    } finally {
+      show.kill("SIGKILL");
+    }
+  }, 40_000);
+
+  it("show --follow frees its port before the dashboard binds it and serves it again once the cycle is gone", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "binds");
+    // Stands in for the CLI's show: tries to listen on the --port it was given and records whether it could, then blocks.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nrequire("node:net").createServer().once("error", (e) => fs.appendFileSync(${JSON.stringify(log)}, "error " + e.code + "\\n")).listen(Number(process.argv[4]), "127.0.0.1", () => fs.appendFileSync(${JSON.stringify(log)}, "bound\\n"));\nsetInterval(() => {}, 1000);\n`);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      expect((await fetchPage(port))!.status).toBe(200);
+      writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+      mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+      expect(await until(() => existsSync(log), 10_000)).toBe(true);
+      expect(readFileSync(log, "utf8")).toBe("bound\n");
+      // The cycle goes (another run holds the lock, with no browser): the dashboard ends and the page is back on the same port.
+      const next = `${t.runId.slice(0, -1)}${t.runId.endsWith("0") ? "1" : "0"}`;
+      setLock(t.main, { runId: next, start: now(), deadline: now() + 3600 });
+      let back: { status: number; body: string } | null = null;
+      for (let i = 0; i < 100 && back?.status !== 200; i++) {
+        back = await fetchPage(port);
+        if (!back) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(back?.body).toContain(`<p>run ${next}</p>`);
+      expect(out).not.toContain("the dashboard ended");
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
 
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });
