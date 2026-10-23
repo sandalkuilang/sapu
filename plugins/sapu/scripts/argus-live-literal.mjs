@@ -150,7 +150,7 @@ function fields(c) {
       if (isObj(e.health)) for (const k of ["url", "cmd"]) str(`start[${i}].health.${k}`, e.health[k]);
     });
   }
-  for (const k of ["base_url", "login_url", "store_check", "reset"]) str(k, c[k]);
+  for (const k of ["base_url", "login_url", "store_check", "reset", "seed_check"]) str(k, c[k]);
   for (const k of ["facts", "mail"]) if (isObj(c[k])) argv(`${k}.argv`, c[k].argv);
   if (isObj(c.triggers)) for (const [n, t] of Object.entries(c.triggers)) if (isObj(t)) argv(`triggers.${n}.argv`, t.argv);
   if (isObj(c.roles)) {

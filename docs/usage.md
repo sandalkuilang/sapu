@@ -86,7 +86,8 @@ Without the aliases, the full names are `/sapu:sapu`, `/sapu:forge`, and so on. 
 
 `/journey` tips:
 - **One invocation is one bounded cycle**, within `limits.max_cycle_minutes`, on up to `limits.max_parallel_journeys` journeys; a pass over the whole catalog is that many invocations. The report ends with the next picks.
-- **To watch,** run the `argus-live.mjs show` command the cycle prints, in a terminal of your own: it opens the browser CLI's dashboard on the cycle's sessions and blocks until Ctrl-C (closing the terminal or a `kill` ends it and its dashboard too). It starts with `cd` to your main checkout, since it reads the lock there. The cycle never runs it itself.
+- **To watch,** run the `argus-live.mjs show --follow` command the first cycle of a session prints, in a terminal of your own. It opens the browser CLI's dashboard on the cycle's sessions, follows every later cycle on the same URL, and blocks until Ctrl-C (closing the terminal or a `kill` ends it and its dashboard too). It starts with `cd` to your main checkout, since it reads the lock there. An explorer reads code before it opens a page, so its sessions appear once it does. The cycle never runs it itself.
+- **Give the instance its data.** The lane walks only the instance `up` builds, never your own dev data. Seed what the journeys need in `reset`, and add a `seed_check` so an empty seed stops `up` before an explorer spends its budget.
 - **A finding only you can rule on** (a doc that contradicts coherent behaviour, a usability heuristic with no written rule) carries the needs-owner label (`labels.needsOwner`, default `argus:needs-owner`), and `/sapu` and `/forge` skip it. Remove the label to accept the finding, or close the issue as not planned to rule the behaviour intended. No agent does either: the guard refuses both to every subagent.
 - **A taste finding only you can rule on** (two screens that do one thing two ways with no majority, or a row the Curator rejected) carries the needs-owner label too. Close a taste issue as not planned to say the design is intended; the orchestrator then runs `taste accept` on your word, and the finding never files or weighs in SELECT again.
 - **A cycle running beside a sweep** shares the machine's CPU with the sweep's gates: a gate that overlapped a cycle is logged with ` live=1` in `.git/sapu-gates.log` and never counts toward a flake proof.
@@ -688,6 +689,15 @@ claude plugin list --json
 ```
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
+
+#### Upgrading from a version before 2.31.0
+
+Nothing to do: start a new session. What behaves differently:
+- **`.argus/live.json` can carry `seed_check`.** It is an optional shell command that runs right after `reset`. A non-zero exit means the data your journeys start from is missing, for example an empty catalog: `up` then fails at step 6 with the tail of what the command printed, before any explorer is dispatched. A plugin older than this version refuses a file that holds it. An explorer that finds a key assumption false on a blocking step now ends its walk at once, as `aborted`.
+- **Watch every cycle from one terminal.** `argus-live.mjs show --follow` waits for a cycle's browser, shows it, and follows each later cycle on the same URL until Ctrl-C. `/journey` prints that command once per session. Plain `show` is unchanged.
+- **The journey lane stays on its instance.** Asked to walk a journey on your own dev servers or data, the orchestrator declines in one line and offers a `reset` fixture plus `seed_check` instead. It no longer drives the browser itself or files from such a walk.
+- **Concurrent argus cycles get distinct ids.** ORIENT reserves the cycle with `sapu-contract.mjs argus-cycle`, which creates `.argus/journal/<id>.md` exclusively. Two sessions starting a cycle at once no longer write the same journal or `run.log` id.
+- **`scrub` creates the agent-filed label when the repo lacks it.** A create the missing label refused is filed again once the label exists. If the label create fails, nothing is filed and the first failure is printed.
 
 #### Upgrading from a version before 2.30.0
 

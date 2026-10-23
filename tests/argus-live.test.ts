@@ -1032,6 +1032,7 @@ describe("argus-live instance — processes, health, store", () => {
         done((s.address() as { port: number }).port);
       });
     });
+  const ev0 = (name: string) => `echo ${name} >> events; `;
   /** A worktree stand-in, a MAIN with an env file, and an expanded config for the fixture app. */
   const world = async (over: Record<string, unknown> = {}) => {
     const wt = tempDir();
@@ -1066,6 +1067,15 @@ describe("argus-live instance — processes, health, store", () => {
     expect(w.events()).toEqual(["backing", "check", "check", "check", "reset", "web", "check", "check", "check"]);
     expect(groups.map((g) => g.name)).toEqual(["backing", "reset", "web"]);
     expect(readFileSync(join(w.ctx.logs, "web.log"), "utf8")).toMatch(/listening on/);
+  }, 30_000);
+
+  it("seed_check runs after reset, and its failure ends step 6 with the tail of what it printed", async () => {
+    const w = await world({ seed_check: `${ev0("seed")}echo 'no product in the catalog' >&2; exit 3` });
+    await expect(bringUpStore(w.ctx)).rejects.toThrow(/^failed: seed_check exited 3: .*no product in the catalog/);
+    expect(w.events()).toEqual(["backing", "check", "check", "check", "reset", "seed"]);
+    const ok = await world({ seed_check: `${ev0("seed")}true` });
+    await bringUpStore(ok.ctx);
+    expect(ok.events().at(-1)).toBe("seed");
   }, 30_000);
 
   it("a store_check printing another store is refused, and reset never runs", async () => {

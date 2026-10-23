@@ -45,6 +45,8 @@
 //   sapu-contract.mjs sweep status|clear   print the marker; remove it whoever holds it (the person's)
 //   sapu-contract.mjs session-status <run-marker> [--phase-a]   {verdict, context, limit, backlog, transcript}:
 //                                 continue | handoff | finish for this sweep session (sessionStatus)
+//   sapu-contract.mjs argus-cycle prints {id, n}: the next argus cycle, reserved (reserveArgusCycle) — its
+//                                 journal <MAIN>/.argus/journal/<id>.md created, so a second session never takes it
 //   sapu-contract.mjs main        prints <MAIN>, the main checkout (findMain: also for a submodule or a
 //                                 --separate-git-dir checkout, where git lists its git directory first)
 //   sapu-contract.mjs stack       the guard /sapu:init proposes for the checkout (detectStack): its
@@ -544,6 +546,30 @@ function loadLocalContract(root, { file, nwo }, { workingTree, ref }) {
   const errs = validate(c);
   if (c && c.repo !== nwo) errs.push(`repo is "${c.repo}" but this checkout's origin is ${nwo}`);
   return errs.length ? { error: `${file} is invalid:\n  - ${errs.join("\n  - ")}` } : { contract: c, home: { mode: "local", dir: path.dirname(file) } };
+}
+
+/**
+ * argus's next cycle, reserved in `main`'s `.argus/`: `n` one past both run.log's lines and the highest
+ * `<date>-<n>.md` journal, `id` = `<local date>-<n>`, and that journal created exclusively (`wx`). Two
+ * sessions starting a cycle at once both read the same count; the one whose create loses takes the next
+ * `n`, so neither overwrites the other's journal or run.log id → `{id, n}`.
+ */
+export function reserveArgusCycle(main, { now = new Date() } = {}) {
+  const dir = path.join(main, ".argus", "journal");
+  fs.mkdirSync(dir, { recursive: true });
+  const log = path.join(main, ".argus", "run.log");
+  const lines = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter((l) => l.trim()).length : 0;
+  const taken = fs.readdirSync(dir).map((f) => /^\d{4}-\d{2}-\d{2}-(\d+)\.md$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  for (let n = Math.max(lines, ...taken) + 1; ; n++) {
+    const id = `${date}-${n}`;
+    try {
+      fs.writeFileSync(path.join(dir, `${id}.md`), `# Cycle ${id}\n`, { flag: "wx" });
+      return { id, n };
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+  }
 }
 
 /** Where this checkout's contract and profiles live: {mode: "repo"|"local", dir} (profiles are <dir>/<skill>.md). */
@@ -2037,8 +2063,8 @@ function main(argv) {
     process.stderr.write(`sapu-contract: ${msg}\n`);
     process.exit(1);
   };
-  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "session-status", "main", "stack", "tuning"].includes(cmd)) {
-    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker> [--force <reason>]|session-status <run-marker> [--phase-a]|sweep status|clear|main|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
+  if (!["check", "show", "wave-args", "specialists", "trusted", "issue-trust", "pr-trust", "get", "preflight", "profiles", "lanes", "home", "policy", "allowed", "pr-reviews", "sweep", "session-status", "main", "stack", "tuning", "argus-cycle"].includes(cmd)) {
+    fail("usage: sapu-contract.mjs check|show|wave-args|specialists|trusted|issue-trust <N> [--text] [--comments]|pr-trust <N> [--text]|get <a.b>|preflight|lanes|home|policy|allowed <skill>|pr-reviews <N>|sweep hold|release <run-marker> [--force <reason>]|session-status <run-marker> [--phase-a]|sweep status|clear|main|argus-cycle|stack|tuning|protect [--ref <rev>] -- <words>|profiles [--list] (show|profiles [--working-tree])");
   }
   // Everything that acts on the contract reads <MAIN>'s HEAD. Only /sapu:init, verifying the files
   // it just wrote on its own branch, reads a working tree — the one the command runs in.
@@ -2060,6 +2086,11 @@ function main(argv) {
     const root = checkoutRoot(process.cwd());
     if (!root) fail("not inside a git repository");
     process.stdout.write(`${JSON.stringify(detectStack(root), null, 2)}\n`);
+    return;
+  }
+  if (cmd === "argus-cycle") {
+    if (!mainDir) fail("not inside a git repository");
+    process.stdout.write(`${JSON.stringify(reserveArgusCycle(mainDir))}\n`);
     return;
   }
   if (cmd === "main") {

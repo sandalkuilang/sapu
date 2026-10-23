@@ -485,7 +485,7 @@ export async function checkStore({ config, env, worktree, main, contract, secret
   for (const scope of scopes) check(scope.label, scope.env, { own: scope.own });
 }
 
-/** Runs one config command (`reset`) through the shell (shellArgv) in the worktree, logged, bounded by `deadline`. */
+/** Runs one config command (`reset`, `seed_check`) through the shell (shellArgv) in the worktree, logged, bounded by `deadline`. */
 async function runStep(name, cmd, { worktree, env, logs, deadline, secrets = {}, groups = [], runner = runAsync }) {
   const left = msLeft(deadline, name);
   if (left <= 0) throw new Error(`failed: ${name} timed out (the cycle's deadline passed)`);
@@ -521,13 +521,15 @@ async function startHealthy(entry, ctx) {
 
 /**
  * `up` step 6: the `phase: "store"` entries (started and healthy, one by one), `checkStore`, and only
- * then `reset`. `ctx` = {config (expanded), env, worktree, main, contract, secrets, logs, groups,
+ * then `reset`, then `seed_check` when the config has one. `ctx` = {config (expanded), env, worktree, main, contract, secrets, logs, groups,
  * timeoutS, deadline}; every started group lands in `ctx.groups` as it starts.
  */
 export async function bringUpStore(ctx) {
   for (const e of ctx.config.start.filter((x) => x.phase === "store")) await startHealthy(e, ctx);
   await checkStore(ctx);
   await runStep("reset", ctx.config.reset, ctx);
+  // The data the journeys start from, checked before any explorer is dispatched: its failure (its output's tail) ends up.
+  if (ctx.config.seed_check) await runStep("seed_check", ctx.config.seed_check, ctx);
 }
 
 /** `up` step 7: every other entry (started and healthy, one by one), then `checkStore` again. */

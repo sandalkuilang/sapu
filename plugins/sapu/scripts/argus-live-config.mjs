@@ -29,7 +29,7 @@ export const MAX_CYCLE_MINUTES = 1440;
 // The schema's key lists, frozen: the reference (skills/journey/live.md) is pinned to them.
 export const TOP_KEYS = Object.freeze([
   "setup", "services", "start", "base_url", "login_url", "logged_in", "login_open", "env_file", "env", "pass_env", "store", "store_check", "reset",
-  "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
+  "seed_check", "facts", "mail", "triggers", "confirmed", "allow_origins", "port_range", "reserved_ports", "login_spacing_ms", "timezone", "locale",
   "fixtures", "roles", "viewports", "locales", "settle_ms", "prohibited", "limits", "compose_files",
   "test_id_attribute", "pseudo_locales", "tokens",
 ]);
@@ -143,7 +143,7 @@ export function validateLive(c) {
       });
     }
   }
-  for (const k of ["base_url", "login_url", "store", "store_check", "reset"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
+  for (const k of ["base_url", "login_url", "store", "store_check", "reset", "seed_check"]) if (has(k)) need(isStr(c[k]), `${k} must be a non-empty string`);
   for (const k of ["logged_in", "login_open"]) if (has(k)) locatorKey(c[k], k, k, errs);
   if (isStr(c.base_url)) localUrl(c.base_url, "base_url", errs);
   if (has("env_file")) need(isStr(c.env_file), "env_file must be a path inside the repo");
@@ -344,7 +344,7 @@ const secretVar = (name) => `ARGUS_SECRET_${name}`;
 /** `["start", 0, "cmd"]`-style paths of the fields run by `/bin/sh -c`. */
 function isShellField(at) {
   const k = at.join(".");
-  return /^(store_check|reset|start\.\d+\.(cmd|stop|health\.cmd)|roles\.[^.]+\.login\.command)$/.test(k);
+  return /^(store_check|reset|seed_check|start\.\d+\.(cmd|stop|health\.cmd)|roles\.[^.]+\.login\.command)$/.test(k);
 }
 
 /** Why `${NAME}` cannot stand where it stands in a shell field, and what to write instead. */
@@ -499,7 +499,7 @@ export function secretEnv(cmd, secrets = {}) {
 
 /**
  * A deep copy of `config` with every string expanded; `config` itself is left as it is. Shell fields
- * (`store_check`, `reset`, `start[].cmd|stop|health.cmd`, `roles.<r>.login.command`) go through
+ * (`store_check`, `reset`, `seed_check`, `start[].cmd|stop|health.cmd`, `roles.<r>.login.command`) go through
  * `expandShell`; everything else (argv lists, env values, URLs) gets the values themselves.
  */
 export function expandConfig(config, { ports = {}, secrets = {} } = {}) {

@@ -521,7 +521,8 @@ export const candidate = async (main: string, { slot, accounts, repros }: { slot
  * `body` the `--body-file`'s text at that moment, `attached` each `--attach` file's bytes (latin1), so a
  * test can scan everything gh was given. It answers `--version`, `repo view` and `issue create|comment`
  * as `set({version, visibility, create, comment})` says (`create`/`comment`: `{out, code}`); by default
- * gh 2.102.0, a PRIVATE repo, and an issue URL with exit 0.
+ * gh 2.102.0, a PRIVATE repo, and an issue URL with exit 0. `set({label: {code}})`: a repo without the
+ * label, so `issue create` fails until a `label create` ran, which exits `code`.
  */
 export const fakeGh = () => {
   const dir = tempDir();
@@ -538,6 +539,8 @@ fs.appendFileSync(self + ".calls", JSON.stringify({ argv, body: at("--body-file"
 const a = Object.assign({ version: "gh version 2.102.0 (stable)", visibility: "PRIVATE", create: { out: "https://github.com/o/r/issues/9\\n", code: 0 }, comment: { out: "https://github.com/o/r/issues/9#issuecomment-77\\n", code: 0 } }, JSON.parse(read(self + ".answers", "utf8") || "{}"));
 if (argv[0] === "--version") { process.stdout.write(a.version + "\\n"); process.exit(0); }
 if (argv[0] === "repo" && argv[1] === "view") { process.stdout.write(a.visibility + "\\n"); process.exit(0); }
+if (argv[0] === "label" && argv[1] === "create" && a.label) { fs.writeFileSync(self + ".labelled", ""); process.exit(a.label.code); }
+if (argv[0] === "issue" && argv[1] === "create" && a.label && !fs.existsSync(self + ".labelled")) { process.stderr.write("could not add label\\n"); process.exit(1); }
 if (argv[0] === "issue" && (argv[1] === "create" || argv[1] === "comment")) { process.stdout.write(a[argv[1]].out); process.exit(a[argv[1]].code); }
 process.stderr.write("fake gh: unknown call\\n");
 process.exit(4);

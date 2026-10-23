@@ -541,7 +541,12 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   const filed = agentFiledLabel(contract);
   const all = policy.traces === "none" ? labels : [...labels.filter((l) => String(l).toLowerCase() !== filed.toLowerCase()), filed];
   const argv = create ? ["issue", "create", "--title", dt.text, "--body-file", bodyFile, ...all.flatMap((l) => ["--label", l]), ...files] : ["issue", "comment", String(comment), "--body-file", bodyFile, ...files];
-  const r = runner([gh, ...argv], { cwd: main, env });
+  let r = runner([gh, ...argv], { cwd: main, env });
+  // A repo that never had the agent-filed label refuses the create: make the label once, then file again.
+  // A label create that fails (the label exists, no permission) leaves the first failure as the answer.
+  if (create && !ISSUE_URL.test(String(r.stdout ?? "")) && all.includes(filed) && runner([gh, "label", "create", filed, "--color", "BFD4F2", "--description", "Filed by a sapu agent"], { cwd: main, env }).status === 0) {
+    r = runner([gh, ...argv], { cwd: main, env });
+  }
   const url = ISSUE_URL.exec(String(r.stdout ?? ""));
   if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`, ...recordFiled(main, runId, { ref, url: url[0], kind: create ? "issue" : "comment" })] };
   return { code: 2, out: [...out, `failed: gh issue ${create ? "create" : "comment"} exited ${r.status ?? "on a signal"} before printing an issue URL`] };

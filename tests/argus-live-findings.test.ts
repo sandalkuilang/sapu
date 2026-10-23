@@ -2036,6 +2036,20 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", c.b]);
   }, 30_000);
 
+  it("a repo without the agent-filed label gets it once, then the issue is filed; a failed label create files nothing", async () => {
+    const t = filing();
+    t.g.set({ label: { code: 0 } });
+    const { b, done } = t.file({ labels: ["bug"] });
+    expect((await done).out.at(-1)).toBe(`filed: ${URL9}`);
+    const create = ["issue", "create", "--title", "A title", "--body-file", b, "--label", "bug", "--label", "sapu:agent-filed"];
+    expect(t.g.calls().map((c) => c.argv)).toEqual([create, ["label", "create", "sapu:agent-filed", "--color", "BFD4F2", "--description", "Filed by a sapu agent"], create]);
+    const u = filing();
+    u.g.set({ label: { code: 1 } });
+    const r = await u.file({ labels: ["bug"] }).done;
+    expect(r.code).toBe(2);
+    expect(u.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label create"]);
+  }, 30_000);
+
   it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {
     const t = filing();
     for (const label of ["sapu:accepted", "SAPU:Accepted"]) {
@@ -2971,6 +2985,43 @@ describe("argus-live show", () => {
     expect(readFileSync(runFile, "utf8")).toBe(before);
   }, 30_000);
 
+  it("show --follow waits for a cycle, then follows the next one on the same port until Ctrl-C", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    // Stands in for the CLI's show: records its argv and cwd, then blocks.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + "\\n");\nsetInterval(() => {}, 1000);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      // the lock is taken but up has no browser yet: it waits, it does not refuse.
+      expect(await until(() => out.includes("show: waiting for a journey cycle's browser"), 10_000)).toBe(true);
+      const run = (runId: string) => {
+        writeRunFiles(t.main, { runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+        mkdirSync(join(t.main, ".argus/live", runId), { recursive: true });
+      };
+      run(t.runId);
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      const next = `${t.runId.slice(0, -1)}${t.runId.endsWith("0") ? "1" : "0"}`;
+      setLock(t.main, { runId: next, start: now(), deadline: now() + 3600 });
+      run(next);
+      expect(await until(() => starts().length === 2, 10_000)).toBe(true);
+      const [a, b] = starts();
+      expect(a.argv[0]).toBe("show");
+      expect(b.argv).toEqual(a.argv);
+      expect(Number(a.argv[2])).toBeGreaterThan(0);
+      expect(realpathSync(b.cwd)).toBe(realpathSync(join(t.main, ".argus/live", next)));
+      expect(out).toContain(`show: cycle ${next} on http://localhost:${a.argv[2]}`);
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 40_000);
+
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });
     expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({ code: 1, out: "", err: "refused: no journey cycle is running\n" });
@@ -3025,6 +3076,6 @@ describe("argus-live show", () => {
 
   it("the usage line names show", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
-    expect(r.stderr).toContain(" | show | ");
+    expect(r.stderr).toContain(" | show [--follow] | ");
   });
 });

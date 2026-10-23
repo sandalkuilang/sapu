@@ -31,7 +31,7 @@ What the orchestrator does in one argus cycle of the journey lane. The explorer'
 
 ## The cycle
 
-`n` is argus's cycle number: one more than the lines of `.argus/run.log` (none → 1).
+`n` is argus's cycle number, from ORIENT's `argus-cycle` (SKILL.md §3), never counted by hand.
 
 1. **ORIENT** as argus, plus `live status --json`: a cycle already running (`runId` not null and no `stale: true`) → stop, naming it and its deadline; `stale: true` (its deadline passed, its session gone) goes on: `up` recovers it. Then `live map-check`: its `dropped <id>: <reason>` lines, `catalog: <k> journeys, <d> dropped` (the report's catalog line) and `refresh: <reasons>` or `refresh: none`. `refused: no journey is selectable` with `refresh: none` → the cycle ends before `up`, listing what was dropped; with a refresh due, go on.
 2. **The instance and the map.** `live up` in the background. When `refresh` is not `none`: wait with the harness's monitor until-loop, never a foreground sleep, until `live status --json` shows the run's `worktree` (set before setup runs); then `live slot 1 --map` (one line of JSON holding the token; with a seed, `live seed (--issue <n>|--doc <file>:<a>-<b>)` first, then `live slot 1 --map --seed`), one map-mode explorer (its charter below), and once it returned `live map-check --merge 1`. A refused merge keeps the old map; no journey left (`refused: no journey is selectable`) → `live down`, and the cycle ends with the faults.
