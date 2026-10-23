@@ -2359,12 +2359,12 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it.each([
-      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1$/],
+      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(command: psql -c drop, at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
       ...(["kill", "stop", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
-      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's$/],
+      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's \(at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
-      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's$/],
+      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's \(at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["a copy out of the owner's container (docker cp)", ev("container", "archive-path", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker archive-path hit container owner-db/],
       ["a copy into the owner's container (docker cp)", ev("container", "extract-to-dir", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker extract-to-dir hit container owner-db/],
     ])("refuses %s", (_what, event, why) => {
@@ -2388,6 +2388,33 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toBe("ok");
       s.events.push(ev("container", "exec_start: pg_isready -U owner; rm -rf /", "c0", { [LABEL]: "owner", name: "owner-db" }));
       expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
+    });
+
+    it("a refusal names the exec's command (control characters out, URL credentials masked, cut), its time, that it cannot tell who, and the follower's file relative to the main checkout", () => {
+      const main = realpathSync(tempDir());
+      const eventsFile = join(main, ".argus/live/run1/logs/docker-events.jsonl");
+      mkdirSync(join(main, ".argus/live/run1/logs"), { recursive: true });
+      const s = state();
+      const exec = ev("container", `exec_create: psql postgres://owner:s3cret@db:5432/app\t-c "CREATE DATABASE x"\n${"y".repeat(200)}`, "c0", { [LABEL]: "owner", name: "owner-db" }, 30);
+      writeFileSync(eventsFile, `${JSON.stringify(exec)}\n`);
+      s.events = [];
+      const why = gate(s, { main, eventsFile });
+      expect(why).toMatch(/^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(command: /);
+      expect(why).toContain('command: psql postgres://***@db:5432/app -c "CREATE DATABASE x" yyyy');
+      expect(why).not.toContain("s3cret");
+      expect(why).not.toMatch(/[\x00-\x1f]/);
+      expect(why).toMatch(/y{50}…, at /); // cut at 120 characters
+      expect(why).not.toMatch(/y{100}/);
+      expect(why).toContain(`at ${new Date(T0 + 30_000).toISOString()})`);
+      expect(why).toContain("The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too");
+      expect(why.endsWith("; the docker events of this run are in .argus/live/run1/logs/docker-events.jsonl")).toBe(true);
+    });
+
+    it("a refusal without a follower names no file; a short command is not cut", () => {
+      const s = state();
+      s.events.push(ev("container", "exec_start: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toMatch(/\(command: psql -c drop, at \S+Z\)\. The gate cannot tell which process did it: .*counts too$/);
     });
 
     describe("the events follower (the daemon replays only its last events to `docker events --since`)", () => {

@@ -584,7 +584,7 @@ const BUDGETS: Record<string, number> = {
   "skills/forge/reference.md": 16_000,
   "agents/ui-explorer.md": 20_500, // +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 15_800, // +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop
+  "skills/argus/journeys.md": 16_300, // +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row
   "skills/argus/SKILL.md": 43_300, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check
   "skills/journey/SKILL.md": 5_750, // +the orchestrator starts the watcher itself, +the `show` form; +show --follow once per session, +only the instance (2.31.0)
   "skills/journey/live.md": 14_800, // +seed_check (2.31.0), +renew from now
