@@ -327,7 +327,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
   // Every file of a suite that reaches every project, check registry and config branch, by its sha256: the split
   // moved code and changed no output. A lane that changes the output on purpose updates these digests in its
   // commit: S1 did (the taste project and core, the bar's version in every header); a probe lane's sources and
-  // expressions reach support.ts, so T1's and T2's merges move it again, and so does a change to the login stage it embeds.
+  // expressions reach support.ts, so T1's and T2's merges move it again, and so does a change to the login stage it embeds (2.32.0: the usable-field check).
   const GOLDEN: Record<string, string> = {
     ".gitignore": "5db585b9b755341b58c08d6d04a692d9626ce9d2a7c900417e9e9305535f2151",
     "auth.setup.ts": "a2af7331be220f6e5684857e5be3fe2363e2c7efcedb32dfd01f78537870ff29",
@@ -335,7 +335,7 @@ describe("argus-live codegen — the split into -codegen and -codeproj (phase 7,
     "package.json": "5da67b6735aff632b3a3e5673cad279ba4a0a80c8bf0c61a774ad7364d3db856",
     "playwright.config.ts": "e8564f300b89f2f041c93797ad54efde5df6ea363efb83a93844ea74a5836321",
     "refund.spec.ts": "0125b0b69225d90ac7fb27f00883bf49d214bb65de27336bdda05514271344ec",
-    "support.ts": "6e4b7abbd048090e40bf9a6b36f9b63674f8eed10332b7fa7535e7ac68c18726",
+    "support.ts": "cd7372d01a9ba7c6446afb211159673003b7f49acca44ae4d531861d4e3fc77a",
   };
 
   it("leaves every generated file byte-identical", () => {
