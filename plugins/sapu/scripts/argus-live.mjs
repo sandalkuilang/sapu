@@ -313,7 +313,7 @@ async function followDashboard() {
       s.close(() => resolve(p));
     });
   });
-  let waiting = false;
+  let waiting = null;
   for (;;) {
     let r;
     try {
@@ -322,12 +322,13 @@ async function followDashboard() {
       r = { refused: e.message };
     }
     if (r.refused) {
-      if (!waiting) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port}`);
-      waiting = true;
+      // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
+      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${r.refused.replace(/^refused: /, "")})`);
+      waiting = r.refused;
       await new Promise((ok) => setTimeout(ok, 2000));
       continue;
     }
-    waiting = false;
+    waiting = null;
     print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
     // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
     const gone = () => {
@@ -344,7 +345,12 @@ async function followDashboard() {
     for (const sig of SIGNALS) process.on(sig, flag);
     const code = await showDashboard({ ...r.show, port, until: gone });
     for (const sig of SIGNALS) process.off(sig, flag);
-    if (signalled || !gone()) return code;
+    if (signalled) return code;
+    if (!gone()) {
+      // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
+      print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
+      return code;
+    }
   }
 }
 

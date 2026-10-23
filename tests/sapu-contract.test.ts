@@ -2300,6 +2300,8 @@ describe("reserveArgusCycle", () => {
     expect(reserveArgusCycle(main, { now })).toEqual({ id: "1999-01-02-5", n: 5 });
     // a second session reserving next counts the first one's journal: it never takes 5 again.
     expect(reserveArgusCycle(main, { now })).toEqual({ id: "1999-01-02-6", n: 6 });
+    // a day later the n stays reserved: the next date never reuses 6.
+    expect(reserveArgusCycle(main, { now: new Date(1999, 0, 3, 0) })).toEqual({ id: "1999-01-03-7", n: 7 });
     expect(readFileSync(join(main, ".argus/journal/1999-01-01-4.md"), "utf8")).toBe("# theirs\n");
     expect(readFileSync(join(main, ".argus/journal/1999-01-02-5.md"), "utf8")).toBe("# Cycle 1999-01-02-5\n");
     rmSync(main, { recursive: true, force: true });

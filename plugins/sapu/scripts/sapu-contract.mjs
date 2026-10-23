@@ -559,11 +559,13 @@ export function reserveArgusCycle(main, { now = new Date() } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const log = path.join(main, ".argus", "run.log");
   const lines = fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter((l) => l.trim()).length : 0;
-  const taken = fs.readdirSync(dir).map((f) => /^\d{4}-\d{2}-\d{2}-(\d+)\.md$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
+  const taken = fs.readdirSync(dir).map((f) => /^(?:\d{4}-\d{2}-\d{2}-|\.n-)(\d+)(?:\.md)?$/.exec(f)).filter(Boolean).map((m) => Number(m[1]));
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   for (let n = Math.max(lines, ...taken) + 1; ; n++) {
     const id = `${date}-${n}`;
     try {
+      // `n` itself is what select and visit key on: reserved by its own marker, so two sessions on either side of midnight never share it.
+      fs.writeFileSync(path.join(dir, `.n-${n}`), "", { flag: "wx" });
       fs.writeFileSync(path.join(dir, `${id}.md`), `# Cycle ${id}\n`, { flag: "wx" });
       return { id, n };
     } catch (e) {
