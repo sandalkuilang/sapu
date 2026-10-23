@@ -21,7 +21,7 @@ import { drift } from "../plugins/sapu/scripts/argus-live-drift.mjs";
 // @ts-expect-error — plain ESM script without types
 import { expandConfig, loadLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
 // @ts-expect-error — plain ESM script without types
-import { appendLedger, appendSeen, dropLedgers, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, secretName, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
+import { appendLedger, appendSeen, dropLedgers, dropOldRuns, highEntropy, LEDGER_CLASSES, ledgerEntries, ledgerFile, MAX_SECRET, MIN_SECRET, readLedger, readSeen, secretHits, secretName, seenFile, seenIds } from "../plugins/sapu/scripts/argus-live-ledger.mjs";
 // @ts-expect-error — plain ESM script without types
 import { catalog, mapCheck, mergeMap, readJourneys, refreshReasons, score, selectJourneys, validateMap } from "../plugins/sapu/scripts/argus-live-map.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -488,6 +488,22 @@ describe("argus-live ledger", () => {
     expect(existsSync(ledgerFile(t.main, t.runId))).toBe(false);
     expect(existsSync(seenFile(t.main, t.runId))).toBe(true);
     expect(existsSync(join(t.main, ".argus/live", other, "logs", "secrets.jsonl"))).toBe(true);
+  });
+
+  it("up's step 1 keeps the newest run records and never the new run's", () => {
+    const main = committed();
+    const id = (i: number) => `${String(20000101000000 + i)}-0123abcd`;
+    for (let i = 1; i <= 13; i++) mkdirSync(join(main, ".argus/live", id(i), "logs"), { recursive: true });
+    mkdirSync(join(main, ".argus/live", "not-a-run"), { recursive: true });
+    // the new run is the oldest-looking id here: it stays whatever its place.
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([2, 3, 4].map(id));
+    expect(readdirSync(join(main, ".argus/live")).sort()).toEqual([...[1, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(id), "not-a-run"].sort());
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([]);
+    // the newest run with taste records outlives a string of failed ups after it
+    mkdirSync(join(main, ".argus/live", id(5), "taste"), { recursive: true });
+    for (let i = 14; i <= 20; i++) mkdirSync(join(main, ".argus/live", id(i), "logs"), { recursive: true });
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([6, 7, 8, 9, 10, 11].map(id));
+    expect(existsSync(join(main, ".argus/live", id(5), "taste"))).toBe(true);
   });
 
   it("drainSessions marks what it could not drain", async () => {
@@ -2036,6 +2052,19 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", c.b]);
   }, 30_000);
 
+  it("a create refused for a missing agent-filed label names the label and never creates it", async () => {
+    const t = filing();
+    t.g.set({ create: { out: "", code: 1 }, labels: ["bug", "SAPU:other"] });
+    const r = await t.file({ labels: ["bug"] }).done;
+    expect(r.code).toBe(2);
+    expect(r.out.at(-1)).toBe("failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back");
+    expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
+    // the label is there (any case): the plain failure, no label line.
+    const u = filing();
+    u.g.set({ create: { out: "", code: 1 }, labels: ["Sapu:Agent-Filed"] });
+    expect((await u.file({ labels: ["bug"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
+  }, 30_000);
+
   it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {
     const t = filing();
     for (const label of ["sapu:accepted", "SAPU:Accepted"]) {
@@ -2971,6 +3000,43 @@ describe("argus-live show", () => {
     expect(readFileSync(runFile, "utf8")).toBe(before);
   }, 30_000);
 
+  it("show --follow waits for a cycle, then follows the next one on the same port until Ctrl-C", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    // Stands in for the CLI's show: records its argv and cwd, then blocks.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + "\\n");\nsetInterval(() => {}, 1000);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      // the lock is taken but up has no browser yet: it waits, it does not refuse.
+      expect(await until(() => out.includes("show: waiting for a journey cycle's browser"), 10_000)).toBe(true);
+      const run = (runId: string) => {
+        writeRunFiles(t.main, { runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+        mkdirSync(join(t.main, ".argus/live", runId), { recursive: true });
+      };
+      run(t.runId);
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      const next = `${t.runId.slice(0, -1)}${t.runId.endsWith("0") ? "1" : "0"}`;
+      setLock(t.main, { runId: next, start: now(), deadline: now() + 3600 });
+      run(next);
+      expect(await until(() => starts().length === 2, 10_000)).toBe(true);
+      const [a, b] = starts();
+      expect(a.argv[0]).toBe("show");
+      expect(b.argv).toEqual(a.argv);
+      expect(Number(a.argv[2])).toBeGreaterThan(0);
+      expect(realpathSync(b.cwd)).toBe(realpathSync(join(t.main, ".argus/live", next)));
+      expect(out).toContain(`show: cycle ${next} on http://localhost:${a.argv[2]}`);
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 40_000);
+
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });
     expect({ code: r.status, out: r.stdout, err: r.stderr }).toEqual({ code: 1, out: "", err: "refused: no journey cycle is running\n" });
@@ -3025,6 +3091,6 @@ describe("argus-live show", () => {
 
   it("the usage line names show", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "nonsense"], { cwd: committed(), encoding: "utf8" });
-    expect(r.stderr).toContain(" | show | ");
+    expect(r.stderr).toContain(" | show [--follow] | ");
   });
 });

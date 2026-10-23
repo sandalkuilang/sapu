@@ -22,7 +22,7 @@ export default {
     s += text(96, y + 50, `ten steps, each a command of ${m("argus-live.mjs")} · one invocation = one bounded cycle`, "cap");
     const P = [
       ["ORIENT", "map-check", "the catalog checked against HEAD; refresh due?"],
-      ["INSTANCE", "up", "an instance of its own; a map explorer if stale"],
+      ["INSTANCE", "up", "its own instance, seed checked; a map explorer if stale"],
       ["SELECT", "select", "journeys scored; accounts allocated"],
       ["CHARTER", "slot <s> --journey", "one token and one charter per explorer"],
       ["EXPLORE", "ui-explorer × N", "every role, through the wrapper only"],

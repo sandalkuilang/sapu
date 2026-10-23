@@ -125,7 +125,7 @@ function commandsOf(config) {
   (config.setup ?? []).forEach((argv, i) => out.push([`setup[${i}]`, [argv.map(String)]]));
   for (const k of ["facts", "mail"]) if (config[k] && Array.isArray(config[k].argv)) out.push([`${k}.argv`, [config[k].argv.map(String)]]);
   for (const [n, t] of Object.entries(config.triggers ?? {})) if (t && Array.isArray(t.argv)) out.push([`triggers.${n}.argv`, [t.argv.map(String)]]);
-  for (const k of ["store_check", "reset"]) if (typeof config[k] === "string") out.push([k, shellWords(config[k])]);
+  for (const k of ["store_check", "reset", "seed_check"]) if (typeof config[k] === "string") out.push([k, shellWords(config[k])]);
   for (const e of config.start ?? []) {
     for (const [k, v] of [["cmd", e.cmd], ["stop", e.stop], ["health.cmd", e.health && e.health.cmd]]) if (typeof v === "string") out.push([`start.${e.name}.${k}`, shellWords(v)]);
   }

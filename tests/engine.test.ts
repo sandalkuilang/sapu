@@ -582,12 +582,12 @@ const BUDGETS: Record<string, number> = {
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
-  "agents/ui-explorer.md": 20_000,
+  "agents/ui-explorer.md": 20_200, // +a blocking false assumption ends the walk at once (2.31.0)
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 15_450,
-  "skills/argus/SKILL.md": 42_832,
-  "skills/journey/SKILL.md": 4_950,
-  "skills/journey/live.md": 14_500,
+  "skills/argus/journeys.md": 15_500, // +no visit for an aborted-on-seed journey (2.31.0)
+  "skills/argus/SKILL.md": 43_185, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0)
+  "skills/journey/SKILL.md": 5_250, // +show --follow once per session, +only the instance (2.31.0)
+  "skills/journey/live.md": 14_750, // +seed_check (2.31.0)
   "skills/journey/smoke.md": 16_550,
 };
 
@@ -1098,9 +1098,8 @@ describe("the journey lane's engine text", () => {
   });
 
   it("/sapu:journey offers the dashboard", () => {
-    expect(read(JOURNEY)).toContain("`live show`");
-    // It reads the lock of the directory it runs in: the owner's terminal starts anywhere.
-    expect(read(JOURNEY)).toContain("`cd <main checkout> && node <real path> show`");
+    // It reads the lock of the directory it runs in: the owner's terminal starts anywhere; --follow keeps it on every cycle.
+    expect(read(JOURNEY)).toContain("`cd <main checkout> && node <real path> show --follow`");
   });
 
   it("argus SKILL.md grows only by its pointer, the lane in SELECT and the Curator's agent", () => {

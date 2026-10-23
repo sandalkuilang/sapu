@@ -273,14 +273,14 @@ On a dedup match whose `issue-trust` passed: **comment the new reproduction path
 | `schemes.json` | the fraud pass | fraud.md §2 | rehearsed schemes: id, verdict, blocking control locator, cycle |
 | `arid.md` | TRIAGE / on every wontfix | TRIAGE | finding *shapes* the owner rejects |
 | `corpus/*.json` | EXECUTE | EXECUTE | interesting request bodies, replayed every cycle |
-| `journal/<cycle>.md` | PERSIST | ORIENT | PROOF sections: Past · Results · Obstacles · Outlook · Feelings |
+| `journal/<cycle>.md` | ORIENT creates it (`argus-cycle`), PERSIST fills it | ORIENT | PROOF sections: Past · Results · Obstacles · Outlook · Feelings |
 | `journal/<cycle>-candidates.md` | TRIAGE | audit | the candidate table |
 | `referrals.md` | TRIAGE | the report, and NEMESIS | out-of-lane candidates + why, so nothing is silently discarded |
 | `run.log` | PERSIST | audit | one line per cycle, format below (SKILL.md §6 assertion 4) |
 | `live.json` | owner, through `/sapu:init` (tracked beside `config.yml`) | `argus-live.mjs` | the journey lane's isolated instance: setup, services, start entries, roles and their accounts, limits |
 | `live.env` | owner (the `env_file`; never tracked) | `argus-live.mjs` | the values `live.json`'s `${NAME}` references take; no agent reads it |
 | `journeys.json` | `argus-live.mjs map-check`, `visit` | SELECT (`select`) | the journey map: journeys, steps and their code anchors, `lastCycle`, `lastHead`, `filed` |
-| `live/` | `argus-live.mjs` | `argus-live.mjs` | journey cycles' lock, run records, returns, repro records, secret ledgers and logs: read only through its commands (journeys.md) |
+| `live/` | `argus-live.mjs` | `argus-live.mjs` | journey cycles' lock, run records (the newest 10 kept), returns, repro records, secret ledgers and logs: read only through its commands (journeys.md) |
 
 **`run.log` format**, date prefix included:
 `<date> cycle=<id> mode=<live|static> focus=<area> candidates=N confirmed=N declined=N dropped_on_minimize=K filed=N issues=#a,#b referred=N fraud=<surface>:<schemes>/<theft_blocked>/<concealment_blocked> negatives=<control>@<locator>[live|test|read] method=...`

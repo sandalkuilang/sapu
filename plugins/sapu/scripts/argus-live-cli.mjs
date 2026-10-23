@@ -107,12 +107,13 @@ export async function runCli({ js, session, args, cwd, home, timeoutMs = 60_000,
  * alone it leaves the dashboard running). So the CLI leads a process group of its own, and SIGINT,
  * SIGTERM and SIGHUP to this process (Ctrl-C, a kill, a closed terminal) go to that whole group, as does a
  * SIGTERM once the CLI ended (a dashboard it left). Nothing is recorded in run.json: it is the owner's own
- * process. Resolves to the CLI's exit status.
+ * process. Resolves to the CLI's exit status. `port` (0: a free one the CLI picks) and `until` (a check
+ * polled each second that ends the CLI's group once true) serve `show --follow`.
  */
-export function showDashboard({ js, home, cwd }) {
+export function showDashboard({ js, home, cwd, port = 0, until = null }) {
   cliDirs(home);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [js, "show", "--port", "0"], { cwd, env: cliEnv(home), stdio: ["ignore", "inherit", "inherit"], detached: true });
+    const child = spawn(process.execPath, [js, "show", "--port", String(port)], { cwd, env: cliEnv(home), stdio: ["ignore", "inherit", "inherit"], detached: true });
     const group = (sig) => {
       try {
         process.kill(-child.pid, sig);
@@ -122,7 +123,10 @@ export function showDashboard({ js, home, cwd }) {
     };
     const forward = Object.fromEntries(["SIGINT", "SIGTERM", "SIGHUP"].map((s) => [s, () => group(s)]));
     for (const [s, f] of Object.entries(forward)) process.on(s, f);
+    // `until` (show --follow): polled each second; true ends the CLI's group, as a Ctrl-C would.
+    const poll = until && setInterval(() => until() && group("SIGTERM"), 1000);
     const done = () => {
+      if (poll) clearInterval(poll);
       for (const [s, f] of Object.entries(forward)) process.off(s, f);
       group("SIGTERM");
     };

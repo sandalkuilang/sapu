@@ -16,7 +16,7 @@ import { closeSessions, socketsDir } from "../plugins/sapu/scripts/argus-live-cl
 // @ts-expect-error — plain ESM script without types
 import { clean } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
-import { commandLogin, login, loginPlan, proveLogins } from "../plugins/sapu/scripts/argus-live-login.mjs";
+import { commandLogin, login, loginPlan, firstTryFailures, proveLogins, retryOnce } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
 import { runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -361,6 +361,47 @@ process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
     const other = { ...config(b), roles: { admin: { login: { command: `echo '{"cookies":[{"name":"sid","value":"x","domain":"outside.test","path":"/"}],"origins":[]}'` } } } };
     await expect(commandLogin({ role: "admin", live: other, env: b.appEnv, worktree: b.wt, origins: [b.base], dir: b.dir })).rejects.toThrow(/cookie for outside\.test, not a host of the run/);
   }, 120_000);
+
+  it("a proving login is tried once more for a reason a retry can clear, never for rejected credentials or a rate limit", async () => {
+    const failing = (reasons: string[]) => {
+      let n = 0;
+      return {
+        fn: async () => {
+          const r = reasons[n++];
+          if (r) throw new Error(`refused: finance.1 could not sign in (${r})`);
+          return "ok";
+        },
+        tries: () => n,
+      };
+    };
+    const said: string[] = [];
+    const opts = { wait: async () => {}, say: (w: string) => said.push(w) };
+    const late = failing(["no-totp-secret"]);
+    expect(await retryOnce(late.fn, opts)).toBe("ok");
+    expect([late.tries(), said]).toEqual([2, ["no-totp-secret"]]);
+    for (const r of ["rejected", "rate-limited"]) {
+      const f = failing([r]);
+      await expect(retryOnce(f.fn, opts)).rejects.toThrow(`(${r})`);
+      expect(f.tries(), r).toBe(1);
+    }
+    const twice = failing(["error: playwright", "no-login-form"]);
+    await expect(retryOnce(twice.fn, opts)).rejects.toThrow("(no-login-form)");
+    // a login command's own refusal (text, not a reason word) runs once
+    const cmd = failing(["the login command of admin printed a cookie for outside.test, not a host of the run"]);
+    await expect(retryOnce(cmd.fn, opts)).rejects.toThrow("outside.test");
+    expect(cmd.tries()).toBe(1);
+    // the first try records only a final reason, so the retry's login() is not refused from the record
+    const kept = new Map<string, string>();
+    const first = firstTryFailures({ get: (k: string) => kept.get(k) ?? null, set: (k: string, r: string) => kept.set(k, r) });
+    first.set("finance/f@x.test", "no-totp-secret");
+    expect(first.get("finance/f@x.test")).toBeNull();
+    first.set("finance/f@x.test", "rejected");
+    expect(kept.get("finance/f@x.test")).toBe("rejected");
+    const outside = async () => {
+      throw new Error("refused: the login of buyer.1 reached http://x.test, outside the run's origins");
+    };
+    await expect(retryOnce(outside, opts)).rejects.toThrow("outside the run's origins");
+  });
 
   it("proveLogins proves every account and closes its sessions", async () => {
     const b = await browserRun();

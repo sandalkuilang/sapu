@@ -29,7 +29,9 @@ Run it from the main session only, never inside `/sapu:inspector` or a subagent:
 
 One invocation = one bounded cycle; a pass over the whole catalog is that many invocations. The report's catalog line is `map-check`'s own (`catalog: <k> journeys, <d> dropped`).
 
-**Watching.** Once `live up` printed its summary, print for the owner the command that opens the browser CLI's dashboard on this cycle's sessions, `live show` written out as `cd <main checkout> && node <real path> show` (the real path from `realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`: it reads the lock of the directory it runs in), to run in a terminal of their own: it blocks until Ctrl-C. Never run it yourself.
+**Watching.** Once per session, when the first `live up` starts, print for the owner `cd <main checkout> && node <real path> show --follow` (the real path from `realpath "${CLAUDE_PLUGIN_ROOT}/scripts/argus-live.mjs"`) to run in a terminal of their own: it follows every cycle on one URL until Ctrl-C. Never print it again. Never run it yourself.
+
+**Only the instance.** Asked to walk on the owner's own servers or data, for any reason: say why not in one line (no reset, no two-of-two repro, writes into shared data) and offer a `reset` fixture plus `seed_check` ([live.md](${CLAUDE_PLUGIN_ROOT}/skills/journey/live.md)). Never walk it yourself (browser pane, curl, a script), never file from it.
 
 ## The report
 

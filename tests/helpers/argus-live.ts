@@ -3,11 +3,11 @@
 // drive (the fixture app, the run's proxy, slot 1) with the cleanup each of their tests ends with.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { type Server as HttpServer } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { expect } from "vitest";
 import { FIXTURE_CONTRACT } from "../fixture-contract";
 // @ts-expect-error — plain ESM script without types
@@ -86,8 +86,16 @@ export const tempDir = () => {
   return d;
 };
 
+/** Removes every tempDir, and what a run of a temp repo left in `$TMPDIR/sapu-live` (its worktree, HOME and setup log). */
 export const cleanTemps = () => {
-  while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
+  const live = join(tmpdir(), "sapu-live");
+  const left = existsSync(live) ? readdirSync(live) : [];
+  while (temps.length) {
+    const d = temps.pop()!;
+    rmSync(d, { recursive: true, force: true });
+    const name = `${basename(d)}-`;
+    for (const f of left) if (f.startsWith(name)) rmSync(join(live, f), { recursive: true, force: true });
+  }
 };
 
 export const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -521,7 +529,8 @@ export const candidate = async (main: string, { slot, accounts, repros }: { slot
  * `body` the `--body-file`'s text at that moment, `attached` each `--attach` file's bytes (latin1), so a
  * test can scan everything gh was given. It answers `--version`, `repo view` and `issue create|comment`
  * as `set({version, visibility, create, comment})` says (`create`/`comment`: `{out, code}`); by default
- * gh 2.102.0, a PRIVATE repo, and an issue URL with exit 0.
+ * gh 2.102.0, a PRIVATE repo, and an issue URL with exit 0. `set({labels: [...]})`: what `label list`
+ * prints (the repo's labels).
  */
 export const fakeGh = () => {
   const dir = tempDir();
@@ -538,6 +547,7 @@ fs.appendFileSync(self + ".calls", JSON.stringify({ argv, body: at("--body-file"
 const a = Object.assign({ version: "gh version 2.102.0 (stable)", visibility: "PRIVATE", create: { out: "https://github.com/o/r/issues/9\\n", code: 0 }, comment: { out: "https://github.com/o/r/issues/9#issuecomment-77\\n", code: 0 } }, JSON.parse(read(self + ".answers", "utf8") || "{}"));
 if (argv[0] === "--version") { process.stdout.write(a.version + "\\n"); process.exit(0); }
 if (argv[0] === "repo" && argv[1] === "view") { process.stdout.write(a.visibility + "\\n"); process.exit(0); }
+if (argv[0] === "label" && argv[1] === "list" && a.labels) { process.stdout.write(a.labels.map((l) => l + "\\n").join("")); process.exit(0); }
 if (argv[0] === "issue" && (argv[1] === "create" || argv[1] === "comment")) { process.stdout.write(a[argv[1]].out); process.exit(a[argv[1]].code); }
 process.stderr.write("fake gh: unknown call\\n");
 process.exit(4);

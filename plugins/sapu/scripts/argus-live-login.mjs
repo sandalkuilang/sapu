@@ -571,7 +571,7 @@ export function runFailures(main, runId) {
  * so the login's traffic never reaches the explorer. A failure is recorded in `failures` under
  * `"<role>/<user>"` (by default runFailures: run.json `loginFailed`, the configured accounts'), and a user
  * found there is refused at once, with no browser work: a failed login is never retried within a run
- * (lockouts). A CLI that fails (the session gone) throws `failed: …` and records nothing.
+ * (lockouts), but for proveLogins' one retry of a RETRYABLE reason (its first try records none: firstTryFailures). A CLI that fails (the session gone) throws `failed: …` and records nothing.
  */
 export async function login({ main, runId, session, account, user, password, totpSecret = null, plan, js, home, cwd, runner = runAsync, now = Date.now, sleep: wait = sleep, failures = runFailures(main, runId) }) {
   runIdOk(runId);
@@ -661,7 +661,7 @@ export async function commandLogin({ role, live, env, worktree, secrets = {}, or
  * requested (their own requests and WebSockets, redirects and blocked ones included: the proxy's log also
  * holds Chrome's own background traffic, which is not the login's) must be a run origin or an
  * `allow_origins` one, else `refused: the login of <role>.<k> reached <origin>, outside the run's origins`; a failure is `refused: <role>.<k> could not sign in (<reason>)`.
- * The session is closed and its record dropped from run.json either way → the number of accounts proven.
+ * The session is closed and its record dropped either way; a RETRYABLE failure gets one more try (retryOnce) → the count proven.
  */
 export async function proveLogins(main, runId, { live, secrets = {}, origins, allowOrigins = [], js, home, proxyPort, chrome, env, worktree, runner = run, cliRunner = runAsync, say = () => {}, sleep: wait = sleep }) {
   const dir = slotDir(main, runId, "up");
@@ -676,6 +676,14 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
   let proven = 0;
   for (const a of accounts) {
     if (proven > 0 && live.login_spacing_ms) await wait(live.login_spacing_ms);
+    const failures = runFailures(main, runId);
+    await retryOnce((n) => proveOne(a, n === 1 ? firstTryFailures(failures) : failures), { wait: () => wait(Math.max(live.login_spacing_ms ?? 0, RETRY_MS)), say: (why) => say(`login ${a.account}: ${why}; one more try`) });
+    proven += 1;
+    say(`login ${a.account}: proven`);
+  }
+  return proven;
+
+  async function proveOne(a, failures) {
     const plan = loginPlan(live, a.role);
     let record = null;
     try {
@@ -688,7 +696,7 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
         res = { ok: Boolean(p.in), reason: p.error ? "error: playwright" : "rejected", origins: p.origins ?? [] };
       } else {
         record = await openSession({ main, runId, slot: "up", account: a.account, js, home, runner, cliRunner });
-        res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner });
+        res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner, failures });
       }
       const outside = res.origins.find((o) => {
         try {
@@ -699,8 +707,6 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
       });
       if (outside) throw new Error(`refused: the login of ${a.account} reached ${outside}, outside the run's origins`);
       if (!res.ok) throw new Error(`refused: ${a.account} could not sign in (${res.reason})`);
-      proven += 1;
-      say(`login ${a.account}: proven`);
     } catch (e) {
       if (/^refused: /.test(e.message)) throw e;
       // A run-code failure quotes Playwright, which may quote the page: fixed words here, the detail in the log.
@@ -724,5 +730,21 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
       }
     }
   }
-  return proven;
+}
+/** The pause before a proving login's retry, and the reasons a retry can clear: an OTP form shown late, a login form not rendered yet, a Playwright error. */
+const RETRY_MS = 2000;
+const RETRYABLE = new Set(["no-login-form", "no-totp-secret", "error: playwright"]);
+/** `failures` as a first try sees it: a RETRYABLE reason is not recorded, so the retry's login() runs for real. */
+export const firstTryFailures = (failures) => ({ get: failures.get, set: (k, reason) => (RETRYABLE.has(reason) ? undefined : failures.set(k, reason)) });
+/** `fn(1)`, then `fn(2)` once for a RETRYABLE reason only: never `rejected`, `rate-limited`, a login command's own refusal or an outside origin. */
+export async function retryOnce(fn, { wait, say = () => {} }) {
+  try {
+    return await fn(1);
+  } catch (e) {
+    const m = /could not sign in \(([^)]*)\)$/.exec(e.message);
+    if (!m || !RETRYABLE.has(m[1])) throw e;
+    say(m[1]);
+    await wait();
+    return fn(2);
+  }
 }

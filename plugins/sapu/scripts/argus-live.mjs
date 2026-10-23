@@ -21,6 +21,8 @@
 //                                no journey cycle is running without a cycle whose browser is up, and on a lock past
 //                                its deadline; a missing run directory is named. SIGINT, SIGTERM and SIGHUP end the
 //                                CLI's whole process group (its dashboard too). Writes nothing
+//   argus-live.mjs show --follow the same for every cycle, in one terminal (followDashboard): it waits for a
+//                                cycle's browser, shows it on one fixed port, and follows the next cycle there
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -152,6 +154,7 @@
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { smokeBaseline } from "./argus-live-baseline.mjs";
 import { smokeCi } from "./argus-live-ci.mjs";
@@ -197,7 +200,7 @@ const print = (line) => process.stdout.write(`${redact(line, secrets)}\n`);
 // Lines already masked where they were made (pw's fence) or holding no secret (a slot's token, ids):
 // masking them again would cut a token or a fence's nonce wherever a short secret value happens to occur.
 const printMasked = (line) => process.stdout.write(`${line}\n`);
-const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste curator <file> | taste accept <rule> <key>";
+const usage = "usage: argus-live.mjs up [--fresh|--map] | check | show [--follow] | renew | down | status [--json] | slot <n> --journey <id> --accounts <list> | slot <n> --handoff | slot <n> --map [--seed] | pw <token> … | intake <n> | repro <slot>.<generation>.<k> [--once|--minimize|--test|--saved] | classify --oracle <o> [--money] [--stock] [--moved-twice] [--acted-on] [--rule] [--class <implicit|derived|bar>] [--cost] | scrub (--run <runId> | --ref <slot>.<generation>.<k> | both) --title <t> --body <file> [--attach <png>…] [--create [--label <l>…] | --comment <n>] | map-check [--list|--merge <slot>] | select --cycle <n> [--flagged <id>,…] [--ids <id>,…] | visit <journeyId> --cycle <n> [--filed <url>…] | drift --doc <file>:<a>-<b> --code <file>:<a>-<b> [--code …] | smoke plan | smoke admit <slot>.<generation> | smoke run [--ids <id>,…] [--slot <n>] [--perf] [--seed <n>] | smoke heal <slot>.<generation> | smoke propose [--dry-run] | smoke check | smoke ci [--run <id>] | smoke baseline --from-run <id> [--ids …] [--known] | smoke perf (--issue|--rebaseline) <id> | smoke retire <id> | smoke workflow | seed (--issue <n>|--doc <file>:<a>-<b>) | report [--run <runId>] | taste judge [--run <runId>] | taste confirm <row> | taste file [--run <runId>] | taste curator <file> | taste accept <rule> <key>";
 /** classify's flags → classify's facts. */
 const CLASSIFY_FLAGS = { "--money": "money", "--stock": "stock", "--moved-twice": "movedTwice", "--acted-on": "actedOn", "--rule": "rule", "--cost": "cost" };
 /** Journey ids, comma-separated. */
@@ -284,6 +287,71 @@ async function laneCommand(cmd, args) {
   else refuseUsage();
   smokeGate();
   return call();
+}
+
+/** The running cycle's dashboard arguments `{show: {js, home, cwd}, runId}`, or `{refused}`: only once up has a browser for the owner (never a map run's). */
+function showable() {
+  const lock = readLock(main);
+  const rec = lock && readRun(main);
+  if (!rec || rec.runId !== lock.runId || !rec.browser || typeof rec.browser.js !== "string" || typeof rec.home !== "string") return { refused: "refused: no journey cycle is running" };
+  if (lock.deadline <= Math.floor(Date.now() / 1000)) return { refused: `refused: cycle ${lock.runId}'s lock is past its deadline: no journey cycle is running` };
+  const cwd = path.join(liveDir(main), lock.runId);
+  if (!fs.existsSync(cwd)) return { refused: `refused: the run's directory ${path.relative(main, cwd)} is missing` };
+  return { runId: lock.runId, show: { js: rec.browser.js, home: browserHome(rec), cwd } };
+}
+
+/**
+ * `show --follow`: one terminal for every cycle. It waits for a cycle's browser, shows it on one port
+ * (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
+ * lock changes or passes its deadline, and waits for the next — until Ctrl-C (the CLI's own exit).
+ */
+async function followDashboard() {
+  const port = await new Promise((resolve, reject) => {
+    const s = net.createServer().once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const { port: p } = s.address();
+      s.close(() => resolve(p));
+    });
+  });
+  let waiting = null;
+  for (;;) {
+    let r;
+    try {
+      r = showable();
+    } catch (e) {
+      r = { refused: e.message };
+    }
+    if (r.refused) {
+      // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
+      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${r.refused.replace(/^refused: /, "")})`);
+      waiting = r.refused;
+      await new Promise((ok) => setTimeout(ok, 2000));
+      continue;
+    }
+    waiting = null;
+    print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
+    // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
+    const gone = () => {
+      try {
+        return showable().runId !== r.runId;
+      } catch {
+        return true;
+      }
+    };
+    // A signal ends the follow even when the cycle changed in the same second (one Ctrl-C, never two).
+    let signalled = false;
+    const flag = () => (signalled = true);
+    const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+    for (const sig of SIGNALS) process.on(sig, flag);
+    const code = await showDashboard({ ...r.show, port, until: gone });
+    for (const sig of SIGNALS) process.off(sig, flag);
+    if (signalled) return code;
+    if (!gone()) {
+      // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
+      print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
+      return code;
+    }
+  }
 }
 
 try {
@@ -448,14 +516,11 @@ try {
     if (typeof r.config.env_file === "string" && !guardsEnvFile(loadContract(main).contract ?? null, r.config.env_file)) print(`note: the committed contract's guard.envFiles does not hold ${path.basename(r.config.env_file)} yet: up refuses until the contract is committed`);
 
   } else if (cmd === "show" && !args.length) {
-    // The owner's window on the run's browsers: only once up has a browser for them (never a map run's).
-    const lock = readLock(main);
-    const rec = lock && readRun(main);
-    if (!rec || rec.runId !== lock.runId || !rec.browser || typeof rec.browser.js !== "string" || typeof rec.home !== "string") throw new Error("refused: no journey cycle is running");
-    if (lock.deadline <= Math.floor(Date.now() / 1000)) throw new Error(`refused: cycle ${lock.runId}'s lock is past its deadline: no journey cycle is running`);
-    const cwd = path.join(liveDir(main), lock.runId);
-    if (!fs.existsSync(cwd)) throw new Error(`refused: the run's directory ${path.relative(main, cwd)} is missing`);
-    process.exit(await showDashboard({ js: rec.browser.js, home: browserHome(rec), cwd }));
+    const r = showable();
+    if (r.refused) throw new Error(r.refused);
+    process.exit(await showDashboard(r.show));
+  } else if (cmd === "show" && args.length === 1 && args[0] === "--follow") {
+    process.exit(await followDashboard());
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
     print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);
