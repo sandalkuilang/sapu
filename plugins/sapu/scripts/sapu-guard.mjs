@@ -97,7 +97,8 @@
 // (`**` reaches any depth): blocked when it can expand into git's own files under HOME, a `.git`,
 // or sapu's machine config (or an ancestor of them, or something inside); elsewhere only the
 // literal word is checked. A quoted `{a,b}` is expanded like an unquoted one (a false block, never
-// a miss), except in the journey explorer's words, which are all literal (no brace reaches a shell); a brace sequence (`{a..z}`) reads as `*`; a zsh named directory (`~name` set by `hash
+// a miss), except in the journey explorer's words, which are all literal (no brace reaches a
+// shell); a brace sequence (`{a..z}`) reads as `*`; a zsh named directory (`~name` set by `hash
 // -d`) and the directory stack (`~1`, `cd +1`) are not known. A symlink whose target does not exist yet
 // is judged by the link's own path (a dangling link inside a state dir can point a later write
 // elsewhere: tampering-grade, two deliberate steps). Bash writes are recognised only in the forms above: not `dd of=`,

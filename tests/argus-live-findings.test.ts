@@ -499,6 +499,11 @@ describe("argus-live ledger", () => {
     expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([2, 3, 4].map(id));
     expect(readdirSync(join(main, ".argus/live")).sort()).toEqual([...[1, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(id), "not-a-run"].sort());
     expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([]);
+    // the newest run with taste records outlives a string of failed ups after it
+    mkdirSync(join(main, ".argus/live", id(5), "taste"), { recursive: true });
+    for (let i = 14; i <= 20; i++) mkdirSync(join(main, ".argus/live", id(i), "logs"), { recursive: true });
+    expect(dropOldRuns(main, { keep: id(1), max: 10 })).toEqual([6, 7, 8, 9, 10, 11].map(id));
+    expect(existsSync(join(main, ".argus/live", id(5), "taste"))).toBe(true);
   });
 
   it("drainSessions marks what it could not drain", async () => {

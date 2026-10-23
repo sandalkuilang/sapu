@@ -16,7 +16,7 @@ import { closeSessions, socketsDir } from "../plugins/sapu/scripts/argus-live-cl
 // @ts-expect-error — plain ESM script without types
 import { clean } from "../plugins/sapu/scripts/argus-live-fence.mjs";
 // @ts-expect-error — plain ESM script without types
-import { commandLogin, login, loginPlan, proveLogins, retryOnce } from "../plugins/sapu/scripts/argus-live-login.mjs";
+import { commandLogin, login, loginPlan, firstTryFailures, proveLogins, retryOnce } from "../plugins/sapu/scripts/argus-live-login.mjs";
 // @ts-expect-error — plain ESM script without types
 import { runAsync, startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -386,6 +386,17 @@ process.stdout.write(JSON.stringify(await login(${JSON.stringify(args)})));`;
     }
     const twice = failing(["error: playwright", "no-login-form"]);
     await expect(retryOnce(twice.fn, opts)).rejects.toThrow("(no-login-form)");
+    // a login command's own refusal (text, not a reason word) runs once
+    const cmd = failing(["the login command of admin printed a cookie for outside.test, not a host of the run"]);
+    await expect(retryOnce(cmd.fn, opts)).rejects.toThrow("outside.test");
+    expect(cmd.tries()).toBe(1);
+    // the first try records only a final reason, so the retry's login() is not refused from the record
+    const kept = new Map<string, string>();
+    const first = firstTryFailures({ get: (k: string) => kept.get(k) ?? null, set: (k: string, r: string) => kept.set(k, r) });
+    first.set("finance/f@x.test", "no-totp-secret");
+    expect(first.get("finance/f@x.test")).toBeNull();
+    first.set("finance/f@x.test", "rejected");
+    expect(kept.get("finance/f@x.test")).toBe("rejected");
     const outside = async () => {
       throw new Error("refused: the login of buyer.1 reached http://x.test, outside the run's origins");
     };

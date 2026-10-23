@@ -571,7 +571,7 @@ export function runFailures(main, runId) {
  * so the login's traffic never reaches the explorer. A failure is recorded in `failures` under
  * `"<role>/<user>"` (by default runFailures: run.json `loginFailed`, the configured accounts'), and a user
  * found there is refused at once, with no browser work: a failed login is never retried within a run
- * (lockouts). A CLI that fails (the session gone) throws `failed: …` and records nothing.
+ * (lockouts), but for proveLogins' one retry of a RETRYABLE reason (its first try records none: firstTryFailures). A CLI that fails (the session gone) throws `failed: …` and records nothing.
  */
 export async function login({ main, runId, session, account, user, password, totpSecret = null, plan, js, home, cwd, runner = runAsync, now = Date.now, sleep: wait = sleep, failures = runFailures(main, runId) }) {
   runIdOk(runId);
@@ -677,13 +677,16 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
   let proven = 0;
   for (const a of accounts) {
     if (proven > 0 && live.login_spacing_ms) await wait(live.login_spacing_ms);
-    await retryOnce(() => proveOne(a), { wait: () => wait(Math.max(live.login_spacing_ms ?? 0, RETRY_MS)), say: (why) => say(`login ${a.account}: ${why}; one more try`) });
+    // The first try records only a final reason in the run's failures, so login() lets the retry sign in for real.
+    const failures = runFailures(main, runId);
+    const firstTry = firstTryFailures(failures);
+    await retryOnce((n) => proveOne(a, n === 1 ? firstTry : failures), { wait: () => wait(Math.max(live.login_spacing_ms ?? 0, RETRY_MS)), say: (why) => say(`login ${a.account}: ${why}; one more try`) });
     proven += 1;
     say(`login ${a.account}: proven`);
   }
   return proven;
 
-  async function proveOne(a) {
+  async function proveOne(a, failures) {
     const plan = loginPlan(live, a.role);
     let record = null;
     try {
@@ -696,7 +699,7 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
         res = { ok: Boolean(p.in), reason: p.error ? "error: playwright" : "rejected", origins: p.origins ?? [] };
       } else {
         record = await openSession({ main, runId, slot: "up", account: a.account, js, home, runner, cliRunner });
-        res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner });
+        res = await login({ main, runId, session: record.name, account: a.account, user: a.user, password: a.password, totpSecret: a.totpSecret, plan, js, home, cwd: dir, runner: cliRunner, failures });
       }
       const outside = res.origins.find((o) => {
         try {
@@ -733,20 +736,24 @@ export async function proveLogins(main, runId, { live, secrets = {}, origins, al
 }
 
 const RETRY_MS = 2000;
+/** The reasons a second try can clear: an OTP form that showed late, a login form not rendered yet, a Playwright error. */
+const RETRYABLE = new Set(["no-login-form", "no-totp-secret", "error: playwright"]);
 /**
- * One proving login, tried again once when it failed for a reason a second try can clear (an OTP form
- * that showed late, a login form not rendered yet, a Playwright error): `rejected` (the credentials) and
- * `rate-limited` are never retried, so a wrong password cannot lock the account; nor is a login that
- * reached an origin outside the run. `fn`'s second failure is the answer.
+ * One proving login (`fn(1)`), tried again once (`fn(2)`) only for a RETRYABLE reason: never `rejected` or
+ * `rate-limited` (a wrong password cannot lock the account), a login command's own refusal (its effects run
+ * once), or a login that reached an origin outside the run. The second failure is the answer.
  */
+/** `failures` as a first try sees it: a RETRYABLE reason is not recorded, so the retry's login() runs for real. */
+export const firstTryFailures = (failures) => ({ get: failures.get, set: (k, reason) => (RETRYABLE.has(reason) ? undefined : failures.set(k, reason)) });
+
 export async function retryOnce(fn, { wait, say = () => {} }) {
   try {
-    return await fn();
+    return await fn(1);
   } catch (e) {
     const m = /could not sign in \(([^)]*)\)$/.exec(e.message);
-    if (!m || m[1] === "rejected" || m[1] === "rate-limited") throw e;
+    if (!m || !RETRYABLE.has(m[1])) throw e;
     say(m[1]);
     await wait();
-    return fn();
+    return fn(2);
   }
 }
