@@ -321,6 +321,15 @@ describe("argus-live logins", () => {
     expect((await stats(b))["POST /login/otp"]).toBe(1);
   }, 180_000);
 
+  it.each(["overlay-otp", "hidden-otp"])("a field that says one-time-code is still found when drawn as %s (opacity 0 overlay / aria-hidden wrapper)", async (v) => {
+    // The explicit field is dropped only when inert or visibility:hidden: opacity 0 over digit boxes and a
+    // modal library's aria-hidden wrapper are how real code fields are drawn.
+    const b = await browserRun();
+    const res = await variantLogin(b, v, "clerk1@example.test", RFC);
+    expect(res).toMatchObject({ ok: true });
+    expect((await stats(b))["POST /login/otp"]).toBe(1);
+  }, 180_000);
+
   it("a code step without a TOTP secret is logged with the field and the rule that picked it, never a value", async () => {
     const b = await browserRun();
     const guessed = await variantLogin(b, "plain-otp", "clerk1@example.test");
