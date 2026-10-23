@@ -22,7 +22,10 @@
 //                                its deadline; a missing run directory is named. SIGINT, SIGTERM and SIGHUP end the
 //                                CLI's whole process group (its dashboard too). Writes nothing
 //   argus-live.mjs show --follow the same for every cycle, in one terminal (followDashboard): it waits for a
-//                                cycle's browser, shows it on one fixed port, and follows the next cycle there
+//                                cycle's browser, shows it on one fixed port, and follows the next cycle there. Its
+//                                first line is `show: watching on http://localhost:<port>`; until a browser is up that
+//                                port serves a page that refreshes itself and names the wait, the run in progress and
+//                                its newest `up` step (a map run has no browser), so the URL answers at once
 //   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
@@ -154,7 +157,7 @@
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
-import net from "node:net";
+import http from "node:http";
 import path from "node:path";
 import { smokeBaseline } from "./argus-live-baseline.mjs";
 import { smokeCi } from "./argus-live-ci.mjs";
@@ -175,7 +178,7 @@ import { report } from "./argus-live-report.mjs";
 import { minimize, redTestFile, savedValues } from "./argus-live-minimize.mjs";
 import { apiLevelHint, repro, runOnce } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
-import { browserHome, down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { browserHome, down, logsDir, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
 import { seed, seedsOf } from "./argus-live-seed.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
@@ -300,20 +303,82 @@ function showable() {
   return { runId: lock.runId, show: { js: rec.browser.js, home: browserHome(rec), cwd } };
 }
 
+const escapeHtml = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** The run in progress as the placeholder page tells it: its id and mode, and the newest `step` line of its up log (masked when written). Nothing without a lock. */
+function runLines() {
+  let lock;
+  try {
+    lock = readLock(main);
+  } catch {
+    return [];
+  }
+  if (!lock) return [];
+  let map = false;
+  try {
+    const rec = readRun(main);
+    map = Boolean(rec && rec.runId === lock.runId && rec.mode === "map");
+  } catch {
+    // no record to read: not told as a map run
+  }
+  const lines = [`run ${lock.runId}${map ? " (map mode: the explorer reads code only; nothing to watch until the walk's `up`)" : ""}`];
+  try {
+    const step = fs.readFileSync(path.join(logsDir(main, lock.runId), "up.log"), "utf8").split("\n").filter((l) => /^step [0-9]/.test(l)).pop();
+    if (step) lines.push(step.slice(0, 300));
+  } catch {
+    // no log yet
+  }
+  return lines;
+}
+
+/**
+ * The page `show --follow` serves on the dashboard's port while it waits (127.0.0.1 only): `reason()` and
+ * `runLines()`, escaped, refreshing every 2 s, so a tab opened at once lands on the dashboard by itself.
+ * Resolves to the listening server (`port` 0: a free one). A port the dashboard has not yet let go of is
+ * retried for a few seconds.
+ */
+async function openPlaceholder(port, reason) {
+  const server = http.createServer((req, res) => {
+    if (!/^(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(req.headers.host ?? "")) {
+      res.writeHead(403).end();
+      return;
+    }
+    const lines = [reason(), ...runLines()].map((l) => `<p>${escapeHtml(redact(l, secrets))}</p>`).join("");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", connection: "close" });
+    res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="refresh" content="2"><title>sapu: waiting for a journey cycle</title><body style="font:16px system-ui;margin:3rem"><h1>Waiting for a journey cycle's browser</h1>${lines}<p>This page opens the dashboard by itself once a cycle's browser is up.</p></body></html>`);
+  });
+  for (let tries = 0; ; tries++) {
+    try {
+      await new Promise((ok, fail) => server.once("error", fail).listen(port, "127.0.0.1", () => ok(server.off("error", fail))));
+      return server;
+    } catch (e) {
+      if (e.code !== "EADDRINUSE" || tries >= 25) throw e;
+      await new Promise((ok) => setTimeout(ok, 200));
+    }
+  }
+}
+
+/** Closes the placeholder, its open connections too (a tab keeps one), and returns once the port is free. */
+async function closePlaceholder(server) {
+  const closed = new Promise((ok) => server.close(ok));
+  server.closeAllConnections();
+  await closed;
+}
+
 /**
  * `show --follow`: one terminal for every cycle. It waits for a cycle's browser, shows it on one port
  * (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
- * lock changes or passes its deadline, and waits for the next — until Ctrl-C (the CLI's own exit).
+ * lock changes or passes its deadline, and waits for the next — until Ctrl-C (the CLI's own exit). It
+ * listens from the start: while it waits, the port serves a page naming the wait and the run in progress
+ * (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle is gone.
+ * Its first line is `show: watching on http://localhost:<port>`.
  */
 async function followDashboard() {
-  const port = await new Promise((resolve, reject) => {
-    const s = net.createServer().once("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const { port: p } = s.address();
-      s.close(() => resolve(p));
-    });
-  });
   let waiting = null;
+  let reason = "starting";
+  let placeholder = await openPlaceholder(0, () => reason);
+  const port = placeholder.address().port;
+  print(`show: watching on http://localhost:${port}`);
   for (;;) {
     let r;
     try {
@@ -323,7 +388,8 @@ async function followDashboard() {
     }
     if (r.refused) {
       // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
-      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${r.refused.replace(/^refused: /, "")})`);
+      reason = r.refused.replace(/^refused: /, "");
+      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${reason})`);
       waiting = r.refused;
       await new Promise((ok) => setTimeout(ok, 2000));
       continue;
@@ -343,6 +409,7 @@ async function followDashboard() {
     const flag = () => (signalled = true);
     const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
     for (const sig of SIGNALS) process.on(sig, flag);
+    await closePlaceholder(placeholder);
     const code = await showDashboard({ ...r.show, port, until: gone });
     for (const sig of SIGNALS) process.off(sig, flag);
     if (signalled) return code;
@@ -351,6 +418,8 @@ async function followDashboard() {
       print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
       return code;
     }
+    reason = "the cycle ended; waiting for the next";
+    placeholder = await openPlaceholder(port, () => reason);
   }
 }
 
