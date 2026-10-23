@@ -585,7 +585,7 @@ const BUDGETS: Record<string, number> = {
   "agents/ui-explorer.md": 20_200, // +a blocking false assumption ends the walk at once (2.31.0)
   "agents/curator.md": 7_800,
   "skills/argus/journeys.md": 15_500, // +no visit for an aborted-on-seed journey (2.31.0)
-  "skills/argus/SKILL.md": 43_185, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0)
+  "skills/argus/SKILL.md": 43_300, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check
   "skills/journey/SKILL.md": 5_250, // +show --follow once per session, +only the instance (2.31.0)
   "skills/journey/live.md": 14_750, // +seed_check (2.31.0)
   "skills/journey/smoke.md": 16_550,

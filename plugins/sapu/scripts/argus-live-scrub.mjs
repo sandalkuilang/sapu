@@ -545,10 +545,17 @@ export async function scrub(main, { run: named = null, ref = null, title, bodyFi
   const url = ISSUE_URL.exec(String(r.stdout ?? ""));
   if (url) return { code: 0, out: [...out, `${create ? "filed" : "commented"}: ${url[0]}`, ...recordFiled(main, runId, { ref, url: url[0], kind: create ? "issue" : "comment" })] };
   const failed = [...out, `failed: gh issue ${create ? "create" : "comment"} exited ${r.status ?? "on a signal"} before printing an issue URL`];
-  // A missing agent-filed label is named, never created: it is the owner's label (the guard refuses its
-  // create), and a renamed one must come back under its contract name, or issue-trust trusts no author.
-  if (!create || !all.includes(filed)) return { code: 2, out: failed };
+  // A label the repository lacks is named, never created: the contract's labels are the owner's (the guard
+  // refuses their create), and a renamed agent-filed one must come back under its contract name, or
+  // issue-trust trusts no author. One `gh label list` checks every label of the create.
+  if (!create) return { code: 2, out: failed };
   const names = runner([gh, "label", "list", "--limit", "1000", "--json", "name", "--jq", ".[].name"], { cwd: main, env });
-  const missing = names.status === 0 && !String(names.stdout ?? "").split("\n").some((n) => n.trim().toLowerCase() === filed.toLowerCase());
-  return { code: 2, out: missing ? [...failed, `failed: the agent-filed label ${filed} is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back`] : failed };
+  if (names.status !== 0) return { code: 2, out: failed };
+  const have = new Set(String(names.stdout ?? "").split("\n").map((n) => n.trim().toLowerCase()));
+  const missing = all.filter((l) => !have.has(String(l).toLowerCase()));
+  const others = missing.filter((l) => l !== filed);
+  const lines = [...failed];
+  if (others.length) lines.push(`failed: label(s) ${others.join(", ")} not in the repository: the owner creates them (gh label create <name>), /sapu:init proposes the contract's labels`);
+  if (missing.includes(filed)) lines.push(`failed: the agent-filed label ${filed} is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back`);
+  return { code: 2, out: lines };
 }

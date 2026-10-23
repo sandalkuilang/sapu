@@ -2059,10 +2059,29 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(r.code).toBe(2);
     expect(r.out.at(-1)).toBe("failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back");
     expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
-    // the label is there (any case): the plain failure, no label line.
+    // every label is there (any case): the plain failure, no label line.
     const u = filing();
-    u.g.set({ create: { out: "", code: 1 }, labels: ["Sapu:Agent-Filed"] });
+    u.g.set({ create: { out: "", code: 1 }, labels: ["bug", "Sapu:Agent-Filed"] });
     expect((await u.file({ labels: ["bug"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
+  }, 30_000);
+
+  it("a create refused for several missing labels names every one in one line, the agent-filed text unchanged, one label list", async () => {
+    const generic = (names: string) => `failed: label(s) ${names} not in the repository: the owner creates them (gh label create <name>), /sapu:init proposes the contract's labels`;
+    const t = filing();
+    t.g.set({ create: { out: "", code: 1 }, labels: ["Bug", "sapu:agent-filed"] });
+    const r = await t.file({ labels: ["bug", "argus:needs-owner", "class:business"] }).done;
+    expect(r.code).toBe(2);
+    expect(r.out.at(-1)).toBe(generic("argus:needs-owner, class:business"));
+    expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
+    // the agent-filed label missing too: its own line stays last and unchanged, the others in the line before.
+    const u = filing();
+    u.g.set({ create: { out: "", code: 1 }, labels: ["bug"] });
+    const both = (await u.file({ labels: ["bug", "argus:needs-owner"] }).done).out;
+    expect(both.slice(-2)).toEqual([generic("argus:needs-owner"), "failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back"]);
+    // every label there (any case) but gh failed for another reason: the generic failure only.
+    const v = filing();
+    v.g.set({ create: { out: "", code: 1 }, labels: ["BUG", "Argus:Needs-Owner", "Sapu:Agent-Filed"] });
+    expect((await v.file({ labels: ["bug", "argus:needs-owner"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
   }, 30_000);
 
   it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {
