@@ -25,7 +25,10 @@
 //                                cycle's browser, shows it on one fixed port, and follows the next cycle there. Its
 //                                first line is `show: watching on http://localhost:<port>`; until a browser is up that
 //                                port serves a page that refreshes itself and names the wait, the run in progress and
-//                                its newest `up` step (a map run has no browser), so the URL answers at once
+//                                its newest `up` step (a map run has no browser), so the URL answers at once. One
+//                                watcher a repo (.argus/live/watch.json): a second start prints the live watcher's
+//                                first line and exits 0; a dead watcher's dashboard group is ended first. It ends on
+//                                SIGINT, SIGTERM or SIGHUP with a last line `show: stopped (<reason>)`
 //   argus-live.mjs renew         keep the cycle alive one more max_cycle_minutes (never past the cap); the egress
 //                                check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
@@ -190,6 +193,7 @@ import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { smokeRun } from "./argus-live-smoke.mjs";
 import { smokeAdmit, smokeCheck, smokePlan, smokeRetire } from "./argus-live-suite.mjs";
+import { claimWatch, noteDashboard, releaseWatch } from "./argus-live-watch.mjs";
 import { tasteAccept, tasteCurator, tasteFile } from "./argus-live-tastefile.mjs";
 import { loadTaste, PASS_OFF, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 import { tasteConfirm, tasteJudge } from "./argus-live-tastejudge.mjs";
@@ -350,7 +354,7 @@ const WATCH_SCRIPT = `setInterval(()=>fetch(location.href,{cache:"no-store"}).th
  * `runLines()`, escaped. Its script polls the page every 2 s (WATCH_SCRIPT; a `<noscript>` meta refresh stands
  * in without scripts), so a tab opened at once lands on the dashboard by itself, even across the port's gap.
  * Resolves to the listening server (`port` 0: a free one). A port the dashboard has not yet let go of is
- * retried for a few seconds.
+ * retried for ~30 s (a dashboard's group can take that long to end).
  */
 async function openPlaceholder(port, reason) {
   const server = http.createServer((req, res) => {
@@ -367,7 +371,7 @@ async function openPlaceholder(port, reason) {
       await new Promise((ok, fail) => server.once("error", fail).listen(port, "127.0.0.1", () => ok(server.off("error", fail))));
       return server;
     } catch (e) {
-      if (e.code !== "EADDRINUSE" || tries >= 25) throw e;
+      if (e.code !== "EADDRINUSE" || tries >= 150) throw e;
       await new Promise((ok) => setTimeout(ok, 200));
     }
   }
@@ -381,60 +385,109 @@ async function closePlaceholder(server) {
 }
 
 /**
- * `show --follow`: one terminal for every cycle. It waits for a cycle's browser, shows it on one port
- * (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
- * lock changes or passes its deadline, and waits for the next — until Ctrl-C (the CLI's own exit). It
- * listens from the start: while it waits, the port serves a page naming the wait and the run in progress
- * (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle is gone.
- * Its first line is `show: watching on http://localhost:<port>`.
+ * `show --follow`: one watcher for every cycle, one per repo. It waits for a cycle's browser, shows it on one
+ * port (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
+ * lock changes or passes its deadline, and waits for the next — until a signal (Ctrl-C, a kill, a closed
+ * terminal). It listens from the start: while it waits, the port serves a page naming the wait and the run in
+ * progress (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle
+ * is gone (retried for ~30 s; a port still taken then ends the watch, said). Its first line is `show: watching
+ * on http://localhost:<port>`.
+ *
+ * The watcher records itself in `.argus/live/watch.json` (argus-live-watch.mjs): a second start finds the live
+ * watcher there, prints that same first line with its port and exits 0; a record whose watcher is gone (a
+ * SIGKILL, a crash) costs the dashboard group it left a SIGTERM before this one takes over. Every way out but a
+ * SIGKILL removes the record and prints one last line, `show: stopped (<reason>)`.
  */
 async function followDashboard() {
   let waiting = null;
   let reason = "starting";
   let placeholder = await openPlaceholder(0, () => reason);
   const port = placeholder.address().port;
-  print(`show: watching on http://localhost:${port}`);
-  for (;;) {
-    let r;
-    try {
-      r = showable();
-    } catch (e) {
-      r = { refused: e.message };
-    }
-    if (r.refused) {
-      // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
-      reason = r.refused.replace(/^refused: /, "");
-      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${reason})`);
-      waiting = r.refused;
-      await new Promise((ok) => setTimeout(ok, 2000));
-      continue;
-    }
-    waiting = null;
-    print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
-    // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
-    const gone = () => {
-      try {
-        return showable().runId !== r.runId;
-      } catch {
-        return true;
-      }
-    };
-    // A signal ends the follow even when the cycle changed in the same second (one Ctrl-C, never two).
-    let signalled = false;
-    const flag = () => (signalled = true);
-    const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
-    for (const sig of SIGNALS) process.on(sig, flag);
+  const taken = claimWatch(main, port);
+  if (taken.live) {
     await closePlaceholder(placeholder);
-    const code = await showDashboard({ ...r.show, port, until: gone });
-    for (const sig of SIGNALS) process.off(sig, flag);
-    if (signalled) return code;
-    if (!gone()) {
-      // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
-      print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
-      return code;
+    print(`show: watching on http://localhost:${taken.live.port}`);
+    return 0;
+  }
+  print(`show: watching on http://localhost:${port}`);
+  // From here the record is this process's: removed, and said, on every way out.
+  let why = "ended";
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    releaseWatch(main);
+    print(`show: stopped (${why})`);
+  };
+  // A signal ends the watch even when the cycle changed in the same second (one Ctrl-C, never two). While a
+  // dashboard runs, showDashboard's own handlers end its group and the loop returns; otherwise exit at once.
+  const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+  let signalled = false;
+  let dashboard = false;
+  const onSignal = (sig) => {
+    signalled = true;
+    why = sig;
+    if (!dashboard) {
+      stop();
+      process.exit(0);
     }
-    reason = "the cycle ended; waiting for the next";
-    placeholder = await openPlaceholder(port, () => reason);
+  };
+  for (const sig of SIGNALS) process.on(sig, onSignal);
+  try {
+    for (;;) {
+      let r;
+      try {
+        r = showable();
+      } catch (e) {
+        r = { refused: e.message };
+      }
+      if (r.refused) {
+        // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
+        reason = r.refused.replace(/^refused: /, "");
+        if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${reason})`);
+        waiting = r.refused;
+        await new Promise((ok) => setTimeout(ok, 2000));
+        continue;
+      }
+      waiting = null;
+      print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
+      // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
+      const gone = () => {
+        try {
+          return showable().runId !== r.runId;
+        } catch {
+          return true;
+        }
+      };
+      await closePlaceholder(placeholder);
+      dashboard = true;
+      let code;
+      try {
+        code = await showDashboard({ ...r.show, port, until: gone, onStart: (pgid) => noteDashboard(main, pgid) });
+      } finally {
+        dashboard = false;
+        noteDashboard(main, null);
+      }
+      if (signalled) return code;
+      if (!gone()) {
+        // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
+        why = `the dashboard ended, exit ${code}`;
+        print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
+        return code;
+      }
+      reason = "the cycle ended; waiting for the next";
+      try {
+        placeholder = await openPlaceholder(port, () => reason);
+      } catch (e) {
+        throw new Error(`failed: port ${port} stayed in use after the dashboard ended (${e.code ?? e.message})`);
+      }
+    }
+  } catch (e) {
+    why = e.message;
+    throw e;
+  } finally {
+    for (const sig of SIGNALS) process.off(sig, onSignal);
+    stop();
   }
 }
 

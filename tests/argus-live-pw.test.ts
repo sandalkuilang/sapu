@@ -2520,7 +2520,7 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     expect(body(await t.call("code", "files", "src"))).toBe(`${t.wt}/src/app.js`);
     expect(body(await t.call("code", "files", `${t.wt}/src`))).toBe(`${t.wt}/src/app.js`);
     expect(body(await t.call("code", "files"))).not.toMatch(/\.argus|\.ARGUS/);
-    for (const bad of ["/etc", "../x", "src/../../x"]) expect((await t.call("code", "files", bad)).out[0], bad).toMatch(/^refused: .* is not a path inside the worktree$/);
+    for (const bad of ["/etc", "../x", "src/../../x"]) expect((await t.call("code", "files", bad)).out[0], bad).toBe(`refused: ${bad} is not a path inside the worktree; ${CODE_USAGE}`);
     expect((await t.call("code", "nope")).out[0]).toBe(CODE_USAGE);
   }, 30_000);
 
@@ -2552,8 +2552,8 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     expect(() => grep("alpha", ...eight, "src")).toThrow(CODE_USAGE);
     expect(() => codeCommand("files", [...eight, "src"], { worktree: wt })).toThrow(CODE_USAGE);
     for (const bad of ["/etc", "../x", "src/../../x", "-e", ":(glob)**", ""]) {
-      expect(() => grep("alpha", "src", bad, "lib"), bad).toThrow(/^refused: .* is not a path inside the worktree$/);
-      expect(() => codeCommand("files", ["src", bad], { worktree: wt }), bad).toThrow(/is not a path inside the worktree$/);
+      expect(() => grep("alpha", "src", bad, "lib"), bad).toThrow(`refused: ${bad || "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
+      expect(() => codeCommand("files", ["src", bad], { worktree: wt }), bad).toThrow(`refused: ${bad || "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
     }
   }, 30_000);
 
