@@ -588,22 +588,24 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
 }
 
 /**
- * The CLI's `renew` (spec §8 `renew`): moves the lock's deadline (renew; `cap reached` ends the cycle
- * and is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run as
- * run.json records it; a refusal → `down`, and the error rethrown. Returns {runId, deadline}.
+ * The CLI's `renew` (spec §8 `renew`): keeps the lock's deadline at least one `max_cycle_minutes` away
+ * (renew; at the cap, or right after another renew, it stays where it is: `moved` false; a refused
+ * renew is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run
+ * as run.json records it, moved or not; a refusal → `down`, and the error rethrown. Returns
+ * {runId, deadline, moved}.
  */
 export async function renewRun(main, { runner = run, lookup = defaultLookup, say = () => {} } = {}) {
   const { lock, rec, config, secrets } = current(main);
   const runId = lock.runId;
   const log = runLog(main, runId, "renew.log", secrets, say);
-  const deadline = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
+  const { deadline, moved } = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
   try {
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
     const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     await ctx.fullEgress();
     checkDockerRuntime({ ...gateOf(rec, rec.groups), main, runner });
-    log(`renew: cycle ${runId} until ${iso(deadline)}; egress and the Docker runtime gate passed`);
-    return { runId, deadline };
+    log(`renew: cycle ${runId} ${moved ? "until" : "unchanged, until"} ${iso(deadline)}; egress and the Docker runtime gate passed`);
+    return { runId, deadline, moved };
   } catch (e) {
     log(`renew: ${e.message}`);
     try {

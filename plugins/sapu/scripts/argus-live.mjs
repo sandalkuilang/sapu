@@ -23,7 +23,8 @@
 //                                CLI's whole process group (its dashboard too). Writes nothing
 //   argus-live.mjs show --follow the same for every cycle, in one terminal (followDashboard): it waits for a
 //                                cycle's browser, shows it on one fixed port, and follows the next cycle there
-//   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
+//   argus-live.mjs renew         keep the cycle alive one more max_cycle_minutes (never past the cap); the egress
+//                                check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
 //                                generation, calls, submitted, retired) and the number of browser sessions
@@ -523,7 +524,9 @@ try {
     process.exit(await followDashboard());
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
-    print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);
+    const until = new Date(r.deadline * 1000).toISOString();
+    if (r.moved) print(`cycle ${r.runId} renewed until ${until}`);
+    else print(`cycle ${r.runId} runs until ${until} (${Math.max(0, Math.floor((r.deadline * 1000 - Date.now()) / 60_000))} min left; the cap is start + 3 x max_cycle_minutes + 15 min)`);
   } else if (cmd === "down" && !args.length) {
     const lock = readLock(main);
     if (!lock) print("no journey cycle is running");
@@ -545,6 +548,6 @@ try {
 } catch (e) {
   const msg = redact(`${e.message}${e.step ? ` (up step ${e.step})` : ""}`, secrets);
   process.stderr.write(`${msg}\n`);
-  process.exit(/^(refused|cap reached): /.test(e.message) ? 1 : 2);
+  process.exit(/^refused: /.test(e.message) ? 1 : 2);
 }
 process.exit(0);
