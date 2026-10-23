@@ -81,7 +81,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 
 ## `limits`
 
-- `max_cycle_minutes` (required, at most 1440) — the lock's deadline is the start plus this plus 15 minutes; `renew` moves it by this, never past the start plus three times this plus 15 minutes.
+- `max_cycle_minutes` (required, at most 1440) — the lock's deadline is the start plus this plus 15 minutes; `renew` sets it to now plus this plus 15 minutes, never earlier than it was nor past the start plus three times this plus 15 minutes.
 - `max_parallel_journeys` — the journeys SELECT picks per cycle (2 when unset).
 - `live_health_timeout_s` — bounds each health wait and each `store_check`.
 - `explorer_pw_calls` — 1 to 10000: an explorer token's `pw` budget; past it every call answers `BUDGET`.
