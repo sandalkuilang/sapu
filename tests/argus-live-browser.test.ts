@@ -285,6 +285,69 @@ describe("argus-live logins", () => {
     expect(res).toMatchObject({ ok: true });
   }, 120_000);
 
+  /** A login of the fixture's `/login/variant?v=<v>` page (see the fixture's header) as `user`, in a new session. */
+  const variantLogin = async (b: Obj, v: string, user: string, totpSecret: string | null = null) => {
+    const live = config(b);
+    const plan = loginPlan({ ...live, roles: { ...live.roles, variant: { login_url: `/login/variant?v=${v}`, users: [{ user, password: PW }] } } }, "variant");
+    const s = await b.open("variant.1");
+    return login({ main: b.main, runId: b.runId, session: s.name, account: "variant.1", user, password: PW, totpSecret, plan, js: cli.js, home: b.home, cwd: b.dir });
+  };
+  const loginsLog = (b: Obj) => readFileSync(join(logsDir(b.main, b.runId), "logins.log"), "utf8");
+
+  it("a hidden search field of a signed-in page whose logged_in is still to come is not read as a one-time-code step", async () => {
+    // The landing page keeps a closed command palette in the DOM (an empty combobox input, opacity 0 in
+    // a click-through wrapper, tabindex -1: visible to Playwright) and shows its Account button 1500 ms
+    // after load, a shell painted before its session call returned.
+    const b = await browserRun();
+    const res = await variantLogin(b, "landing", "buyer1@example.test");
+    expect(res).toMatchObject({ ok: true });
+    expect(readRun(b.main).loginFailed ?? {}).toEqual({});
+    expect((await stats(b))["POST /login/otp"] ?? 0).toBe(0);
+  }, 120_000);
+
+  it("a usable field of a signed-in page whose logged_in is still to come gets one more window before it is read as a code step", async () => {
+    // A visible, empty "Quick note" text field and no palette: a usable guess at a code field, so
+    // logged_in (1500 ms after load) is waited for once more before the guess stands.
+    const b = await browserRun();
+    const res = await variantLogin(b, "landing-field", "buyer1@example.test");
+    expect(res).toMatchObject({ ok: true });
+    expect((await stats(b))["POST /login/otp"] ?? 0).toBe(0);
+  }, 120_000);
+
+  it("a real code page whose field says nothing about one-time codes is still a one-time-code step", async () => {
+    const b = await browserRun();
+    const res = await variantLogin(b, "plain-otp", "clerk1@example.test", RFC);
+    expect(res).toMatchObject({ ok: true });
+    expect((await stats(b))["POST /login/otp"]).toBe(1);
+  }, 180_000);
+
+  it.each(["overlay-otp", "hidden-otp"])("a field that says one-time-code is still found when drawn as %s (opacity 0 overlay / aria-hidden wrapper)", async (v) => {
+    // The explicit field is dropped only when inert or visibility:hidden: opacity 0 over digit boxes and a
+    // modal library's aria-hidden wrapper are how real code fields are drawn.
+    const b = await browserRun();
+    const res = await variantLogin(b, v, "clerk1@example.test", RFC);
+    expect(res).toMatchObject({ ok: true });
+    expect((await stats(b))["POST /login/otp"]).toBe(1);
+  }, 180_000);
+
+  it("a code step without a TOTP secret is logged with the field and the rule that picked it, never a value", async () => {
+    const b = await browserRun();
+    const guessed = await variantLogin(b, "plain-otp", "clerk1@example.test");
+    expect(guessed).toMatchObject({ ok: false, reason: "no-totp-secret" });
+    const line = loginsLog(b).trim();
+    expect(line).toContain("variant.1 clerk1@example.test: no-totp-secret: one-time code step at /login/otp taken by rule fallback");
+    expect(line).toContain(`"tag":"input","type":"text","name":"code"`);
+    expect(line.split("\n")).toHaveLength(1);
+    // Nothing the account typed, and no query of the page.
+    for (const secret of [PW, RFC]) expect(line).not.toContain(secret);
+    const said = await signIn(b, "clerk", "clerk.1", "clerk1@example.test");
+    expect(said.res).toMatchObject({ ok: false, reason: "no-totp-secret" });
+    const lines = loginsLog(b).trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("clerk.1 clerk1@example.test: no-totp-secret: one-time code step at /login/otp taken by rule one-time-code");
+    expect(lines[1]).not.toContain(PW);
+  }, 180_000);
+
   it("the login page is opened fresh each time", async () => {
     const b = await browserRun();
     const one = await signIn(b, "buyer", "buyer.1", "buyer1@example.test");

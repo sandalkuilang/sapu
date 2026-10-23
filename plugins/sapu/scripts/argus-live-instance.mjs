@@ -5,11 +5,12 @@
 // the worktree, HOME and environment, setup, start and health, the store phase) live in
 // argus-live-start.mjs. The lane's modules, each importing only modules named before it (the leaves below
 // import none, and any module may import them): argus-live-proc.mjs (processes) → -config.mjs (the
-// configuration) → -smokecfg.mjs (`.argus/smoke.json`) and -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) → -docker.mjs (Compose,
+// configuration) → -smokecfg.mjs (`.argus/smoke.json`) and -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) and -watch.mjs (the watcher's record) → -docker.mjs (Compose,
 // the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
 // -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs,
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
-// -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -login.mjs → -session.mjs →
+// -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -logincode.mjs (the login's browser
+// code) → -login.mjs → -session.mjs →
 // -steps.mjs → -pw.mjs → this module, -codeproj.mjs (the suite's projects, checks and config), -codegen.mjs (the smoke
 // suite's generator) and -redtest.mjs →
 // -repro.mjs → -minimize.mjs (minimize, the RED test) → -smoke.mjs (the lane's smoke pass) → -suite.mjs
@@ -588,22 +589,24 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
 }
 
 /**
- * The CLI's `renew` (spec §8 `renew`): moves the lock's deadline (renew; `cap reached` ends the cycle
- * and is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run as
- * run.json records it; a refusal → `down`, and the error rethrown. Returns {runId, deadline}.
+ * The CLI's `renew` (spec §8 `renew`): keeps the lock's deadline at least one `max_cycle_minutes` away
+ * (renew; only at the cap, or within the same second as another renew, it stays where it is: `moved` false; a refused
+ * renew is rethrown as it is), then repeats the egress check and the Docker runtime gate over the run
+ * as run.json records it, moved or not; a refusal → `down`, and the error rethrown. Returns
+ * {runId, deadline, moved}.
  */
 export async function renewRun(main, { runner = run, lookup = defaultLookup, say = () => {} } = {}) {
   const { lock, rec, config, secrets } = current(main);
   const runId = lock.runId;
   const log = runLog(main, runId, "renew.log", secrets, say);
-  const deadline = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
+  const { deadline, moved } = renew(main, { runId, maxCycleMinutes: config.limits.max_cycle_minutes });
   try {
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
     const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     await ctx.fullEgress();
     checkDockerRuntime({ ...gateOf(rec, rec.groups), main, runner });
-    log(`renew: cycle ${runId} until ${iso(deadline)}; egress and the Docker runtime gate passed`);
-    return { runId, deadline };
+    log(`renew: cycle ${runId} ${moved ? "until" : "unchanged, until"} ${iso(deadline)}; egress and the Docker runtime gate passed`);
+    return { runId, deadline, moved };
   } catch (e) {
     log(`renew: ${e.message}`);
     try {

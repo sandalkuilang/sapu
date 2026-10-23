@@ -247,10 +247,14 @@ export function staleRecords(main) {
 }
 
 /**
- * Move run `runId`'s deadline by `maxCycleMinutes`, never past start + 3 × it + the 15 min grace;
- * append the new deadline to the live log, then rewrite the lock. Returns the new deadline. Throws
- * `cap reached` when it cannot move, `refused: …` when the lock names another run, its deadline
- * passed, or it changed meanwhile. `pause("claimed")` is a test seam.
+ * Keep run `runId` alive for one more `maxCycleMinutes` from now: the new deadline is
+ * min(max(deadline, now + max + the 15 min grace, as `takeLock` sets the first one), start + 3 × max +
+ * the grace). A renew never moves it earlier, so it changes nothing only at the cap, or within the same
+ * second as the renew before it (a renew seconds later moves the deadline by those seconds): it then
+ * neither rewrites the lock nor appends to the live log, and `moved` is false. Otherwise it appends the
+ * new deadline to the live log, then rewrites the lock. Returns {deadline, moved}. Throws `refused: …`
+ * when no lock exists, the lock names another run, its deadline passed, or it changed meanwhile.
+ * `pause("claimed")` is a test seam.
  */
 export function renew(main, { runId, maxCycleMinutes, now = Date.now(), pause = () => {} }) {
   runIdOk(runId);
@@ -260,8 +264,9 @@ export function renew(main, { runId, maxCycleMinutes, now = Date.now(), pause = 
   if (!lock) throw new Error("no lock: no journey cycle is running");
   if (lock.runId !== runId) throw new Error(`refused: the lock names cycle ${lock.runId}, not ${runId}`);
   if (at >= lock.deadline) throw new Error(`refused: the deadline of cycle ${runId} passed at ${iso(lock.deadline)}`);
-  const next = Math.min(lock.deadline + max * 60, lock.start + 3 * max * 60 + GRACE_S);
-  if (next <= lock.deadline) throw new Error(`cap reached: cycle ${runId} ends at ${iso(lock.deadline)} (start + 3 × max_cycle_minutes + 15 min)`);
+  const cap = lock.start + 3 * max * 60 + GRACE_S;
+  const next = Math.min(Math.max(lock.deadline, at + max * 60 + GRACE_S), cap);
+  if (next <= lock.deadline) return { deadline: lock.deadline, moved: false };
   if (!claim(main, runId, { renew: next })) throw claimBusy(main, runId);
   try {
     pause("claimed");
@@ -276,7 +281,7 @@ export function renew(main, { runId, maxCycleMinutes, now = Date.now(), pause = 
   } finally {
     fs.rmSync(claimPath(main, runId), { force: true });
   }
-  return next;
+  return { deadline: next, moved: true };
 }
 
 /** Append `<runId> end <now>` to the live log (a failed `up`, a `down`). */

@@ -3,8 +3,10 @@
 // generated test, classes, the secret ledger's matcher, scrub, the journey map, SELECT and doc drift.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { get } from "node:http";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,9 +39,11 @@ import { checkUrl, originOf } from "../plugins/sapu/scripts/argus-live-origin.mj
 // @ts-expect-error — plain ESM script without types
 import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 // @ts-expect-error — plain ESM script without types
+import { claimWatch, watcherRuns } from "../plugins/sapu/scripts/argus-live-watch.mjs";
+// @ts-expect-error — plain ESM script without types
 import { minimize } from "../plugins/sapu/scripts/argus-live-minimize.mjs";
 // @ts-expect-error — plain ESM script without types
-import { repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
+import { DEADLINE_EXIT, deadlineRefusal, repro, runOnce } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
 import { redTest } from "../plugins/sapu/scripts/argus-live-redtest.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -151,8 +155,8 @@ describe("argus-live modules — the DAG", () => {
     for (const m of PHASE7) expect(g.has(m), m).toBe(true);
     // The shapes, and the in-page probes the suite embeds verbatim (the AI probe is the lane's alone): leaves.
     for (const leaf of ["argus-live-tastecfg", "argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-world"]) expect(g.get(leaf), leaf).toEqual([]);
-    // The recorders' world is installed by the session hook (-login's hook stage) and read by every reader of them.
-    for (const m of ["argus-live-login", "argus-live-session", "argus-live-steps", "argus-live-tastesink", "argus-live-codeproj"]) expect(g.get(m), m).toContain("argus-live-world");
+    // The recorders' world is installed by the session hook (-logincode's hook stage) and read by every reader of them.
+    for (const m of ["argus-live-logincode", "argus-live-session", "argus-live-steps", "argus-live-tastesink", "argus-live-codeproj"]) expect(g.get(m), m).toContain("argus-live-world");
     // The judge reads the probes and the shapes; the session hook installs the probes' init payload (the browser's PAGE_INIT).
     expect(g.get("argus-live-tastejudge")).toEqual(expect.arrayContaining(["argus-live-taste", "argus-live-ease", "argus-live-aiux", "argus-live-tastecfg", "argus-live-tastesink"]));
     // The confirmation's sink builds the in-daemon code from the probes and the session's route template, below the judge.
@@ -955,6 +959,33 @@ describe("argus-live repro — two of two", () => {
     expect([n.code, n.lines.at(-1)]).toEqual([0, "NOT REPRODUCED runs=0/1"]);
     expect(once0.calls).toHaveLength(1);
     expect(verdict(t)).toEqual({ runs: [0], verdict: "not-reproduced" });
+  });
+
+  it("refuses before a run when the deadline leaves less than two runs need: exit 4, no run, no verdict", async () => {
+    const t = returned([LIST]);
+    // 3 minutes left: two runs of a minute at least fit; 90 seconds do not.
+    setLock(t.main, { ...t.lock, deadline: now() + 90 });
+    const s = stub([3, 3]);
+    const said: string[] = [];
+    const r = await repro(t.main, t.refs[0], { once: s.once, say: (l: string) => said.push(l) });
+    expect([r.code, DEADLINE_EXIT]).toEqual([4, 4]);
+    expect(r.lines).toEqual(["deadline: 1 min left, a repro needs about 2"]);
+    expect(said).toEqual(r.lines);
+    expect(s.calls).toEqual([]);
+    expect(existsSync(join(t.dir(t.refs[0]), "verdict.json"))).toBe(false);
+    // One run (--once) needs a minute: 90 seconds fit, 30 do not.
+    expect(deadlineRefusal(t.main, t.refs[0], 1)).toBeNull();
+    setLock(t.main, { ...t.lock, deadline: now() + 30 });
+    expect(deadlineRefusal(t.main, t.refs[0], 1)).toBe("deadline: 0 min left, a repro needs about 1");
+    // The longest run recorded in this run is the estimate: a 5-minute run needs 10 for two.
+    mkdirSync(t.dir(t.refs[0]), { recursive: true });
+    writeFileSync(join(t.dir(t.refs[0]), "run-1.json"), `${JSON.stringify({ exit: 3, ms: 300_000 })}\n`);
+    setLock(t.main, { ...t.lock, deadline: now() + 9 * 60 });
+    expect(deadlineRefusal(t.main, t.refs[0], 2)).toBe("deadline: 8 min left, a repro needs about 10");
+    setLock(t.main, { ...t.lock, deadline: now() + 11 * 60 });
+    expect(deadlineRefusal(t.main, t.refs[0], 2)).toBeNull();
+    const ok = await repro(t.main, t.refs[0], { once: stub([3, 3]).once });
+    expect(ok.code).toBe(3);
   });
 
   it("a harness failure stops at once and is never counted as reproduced", async () => {
@@ -2059,10 +2090,29 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(r.code).toBe(2);
     expect(r.out.at(-1)).toBe("failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back");
     expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
-    // the label is there (any case): the plain failure, no label line.
+    // every label is there (any case): the plain failure, no label line.
     const u = filing();
-    u.g.set({ create: { out: "", code: 1 }, labels: ["Sapu:Agent-Filed"] });
+    u.g.set({ create: { out: "", code: 1 }, labels: ["bug", "Sapu:Agent-Filed"] });
     expect((await u.file({ labels: ["bug"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
+  }, 30_000);
+
+  it("a create refused for several missing labels names every one in one line, the agent-filed text unchanged, one label list", async () => {
+    const generic = (names: string) => `failed: label(s) ${names} not in the repository: the owner creates them (gh label create <name>), /sapu:init proposes the contract's labels`;
+    const t = filing();
+    t.g.set({ create: { out: "", code: 1 }, labels: ["Bug", "sapu:agent-filed"] });
+    const r = await t.file({ labels: ["bug", "argus:needs-owner", "class:business"] }).done;
+    expect(r.code).toBe(2);
+    expect(r.out.at(-1)).toBe(generic("argus:needs-owner, class:business"));
+    expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
+    // the agent-filed label missing too: its own line stays last and unchanged, the others in the line before.
+    const u = filing();
+    u.g.set({ create: { out: "", code: 1 }, labels: ["bug"] });
+    const both = (await u.file({ labels: ["bug", "argus:needs-owner"] }).done).out;
+    expect(both.slice(-2)).toEqual([generic("argus:needs-owner"), "failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back"]);
+    // every label there (any case) but gh failed for another reason: the generic failure only.
+    const v = filing();
+    v.g.set({ create: { out: "", code: 1 }, labels: ["BUG", "Argus:Needs-Owner", "Sapu:Agent-Filed"] });
+    expect((await v.file({ labels: ["bug", "argus:needs-owner"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
   }, 30_000);
 
   it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {
@@ -2449,6 +2499,18 @@ describe("argus-live map mode", () => {
     const lines = intake(t.main, 1);
     expect(lines[0]).toBe("slot 1 generation 1 map journeys 1 roots 2");
     expect(lines[1]).toMatch(/^<<<RETURN-/);
+  }, 30_000);
+
+  it("a map slot's submit --check validates the map, records nothing and leaves the token live", async () => {
+    const t = await mapped();
+    const m = await mintMapSlot(t.main, { slot: 1 });
+    const before = JSON.stringify(readRun(t.main));
+    expect(await pw(t.main, [m.token, "submit", "--check", JSON.stringify({ ...MAP, extra: 1 })])).toEqual({ code: 1, out: ['refused: return: the map: unknown key "extra"'] });
+    expect(await pw(t.main, [m.token, "submit", "--check", JSON.stringify(MAP)])).toEqual({ code: 0, out: ["check: ok"] });
+    expect(JSON.stringify(readRun(t.main))).toBe(before);
+    expect(() => intake(t.main, 1)).toThrow("refused: slot 1 has not submitted");
+    expect((await pw(t.main, [m.token, "code", "files", "src"])).out[1]).toBe("calls 1/120");
+    expect(await pw(t.main, [m.token, "submit", JSON.stringify(MAP)])).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 map journeys 1"] });
   }, 30_000);
 
   it("validateMap holds the map's schema", () => {
@@ -3036,6 +3098,196 @@ describe("argus-live show", () => {
       if (show.exitCode === null) show.kill("SIGKILL");
     }
   }, 40_000);
+
+  // An HTTP GET to the port show --follow printed: {status, body}, or null while nothing there answers.
+  const fetchPage = (port: number, host = `127.0.0.1:${port}`) =>
+    new Promise<{ status: number; body: string; marker: string | undefined } | null>((ok) => {
+      const req = get({ host: "127.0.0.1", port, headers: { host } }, (res) => {
+        let body = "";
+        res.on("data", (d) => (body += d));
+        res.on("end", () => ok({ status: res.statusCode ?? 0, body, marker: res.headers["x-sapu-watch"] as string | undefined }));
+      });
+      req.on("error", () => ok(null));
+      req.setTimeout(1000, () => req.destroy());
+    });
+  const WATCHING = /show: watching on http:\/\/localhost:(\d+)\n/;
+
+  it("show --follow answers on its port while it waits: the state, the run's newest up step, escaped, refreshing", async () => {
+    const t = liveRun();
+    const logs = join(t.main, ".argus/live", t.runId, "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "up.log"), `step 1 lock: cycle ${t.runId}\nstep 3 environment: <script>alert("x")</script> & 'q'\nnot a step line\n`);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => out.startsWith("show: watching on http://localhost:"), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      const page = (await fetchPage(port))!;
+      expect(page.status).toBe(200);
+      // Every placeholder response carries the marker the page's script looks for; the refresh meta is the no-script fallback only.
+      expect(page.marker).toBe("waiting");
+      expect(page.body).toContain('<noscript><meta http-equiv="refresh" content="2"></noscript>');
+      expect(page.body).toContain("no journey cycle is running");
+      expect(page.body).toContain(`<p>run ${t.runId}</p>`);
+      // The newest step line only, every markup character escaped.
+      expect(page.body).toContain("<p>step 3 environment: &#60;script&#62;alert(&#34;x&#34;)&#60;/script&#62; &#38; &#39;q&#39;</p>");
+      expect(page.body).not.toContain("step 1 lock");
+      // One inline script, polling the page itself, with no data in it: the same text whatever the state.
+      const scripts = page.body.match(/<script>[\s\S]*?<\/script>/g) ?? [];
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0]).toContain('fetch(location.href,{cache:"no-store"})');
+      expect(scripts[0]).toContain("location.reload()");
+      for (const data of [t.runId, "step 3", "alert", "no journey cycle", "127.0.0.1", String(port)]) expect(scripts[0], data).not.toContain(data);
+      // A map run is told as one.
+      writeRunFiles(t.main, { runId: t.runId, mode: "map", instanceId: null, worktree: t.wt, groups: [], stops: [] });
+      const mapPage = (await fetchPage(port))!;
+      expect(mapPage.body).toContain("map mode: the explorer reads code only; nothing to watch until the walk&#39;s `up`");
+      expect(mapPage.body.match(/<script>[\s\S]*?<\/script>/g)).toEqual(scripts);
+      // The script itself: keeps polling through a network error, reloads once an answer lacks the marker, swaps the status in place while it has it.
+      const code = scripts[0].replace(/^<script>|<\/script>$/g, "");
+      const run = async (answer: () => Promise<unknown>) => {
+        let tick = () => {};
+        const s = { innerHTML: "old" };
+        const env = { reloads: 0, s };
+        runInNewContext(code, {
+          setInterval: (f: () => void) => (tick = f),
+          fetch: answer,
+          location: { href: "http://x/", reload: () => env.reloads++ },
+          document: { getElementById: () => s },
+          DOMParser: class {
+            parseFromString = (t: string) => ({ getElementById: () => ({ innerHTML: t }) });
+          },
+        });
+        await tick();
+        await new Promise((r) => setTimeout(r, 10));
+        return env;
+      };
+      const reply = (marker: string | null, text: string) => Promise.resolve({ headers: { get: () => marker }, text: () => Promise.resolve(text) });
+      expect(await run(() => Promise.reject(new Error("refused")))).toMatchObject({ reloads: 0, s: { innerHTML: "old" } });
+      expect(await run(() => reply(null, "dashboard"))).toMatchObject({ reloads: 1, s: { innerHTML: "old" } });
+      expect(await run(() => reply("waiting", "new status"))).toMatchObject({ reloads: 0, s: { innerHTML: "new status" } });
+      // Only a localhost Host header is answered (no DNS rebinding).
+      expect((await fetchPage(port, "evil.example"))!.status).toBe(403);
+    } finally {
+      show.kill("SIGKILL");
+    }
+  }, 40_000);
+
+  it("show --follow frees its port before the dashboard binds it and serves it again once the cycle is gone", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "binds");
+    // Stands in for the CLI's show: tries to listen on the --port it was given and records whether it could, then blocks.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nrequire("node:net").createServer().once("error", (e) => fs.appendFileSync(${JSON.stringify(log)}, "error " + e.code + "\\n")).listen(Number(process.argv[4]), "127.0.0.1", () => fs.appendFileSync(${JSON.stringify(log)}, "bound\\n"));\nsetInterval(() => {}, 1000);\n`);
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      expect((await fetchPage(port))!.status).toBe(200);
+      writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId: "0123456789abcdef", browser: { js, channel: "chrome" } });
+      mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+      expect(await until(() => existsSync(log), 10_000)).toBe(true);
+      expect(readFileSync(log, "utf8")).toBe("bound\n");
+      // The cycle goes (another run holds the lock, with no browser): the dashboard ends and the page is back on the same port.
+      const next = `${t.runId.slice(0, -1)}${t.runId.endsWith("0") ? "1" : "0"}`;
+      setLock(t.main, { runId: next, start: now(), deadline: now() + 3600 });
+      let back: { status: number; body: string } | null = null;
+      for (let i = 0; i < 100 && back?.status !== 200; i++) {
+        back = await fetchPage(port);
+        if (!back) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(back?.body).toContain(`<p>run ${next}</p>`);
+      expect(out).not.toContain("the dashboard ended");
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("a second show --follow prints the live watcher's URL and exits 0; a normal exit removes the record and says why", async () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      const rec = JSON.parse(readFileSync(watch, "utf8"));
+      expect(rec).toMatchObject({ pid: show.pid, port, dashboardPgid: null });
+      expect(rec.start).toBe(startTime(show.pid!));
+      expect(statSync(watch).mode & 0o777).toBe(0o600);
+      const second = spawnSync(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, encoding: "utf8", timeout: 20_000 });
+      expect({ code: second.status, out: second.stdout, err: second.stderr }).toEqual({ code: 0, out: `show: watching on http://localhost:${port}\n`, err: "" });
+      // the second start took nothing from the first: its record and its page stay.
+      expect(JSON.parse(readFileSync(watch, "utf8")).pid).toBe(show.pid);
+      expect((await fetchPage(port))!.status).toBe(200);
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+      expect(out.trimEnd().split("\n").pop()).toBe("show: stopped (SIGINT)");
+      expect(existsSync(watch)).toBe(false);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("show --follow after a watcher died ends the dashboard group it left and takes over; a group it cannot vouch for stays", async () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+    const dashboard = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    const left = dashboard();
+    const other = dashboard();
+    let show: ReturnType<typeof spawn> | undefined;
+    try {
+      // the dead watcher recorded `left` as its dashboard group; `other` is recorded with a start time that is not its own (a reused pid).
+      for (const [rec, pgid] of [[{ pid: dead, start: "ticks:1", port: 1, dashboardPgid: other.pid, dashboardStart: "ticks:1" }, other.pid], [{ pid: dead, start: "ticks:1", port: 1, dashboardPgid: left.pid, dashboardStart: startTime(left.pid!) }, left.pid]] as const) {
+        mkdirSync(join(t.main, ".argus/live"), { recursive: true });
+        writeFileSync(watch, `${JSON.stringify(rec)}\n`);
+        show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        show.stdout.on("data", (d) => (out += d));
+        expect(await until(() => WATCHING.test(out), 10_000)).toBe(true);
+        expect(JSON.parse(readFileSync(watch, "utf8"))).toMatchObject({ pid: show.pid, port: Number(WATCHING.exec(out)![1]) });
+        if (pgid === left.pid) expect(await until(() => !alive(left.pid!), 10_000)).toBe(true);
+        else expect(alive(other.pid!)).toBe(true);
+        show.kill("SIGINT");
+        expect(await until(() => show!.exitCode !== null || show!.signalCode !== null, 10_000)).toBe(true);
+      }
+    } finally {
+      if (show && show.exitCode === null) show.kill("SIGKILL");
+      for (const c of [left, other]) if (c.pid && alive(c.pid)) process.kill(c.pid, "SIGKILL");
+    }
+  }, 60_000);
+
+  it("show --follow: a recorded watcher whose start time cannot be read is left alone, and no claim is written without a start time of its own", () => {
+    const t = liveRun();
+    const watch = join(t.main, ".argus/live/watch.json");
+    const unreadable = () => undefined; // ps failed
+    // A live pid whose start time cannot be read now is alive-unknown: kept, not taken over. A readable different one is a reused pid.
+    const rec = { pid: process.pid, start: "ticks:1", port: 4321, dashboardPgid: null, dashboardStart: null };
+    expect(watcherRuns(rec, undefined, unreadable)).toBe(true);
+    expect(watcherRuns(rec, undefined, () => "ticks:2")).toBe(false);
+    mkdirSync(join(t.main, ".argus/live"), { recursive: true });
+    const raw = `${JSON.stringify(rec)}\n`;
+    writeFileSync(watch, raw);
+    expect(() => claimWatch(t.main, 1234, undefined, unreadable)).toThrow(/^failed: this watcher's start time cannot be read/);
+    expect(readFileSync(watch, "utf8")).toBe(raw); // the live record stands: nothing taken over, nothing written
+    rmSync(watch);
+    expect(() => claimWatch(t.main, 1234, undefined, unreadable)).toThrow(/^failed: /);
+    expect(existsSync(watch)).toBe(false); // never a record without a start time
+    // With a readable own start time the same alive-unknown record is reused: its URL comes back, the file is untouched.
+    const other = { ...rec, pid: process.ppid }; // another live process, whose start time ps cannot give
+    const otherRaw = `${JSON.stringify(other)}\n`;
+    writeFileSync(watch, otherRaw);
+    expect(claimWatch(t.main, 1234, undefined, (pid: number) => (pid === process.pid ? "ticks:7" : undefined))).toEqual({ live: other });
+    expect(readFileSync(watch, "utf8")).toBe(otherRaw);
+  });
 
   it("show is refused without a running cycle", () => {
     const r = spawnSync(process.execPath, [ARGUS_LIVE, "show"], { cwd: committed(), encoding: "utf8" });

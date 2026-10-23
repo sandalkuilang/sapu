@@ -22,8 +22,15 @@
 //                                its deadline; a missing run directory is named. SIGINT, SIGTERM and SIGHUP end the
 //                                CLI's whole process group (its dashboard too). Writes nothing
 //   argus-live.mjs show --follow the same for every cycle, in one terminal (followDashboard): it waits for a
-//                                cycle's browser, shows it on one fixed port, and follows the next cycle there
-//   argus-live.mjs renew         move the cycle's deadline; the egress check and the Docker runtime gate again
+//                                cycle's browser, shows it on one fixed port, and follows the next cycle there. Its
+//                                first line is `show: watching on http://localhost:<port>`; until a browser is up that
+//                                port serves a page that refreshes itself and names the wait, the run in progress and
+//                                its newest `up` step (a map run has no browser), so the URL answers at once. One
+//                                watcher a repo (.argus/live/watch.json): a second start prints the live watcher's
+//                                first line and exits 0; a dead watcher's dashboard group is ended first. It ends on
+//                                SIGINT, SIGTERM or SIGHUP with a last line `show: stopped (<reason>)`
+//   argus-live.mjs renew         keep the cycle alive one more max_cycle_minutes (never past the cap); the egress
+//                                check and the Docker runtime gate again
 //   argus-live.mjs down          tear the running cycle's instance down
 //   argus-live.mjs status        the running cycle, its instance, each process group, each slot (journey,
 //                                generation, calls, submitted, retired) and the number of browser sessions
@@ -45,18 +52,22 @@
 //   argus-live.mjs pw <token> <role>[.<k>] <command> [args] | pw <token> <code|trigger|facts|mail|submit|source> [args]
 //                                the explorer's only way into a browser (spec §9): the page's answer in a
 //                                nonce fence, then the wrapper's own lines; exit 0 ran, 1 refused or
-//                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed
+//                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed;
+//                                `pw <token> submit --check <json>` validates a return and prints
+//                                `check: ok`, recording and retiring nothing
 //   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
 //                                enums and counts, then the return whole in a RETURN nonce fence
 //   argus-live.mjs repro <slot>.<generation>.<k>
 //                                candidate <k>'s repro, two of two (spec §10): run 1, and run 2 only when run 1
 //                                reproduced, each run's lines prefixed `run <i> `; the verdict last: REPRODUCED
 //                                step=… (exit 3, both runs), NOT REPRODUCED runs=<k>/<n> (exit 0) or HARNESS:
-//                                run <i>: … (exit 2); verdict.json in the candidate's records
+//                                run <i>: … (exit 2); verdict.json in the candidate's records; with less of the
+//                                cycle's time left than two runs need: `deadline: <n> min left, …` (exit 4), nothing run
 //   argus-live.mjs repro <slot>.<generation>.<k> --once
 //                                one run of candidate <k>'s repro on a fresh instance (spec §10): a line per
 //                                step in the wrapper's own words, what the page showed in a nonce fence,
-//                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2)
+//                                then NOT REPRODUCED (exit 0), REPRODUCED step=… (exit 3) or HARNESS: … (exit 2); or, with less time
+//                                left than one run needs, `deadline: …` (exit 4), nothing run
 //   argus-live.mjs repro <slot>.<generation>.<k> --minimize
 //                                drop one role or step at a time from a reproduced repro, each try a run on a
 //                                fresh instance (spec §10 "Minimize"): a line per try (its label and exit), the
@@ -154,7 +165,7 @@
 // Exit codes: 0 ok, 1 refused (the reason printed), 2 failed (the step and the error printed). No
 // output carries a value of the env file, as it is now or as `up` read it: every line is masked with both.
 import fs from "node:fs";
-import net from "node:net";
+import http from "node:http";
 import path from "node:path";
 import { smokeBaseline } from "./argus-live-baseline.mjs";
 import { smokeCi } from "./argus-live-ci.mjs";
@@ -173,15 +184,16 @@ import { serveProxy } from "./argus-live-proxy.mjs";
 import { pw } from "./argus-live-pw.mjs";
 import { report } from "./argus-live-report.mjs";
 import { minimize, redTestFile, savedValues } from "./argus-live-minimize.mjs";
-import { apiLevelHint, repro, runOnce } from "./argus-live-repro.mjs";
+import { DEADLINE_EXIT, apiLevelHint, deadlineRefusal, repro, runOnce } from "./argus-live-repro.mjs";
 import { intake, mapReturn } from "./argus-live-return.mjs";
-import { browserHome, down, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
+import { browserHome, down, logsDir, readRun, reap, recordedSecrets } from "./argus-live-run.mjs";
 import { scrub } from "./argus-live-scrub.mjs";
 import { seed, seedsOf } from "./argus-live-seed.mjs";
 import { drainSessions } from "./argus-live-session.mjs";
 import { handoffSlot, mintMapSlot, mintSlot, parseAccounts } from "./argus-live-slots.mjs";
 import { smokeRun } from "./argus-live-smoke.mjs";
 import { smokeAdmit, smokeCheck, smokePlan, smokeRetire } from "./argus-live-suite.mjs";
+import { claimWatch, noteDashboard, releaseWatch } from "./argus-live-watch.mjs";
 import { tasteAccept, tasteCurator, tasteFile } from "./argus-live-tastefile.mjs";
 import { loadTaste, PASS_OFF, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 import { tasteConfirm, tasteJudge } from "./argus-live-tastejudge.mjs";
@@ -300,57 +312,182 @@ function showable() {
   return { runId: lock.runId, show: { js: rec.browser.js, home: browserHome(rec), cwd } };
 }
 
+const escapeHtml = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** The run in progress as the placeholder page tells it: its id and mode, and the newest `step` line of its up log (masked when written). Nothing without a lock. */
+function runLines() {
+  let lock;
+  try {
+    lock = readLock(main);
+  } catch {
+    return [];
+  }
+  if (!lock) return [];
+  let map = false;
+  try {
+    const rec = readRun(main);
+    map = Boolean(rec && rec.runId === lock.runId && rec.mode === "map");
+  } catch {
+    // no record to read: not told as a map run
+  }
+  const lines = [`run ${lock.runId}${map ? " (map mode: the explorer reads code only; nothing to watch until the walk's `up`)" : ""}`];
+  try {
+    const step = fs.readFileSync(path.join(logsDir(main, lock.runId), "up.log"), "utf8").split("\n").filter((l) => /^step [0-9]/.test(l)).pop();
+    if (step) lines.push(step.slice(0, 300));
+  } catch {
+    // no log yet
+  }
+  return lines;
+}
+
+/** Marks every placeholder response; the page's script reloads once an answer lacks it (the dashboard took the port). */
+const WATCH_HEADER = "x-sapu-watch";
 /**
- * `show --follow`: one terminal for every cycle. It waits for a cycle's browser, shows it on one port
- * (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
- * lock changes or passes its deadline, and waits for the next — until Ctrl-C (the CLI's own exit).
+ * Static, no data in it. Every 2 s it fetches the page again: an answer without the marker → reload (the
+ * dashboard); with it → the status text is swapped in place; a network error (the gap while the port changes
+ * hands) → try again.
+ */
+const WATCH_SCRIPT = `setInterval(()=>fetch(location.href,{cache:"no-store"}).then((r)=>{if(r.headers.get("${WATCH_HEADER}")!=="waiting")return location.reload();return r.text().then((t)=>{const s=new DOMParser().parseFromString(t,"text/html").getElementById("s");if(s)document.getElementById("s").innerHTML=s.innerHTML})},()=>{}),2000)`;
+
+/**
+ * The page `show --follow` serves on the dashboard's port while it waits (127.0.0.1 only): `reason()` and
+ * `runLines()`, escaped. Its script polls the page every 2 s (WATCH_SCRIPT; a `<noscript>` meta refresh stands
+ * in without scripts), so a tab opened at once lands on the dashboard by itself, even across the port's gap.
+ * Resolves to the listening server (`port` 0: a free one). A port the dashboard has not yet let go of is
+ * retried for ~30 s (a dashboard's group can take that long to end).
+ */
+async function openPlaceholder(port, reason) {
+  const server = http.createServer((req, res) => {
+    if (!/^(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(req.headers.host ?? "")) {
+      res.writeHead(403).end();
+      return;
+    }
+    const lines = [reason(), ...runLines()].map((l) => `<p>${escapeHtml(redact(l, secrets))}</p>`).join("");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", connection: "close", [WATCH_HEADER]: "waiting" });
+    res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><noscript><meta http-equiv="refresh" content="2"></noscript><title>sapu: waiting for a journey cycle</title><body style="font:16px system-ui;margin:3rem"><h1>Waiting for a journey cycle's browser</h1><div id="s">${lines}</div><p>This page opens the dashboard by itself once a cycle's browser is up.</p><script>${WATCH_SCRIPT}</script></body></html>`);
+  });
+  for (let tries = 0; ; tries++) {
+    try {
+      await new Promise((ok, fail) => server.once("error", fail).listen(port, "127.0.0.1", () => ok(server.off("error", fail))));
+      return server;
+    } catch (e) {
+      if (e.code !== "EADDRINUSE" || tries >= 150) throw e;
+      await new Promise((ok) => setTimeout(ok, 200));
+    }
+  }
+}
+
+/** Closes the placeholder, its open connections too (a tab keeps one), and returns once the port is free. */
+async function closePlaceholder(server) {
+  const closed = new Promise((ok) => server.close(ok));
+  server.closeAllConnections();
+  await closed;
+}
+
+/**
+ * `show --follow`: one watcher for every cycle, one per repo. It waits for a cycle's browser, shows it on one
+ * port (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
+ * lock changes or passes its deadline, and waits for the next — until a signal (Ctrl-C, a kill, a closed
+ * terminal). It listens from the start: while it waits, the port serves a page naming the wait and the run in
+ * progress (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle
+ * is gone (retried for ~30 s; a port still taken then ends the watch, said). Its first line is `show: watching
+ * on http://localhost:<port>`.
+ *
+ * The watcher records itself in `.argus/live/watch.json` (argus-live-watch.mjs): a second start finds the live
+ * watcher there, prints that same first line with its port and exits 0; a record whose watcher is gone (a
+ * SIGKILL, a crash) costs the dashboard group it left a SIGTERM before this one takes over. Every way out but a
+ * SIGKILL removes the record and prints one last line, `show: stopped (<reason>)`.
  */
 async function followDashboard() {
-  const port = await new Promise((resolve, reject) => {
-    const s = net.createServer().once("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const { port: p } = s.address();
-      s.close(() => resolve(p));
-    });
-  });
   let waiting = null;
-  for (;;) {
-    let r;
-    try {
-      r = showable();
-    } catch (e) {
-      r = { refused: e.message };
+  let reason = "starting";
+  let placeholder = await openPlaceholder(0, () => reason);
+  const port = placeholder.address().port;
+  const taken = claimWatch(main, port);
+  if (taken.live) {
+    await closePlaceholder(placeholder);
+    print(`show: watching on http://localhost:${taken.live.port}`);
+    return 0;
+  }
+  print(`show: watching on http://localhost:${port}`);
+  // From here the record is this process's: removed, and said, on every way out.
+  let why = "ended";
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    releaseWatch(main);
+    print(`show: stopped (${why})`);
+  };
+  // A signal ends the watch even when the cycle changed in the same second (one Ctrl-C, never two). While a
+  // dashboard runs, showDashboard's own handlers end its group and the loop returns; otherwise exit at once.
+  const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+  let signalled = false;
+  let dashboard = false;
+  const onSignal = (sig) => {
+    signalled = true;
+    why = sig;
+    if (!dashboard) {
+      stop();
+      process.exit(0);
     }
-    if (r.refused) {
-      // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
-      if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${r.refused.replace(/^refused: /, "")})`);
-      waiting = r.refused;
-      await new Promise((ok) => setTimeout(ok, 2000));
-      continue;
-    }
-    waiting = null;
-    print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
-    // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
-    const gone = () => {
+  };
+  for (const sig of SIGNALS) process.on(sig, onSignal);
+  try {
+    for (;;) {
+      let r;
       try {
-        return showable().runId !== r.runId;
-      } catch {
-        return true;
+        r = showable();
+      } catch (e) {
+        r = { refused: e.message };
       }
-    };
-    // A signal ends the follow even when the cycle changed in the same second (one Ctrl-C, never two).
-    let signalled = false;
-    const flag = () => (signalled = true);
-    const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
-    for (const sig of SIGNALS) process.on(sig, flag);
-    const code = await showDashboard({ ...r.show, port, until: gone });
-    for (const sig of SIGNALS) process.off(sig, flag);
-    if (signalled) return code;
-    if (!gone()) {
-      // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
-      print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
-      return code;
+      if (r.refused) {
+        // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
+        reason = r.refused.replace(/^refused: /, "");
+        if (waiting !== r.refused) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port} (${reason})`);
+        waiting = r.refused;
+        await new Promise((ok) => setTimeout(ok, 2000));
+        continue;
+      }
+      waiting = null;
+      print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
+      // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
+      const gone = () => {
+        try {
+          return showable().runId !== r.runId;
+        } catch {
+          return true;
+        }
+      };
+      await closePlaceholder(placeholder);
+      dashboard = true;
+      let code;
+      try {
+        code = await showDashboard({ ...r.show, port, until: gone, onStart: (pgid) => noteDashboard(main, pgid) });
+      } finally {
+        dashboard = false;
+        noteDashboard(main, null);
+      }
+      if (signalled) return code;
+      if (!gone()) {
+        // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
+        why = `the dashboard ended, exit ${code}`;
+        print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
+        return code;
+      }
+      reason = "the cycle ended; waiting for the next";
+      try {
+        placeholder = await openPlaceholder(port, () => reason);
+      } catch (e) {
+        throw new Error(`failed: port ${port} stayed in use after the dashboard ended (${e.code ?? e.message})`);
+      }
     }
+  } catch (e) {
+    why = e.message;
+    throw e;
+  } finally {
+    for (const sig of SIGNALS) process.off(sig, onSignal);
+    stop();
   }
 }
 
@@ -384,6 +521,11 @@ try {
     // The return is fenced and masked as it is printed; masking whole lines again would cut the nonce.
     for (const line of intake(main, Number(args[0]), { secrets })) printMasked(line);
   } else if (cmd === "repro" && args.length === 2 && args[1] === "--once") {
+    const late = deadlineRefusal(main, args[0], 1);
+    if (late) {
+      print(late);
+      process.exit(DEADLINE_EXIT);
+    }
     // Each line is printed as it is made, already in the wrapper's words or fenced and masked (decision 8).
     const r = await runOnce(main, args[0], { say: printMasked });
     process.exit(r.code);
@@ -523,7 +665,9 @@ try {
     process.exit(await followDashboard());
   } else if (cmd === "renew" && !args.length) {
     const r = await renewRun(main, { say: print });
-    print(`cycle ${r.runId} renewed until ${new Date(r.deadline * 1000).toISOString()}`);
+    const until = new Date(r.deadline * 1000).toISOString();
+    if (r.moved) print(`cycle ${r.runId} renewed until ${until}`);
+    else print(`cycle ${r.runId} runs until ${until} (${Math.max(0, Math.floor((r.deadline * 1000 - Date.now()) / 60_000))} min left; the cap is start + 3 x max_cycle_minutes + 15 min)`);
   } else if (cmd === "down" && !args.length) {
     const lock = readLock(main);
     if (!lock) print("no journey cycle is running");
@@ -545,6 +689,6 @@ try {
 } catch (e) {
   const msg = redact(`${e.message}${e.step ? ` (up step ${e.step})` : ""}`, secrets);
   process.stderr.write(`${msg}\n`);
-  process.exit(/^(refused|cap reached): /.test(e.message) ? 1 : 2);
+  process.exit(/^refused: /.test(e.message) ? 1 : 2);
 }
 process.exit(0);

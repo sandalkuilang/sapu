@@ -72,9 +72,9 @@ export async function runHook(kind, name, values, { rec, live, runner = runAsync
   return { code: r.timedOut ? null : (r.status ?? null), stdout, events };
 }
 
-/** A pathspec as the explorer gives it → repo-relative, or a refusal: an absolute path must lie inside the worktree; no `..`, no leading `-` or `:`. */
+/** A pathspec as the explorer gives it → repo-relative, or a refusal (CODE_USAGE ends it): an absolute path must lie inside the worktree; no `..`, no leading `-` or `:`. */
 function pathspecOf(spec, worktree) {
-  const refuse = () => new Error(`refused: ${typeof spec === "string" && /^[\x20-\x7e]{1,200}$/.test(spec) ? spec : "that pathspec"} is not a path inside the worktree`);
+  const refuse = () => new Error(`refused: ${typeof spec === "string" && /^[\x20-\x7e]{1,200}$/.test(spec) ? spec : "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
   if (typeof spec !== "string" || spec === "" || spec.length > 1000 || /[\u0000-\u001f\u007f]/.test(spec)) throw refuse();
   let rel = spec;
   if (path.isAbsolute(spec)) {
@@ -92,21 +92,27 @@ const argusPath = (p) => {
   return l === ".argus" || l.startsWith(".argus/");
 };
 
+/** What every refusal of a `code` call says (pw's argument check and codeCommand alike). */
+export const CODE_USAGE = "refused: code grep <pattern> [<pathspec>…] (basic regex: \\| alternates; a pathspec is a file or directory, no globs) or code files [<pathspec>…]";
+
+/** At most this many pathspecs follow `code grep <pattern>` or `code files`. */
+const CODE_PATHSPECS = 8;
+
 /**
- * `code grep <pattern> [<pathspec>]` and `code files [<pathspec>]` (spec §9, decision 12) on HEAD's tree of
- * `worktree` → `{code, text}`: `git --literal-pathspecs -C <wt> grep -z -n -I --no-color -e <pattern> HEAD
- * -- [<pathspec>]` (the `HEAD:` prefix stripped; exit 1, no match, is an empty text) or `git
- * --literal-pathspecs -C <wt> ls-tree -z -r --name-only HEAD -- [<pathspec>]`. Tracked files only (HEAD,
- * as the explorer's Read); any path under `.argus/` (any case) dropped; each path printed absolute inside
- * the worktree. The pattern is never an option (`-e`), the pathspec never a magic one.
+ * `code grep <pattern> [<pathspec>…]` and `code files [<pathspec>…]` (spec §9, decision 12; at most 8
+ * pathspecs, each through pathspecOf) on HEAD's tree of `worktree` → `{code, text}`: `git --literal-pathspecs
+ * -C <wt> grep -z -n -I --no-color -e <pattern> HEAD -- [<pathspec>…]` (basic regex, git's default; the
+ * `HEAD:` prefix stripped; exit 1, no match, is an empty text) or `git --literal-pathspecs -C <wt> ls-tree -z
+ * -r --name-only HEAD -- [<pathspec>…]`. Tracked files only (HEAD, as the explorer's Read); any path under
+ * `.argus/` (any case) dropped; each path printed absolute inside the worktree. The pattern is never an
+ * option (`-e`), a pathspec never a magic one or a glob. Any other shape is refused with CODE_USAGE.
  */
 export function codeCommand(sub, args, { worktree, runner = run }) {
-  if (sub !== "grep" && sub !== "files") throw new Error("refused: code takes grep <pattern> [<pathspec>] or files [<pathspec>]");
-  const [pattern, spec] = sub === "grep" ? args : [null, args[0]];
-  if (sub === "grep" && (args.length < 1 || args.length > 2)) throw new Error("refused: code grep takes <pattern> [<pathspec>]");
-  if (sub === "files" && args.length > 1) throw new Error("refused: code files takes [<pathspec>]");
-  if (sub === "grep" && (typeof pattern !== "string" || pattern === "" || pattern.length > 1000 || /[\u0000\n\r]/.test(pattern))) throw new Error("refused: code grep takes one pattern of at most 1000 characters on one line");
-  const tail = spec === undefined ? [] : ["--", pathspecOf(spec, worktree)];
+  if (sub !== "grep" && sub !== "files") throw new Error(CODE_USAGE);
+  const [pattern, specs] = sub === "grep" ? [args[0], args.slice(1)] : [null, args];
+  if ((sub === "grep" && args.length < 1) || specs.length > CODE_PATHSPECS) throw new Error(CODE_USAGE);
+  if (sub === "grep" && (typeof pattern !== "string" || pattern === "" || pattern.length > 1000 || /[\u0000\n\r]/.test(pattern))) throw new Error(`${CODE_USAGE}; the pattern is at most 1000 characters on one line`);
+  const tail = specs.length === 0 ? [] : ["--", ...specs.map((spec) => pathspecOf(spec, worktree))];
   const argv = sub === "grep" ? ["git", "--literal-pathspecs", "-C", worktree, "grep", "-z", "-n", "-I", "--no-color", "-e", pattern, "HEAD", ...tail] : ["git", "--literal-pathspecs", "-C", worktree, "ls-tree", "-z", "-r", "--name-only", "HEAD", ...tail];
   const r = runner(argv, { cwd: worktree });
   if (r.error) throw new Error(`failed: git could not run: ${r.error.code ?? "error"}`);

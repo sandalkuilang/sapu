@@ -40,7 +40,7 @@ import { intake } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { takeLock } from "../plugins/sapu/scripts/argus-live-lock.mjs";
 // @ts-expect-error — plain ESM script without types
-import { codeCommand } from "../plugins/sapu/scripts/argus-live-hooks.mjs";
+import { CODE_USAGE, codeCommand } from "../plugins/sapu/scripts/argus-live-hooks.mjs";
 // @ts-expect-error — plain ESM script without types
 import { explorerTarget, parseTarget, targetCode } from "../plugins/sapu/scripts/argus-live-targets.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -2520,8 +2520,54 @@ describe("argus-live pw — code, trigger, facts, mail", () => {
     expect(body(await t.call("code", "files", "src"))).toBe(`${t.wt}/src/app.js`);
     expect(body(await t.call("code", "files", `${t.wt}/src`))).toBe(`${t.wt}/src/app.js`);
     expect(body(await t.call("code", "files"))).not.toMatch(/\.argus|\.ARGUS/);
-    for (const bad of ["/etc", "../x", "src/../../x"]) expect((await t.call("code", "files", bad)).out[0], bad).toMatch(/^refused: .* is not a path inside the worktree$/);
-    expect((await t.call("code", "nope")).out[0]).toMatch(/^refused: code takes grep/);
+    for (const bad of ["/etc", "../x", "src/../../x"]) expect((await t.call("code", "files", bad)).out[0], bad).toBe(`refused: ${bad} is not a path inside the worktree; ${CODE_USAGE}`);
+    expect((await t.call("code", "nope")).out[0]).toBe(CODE_USAGE);
+  }, 30_000);
+
+  it("code grep and code files take several pathspecs; basic regex, literal pathspecs, every one checked", () => {
+    const wt = tempDir();
+    const g = (...a: string[]) => execFileSync("git", ["-C", wt, ...a], { encoding: "utf8" });
+    g("init", "-q");
+    for (const [f, text] of [["src/a.js", "alpha(\n"], ["lib/b.js", "beta\n"], ["docs/c.md", "alpha beta\n"], [".argus/s.txt", "alpha\n"]]) {
+      mkdirSync(join(wt, f.replace(/\/[^/]+$/, "")), { recursive: true });
+      writeFileSync(join(wt, f), text);
+    }
+    g("add", "-f", ".");
+    g("-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "x");
+    const grep = (...a: string[]) => codeCommand("grep", a, { worktree: wt });
+    // Basic regex: `\|` alternates, `|` and `(` are literal.
+    expect(grep("alpha\\|beta", "src", "lib").text).toBe(`${wt}/lib/b.js:1:beta\n${wt}/src/a.js:1:alpha(`);
+    expect(grep("alpha|beta", "src", "lib").text).toBe("");
+    expect(grep("alpha(", "src").text).toBe(`${wt}/src/a.js:1:alpha(`);
+    expect(grep("alpha\\|beta", "src/a.js", "lib/b.js", "docs").text.split("\n")).toHaveLength(3);
+    expect(grep("alpha\\|beta", ".argus", "lib").text).toBe(`${wt}/lib/b.js:1:beta`);
+    // A pathspec is literal: a glob matches nothing.
+    expect(grep("alpha", "src/*.js").text).toBe("");
+    expect(grep("alpha", "**/a.js", "src").text).toBe(`${wt}/src/a.js:1:alpha(`);
+    expect(codeCommand("files", ["src", "lib"], { worktree: wt }).text.split("\n").sort()).toEqual([`${wt}/lib/b.js`, `${wt}/src/a.js`]);
+    expect(codeCommand("files", [".argus", `${wt}/docs`], { worktree: wt }).text).toBe(`${wt}/docs/c.md`);
+    // Eight at most, and each one through the same checks: one bad one refuses the call.
+    const eight = Array.from({ length: 8 }, () => "src");
+    expect(grep("alpha", ...eight).code).toBe(0);
+    expect(() => grep("alpha", ...eight, "src")).toThrow(CODE_USAGE);
+    expect(() => codeCommand("files", [...eight, "src"], { worktree: wt })).toThrow(CODE_USAGE);
+    for (const bad of ["/etc", "../x", "src/../../x", "-e", ":(glob)**", ""]) {
+      expect(() => grep("alpha", "src", bad, "lib"), bad).toThrow(`refused: ${bad || "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
+      expect(() => codeCommand("files", ["src", bad], { worktree: wt }), bad).toThrow(`refused: ${bad || "that pathspec"} is not a path inside the worktree; ${CODE_USAGE}`);
+    }
+  }, 30_000);
+
+  it("every refusal of a code call states the usage; other commands keep their own", async () => {
+    const t = await hookRun();
+    for (const args of [[], ["nope"], ["grep"], ["files", "src", "src", "src", "src", "src", "src", "src", "src", "src"], ["grep", "a".repeat(1001)]]) {
+      const r = await t.call("code", ...args);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.out[0], args.join(" ")).toMatch(new RegExp(`^${CODE_USAGE.replace(/[.*+?^$()|[\]\\]/g, "\\$&")}`));
+      expect(r.out[1]).toMatch(/^calls \d+\/120$/);
+    }
+    expect((await t.call("code", "grep", "createOrder", "src", "src", "src")).code).toBe(0);
+    expect((await t.call("mail", "x")).out[0]).toBe("refused: mail takes no argument");
+    expect((await t.call("facts")).out[0]).toBe("refused: facts takes text");
   }, 30_000);
 
   it("trigger refuses option-like and shell-like values before running; a value is one argv element", async () => {
@@ -2673,6 +2719,39 @@ describe("argus-live submit and intake", () => {
     expect(saved.candidates[0].claim).toBe(`${"c".repeat(500)}…`);
     expect(saved.notes).toBe(`${"n".repeat(500)}…`);
     expect(statSync(join(t.main, ".argus/live", t.runId, "returns/1.1.json")).mode & 0o777).toBe(0o600);
+  }, 30_000);
+
+  it("submit --check validates as submit does and records nothing: no file, no retirement, no call counted", async () => {
+    const t = await submitRun();
+    const before = JSON.stringify(readRun(t.main));
+    const check = (obj: unknown) => pw(t.main, [t.token, "submit", "--check", typeof obj === "string" ? obj : JSON.stringify(obj)], { cli: join(tempDir(), "no-cli.js") });
+    expect(await check(good())).toEqual({ code: 0, out: ["check: ok"] });
+    // The same faults, the same text and exit code as a real submit's refusal.
+    for (const bad of [good({ status: "finished" }), good({ journey: "other" }), good({ extra: 1 }), "{not json"]) {
+      const c = await check(bad);
+      expect(c, JSON.stringify(bad)).toEqual(await t.send(t.token, bad));
+      expect(c.code).toBe(1);
+      expect(c.out[0]).toMatch(/^refused: return: /);
+    }
+    expect(returnsOf(t)).toEqual([]);
+    expect(JSON.stringify(readRun(t.main))).toBe(before);
+    expect(readRun(t.main).slots["1"]).toMatchObject({ submitted: false, retired: [] });
+    // The token is live and uncounted: a code call is the slot's first; a real submit still works.
+    expect((await pw(t.main, [t.token, "code", "files"])).out).toContain("calls 1/120");
+    expect((await check(good())).out).toEqual(["check: ok"]);
+    expect(await t.send(t.token, good())).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 status done"] });
+    expect((await check(good())).out).toEqual(["refused: retired token"]);
+  }, 30_000);
+
+  it("submit --check is allowed past the budget and takes the JSON as its one argument", async () => {
+    const t = await submitRun((c) => (c.limits.explorer_pw_calls = 1));
+    await pw(t.main, [t.token, "code", "files"]);
+    expect((await pw(t.main, [t.token, "code", "files"])).out).toEqual(["BUDGET: submit status handoff"]);
+    expect((await pw(t.main, [t.token, "submit", "--check", JSON.stringify(good())])).out).toEqual(["check: ok"]);
+    expect((await pw(t.main, [t.token, "submit", "--check"])).out).toEqual(["refused: submit takes text"]);
+    expect((await pw(t.main, [t.token, "submit", "--check=1", "{}"])).out).toEqual(["refused: --check takes no value"]);
+    expect((await pw(t.main, [t.token, "submit", "--force", "{}"])).out).toEqual(["refused: --force is not a flag of submit"]);
+    expect(returnsOf(t)).toEqual([]);
   }, 30_000);
 
   it("submit retires the token and is allowed past the budget", async () => {

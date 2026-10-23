@@ -525,7 +525,9 @@ const REPRODUCED = /^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)? observed=[a-z-]
  * exit 3 without its REPRODUCED line, or any exit but 0, 2 and 3, is the harness's too. `verdict.json`
  * `{runs: [exit…], verdict: "reproduced"|"not-reproduced"|"intermittent"|"harness"}` (0600) goes to the
  * candidate's directory. Each run's records are numbered after the candidate's (`run <i>` in the lines is
- * this repro's run). `once` is the one-run seam (runOnce); `opts` reach it as they are.
+ * this repro's run). `once` is the one-run seam (runOnce); `opts` reach it as they are. Before the first run
+ * the lock's deadline must leave the time of two runs (deadlineRefusal): else the one line `deadline: …`,
+ * exit 4, nothing run and no verdict.json.
  */
 export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts } = {}) {
   const { dir } = reproRef(main, ref);
@@ -535,6 +537,11 @@ export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts
     lines.push(l);
     say(l);
   };
+  const late = deadlineRefusal(main, ref, 2);
+  if (late) {
+    emit(late);
+    return { code: DEADLINE_EXIT, lines };
+  }
   const runs = [];
   let verdict = null;
   let code = 0;
@@ -555,6 +562,47 @@ export async function repro(main, ref, { once = runOnce, say = () => {}, ...opts
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   writePrivate(path.join(dir, "verdict.json"), `${JSON.stringify({ runs, verdict: word })}\n`);
   return { code, lines };
+}
+
+/** The candidate's run records in `dir` → `[{i, rec}]` by run number (an unreadable one left out). */
+export function runRecords(dir) {
+  let names = [];
+  try {
+    names = fs.readdirSync(dir).filter((f) => /^run-[1-9][0-9]*\.json$/.test(f));
+  } catch {
+    names = [];
+  }
+  const out = [];
+  for (const f of names) {
+    try {
+      out.push({ i: Number(f.slice(4, -5)), rec: JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) });
+    } catch {
+      // unreadable: not a record
+    }
+  }
+  return out.sort((a, b) => a.i - b.i);
+}
+
+/** The least time a minimize run is taken to need before the lock's deadline. */
+export const MIN_RUN_MS = 60_000;
+
+/** The time one run of a candidate is taken to need: the longest run recorded in `dir` (`ms`), a minute at least. */
+export const runNeedMs = (dir) => Math.max(MIN_RUN_MS, ...runRecords(dir).map((r) => (isObj(r.rec) && Number.isFinite(r.rec.ms) ? r.rec.ms : 0)));
+
+/** Exit code of a repro refused for want of time (0 not reproduced, 2 harness, 3 reproduced): nothing ran. */
+export const DEADLINE_EXIT = 4;
+
+/**
+ * Why candidate `ref` may not start `runs` runs now: the lock's deadline leaves less than they need (runNeedMs
+ * each) → `deadline: <n> min left, a repro needs about <m>`, else null. A repro cut off by the reaper reads as
+ * a harness failure, so it is refused before it starts. Refused as reproRef does when no cycle runs.
+ */
+export function deadlineRefusal(main, ref, runs) {
+  const { dir } = reproRef(main, ref);
+  const lock = readLock(main);
+  const left = lock.deadline * 1000 - Date.now();
+  const need = runs * runNeedMs(dir);
+  return left < need ? `deadline: ${Math.max(0, Math.floor(left / 60_000))} min left, a repro needs about ${Math.ceil(need / 60_000)}` : null;
 }
 
 /** The number the candidate's next run record takes: one past its highest `run-<i>.json` (unreadable ones too). */

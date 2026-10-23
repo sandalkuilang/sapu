@@ -536,25 +536,59 @@ describe("argus-live instance — lock, live log, renew", () => {
     }
   }, 30_000);
 
-  it("renew moves the deadline by max_cycle_minutes, appends it, and stops at start + 3 x max + 15 min", () => {
+  it("renew sets the deadline to now + max + 15 min, appends it, and never moves it earlier", () => {
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    const d1 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 });
-    expect(d1).toBe(l.deadline + MAX * 60);
-    expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: d1 });
-    const d2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 120_000 });
-    expect(d2).toBe(S0 + 3 * MAX * 60 + 900);
-    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 180_000 })).toThrow(/cap reached/);
-    expect(logOf(main).trim().split("\n").slice(1)).toEqual([`${l.runId} deadline ${d1}`, `${l.runId} deadline ${d2}`]);
+    const r1 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 });
+    expect(r1).toEqual({ deadline: l.deadline + 60, moved: true });
+    expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: r1.deadline });
+    // Later in the cycle the same renew reaches further, still from now.
+    const r2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 30 * 60_000 });
+    expect(r2).toEqual({ deadline: S0 + 30 * 60 + MAX * 60 + 900, moved: true });
+    expect(logOf(main).trim().split("\n").slice(1)).toEqual([`${l.runId} deadline ${r1.deadline}`, `${l.runId} deadline ${r2.deadline}`]);
+    expect(readdirLive(main)).toEqual(["lock.json"]);
+  });
+
+  it("three renews in quick succession leave the deadline at now + max + 15 min, not at the cap", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const at = T0 + 20 * 60_000;
+    const want = S0 + 20 * 60 + MAX * 60 + 900;
+    const first = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: at });
+    expect(first).toEqual({ deadline: want, moved: true });
+    for (const dt of [1000, 2000]) {
+      expect(renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: at + dt })).toEqual({ deadline: want + dt / 1000, moved: true });
+    }
+    const cap = S0 + 3 * MAX * 60 + 900;
+    expect(lockOf(main).deadline).toBe(want + 2);
+    expect(lockOf(main).deadline).toBeLessThan(cap);
+    // A renew in the same second changes nothing: no rewrite, no log line.
+    const lines = logOf(main);
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: at + 2000 })).toEqual({ deadline: want + 2, moved: false });
+    expect(logOf(main)).toBe(lines);
+  });
+
+  it("a renew at the cap returns the unchanged deadline: no throw, no lock rewrite, no live-log line", () => {
+    const main = repo();
+    const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
+    const cap = S0 + 3 * MAX * 60 + 900;
+    renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 59 * 60_000 });
+    // Late in the cycle now + max + 15 min is past the cap: it stops there.
+    const late = T0 + 118 * 60_000;
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: late })).toEqual({ deadline: cap, moved: true });
+    const lines = logOf(main);
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: late + 1000 })).toEqual({ deadline: cap, moved: false });
+    expect(lockOf(main)).toEqual({ runId: l.runId, start: l.start, deadline: cap });
+    expect(logOf(main)).toBe(lines);
     expect(readdirLive(main)).toEqual(["lock.json"]);
   });
 
   it("a short cycle can still renew: the cap carries the same 15 min grace", () => {
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: 5, now: T0 });
-    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 1000 })).toBe(S0 + 300 + 900 + 300);
-    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 2000 })).toBe(S0 + 3 * 300 + 900);
-    expect(() => renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 3000 })).toThrow(/cap reached/);
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 1000 })).toEqual({ deadline: S0 + 1 + 300 + 900, moved: true });
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 600_000 })).toEqual({ deadline: S0 + 3 * 300 + 900, moved: true });
+    expect(renew(main, { runId: l.runId, maxCycleMinutes: 5, now: T0 + 601_000 })).toEqual({ deadline: S0 + 3 * 300 + 900, moved: false });
   });
 
   it("renew refuses with no lock, once the deadline has passed, and for another run's lock", () => {
@@ -595,7 +629,7 @@ describe("argus-live instance — lock, live log, renew", () => {
   it("seam: live_overlap sees a renewed run up to its latest deadline, and a run up to its end", () => {
     const main = repo();
     const l = takeLock(main, { maxCycleMinutes: MAX, now: T0 });
-    const d2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 });
+    const d2 = renew(main, { runId: l.runId, maxCycleMinutes: MAX, now: T0 + 60_000 }).deadline;
     expect(overlaps(main, l.deadline + 10, l.deadline + 20)).toBe(true);
     expect(overlaps(main, d2 + 10, d2 + 20)).toBe(false);
     expect(overlaps(main, S0 - 20, S0 - 10)).toBe(false);
@@ -2245,7 +2279,7 @@ describe("argus-live instance — Compose and egress checks", () => {
           t.events.push(ev("container", "create", "c8", { name: "gate-tmp" }, 22), ev("volume", "mount", volume, { container: "c8", destination: "/data", driver: "local" }, 22), ev("container", "destroy", "c8", { name: "gate-tmp" }, 23));
           return gate(t);
         };
-        expect(mounted("owner_pgdata")).toBe("refused: during the cycle, container gate-tmp, which is not of the run's Compose project argus-run1, mounted volume owner_pgdata, which existed before it and is not the run's");
+        expect(mounted("owner_pgdata")).toMatch(/^refused: during the cycle, container gate-tmp, which is not of the run's Compose project argus-run1, mounted volume owner_pgdata, which existed before it and is not the run's \(at \S+Z\)\. The gate cannot tell which process did it/);
         expect(mounted("old_anon")).toMatch(/^refused: during the cycle, container gate-tmp, .* mounted volume old_anon, which existed before it/);
         expect(mounted(`${P}_pgdata`)).toBe("ok");
       });
@@ -2325,12 +2359,12 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     it.each([
-      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1$/],
+      ["an exec into the owner's container", ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(exec of psql, at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["an exec into an unlabelled container", ev("container", "exec_start: sh", "c9", { name: "other" }), /^refused: during the cycle, docker exec_start hit container other/],
       ...(["kill", "stop", "destroy"].map((a) => [`${a} on the owner's container`, ev("container", a, "c0", { [LABEL]: "owner", name: "owner-db" }), new RegExp(`^refused: during the cycle, docker ${a} hit container owner-db`)]) as [string, Obj, RegExp][]),
-      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's$/],
+      ["the owner's volume destroyed", ev("volume", "destroy", "owner_pgdata", { driver: "local" }), /^refused: during the cycle, docker destroy hit volume owner_pgdata, which existed before it and is not the run's \(at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["an old anonymous volume destroyed", ev("volume", "destroy", "e".repeat(64), { driver: "local" }), /^refused: during the cycle, docker destroy hit volume e{64}/],
-      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's$/],
+      ["the owner's network destroyed", ev("network", "destroy", "n3", { name: "owner_default", type: "bridge" }), /^refused: during the cycle, docker destroy hit network owner_default, which existed before it and is not the run's \(at \d{4}-[\d-]+T[\d:.]+Z\)\. The gate cannot tell which process did it/],
       ["a copy out of the owner's container (docker cp)", ev("container", "archive-path", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker archive-path hit container owner-db/],
       ["a copy into the owner's container (docker cp)", ev("container", "extract-to-dir", "c0", { [LABEL]: "owner", name: "owner-db" }), /^refused: during the cycle, docker extract-to-dir hit container owner-db/],
     ])("refuses %s", (_what, event, why) => {
@@ -2354,6 +2388,57 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toBe("ok");
       s.events.push(ev("container", "exec_start: pg_isready -U owner; rm -rf /", "c0", { [LABEL]: "owner", name: "owner-db" }));
       expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db/);
+    });
+
+    it("a refusal names the exec's program and time, that it cannot tell who, and the follower's file relative to the main checkout, never an argument", () => {
+      const main = realpathSync(tempDir());
+      const eventsFile = join(main, ".argus/live/run1/logs/docker-events.jsonl");
+      mkdirSync(join(main, ".argus/live/run1/logs"), { recursive: true });
+      const s = state();
+      const exec = ev("container", `exec_create: /usr/bin/psql postgres://owner:s3cret@db:5432/app\t-c "CREATE DATABASE x"\n${"y".repeat(200)}`, "c0", { [LABEL]: "owner", name: "owner-db" }, 30);
+      writeFileSync(eventsFile, `${JSON.stringify(exec)}\n`);
+      s.events = [];
+      const why = gate(s, { main, eventsFile });
+      expect(why).toMatch(/^refused: during the cycle, docker exec_create hit container owner-db, which existed before it and is not of the run's Compose project argus-run1 \(exec of psql, at /);
+      expect(why).toContain(`(exec of psql, at ${new Date(T0 + 30_000).toISOString()})`);
+      for (const arg of ["s3cret", "postgres://", "CREATE", "yyyy", "-c"]) expect(why).not.toContain(arg);
+      expect(why).not.toMatch(/[\x00-\x1f]/);
+      expect(why).toContain("The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too");
+      expect(why.endsWith("; the docker events of this run are in .argus/live/run1/logs/docker-events.jsonl")).toBe(true);
+    });
+
+    it.each([
+      ["a shell's inner command after an env assignment", 'sh -c PGPASSWORD=x psql -U a -c "CREATE DATABASE y"', "psql"],
+      ["a path and an attached mysql -p", "/usr/bin/mysql -pS3cret", "mysql"],
+      ["curl -u", "curl -u a:b http://h", "curl"],
+      ["a healthcheck-looking shell", "/bin/sh -c pg_isready -U x", "pg_isready"],
+      ["a login shell's flags before -c", "bash -lc API_TOKEN=t node run.js", "node"],
+      ["an assignment with a quoted value holding spaces", 'sh -c DB_PWD="a b c" psql -h db', "psql"],
+      ["env, assignments, nice and timeout wrappers", "dash -c env -i A=1 nice -n 5 timeout 30 redis-cli -a hunter2 ping", "redis-cli"],
+      ["a quoted inner command", "/bin/zsh -c (exec /opt/bin/sqlcmd -P hunter2", "sqlcmd"],
+      ["a header argument", "curl -H X-Api-Key:abc123 --api-key abc123 http://x", "curl"],
+      ["a program that is no shell, so its -c is an argument", "ssh -c aes128-ctr host", "ssh"],
+    ])("a refusal names the program of %s, and nothing else", (_what, command, program) => {
+      const s = state();
+      s.events.push(ev("container", `exec_create: ${command}`, "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toMatch(new RegExp(`\\(exec of ${program}, at \\S+Z\\)`));
+      expect(why).not.toMatch(/hunter\d|S3cret|abc123|a b c|PGPASSWORD|API_TOKEN|a:b|CREATE|-U x|aes128|host|\bx\b/);
+    });
+
+    it("a refusal does not guess a program from a word that is no plain name", () => {
+      const s = state();
+      s.events.push(ev("container", "exec_create: $(cat /run/secret)", "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toMatch(/\(exec of an unnamed program, at \S+Z\)/);
+      expect(why).not.toContain("secret");
+    });
+
+    it("a refusal without a follower names no file; the program alone is named", () => {
+      const s = state();
+      s.events.push(ev("container", "exec_start: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }));
+      const why = gate(s);
+      expect(why).toMatch(/\(exec of psql, at \S+Z\)\. The gate cannot tell which process did it: .*counts too$/);
     });
 
     describe("the events follower (the daemon replays only its last events to `docker events --since`)", () => {
@@ -3312,6 +3397,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     const renewed = await renewRun(main, { runner: noDocker });
     expect(renewed.deadline).toBe(readLock(main).deadline);
     expect(renewed.deadline).toBeGreaterThan(before.deadline);
+    expect(renewed.moved).toBe(true);
     expect(logOf(main).at(-1)).toBe(`${r.runId} deadline ${renewed.deadline}`);
 
     writeFileSync(join(data, "sentinel"), "x");

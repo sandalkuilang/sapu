@@ -333,8 +333,10 @@ export function mapReturn(main, slot) {
  * its token retired → `submitted: slot <n> generation <g> status <s>` (enums only). A map slot's return is
  * the journey map, validated by validateMap → `submitted: slot <n> generation <g> map journeys <k>`. Errors →
  * `refused: return: <the first five>`, nothing written, the token still live. `checks` reaches validateReturn.
+ * `check` (`submit --check`): the same validation, whatever the slot's mode, then `check: ok` and nothing
+ * else: no file, no state, the token live, not a submission.
  */
-export function submit(main, { runId, slot, rec }, json, { checks = null } = {}) {
+export function submit(main, { runId, slot, rec }, json, { checks = null, check = false } = {}) {
   runIdOk(runId);
   if (typeof json !== "string" || Buffer.byteLength(json) > JSON_CAP) throw new Error("refused: return: the JSON must be at most 256 KB");
   let obj;
@@ -352,6 +354,7 @@ export function submit(main, { runId, slot, rec }, json, { checks = null } = {})
   const map = rec.mode === "map";
   const { value, errors } = map ? validateMap(obj) : validateReturn(obj, { journey: rec.journey, accounts: rec.accounts, outFiles, checks });
   if (errors.length) throw new Error(`refused: return: ${errors.slice(0, 5).join("; ")}`);
+  if (check) return "check: ok";
   const dir = returnsDir(main, runId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, `${slot}.${rec.generation}.json`);

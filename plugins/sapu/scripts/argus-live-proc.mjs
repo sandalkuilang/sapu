@@ -349,7 +349,7 @@ export function runPids(groups, runner) {
 }
 
 /** The process runs (one of another user's counts as running). */
-const pidAlive = (pid) => {
+export const pidAlive = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
@@ -421,7 +421,7 @@ export async function withFileLock(file, fn, { waitMs = 30_000, staleMs = Infini
 }
 
 /** Moves a stale lock `file` (whose content was `raw`) aside and removes it; one that changed meanwhile (another taker's fresh lock) is put back. */
-function takeOver(file, raw) {
+export function takeOver(file, raw) {
   const aside = `${file}.stale-${process.pid}-${randomBytes(4).toString("hex")}`;
   try {
     fs.renameSync(file, aside);
