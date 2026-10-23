@@ -510,7 +510,8 @@ function linkedWorktrees(main, realMain, runner) {
 
 /** An event's time as ISO (UTC), from its `timeNano` or `time` (epoch seconds); null when it has none. */
 function eventTime(e) {
-  const ms = Number.isFinite(e.timeNano) ? e.timeNano / 1e6 : Number.isFinite(e.time) ? e.time * 1000 : NaN;
+  // Rounded: a nanosecond count past 2^53 loses its last digits as a float, so a plain division can land 1 ms early.
+  const ms = Number.isFinite(e.timeNano) ? Math.round(e.timeNano / 1e6) : Number.isFinite(e.time) ? e.time * 1000 : NaN;
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
