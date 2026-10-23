@@ -508,6 +508,29 @@ function linkedWorktrees(main, realMain, runner) {
     .filter((p) => p && p !== realMain);
 }
 
+/** An event's time as ISO (UTC), from its `timeNano` or `time` (epoch seconds); null when it has none. */
+function eventTime(e) {
+  const ms = Number.isFinite(e.timeNano) ? e.timeNano / 1e6 : Number.isFinite(e.time) ? e.time * 1000 : NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** An exec's command line (the Action's text after `exec_create: `): control characters out, URL credentials masked, cut to 120 characters. */
+function execCommand(action) {
+  const cmd = action.slice(action.indexOf(":") + 1).replace(/[\x00-\x1f\x7f]+/g, " ").replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1***@").trim();
+  return cmd.length > 120 ? `${cmd.slice(0, 120)}…` : cmd;
+}
+
+/**
+ * What a refusal on an object outside the run adds after its leading text: the exec's command (`exec_*`
+ * events), the event's time, and that the gate cannot tell who did it, with the follower's file (relative to `main`).
+ */
+function whatHappened(e, action, { main, eventsFile }) {
+  const time = eventTime(e);
+  const facts = [action.startsWith("exec_") ? `command: ${execCommand(action)}` : null, time ? `at ${time}` : null].filter(Boolean);
+  const file = eventsFile ? `; the docker events of this run are in ${path.relative(main, eventsFile)}` : "";
+  return `${facts.length ? ` (${facts.join(", ")})` : ""}. The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too${file}`;
+}
+
 /**
  * The Docker runtime gate (spec §8 step 8, and at `renew` and `down`): what the static Compose checks
  * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. `since` is the
@@ -531,7 +554,9 @@ function linkedWorktrees(main, realMain, runner) {
  * catch-up from the last event it saw (`docker events --since <last> --until <daemon now>`); without a
  * follower, the window from `since`. A `follower` group (its run.json record) that no longer runs leaves
  * the gate blind: refused. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no
- * daemon running, means nothing was created through it. Throws `refused: …` naming the object.
+ * daemon running, means nothing was created through it. Throws `refused: …` naming the object; one on an object
+ * outside the run goes on to say what was done to it (whatHappened: an exec's command, masked and cut; when), that the
+ * gate cannot tell which process did it, and where the follower's file is.
  */
 export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null }) {
   const project = env.COMPOSE_PROJECT_NAME;
@@ -662,6 +687,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     if (a[PROJECT_LABEL] === project) runContainers.add(e.Actor.ID);
     if (a.name && !nameOf.has(e.Actor.ID)) nameOf.set(e.Actor.ID, a.name);
   }
+  const what = (e, action) => whatHappened(e, action, { main, eventsFile });
   for (const e of events) {
     const id = (e.Actor && e.Actor.ID) || "";
     const a = (e.Actor && e.Actor.Attributes) || {};
@@ -673,18 +699,18 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       const v = volumeByName.get(id);
       const old = v ? !recent(v.CreatedAt) : !createdNow.has(id);
       const runs = v ? volumeOk(v) : String(id).startsWith(`${project}_`);
-      if (old && !runs) throw new Error(`refused: during the cycle, container ${nameOf.get(a.container) ?? a.container ?? "(unnamed)"}, which is not of the run's Compose project ${project}, mounted volume ${id}, which existed before it and is not the run's`);
+      if (old && !runs) throw new Error(`refused: during the cycle, container ${nameOf.get(a.container) ?? a.container ?? "(unnamed)"}, which is not of the run's Compose project ${project}, mounted volume ${id}, which existed before it and is not the run's${what(e, action)}`);
       continue;
     }
     if (e.Type === "container") {
       if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project || createdNow.has(id)) continue;
       if (verb.startsWith("exec_") && action.slice(action.indexOf(":") + 1).trim() === healthcheckCmd(byId.get(id))) continue;
-      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which existed before it and is not of the run's Compose project ${project}`);
+      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which existed before it and is not of the run's Compose project ${project}${what(e, action)}`);
     }
     if (verb !== "destroy") continue;
     const name = e.Type === "network" ? a.name || id : id;
     if (String(name).startsWith(`${project}_`) || createdNow.has(id)) continue;
-    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's`);
+    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's${what(e, action)}`);
   }
 }
 

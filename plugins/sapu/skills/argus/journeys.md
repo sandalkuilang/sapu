@@ -61,6 +61,7 @@ Each charter is its agent's whole prompt: no URL, password, session name or othe
 | Event | Action |
 |---|---|
 | `live up` refuses or fails | quote its step and message; it ran `down` itself; the cycle ends (argus picks another lane) |
+| `live up` or `renew` refused: `during the cycle, docker … hit …, which existed before it` (an object outside the run) | read the command and time it names; when it is not the cycle's (other work on this machine), wait until that work ends and run `live up` again; never read or patch the engine to diagnose it |
 | `refused: cycle <run> holds the lock until <time>` | another cycle runs: stop, naming it; never `down` a cycle you did not start |
 | `map-check` keeps no journey and no refresh is due | the cycle ends before `up`, listing the dropped journeys |
 | `map-check --merge` refused | the old map stays; the faults go to the journal |
