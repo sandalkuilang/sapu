@@ -273,7 +273,7 @@ On a dedup match whose `issue-trust` passed: **comment the new reproduction path
 | `schemes.json` | the fraud pass | fraud.md §2 | rehearsed schemes: id, verdict, blocking control locator, cycle |
 | `arid.md` | TRIAGE / on every wontfix | TRIAGE | finding *shapes* the owner rejects |
 | `corpus/*.json` | EXECUTE | EXECUTE | interesting request bodies, replayed every cycle |
-| `journal/<cycle>.md` | PERSIST | ORIENT | PROOF sections: Past · Results · Obstacles · Outlook · Feelings |
+| `journal/<cycle>.md` | ORIENT creates it (`argus-cycle`), PERSIST fills it | ORIENT | PROOF sections: Past · Results · Obstacles · Outlook · Feelings |
 | `journal/<cycle>-candidates.md` | TRIAGE | audit | the candidate table |
 | `referrals.md` | TRIAGE | the report, and NEMESIS | out-of-lane candidates + why, so nothing is silently discarded |
 | `run.log` | PERSIST | audit | one line per cycle, format below (SKILL.md §6 assertion 4) |

@@ -2036,18 +2036,17 @@ describe("argus-live scrub — attachments and filing", () => {
     expect(creates(t.g).at(-1)!.argv).toEqual(["issue", "comment", "9", "--body-file", c.b]);
   }, 30_000);
 
-  it("a repo without the agent-filed label gets it once, then the issue is filed; a failed label create files nothing", async () => {
+  it("a create refused for a missing agent-filed label names the label and never creates it", async () => {
     const t = filing();
-    t.g.set({ label: { code: 0 } });
-    const { b, done } = t.file({ labels: ["bug"] });
-    expect((await done).out.at(-1)).toBe(`filed: ${URL9}`);
-    const create = ["issue", "create", "--title", "A title", "--body-file", b, "--label", "bug", "--label", "sapu:agent-filed"];
-    expect(t.g.calls().map((c) => c.argv)).toEqual([create, ["label", "create", "sapu:agent-filed", "--color", "BFD4F2", "--description", "Filed by a sapu agent"], create]);
-    const u = filing();
-    u.g.set({ label: { code: 1 } });
-    const r = await u.file({ labels: ["bug"] }).done;
+    t.g.set({ create: { out: "", code: 1 }, labels: ["bug", "SAPU:other"] });
+    const r = await t.file({ labels: ["bug"] }).done;
     expect(r.code).toBe(2);
-    expect(u.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label create"]);
+    expect(r.out.at(-1)).toBe("failed: the agent-filed label sapu:agent-filed is not in the repository (renamed or deleted?): the owner creates it through /sapu:init, or renames it back");
+    expect(t.g.calls().map((c) => c.argv.slice(0, 2).join(" "))).toEqual(["issue create", "label list"]);
+    // the label is there (any case): the plain failure, no label line.
+    const u = filing();
+    u.g.set({ create: { out: "", code: 1 }, labels: ["Sapu:Agent-Filed"] });
+    expect((await u.file({ labels: ["bug"] }).done).out.at(-1)).toBe("failed: gh issue create exited 1 before printing an issue URL");
   }, 30_000);
 
   it("an issue never carries the acceptance label, in any case, and a refused one runs no gh", async () => {

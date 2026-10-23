@@ -315,7 +315,12 @@ async function followDashboard() {
   });
   let waiting = false;
   for (;;) {
-    const r = showable();
+    let r;
+    try {
+      r = showable();
+    } catch (e) {
+      r = { refused: e.message };
+    }
     if (r.refused) {
       if (!waiting) print(`show: waiting for a journey cycle's browser; it opens on http://localhost:${port}`);
       waiting = true;
@@ -324,9 +329,22 @@ async function followDashboard() {
     }
     waiting = false;
     print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
-    const gone = () => showable().runId !== r.runId;
+    // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
+    const gone = () => {
+      try {
+        return showable().runId !== r.runId;
+      } catch {
+        return true;
+      }
+    };
+    // A signal ends the follow even when the cycle changed in the same second (one Ctrl-C, never two).
+    let signalled = false;
+    const flag = () => (signalled = true);
+    const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
+    for (const sig of SIGNALS) process.on(sig, flag);
     const code = await showDashboard({ ...r.show, port, until: gone });
-    if (!gone()) return code;
+    for (const sig of SIGNALS) process.off(sig, flag);
+    if (signalled || !gone()) return code;
   }
 }
 
