@@ -331,9 +331,19 @@ function runLines() {
   return lines;
 }
 
+/** Marks every placeholder response; the page's script reloads once an answer lacks it (the dashboard took the port). */
+const WATCH_HEADER = "x-sapu-watch";
+/**
+ * Static, no data in it. Every 2 s it fetches the page again: an answer without the marker → reload (the
+ * dashboard); with it → the status text is swapped in place; a network error (the gap while the port changes
+ * hands) → try again.
+ */
+const WATCH_SCRIPT = `setInterval(()=>fetch(location.href,{cache:"no-store"}).then((r)=>{if(r.headers.get("${WATCH_HEADER}")!=="waiting")return location.reload();return r.text().then((t)=>{const s=new DOMParser().parseFromString(t,"text/html").getElementById("s");if(s)document.getElementById("s").innerHTML=s.innerHTML})},()=>{}),2000)`;
+
 /**
  * The page `show --follow` serves on the dashboard's port while it waits (127.0.0.1 only): `reason()` and
- * `runLines()`, escaped, refreshing every 2 s, so a tab opened at once lands on the dashboard by itself.
+ * `runLines()`, escaped. Its script polls the page every 2 s (WATCH_SCRIPT; a `<noscript>` meta refresh stands
+ * in without scripts), so a tab opened at once lands on the dashboard by itself, even across the port's gap.
  * Resolves to the listening server (`port` 0: a free one). A port the dashboard has not yet let go of is
  * retried for a few seconds.
  */
@@ -344,8 +354,8 @@ async function openPlaceholder(port, reason) {
       return;
     }
     const lines = [reason(), ...runLines()].map((l) => `<p>${escapeHtml(redact(l, secrets))}</p>`).join("");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", connection: "close" });
-    res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta http-equiv="refresh" content="2"><title>sapu: waiting for a journey cycle</title><body style="font:16px system-ui;margin:3rem"><h1>Waiting for a journey cycle's browser</h1>${lines}<p>This page opens the dashboard by itself once a cycle's browser is up.</p></body></html>`);
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", connection: "close", [WATCH_HEADER]: "waiting" });
+    res.end(`<!doctype html><html lang="en"><meta charset="utf-8"><noscript><meta http-equiv="refresh" content="2"></noscript><title>sapu: waiting for a journey cycle</title><body style="font:16px system-ui;margin:3rem"><h1>Waiting for a journey cycle's browser</h1><div id="s">${lines}</div><p>This page opens the dashboard by itself once a cycle's browser is up.</p><script>${WATCH_SCRIPT}</script></body></html>`);
   });
   for (let tries = 0; ; tries++) {
     try {

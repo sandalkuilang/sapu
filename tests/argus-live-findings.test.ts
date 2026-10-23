@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { get } from "node:http";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -3040,11 +3041,11 @@ describe("argus-live show", () => {
 
   // An HTTP GET to the port show --follow printed: {status, body}, or null while nothing there answers.
   const fetchPage = (port: number, host = `127.0.0.1:${port}`) =>
-    new Promise<{ status: number; body: string } | null>((ok) => {
+    new Promise<{ status: number; body: string; marker: string | undefined } | null>((ok) => {
       const req = get({ host: "127.0.0.1", port, headers: { host } }, (res) => {
         let body = "";
         res.on("data", (d) => (body += d));
-        res.on("end", () => ok({ status: res.statusCode ?? 0, body }));
+        res.on("end", () => ok({ status: res.statusCode ?? 0, body, marker: res.headers["x-sapu-watch"] as string | undefined }));
       });
       req.on("error", () => ok(null));
       req.setTimeout(1000, () => req.destroy());
@@ -3064,16 +3065,48 @@ describe("argus-live show", () => {
       const port = Number(WATCHING.exec(out)![1]);
       const page = (await fetchPage(port))!;
       expect(page.status).toBe(200);
-      expect(page.body).toContain('<meta http-equiv="refresh" content="2">');
+      // Every placeholder response carries the marker the page's script looks for; the refresh meta is the no-script fallback only.
+      expect(page.marker).toBe("waiting");
+      expect(page.body).toContain('<noscript><meta http-equiv="refresh" content="2"></noscript>');
       expect(page.body).toContain("no journey cycle is running");
       expect(page.body).toContain(`<p>run ${t.runId}</p>`);
       // The newest step line only, every markup character escaped.
       expect(page.body).toContain("<p>step 3 environment: &#60;script&#62;alert(&#34;x&#34;)&#60;/script&#62; &#38; &#39;q&#39;</p>");
-      expect(page.body).not.toContain("<script>");
       expect(page.body).not.toContain("step 1 lock");
+      // One inline script, polling the page itself, with no data in it: the same text whatever the state.
+      const scripts = page.body.match(/<script>[\s\S]*?<\/script>/g) ?? [];
+      expect(scripts).toHaveLength(1);
+      expect(scripts[0]).toContain('fetch(location.href,{cache:"no-store"})');
+      expect(scripts[0]).toContain("location.reload()");
+      for (const data of [t.runId, "step 3", "alert", "no journey cycle", "127.0.0.1", String(port)]) expect(scripts[0], data).not.toContain(data);
       // A map run is told as one.
       writeRunFiles(t.main, { runId: t.runId, mode: "map", instanceId: null, worktree: t.wt, groups: [], stops: [] });
-      expect((await fetchPage(port))!.body).toContain("map mode: the explorer reads code only; nothing to watch until the walk&#39;s `up`");
+      const mapPage = (await fetchPage(port))!;
+      expect(mapPage.body).toContain("map mode: the explorer reads code only; nothing to watch until the walk&#39;s `up`");
+      expect(mapPage.body.match(/<script>[\s\S]*?<\/script>/g)).toEqual(scripts);
+      // The script itself: keeps polling through a network error, reloads once an answer lacks the marker, swaps the status in place while it has it.
+      const code = scripts[0].replace(/^<script>|<\/script>$/g, "");
+      const run = async (answer: () => Promise<unknown>) => {
+        let tick = () => {};
+        const s = { innerHTML: "old" };
+        const env = { reloads: 0, s };
+        runInNewContext(code, {
+          setInterval: (f: () => void) => (tick = f),
+          fetch: answer,
+          location: { href: "http://x/", reload: () => env.reloads++ },
+          document: { getElementById: () => s },
+          DOMParser: class {
+            parseFromString = (t: string) => ({ getElementById: () => ({ innerHTML: t }) });
+          },
+        });
+        await tick();
+        await new Promise((r) => setTimeout(r, 10));
+        return env;
+      };
+      const reply = (marker: string | null, text: string) => Promise.resolve({ headers: { get: () => marker }, text: () => Promise.resolve(text) });
+      expect(await run(() => Promise.reject(new Error("refused")))).toMatchObject({ reloads: 0, s: { innerHTML: "old" } });
+      expect(await run(() => reply(null, "dashboard"))).toMatchObject({ reloads: 1, s: { innerHTML: "old" } });
+      expect(await run(() => reply("waiting", "new status"))).toMatchObject({ reloads: 0, s: { innerHTML: "new status" } });
       // Only a localhost Host header is answered (no DNS rebinding).
       expect((await fetchPage(port, "evil.example"))!.status).toBe(403);
     } finally {
