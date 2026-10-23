@@ -19,12 +19,15 @@ const readRecord = (file) => {
 
 /**
  * True when the process the record names still runs: its pid is alive and, where a start time was recorded,
- * started at that time (a reused pid starts later). A record without a start time (no `ps` here) can only
- * be judged by the pid.
+ * started at that time (a reused pid starts later). A record without a start time, or one whose pid's start
+ * time cannot be read now (`ps` failed), can only be judged by the pid: an alive pid is taken for the watcher,
+ * so it is never taken over or its dashboard group killed on a guess. `startOf` reads a start time (tests).
  */
-export function watcherRuns(rec, runner = run) {
+export function watcherRuns(rec, runner = run, startOf = startTime) {
   if (!rec || !Number.isInteger(rec.pid) || rec.pid <= 0 || !pidAlive(rec.pid)) return false;
-  return rec.start ? sameStart(startTime(rec.pid, runner), rec.start) : true;
+  if (!rec.start) return true;
+  const now = startOf(rec.pid, runner);
+  return now === undefined ? true : sameStart(now, rec.start);
 }
 
 /**
@@ -54,12 +57,15 @@ export function leftDashboard(rec, runner = run) {
  * `{live: <record>}` when another watcher runs (nothing is written), else `{mine: true}`. The record is
  * created whole with link(2), so it is never half written and two starters cannot both win. A record whose
  * watcher is gone is taken over after SIGTERM to the dashboard group it left (leftDashboard); an unreadable
- * one is taken over.
+ * one is taken over. A record is never written without this process's start time (it could not be told from a
+ * reused pid later): when `ps` cannot give it, the claim fails, `failed: …`, and the watcher does not serve.
  */
-export function claimWatch(main, port, runner = run) {
+export function claimWatch(main, port, runner = run, startOf = startTime) {
   const file = watchFile(main);
+  const start = startOf(process.pid, runner);
+  if (!start) throw new Error("failed: this watcher's start time cannot be read (ps gave none), so it cannot record itself as the repo's watcher; no watcher was started");
   fs.mkdirSync(liveDir(main), { recursive: true });
-  const mine = `${JSON.stringify({ pid: process.pid, start: startTime(process.pid, runner) ?? null, port, dashboardPgid: null, dashboardStart: null })}\n`;
+  const mine = `${JSON.stringify({ pid: process.pid, start, port, dashboardPgid: null, dashboardStart: null })}\n`;
   for (let tries = 0; tries < 10; tries++) {
     const tmp = tempBeside(file, mine, 0o600);
     try {
@@ -72,7 +78,7 @@ export function claimWatch(main, port, runner = run) {
     }
     const { raw, rec } = readRecord(file);
     if (raw === null && !fs.existsSync(file)) continue; // released meanwhile
-    if (watcherRuns(rec, runner)) return { live: rec };
+    if (watcherRuns(rec, runner, startOf)) return { live: rec };
     const group = leftDashboard(rec, runner);
     if (group !== null) killGroup(group, "SIGTERM");
     takeOver(file, raw ?? "");

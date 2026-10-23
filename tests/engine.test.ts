@@ -586,7 +586,7 @@ const BUDGETS: Record<string, number> = {
   "agents/curator.md": 7_800,
   "skills/argus/journeys.md": 16_578, // +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row, +repro exit 4 (deadline) and its rows
   "skills/argus/SKILL.md": 43_288, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check
-  "skills/journey/SKILL.md": 5_937, // the watcher is idempotent in the engine (2.32.0); +the orchestrator starts the watcher itself, +the `show` form; +show --follow once per session, +only the instance (2.31.0)
+  "skills/journey/SKILL.md": 6_115, // +show --follow again right before each `live up`, a reusing session never sees the watcher stop (2.32.0); the watcher is idempotent in the engine (2.32.0); +the orchestrator starts the watcher itself, +the `show` form; +show --follow once per session, +only the instance (2.31.0)
   "skills/journey/live.md": 14_800, // +seed_check (2.31.0), +renew from now
   "skills/journey/smoke.md": 16_550,
 };
@@ -1100,13 +1100,15 @@ describe("the journey lane's engine text", () => {
   it("/sapu:journey offers the dashboard", () => {
     // It reads the lock of the directory it runs in, so it starts from the main checkout; --follow keeps it on every cycle.
     // The orchestrator starts it itself at the start of an invocation that runs `live up`, and `show` is a form of its own.
-    // The engine keeps one watcher a repo, so a second start only names the first one's URL; a watcher that ended is started once more.
+    // The engine keeps one watcher a repo, so a second start only names the first one's URL; it is run again right before each `live up`,
+    // because a session that reused another session's watcher never sees that watcher stop.
     const text = read(JOURNEY);
     expect(text).toContain("start `cd <main checkout> && node <real path> show --follow` yourself in the background");
     expect(text).toContain("start it right before `live up --map`");
     expect(text).toContain("It is idempotent, one watcher per repo");
     expect(text).toContain("`show: watching on http://localhost:<port>`");
-    expect(text).toContain("`show: stopped …`, start it again once");
+    expect(text).toContain("Run `show --follow` (background) again right before each `live up` of the invocation");
+    expect(text).not.toContain("start it again once");
     expect(text).not.toContain("One watcher per session");
     expect(text).toContain("| `show` |");
     expect(text).not.toContain("Never run it yourself");
