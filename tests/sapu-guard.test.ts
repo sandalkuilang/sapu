@@ -2546,6 +2546,16 @@ describe("sapu-guard — the journey explorer's Bash runs only its wrapper", () 
     expect(bash(cmd)).toBeNull();
   });
 
+  it("an explorer's return JSON of many objects is no brace expansion, and a literal env file still blocks", () => {
+    const steps = Array.from({ length: 12 }, (_, i) => `{"role":"a.1","action":"click ${i}","saw":"x"}`).join(",");
+    const submit = `node ${W} pw tk1 submit '{"journey":"j","status":"done","steps":[${steps}]}'`;
+    const as = (command: string, explorer: boolean) => (checkUntyped as (i: object) => string | null)({ command, cwd: plug, explorer });
+    expect(as(submit, true)).toBeNull();
+    // anyone else's quoted braces stay expanded (a false block, never a miss)
+    expect(as(submit, false)).toMatch(/real env files/);
+    expect(as(`node ${W} pw tk1 code grep x '.env'`, true)).toMatch(/real env files/);
+  });
+
   it("reads the POSIX apostrophe idiom as one argument", () => {
     expect(argv(`node ${W} pw tk1 a fill e5 'O'\\''Brien' x`)).toEqual([["node", W, "pw", "tk1", "a", "fill", "e5", "O'Brien", "x"]]);
     expect(argv(`node ${W} pw tk1 a fill e5 'a'\\''b'\\''c'`)?.[0].at(-1)).toBe("a'b'c");
