@@ -2275,7 +2275,7 @@ describe("argus-live pw — refusals and limits", () => {
 
       it("a text expectation on an input has no text to read: a note naming the candidate and the step", async () => {
         const { t, out } = await noted("text-contains", LABEL, { held: false, tag: "input" });
-        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input, a textarea or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
+        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input, a textarea, a select or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
         // One browser call, the repro's own judging code and locator code in it, the expectation's kind and value as data.
         expect(sent(t)).toHaveLength(1);
         expect(sent(t)[0]).toContain("const judgeTarget = async (P, T) =>");
@@ -2283,6 +2283,8 @@ describe("argus-live pw — refusals and limits", () => {
         expect(sent(t)[0]).toContain('{"kind":"text-contains","value":"42"}');
         expect(existsSync(join(t.main, ".argus/live", t.runId, "returns"))).toBe(false);
         expect((await noted("text-equals", LABEL, { held: false, tag: "img" })).out.out[1]).toContain("candidates[0] step 2");
+        // A select's innerText lists every option, not the chosen one: it has no text of its own either.
+        expect((await noted("text-equals", LABEL, { held: false, tag: "select" })).out.out[1]).toContain("candidates[0] step 2");
       }, 30_000);
 
       it("a label that does not hold the text is a note; one that holds it, or whose value is a placeholder, is not", async () => {
@@ -2322,10 +2324,38 @@ describe("argus-live pw — refusals and limits", () => {
         // After a click the page is unknown: the role still decides.
         const moved = [{ as: "buyer.1", do: "goto", path: "/orders" }, { as: "buyer.1", do: "click", target: { role: "link", name: "Next" } }, ...expecting("value-equals", heading).slice(1)];
         expect((await check(t, moved)).out).toEqual([line.replace("step 2", "step 3")]);
-        // A role an input can have, a placeholder in the role, and a non-role target are not refused.
-        for (const target of [{ role: "textbox", name: "Amount" }, { role: "button", name: "Go" }, { role: "{{kind}}" }, LABEL]) {
+        for (const role of ["img", "list", "dialog", "alert", "region"]) {
+          t.queue({ path: "/orders", counts: [1, 1] });
+          expect((await check(t, expecting("value-equals", { role }))).out).toEqual([line.replace("a heading", `a ${role}`)]);
+        }
+        // A role an input can have (an input may carry any widget role: a tab, an option, a link), a placeholder in the role, and a non-role target are not refused.
+        for (const target of [{ role: "textbox", name: "Amount" }, { role: "button", name: "Go" }, { role: "tab" }, { role: "menuitemcheckbox" }, { role: "option" }, { role: "gridcell" }, { role: "link" }, { role: "{{kind}}" }, LABEL]) {
           t.queue({ path: "/orders", counts: [1, 1] });
           expect((await check(t, expecting("value-equals", target))).out[0]).toBe("check: ok");
+        }
+      }, 30_000);
+
+      it("the code it sends stops judging after its time budget, counts all the same, so a long repro never loses them to the 30 s call limit", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        await check(t, expecting("value-equals", { role: "textbox", name: "Amount" }));
+        let clock = 0;
+        const loc = {
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          innerText: async () => "Pay",
+          inputValue: async () => ((clock += 16_000), "42"),
+          evaluate: async (fn: (el: Obj) => unknown) => fn({ tagName: "INPUT" }),
+        };
+        const page = { url: () => "http://localhost:41002/orders", getByRole: () => loc, getByLabel: () => loc };
+        const realNow = Date.now;
+        Date.now = () => clock;
+        try {
+          // The first expectation is judged (and slow); the second finds the budget spent: no judgment, so no note, but its count is there.
+          expect(await (0, eval)(`(${sent(t)[0]})`)(page)).toEqual({ path: "/orders", counts: [1, 1], judged: [{ held: true, tag: "input" }, null] });
+        } finally {
+          Date.now = realNow;
         }
       }, 30_000);
 

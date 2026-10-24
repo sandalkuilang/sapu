@@ -13,10 +13,15 @@ import { CLICKS, JUDGE_TARGET, targetFn } from "./argus-live-steps.mjs";
 const LISTED = 8;
 /** The expectations judged on the live page: the kinds the repro judges by one read of one element. */
 const JUDGED = ["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals"];
-/** The tags whose innerText is never what they show: an input's and an image's is empty, a textarea's is not what it holds. */
-const TEXTLESS = ["input", "textarea", "img"];
-/** The roles an input, a textarea or a select can have: `value-equals` on any other role's element throws on every page. */
-const FIELD_ROLES = ["textbox", "searchbox", "combobox", "listbox", "spinbutton", "slider", "checkbox", "radio", "switch", "button"];
+/** The tags whose innerText is never what they show: an input's and an image's is empty, a textarea's is not what it holds, a select's lists every option, not the chosen one. */
+const TEXTLESS = ["input", "textarea", "select", "img"];
+/** The time after which the one browser call stops judging expectations (counting goes on), so the call ends before its 30 s limit. */
+const JUDGE_BUDGET_MS = 15_000;
+/** The roles no form control is used as: an input may carry any widget role (a tab, an option, a link), so `value-equals` on these alone throws on every page. */
+const STRUCTURAL_ROLES = [
+  "heading", "img", "list", "listitem", "paragraph", "table", "row", "rowgroup", "cell", "columnheader", "rowheader", "article", "navigation", "main",
+  "banner", "contentinfo", "complementary", "region", "dialog", "alertdialog", "alert", "status", "tooltip", "figure",
+];
 /** Why a step was not counted → the note's text. */
 const WHY = {
   page: "the step's page is not the one its account stands on, or is not known",
@@ -30,7 +35,7 @@ const WHY = {
 };
 /** Why an expectation cannot be judged where it stands → the note's text (the page now may differ from the step's: a note, never a refusal). */
 const UNJUDGED = {
-  textless: "a text expectation's target has no text of its own, an input, a textarea or an image; read a field with value-equals, or target the element that holds the text",
+  textless: "a text expectation's target has no text of its own, an input, a textarea, a select or an image; read a field with value-equals, or target the element that holds the text",
   label: "a text expectation's target is a label that does not hold the text now; target the element that holds it",
   novalue: "a value-equals target is not an input, a textarea or a select",
   error: "the expectation cannot be evaluated on its target; a text expectation needs an HTML element",
@@ -67,12 +72,12 @@ export function liveTargets(steps) {
 /**
  * The `run-code` text that answers `{path, counts, judged}`: the page's pathname, each target's match count (null
  * when it threw) and, for an expectation of a kind the repro judges by one read whose target matched exactly one
- * element, `{held}` (or `{threw: true}` when the evaluation threw) and the element's `tag`; null for the rest.
- * The evaluation is JUDGE_TARGET, the repro's own.
+ * element, `{held}` (or `{threw: true}` when the evaluation threw) and the element's `tag`; null for the rest,
+ * and for every expectation met after JUDGE_BUDGET_MS (the counts are all returned). The evaluation is JUDGE_TARGET, the repro's own.
  */
 const countCode = (steps) => {
   const Ps = steps.map((s) => (JUDGED.includes(s.expect) ? { kind: s.expect, value: s.value } : null));
-  return `async page => {\n${JUDGE_TARGET}  const Ts = [${steps.map(targetFn).join(", ")}];\n  const Ps = ${JSON.stringify(Ps)};\n  const counts = [];\n  const judged = [];\n  for (const [k, T] of Ts.entries()) {\n    let n = null;\n    try {\n      n = await T(page).count();\n    } catch {\n      n = null;\n    }\n    counts.push(n);\n    let j = null;\n    if (Ps[k] && n === 1) {\n      j = {};\n      try {\n        j.held = (await judgeTarget(Ps[k], T)).held === true;\n      } catch {\n        j.threw = true;\n      }\n      try {\n        j.tag = await T(page).evaluate((el) => el.tagName.toLowerCase(), undefined, { timeout: 1000 });\n      } catch {\n        j.tag = null;\n      }\n    }\n    judged.push(j);\n  }\n  let path = "";\n  try {\n    path = new URL(page.url()).pathname;\n  } catch {\n    path = "";\n  }\n  return { path, counts, judged };\n}\n`;
+  return `async page => {\n${JUDGE_TARGET}  const Ts = [${steps.map(targetFn).join(", ")}];\n  const Ps = ${JSON.stringify(Ps)};\n  const t0 = Date.now();\n  const counts = [];\n  const judged = [];\n  for (const [k, T] of Ts.entries()) {\n    let n = null;\n    try {\n      n = await T(page).count();\n    } catch {\n      n = null;\n    }\n    counts.push(n);\n    let j = null;\n    if (Ps[k] && n === 1 && Date.now() - t0 < ${JUDGE_BUDGET_MS}) {\n      j = {};\n      try {\n        j.held = (await judgeTarget(Ps[k], T)).held === true;\n      } catch {\n        j.threw = true;\n      }\n      try {\n        j.tag = await T(page).evaluate((el) => el.tagName.toLowerCase(), undefined, { timeout: 1000 });\n      } catch {\n        j.tag = null;\n      }\n    }\n    judged.push(j);\n  }\n  let path = "";\n  try {\n    path = new URL(page.url()).pathname;\n  } catch {\n    path = "";\n  }\n  return { path, counts, judged };\n}\n`;
 };
 
 /** Why expectation `s`, judged as `j` (the browser's answer for it), cannot be judged where it stands → a key of UNJUDGED, else null. */
@@ -86,10 +91,10 @@ function unjudged(s, j) {
   return null;
 }
 
-/** The role of a `value-equals` target that fails on every page, else null: a role no input, textarea or select has. */
+/** The role of a `value-equals` target that fails on every page, else null: a structural role no form control is used as. */
 const neverField = (s) => {
   const t = s.target;
-  return s.expect === "value-equals" && t && t.by === "role" && typeof t.role === "string" && !t.role.includes("{{") && !FIELD_ROLES.includes(t.role) ? t.role : null;
+  return s.expect === "value-equals" && t && t.by === "role" && typeof t.role === "string" && !t.role.includes("{{") && STRUCTURAL_ROLES.includes(t.role) ? t.role : null;
 };
 
 /** Skipped steps `[{i, n}]` as one line: `candidates[0] steps 2, 3; candidates[1] step 1` (at most LISTED steps, the rest counted); a candidate as a whole (`n` null) stands alone. */
@@ -111,7 +116,7 @@ function listed(rows) {
  * `sessions`), `js` the browser CLI. An action's target must match exactly one element; an expectation's at
  * most one, since an absent target may be the very bug. An expectation whose target matches one is judged once
  * (JUDGE_TARGET): one that cannot be judged there is a note (UNJUDGED), the page now may differ from the step's.
- * Refused from the target's role alone, on any page: a `value-equals` on a role no input has. A step whose page
+ * Refused from the target's role alone, on any page: a `value-equals` on a structural role (a heading, an image, a list). A step whose page
  * is not the live one, whose target holds a `{{placeholder}}`, or whose account has no open page is listed in a note, never refused. Nothing
  * page-derived is printed: the lines hold step numbers, accounts and counts only.
  */
