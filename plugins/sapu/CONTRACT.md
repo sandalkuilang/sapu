@@ -15,7 +15,8 @@ The contract has three layers:
 
 **The journey lane's files.** Tracked in a repo home: `.argus/live.json`, `.argus/smoke.json`, `.argus/taste.json` and the
 smoke suite's directory (`smoke.json` `dir`; its `.auth/` is ignored). Local state, ignored under `.argus/`:
-`.argus/live/<runId>/` (a run's records; its `filed.jsonl` lists each issue or comment `scrub` filed),
+`.argus/live/<runId>/` (a run's records; its `filed.jsonl` lists each issue or comment `scrub` filed; `returns/<slot>.<generation>.json` is each
+generation's return, a handoff's `path` the walk so far, and the generations' paths joined in order are what `taste confirm` replays),
 `.argus/smoke-state.json` (staged suite changes, rejected digests, quarantine streaks, a closed heal's
 pending-regression mark, `retire`), `.argus/smoke-ci/<run>/`
 (`smoke ci`'s triage), `.argus/perf.json` (perf baselines), `.argus/taste-state.json` (per journey the last taste

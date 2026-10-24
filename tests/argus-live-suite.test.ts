@@ -478,6 +478,10 @@ describe("smoke admit — a path staged once it held fresh and dirty (spec §19.
     const { token } = await mintSlot(t.main, { slot: 3, journey: "refund", accounts: { "customer.1": "buyer1@example.test" } });
     await pw(t.main, [token, "submit", JSON.stringify({ journey: "refund", status: "done" })]);
     await expect(admit(t.main, "3.1", s.once)).rejects.toThrow("refused: smoke admit: slot 3 generation 1 returned no path");
+    // A handoff's path is the walk so far, never a whole journey: nothing admits it.
+    const file = join(t.main, ".argus/live", t.runId, "returns", "1.1.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), status: "handoff" }));
+    await expect(admit(t.main, "1.1", s.once)).rejects.toThrow("refused: smoke admit: slot 1 generation 1 handed off: its path is the walk so far, not a whole journey");
     expect(s.calls).toEqual([]);
   }, 30_000);
 });

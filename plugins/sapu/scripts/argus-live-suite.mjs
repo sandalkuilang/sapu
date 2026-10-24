@@ -475,7 +475,7 @@ function widthsOf(live, smoke, id) {
 
 /**
  * `smoke admit <slot>.<generation>` → `{code, lines}` (spec §19.4): the path slot `<slot>`'s return of that
- * generation holds, for a journey `smoke plan` lists as `capture`, renumbered to the suite's accounts and
+ * generation holds (never a handoff's: its path is the walk so far), for a journey `smoke plan` lists as `capture`, renumbered to the suite's accounts and
  * parsed in path mode, checked against every secret scrub knows for the run (a hit refuses by step, field and
  * class), then run as the suite will: after `up --fresh` at the first width (`fresh`), on the same instance at
  * every further width the suite runs it at (`width <w>`), then after one pass over the suite's other paths in
@@ -500,6 +500,7 @@ export async function smokeAdmit(main, ref, { once = runOnce, seed = null, runne
   }
   const slotRec = rec.slots && rec.slots[slot];
   if (!isObj(ret) || !Array.isArray(ret.path) || !slotRec) throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} returned no path`);
+  if (ret.status === "handoff") throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} handed off: its path is the walk so far, not a whole journey`);
   const id = ret.journey;
   if (typeof id !== "string" || !JOURNEY.test(id)) throw new Error(`refused: smoke admit: slot ${slot} generation ${generation} names no journey`);
   const entry = planOf(main, { runner, gh }).entries.find((e) => e.id === id);
