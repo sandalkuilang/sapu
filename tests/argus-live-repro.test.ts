@@ -371,7 +371,7 @@ describe("argus-live repro — one run", () => {
     const t = await reproCycle([
       [...signUp, { as: "buyer.2", do: "login", user: "{{marker}}@example.test", password: "pw-{{marker}}" }, { as: "buyer.2", expect: "visible", target: { text: "Signed in as" } }, { as: "buyer.2", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" }],
       [{ as: "buyer.2", do: "login", user: "{{marker}}@example.test", password: "pw-never-{{marker}}" }, { as: "buyer.2", expect: "visible", target: { text: "Signed in as" } }, { as: "buyer.2", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" }],
-    ]);
+    ], [4]); // anon.1's Sign up: minimize could drop anon whole
     const ok = t.repro(t.refs[0]);
     expect(ok.code, `${ok.lines.join(" | ")} ${ok.last} ${ok.err}`).toBe(0);
     expect(ok.lines).toContain("step 6 buyer.2 login: ok");
