@@ -305,7 +305,7 @@ async function laneCommand(cmd, args) {
   return call();
 }
 
-/** The running cycle's dashboard arguments `{show: {js, home, cwd}, runId, instance}`, or `{refused}`: only once up has a browser for the owner (never a map run's). `instance` is false while an `up --fresh` has no instance yet. */
+/** The running cycle's dashboard arguments `{show: {js, home, cwd}, runId, instance, instanceId}`, or `{refused}`: only once up has a browser for the owner (never a map run's). `instance` is false while an `up --fresh` has no instance yet. */
 function showable() {
   const lock = readLock(main);
   const rec = lock && readRun(main);
@@ -313,7 +313,7 @@ function showable() {
   if (lock.deadline <= Math.floor(Date.now() / 1000)) return { refused: `refused: cycle ${lock.runId}'s lock is past its deadline: no journey cycle is running` };
   const cwd = path.join(liveDir(main), lock.runId);
   if (!fs.existsSync(cwd)) return { refused: `refused: the run's directory ${path.relative(main, cwd)} is missing` };
-  return { runId: lock.runId, instance: Boolean(rec.instanceId), show: { js: rec.browser.js, home: browserHome(rec), cwd } };
+  return { runId: lock.runId, instance: Boolean(rec.instanceId), instanceId: rec.instanceId ?? null, show: { js: rec.browser.js, home: browserHome(rec), cwd } };
 }
 
 const escapeHtml = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -394,8 +394,9 @@ async function closePlaceholder(server) {
  * lock changes or passes its deadline, and waits for the next — until a signal (Ctrl-C, a kill, a closed
  * terminal). A dashboard that ends while the cycle's lock still holds is the instance restarting (`up --fresh`
  * closes the sessions it shows): the placeholder is back on the same port at once and the dashboard follows it
- * there once the new instance is up, never earlier than a pause that doubles (2 s to 30 s) while dashboards
- * keep ending within 10 s, so a dashboard that cannot stay up does not spin. It listens from the start: while it waits, the port serves a page naming the wait and the run in
+ * there once the new instance is up, after a pause of 2 s; the pause doubles (4 s to 30 s) while dashboards on
+ * the same instance keep ending within 10 s (an instance that cannot stay up), so it does not spin; an instance
+ * that is new (a quick restart, as `repro --minimize` makes) is waited for 2 s only. It listens from the start: while it waits, the port serves a page naming the wait and the run in
  * progress (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle
  * is gone (retried for ~30 s; a port still taken then ends the watch, said). Its first line is `show: watching
  * on http://localhost:<port>`.
@@ -409,6 +410,8 @@ async function followDashboard() {
   let waiting = null;
   let reattach = false; // a dashboard ended under a lock that holds: wait for the restarted instance
   let pause = 2000;
+  let reattachRun = null; // the cycle the reattach was for: another cycle starts afresh
+  let endedOn = null; // the instance id of the dashboard that last ended within 10 s
   let reason = "starting";
   let placeholder = await openPlaceholder(0, () => reason);
   const port = placeholder.address().port;
@@ -450,6 +453,11 @@ async function followDashboard() {
       } catch (e) {
         r = { refused: e.message };
       }
+      if (!r.refused && r.runId !== reattachRun) {
+        reattach = false;
+        endedOn = null;
+        pause = 2000;
+      }
       if (!r.refused && reattach && !r.instance) r = { refused: `refused: cycle ${r.runId} has no instance yet (an up --fresh is under way)` };
       if (r.refused) {
         // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
@@ -483,8 +491,11 @@ async function followDashboard() {
       if (signalled) return code;
       if (!gone()) {
         // The dashboard ended on its own under a lock that holds (the instance restarts; or its port was taken, another dashboard on this HOME): said, then waited for again.
-        pause = Date.now() - began < 10_000 ? Math.min(pause * 2, 30_000) : 2000;
+        const quick = Date.now() - began < 10_000;
+        pause = quick && endedOn !== null && r.instanceId === endedOn ? Math.min(pause * 2, 30_000) : 2000;
+        endedOn = quick ? r.instanceId : null;
         reattach = true;
+        reattachRun = r.runId;
         reason = "the dashboard ended; waiting for the instance to come back";
         print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; it reattaches on http://localhost:${port} once the instance is up`);
       } else {

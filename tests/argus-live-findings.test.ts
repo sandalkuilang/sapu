@@ -3462,6 +3462,56 @@ describe("argus-live show", () => {
     }
   }, 60_000);
 
+  it("show --follow waits the base pause for a restart on a new instance, backs off only while the same instance keeps ending, and a new cycle forgets the reattach", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    const die = join(dir, "die");
+    // Stands in for the CLI's show: exits (exit 0) once `die` exists, taking it away, as a dashboard does when its sessions close.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nfs.appendFileSync(${JSON.stringify(log)}, process.argv[4] + "\\n");\nsetInterval(() => { if (fs.existsSync(${JSON.stringify(die)})) { fs.unlinkSync(${JSON.stringify(die)}); process.exit(0); } }, 100);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+    const files = (instanceId: string | null, runId = t.runId) => writeRunFiles(t.main, { runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId, browser: { js, channel: "chrome" } });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+    files("aaaaaaaaaaaaaaaa");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    const endings = () => out.split("the dashboard ended (exit 0)").length - 1;
+    /** Ends the running dashboard → the ms from the watcher saying so to the next dashboard's start. */
+    const restart = async (n: number) => {
+      writeFileSync(die, "");
+      expect(await until(() => endings() === n, 10_000)).toBe(true);
+      const from = Date.now();
+      expect(await until(() => starts().length === n + 1, 20_000)).toBe(true);
+      return Date.now() - from;
+    };
+    try {
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      // A quick restart on a new instance (the minimize loop does this every try): the base pause, every time.
+      files("bbbbbbbbbbbbbbbb");
+      expect(await restart(1)).toBeLessThan(3500);
+      expect(await restart(2)).toBeLessThan(3500);
+      // The same instance ending again within seconds cannot stay up: the pause doubles.
+      const slow = await restart(3);
+      expect(slow).toBeGreaterThanOrEqual(3000);
+      expect(slow).toBeLessThan(9000);
+      // A dashboard ended while the next instance is not up yet; then another cycle starts: it is not told that an up --fresh is under way.
+      files(null);
+      writeFileSync(die, "");
+      expect(await until(() => endings() === 4, 10_000)).toBe(true);
+      const next = "20990101000000-0000beef";
+      mkdirSync(join(t.main, ".argus/live", next), { recursive: true });
+      setLock(t.main, { ...JSON.parse(readFileSync(join(t.main, ".argus/live/lock.json"), "utf8")), runId: next });
+      files(null, next);
+      expect(await until(() => out.includes(`show: cycle ${next} on`), 30_000)).toBe(true);
+      expect(out).not.toContain(`cycle ${next} has no instance yet`);
+      expect(out).not.toContain("an up --fresh is under way");
+    } finally {
+      show.kill("SIGKILL");
+    }
+  }, 90_000);
+
   it("a second show --follow prints the live watcher's URL and exits 0; a normal exit removes the record and says why", async () => {
     const t = liveRun();
     const watch = join(t.main, ".argus/live/watch.json");

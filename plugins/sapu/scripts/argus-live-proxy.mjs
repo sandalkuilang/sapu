@@ -44,7 +44,9 @@ function shownOrigin(scheme, host, port) {
  * forwarded (their Proxy-* headers dropped); origin-form requests and absolute `https://` answer 400 (it
  * is not a reverse proxy; https goes through CONNECT); CONNECT opens a tunnel; an upgrade (WebSocket)
  * is piped. Anything else answers 403 and `onBlocked(origin, kind)` — once per origin per server; so does
- * a 502 for an allowed loopback name with no address (kind `no-address`).
+ * a 502 for an allowed loopback name with no address (kind `no-address`) and one for an address that
+ * accepts no connection (kind `connect-failed`; a loopback name on a run port is tried at the other
+ * loopback literal once first, the record being stale after an `up --fresh`).
  * URLs are read with WHATWG `URL`, so `http://localhost:<p>@outside.test/` is outside.test.
  */
 export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup = defaultLookup, onBlocked = () => {}, upstream = () => null } = {}) {
@@ -83,6 +85,24 @@ export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup
       return null;
     }
   };
+  /**
+   * The connected socket for an allowed target at `to`, or null: a loopback name on a run port whose address
+   * `to` is a loopback literal that accepts nothing is tried once at the other literal (never a lookup,
+   * never another host); any other target only at `to`.
+   */
+  const dial = async (host, port, to) => {
+    const other = { "127.0.0.1": "::1", "::1": "127.0.0.1" }[to];
+    const list = other && ports.has(port) && normHost(host) === "loopback" && !net.isIP(host) ? [to, other] : [to];
+    for (const a of list) {
+      const sock = await new Promise((done) => {
+        const c = net.connect({ host: a, port });
+        c.once("connect", () => done(c));
+        c.once("error", () => (c.destroy(), done(null)));
+      });
+      if (sock) return tracked(sock);
+    }
+    return null;
+  };
   /** The absolute `http://` target of a request, or null (origin form, another scheme, unparsable). */
   const absolute = (raw) => {
     if (!/^http:\/\//i.test(raw || "")) return null;
@@ -105,21 +125,29 @@ export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup
 
   const server = http.createServer(async (req, res) => {
     const t = absolute(req.url);
-    const answer = (code) => {
+    const answer = (code, text) => {
       res.writeHead(code, { "content-type": "text/plain", connection: "close" });
-      res.end(code === 403 ? "blocked by the run's proxy\n" : code === 502 ? "no address recorded for this run listener\n" : "not a proxy request\n");
+      res.end(text ?? (code === 403 ? "blocked by the run's proxy\n" : "not a proxy request\n"));
     };
     if (!t) return answer(400);
     const to = proxyAllows({ scheme: "http", host: t.host, port: t.port }, { allowed: set }) ? await address(t.host, t.port) : null;
     if (to === undefined) {
       block("http", t.host, t.port, "no-address");
-      return answer(502);
+      return answer(502, "no address recorded for this run listener\n");
     }
     if (!to) {
       block("http", t.host, t.port, "http");
       return answer(403);
     }
-    const up = http.request({ host: to, port: t.port, method: req.method, path: `${t.u.pathname}${t.u.search}`, headers: headersFor(req), agent: false });
+    const sock = await dial(t.host, t.port, to);
+    if (!sock) {
+      block("http", t.host, t.port, "connect-failed");
+      return answer(502, "this run listener accepts no connection\n");
+    }
+    res.on("close", () => sock.destroy());
+    // The agent hands the request the socket already connected (a request cannot be retried once its body is piped).
+    const agent = Object.assign(new http.Agent(), { createConnection: () => sock });
+    const up = http.request({ host: to, port: t.port, method: req.method, path: `${t.u.pathname}${t.u.search}`, headers: headersFor(req), agent });
     up.on("response", (r) => {
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
@@ -151,14 +179,18 @@ export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup
       block("connect", host, port, "connect");
       return deny(socket, 403, "Forbidden");
     }
-    const up = tracked(net.connect(port, to, () => {
-      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (head && head.length) up.write(head);
-      up.pipe(socket);
-      socket.pipe(up);
-    }));
+    const up = await dial(host, port, to);
+    if (!up) {
+      block("connect", host, port, "connect-failed");
+      return deny(socket, 502, "Bad Gateway");
+    }
     up.on("error", () => (socket.writable ? deny(socket, 502, "Bad Gateway") : socket.destroy()));
     socket.on("close", () => up.destroy());
+    if (socket.destroyed) return up.destroy();
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    if (head && head.length) up.write(head);
+    up.pipe(socket);
+    socket.pipe(up);
   });
   server.on("upgrade", async (req, socket, head) => {
     socket.on("error", () => {});
@@ -173,16 +205,20 @@ export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup
       block("http", t.host, t.port, "websocket");
       return deny(socket, 403, "Forbidden");
     }
-    const up = tracked(net.connect(t.port, to, () => {
-      const lines = [`${req.method} ${t.u.pathname}${t.u.search} HTTP/${req.httpVersion}`];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) if (!/^proxy-/i.test(req.rawHeaders[i])) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
-      up.write(`${lines.join("\r\n")}\r\n\r\n`);
-      if (head && head.length) up.write(head);
-      up.pipe(socket);
-      socket.pipe(up);
-    }));
+    const up = await dial(t.host, t.port, to);
+    if (!up) {
+      block("http", t.host, t.port, "connect-failed");
+      return deny(socket, 502, "Bad Gateway");
+    }
     up.on("error", () => (socket.writable ? deny(socket, 502, "Bad Gateway") : socket.destroy()));
     socket.on("close", () => up.destroy());
+    if (socket.destroyed) return up.destroy();
+    const lines = [`${req.method} ${t.u.pathname}${t.u.search} HTTP/${req.httpVersion}`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) if (!/^proxy-/i.test(req.rawHeaders[i])) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    up.write(`${lines.join("\r\n")}\r\n\r\n`);
+    if (head && head.length) up.write(head);
+    up.pipe(socket);
+    socket.pipe(up);
   });
   server.on("clientError", (_e, socket) => (socket.writable ? deny(socket, 400, "Bad Request") : socket.destroy()));
   // Every socket either side holds, tunnels and upgrades included (the server stops tracking those).
@@ -297,6 +333,9 @@ export async function startProxy(main, runId, { groups, script = CLI, timeoutMs 
   return { pid, port };
 }
 
+/** Kinds of the log that are a refused connection to the run's own origin, never a block (an explorer is not told `blocked:`). */
+const NOT_BLOCKS = new Set(["no-address", "connect-failed"]);
+
 /** The origins the proxy blocked after byte `offset` of its log → {origins, offset} (complete lines only). */
 export function blockedSince(main, runId, offset = 0) {
   let buf;
@@ -311,8 +350,8 @@ export function blockedSince(main, runId, offset = 0) {
   for (const line of text.slice(0, end).split("\n")) {
     if (!line) continue;
     try {
-      const o = JSON.parse(line).origin;
-      if (typeof o === "string") origins.push(o);
+      const { origin, kind } = JSON.parse(line);
+      if (typeof origin === "string" && !NOT_BLOCKS.has(kind)) origins.push(origin);
     } catch {
       // a torn line is skipped
     }
