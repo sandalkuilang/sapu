@@ -2373,6 +2373,36 @@ describe("argus-live instance — Compose and egress checks", () => {
       expect(gate(s)).toMatch(why as RegExp);
     });
 
+    describe("with the run's Docker proxy", () => {
+      const proxied = (s: State, calls: Obj[] = []) => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P, DOCKER_HOST: "unix:///tmp/sapu-docker-x/docker.sock" }, main: realpathSync(tempDir()), worktree: realpathSync(tempDir()), runner: fake(s, calls), upstream: "unix:///var/run/docker.sock", dockerProxy: { name: "docker-proxy", internal: true, pgid: 1 } });
+      const other = (Labels: Obj, Mounts: Obj[]) => ({ Id: "c8", Name: "/side-1", Created: at(20), State: { StartedAt: at(21) }, Config: { Labels }, HostConfig: {}, Mounts, NetworkSettings: { Networks: { bridge: {} } } });
+      it("what touched the owner's state outside the proxy is a note, not a refusal; the gate reads the daemon's socket itself", () => {
+        const s = state();
+        s.events.push(ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), ev("volume", "destroy", "owner_pgdata", { driver: "local" }));
+        s.containers.push(other({}, [{ Type: "volume", Name: "owner_pgdata" }]));
+        const calls: Obj[] = [];
+        const { notes } = proxied(s, calls);
+        expect(notes).toHaveLength(3);
+        expect(notes[0]).toBe("container side-1, created during the cycle outside the run's Compose project argus-run1, mounts volume owner_pgdata, which existed before the cycle");
+        expect(notes[1]).toMatch(/^during the cycle, docker exec_create hit container owner-db, .* \(exec of psql, at \S+Z\)\. It did not pass the run's Docker proxy: another process on this machine did it/);
+        expect(notes[2]).toMatch(/^during the cycle, docker destroy hit volume owner_pgdata/);
+        expect(calls.every((c) => c.env.DOCKER_HOST === "unix:///var/run/docker.sock")).toBe(true);
+      });
+      it("a container the run created through the proxy (RUN_LABEL) that touches the owner's state is still refused; on the bridge and its own it passes", () => {
+        const s = state();
+        s.containers.push(other({ "sapu.run": P }, [{ Type: "volume", Name: "owner_pgdata" }]));
+        expect(message(() => proxied(s))).toBe("refused: container side-1, created during the cycle outside the run's Compose project argus-run1, mounts volume owner_pgdata, which existed before the cycle");
+        const t = state();
+        t.containers.push(other({ "sapu.run": P }, []));
+        expect(proxied(t).notes).toEqual([]);
+      });
+      it("without the proxy, the same action is refused as before", () => {
+        const s = state();
+        s.events.push(ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }));
+        expect(gate(s)).toMatch(/^refused: during the cycle, docker exec_create hit container owner-db/);
+      });
+    });
+
     it("a die alone (the owner's container crashing by itself) is not an action on it; a kill or stop before it still is", () => {
       const s = state();
       s.events.push(ev("container", "die", "c0", { [LABEL]: "owner", name: "owner-db", exitCode: "137" }));
@@ -3565,7 +3595,7 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     expect(balanced(main)).toBe(true);
   }, 60000);
 
-  it("up starts the docker events follower at step 3 as a recorded group; renew judges what it wrote; down stops it", async () => {
+  it("up starts the run's Docker proxy and the docker events follower at step 3 as recorded groups; renew judges what the follower wrote; down stops both", async () => {
     const bin = tempDir();
     writeFileSync(
       join(bin, "docker"),
@@ -3589,14 +3619,24 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
     reapers.push(rec.reaper);
     const follower = rec.groups.find((g: Obj) => g.name === "docker-events");
     reapers.push(follower.pgid);
-    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["docker-events", "cache", "reset", "web", "proxy"]);
+    expect(rec.groups.map((g: Obj) => g.name)).toEqual(["docker-proxy", "docker-events", "cache", "reset", "web", "proxy"]);
+    const dproxy = rec.groups.find((g: Obj) => g.name === "docker-proxy");
+    reapers.push(dproxy.pgid);
+    expect(dproxy.internal).toBe(true);
+    expect(rec.dockerUpstream).toBe("unix:///nonexistent/docker.sock");
+    expect(rec.env.DOCKER_HOST).toMatch(/^unix:\/\/.+\/sapu-docker-[^/]+\/docker\.sock$/);
+    expect(existsSync(rec.env.DOCKER_HOST.slice("unix://".length))).toBe(true);
     expect(rec.events).toBe(join(main, ".argus/live", r.runId, "logs", "docker-events.jsonl"));
     expect(readFileSync(rec.events, "utf8")).toContain('"Action":"connect"');
     expect(await message(renewRun(main, { runner: run }))).toBe("ok");
     const t = Date.now();
     appendFileSync(rec.events, `${JSON.stringify({ Type: "container", Action: "exec_start: psql", Actor: { ID: "c0", Attributes: { name: "owner-db" } }, time: Math.floor(t / 1000), timeNano: t * 1e6 })}\n`);
-    expect(await message(renewRun(main, { runner: run }))).toMatch(/^refused: during the cycle, docker exec_start hit container owner-db, which existed before it/);
-    expect(await until(() => !alive(follower.pgid), 5000)).toBe(true);
+    // Not through the run's proxy: outside the run, a note in renew.log.
+    expect(await message(renewRun(main, { runner: run }))).toBe("ok");
+    expect(readFileSync(join(main, ".argus/live", r.runId, "logs", "renew.log"), "utf8")).toMatch(/renew: docker: outside the run: during the cycle, docker exec_start hit container owner-db, which existed before it .*It did not pass the run's Docker proxy/);
+    await down(main, { runId: r.runId });
+    expect(await until(() => !alive(follower.pgid) && !alive(dproxy.pgid), 5000)).toBe(true);
+    expect(existsSync(rec.env.DOCKER_HOST.slice("unix://".length))).toBe(false);
     expect(balanced(main)).toBe(true);
   }, 60000);
 

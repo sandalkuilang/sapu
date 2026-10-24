@@ -5,8 +5,8 @@
 // the worktree, HOME and environment, setup, start and health, the store phase) live in
 // argus-live-start.mjs. The lane's modules, each importing only modules named before it (the leaves below
 // import none, and any module may import them): argus-live-proc.mjs (processes) → -config.mjs (the
-// configuration) → -smokecfg.mjs (`.argus/smoke.json`) and -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) and -watch.mjs (the watcher's record) → -docker.mjs (Compose,
-// the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
+// configuration) → -smokecfg.mjs (`.argus/smoke.json`) and -lock.mjs (lock, live log) → -endpoints.mjs (endpoint comparison) and -watch.mjs (the watcher's record) → -dockerproxy.mjs
+// (the run's Docker socket proxy) → -docker.mjs (Compose, the runtime gate), -egress.mjs (the egress check) and -cli.mjs (the browser CLI's calls and sessions) →
 // -run.mjs (run.json, teardown) → -browser.mjs, -proxy.mjs, -hooks.mjs, -start.mjs, -map.mjs, -drift.mjs,
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
 // -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -logincode.mjs (the login's browser
@@ -37,6 +37,7 @@ import { DEFAULT_CALLS } from "./argus-live-pw.mjs";
 import { readSlotState, retireAll } from "./argus-live-slots.mjs";
 import { expandConfig, LIVE_FILE, loadLive, portNames } from "./argus-live-config.mjs";
 import { checkCompose, checkDockerRuntime, daemonNow, dockerEnv, FOLLOWER, gateOf, startEventsFollower } from "./argus-live-docker.mjs";
+import { throughProxy } from "./argus-live-dockerproxy.mjs";
 import { checkEgress, egressAllowed } from "./argus-live-egress.mjs";
 import { hostOf, resolvesToLoopback } from "./argus-live-endpoints.mjs";
 import { dropLedgers, dropOldRuns } from "./argus-live-ledger.mjs";
@@ -142,7 +143,7 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
  * `up --fresh`'s closes), `slots` (slot, submit, retireAll), `loginFailed` (login), `closing` (down) — and
  * is kept as it stands, as is a key this version does not know. `mode` is `up --map`'s alone (upMap).
  */
-const UP_KEYS = ["runId", "instanceId", "worktree", "worktreeHead", "home", "ports", "upstream", "origins", "baseUrl", "env", "since", "events", "digest", "composeServices", "composePorts", "groups", "stops", "browser", "allowOrigins"];
+const UP_KEYS = ["runId", "instanceId", "worktree", "worktreeHead", "home", "ports", "upstream", "origins", "baseUrl", "env", "dockerUpstream", "since", "events", "digest", "composeServices", "composePorts", "groups", "stops", "browser", "allowOrigins"];
 
 /** `state`'s UP_KEYS (those it holds): what `up` and `up --fresh` write of it. */
 const upOwned = (state) => Object.fromEntries(UP_KEYS.filter((k) => Object.hasOwn(state, k)).map((k) => [k, state[k]]));
@@ -383,13 +384,15 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     const docker = dockerEnv({ home: state.home, runner });
     state.env = instanceEnv({ config, ports, secrets, runId, home: state.home, docker });
     // The daemon's clock through the run's own client (its context checked by dockerEnv just now);
-    // nothing of the run has touched Docker before this step. With a daemon, the events follower starts
-    // here: the runtime gate reads every event since, not only the daemon's last ones.
+    // nothing of the run has touched Docker before this step. With a daemon, every docker call of the run
+    // goes through the run's Docker proxy from here on (its DOCKER_HOST), and the events follower starts:
+    // the runtime gate reads every event since, not only the daemon's last ones.
     const clock = daemonNow({ env: state.env, runner });
     state.since = clock ?? Date.now();
-    if (clock !== null) state.events = (await startEventsFollower({ env: state.env, since: state.since, logs: logsDir(main, runId), cwd: state.home, groups: state.groups })).file;
+    if (clock !== null && state.env.DOCKER_HOST) ({ env: state.env, upstream: state.dockerUpstream } = await throughProxy(state.env, { logs: logsDir(main, runId), groups: state.groups }));
+    if (clock !== null) state.events = (await startEventsFollower({ env: { ...state.env, DOCKER_HOST: state.dockerUpstream ?? state.env.DOCKER_HOST }, since: state.since, logs: logsDir(main, runId), cwd: state.home, groups: state.groups })).file;
     save();
-    log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}${state.events ? "; docker events followed" : ""}`);
+    log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}${state.dockerUpstream ? "; docker through the run's proxy" : ""}${state.events ? "; docker events followed" : ""}`);
 
     step = "4 worktree";
     state.worktree = makeWorktree(main, runId, { runner });
@@ -415,7 +418,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     log(`step 7 start: ${x.start.filter((e) => e.phase !== "store").map((e) => e.name).join(", ") || "no other entry"} healthy; store_check printed ${x.store}`);
     step = "8 egress";
     await ctx.fullEgress();
-    checkDockerRuntime({ ...gateOf(state, state.groups), main, runner });
+    for (const n of checkDockerRuntime({ ...gateOf(state, state.groups), main, runner }).notes) log(`step 8 docker: outside the run: ${n}`);
     log("step 8 egress: the run's processes reach only what the run allows; the Docker runtime gate passed");
 
     step = "9 proxy";
@@ -576,7 +579,7 @@ export async function upFresh(main, { runner = run, lookup = defaultLookup, say 
     await bringUpRest(ctx);
     step = "fresh: egress";
     await ctx.fullEgress();
-    checkDockerRuntime({ ...gateOf(rec, state.groups), main, runner });
+    for (const n of checkDockerRuntime({ ...gateOf(rec, state.groups), main, runner }).notes) log(`fresh: docker: outside the run: ${n}`);
     state.instanceId = randomBytes(8).toString("hex");
     save();
     log(`fresh: instance ${state.instanceId}; store reset, every entry healthy, egress and the Docker runtime gate passed`);
@@ -604,7 +607,7 @@ export async function renewRun(main, { runner = run, lookup = defaultLookup, say
     const x = expandConfig(config, { ports: { ...rec.ports }, secrets });
     const ctx = runContext({ main, runId, x, env: rec.env, worktree: rec.worktree, home: rec.home, ports: rec.ports, secrets, contract: contractOf(main), groups: rec.groups ?? [], stops: [], deadline, composeServices: rec.composeServices ?? [], composePorts: rec.composePorts ?? [], runner, lookup });
     await ctx.fullEgress();
-    checkDockerRuntime({ ...gateOf(rec, rec.groups), main, runner });
+    for (const n of checkDockerRuntime({ ...gateOf(rec, rec.groups), main, runner }).notes) log(`renew: docker: outside the run: ${n}`);
     log(`renew: cycle ${runId} ${moved ? "until" : "unchanged, until"} ${iso(deadline)}; egress and the Docker runtime gate passed`);
     return { runId, deadline, moved };
   } catch (e) {
