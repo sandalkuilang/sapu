@@ -582,9 +582,9 @@ const BUDGETS: Record<string, number> = {
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
-  "agents/ui-explorer.md": 21_139, // +the `=+` account for a user the journey creates and the `creates` map step, +submit counts repro targets on the live page (2.33.0); +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
+  "agents/ui-explorer.md": 21_413, // +the `=+` account for a user the journey creates and the `creates` map step, +submit counts repro targets on the live page, +a handoff return keeps its partial path (2.33.0); +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
   "agents/curator.md": 7_800,
-  "skills/argus/journeys.md": 16_812, // +the `=+` account in the charter and the walking-repro refusal row (2.33.0); +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row, +repro exit 4 (deadline) and its rows
+  "skills/argus/journeys.md": 16_917, // +the `=+` account in the charter, the walking-repro refusal row, a handoff's path is replayed whole (2.33.0); +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row, +repro exit 4 (deadline) and its rows
   "skills/argus/SKILL.md": 43_288, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check
   "skills/journey/SKILL.md": 6_115, // +show --follow again right before each `live up`, a reusing session never sees the watcher stop (2.32.0); the watcher is idempotent in the engine (2.32.0); +the orchestrator starts the watcher itself, +the `show` form; +show --follow once per session, +only the instance (2.31.0)
   "skills/journey/live.md": 15_079, // +the `=+` account of a role (2.33.0); +seed_check (2.31.0), +renew from now

@@ -12,7 +12,7 @@ import { pw } from "../plugins/sapu/scripts/argus-live-pw.mjs";
 // @ts-expect-error — plain ESM script without types
 import { reproRef } from "../plugins/sapu/scripts/argus-live-repro.mjs";
 // @ts-expect-error — plain ESM script without types
-import { validateReturn } from "../plugins/sapu/scripts/argus-live-return.mjs";
+import { validateReturn, walkedPath } from "../plugins/sapu/scripts/argus-live-return.mjs";
 // @ts-expect-error — plain ESM script without types
 import { down, readRun, writeRunFiles } from "../plugins/sapu/scripts/argus-live-run.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -504,6 +504,29 @@ describe("the explorer's return: path and heal (spec §19.4, §19.9)", () => {
     expect(validateReturn(ret({}), opts).value.path).toBeUndefined();
   });
 
+  it("a handoff's path is the walk so far; a later generation's path continues the earlier ones (a placeholder read before counts, its own context is dropped)", () => {
+    const head = PATH().slice(0, 8);
+    const tail = PATH().slice(8);
+    expect(validateReturn(ret({ status: "handoff", path: head }), opts).errors).toEqual([]);
+    expect(validateReturn(ret({ path: tail }), opts).errors).toEqual([expect.stringMatching(/\{\{order\}\} is used before a read saves it/)]);
+    const after = { ...opts, before: head };
+    expect(validateReturn(ret({ path: tail }), after)).toMatchObject({ errors: [], value: { path: tail } });
+    expect(validateReturn(ret({ path: [{ context: { viewport: 390 } }, ...tail] }), after).errors).toEqual([]);
+  });
+
+  it("walkedPath joins a slot's generations before `below`, in order, keeping the first context only; a generation without a path adds nothing", () => {
+    const dir = tempDir();
+    const put = (g: number, ret: Obj) => writeFileSync(join(dir, `1.${g}.json`), JSON.stringify(ret));
+    const head = PATH().slice(0, 8);
+    put(1, { journey: "j1", status: "handoff", path: head });
+    put(2, { journey: "j1", status: "handoff" });
+    put(3, { journey: "j1", status: "done", path: [{ context: { viewport: 390 } }, ...PATH().slice(8)] });
+    expect(walkedPath(dir, 1)).toEqual({ journey: "j1", path: PATH() });
+    expect(walkedPath(dir, 1, 3)).toEqual({ journey: "j1", path: head });
+    expect(walkedPath(dir, 1, 1)).toEqual({ journey: null, path: [] });
+    expect(walkedPath(dir, 2)).toEqual({ journey: null, path: [] });
+  });
+
   it("refuses a path the path mode refuses, naming the step", () => {
     const bad = [...PATH().slice(0, -1), { ...PATH().at(-1), final: "handoff" }];
     expect(validateReturn(ret({ path: bad }), opts).errors).toEqual(["path: step 9: a path has no final: it ends with an expect proving the journey's goal"]);
@@ -686,6 +709,20 @@ describe("smoke run — the lane's pass over the suite's paths (spec §19.5, §1
     writeFileSync(join(t.main, ".argus/smoke.json"), "{}");
     expect((await submit({ path: PATH() })).out).toEqual(["submitted: slot 1 generation 1 status done"]);
     expect(JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", "1.1.json"), "utf8")).path).toEqual(PATH());
+  });
+
+  it("pw submit: a handoff keeps its partial path, and the next generation's path is checked as its continuation", async () => {
+    const t = suiteRun({});
+    const first = await mintSlot(t.main, { slot: 1, journey: "checkout", accounts: { "customer.1": "buyer1@example.test", "sales.1": "sales1@example.test" } });
+    const submit = (token: string, ret: Obj) => pw(t.main, [token, "submit", JSON.stringify({ journey: "checkout", ...ret })]);
+    expect((await submit(first.token, { status: "handoff", path: PATH().slice(0, 8) })).out).toEqual(["submitted: slot 1 generation 1 status handoff"]);
+    expect(JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", "1.1.json"), "utf8")).path).toEqual(PATH().slice(0, 8));
+    const next = await handoffSlot(t.main, 1);
+    // Alone the tail reads `order` before any read saves it; after the first generation's path it is a continuation.
+    expect((await submit(next.token, { status: "done", path: PATH().slice(8) })).out).toEqual(["submitted: slot 1 generation 2 status done"]);
+    const u = suiteRun({});
+    const lone = await mintSlot(u.main, { slot: 1, journey: "checkout", accounts: { "customer.1": "buyer1@example.test", "sales.1": "sales1@example.test" } });
+    expect((await pw(u.main, [lone.token, "submit", JSON.stringify({ journey: "checkout", status: "done", path: PATH().slice(8) })])).out).toEqual([expect.stringMatching(/^refused: return: path: step 2: \{\{order\}\} is used before a read saves it/)]);
   });
 
   it("with --slot, a locator break or a flake writes nothing: a heal decides those", async () => {

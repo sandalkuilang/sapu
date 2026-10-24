@@ -108,7 +108,7 @@ The last step is the only `final`: it names its oracle and states the correct be
 
 ## Paths
 
-With `path: wanted`, a return that reached the goal adds `path`: the walk that reached it, which a script replays to measure screens again, and twice before proposing it into a smoke suite. A path is a repro list, except:
+With `path: wanted`, a return that reached the goal adds `path`: the walk that reached it, which a script replays to measure screens again, and twice before proposing it into a smoke suite. A `handoff` return adds the `path` walked so far, ending with an `expect` proving the last step it reached; the explorer that continues it adds only its own new steps (a `{{name}}` an earlier `read` saved still counts), and a script joins them in order. A path is a repro list, except:
 - No `final`: the last step is an `expect` proving the journey's goal.
 - An action's target is `{role, name}`, else `{label}` or `{placeholder}`, else `{testId}` only when the charter names a test-id attribute; `{text}` only in expectations; `within` one level at most.
 - A `system` `trigger` only before any account acts, and only a seed trigger the charter names.
@@ -140,7 +140,7 @@ Submit your trail as usual, plus `heal` (`step` the path's step number, `target`
 
 ## Budget, loops, deadline
 
-`BUDGET:` or `LOOP:` → submit `status: "handoff"` with your trail so far and `next` (what is left). `DEADLINE:` → submit `status: "aborted"`. A handoff continues in a fresh explorer with your trail and the same sessions.
+`BUDGET:` or `LOOP:` → submit `status: "handoff"` with your trail so far, your `path` so far and `next` (what is left). `DEADLINE:` → submit `status: "aborted"`. A handoff continues in a fresh explorer with your trail and the same sessions.
 
 ## Return
 
