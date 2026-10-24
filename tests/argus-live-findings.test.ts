@@ -3251,6 +3251,59 @@ describe("argus-live show", () => {
     }
   }, 60_000);
 
+  it("show --follow reattaches to the restarted instance's dashboard on the same port, keeping its record, and ends only on a signal", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    const die = join(dir, "die");
+    const watch = join(t.main, ".argus/live/watch.json");
+    // Stands in for the CLI's show: the first one exits (exit 0) once `die` exists, as a dashboard does when an up --fresh closes its sessions; later ones block.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nconst first = !fs.existsSync(${JSON.stringify(log)});\nfs.appendFileSync(${JSON.stringify(log)}, process.argv[4] + "\\n");\nsetInterval(() => { if (first && fs.existsSync(${JSON.stringify(die)})) process.exit(0); }, 100);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+    const files = (instanceId: string | null) => writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId, browser: { js, channel: "chrome" } });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+    files("0123456789abcdef");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      expect(starts()).toEqual([String(port)]);
+      const first = JSON.parse(readFileSync(watch, "utf8"));
+      expect(first.dashboardPgid).toBeGreaterThan(1);
+      // The instance restarts: no instance id while the up --fresh runs, the dashboard ends, the lock still holds.
+      files(null);
+      writeFileSync(die, "");
+      expect(await until(() => out.includes("show: the dashboard ended (exit 0)"), 10_000)).toBe(true);
+      let page: { status: number; marker: string | undefined } | null = null;
+      for (let i = 0; i < 100 && page?.marker !== "waiting"; i++) {
+        page = await fetchPage(port);
+        if (page?.marker !== "waiting") await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(page?.marker).toBe("waiting"); // the placeholder is back on the dashboard's port
+      expect(JSON.parse(readFileSync(watch, "utf8"))).toMatchObject({ pid: show.pid, port, dashboardPgid: null });
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(starts()).toHaveLength(1); // not before the new instance is up
+      files("fedcba9876543210");
+      expect(await until(() => starts().length === 2, 15_000)).toBe(true);
+      expect(starts()).toEqual([String(port), String(port)]);
+      const second = JSON.parse(readFileSync(watch, "utf8"));
+      expect(second).toMatchObject({ pid: show.pid, start: first.start, port });
+      expect(second.dashboardPgid).toBeGreaterThan(1);
+      expect(second.dashboardPgid).not.toBe(first.dashboardPgid);
+      expect(show.exitCode).toBeNull();
+      expect(out).not.toContain("show: stopped");
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+      expect(out.trimEnd().split("\n").pop()).toBe("show: stopped (SIGINT)");
+      expect(existsSync(watch)).toBe(false);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
+
   it("a second show --follow prints the live watcher's URL and exits 0; a normal exit removes the record and says why", async () => {
     const t = liveRun();
     const watch = join(t.main, ".argus/live/watch.json");

@@ -690,6 +690,11 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.34.0
+
+Nothing to change in your repo. What behaves differently:
+- **The watcher survives an instance restart.** `repro` and `repro --minimize` bring the instance up fresh, which ends the dashboard `show --follow` shows. The watcher no longer exits with `the dashboard ended`: the status page is back on the same URL at once (the browser pane stays open on it), the dashboard returns there once the new instance is up, and the watcher's record in `.argus/live/watch.json` stays. A dashboard that ends again within 10 seconds is waited for 4, 8, … up to 30 seconds, so one that cannot stay up does not spin. The watcher ends on a signal as before, and it shows nothing once the cycle is down or its lock is gone, until the next cycle. The orchestrator no longer starts it again after a restart.
+
 #### Upgrading from a version before 2.33.0
 
 Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:

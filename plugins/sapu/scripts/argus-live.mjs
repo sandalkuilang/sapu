@@ -305,7 +305,7 @@ async function laneCommand(cmd, args) {
   return call();
 }
 
-/** The running cycle's dashboard arguments `{show: {js, home, cwd}, runId}`, or `{refused}`: only once up has a browser for the owner (never a map run's). */
+/** The running cycle's dashboard arguments `{show: {js, home, cwd}, runId, instance}`, or `{refused}`: only once up has a browser for the owner (never a map run's). `instance` is false while an `up --fresh` has no instance yet. */
 function showable() {
   const lock = readLock(main);
   const rec = lock && readRun(main);
@@ -313,7 +313,7 @@ function showable() {
   if (lock.deadline <= Math.floor(Date.now() / 1000)) return { refused: `refused: cycle ${lock.runId}'s lock is past its deadline: no journey cycle is running` };
   const cwd = path.join(liveDir(main), lock.runId);
   if (!fs.existsSync(cwd)) return { refused: `refused: the run's directory ${path.relative(main, cwd)} is missing` };
-  return { runId: lock.runId, show: { js: rec.browser.js, home: browserHome(rec), cwd } };
+  return { runId: lock.runId, instance: Boolean(rec.instanceId), show: { js: rec.browser.js, home: browserHome(rec), cwd } };
 }
 
 const escapeHtml = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -392,7 +392,10 @@ async function closePlaceholder(server) {
  * `show --follow`: one watcher for every cycle, one per repo. It waits for a cycle's browser, shows it on one
  * port (the same URL for every cycle, so the owner's tab only reloads), ends that dashboard once the cycle's
  * lock changes or passes its deadline, and waits for the next — until a signal (Ctrl-C, a kill, a closed
- * terminal). It listens from the start: while it waits, the port serves a page naming the wait and the run in
+ * terminal). A dashboard that ends while the cycle's lock still holds is the instance restarting (`up --fresh`
+ * closes the sessions it shows): the placeholder is back on the same port at once and the dashboard follows it
+ * there once the new instance is up, never earlier than a pause that doubles (2 s to 30 s) while dashboards
+ * keep ending within 10 s, so a dashboard that cannot stay up does not spin. It listens from the start: while it waits, the port serves a page naming the wait and the run in
  * progress (openPlaceholder), closed right before the dashboard takes the port and opened again once the cycle
  * is gone (retried for ~30 s; a port still taken then ends the watch, said). Its first line is `show: watching
  * on http://localhost:<port>`.
@@ -404,6 +407,8 @@ async function closePlaceholder(server) {
  */
 async function followDashboard() {
   let waiting = null;
+  let reattach = false; // a dashboard ended under a lock that holds: wait for the restarted instance
+  let pause = 2000;
   let reason = "starting";
   let placeholder = await openPlaceholder(0, () => reason);
   const port = placeholder.address().port;
@@ -445,6 +450,7 @@ async function followDashboard() {
       } catch (e) {
         r = { refused: e.message };
       }
+      if (!r.refused && reattach && !r.instance) r = { refused: `refused: cycle ${r.runId} has no instance yet (an up --fresh is under way)` };
       if (r.refused) {
         // Each new reason once: a stale lock or a missing run directory is said, not hidden behind the wait.
         reason = r.refused.replace(/^refused: /, "");
@@ -454,6 +460,7 @@ async function followDashboard() {
         continue;
       }
       waiting = null;
+      reattach = false;
       print(`show: cycle ${r.runId} on http://localhost:${port} (an explorer reads code before it opens a page: its sessions appear once it does)`);
       // An unreadable lock counts as the cycle gone: a throw in the poll would leave the detached dashboard behind.
       const gone = () => {
@@ -466,6 +473,7 @@ async function followDashboard() {
       await closePlaceholder(placeholder);
       dashboard = true;
       let code;
+      const began = Date.now();
       try {
         code = await showDashboard({ ...r.show, port, until: gone, onStart: (pgid) => noteDashboard(main, pgid) });
       } finally {
@@ -474,17 +482,20 @@ async function followDashboard() {
       }
       if (signalled) return code;
       if (!gone()) {
-        // The dashboard ended on its own (its port taken meanwhile, another dashboard on this HOME): said, never silent.
-        why = `the dashboard ended, exit ${code}`;
-        print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; run show --follow again`);
-        return code;
+        // The dashboard ended on its own under a lock that holds (the instance restarts; or its port was taken, another dashboard on this HOME): said, then waited for again.
+        pause = Date.now() - began < 10_000 ? Math.min(pause * 2, 30_000) : 2000;
+        reattach = true;
+        reason = "the dashboard ended; waiting for the instance to come back";
+        print(`show: the dashboard ended (exit ${code}) while cycle ${r.runId} still runs; it reattaches on http://localhost:${port} once the instance is up`);
+      } else {
+        reason = "the cycle ended; waiting for the next";
       }
-      reason = "the cycle ended; waiting for the next";
       try {
         placeholder = await openPlaceholder(port, () => reason);
       } catch (e) {
         throw new Error(`failed: port ${port} stayed in use after the dashboard ended (${e.code ?? e.message})`);
       }
+      if (reattach) await new Promise((ok) => setTimeout(ok, pause));
     }
   } catch (e) {
     why = e.message;
