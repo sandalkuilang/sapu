@@ -13,8 +13,8 @@ import { CLICKS, JUDGE_TARGET, targetFn } from "./argus-live-steps.mjs";
 const LISTED = 8;
 /** The expectations judged on the live page: the kinds the repro judges by one read of one element. */
 const JUDGED = ["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals"];
-/** The tags whose element has no text of its own: a void element, its innerText is always empty. */
-const TEXTLESS = ["input", "img"];
+/** The tags whose innerText is never what they show: an input's and an image's is empty, a textarea's is not what it holds. */
+const TEXTLESS = ["input", "textarea", "img"];
 /** The roles an input, a textarea or a select can have: `value-equals` on any other role's element throws on every page. */
 const FIELD_ROLES = ["textbox", "searchbox", "combobox", "listbox", "spinbutton", "slider", "checkbox", "radio", "switch", "button"];
 /** Why a step was not counted → the note's text. */
@@ -30,7 +30,7 @@ const WHY = {
 };
 /** Why an expectation cannot be judged where it stands → the note's text (the page now may differ from the step's: a note, never a refusal). */
 const UNJUDGED = {
-  textless: "a text expectation's target has no text of its own, an input or an image; read a field with value-equals, or target the element that holds the text",
+  textless: "a text expectation's target has no text of its own, an input, a textarea or an image; read a field with value-equals, or target the element that holds the text",
   label: "a text expectation's target is a label that does not hold the text now; target the element that holds it",
   novalue: "a value-equals target is not an input, a textarea or a select",
   error: "the expectation cannot be evaluated on its target; a text expectation needs an HTML element",

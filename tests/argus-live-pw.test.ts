@@ -2222,7 +2222,7 @@ describe("argus-live pw — refusals and limits", () => {
 
       it("a text expectation on an input has no text to read: a note naming the candidate and the step", async () => {
         const { t, out } = await noted("text-contains", LABEL, { held: false, tag: "input" });
-        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
+        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input, a textarea or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
         // One browser call, the repro's own judging code and locator code in it, the expectation's kind and value as data.
         expect(sent(t)).toHaveLength(1);
         expect(sent(t)[0]).toContain("const judgeTarget = async (P, T) =>");
