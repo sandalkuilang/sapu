@@ -8,7 +8,7 @@ import { expandConfig, loadLive } from "./argus-live-config.mjs";
 import { readSeen, secretHits } from "./argus-live-ledger.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { redTest } from "./argus-live-redtest.mjs";
-import { nextRun, reproRef, runNeedMs, runOnce, runRecords, writePrivate } from "./argus-live-repro.mjs";
+import { nextRun, reproRef, runNeedMs, runOnce, runRecords, walkingRefusal, writePrivate } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { redactIds, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
 import { parseRepro, reductions } from "./argus-live-steps.mjs";
@@ -42,6 +42,8 @@ function liveOf(main) {
  */
 export async function minimize(main, ref, { once = runOnce, max = null, say = () => {}, ...opts } = {}) {
   const { runId, candidate, slotRec, dir } = reproRef(main, ref);
+  const walking = walkingRefusal(main, runId);
+  if (walking) throw new Error(walking);
   const records = runRecords(dir);
   const base = records.filter((r) => isObj(r.rec) && r.rec.exit === 3 && !r.rec.reduced).at(-1);
   if (!base) throw new Error(`refused: repro: ${ref} has no reproducing run (repro ${ref} first)`);

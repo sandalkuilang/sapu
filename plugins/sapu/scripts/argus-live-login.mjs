@@ -211,7 +211,7 @@ export function runFailures(main, runId) {
  * so the login's traffic never reaches the explorer. A failure is recorded in `failures` under
  * `"<role>/<user>"` (by default runFailures: run.json `loginFailed`, the configured accounts'), and a user
  * found there is refused at once, with no browser work: a failed login is never retried within a run
- * (lockouts), but for proveLogins' one retry of a RETRYABLE reason (its first try records none: firstTryFailures). A CLI that fails (the session gone) throws `failed: …` and records nothing.
+ * (lockouts), but for the one retry of a RETRYABLE reason (proveLogins, loginRetry: the first try records none: firstTryFailures). A CLI that fails (the session gone) throws `failed: …` and records nothing.
  */
 export async function login({ main, runId, session, account, user, password, totpSecret = null, plan, js, home, cwd, runner = runAsync, now = Date.now, sleep: wait = sleep, failures = runFailures(main, runId) }) {
   runIdOk(runId);
@@ -389,4 +389,27 @@ export async function retryOnce(fn, { wait, say = () => {} }) {
     await wait();
     return fn(2);
   }
+}
+/**
+ * login() for a slot's or a repro's session: a RETRYABLE failure gets one more try after the instance settles
+ * (`spacingMs` or RETRY_MS, the longer), and only the last answer is recorded in `failures` (retryOnce and
+ * firstTryFailures, as `up`'s proving logins use them). `rejected`, `rate-limited` and a user already in
+ * `failures` get login()'s answer after one try. → login()'s answer.
+ */
+export async function loginRetry(opts, { spacingMs = 0, sleep: wait = sleep, say = () => {} } = {}) {
+  const failures = opts.failures ?? runFailures(opts.main, opts.runId);
+  if (failures.get(`${String(opts.account).split(".")[0]}/${opts.user}`)) return login({ ...opts, failures });
+  let res = null;
+  try {
+    await retryOnce(
+      async (n) => {
+        res = await login({ ...opts, failures: n === 1 ? firstTryFailures(failures) : failures });
+        if (!res.ok) throw Object.assign(new Error(`could not sign in (${res.reason})`), { res });
+      },
+      { wait: () => wait(Math.max(spacingMs, RETRY_MS)), say },
+    );
+  } catch (e) {
+    if (!e.res) throw e;
+  }
+  return res;
 }

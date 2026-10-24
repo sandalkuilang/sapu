@@ -291,7 +291,7 @@ function pngsIn(dir) {
  * an account the journey created (its password appended to the run's secret ledger first, as `created
  * password`; `login: ok` or `login: failed (<reason>)`; kept in state.json
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
- * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
+ * `loginFailed`; a RETRYABLE failure is tried once more first, loginRetry); a user of `roles.*.users` is refused, whichever slot holds it. On an account allocated `+` (`<role>.<k>=+`, an account the journey creates) the session starts signed out and no configured user is ever signed in on it. Every write of the slot's
  * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
  * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
@@ -427,7 +427,6 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // The account's session (argus-live-session.mjs): its credentials, its state and every CLI call it makes.
   const d = sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, failures: createdFailures, runner, cliRunner });
   const { role, plan } = d;
-  const r = live.roles && live.roles[role];
   let positionals;
   try {
     positionals = p.positionals.map((v, i) => checkArg(COMMANDS[p.cmd].args[Math.min(i, COMMANDS[p.cmd].args.length - 1)], v, { origins: rec.origins ?? [], base: plan.base, files: path.join(dir, "files") }));
@@ -440,7 +439,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   }
 
   const c0 = d.credentials();
-  const user = (c0 ?? {}).user ?? slotRec.accounts[account];
+  const user = (c0 ?? {}).user ?? (d.fresh ? null : slotRec.accounts[account]);
   const failedBefore = c0 && c0.created ? createdFailures.get(`${role}/${user}`) : user && rec.loginFailed && Object.hasOwn(rec.loginFailed, `${role}/${user}`);
   if (p.cmd !== "login" && failedBefore) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
@@ -472,9 +471,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
     return { code: 0, out: [counter, ...opening, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
   }
-  if (role !== "anon" && !d.state.signedIn) {
-    if (!(r && r.login) && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
-  }
+  if (!d.state.signedIn && d.wantsSignIn() && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
   const shotsBefore = p.cmd === "screenshot" ? pngsIn(dir) : null;

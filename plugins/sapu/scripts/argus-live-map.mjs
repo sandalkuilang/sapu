@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
+import { CREATED } from "./argus-live-slots.mjs";
 import { loadTaste, readTasteState, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 
 export const JOURNEYS_FILE = ".argus/journeys.json";
@@ -57,7 +58,7 @@ const repoPath = (p) => typeof p === "string" && p !== "" && !path.isAbsolute(p)
 const TRIGGER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
 const MAP_KEYS = ["roots", "journeys", "notes"];
 const JOURNEY_KEYS = ["id", "domain", "title", "money", "global", "goal", "steps"];
-const STEP_KEYS = ["role", "route", "trigger", "goal", "claim", "sources"];
+const STEP_KEYS = ["role", "route", "trigger", "goal", "claim", "creates", "sources"];
 const SOURCE_KEYS = ["file", "line", "text"];
 
 /** A C0 or C1 control character, DEL included. */
@@ -66,7 +67,7 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 /**
  * The map an explorer returns in map mode (decision 20) → `{value, errors}`: `{roots: [≤ 100 repo-relative
  * paths], journeys: [≤ 100 {id kebab-case, domain ≤ 60, title ≤ 120, money, global, goal ≤ 500, steps: [1–40
- * {role, route? (starts /, ≤ 200), trigger?, goal ≤ 500, claim?, sources: [1–10 {file, line ≥ 1, text 16–500}]}]}],
+ * {role, route? (starts /, ≤ 200), trigger?, goal ≤ 500, claim?, creates?, sources: [1–10 {file, line ≥ 1, text 16–500}]}]}],
  * notes? ≤ 2000}`; every unknown key is an error, and so is a control character in a domain, title, goal or
  * the notes (the catalog prints them: no line of it can be forged). `value` is the map as given when there is none.
  */
@@ -111,6 +112,7 @@ export function validateMap(obj) {
       if (s.trigger !== undefined && (typeof s.trigger !== "string" || !TRIGGER.test(s.trigger))) err(`${st}.trigger must be a trigger name (${TRIGGER.source})`);
       plain(s.goal, `${st}.goal`, 500);
       if (s.claim !== undefined) bool(s.claim, `${st}.claim`);
+      if (s.creates !== undefined) bool(s.creates, `${st}.creates`);
       objects(s.sources, `${st}.sources`, 10, 1, SOURCE_KEYS, (a, sa) => {
         file(a.file, `${sa}.file`);
         if (!Number.isInteger(a.line) || a.line < 1) err(`${sa}.line must be a whole number from 1`);
@@ -439,17 +441,25 @@ function selectRoles(main) {
  * roles' `<role>/command` taken this cycle) → `{accounts}` (`{"<role>.<k>": user | null}`, the roles in their
  * steps' order) or `{role}` the first role with no free account. First pass one account per role a step
  * names (`system` none; `anon.1` without a user; a login-command role's `.1`, once per cycle); second pass
- * a second account of a users role a `claim: true` step names, when one is free.
+ * a second account of a users role a `claim: true` step names, when one is free. A `creates: true` step makes a
+ * new user of its role (never `anon`'s): each is an account of its own, `<role>.<k>=+` (CREATED), numbered after
+ * the role's configured ones and holding no user; a role whose every step creates holds no configured user.
  */
 function allocate(j, roles, used) {
   const order = [...new Set(j.steps.map((s) => s.role).filter((r) => r !== "system"))];
   const claims = new Set(j.steps.filter((s) => s.claim === true).map((s) => s.role));
+  const made = {};
+  for (const s of j.steps) if (s.creates === true && s.role !== "anon" && s.role !== "system") made[s.role] = (made[s.role] ?? 0) + 1;
+  const onlyMade = (r) => Boolean(made[r]) && j.steps.every((s) => s.role !== r || s.creates === true);
   const taken = new Set();
   const per = {};
   const freeUser = (r) => (roles[r].users ?? []).map((u) => isObj(u) && u.user).find((u) => typeof u === "string" && !used.has(`${r}/${u}`) && !taken.has(`${r}/${u}`));
   for (const r of order) {
     const role = isObj(roles[r]) ? roles[r] : null;
-    if (r === "anon" && role) per[r] = [null];
+    if (onlyMade(r)) {
+      if (!role) return { role: r };
+      per[r] = [];
+    } else if (r === "anon" && role) per[r] = [null];
     else if (role && role.login) {
       if (used.has(`${r}/command`)) return { role: r };
       taken.add(`${r}/command`);
@@ -462,13 +472,16 @@ function allocate(j, roles, used) {
     }
   }
   for (const r of order) {
-    if (!claims.has(r) || r === "anon" || roles[r].login) continue;
+    if (!claims.has(r) || r === "anon" || roles[r].login || onlyMade(r)) continue;
     const u = freeUser(r);
     if (u !== undefined) (taken.add(`${r}/${u}`), per[r].push(u));
   }
   for (const k of taken) used.add(k);
   const accounts = {};
-  for (const r of order) per[r].forEach((u, i) => (accounts[`${r}.${i + 1}`] = u));
+  for (const r of order) {
+    per[r].forEach((u, i) => (accounts[`${r}.${i + 1}`] = u));
+    for (let k = 0; k < (made[r] ?? 0); k++) accounts[`${r}.${per[r].length + k + 1}`] = CREATED;
+  }
   return { accounts };
 }
 
