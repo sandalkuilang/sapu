@@ -295,7 +295,7 @@ function tasteStep(raw) {
 }
 
 /** True when step `s` changes state: always (decision 6), or a click, double click or press the run recorded in `changed`. */
-const changesState = (s, changed) => ALWAYS_CHANGES.includes(s.do) || (CLICKS.includes(s.do) && changed.has(s.n));
+export const changesState = (s, changed) => ALWAYS_CHANGES.includes(s.do) || (CLICKS.includes(s.do) && changed.has(s.n));
 
 /**
  * The proving expect of state-changing step `n` of `steps` (decision 6) → its number, or null: a trigger's is

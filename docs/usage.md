@@ -690,6 +690,12 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.34.0
+
+Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **`repro --minimize` keeps the step a claim is about.** An explorer may set `key_step` on a candidate, the number of the repro step the claim is about (an action before the last step, such as a supervisor's reject); `submit` refuses a number that is not one. A reduction that would drop that step is skipped without a run (`try <label>: skipped (it holds the key step <n>)`), so a repro whose final also holds without the action no longer minimizes down to one that no longer shows the bug. A candidate without `key_step` is minimized as before.
+- **A negative control follows the confirm.** For a candidate with a `key_step`, `repro --minimize` runs the repro it would file once more without that step and the expect proving it, and ends with a verdict line: `not discriminating: the outcome shows without step <n>` (the repro does not discriminate: the lane does not file it as is), `discriminating: the outcome does not show without step <n>`, or `control undecided: <why>` (no run left, the cycle down or short of time, or the run exited 2; filed as before). `minimize.json` then also holds `key_step` and `control` (`shows`, `discriminates` or `undecided`). The control is one more run, counted in `limits.minimize_runs` and held back from the tries, and it is only started with the time of the longest run so far left before the cycle's deadline (else `stopped deadline`, exit 2).
+
 #### Upgrading from a version before 2.33.0
 
 Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:

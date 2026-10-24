@@ -2856,6 +2856,33 @@ describe("argus-live submit and intake", () => {
     expect((await t.send(t.token, withRepro(nest(8)))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
   }, 30_000);
 
+  it("submit takes a candidate's key_step: an action before the final step, numbered as the repro's steps are", async () => {
+    const t = await submitRun();
+    const ctx = { context: { viewport: 1440 } };
+    const act = (n: number) => ({ as: "buyer", do: "click", target: { text: `b${n}` } });
+    const see = { as: "buyer", expect: "visible", target: { text: "x" } };
+    const final = { as: "buyer", expect: "visible", target: { text: "y" }, final: "status-coherence" };
+    const withKey = (repro: unknown[], key: unknown) => JSON.stringify(good({ candidates: [{ ...good().candidates[0], repro, key_step: key }] }));
+    const refused = [
+      [withKey([ctx, act(1), see, final], 0), /^refused: return: candidates\[0\]\.key_step must be a step number from 1 to 2, before the final step$/],
+      [withKey([ctx, act(1), see, final], 3), /key_step must be a step number from 1 to 2, before the final step/],
+      [withKey([ctx, act(1), see, final], "1"), /key_step must be a step number/],
+      [withKey([ctx, act(1), see, final], 1.5), /key_step must be a step number/],
+      [withKey([ctx, act(1), see, final], 2), /^refused: return: candidates\[0\]\.key_step must name an action \(a step with "do"\), not an expectation$/],
+      // A parallel group's members each count: step 3 is the second member, the group's last, and 4 the final.
+      [withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 4), /key_step must be a step number from 1 to 3/],
+    ] as [string, RegExp][];
+    for (const [json, re] of refused) {
+      const r = await t.send(t.token, json);
+      expect(r.code, String(re)).toBe(1);
+      expect(r.out[0]).toMatch(re);
+    }
+    expect(returnsOf(t)).toEqual([]);
+    expect((await t.send(t.token, withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 3))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+    const saved = JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", returnsOf(t)[0]), "utf8"));
+    expect(saved.candidates[0].key_step).toBe(3);
+  }, 30_000);
+
   it("submit needs only the slot: an invalid .argus/live.json does not block it", async () => {
     const t = await submitRun();
     writeFileSync(join(t.main, ".argus/live.json"), "{not json");
