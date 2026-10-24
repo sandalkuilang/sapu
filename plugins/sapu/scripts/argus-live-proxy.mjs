@@ -144,6 +144,7 @@ export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup
       block("http", t.host, t.port, "connect-failed");
       return answer(502, "this run listener accepts no connection\n");
     }
+    if (req.socket.destroyed) return sock.destroy();
     res.on("close", () => sock.destroy());
     // The agent hands the request the socket already connected (a request cannot be retried once its body is piped).
     const agent = Object.assign(new http.Agent(), { createConnection: () => sock });
