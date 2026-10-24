@@ -84,6 +84,8 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
   const sink = {
     measured: null,
     probes: [],
+    /** The `route|width` of every page the replay passed after a step (a broken path's later rows are answered from it). */
+    seen: new Set(),
     first: null,
     arm: row && row.rule === "states.error" ? faultCode(S) : row && row.rule === "ai.error" ? faultArm() : null,
     wrap: (text) =>
@@ -100,6 +102,7 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
     const vp = page.viewportSize();
     const width = vp && vp.width ? vp.width : await page.evaluate("innerWidth");
     const here = routeOf(new URL(page.url()).pathname, S.routes);
+    if (answer && typeof answer === "object") answer.__seen = here + "|" + width;
     const at = width === S.width && here === S.route;
     const P = S.probe;
     // A recorded screen of the journey (its route and width): only there is the page's scheme read, and a read that
@@ -186,6 +189,10 @@ export function confirmSink(rows, { routes, settleMs, bar = loadBar(), cfg = nul
 }
 `,
     take: (answer) => {
+      if (isObj(answer) && Object.hasOwn(answer, "__seen")) {
+        if (typeof answer.__seen === "string") sink.seen.add(answer.__seen);
+        delete answer.__seen;
+      }
       if (isObj(answer) && Object.hasOwn(answer, "__probe")) {
         if (isObj(answer.__probe) && typeof answer.__probe.key === "string" && !sink.probes.some((x) => x.key === answer.__probe.key)) sink.probes.push({ key: answer.__probe.key, themes: answer.__probe.themes ?? null, rows: Array.isArray(answer.__probe.rows) ? answer.__probe.rows : null });
         delete answer.__probe;
