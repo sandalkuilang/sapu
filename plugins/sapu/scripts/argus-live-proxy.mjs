@@ -9,7 +9,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { normHost } from "./argus-live-endpoints.mjs";
+import { normHost, probeLoopback } from "./argus-live-endpoints.mjs";
 import { readLock, runIdOk } from "./argus-live-lock.mjs";
 import { canonicalOrigin, exactHost } from "./argus-live-origin.mjs";
 import { killGroup, sleep, startTime } from "./argus-live-proc.mjs";
@@ -39,16 +39,19 @@ function shownOrigin(scheme, host, port) {
  * The filtering proxy → an `http.Server` (not listening yet). `allowed`: origins (any form; compared
  * canonically); `runHosts`: the host names of the run's origins that are not loopback by themselves —
  * such a host is connected to only when `lookup` gives it loopback addresses only at that moment, and
- * then at the address checked (no second lookup to rebind). Absolute-form `http://` requests are
+ * then at the address checked (no second lookup to rebind); `runPorts`: the run's own ports, the only ones a
+ * loopback name with no recorded address is probed on (127.0.0.1, then ::1). Absolute-form `http://` requests are
  * forwarded (their Proxy-* headers dropped); origin-form requests and absolute `https://` answer 400 (it
  * is not a reverse proxy; https goes through CONNECT); CONNECT opens a tunnel; an upgrade (WebSocket)
- * is piped. Anything else answers 403 and `onBlocked(origin, kind)` — once per origin per server.
+ * is piped. Anything else answers 403 and `onBlocked(origin, kind)` — once per origin per server; so does
+ * a 502 for an allowed loopback name with no address (kind `no-address`).
  * URLs are read with WHATWG `URL`, so `http://localhost:<p>@outside.test/` is outside.test.
  */
-export function createProxy({ allowed = [], runHosts = [], lookup = defaultLookup, onBlocked = () => {}, upstream = () => null } = {}) {
+export function createProxy({ allowed = [], runHosts = [], runPorts = [], lookup = defaultLookup, onBlocked = () => {}, upstream = () => null } = {}) {
   const set = new Set([...allowed].map(canonicalOrigin));
   let tracked = (sock) => sock;
   const named = new Set([...runHosts].map((h) => normHost(h)));
+  const ports = new Set([...runPorts].map(Number));
   const reported = new Set();
   const block = (scheme, host, port, kind) => {
     const origin = shownOrigin(scheme, host, port);
@@ -62,14 +65,15 @@ export function createProxy({ allowed = [], runHosts = [], lookup = defaultLooku
   };
   /**
    * Where to connect for an allowed target: a loopback address as it is; a loopback name (`localhost`,
-   * `*.localhost`) at the address the run's listener on that port passed health on (`upstream(port)`),
-   * never by a lookup — undefined (502) when none is recorded; a run host that is a name, at the loopback
+   * `*.localhost`) at the address recorded for that port (`upstream(port)`), else, for one of the run's
+   * ports only, at the loopback address (127.0.0.1, then ::1) that accepts a connection now — never by a
+   * lookup, undefined (502) when there is none; a run host that is a name, at the loopback
    * address it resolves to now — null (blocked) when it resolves elsewhere.
    */
   const address = async (host, port) => {
     const h = normHost(host);
     const bare = host.replace(/^\[(.*)\]$/, "$1");
-    if (h === "loopback") return net.isIP(bare) ? bare : (upstream(port) ?? undefined);
+    if (h === "loopback") return net.isIP(bare) ? bare : ((upstream(port) ?? (ports.has(port) ? await probeLoopback(port) : null)) || undefined);
     if (!named.has(h)) return host;
     try {
       const addrs = await lookup(host);
@@ -107,7 +111,10 @@ export function createProxy({ allowed = [], runHosts = [], lookup = defaultLooku
     };
     if (!t) return answer(400);
     const to = proxyAllows({ scheme: "http", host: t.host, port: t.port }, { allowed: set }) ? await address(t.host, t.port) : null;
-    if (to === undefined) return answer(502);
+    if (to === undefined) {
+      block("http", t.host, t.port, "no-address");
+      return answer(502);
+    }
     if (!to) {
       block("http", t.host, t.port, "http");
       return answer(403);
@@ -136,7 +143,10 @@ export function createProxy({ allowed = [], runHosts = [], lookup = defaultLooku
       return deny(socket, 400, "Bad Request");
     }
     const to = proxyAllows({ scheme: "connect", host, port }, { allowed: set }) ? await address(host, port) : null;
-    if (to === undefined) return deny(socket, 502, "Bad Gateway");
+    if (to === undefined) {
+      block("connect", host, port, "no-address");
+      return deny(socket, 502, "Bad Gateway");
+    }
     if (!to) {
       block("connect", host, port, "connect");
       return deny(socket, 403, "Forbidden");
@@ -155,7 +165,10 @@ export function createProxy({ allowed = [], runHosts = [], lookup = defaultLooku
     const t = absolute(req.url);
     if (!t) return deny(socket, 400, "Bad Request");
     const to = proxyAllows({ scheme: "http", host: t.host, port: t.port }, { allowed: set }) ? await address(t.host, t.port) : null;
-    if (to === undefined) return deny(socket, 502, "Bad Gateway");
+    if (to === undefined) {
+      block("http", t.host, t.port, "no-address");
+      return deny(socket, 502, "Bad Gateway");
+    }
     if (!to) {
       block("http", t.host, t.port, "websocket");
       return deny(socket, 403, "Forbidden");
@@ -195,7 +208,8 @@ const blockedLog = (main, runId) => path.join(logsDir(main, runId), "proxy-block
 /**
  * `argus-live.mjs proxy <runId>`: the run's proxy, for run.json's `origins` and `allowOrigins` (the
  * expanded `allow_origins`, recorded by `up`), connecting loopback names at run.json's `upstream`
- * (`{<port>: <address>}`: where each listener passed health; re-read every `pollMs`). Listens on 127.0.0.1:0, writes `<logs>/proxy.json`
+ * (`{<port>: <address>}`: where each listener passed health or accepted a probe; re-read every `pollMs`) and, for a
+ * port of run.json's `ports` with none, at the loopback address that accepts a connection. Listens on 127.0.0.1:0, writes `<logs>/proxy.json`
  * `{port, pid}`, appends each blocked origin once to `<logs>/proxy-blocked.jsonl` as `{t, origin, kind}`,
  * and re-reads the lock every `pollMs`, closing once it no longer names `runId` (resolves then).
  */
@@ -210,7 +224,8 @@ export async function serveProxy(main, runId, { lookup = defaultLookup, pollMs =
   const onBlocked = (origin, kind) => fs.appendFileSync(blockedLog(main, runId), `${JSON.stringify({ t: Date.now(), origin, kind })}\n`, { mode: 0o600 });
   // Where each run port's listener passed health (run.json `upstream`, rewritten by `up --fresh`): re-read with the lock.
   let upstream = rec.upstream ?? {};
-  const server = createProxy({ allowed: [...origins, ...(rec.allowOrigins ?? [])], runHosts, lookup, onBlocked, upstream: (port) => (typeof upstream[String(port)] === "string" ? upstream[String(port)] : null) });
+  const runPorts = Object.values(rec.ports ?? {}).filter((p) => Number.isInteger(p));
+  const server = createProxy({ allowed: [...origins, ...(rec.allowOrigins ?? [])], runHosts, runPorts, lookup, onBlocked, upstream: (port) => (typeof upstream[String(port)] === "string" ? upstream[String(port)] : null) });
   await new Promise((ok, fail) => {
     server.once("error", fail);
     server.listen(0, "127.0.0.1", ok);

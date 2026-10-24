@@ -132,6 +132,7 @@ function runContext({ main, runId, x, env, worktree, home, ports, secrets, contr
     composeServices,
     lookup,
     upstream,
+    ports,
     egress: () => egress(1),
     fullEgress: () => egress(5, expectListen),
   };

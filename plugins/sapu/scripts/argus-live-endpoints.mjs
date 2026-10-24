@@ -372,6 +372,28 @@ export function hostOf(raw) {
   }
 }
 
+/**
+ * The loopback address a listener on `port` accepts a TCP connection on → `127.0.0.1`, else `::1`, else null
+ * (each try bounded by `timeoutMs`). Only these two literals are ever tried: never a name, never another host.
+ */
+export async function probeLoopback(port, timeoutMs = 500) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  for (const host of ["127.0.0.1", "::1"]) {
+    const ok = await new Promise((done) => {
+      const sock = net.connect({ host, port, timeout: timeoutMs });
+      const end = (v) => {
+        sock.destroy();
+        done(v);
+      };
+      sock.once("connect", () => end(true));
+      sock.once("timeout", () => end(false));
+      sock.once("error", () => end(false));
+    });
+    if (ok) return host;
+  }
+  return null;
+}
+
 /** True when `host` is loopback by itself (`localhost`, `127.x`, `::1`) or every address `lookup` gives it is. */
 export async function resolvesToLoopback(host, lookup) {
   if (normHost(host) === "loopback") return true;

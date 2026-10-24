@@ -690,6 +690,12 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.34.0
+
+Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **The browser reaches every port of the run, not only those with a health `url`.** The run's filtering proxy connects a loopback name (`localhost`) only to an address it has recorded for the port; that was recorded only for a start entry whose health check is a `url`. A port served by an entry with a health `cmd` (object storage under Compose, say) had none, so every browser call to it got a bare 502 that Chrome shows as a CORS error (an upload failing with "Gagal unggah"). `up` and `up --fresh` now record, once every entry is healthy, the loopback address (`127.0.0.1`, then `::1`) that accepts a connection on each of the run's `ports` still without one, and the proxy probes the same two addresses itself for a run port that still has none. It never connects a name to a non-loopback address, never probes a port that is not one of the run's, and a run port nothing listens on still answers 502.
+- **The proxy's 502s are logged.** A request to an allowed loopback port with no address to connect to is appended to `proxy-blocked.jsonl` once per origin, with kind `no-address`. It is not reported to an explorer as `blocked:` (the origin is the run's own).
+
 #### Upgrading from a version before 2.33.0
 
 Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:

@@ -30,7 +30,7 @@ import { base32Decode, login, loginCode, loginPlan, reserveStep, runCode, totp, 
 // @ts-expect-error — plain ESM script without types
 import { status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
+import { makeHome, makeWorktree, recordRunPorts, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1263,9 +1263,70 @@ describe("argus-live proxy", () => {
     expect(upstream).toEqual({ [String(app.port)]: "127.0.0.1" });
   });
 
+  it("a run port with no recorded address is probed on 127.0.0.1 then ::1, by name over HTTP and CONNECT; the refusals stay", async () => {
+    const app = await target();
+    const other = await counter();
+    const nobody = await freePort();
+    const get = (port: number, host = "localhost") => `GET http://${host}:${port}/n HTTP/1.1\r\nHost: ${host}:${port}\r\nConnection: close\r\n\r\n`;
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`, `http://localhost:${other.port}`, `http://localhost:${nobody}`], runPorts: [app.port, nobody], upstream: () => null });
+    // A run port: reached with no record.
+    expect(await raw(p.port, get(app.port))).toContain("app /n");
+    expect(await raw(p.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\nGET /c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /c");
+    // An allowed loopback port that is not one of the run's: never probed, never reached.
+    expect(status(await raw(p.port, get(other.port)))).toBe(502);
+    expect(other.count()).toBe(0);
+    // A run port nothing listens on: 502, not a guess elsewhere.
+    expect(status(await raw(p.port, get(nobody)))).toBe(502);
+    expect(p.blocked).toEqual([[`http://localhost:${other.port}`, "no-address"], [`http://localhost:${nobody}`, "no-address"]]);
+    // A run host that resolves outside loopback stays blocked, whatever the run ports are.
+    const out = await proxyOn({ allowed: ["http://app.test:80"], runHosts: ["app.test"], runPorts: [80], lookup: async () => [{ address: "203.0.113.5", family: 4 }] });
+    expect(status(await raw(out.port, get(80, "app.test")))).toBe(403);
+    expect(out.blocked).toEqual([["http://app.test", "http"]]);
+  });
+
+  it("a recorded address wins over the probe; the 502 of an unrecorded port is logged once as no-address, on every route", async () => {
+    const app = await target();
+    const req = (path: string, extra = "") => `GET http://localhost:${app.port}${path} HTTP/1.1\r\nHost: x\r\n${extra}Connection: close\r\n\r\n`;
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [app.port], upstream: () => "127.0.0.1" });
+    expect(await raw(p.port, req("/r"))).toContain("app /r");
+    const none = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    for (let i = 0; i < 2; i++) expect(status(await raw(none.port, req("/r")))).toBe(502);
+    expect(none.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+    const ws = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    expect(status(await raw(ws.port, req("/ws", "Upgrade: websocket\r\n")))).toBe(502);
+    expect(ws.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+    const tunnel = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    expect(status(await raw(tunnel.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\n`))).toBe(502);
+    expect(tunnel.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+  });
+
+  it("recordRunPorts records the loopback address a run port accepts on, keeps recorded ones and skips a port nothing listens on", async () => {
+    const app = await target();
+    const nobody = await freePort();
+    const upstream: Record<string, string> = { "1": "::1" };
+    await recordRunPorts({ web: app.port, gone: nobody, kept: 1 }, upstream);
+    expect(upstream).toEqual({ "1": "::1", [String(app.port)]: "127.0.0.1" });
+  });
+
   it("listens on loopback only", async () => {
     const p = await proxyOn({ allowed: [] });
     expect(p.address).toBe("127.0.0.1");
+  });
+
+  it("serveProxy reaches a run port with no upstream record and logs the 502 of an allowed port that is not the run's", async () => {
+    process.env.TMPDIR = tempDir();
+    const r = liveRun();
+    closers.push(() => down(r.main, { runId: r.runId, graceMs: 1000 }));
+    const app = await target();
+    const other = await counter();
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, ports: { s3: app.port }, origins: [`http://localhost:${app.port}`, `http://localhost:${other.port}`], allowOrigins: [], upstream: {}, groups: [], env: r.env });
+    const { pid, port } = await startProxy(r.main, r.runId, { groups: [] });
+    closers.push(() => killGroup(pid));
+    expect(await raw(port, `GET http://localhost:${app.port}/up HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /up");
+    expect(status(await raw(port, `GET http://localhost:${other.port}/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`))).toBe(502);
+    expect(other.count()).toBe(0);
+    const lines = readFileSync(join(logsDir(r.main, r.runId), "proxy-blocked.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.origin, l.kind])).toEqual([[`http://localhost:${other.port}`, "no-address"]]);
   });
 
   it("serveProxy (through startProxy) records its group as internal, its port in run.json, logs each blocked origin once, and exits once the lock names another run", async () => {
