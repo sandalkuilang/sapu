@@ -512,11 +512,11 @@ export const appCycle = ({ clerk = true, mark, repro = false }: { clerk?: boolea
 /**
  * Slot `slot` minted for journey order-to-cash with `accounts` (`<role>.<k>=<user>|<role>.<k>,…`) and a
  * return submitted through it holding one candidate per repro of `repros` (its oracle the last step's
- * `final`) → the candidates' refs (`<slot>.1.<k>`), as `repro` takes them.
+ * `final`, its `key_step` the one at its index of `keySteps`) → the candidates' refs (`<slot>.1.<k>`), as `repro` takes them.
  */
-export const candidate = async (main: string, { slot, accounts, repros }: { slot: number; accounts: string; repros: Obj[][] }) => {
+export const candidate = async (main: string, { slot, accounts, repros, keySteps = [] }: { slot: number; accounts: string; repros: Obj[][]; keySteps?: Array<number | undefined> }) => {
   const m = await mintSlot(main, { slot, journey: "order-to-cash", accounts: parseAccounts(accounts) });
-  const ret = { journey: "order-to-cash", status: "done", candidates: repros.map((repro) => ({ claim: "a seeded defect", oracle: repro.at(-1)!.final, repro })) };
+  const ret = { journey: "order-to-cash", status: "done", candidates: repros.map((repro, k) => ({ claim: "a seeded defect", oracle: repro.at(-1)!.final, repro, ...(keySteps[k] === undefined ? {} : { key_step: keySteps[k] }) })) };
   const r = await pw(main, [m.token, "submit", JSON.stringify(ret)]);
   expect(r.out, "submit").toEqual([`submitted: slot ${slot} generation 1 status done`]);
   return repros.map((_, k) => `${slot}.1.${k + 1}`);

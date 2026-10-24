@@ -135,10 +135,26 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
    * counted, each member of a `parallel` group counted) → the number, or null when absent. It names an action
    * (a `do`) that is not the last step and not a member of a `parallel` group (without it the group would hold
    * one member, which the static checks refuse): minimize keeps it and runs the repro once without it.
+   * Required when minimize may drop a whole role (reductions: each role besides `system` and the final
+   * step's, unless dropping it leaves a placeholder of its `read` unsaved or a `parallel` group of one) and
+   * some action can be named: without the key step it may drop the one the claim is about.
    */
   const keyStep = (k, repro, at) => {
-    if (k === undefined) return null;
     const flat = repro.filter((s, i) => !(i === 0 && isObj(s) && Object.hasOwn(s, "context"))).flatMap((s) => (isObj(s) && Array.isArray(s.parallel) ? s.parallel.map((m) => ({ step: m, grouped: true })) : [{ step: s, grouped: false }]));
+    if (k === undefined) {
+      const roleOf = ({ step }) => (isObj(step) && typeof step.as === "string" ? step.as.split(".")[0] : "system");
+      const last = flat.length ? roleOf(flat.at(-1)) : "system";
+      // ponytail: the static checks' two refusals of a role drop, not the whole parseRepro (no accounts here).
+      const feeds = (r) => {
+        const others = JSON.stringify(flat.filter((x) => roleOf(x) !== r).map((x) => x.step));
+        return flat.some((x) => roleOf(x) === r && isObj(x.step) && typeof x.step.save === "string" && others.includes(`{{${x.step.save}}}`));
+      };
+      const grouped = (r) => repro.some((s) => isObj(s) && Array.isArray(s.parallel) && s.parallel.some((m) => roleOf({ step: m }) === r) && s.parallel.filter((m) => roleOf({ step: m }) !== r).length < 2);
+      const droppable = [...new Set(flat.map(roleOf))].filter((r) => r !== "system" && r !== last && !feeds(r) && !grouped(r));
+      const nameable = flat.slice(0, -1).some((x) => !x.grouped && roleOf(x) !== "system" && typeof x.step.do === "string");
+      if (droppable.length && nameable) err(`${at} is required: minimize may drop ${droppable.length > 1 ? "roles" : "role"} ${droppable.map((r) => (/^[a-z0-9_-]{1,40}$/.test(r) ? r : "that")).join(", ")} whole; name the step the claim is about`);
+      return null;
+    }
     if (!Number.isInteger(k) || k < 1 || k >= flat.length) err(`${at} must be a step number from 1 to ${Math.max(flat.length - 1, 1)}, before the final step`);
     else if (!isObj(flat[k - 1].step) || typeof flat[k - 1].step.do !== "string") err(`${at} must name an action (a step with "do"), not an expectation`);
     else if (flat[k - 1].grouped) err(`${at} must not be a member of a parallel group; name an action outside it`);

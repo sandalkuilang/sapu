@@ -31,7 +31,7 @@ describe("argus-live repro — the oracles' defects", () => {
   const reproCycle = reproCycleFor(MARK);
 
   it("each seeded oracle defect reproduces, and its fixed variant does not", async () => {
-    const t = await reproCycle(ORACLE_REPROS.map(([, r]) => r));
+    const t = await reproCycle(ORACLE_REPROS.map(([, r]) => r), ORACLE_REPROS.map(([, , k]) => k));
     for (const [k, [defect]] of ORACLE_REPROS.entries()) {
       t.c.defects(defect);
       const on = t.repro(t.refs[k]);
