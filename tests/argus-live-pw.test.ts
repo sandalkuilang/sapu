@@ -3125,6 +3125,21 @@ describe("argus-live submit and intake", () => {
     expect(saved.candidates[0].key_step).toBe(1);
   }, 30_000);
 
+  it("submit needs a key_step on a repro across roles: minimize drops a whole role, maybe the one the claim is about", async () => {
+    const t = await submitRun();
+    const step = (as: string, n: number) => ({ as, do: "click", target: { text: `b${n}` } });
+    const final = { as: "buyer", expect: "hidden", target: { text: "y" }, final: "status-coherence" };
+    const withRepro = (repro: unknown[], key?: number) => JSON.stringify(good({ candidates: [{ ...good().candidates[0], repro, ...(key === undefined ? {} : { key_step: key }) }] }));
+    const r = await t.send(t.token, withRepro([step("seller.1", 1), { parallel: [step("buyer.1", 2), step("buyer.2", 3)] }, final]));
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toBe("refused: return: candidates[0].key_step is required on a repro across roles (seller, buyer): name the step the claim is about");
+    expect(returnsOf(t)).toEqual([]);
+    // One role besides system: nothing to drop whole, the key step stays optional.
+    expect((await t.send(t.token, withRepro([{ as: "system", do: "trigger", name: "seed" }, step("buyer", 2), final]))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+    const u = await submitRun();
+    expect((await u.send(u.token, withRepro([step("seller.1", 1), step("buyer", 2), final], 1))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+  }, 30_000);
+
   it("submit needs only the slot: an invalid .argus/live.json does not block it", async () => {
     const t = await submitRun();
     writeFileSync(join(t.main, ".argus/live.json"), "{not json");

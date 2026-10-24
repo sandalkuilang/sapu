@@ -135,10 +135,16 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
    * counted, each member of a `parallel` group counted) → the number, or null when absent. It names an action
    * (a `do`) that is not the last step and not a member of a `parallel` group (without it the group would hold
    * one member, which the static checks refuse): minimize keeps it and runs the repro once without it.
+   * Required when the repro acts as two or more roles besides `system`: minimize drops a whole role, and
+   * without the key step it may drop the one the claim is about.
    */
   const keyStep = (k, repro, at) => {
-    if (k === undefined) return null;
     const flat = repro.filter((s, i) => !(i === 0 && isObj(s) && Object.hasOwn(s, "context"))).flatMap((s) => (isObj(s) && Array.isArray(s.parallel) ? s.parallel.map((m) => ({ step: m, grouped: true })) : [{ step: s, grouped: false }]));
+    if (k === undefined) {
+      const roles = [...new Set(flat.map(({ step }) => (isObj(step) && typeof step.as === "string" ? step.as.split(".")[0] : "system")))].filter((r) => r !== "system");
+      if (roles.length > 1) err(`${at} is required on a repro across roles (${roles.join(", ")}): name the step the claim is about`);
+      return null;
+    }
     if (!Number.isInteger(k) || k < 1 || k >= flat.length) err(`${at} must be a step number from 1 to ${Math.max(flat.length - 1, 1)}, before the final step`);
     else if (!isObj(flat[k - 1].step) || typeof flat[k - 1].step.do !== "string") err(`${at} must name an action (a step with "do"), not an expectation`);
     else if (flat[k - 1].grouped) err(`${at} must not be a member of a parallel group; name an action outside it`);

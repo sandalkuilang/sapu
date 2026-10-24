@@ -690,6 +690,11 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.35.0
+
+Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **A repro across roles needs a `key_step`.** `submit` refuses a candidate whose repro acts as two or more roles besides `system` and sets no `key_step`: `refused: return: candidates[<i>].key_step is required on a repro across roles (<roles>): name the step the claim is about`. `repro --minimize` drops a whole role at a time, so without the key step it could drop the role the claim is about (role A's action behind "X never shows for role B") and still confirm. A repro of one role keeps `key_step` optional, and candidates recorded before 2.35.0 are minimized as before.
+
 #### Upgrading from a version before 2.34.0
 
 Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
