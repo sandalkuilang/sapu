@@ -167,6 +167,9 @@ export const writePrivate = (file, text) => fs.renameSync(tempBeside(file, text,
  */
 export async function runOnce(main, ref, { list = null, i = null, path: smoke = null, until = null, dirty = false, fresh = upFresh, cli = null, runner = run, cliRunner = runAsync, say = () => {} } = {}) {
   const { runId, candidate, slotRec, dir } = smoke ? pathRef(main, smoke) : reproRef(main, ref);
+  // A restart (`up --fresh`) ends a walking explorer's journey: refused before anything is touched (a `dirty` run restarts nothing).
+  const walking = dirty ? null : walkingRefusal(main, runId);
+  if (walking) throw new Error(walking);
   const n = i ?? nextRun(dir);
   const started = Date.now();
   const lines = [];
@@ -267,7 +270,7 @@ export async function runOnce(main, ref, { list = null, i = null, path: smoke = 
           const { record, events } = await d.ensure();
           u.record = record;
           if (events.length) throw new Harness(`step ${n} ${a} hook failed`);
-          if (d.role !== "anon" && firstOf.get(a).do !== "login" && !d.state.signedIn) {
+          if (d.wantsSignIn() && firstOf.get(a).do !== "login" && !d.state.signedIn) {
             d.state.drained = false; // the sign-in runs in the hooked context: its values wait for the next drain
             if (!(await d.signIn()).ok) throw new Harness(`${a} cannot sign in this cycle`);
           }
@@ -603,6 +606,30 @@ export function deadlineRefusal(main, ref, runs) {
   const left = lock.deadline * 1000 - Date.now();
   const need = runs * runNeedMs(dir);
   return left < need ? `deadline: ${Math.max(0, Math.floor(left / 60_000))} min left, a repro needs about ${Math.ceil(need / 60_000)}` : null;
+}
+
+/** How recently a slot's state.json was written for its explorer to count as walking (a quiet one is not waited for). */
+export const WALKING_MS = 5 * 60_000;
+
+/**
+ * Why a run of cycle `runId` may not restart the instance (`up --fresh`) now: a slot holds a live token and its
+ * state.json changed within WALKING_MS, so its explorer is mid-journey and the restart would retire its token
+ * and close its browsers → `refused: repro: slot <n> is still walking …`, else null. It refuses, never waits: a
+ * wait could outlast the lock's deadline, and the orchestrator knows when its explorers have returned.
+ */
+export function walkingRefusal(main, runId) {
+  const rec = readRun(main);
+  for (const [n, s] of Object.entries(rec && rec.runId === runId ? (rec.slots ?? {}) : {})) {
+    if (!isObj(s) || !s.tokenHash || !/^[1-9][0-9]?$/.test(n)) continue;
+    let at = 0;
+    try {
+      at = fs.statSync(path.join(slotDir(main, runId, Number(n)), "state.json")).mtimeMs;
+    } catch {
+      at = 0;
+    }
+    if (Date.now() - at < WALKING_MS) return `refused: repro: slot ${n} is still walking (a call within the last ${WALKING_MS / 60_000} min); run it again once its explorer has returned, or ${WALKING_MS / 60_000} min after its last call`;
+  }
+  return null;
 }
 
 /** The number the candidate's next run record takes: one past its highest `run-<i>.json` (unreadable ones too). */

@@ -1020,6 +1020,29 @@ describe("argus-live repro — two of two", () => {
     expect(JSON.parse(readFileSync(join(t.dir(t.refs[0]), "run-1.json"), "utf8"))).toEqual({ exit: 3, reduced: false });
   }, 30_000);
 
+  it("a repro run, repro and minimize are refused while another slot's explorer is walking: up --fresh would end its journey", async () => {
+    const t = returned([LIST]);
+    const fresh = async () => Promise.reject(Object.assign(new Error("failed: x"), { step: "3 store" }));
+    const slot2 = (tokenHash: string | null) => updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, slots: { ...prev.slots, "2": { journey: "order-to-cash", generation: 1, tokenHash, accounts: {}, retired: [], submitted: false } } }));
+    const dir2 = slotDir(t.main, t.runId, 2);
+    mkdirSync(dir2, { recursive: true, mode: 0o700 });
+    writeSlotState(dir2, { calls: 3 });
+    const why = "refused: repro: slot 2 is still walking (a call within the last 5 min); run it again once its explorer has returned, or 5 min after its last call";
+    slot2("a".repeat(64));
+    await expect(runOnce(t.main, t.refs[0], { fresh })).rejects.toThrow(why);
+    await expect(repro(t.main, t.refs[0])).rejects.toThrow(why);
+    await expect(minimize(t.main, t.refs[0])).rejects.toThrow(why);
+    expect(existsSync(join(t.dir(t.refs[0]), "verdict.json"))).toBe(false);
+    // An explorer that went quiet is not waited for: up --fresh retires its token anyway.
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(join(dir2, "state.json"), old, old);
+    expect((await runOnce(t.main, t.refs[0], { fresh })).lines.at(-1)).toBe("HARNESS: up --fresh failed at 3 store");
+    // A slot without a live token (submitted, or retired) is never walking.
+    writeSlotState(dir2, { calls: 4 });
+    slot2(null);
+    expect((await runOnce(t.main, t.refs[0], { fresh })).lines.at(-1)).toBe("HARNESS: up --fresh failed at 3 store");
+  }, 30_000);
+
   it("repro --saved prints the values the reproducing run read, masked by scrub's rules", () => {
     const t = returned([LIST]);
     const dir = t.dir(t.refs[0]);
@@ -2525,6 +2548,8 @@ describe("argus-live map mode", () => {
     expect(errs(step({ role: "Buyer" }))).toEqual(["journeys[0].steps[0].role must be a role name"]);
     expect(errs(step({ route: "orders" }))).toEqual(["journeys[0].steps[0].route must start with / (at most 200 characters)"]);
     expect(errs(step({ claim: 1 }))).toEqual(["journeys[0].steps[0].claim must be true or false"]);
+    expect(errs(step({ creates: true }))).toEqual([]);
+    expect(errs(step({ creates: "yes" }))).toEqual(["journeys[0].steps[0].creates must be true or false"]);
     expect(errs(step({ sources: [] }))).toEqual(["journeys[0].steps[0].sources must hold 1 to 10 anchors"]);
     expect(errs(step({ sources: [{ file: "/etc/x", line: 0, text: "short" }] }))).toEqual([
       "journeys[0].steps[0].sources[0].file must be a repo-relative path (no ..)",
@@ -2686,6 +2711,23 @@ describe("argus-live select", () => {
     t.map([journey("c", [claim], { lastCycle: 1 }), journey("d", [BUY])]);
     expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "d", score: 4.5, accounts: { "buyer.1": "buyer1@example.test" } }, { id: "c", score: 3, accounts: { "buyer.1": "buyer2@example.test" } }]);
   });
+
+  it("a creates step gets an account of its own (=+), after the role's configured ones, and takes no configured user", () => {
+    const made = { ...BUY, creates: true };
+    // Every step of the role creates it: no configured buyer is held at all.
+    const t = selectRepo([journey("i", [APPROVE, made])], { limits: { max_parallel_journeys: 3 } });
+    expect(selectJourneys(t.main, { cycle: 3 }).picks).toEqual([{ id: "i", score: 4.5, accounts: { "clerk.1": "clerk1@example.test", "buyer.1": "+" } }]);
+    // A role with steps of both kinds: its configured account first, then one created account per creates step.
+    t.map([journey("j", [BUY, made, { ...made, goal: "a second one" }])]);
+    expect(selectJourneys(t.main, { cycle: 3 }).picks[0].accounts).toEqual({ "buyer.1": "buyer1@example.test", "buyer.2": "+", "buyer.3": "+" });
+    // Created accounts hold no key: two journeys each get their own, and the configured buyers stay free for others.
+    t.map([journey("k", [made]), journey("l", [made]), journey("m", [BUY], { lastCycle: 1 })]);
+    const r = selectJourneys(t.main, { cycle: 3 });
+    expect(r.picks.map((p: Obj) => [p.id, p.accounts])).toEqual([["k", { "buyer.1": "+" }], ["l", { "buyer.1": "+" }], ["m", { "buyer.1": "buyer1@example.test" }]]);
+    // anon is never signed in, so creates means nothing there; a login-command role keeps its single command account.
+    t.map([journey("n", [{ ...ANON, creates: true }])]);
+    expect(selectJourneys(t.main, { cycle: 3 }).picks[0].accounts).toEqual({ "anon.1": null });
+  }, 30_000);
 
   it("a login-command role serves one journey a cycle", () => {
     const ADMIN = { ...APPROVE, role: "admin" };

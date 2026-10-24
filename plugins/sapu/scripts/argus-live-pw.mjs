@@ -13,6 +13,7 @@ import { loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs"
 import { fence } from "./argus-live-fence.mjs";
 import { CODE_USAGE, codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
+import { liveCounts } from "./argus-live-counts.mjs";
 import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { submit } from "./argus-live-return.mjs";
 import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mjs";
@@ -291,9 +292,9 @@ function pngsIn(dir) {
  * an account the journey created (its password appended to the run's secret ledger first, as `created
  * password`; `login: ok` or `login: failed (<reason>)`; kept in state.json
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
- * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
+ * `loginFailed`; a RETRYABLE failure is tried once more first, loginRetry); a user of `roles.*.users` is refused, whichever slot holds it. On an account allocated `+` (`<role>.<k>=+`, an account the journey creates) the session starts signed out and no configured user is ever signed in on it. Every write of the slot's
  * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
- * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. The role-free `code`, `trigger`, `facts` and `mail`
+ * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. Both count each repro step's target on the page its account's open session stands on (argus-live-counts.mjs): more than one match, or none for an action, is refused; `--check` notes the steps it could not count. The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
  * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall); a
@@ -355,11 +356,31 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // submit needs only the slot's record: past DEADLINE and BUDGET, never counted, and a .argus/live.json
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
   // `submit --check` is the same validation printing `check: ok`: it writes nothing, retires nothing, and is
-  // never counted either (as a refused submit is not).
+  // never counted either (as a refused submit is not). `--check` then counts each repro step's target on the
+  // page its account stands on (liveCounts): one matching more than one element is refused, and the targets
+  // that could not be counted are noted. A real submit is not counted: the page has moved on since the walk
+  // (a control gone, a list grown), and a return refused for it costs the explorer more than the repro will.
   if (word === "submit") {
     try {
       const p = parsePw(argv);
-      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, p.positionals[0], { checks: () => returnChecks(main, slotRec), check: p.flags.includes("--check") })] };
+      const check = p.flags.includes("--check");
+      let pc;
+      const checks = () => {
+        if (pc === undefined) {
+          try {
+            pc = returnChecks(main, slotRec);
+          } catch {
+            pc = null;
+          }
+        }
+        return pc;
+      };
+      const ids = { main, runId, slot, rec: slotRec };
+      const line = submit(main, ids, p.positionals[0], { checks, check: true });
+      const run = readRun(main);
+      const counted = !check || slotRec.mode === "map" || lockNow.deadline * 1000 <= now() ? { errors: [], notes: [] } : await liveCounts(JSON.parse(p.positionals[0]), { checks: checks(), run, runId, slot, js: cli ?? (run && run.browser && run.browser.js), cliRunner });
+      if (counted.errors.length) throw new Error(`refused: return: ${counted.errors.slice(0, 5).join("; ")}`);
+      return { code: 0, out: check ? [line, ...counted.notes] : [submit(main, ids, p.positionals[0], { checks })] };
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       return { code: 1, out: [e.message] };
@@ -427,7 +448,6 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // The account's session (argus-live-session.mjs): its credentials, its state and every CLI call it makes.
   const d = sessionDriver({ main, runId, slot, account, rec, live, envSecrets, slotRec, dir, js, failures: createdFailures, runner, cliRunner });
   const { role, plan } = d;
-  const r = live.roles && live.roles[role];
   let positionals;
   try {
     positionals = p.positionals.map((v, i) => checkArg(COMMANDS[p.cmd].args[Math.min(i, COMMANDS[p.cmd].args.length - 1)], v, { origins: rec.origins ?? [], base: plan.base, files: path.join(dir, "files") }));
@@ -440,7 +460,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   }
 
   const c0 = d.credentials();
-  const user = (c0 ?? {}).user ?? slotRec.accounts[account];
+  const user = (c0 ?? {}).user ?? (d.fresh ? null : slotRec.accounts[account]);
   const failedBefore = c0 && c0.created ? createdFailures.get(`${role}/${user}`) : user && rec.loginFailed && Object.hasOwn(rec.loginFailed, `${role}/${user}`);
   if (p.cmd !== "login" && failedBefore) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
@@ -472,9 +492,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
     save(done.ok ? { created: { ...(readSlotState(dir).created ?? {}), [account]: { user: u, password } } } : {});
     return { code: 0, out: [counter, ...opening, done.ok ? "login: ok" : `login: failed (${/^error: /.test(done.reason) ? "error" : done.reason})`] };
   }
-  if (role !== "anon" && !d.state.signedIn) {
-    if (!(r && r.login) && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
-  }
+  if (!d.state.signedIn && d.wantsSignIn() && !(await d.signIn()).ok) return { code: 1, out: [`HARNESS: ${account} cannot sign in this cycle; submit status aborted`, counter] };
 
   const args = [p.cmd, ...p.flags, ...(positionals.length ? ["--", ...positionals] : [])];
   const shotsBefore = p.cmd === "screenshot" ? pngsIn(dir) : null;

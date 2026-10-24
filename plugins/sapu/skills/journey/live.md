@@ -97,7 +97,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `users` — a non-empty list of `{user, password, totp_secret?}`: `user` written literally (SELECT prints the accounts), `password` and `totp_secret` as `${NAME}`. Account `<role>.<k>` is the k-th user, from 1.
 - `login` — `{"command": <command>}`, run at every session open, printing a fresh Playwright storage state (`{cookies, origins}`). One journey a cycle may use such a role.
 
-A role may also set `code_role` (the role's name in the code's role → permission source, read by the map agent), `base_url`, `login_url`, `logged_in` and `login_open`, overriding the top level. `up` proves every account with one login before the cycle, and refuses on the first that fails.
+A role may also set `code_role` (the role's name in the code's role → permission source, read by the map agent), `base_url`, `login_url`, `logged_in` and `login_open`, overriding the top level. `up` proves every account with one login before the cycle, and refuses on the first that fails. A journey that makes a new user of a role (an invited person who registers) gets `<role>.<k>=+` for each: a session of its own, signed out, using the role's `base_url` and `login_url`, signed in only by `login <user> <password>`; it takes no configured user, and its failed logins stay in the slot.
 
 ## Expansion
 
@@ -124,7 +124,7 @@ The checks of `up`, `renew` and `down` catch a misconfiguration or an app defaul
 - The egress check samples: a connection opened and closed between two samples is not seen, and processes inside containers are not listed.
 - A host name stands for the addresses it resolves to when the check runs; `allow_origins` is matched for every process of the run, not only for pages.
 - A container reaches the Docker host only by the names and addresses the checks know; a custom bridge subnet and some runtimes' host aliases escape them.
-- The Docker runtime gate judges objects by when they were created: touching an object older than the cycle ends it, the owner's own work on the same daemon included.
+- Every docker call of the instance passes the run's Docker proxy: it labels what the run creates and refuses the run's actions on objects that are not the run's, and prunes. The Docker runtime gate judges objects by when they were created; what touched an older object without passing the proxy (the owner's own work on the same daemon) is a note in the log, not a refusal. A process of the run that dials the daemon's socket itself bypasses the proxy and counts as the owner's.
 - The run's Docker client uses the local unix socket of the owner's current context (tcp or ssh is refused), with no credentials: pull private images beforehand.
 - A slot's token is in the process list while a `pw` call runs: the lane assumes a single-user machine.
 - The worktree and HOME live under `$TMPDIR`; on a Linux whose `/tmp` is a tmpfs, point `TMPDIR` at a disk-backed directory of your own.

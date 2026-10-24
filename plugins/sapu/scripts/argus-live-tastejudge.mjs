@@ -13,6 +13,7 @@ import { liveDir, readLock, RUN_ID } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";
 import { pathSha } from "./argus-live-perf.mjs";
 import { tempBeside } from "./argus-live-proc.mjs";
+import { walkedPath } from "./argus-live-return.mjs";
 import { confirmSink, firstRows, probePlan } from "./argus-live-tastesink.mjs";
 import { runOnce } from "./argus-live-repro.mjs";
 import { confirming, spendTaste, tasteDir, tasteSpent } from "./argus-live-session.mjs";
@@ -89,7 +90,11 @@ function readScreens(main, runId) {
   return { screens, bad };
 }
 
-/** Each journey's explorer path in run `runId` (`<run>/returns/<slot>.<generation>.json` holding `path`; the newest generation of the lowest slot) → Map(id → list). */
+/**
+ * Each journey's explorer path in run `runId` (`<run>/returns/<slot>.<generation>.json`) → Map(id → list): the path the
+ * lowest slot walked, every generation's joined in order (walkedPath): a handoff's partial path, then the steps the
+ * next generations added, so a journey that ended in a handoff still replays what it walked.
+ */
 function explorerPaths(main, runId) {
   const dir = path.join(liveDir(main), runId, "returns");
   const out = new Map();
@@ -99,16 +104,9 @@ function explorerPaths(main, runId) {
   } catch {
     return out;
   }
-  const order = (f) => f.split(".").map(Number);
-  files.sort((a, b) => order(a)[0] - order(b)[0] || order(b)[1] - order(a)[1]);
-  for (const f of files) {
-    let r = null;
-    try {
-      r = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
-    } catch {
-      r = null;
-    }
-    if (isObj(r) && typeof r.journey === "string" && Array.isArray(r.path) && r.path.length && !out.has(r.journey)) out.set(r.journey, r.path);
+  for (const slot of [...new Set(files.map((f) => Number(f.split(".")[0])))].sort((a, b) => a - b)) {
+    const { journey, path: list } = walkedPath(dir, slot);
+    if (journey !== null && list.length && !out.has(journey)) out.set(journey, list);
   }
   return out;
 }

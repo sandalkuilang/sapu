@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { closeSessions, removeSockets, sweepSessions } from "./argus-live-cli.mjs";
 import { LIVE_FILE, loadLive, secretEnv, secretsIn } from "./argus-live-config.mjs";
-import { checkDockerRuntime, gateOf } from "./argus-live-docker.mjs";
+import { checkDockerRuntime, DOCKER_PROXY, dropProxySocket, gateOf, viaDaemon } from "./argus-live-docker.mjs";
 import { appendEnd, claim, claimBusy, claimPath, liveDir, readLock, releaseLock, RUN_ID, runIdOk, staleRecords } from "./argus-live-lock.mjs";
 import { gitCommonDir } from "./sapu-contract.mjs";
 import { processTable, readFrom, redact, refreshGroups, run, runAsync, sleep, sleepSync, stopRecordedGroups, tail, tempBeside, withFileLock, within } from "./argus-live-proc.mjs";
@@ -553,7 +553,7 @@ async function replayRecorded(s, t) {
     if (!s || typeof s.cwd !== "string" || !fs.existsSync(s.cwd)) return t.note(`stop ${s && s.name}: its cwd ${s && s.cwd} is gone; journalled, not run`);
     if (!s.env || s.env.COMPOSE_PROJECT_NAME !== `argus-${t.runId}`) return t.note(`stop ${s.name}: its env does not name COMPOSE_PROJECT_NAME=argus-${t.runId}; journalled, not run`);
   } else if (s && typeof s.cwd === "string" && !fs.existsSync(s.cwd)) return t.note(`stop ${s.name}: its cwd ${s.cwd} is gone; not run`);
-  await replayStop(s, { secrets: t.secrets, asyncRunner: t.asyncRunner, timeoutMs: t.stopTimeoutMs, logs: logsDir(t.main, t.runId), note: t.note });
+  await replayStop(viaDaemon(s, t.rec, t.runner), { secrets: t.secrets, asyncRunner: t.asyncRunner, timeoutMs: t.stopTimeoutMs, logs: logsDir(t.main, t.runId), note: t.note });
 }
 
 /**
@@ -578,7 +578,7 @@ function markUndrained(main, runId, sessions) {
  */
 const TEARDOWN = [
   // `down` only: a finding is reported, never stops the teardown.
-  ["docker runtime gate", (t) => (t.mode === "down" && t.rec && Number.isFinite(t.rec.since) && t.rec.env && typeof t.rec.worktree === "string" ? checkDockerRuntime({ ...gateOf(t.rec, t.rec.groups), main: t.main, runner: t.runner }) : undefined)],
+  ["docker runtime gate", (t) => (t.mode === "down" && t.rec && Number.isFinite(t.rec.since) && t.rec.env && typeof t.rec.worktree === "string" ? checkDockerRuntime({ ...gateOf(t.rec, t.rec.groups), main: t.main, runner: t.runner }).notes.forEach((n) => t.note(`docker: outside the run: ${n}`)) : undefined)],
   // Last started first, each bounded by stopTimeoutMs.
   ["stops", async (t) => {
     for (const s of [...(t.rec?.stops ?? [])].reverse()) await guarded(`stop ${s && s.name}`, t.note, () => replayRecorded(s, t));
@@ -586,7 +586,7 @@ const TEARDOWN = [
   // Only groups that still run what was recorded (sameGroup); setup groups included.
   // The run's own helpers (`internal`: the proxy) have their own steps.
   ["process groups", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => !(g && g.internal)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: t.note })],
-  ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && g.name === "proxy"), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) })],
+  ["the proxy", (t) => stopRecordedGroups((t.rec?.groups ?? []).filter((g) => g && g.internal && (g.name === "proxy" || g.name === DOCKER_PROXY)), { runner: t.runner, secrets: t.secrets, graceMs: t.graceMs, refresh: t.refresh, note: (l) => t.note(`the proxy: ${l}`) }).then(() => dropProxySocket(t.rec))],
   // Each session drained first (`drain`: its values into the run's secret ledger; else marked undrained),
   // closed by name, then its daemon and browser killed by identity (closeSessions).
   // Then whatever a session of the run left that no record holds (sweepSessions: its daemons by name, orphaned browsers by HOME).

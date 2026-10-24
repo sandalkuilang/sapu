@@ -604,9 +604,9 @@ const judgeRepo = () => {
   let t = 0;
   const screen = (route: string, findings: Obj[] = [], over: Obj = {}) => ({ v: 1, t: (t += 1), journey: "j", slot: 1, account: "buyer.1", key: `${route}|1440|light`, route, width: 1440, theme: "light", rows: 0, themed: false, taste: { findings }, ease: { findings: [] }, events: [], dropped: 0, shots: [], faults: [], ...over });
   const taste = (obj: Obj) => writeFileSync(join(main, ".argus/taste.json"), JSON.stringify(obj));
-  const ret = (slot: number, journey: string, path: Obj[], generation = 1) => {
+  const ret = (slot: number, journey: string, path: Obj[] | undefined, generation = 1, status = "done") => {
     mkdirSync(join(main, ".argus/live", runId, "returns"), { recursive: true });
-    writeFileSync(join(main, ".argus/live", runId, "returns", `${slot}.${generation}.json`), JSON.stringify({ journey, status: "done", path }));
+    writeFileSync(join(main, ".argus/live", runId, "returns", `${slot}.${generation}.json`), JSON.stringify({ journey, status, path }));
   };
   const judge = () => tasteJudge(main, { run: null });
   const file = () => JSON.parse(readFileSync(join(dir, "judge.json"), "utf8"));
@@ -1198,6 +1198,26 @@ describe("argus-live taste confirm (J2)", () => {
     // The best path gone from the suite: nothing to replay.
     writeFileSync(join(t.main, "e2e/argus-smoke/journeys/j.json"), JSON.stringify({ journey: "j", path: pathOf(4) }));
     await expect(tasteConfirm(t.main, "t1", { once: once(3) })).rejects.toThrow("refused: taste confirm: the best path of j is not in the suite");
+  }, 30_000);
+
+  it("a journey that ended in a handoff replays the path walked so far: each generation's path in order, the final one's last", async () => {
+    const t = await confirmRepo([broken]);
+    const tail: Obj[] = [{ context: { viewport: 390 } }, { as: "buyer.1", do: "click", target: { role: "button", name: "Next 8" } }];
+    // Generation 1 handed off with its partial path, generation 2 added its steps.
+    t.ret(1, "j", pathOf(3), 1, "handoff");
+    t.ret(1, "j", tail, 2, "done");
+    await t.confirm("t1", { rows: [{ key: "facts|undefined", measured: "undefined" }] });
+    expect(t.runs[0].opts.path.list).toEqual([...pathOf(3), tail[1]]);
+    // A generation without a path ends the walk known: generation 3 went on from a page the join never reached.
+    t.ret(1, "j", undefined, 2, "handoff");
+    t.ret(1, "j", tail, 3, "done");
+    await t.confirm("t1", { rows: [{ key: "facts|undefined", measured: "undefined" }] });
+    expect(t.runs[1].opts.path.list).toEqual(pathOf(3));
+    // No generation with a path at all (an empty first generation): refused, as before.
+    t.ret(1, "j", undefined, 1, "handoff");
+    t.ret(1, "j", undefined, 2, "handoff");
+    t.ret(1, "j", undefined, 3, "handoff");
+    await expect(t.confirm("t1", { rows: [] })).rejects.toThrow("refused: taste confirm: journey j returned no path to replay");
   }, 30_000);
 
   it("refusals: no cycle, a row of another shape or not judged, a cross-screen row, the pass's time spent, no path", async () => {

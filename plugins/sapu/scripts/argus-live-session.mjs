@@ -15,11 +15,11 @@ import { appendLedger, appendSeen, ledgerEntries, seenIds } from "./argus-live-l
 import { liveDir } from "./argus-live-lock.mjs";
 import { readJourneys } from "./argus-live-map.mjs";
 import { activeSink, measure, PERF_SCRIPT } from "./argus-live-perf.mjs";
-import { commandLogin, login, loginCode, loginPlan, loginStageSource, runCode } from "./argus-live-login.mjs";
+import { commandLogin, loginCode, loginPlan, loginRetry, loginStageSource, runCode } from "./argus-live-login.mjs";
 import { run, runAsync } from "./argus-live-proc.mjs";
 import { browserHome, logsDir, readRun, recordedSecrets } from "./argus-live-run.mjs";
 import { writeVerdict } from "./argus-live-scrub.mjs";
-import { readSlotState, stillLive } from "./argus-live-slots.mjs";
+import { CREATED, readSlotState, stillLive } from "./argus-live-slots.mjs";
 import { censusOf } from "./argus-live-taste.mjs";
 import { loadBar, loadTaste, MEDIA_READ, SCREEN_KEY, shotName, TASTE_BUDGET_MS, TASTE_DRAIN, tasteEventFault, tasteOff } from "./argus-live-tastecfg.mjs";
 import { WORLD_EVAL } from "./argus-live-world.mjs";
@@ -469,12 +469,15 @@ export function recorderPayload({ main, runId, slot, slotRec, prev, settleMs }) 
  * The driver of account `account`'s session in slot `slot` of run `runId` (`rec` its run.json as the
  * caller read it, `live` the expanded config, `envSecrets` the env_file's values, `slotRec` the slot's
  * run.json record, `dir` the slot's directory, `js` the installed CLI) → `{name, plan, role, state,
- * credentials, cli, stage, code, ensure, signIn, gone, reopen, observe, relogin}`:
+ * credentials, fresh, byCommand, wantsSignIn, cli, stage, code, ensure, signIn, gone, reopen, observe, relogin}`:
  * - `state`: the account's `{signedIn, lastState, consoleSeen}` from the slot's state.json, replaced by
  *   `{signedIn}` when the session opens again; the caller saves it.
  * - `credentials()`: those of an account the journey created and signed in with `login` (the slot's
  *   state.json `created`), else its allocated user's (`created: false`), else null; `credentials` (a
  *   parameter) replaces it.
+ * - `fresh`: the account is one the journey creates (allocated CREATED, `<role>.<k>=+`): it has no configured
+ *   user, its session starts signed out even in a login-command role (`byCommand` is false for it), and it is
+ *   signed in only by its `login` (`wantsSignIn()` is true once that left credentials, for a re-login).
  * - `cli(args, timeoutMs)`: one CLI call in the slot's directory, under the run's browser HOME;
  *   `stage(which, payload)` a login stage (loginCode) and `code(text, timeoutMs)` a template the caller
  *   built, each through runCode. A driver made while a perf pass measures (argus-live-perf's activeSink)
@@ -509,6 +512,8 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
   const role = account.split(".")[0];
   const r = live.roles && live.roles[role];
   const plan = loginPlan(live, role);
+  const fresh = isObj(slotRec.accounts) && slotRec.accounts[account] === CREATED;
+  const byCommand = Boolean(r && r.login) && !fresh;
   const name = sessionName(runId, slot, account);
   const home = () => browserHome(rec);
   const perf = activeSink();
@@ -518,12 +523,15 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     name,
     plan,
     role,
+    fresh,
+    byCommand,
     state: { ...((readSlotState(dir).sessions ?? {})[account] ?? {}) },
     credentials:
       credentials ??
       (() => {
         const c = (readSlotState(dir).created ?? {})[account];
         if (c && typeof c.user === "string" && typeof c.password === "string") return { user: c.user, password: c.password, totpSecret: null, created: true };
+        if (fresh) return null;
         const u = ((r && r.users) || []).find((x) => x && x.user === slotRec.accounts[account]);
         return u ? { user: u.user, password: u.password, totpSecret: u.totp_secret ?? null, created: false } : null;
       }),
@@ -538,7 +546,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     // The page's init payload as this session needs it (a perf pass measures the app alone: no taste recorder).
     writeInitPayload(dir, perf ? SIGNAL_SCRIPT : PAGE_INIT);
     let storageState = null;
-    if (r && r.login) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
+    if (byCommand) storageState = await commandLogin({ role, live, env: rec.env, worktree: rec.worktree, secrets: envSecrets, origins: rec.origins ?? [], dir, runner: cliRunner });
     record = await openSession({ main, runId, slot, account, js, home: home(), storageState, runner, cliRunner });
     d.state = { signedIn: Boolean(storageState) };
     const runOrigins = [...new Set([...(rec.origins ?? []), ...(rec.allowOrigins ?? [])].map((o) => new URL(o).origin))];
@@ -561,9 +569,11 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     const events = await open();
     return { record, opened: true, events };
   };
-  /** Signs the open session in with the account's credentials (login, which never retries a failed account) → its answer. */
+  /** True when the wrapper signs this session in by itself: not anon's, not a login command's, and a created account only once its `login` left credentials. */
+  d.wantsSignIn = () => role !== "anon" && !byCommand && (!fresh || d.credentials() !== null);
+  /** Signs the open session in with the account's credentials (loginRetry: one retry of a retryable reason, none of a failed account) → its answer. */
   d.signIn = async (c = d.credentials()) => {
-    const res = c ? await login({ main, runId, session: name, account, user: c.user, password: c.password, totpSecret: c.totpSecret, plan, js, home: home(), cwd: dir, runner: cliRunner, ...(c.created && failures ? { failures } : {}) }) : { ok: false, reason: "rejected" };
+    const res = c ? await loginRetry({ main, runId, session: name, account, user: c.user, password: c.password, totpSecret: c.totpSecret, plan, js, home: home(), cwd: dir, runner: cliRunner, ...(c.created && failures ? { failures } : {}) }, { spacingMs: live.login_spacing_ms }) : { ok: false, reason: "rejected" };
     if (res.ok) d.state.signedIn = true;
     return res;
   };
@@ -573,7 +583,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
     await closeSessions([session], { js, runner, cliRunner, graceMs: 3000 });
     const hooked = await open();
     const events = [`session-reopened: ${account}`, ...hooked];
-    if (role !== "anon" && !d.state.signedIn && !(r && r.login) && !(await d.signIn()).ok) events.push("harness: login failed");
+    if (!d.state.signedIn && d.wantsSignIn() && !(await d.signIn()).ok) events.push("harness: login failed");
     return events;
   };
   d.observe = async () => {
@@ -618,7 +628,7 @@ export function sessionDriver({ main, runId, slot, account, rec, live, envSecret
       d.state.signedIn = false;
       let ok = false;
       try {
-        if (r && r.login) {
+        if (byCommand) {
           await closeSessions([record], { js, runner, cliRunner, graceMs: 3000 });
           events.push(...(await open()));
           ok = d.state.signedIn;

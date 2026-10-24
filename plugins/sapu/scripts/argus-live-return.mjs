@@ -58,8 +58,11 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
  * `path` (a smoke path, kept as written once `parsePath` takes it) and `heal` (`[{step, target}]`, at most
  * `healMax`, each target a locator `healTarget` turns into the DSL's; or `[]` with `heal_reason`) are read
  * through `checks()` (pathChecks; called only for a return holding either, null when it cannot be built).
+ * A path is the walk of its generation: `before` (walkedPath's `path` of the slot's earlier generations) leads it, so
+ * a handoff's partial path ends with an expect proving the last step it reached, and a later generation's continues
+ * it (a read an earlier generation made still counts; its own `context` element is dropped). `value.path` is kept as written.
  */
-export function validateReturn(obj, { journey, accounts, outFiles, checks = null }) {
+export function validateReturn(obj, { journey, accounts, outFiles, checks = null, before = [] }) {
   const errors = [];
   const err = (m) => errors.push(m);
   if (!isObj(obj)) return { value: null, errors: ["the return must be a JSON object"] };
@@ -209,16 +212,16 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
     return pc;
   };
   if (obj.path !== undefined) {
-    const before = errors.length;
+    const faults = errors.length;
     const p = list(obj.path, "path", 101).map((s, i) => {
       if (!isObj(s)) err(`path[${i}] must be an object`);
       return leaves(s, `path[${i}]`);
     });
-    if (errors.length === before) {
+    if (errors.length === faults) {
       if (!checked()) err(`path: ${UNCHECKED}`);
       else {
         try {
-          checked().parsePath(p);
+          checked().parsePath(before.length ? [...before, ...withoutContext(p)] : p);
           v.path = p;
         } catch (e) {
           err(`path: ${String(e.message).replace(/^refused: repro: /, "")}`);
@@ -261,6 +264,34 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
 }
 
 const returnsDir = (main, runId) => path.join(liveDir(main), runId, "returns");
+
+/** A path without its leading `{context}` element (a joined path opens its browser context once, with the first generation's). */
+const withoutContext = (p) => (isObj(p[0]) && Object.hasOwn(p[0], "context") ? p.slice(1) : p);
+
+/**
+ * The path slot `slot` walked in the generations before `below` (every one when omitted; at most 9 exist) in returns
+ * directory `dir` → `{journey, path}`: each `<slot>.<generation>.json` holding a path, in generation order, joined
+ * (a handoff's partial path and the next generations' steps, the browser sessions staying open between them; only the
+ * first generation's `context` stays). `{journey: null, path: []}` when no generation holds one. The one place the
+ * data lives is the return files: no state of its own.
+ */
+export function walkedPath(dir, slot, below = Infinity) {
+  let journey = null;
+  const joined = [];
+  for (let g = 1; g < below && g <= 9; g++) {
+    let r = null;
+    try {
+      r = JSON.parse(fs.readFileSync(path.join(dir, `${slot}.${g}.json`), "utf8"));
+    } catch {
+      break;
+    }
+    // A generation without a path ends the walk known so far: a later one would go on from a page the join never reached.
+    if (!isObj(r) || !Array.isArray(r.path) || !r.path.length) break;
+    if (!joined.length && typeof r.journey === "string") journey = r.journey;
+    joined.push(...(joined.length ? withoutContext(r.path) : r.path));
+  }
+  return { journey, path: joined };
+}
 
 /** A map return (decision 20): the journey map's `journeys`, never an explorer return's `status`. */
 const isMap = (r) => isObj(r) && Array.isArray(r.journeys) && !Object.hasOwn(r, "status");
@@ -352,7 +383,8 @@ export function submit(main, { runId, slot, rec }, json, { checks = null, check 
     outFiles = [];
   }
   const map = rec.mode === "map";
-  const { value, errors } = map ? validateMap(obj) : validateReturn(obj, { journey: rec.journey, accounts: rec.accounts, outFiles, checks });
+  const before = map ? [] : walkedPath(returnsDir(main, runId), slot, rec.generation).path;
+  const { value, errors } = map ? validateMap(obj) : validateReturn(obj, { journey: rec.journey, accounts: rec.accounts, outFiles, checks, before });
   if (errors.length) throw new Error(`refused: return: ${errors.slice(0, 5).join("; ")}`);
   if (check) return "check: ok";
   const dir = returnsDir(main, runId);

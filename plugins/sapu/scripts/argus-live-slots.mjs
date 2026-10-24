@@ -9,7 +9,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
-import { expandConfig, loadLive } from "./argus-live-config.mjs";
+import { CREATED, expandConfig, loadLive } from "./argus-live-config.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { run, tempBeside, withFileLock } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
@@ -62,8 +62,10 @@ export function stillLive(main, runId, { map = false } = {}) {
   if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
 }
 
+export { CREATED };
+
 /**
- * `<role>.<k>=<user>|<role>.<k>,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
+ * `<role>.<k>=<user>|<role>.<k>|<role>.<k>=+,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
  * word that is not `<role>.<k>`, an account named twice, or an empty list is refused.
  */
 export function parseAccounts(list) {
@@ -84,7 +86,8 @@ export function parseAccounts(list) {
  * The account `account` (`<role>.<k>`) and its user checked against the expanded config `live` → the key
  * it is allocated by (`<role>/<user>`, `<role>/command` for a login-command role), or null for `anon`.
  * Refused: `system`, a role the config lacks, `anon` with a user or past `.1`, a login-command role past
- * `.1` or with a user, a users role without a user or with one it does not list.
+ * `.1` or with a user, a users role without a user or with one it does not list. `+` (CREATED) is an account
+ * the journey creates in any role but `anon` and `system`: no key (null).
  */
 function allocationKey(account, user, live) {
   const [, role, k] = ACCOUNT.exec(account);
@@ -95,6 +98,7 @@ function allocationKey(account, user, live) {
     if (user !== null) throw new Error(`refused: ${account}: anon is never signed in, so it takes no user`);
     return null;
   }
+  if (user === CREATED) return null;
   if (r.login) {
     if (k !== "1") throw new Error(`refused: ${account}: ${role} signs in by its login command, so it has only ${role}.1`);
     if (user !== null) throw new Error(`refused: ${account}: ${role} signs in by its login command, so it takes no user`);
@@ -316,7 +320,7 @@ function allocationKeysQuiet(accounts, live) {
   const out = {};
   for (const [a, user] of Object.entries(accounts ?? {})) {
     const m = ACCOUNT.exec(a);
-    if (!m || m[1] === "anon") continue;
+    if (!m || m[1] === "anon" || user === CREATED) continue;
     const r = live.roles && live.roles[m[1]];
     out[a] = r && r.login ? `${m[1]}/command` : `${m[1]}/${user}`;
   }
