@@ -11,7 +11,7 @@
 // -seed.mjs (seeds from issues and docs) and -ledger.mjs (the secret ledger) → -slots.mjs (after -browser.mjs),
 // -perf.mjs (after -map.mjs) and -scrub.mjs (after -ledger.mjs) → -return.mjs → -logincode.mjs (the login's browser
 // code) → -login.mjs → -session.mjs →
-// -steps.mjs → -pw.mjs → this module, -codeproj.mjs (the suite's projects, checks and config), -codegen.mjs (the smoke
+// -steps.mjs → -counts.mjs (submit --check's live target counts) → -pw.mjs → this module, -codeproj.mjs (the suite's projects, checks and config), -codegen.mjs (the smoke
 // suite's generator) and -redtest.mjs →
 // -repro.mjs → -minimize.mjs (minimize, the RED test) → -smoke.mjs (the lane's smoke pass) → -suite.mjs
 // (membership) → -propose.mjs (proposals) and -artifacts.mjs (CI's runs and artifacts) → -heal.mjs and -ci.mjs →

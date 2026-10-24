@@ -134,7 +134,8 @@ export function reachesOf(j) {
 /** The labels of `kind`/`id` on the daemon at `upstream`; null when it has none such (the daemon answers that). */
 function labelsOf(upstream, kind, id) {
   return new Promise((ok, fail) => {
-    const req = http.get({ socketPath: upstream, path: `/${kind}/${encodeURIComponent(id)}${kind === "containers" ? "/json" : ""}`, headers: { Host: "docker" } }, (res) => {
+    // A connection of its own (agent: false): a kept-alive one the daemon closed meanwhile would fail the lookup.
+    const req = http.get({ socketPath: upstream, path: `/${kind}/${encodeURIComponent(id)}${kind === "containers" ? "/json" : ""}`, headers: { Host: "docker" }, agent: false }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (d) => (body += d));

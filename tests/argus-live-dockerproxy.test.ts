@@ -35,9 +35,9 @@ async function daemon(objects: Record<string, Obj>, dir: string) {
       const o = method === "GET" ? objects[url] : undefined;
       if (method === "GET" && url in objects) {
         const json = JSON.stringify(o);
-        return c.end(`HTTP/1.1 200 OK\r\nContent-Length: ${json.length}\r\n\r\n${json}`);
+        return c.end(`HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: ${json.length}\r\n\r\n${json}`);
       }
-      if (method === "GET" && /\/json$|\/volumes\/|\/networks\//.test(url) && !url.startsWith("/v1.47/_ping")) return c.end("HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n{}");
+      if (method === "GET" && /\/json$|\/volumes\/|\/networks\//.test(url) && !url.startsWith("/v1.47/_ping")) return c.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
       seen.push({ head, body: Buffer.from(body, "latin1").toString("utf8") });
       if (/upgrade:/i.test(head)) return c.end(`HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\nstream:${body}`);
       c.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
