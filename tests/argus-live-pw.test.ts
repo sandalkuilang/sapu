@@ -3028,6 +3028,8 @@ describe("argus-live submit and intake", () => {
       [withKey([ctx, act(1), see, final], 2), /^refused: return: candidates\[0\]\.key_step must name an action \(a step with "do"\), not an expectation$/],
       // A parallel group's members each count: step 3 is the second member, the group's last, and 4 the final.
       [withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 4), /key_step must be a step number from 1 to 3/],
+      // A member of a parallel group cannot be the key: without it the group would hold one member, which the static checks refuse.
+      [withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 3), /^refused: return: candidates\[0\]\.key_step must not be a member of a parallel group; name an action outside it$/],
     ] as [string, RegExp][];
     for (const [json, re] of refused) {
       const r = await t.send(t.token, json);
@@ -3035,9 +3037,9 @@ describe("argus-live submit and intake", () => {
       expect(r.out[0]).toMatch(re);
     }
     expect(returnsOf(t)).toEqual([]);
-    expect((await t.send(t.token, withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 3))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+    expect((await t.send(t.token, withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 1))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
     const saved = JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", returnsOf(t)[0]), "utf8"));
-    expect(saved.candidates[0].key_step).toBe(3);
+    expect(saved.candidates[0].key_step).toBe(1);
   }, 30_000);
 
   it("submit needs only the slot: an invalid .argus/live.json does not block it", async () => {

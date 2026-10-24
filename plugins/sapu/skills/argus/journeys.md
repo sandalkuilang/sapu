@@ -73,7 +73,7 @@ Each charter is its agent's whole prompt: no URL, password, session name or othe
 | `refused: repro: slot <n> is still walking …` | nothing ran: a restart would end that explorer's journey; run it again once its explorer returned, or 5 min after its last call (one that died without a return) |
 | `refused: repro: …` | nothing ran; journal the reason |
 | `--minimize` stopped `down` or `deadline` | journal where it stopped; the whole list is the one filed |
-| `--minimize` ends `not discriminating: …` | the outcome shows without the claim's key step, so the repro proves nothing: journalled, never filed as is (`control undecided: …` is filed as before) |
+| `--minimize` ends `not discriminating: …` | the final asserts a bad thing is absent and still fails without the claim's key step, so the repro proves nothing: journalled, never filed as is (`control uninformative: …` and `control undecided: …` are filed as before) |
 | Scrub refuses the issue (a secret hit) | not filed; rewrite each place named and scrub again, or journal the candidate with the reason |
 | Scrub refuses the run (ledger incomplete, gone or damaged; a map run; not reproduced two of two) | nothing from that run is filed, and the journal says so |
 | `taste judge` refused (`.argus/taste.json` out of shape, no screen recorded) | quote it; the taste pass ends, the rest of the cycle goes on |

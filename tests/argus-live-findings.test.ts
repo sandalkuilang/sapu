@@ -1151,9 +1151,9 @@ describe("argus-live minimize", () => {
   const FAILED = { expected: "visible", observed: "absent", shownSha256: "same" };
   const has = (list: Obj[], step: Obj) => list.some((x) => JSON.stringify(x) === JSON.stringify(step));
   /** The candidate's reproducing run (run 1, exit 3, step 4 changed state), as runOnce records it. */
-  const reproduced = (t: ReturnType<typeof returned>, ref: string, changed: number[]) => {
+  const reproduced = (t: ReturnType<typeof returned>, ref: string, changed: number[], failed: Obj = FAILED) => {
     mkdirSync(t.dir(ref), { recursive: true });
-    writeFileSync(join(t.dir(ref), "run-1.json"), JSON.stringify({ exit: 3, step: 8, ...FAILED, ms: 1, saved: {}, traces: [], changed }));
+    writeFileSync(join(t.dir(ref), "run-1.json"), JSON.stringify({ exit: 3, step: 8, ...failed, ms: 1, saved: {}, traces: [], changed }));
   };
   /** A `once` answering 3 (failed as FAILED) exactly while steps 2 and 6 are both in its list, else 0; `force` overrides call k's exit. */
   const essential = (force: Record<number, number> = {}) => {
@@ -1281,12 +1281,12 @@ describe("argus-live minimize", () => {
 
   describe("the step a claim is about", () => {
     /** Reproduces (exit 3, FAILED) while steps 2 and 6 are in the list, and, when `needs` is given, that step too. */
-    const when = (needs: Obj | null) => {
+    const when = (needs: Obj | null, failed: Obj = FAILED) => {
       const calls: Obj[] = [];
       const once = async (_main: string, _ref: string, opts: Obj) => {
         calls.push(opts);
         const code = has(opts.list, S[2]) && has(opts.list, S[6]) && (!needs || has(opts.list, needs)) ? 3 : 0;
-        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? FAILED : {}) } };
+        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? failed : {}) } };
       };
       return { once, calls };
     };
@@ -1311,16 +1311,65 @@ describe("argus-live minimize", () => {
       expect(s.calls.slice(0, -1).every((c) => has(c.list, S[4]))).toBe(true);
     });
 
-    it("runs the minimized repro once without it: the outcome still showing is not discriminating", async () => {
+    // A final asserting that a bad thing is absent: failing it without the key step means the bad thing shows without it.
+    const HIDDEN = { as: "clerk", expect: "hidden", target: { text: "ORD-1" }, final: "orphaned-work" };
+    const FAILED_HIDDEN = { expected: "hidden", observed: "present", shownSha256: "same" };
+
+    it("runs the minimized repro once without it: a final asserting something absent that still fails is not discriminating", async () => {
+      const t = returned([[...EIGHT.slice(0, 7), HIDDEN]], [4]);
+      reproduced(t, t.refs[0], [4], FAILED_HIDDEN);
+      const s = when(null, FAILED_HIDDEN);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      // The control is the last run: the minimized list without step 4 and its proving expect 5.
+      expect(s.calls.at(-1)!.list).toEqual([CONTEXT, S[2], S[6], HIDDEN]);
+      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "not discriminating: the outcome shows without step 4"]);
+      expect(r.code).toBe(0);
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "shows" });
+    });
+
+    it("a final waiting for an effect the key step should make is uninformative when it fails without it", async () => {
       const t = returned([EIGHT], [4]);
       reproduced(t, t.refs[0], [4]);
       const s = when(null);
       const r = await minimize(t.main, t.refs[0], { once: s.once });
-      // The control is the last run: the minimized list without step 4 and its proving expect 5.
       expect(s.calls.at(-1)!.list).toEqual([CONTEXT, S[2], S[6], S[8]]);
-      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "not discriminating: the outcome shows without step 4"]);
+      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "control uninformative: the outcome is an effect step 4 should make, missing without it too"]);
       expect(r.code).toBe(0);
-      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "shows" });
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "uninformative" });
+    });
+
+    it("the same expectation kind is not enough: another observed outcome without the key step is undecided; the page text is not compared", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const other = (observed: string, shownSha256: string) => async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        return has(opts.list, S[4]) ? a : { ...a, result: { ...a.result, observed, shownSha256 } };
+      };
+      const a = await minimize(t.main, t.refs[0], { once: other("disabled", "same") });
+      expect(a.lines.at(-1)).toBe("control undecided: the final failed another way without step 4");
+      expect(json(t, "minimize.json")).toMatchObject({ control: "undecided" });
+      // Dynamic text (a timestamp, an id) changes the digest only: the same outcome.
+      const b = await minimize(t.main, t.refs[0], { once: other("absent", "other") });
+      expect(b.lines.at(-1)).toBe("control uninformative: the outcome is an effect step 4 should make, missing without it too");
+    });
+
+    it("never drops the final: a key step proved by the final itself is still controlled", async () => {
+      const goto = { as: "buyer", do: "goto", path: "/orders/new" };
+      const click = { as: "buyer", do: "click", target: { role: "button", name: "Place order" } };
+      const final = { as: "buyer", expect: "visible", target: { testId: "order-number" }, final: "handoff" };
+      const t = returned([[goto, click, final]], [2]);
+      reproduced(t, t.refs[0], [2]);
+      const calls: Obj[] = [];
+      const once = async (_m: string, _r: string, opts: Obj) => {
+        calls.push(opts);
+        const code = has(opts.list, goto) && has(opts.list, click) ? 3 : 0;
+        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? FAILED : {}) } };
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(calls.at(-1)!.list).toEqual([CONTEXT, goto, final]);
+      expect(r.lines.at(-1)).toBe("discriminating: the outcome does not show without step 2");
+      expect(json(t, "minimize.json")).toMatchObject({ key_step: 2, control: "discriminates" });
     });
 
     it("a repro the outcome needs step 4 for discriminates", async () => {
@@ -1349,7 +1398,7 @@ describe("argus-live minimize", () => {
       expect(b.lines.at(-1)).toBe("control undecided: no run left");
     });
 
-    it("a deadline too close for the control leaves it undecided and the result stands; exit 2", async () => {
+    it("a deadline too close for the control leaves it undecided and the confirmed result stands; exit 0", async () => {
       const t = returned([EIGHT], [4]);
       reproduced(t, t.refs[0], [4]);
       const s = when(S[4]);
@@ -1359,8 +1408,23 @@ describe("argus-live minimize", () => {
         return a;
       };
       const r = await minimize(t.main, t.refs[0], { once });
-      expect(r.code).toBe(2);
+      expect(r.code).toBe(0);
       expect(r.lines.at(-1)).toBe("control undecided: stopped deadline");
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, control: "undecided" });
+    });
+
+    it("a stop before the confirm is still exit 2", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const once = async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        if (s.calls.length === 2) setLock(t.main, { ...t.lock, deadline: now() + 30 });
+        return a;
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(r.code).toBe(2);
+      expect(json(t, "minimize.json")).toMatchObject({ stopped: "deadline", confirmed: false });
     });
 
     it("a candidate with no key step is minimized as before, with no control", async () => {
