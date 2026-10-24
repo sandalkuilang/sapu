@@ -460,8 +460,11 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
     const step = `async page => {\n  await page.goto(${JSON.stringify(`${base}/${name}/1234`)});\n  return { ok: true };\n}\n`;
     const answer = sink.take(await new Function(`return ${sink.wrap(step)}`)()(page));
     expect(answer).toEqual({ ok: true });
+    passed = [...sink.seen];
     return sink.measured;
   };
+  /** The `route|width` pages the last confirmOn's step passed (the sink's `seen`: a broken path's later rows are answered from it). */
+  let passed: string[] = [];
   const blank = async (contextOptions: Obj = {}) => {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...contextOptions });
     return { page: await context.newPage(), close: () => context.close() };
@@ -471,6 +474,7 @@ describe("argus-live taste recorder — in Chrome (J1)", () => {
     const p = await blank();
     try {
       expect(await confirmOn(p.page, "colour.dark-border", "/darkcheck/:id|1280|dark", "darkcheck")).toEqual({ rows: [{ key: "card", measured: 1 }] });
+      expect(passed).toEqual(["/darkcheck/:id|1280"]);
       expect(await p.page.evaluate(MEDIA_READ)).toEqual({ colorScheme: "light", reducedMotion: "no-preference" });
       // Twins: a light row on the same page; another width; another route.
       expect(await confirmOn(p.page, "colour.role", "/darkcheck/:id|1280|light", "darkcheck")).toEqual({ rows: [] });
@@ -1144,37 +1148,103 @@ describe("argus-live taste confirm (J2)", () => {
     expect(failed.lines[0]).toBe("taste confirm t1: not decided (the rule's expression failed on the screen)");
   }, 30_000);
 
-  it("a replay that failed before the screen is cached for the cycle by its path: the screen's next row is answered at once, another screen replays", async () => {
+  /** A cycle whose journey j has the screens /a (two rows), /b and /c, one explorer path; `at(rule, route)` a row's number. */
+  const cacheRepo = async () => {
     const heading = { rule: "hierarchy.heading-order", key: "h2|Profile", measured: 32, expected: "at most 24" };
     const t = judgeRepo();
-    t.put(1, [t.screen("/a", [broken, heading]), t.screen("/b", [broken])]);
+    t.put(1, [t.screen("/a", [broken, heading]), t.screen("/b", [broken]), t.screen("/c", [broken])]);
     t.ret(1, "j", pathOf(3));
     await t.judge();
     const rows = t.file().rows;
     const at = (rule: string, route: string) => rows.find((r: Obj) => r.rule === rule && r.screen === `${route}|1440|light`).row;
     const runs: Obj[] = [];
-    const once = (reach: boolean, key: string) => async (_m: string, _r: null, opts: Obj) => {
-      runs.push(opts);
-      if (reach) activeConfirm().take({ ok: true, __taste: { rows: [{ key, measured: "undefined" }] } });
-      return { code: 2, lines: ["HARNESS: the replay failed"] };
+    /** runOnce's stand-in: the replay ends with `code` and `lines` after passing the screens `seen`; `reach` the key it measured at the screen. */
+    const once = (code: number, lines: string[], { seen = [], reach = null }: { seen?: string[]; reach?: string | null } = {}) => async (_m: string, _r: null, opts: Obj) => {
+      const sink = activeConfirm();
+      runs.push({ opts, arm: sink.arm });
+      for (const s of seen) sink.take({ ok: true, __seen: s });
+      if (reach) sink.take({ ok: true, __taste: { rows: [{ key: reach, measured: "undefined" }] } });
+      return { code, lines };
     };
-    const first = await tasteConfirm(t.main, at("copy.broken", "/a"), { once: once(false, "facts|undefined") });
+    return { ...t, rows, at, runs, once };
+  };
+  const BROKE = ["PATH broke step=3 kind=target-missing", "HARNESS: the path broke"];
+
+  it("a path that broke is cached per journey and path with its step: a later row whose screen the replay never passed is answered at once, naming the replay it came from", async () => {
+    const t = await cacheRepo();
+    const [a1, a2, b1, c1] = [t.at("copy.broken", "/a"), t.at("hierarchy.heading-order", "/a"), t.at("copy.broken", "/b"), t.at("copy.broken", "/c")];
+    // The replay of /a passed /b (and the start) and broke at step 3 before /a.
+    const first = await tasteConfirm(t.main, a1, { once: t.once(3, BROKE, { seen: ["/start|1440", "/b|1440"] }) });
     expect(first.code).toBe(2);
-    expect(first.lines[0]).toBe(`taste confirm ${at("copy.broken", "/a")}: not decided (the replay failed before the screen)`);
-    // The same screen's other row: no second replay, the same answer.
-    const next = await tasteConfirm(t.main, at("hierarchy.heading-order", "/a"), { once: once(true, "h2|Profile") });
-    expect(runs).toHaveLength(1);
-    expect(next.code).toBe(2);
-    expect(next.lines[0]).toBe(`taste confirm ${at("hierarchy.heading-order", "/a")}: not decided (the replay failed before the screen)`);
-    expect(t.file().rows.map((r: Obj) => r.confirmed)).toEqual(rows.map(() => null));
-    // Another screen of the journey replays.
-    const other = await tasteConfirm(t.main, at("copy.broken", "/b"), { once: once(true, "facts|undefined") });
-    expect(runs).toHaveLength(2);
-    expect(other.lines[0]).toBe(`taste confirm ${at("copy.broken", "/b")}: confirmed (measured again)`);
-    // The explorer's path changed: the cached failure was of another path and no longer applies.
+    expect(first.lines.slice(0, 3)).toEqual([`taste confirm ${a1}: not decided (the path broke at step 3 before the screen)`, "harness: the path broke at step 3 before the screen", "HARNESS: the path broke"]);
+    // The same screen's other row, and another screen the replay never passed: no replay, the answer names a1's replay and repeats its HARNESS line.
+    for (const next of [a2, c1]) {
+      const r = await tasteConfirm(t.main, next, { once: t.once(0, [], { reach: "x" }) });
+      expect(r.code).toBe(2);
+      expect(r.lines.slice(0, 3)).toEqual([`taste confirm ${next}: not decided (the path broke at step 3 before the screen, from ${a1}'s replay)`, `harness: the path broke at step 3 before the screen, from ${a1}'s replay`, "HARNESS: the path broke"]);
+    }
+    expect(t.runs).toHaveLength(1);
+    expect(t.file().rows.map((r: Obj) => r.confirmed)).toEqual(t.rows.map(() => null));
+    // /b was passed before step 3: it replays.
+    const b = await tasteConfirm(t.main, b1, { once: t.once(3, [], { reach: "facts|undefined" }) });
+    expect(t.runs).toHaveLength(2);
+    expect(b.lines[0]).toBe(`taste confirm ${b1}: confirmed (measured again)`);
+    // The explorer's path changed: the cached break was of another path.
     t.ret(1, "j", pathOf(4));
-    await tasteConfirm(t.main, at("hierarchy.heading-order", "/a"), { once: once(true, "h2|Profile") });
-    expect(runs).toHaveLength(3);
+    await tasteConfirm(t.main, c1, { once: t.once(3, BROKE) });
+    expect(t.runs).toHaveLength(3);
+  }, 30_000);
+
+  it("a screen the replay ran the whole path without reaching is cached for that screen only", async () => {
+    const t = await cacheRepo();
+    const [a1, a2, b1] = [t.at("copy.broken", "/a"), t.at("hierarchy.heading-order", "/a"), t.at("copy.broken", "/b")];
+    const first = await tasteConfirm(t.main, a1, { once: t.once(0, []) });
+    expect(first.lines[0]).toBe(`taste confirm ${a1}: not decided (the replay never reached the screen)`);
+    const next = await tasteConfirm(t.main, a2, { once: t.once(0, [], { reach: "h2|Profile" }) });
+    expect(t.runs).toHaveLength(1);
+    expect(next.lines[0]).toBe(`taste confirm ${a2}: not decided (the replay never reached the screen, from ${a1}'s replay)`);
+    await tasteConfirm(t.main, b1, { once: t.once(0, []) });
+    expect(t.runs).toHaveLength(2);
+  }, 30_000);
+
+  it("a harness failure (exit 2) is never cached: the next row replays", async () => {
+    const t = await cacheRepo();
+    const [a1, a2] = [t.at("copy.broken", "/a"), t.at("hierarchy.heading-order", "/a")];
+    const first = await tasteConfirm(t.main, a1, { once: t.once(2, ["HARNESS: the instance did not start"]) });
+    expect(first.lines.slice(0, 3)).toEqual([`taste confirm ${a1}: not decided (the replay failed before the screen)`, "harness: the replay failed before the screen", "HARNESS: the instance did not start"]);
+    const next = await tasteConfirm(t.main, a2, { once: t.once(3, [], { reach: "h2|Profile" }) });
+    expect(t.runs).toHaveLength(2);
+    expect(next.lines[0]).toBe(`taste confirm ${a2}: confirmed (measured again)`);
+  }, 30_000);
+
+  it("an armed replay (a states.error row) neither fills the cache nor reads it: a plain row of its screen is not poisoned", async () => {
+    const t = await cacheRepo();
+    const [a1, a2] = [t.at("copy.broken", "/a"), t.at("hierarchy.heading-order", "/a")];
+    const file = t.file();
+    file.rows.find((r: Obj) => r.row === a2).rule = "states.error";
+    writeFileSync(join(t.dir, "judge.json"), JSON.stringify(file));
+    const armed = await tasteConfirm(t.main, a2, { once: t.once(3, BROKE) });
+    expect(armed.lines[0]).toBe(`taste confirm ${a2}: not decided (the path broke at step 3 before the screen)`);
+    expect(t.runs[0].arm).not.toBeNull();
+    const plain = await tasteConfirm(t.main, a1, { once: t.once(3, [], { reach: "facts|undefined" }) });
+    expect(t.runs).toHaveLength(2);
+    expect(plain.lines[0]).toBe(`taste confirm ${a1}: confirmed (measured again)`);
+    // A plain break is cached, yet the armed row still replays.
+    await tasteConfirm(t.main, t.at("copy.broken", "/c"), { once: t.once(3, BROKE) });
+    await tasteConfirm(t.main, a2, { once: t.once(3, BROKE) });
+    expect(t.runs).toHaveLength(4);
+  }, 30_000);
+
+  it("a probe's failure is cached apart from the rows': a row of the same journey replays", async () => {
+    const t = await cacheRepo();
+    const probe = await tasteConfirm(t.main, "p1", { once: t.once(3, BROKE) });
+    expect(probe.lines[0]).toBe("taste confirm p1: not decided (the path broke at step 3 before the screen)");
+    const again = await tasteConfirm(t.main, "p1", { once: t.once(0, []) });
+    expect(again.lines[0]).toBe("taste confirm p1: not decided (the path broke at step 3 before the screen, from p1's replay)");
+    expect(t.runs).toHaveLength(1);
+    const row = await tasteConfirm(t.main, t.at("copy.broken", "/a"), { once: t.once(3, [], { reach: "facts|undefined" }) });
+    expect(t.runs).toHaveLength(2);
+    expect(row.lines[0]).toBe(`taste confirm ${t.at("copy.broken", "/a")}: confirmed (measured again)`);
   }, 30_000);
 
   it("every answer line ends with the budget the confirm took and what is left of the pass's 15 minutes", async () => {

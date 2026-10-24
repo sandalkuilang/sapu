@@ -178,28 +178,38 @@ export function budgetNote(main, runId, ms) {
 
 const failedFile = (main, runId) => path.join(tasteDir(main, runId), "replay-failed.jsonl");
 
-/** Remembers that the replay of `sha` (a path's pathSha) of `journey` ended before `screen`, saying `said`: the cycle's later rows of that screen are answered from it. Never throws. */
-export function noteReplayFailed(main, runId, journey, screen, sha, said) {
+/**
+ * Remembers a plain replay of `sha` (a path's pathSha) of `journey` in `mode` (`row` or `probe`) that ended before the
+ * screen: `{ref, said, harness}` plus either `broke` (the step the path broke at) and `seen` (the `route|width` of
+ * every page it passed before), or `screen` (the path held to its end without reaching it). Never throws.
+ */
+export function noteReplayFailed(main, runId, entry) {
   try {
     privateDir(tasteDir(main, runId));
-    appendPrivate(failedFile(main, runId), { journey, screen, sha, said });
+    appendPrivate(failedFile(main, runId), entry);
   } catch {
     // a cache: the next row replays
   }
 }
 
-/** The `said` of the cycle's failed replay of `journey`'s `screen` by the path `sha`, or null. */
-export function replayFailed(main, runId, journey, screen, sha) {
+/**
+ * The cycle's remembered failure that answers `screen` (`route|width|theme`) of `journey`'s `sha` in `mode`, or null:
+ * a broken path answers every screen its replay never passed (the break comes before it), a path that held answers
+ * the screen it never reached.
+ */
+export function replayFailed(main, runId, journey, mode, sha, screen) {
   let text = "";
   try {
     text = fs.readFileSync(failedFile(main, runId), "utf8");
   } catch {
     return null;
   }
+  const at = screen.split("|").slice(0, 2).join("|");
   for (const l of text.split("\n")) {
     try {
       const e = JSON.parse(l);
-      if (isObj(e) && e.journey === journey && e.screen === screen && e.sha === sha && typeof e.said === "string") return e.said;
+      if (!isObj(e) || e.journey !== journey || e.mode !== mode || e.sha !== sha || typeof e.said !== "string") continue;
+      if (Number.isInteger(e.broke) ? Array.isArray(e.seen) && !e.seen.includes(at) : e.screen === screen) return e;
     } catch {
       // a torn line says nothing
     }
