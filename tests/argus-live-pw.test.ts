@@ -2205,6 +2205,102 @@ describe("argus-live pw — refusals and limits", () => {
       expect((await check(t, repro())).out).toEqual(["check: ok", "note: not counted on the live page (.argus/live.json could not be read): candidates[0]"]);
     }, 30_000);
 
+    describe("--check judges each expectation on the live page", () => {
+      // goto, an intermediate expectation (step 2), then the final visible (step 3): both on the live page.
+      const expecting = (kind: string, target: Obj, value = "42") => [
+        { as: "buyer.1", do: "goto", path: "/orders" },
+        { as: "buyer.1", expect: kind, target, ...(kind === "visible" ? {} : { value }) },
+        { as: "buyer.1", expect: "visible", target: { role: "button", name: "Pay" }, final: "handoff" },
+      ];
+      const fine = { held: true, tag: "button" };
+      const noted = async (kind: string, target: Obj, judged: unknown, value?: string) => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1], judged: [judged, fine] });
+        return { t, out: await check(t, expecting(kind, target, value)) };
+      };
+      const LABEL = { label: "Amount" };
+
+      it("a text expectation on an input has no text to read: a note naming the candidate and the step", async () => {
+        const { t, out } = await noted("text-contains", LABEL, { held: false, tag: "input" });
+        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
+        // One browser call, the repro's own judging code and locator code in it, the expectation's kind and value as data.
+        expect(sent(t)).toHaveLength(1);
+        expect(sent(t)[0]).toContain("const judgeTarget = async (P, T) =>");
+        expect(sent(t)[0]).toContain('(pg) => pg.getByLabel("Amount")');
+        expect(sent(t)[0]).toContain('{"kind":"text-contains","value":"42"}');
+        expect(existsSync(join(t.main, ".argus/live", t.runId, "returns"))).toBe(false);
+        expect((await noted("text-equals", LABEL, { held: false, tag: "img" })).out.out[1]).toContain("candidates[0] step 2");
+      }, 30_000);
+
+      it("a label that does not hold the text is a note; one that holds it, or whose value is a placeholder, is not", async () => {
+        const text = { role: "status" };
+        expect((await noted("text-contains", text, { held: false, tag: "label" })).out.out[1]).toBe("note: cannot be judged on the live page (a text expectation's target is a label that does not hold the text now; target the element that holds it): candidates[0] step 2");
+        expect((await noted("text-contains", text, { held: true, tag: "label" })).out.out).toEqual(["check: ok"]);
+        expect((await noted("text-contains", text, { held: false, tag: "label" }, "{{marker}}")).out.out).toEqual(["check: ok"]);
+        // Not held on a plain element is not a note: the page may differ from when the step ran.
+        expect((await noted("text-contains", text, { held: false, tag: "div" })).out.out).toEqual(["check: ok"]);
+      }, 30_000);
+
+      it("a value-equals the evaluation throws on, and any other expectation it throws on, are notes", async () => {
+        const field = { role: "textbox", name: "Amount" };
+        expect((await noted("value-equals", field, { threw: true, tag: "div" })).out.out[1]).toBe("note: cannot be judged on the live page (a value-equals target is not an input, a textarea or a select): candidates[0] step 2");
+        expect((await noted("text-equals", { role: "img" }, { threw: true, tag: "svg" })).out.out[1]).toBe("note: cannot be judged on the live page (the expectation cannot be evaluated on its target; a text expectation needs an HTML element): candidates[0] step 2");
+        expect((await noted("value-equals", field, { held: false, tag: "input" })).out.out).toEqual(["check: ok"]);
+        expect((await noted("visible", { role: "dialog" }, { held: false, tag: "div" })).out.out).toEqual(["check: ok"]);
+      }, 30_000);
+
+      it("an answer without judgments, a null one or an unknown shape adds no note; a page that is not the live one is judged by nothing", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        expect((await check(t, expecting("text-contains", LABEL))).out).toEqual(["check: ok"]);
+        t.queue({ path: "/orders", counts: [1, 1], judged: [null, "x"] });
+        expect((await check(t, expecting("text-contains", LABEL))).out).toEqual(["check: ok"]);
+        t.queue({ path: "/elsewhere", counts: [1, 1], judged: [{ held: false, tag: "input" }, fine] });
+        expect((await check(t, expecting("text-contains", LABEL))).out[0]).toBe("check: ok");
+        expect((await check(t, expecting("text-contains", LABEL))).out.join("\n")).not.toContain("cannot be judged");
+      }, 30_000);
+
+      it("value-equals on a target that can never be an input is refused from its role alone, whatever page it is on", async () => {
+        const t = await pwRun();
+        const line = "refused: return: candidates[0].repro step 2: value-equals reads the value of an input, a textarea or a select, and a heading never is one; target the field itself, or use text-equals";
+        const heading = { role: "heading", name: "Total" };
+        t.queue({ path: "/orders", counts: [1, 1] });
+        expect(await check(t, expecting("value-equals", heading))).toEqual({ code: 1, out: [line] });
+        // After a click the page is unknown: the role still decides.
+        const moved = [{ as: "buyer.1", do: "goto", path: "/orders" }, { as: "buyer.1", do: "click", target: { role: "link", name: "Next" } }, ...expecting("value-equals", heading).slice(1)];
+        expect((await check(t, moved)).out).toEqual([line.replace("step 2", "step 3")]);
+        // A role an input can have, a placeholder in the role, and a non-role target are not refused.
+        for (const target of [{ role: "textbox", name: "Amount" }, { role: "button", name: "Go" }, { role: "{{kind}}" }, LABEL]) {
+          t.queue({ path: "/orders", counts: [1, 1] });
+          expect((await check(t, expecting("value-equals", target))).out[0]).toBe("check: ok");
+        }
+      }, 30_000);
+
+      it("the code it sends is the repro's judging: run on a page it answers what the repro would see", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        await check(t, expecting("value-equals", { role: "textbox", name: "Amount" }));
+        const loc = (tag: string, text: string, value: string | null) => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          innerText: async () => text,
+          inputValue: async () => {
+            if (value === null) throw new Error("Node is not an <input>, <textarea> or <select> element");
+            return value;
+          },
+          evaluate: async (fn: (el: Obj) => unknown) => fn({ tagName: tag.toUpperCase() }),
+        });
+        const pageOf = (l: Obj) => ({ url: () => "http://localhost:41002/orders?x=1", getByRole: () => l, getByLabel: () => l });
+        const run = async (l: Obj) => (0, eval)(`(${sent(t)[0]})`)(pageOf(l));
+        // The step is a value-equals "42": an input holding 42 holds, a div throws.
+        expect(await run(loc("input", "", "42"))).toEqual({ path: "/orders", counts: [1, 1], judged: [{ held: true, tag: "input" }, { held: true, tag: "input" }] });
+        const div = await run(loc("div", "Pay", null));
+        expect(div.judged[0]).toEqual({ threw: true, tag: "div" });
+        expect(div.judged[1]).toEqual({ held: true, tag: "div" });
+      }, 30_000);
+    });
+
     it("a real submit is never counted (the page has moved on since the walk), past the deadline neither", async () => {
       const t = await pwRun();
       t.queue({ path: "/journals/new", counts: [2] });
