@@ -467,13 +467,14 @@ function dslTarget(s) {
 
 /**
  * What the explorer's return is checked with (spec §19.4, §19.9), for `validateReturn`'s `checks`: `parsePath`
- * (a path in path mode against the slot's `accounts`), `healTarget` (a heal's new target: a locator string →
+ * (a path in path mode against the slot's `accounts`), `parseSteps` (a candidate's repro, parseRepro's steps), `healTarget` (a heal's new target: a locator string →
  * the DSL's target, in the selector order an action takes; else throws its reason) and `healMax`.
  */
 export function pathChecks({ accounts, live, healMax }) {
   return {
     healMax,
     parsePath: (list) => parseRepro(list, { accounts, live, path: true }),
+    parseSteps: (list) => parseRepro(list, { accounts, live }).steps,
     healTarget: (s) => {
       if (typeof s !== "string") throw new Error("a heal's target is a locator string");
       try {
@@ -640,6 +641,9 @@ const EXPECT = `  const layout = async () => {
   };
 `;
 
+/** A step's target as the function every template calls, `(pg) => <targetCode>` (or `null`): the one resolution of a target to a locator, for a step and for the live page's count. */
+export const targetFn = (step) => (step.target ? `(pg) => ${targetCode(step.target, "pg")}` : "null");
+
 /**
  * The `run-code` text of browser step `step` (normalized and substituted; a `goto`'s `url` set by the
  * runner after checkUrl): `async page => {…}` with `const P = <JSON>;` (its kind, value, key, url, the
@@ -660,7 +664,7 @@ export function stepCode(step, { settleMs, at = null, runOrigins, skip = [] }) {
     const family = step.rule.split(".")[0];
     Object.assign(P, { rule: step.rule, key: step.key, expr: (FAMILIES[family].probe === "ease" ? easeExpression : tasteExpression)(step.rule) });
   }
-  const T = step.target ? `(pg) => ${targetCode(step.target, "pg")}` : "null";
+  const T = targetFn(step);
   const fail = step.do ? '{ ok: false, why: "error", detail: failure(e) }' : '{ held: false, observed: "error", detail: failure(e) }';
   return `async page => {\n  const P = ${JSON.stringify(P)};\n  const T = ${T};\n${HELPERS}${COMMON}${step.do ? ACTION : EXPECT}  try {\n    return await finish(await step());\n  } catch (e) {\n    return await finish(${fail});\n  }\n}\n`;
 }
