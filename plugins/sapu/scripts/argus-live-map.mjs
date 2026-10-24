@@ -5,9 +5,8 @@
 // ranks the journeys and allocates their accounts (score, selectJourneys).
 import fs from "node:fs";
 import path from "node:path";
-import { loadLive, ROLE_NAME } from "./argus-live-config.mjs";
+import { CREATED, loadLive, ROLE_NAME } from "./argus-live-config.mjs";
 import { run, tempBeside } from "./argus-live-proc.mjs";
-import { CREATED } from "./argus-live-slots.mjs";
 import { loadTaste, readTasteState, TASTE_FILE, tasteOff } from "./argus-live-tastecfg.mjs";
 
 export const JOURNEYS_FILE = ".argus/journeys.json";

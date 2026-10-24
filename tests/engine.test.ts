@@ -587,7 +587,7 @@ const BUDGETS: Record<string, number> = {
   "skills/argus/journeys.md": 16_917, // +the `=+` account in the charter, the walking-repro refusal row, a handoff's path is replayed whole (2.33.0); +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row, +repro exit 4 (deadline) and its rows
   "skills/argus/SKILL.md": 43_288, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check
   "skills/journey/SKILL.md": 6_115, // +show --follow again right before each `live up`, a reusing session never sees the watcher stop (2.32.0); the watcher is idempotent in the engine (2.32.0); +the orchestrator starts the watcher itself, +the `show` form; +show --follow once per session, +only the instance (2.31.0)
-  "skills/journey/live.md": 15_079, // +the `=+` account of a role (2.33.0); +seed_check (2.31.0), +renew from now
+  "skills/journey/live.md": 15_392, // +the `=+` account of a role, +the run's Docker proxy (2.33.0); +seed_check (2.31.0), +renew from now
   "skills/journey/smoke.md": 16_550,
 };
 

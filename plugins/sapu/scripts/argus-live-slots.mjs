@@ -9,7 +9,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { slotConfig, slotDir, writeSlotConfig } from "./argus-live-browser.mjs";
-import { expandConfig, loadLive } from "./argus-live-config.mjs";
+import { CREATED, expandConfig, loadLive } from "./argus-live-config.mjs";
 import { readLock } from "./argus-live-lock.mjs";
 import { run, tempBeside, withFileLock } from "./argus-live-proc.mjs";
 import { readRun, updateRun } from "./argus-live-run.mjs";
@@ -62,12 +62,7 @@ export function stillLive(main, runId, { map = false } = {}) {
   if (!rec || rec.runId !== runId || rec.closing) throw new Error(`refused: cycle ${runId} is being torn down`);
 }
 
-/**
- * The allocation of an account the journey itself creates (`--accounts <role>.<k>=+`): no configured user and
- * no allocation key, so any number of slots hold one. Its session starts signed out (a login command's storage
- * state is never applied) and only `login <user> <password>` signs it in; its failures are the slot's `createdFailed`.
- */
-export const CREATED = "+";
+export { CREATED };
 
 /**
  * `<role>.<k>=<user>|<role>.<k>|<role>.<k>=+,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
