@@ -6,6 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseEnvFile } from "./argus-live-config.mjs";
+import { DOCKER_PROXY, RUN_LABEL, viaDaemon, whatHappened } from "./argus-live-dockerproxy.mjs";
+export { DOCKER_PROXY, viaDaemon };
 import { dockerHost, readOwner, scopeChecker, SOCKET_NAME } from "./argus-live-endpoints.mjs";
 import { membersOf, processTable, redact, resolveLink, run, sameGroup, startTime, tail, within } from "./argus-live-proc.mjs";
 
@@ -73,7 +75,7 @@ const CAPS_OK = new Set(["NET_BIND_SERVICE", "CHOWN", "SETUID", "SETGID", "DAC_O
  * Where container runtimes and local datastores keep their sockets: a bind mount of one, or of a
  * directory holding one, hands the container the owner's daemon or data.
  */
-function knownSockets(env = {}) {
+function knownSockets(env = {}, upstream = null) {
   const home = process.env.HOME || os.homedir();
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const list = [
@@ -83,8 +85,7 @@ function knownSockets(env = {}) {
     "/tmp/.s.PGSQL.5432", "/var/run/postgresql/.s.PGSQL.5432", "/run/postgresql/.s.PGSQL.5432", "/tmp/mysql.sock", "/var/run/mysqld/mysqld.sock", "/run/mysqld/mysqld.sock",
     "/var/run/redis/redis.sock", "/run/redis/redis.sock", "/var/run/redis/redis-server.sock", "/run/redis/redis-server.sock",
   ];
-  const m = String(env.DOCKER_HOST || "").match(/^unix:\/\/(\/.+)$/);
-  if (m) list.push(m[1]);
+  for (const h of [env.DOCKER_HOST, upstream]) list.push(...(String(h || "").match(/^unix:\/\/(\/.+)$/)?.slice(1) ?? []));
   return [...new Set(list.flatMap((s) => [s, resolveLink(s)]).filter(Boolean))];
 }
 
@@ -508,62 +509,13 @@ function linkedWorktrees(main, realMain, runner) {
     .filter((p) => p && p !== realMain);
 }
 
-/** An event's time as ISO (UTC), from its `timeNano` or `time` (epoch seconds); null when it has none. */
-function eventTime(e) {
-  // Rounded: a nanosecond count past 2^53 loses its last digits as a float, so a plain division can land 1 ms early.
-  const ms = Number.isFinite(e.timeNano) ? Math.round(e.timeNano / 1e6) : Number.isFinite(e.time) ? e.time * 1000 : NaN;
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-}
-
-const SHELLS = new Set(["sh", "bash", "ash", "dash", "zsh", "ksh", "mksh"]);
-const WRAPPERS = new Set(["env", "exec", "command", "nice", "timeout"]);
-const WRAPPER_ARG = /^(?:-n|-i|-?\d+(?:\.\d+)?[smhd]?)$/; // env -i, nice -n 5, timeout 30s
-
-/**
- * The program an exec runs, from the Action's text after `exec_create: ` (the daemon joins the argv with
- * spaces): the basename of the first word; for a shell run with `-c`, of the first word of the inner command,
- * after leading `NAME=value` assignments (a quoted value may hold spaces) and trivial wrappers (WRAPPERS).
- * Null when that word is no plain program name. Another process's secrets cannot be listed by shape
- * (`PASSWORD=x`, libpq `password=x`, `curl -u a:b`, `-p<value>`, a header, a JSON body …): never an argument is shown.
- */
-function execProgram(action) {
-  const words = action.slice(action.indexOf(":") + 1).split(/[\s\x00-\x1f\x7f]+/).filter(Boolean).map((w) => w.replace(/^["'(]+/, ""));
-  const base = (w) => w.split("/").pop();
-  let i = 0;
-  if (SHELLS.has(base(words[0] ?? ""))) {
-    let c = 1;
-    while (words[c]?.startsWith("-") && !/^-[A-Za-z]*c$/.test(words[c])) c++;
-    if (words[c]?.startsWith("-")) i = c + 1;
-  }
-  for (let wrapped = false; i < words.length; i++) {
-    const w = words[i];
-    if (wrapped && WRAPPER_ARG.test(w)) continue;
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) {
-      const q = /=(["'])/.exec(w);
-      if (q && !w.includes(q[1], q.index + 2)) while (++i < words.length && !words[i].endsWith(q[1]));
-    } else if (WRAPPERS.has(base(w))) wrapped = true;
-    else return /^[A-Za-z0-9_][A-Za-z0-9_.+-]{0,63}$/.test(base(w)) ? base(w) : null;
-  }
-  return null;
-}
-
-/**
- * What a refusal on an object outside the run adds after its leading text: the exec's program (`exec_*`
- * events), the event's time, and that the gate cannot tell who did it, with the follower's file (relative to `main`).
- */
-function whatHappened(e, action, { main, eventsFile }) {
-  const time = eventTime(e);
-  const facts = [action.startsWith("exec_") ? `exec of ${execProgram(action) ?? "an unnamed program"}` : null, time ? `at ${time}` : null].filter(Boolean);
-  const file = eventsFile ? `; the docker events of this run are in ${path.relative(main, eventsFile)}` : "";
-  return `${facts.length ? ` (${facts.join(", ")})` : ""}. The gate cannot tell which process did it: another process on this machine, such as tests in another checkout, counts too${file}`;
-}
-
 /**
  * The Docker runtime gate (spec §8 step 8, and at `renew` and `down`): what the static Compose checks
  * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. `since` is the
  * daemon's clock at `up` (epoch ms; `skewMs` earlier, for its whole-second volume times). The rule:
- * - The run's own objects (labelled `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`; a volume may
- *   instead be a new anonymous one): a container of the run may mount only the run's volumes, join only
+ * - The run's own objects (labelled `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, or RUN_LABEL with
+ *   that value: the run's Docker proxy puts it on all it creates; a volume may instead be a new anonymous
+ *   one): a container of the run may mount only the run's volumes, join only
  *   the run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and
  *   publish only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike).
  * - An object that existed before `since` and is not the run's (the owner's state) may not be touched:
@@ -583,11 +535,16 @@ function whatHappened(e, action, { main, eventsFile }) {
  * the gate blind: refused. Runs docker under `env` (the instance's: its DOCKER_HOST). No docker, or no
  * daemon running, means nothing was created through it. Throws `refused: …` naming the object; one on an object
  * outside the run goes on to say what was done to it (whatHappened: an exec's program, never its arguments; when), that the
- * gate cannot tell which process did it, and where the follower's file is.
+ * gate cannot tell which process did it, and where the follower's file is. With the run's Docker proxy (`dockerProxy`, its
+ * run.json group; `upstream`, the daemon's socket behind it, a known socket too), the second and third rules are notes,
+ * not refusals: the proxy refuses the run's own such actions before they happen (argus-live-dockerproxy.mjs), so what
+ * the events show did not come through it. Returns {notes}.
  */
-export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null }) {
+export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null, upstream = null, dockerProxy = null }) {
   const project = env.COMPOSE_PROJECT_NAME;
-  const docker = (args) => runner(["docker", ...args], { env, timeout: 60_000 });
+  // The gate only reads: straight to the daemon, so a proxy that stopped cannot blind it.
+  const denv = upstream ? { ...env, DOCKER_HOST: upstream } : env;
+  const docker = (args) => runner(["docker", ...args], { env: denv, timeout: 60_000 });
   const failed = (args, r) => new Error(`refused: docker ${args.join(" ")} failed: ${tail((r.error && r.error.message) || r.stderr || `exit ${r.status}`)}`);
   const list = (args) => {
     const r = docker(args);
@@ -608,8 +565,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   };
   const ps = ["ps", "-aq", "--no-trunc"];
   const first = docker(ps);
-  if (first.error && first.error.code === "ENOENT") return;
-  if (!first.error && first.status !== 0 && /cannot connect to the docker daemon|is the docker daemon running/i.test(first.stderr || "")) return;
+  if ((first.error && first.error.code === "ENOENT") || (!first.error && first.status !== 0 && /cannot connect to the docker daemon|is the docker daemon running/i.test(first.stderr || ""))) return { notes: [] };
   if (first.error || first.status !== 0) throw failed(ps, first);
   if (follower) {
     let now;
@@ -625,6 +581,14 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     return Number.isFinite(ms) && ms >= since - skewMs;
   };
   const ours = (labels) => Boolean(labels) && labels[PROJECT_LABEL] === project;
+  // Through the run's proxy, what touches the owner's state came from the run only when the object that did it
+  // carries RUN_LABEL (the proxy labels what the run creates, and refuses the run's actions on the owner's
+  // objects before they happen): then a refusal; else it came from outside the run, a note.
+  const notes = new Set();
+  const outside = (msg, labels = null) => {
+    if (!dockerProxy || (labels && labels[RUN_LABEL] === project)) throw new Error(msg);
+    notes.add(msg.replace(/^refused: /, ""));
+  };
   const volumes = inspect(["volume", "inspect"], list(["volume", "ls", "-q"]));
   const networks = inspect(["network", "inspect"], list(["network", "ls", "-q", "--no-trunc"]));
   const volumeByName = new Map(volumes.map((v) => [v.Name, v]));
@@ -633,7 +597,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   const runVolumes = new Set(volumes.filter(volumeOk).map((v) => v.Name));
   const runNetworks = new Set(networks.filter((n) => ours(n.Labels)).map((n) => n.Name));
   const realMain = fs.realpathSync.native(main);
-  const at = { worktree, root: fs.realpathSync.native(worktree), realMain, sockets: knownSockets(env) };
+  const at = { worktree, root: fs.realpathSync.native(worktree), realMain, sockets: knownSockets(env, upstream) };
   let ownerAt = null;
   const forOthers = () => ownerAt ?? (ownerAt = { ...at, exempt: linkedWorktrees(main, realMain, runner) });
   const runPorts = new Set(Object.values(ports).map(Number));
@@ -644,19 +608,23 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     const name = String(c.Name || c.Id).replace(/^\//, "");
     const host = c.HostConfig || {};
     if (!ours(c.Config && c.Config.Labels)) {
-      if (!created) throw new Error(`refused: container ${name} existed before the cycle, is not the run's, and was started during it`);
+      if (!created) {
+        outside(`refused: container ${name} existed before the cycle, is not the run's, and was started during it`);
+        continue;
+      }
       const why = `refused: container ${name}, created during the cycle outside the run's Compose project ${project},`;
-      if (host.Privileged) throw new Error(`${why} is privileged`);
+      const labels = c.Config && c.Config.Labels;
+      if (host.Privileged) outside(`${why} is privileged`, labels);
       for (const m of c.Mounts ?? []) {
         const v = m.Type === "volume" ? volumeByName.get(m.Name) : null;
-        if (m.Type === "volume" && (!v || !recent(v.CreatedAt))) throw new Error(`${why} mounts volume ${m.Name}, which existed before the cycle`);
+        if (m.Type === "volume" && (!v || !recent(v.CreatedAt))) outside(`${why} mounts volume ${m.Name}, which existed before the cycle`, labels);
         const no = m.Type === "bind" ? hostPathRefusal(m.Source, { ...forOthers(), socketsOk: testcontainersReaper(c) }) : null;
-        if (no) throw new Error(`${why} bind-mounts ${no}`);
+        if (no) outside(`${why} bind-mounts ${no}`, labels);
       }
       for (const n of Object.keys((c.NetworkSettings && c.NetworkSettings.Networks) || {})) {
         if (n === "bridge" || n === "none") continue;
         const net = networkByName.get(n);
-        if (!net || !recent(net.Created)) throw new Error(`${why} joins network ${n}, which existed before the cycle`);
+        if (!net || !recent(net.Created)) outside(`${why} joins network ${n}, which existed before the cycle`, labels);
       }
       continue;
     }
@@ -686,11 +654,11 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     if (!recent(v.CreatedAt) || volumeOk(v)) continue;
     const o = v.Options || {};
     const no = o.device && (/\bbind\b/.test(String(o.o ?? "")) || o.type === "none") ? hostPathRefusal(o.device, forOthers()) : null;
-    if (no) throw new Error(`refused: volume ${v.Name}, created during the cycle outside the run's Compose project ${project}, binds ${no}`);
+    if (no) outside(`refused: volume ${v.Name}, created during the cycle outside the run's Compose project ${project}, binds ${no}`, v.Labels);
   }
   const followed = eventsFile ? followedEvents(eventsFile) : { events: [], last: null };
   const from = Math.max(since - skewMs, followed.last === null ? -Infinity : followed.last - skewMs);
-  const now = daemonNow({ env, runner }) ?? Date.now();
+  const now = daemonNow({ env: denv, runner }) ?? Date.now();
   const evArgs = ["events", "--since", (from / 1000).toFixed(3), "--until", (now / 1000).toFixed(3), "--format", "{{json .}}", ...EVENT_FILTERS];
   const er = docker(evArgs);
   if (er.error || er.status !== 0) throw failed(evArgs, er);
@@ -709,12 +677,14 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   // gone by now, `docker run --rm`, is in the events alone; container events carry its labels).
   const runContainers = new Set(containers.filter((c) => ours(c.Config && c.Config.Labels)).map((c) => c.Id));
   const nameOf = new Map(containers.map((c) => [c.Id, String(c.Name || c.Id).replace(/^\//, "")]));
+  const labelsOf = new Map(containers.map((c) => [c.Id, (c.Config && c.Config.Labels) ?? {}]));
   for (const e of events) {
     const a = (e.Type === "container" && e.Actor && e.Actor.Attributes) || {};
-    if (a[PROJECT_LABEL] === project) runContainers.add(e.Actor.ID);
+    if (ours(a)) runContainers.add(e.Actor.ID);
+    if (e.Type === "container" && e.Actor && !labelsOf.has(e.Actor.ID)) labelsOf.set(e.Actor.ID, a);
     if (a.name && !nameOf.has(e.Actor.ID)) nameOf.set(e.Actor.ID, a.name);
   }
-  const what = (e, action) => whatHappened(e, action, { main, eventsFile });
+  const what = (e, action) => whatHappened(e, action, { main, eventsFile, proxied: Boolean(dockerProxy) });
   for (const e of events) {
     const id = (e.Actor && e.Actor.ID) || "";
     const a = (e.Actor && e.Actor.Attributes) || {};
@@ -726,22 +696,25 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       const v = volumeByName.get(id);
       const old = v ? !recent(v.CreatedAt) : !createdNow.has(id);
       const runs = v ? volumeOk(v) : String(id).startsWith(`${project}_`);
-      if (old && !runs) throw new Error(`refused: during the cycle, container ${nameOf.get(a.container) ?? a.container ?? "(unnamed)"}, which is not of the run's Compose project ${project}, mounted volume ${id}, which existed before it and is not the run's${what(e, action)}`);
+      if (old && !runs) outside(`refused: during the cycle, container ${nameOf.get(a.container) ?? a.container ?? "(unnamed)"}, which is not of the run's Compose project ${project}, mounted volume ${id}, which existed before it and is not the run's${what(e, action)}`, labelsOf.get(a.container));
       continue;
     }
     if (e.Type === "container") {
-      if (!CONTAINER_ACTIONS.has(verb) || a[PROJECT_LABEL] === project || createdNow.has(id)) continue;
+      if (!CONTAINER_ACTIONS.has(verb) || ours(a) || createdNow.has(id)) continue;
       if (verb.startsWith("exec_") && action.slice(action.indexOf(":") + 1).trim() === healthcheckCmd(byId.get(id))) continue;
-      throw new Error(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which existed before it and is not of the run's Compose project ${project}${what(e, action)}`);
+      outside(`refused: during the cycle, docker ${verb} hit container ${a.name || id}, which existed before it and is not of the run's Compose project ${project}${what(e, action)}`);
+      continue;
     }
     if (verb !== "destroy") continue;
     const name = e.Type === "network" ? a.name || id : id;
     if (String(name).startsWith(`${project}_`) || createdNow.has(id)) continue;
-    throw new Error(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's${what(e, action)}`);
+    outside(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's${what(e, action)}`);
   }
+  return { notes: [...notes] };
 }
 
 /** checkDockerRuntime's view of a run (`rec`: run.json, or `up`'s state) whose groups are `groups`: since, env, worktree, ports, the follower's file and group. */
 export function gateOf(rec, groups = []) {
-  return { since: rec.since, env: rec.env, worktree: rec.worktree, ports: rec.ports ?? {}, eventsFile: rec.events ?? null, follower: (groups ?? []).find((g) => g && g.name === FOLLOWER) ?? null };
+  const group = (name) => (groups ?? []).find((g) => g && g.name === name) ?? null;
+  return { since: rec.since, env: rec.env, worktree: rec.worktree, ports: rec.ports ?? {}, eventsFile: rec.events ?? null, follower: group(FOLLOWER), upstream: rec.dockerUpstream ?? null, dockerProxy: group(DOCKER_PROXY) };
 }
