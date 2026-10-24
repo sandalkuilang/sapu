@@ -63,7 +63,14 @@ export function stillLive(main, runId, { map = false } = {}) {
 }
 
 /**
- * `<role>.<k>=<user>|<role>.<k>,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
+ * The allocation of an account the journey itself creates (`--accounts <role>.<k>=+`): no configured user and
+ * no allocation key, so any number of slots hold one. Its session starts signed out (a login command's storage
+ * state is never applied) and only `login <user> <password>` signs it in; its failures are the slot's `createdFailed`.
+ */
+export const CREATED = "+";
+
+/**
+ * `<role>.<k>=<user>|<role>.<k>|<role>.<k>=+,…` (the CLI's `--accounts`) → `{"<role>.<k>": "<user>" | null}`. A
  * word that is not `<role>.<k>`, an account named twice, or an empty list is refused.
  */
 export function parseAccounts(list) {
@@ -84,7 +91,8 @@ export function parseAccounts(list) {
  * The account `account` (`<role>.<k>`) and its user checked against the expanded config `live` → the key
  * it is allocated by (`<role>/<user>`, `<role>/command` for a login-command role), or null for `anon`.
  * Refused: `system`, a role the config lacks, `anon` with a user or past `.1`, a login-command role past
- * `.1` or with a user, a users role without a user or with one it does not list.
+ * `.1` or with a user, a users role without a user or with one it does not list. `+` (CREATED) is an account
+ * the journey creates in any role but `anon` and `system`: no key (null).
  */
 function allocationKey(account, user, live) {
   const [, role, k] = ACCOUNT.exec(account);
@@ -95,6 +103,7 @@ function allocationKey(account, user, live) {
     if (user !== null) throw new Error(`refused: ${account}: anon is never signed in, so it takes no user`);
     return null;
   }
+  if (user === CREATED) return null;
   if (r.login) {
     if (k !== "1") throw new Error(`refused: ${account}: ${role} signs in by its login command, so it has only ${role}.1`);
     if (user !== null) throw new Error(`refused: ${account}: ${role} signs in by its login command, so it takes no user`);
@@ -316,7 +325,7 @@ function allocationKeysQuiet(accounts, live) {
   const out = {};
   for (const [a, user] of Object.entries(accounts ?? {})) {
     const m = ACCOUNT.exec(a);
-    if (!m || m[1] === "anon") continue;
+    if (!m || m[1] === "anon" || user === CREATED) continue;
     const r = live.roles && live.roles[m[1]];
     out[a] = r && r.login ? `${m[1]}/command` : `${m[1]}/${user}`;
   }

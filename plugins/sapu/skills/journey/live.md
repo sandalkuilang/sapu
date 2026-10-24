@@ -97,7 +97,7 @@ Required: `start`, `base_url`, `login_url`, `logged_in`, `store`, `store_check`,
 - `users` — a non-empty list of `{user, password, totp_secret?}`: `user` written literally (SELECT prints the accounts), `password` and `totp_secret` as `${NAME}`. Account `<role>.<k>` is the k-th user, from 1.
 - `login` — `{"command": <command>}`, run at every session open, printing a fresh Playwright storage state (`{cookies, origins}`). One journey a cycle may use such a role.
 
-A role may also set `code_role` (the role's name in the code's role → permission source, read by the map agent), `base_url`, `login_url`, `logged_in` and `login_open`, overriding the top level. `up` proves every account with one login before the cycle, and refuses on the first that fails.
+A role may also set `code_role` (the role's name in the code's role → permission source, read by the map agent), `base_url`, `login_url`, `logged_in` and `login_open`, overriding the top level. `up` proves every account with one login before the cycle, and refuses on the first that fails. A journey that makes a new user of a role (an invited person who registers) gets `<role>.<k>=+` for each: a session of its own, signed out, using the role's `base_url` and `login_url`, signed in only by `login <user> <password>`; it takes no configured user, and its failed logins stay in the slot.
 
 ## Expansion
 

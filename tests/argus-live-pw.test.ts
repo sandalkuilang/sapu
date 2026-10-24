@@ -2364,6 +2364,78 @@ await import(${JSON.stringify(t.shim)});
     expect(await t.call("anon", "login", "a@example.test", "x")).toEqual({ code: 1, out: ["refused: anon is never signed in", "calls 4/120"] });
   }, 30_000);
 
+  it("a slot sign-in that fails with a retryable reason is tried once more before it is recorded", async () => {
+    const t = await pwRun();
+    const stages = () => t.calls().filter((c) => c.argv.includes("run-code")).length;
+    const err = { state: "error", status429: false, lockout: false, origins: [], error: "Target page, context or browser has been closed" };
+    const ok = { state: "in", status429: false, lockout: false, origins: [] };
+    // A created account: one retry clears it; nothing recorded anywhere.
+    t.queue(err, ok);
+    expect((await t.call("buyer.1", "login", "buyer8@example.test", "Pw-8")).out).toEqual(["calls 1/120", "login: ok"]);
+    expect(stages()).toBe(2);
+    expect(readSlotState(t.dir).createdFailed ?? {}).toEqual({});
+    // A configured account's re-login: the same, run.json untouched.
+    const page = { signals: [], loggedIn: false, url: `${BASE}/`, aria: "x", tabs: 1 };
+    t.queue(page, { in: false, origins: [] }, err, ok);
+    expect((await t.call("buyer.1", "click", "e5")).out.at(-1)).toBe("re-logged-in: buyer.1");
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+    // A retry that fails too is recorded (a created account's in its slot), and not tried a third time.
+    const before = stages();
+    t.queue(err, err);
+    expect((await t.call("buyer.1", "login", "buyer7@example.test", "Pw-7")).out).toEqual(["calls 3/120", "login: failed (error)"]);
+    expect(stages()).toBe(before + 2);
+    expect(readSlotState(t.dir).createdFailed).toEqual({ "buyer/buyer7@example.test": "error: playwright" });
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+  }, 60_000);
+
+  it("an account the journey creates (=+) has a session of its own, signed out until its login, and its failures stay in its slot", async () => {
+    const t = await pwRun();
+    // Slot 2: buyer2 configured, and buyer.2 the journey's own (and admin.1, a login-command role's: its storage state is never applied).
+    const m2 = await mintSlot(t.main, { slot: 2, journey: "invite", accounts: parseAccounts("buyer.1=buyer2@example.test,buyer.2=+,admin.1=+") });
+    expect(m2.accounts).toEqual({ "buyer.1": "buyer2@example.test", "buyer.2": "+", "admin.1": "+" });
+    const dir2 = slotDir(t.main, t.runId, 2);
+    const me = { pid: process.pid, pgid: process.pid, started: startTime(process.pid) };
+    const home = join(t.home, "browser");
+    updateRun(t.main, t.runId, (prev: Obj) => ({ ...prev, sessions: [...prev.sessions, ...["buyer.1", "buyer.2", "admin.1"].map((account) => ({ name: sessionName(t.runId, 2, account), slot: 2, account, cwd: dir2, home, daemon: me, browser: null }))] }));
+    writeSlotState(dir2, { ...readSlotState(dir2), sessions: { "buyer.1": { signedIn: true }, "buyer.2": {}, "admin.1": {} } });
+    const call2 = (...args: string[]) => pw(t.main, [m2.token, ...args], { cli: t.shim });
+    const stages = () => t.calls().filter((c) => c.argv.includes("run-code")).map((c) => String(c.code));
+    // Before its login the session is signed out: no credentials stage runs for it.
+    expect((await call2("buyer.2", "goto", "/register")).code).toBe(0);
+    expect((await call2("admin.1", "goto", "/register")).code).toBe(0);
+    expect(stages().filter((c) => c.includes("buyer2@example.test"))).toEqual([]);
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+    // Its login: the created user, on that session only, kept for its re-logins under its own account.
+    t.queue({ state: "in", status429: false, lockout: false, origins: [] });
+    expect((await call2("buyer.2", "login", "prospect@example.test", "Pw-p1")).out).toEqual(["calls 3/120", "login: ok"]);
+    expect(readSlotState(dir2).created).toEqual({ "buyer.2": { user: "prospect@example.test", password: "Pw-p1" } });
+    expect(stages().at(-1)).toContain('"user":"prospect@example.test"');
+    // The slot's configured buyer.1 is untouched.
+    expect(readSlotState(dir2).sessions["buyer.1"]).toEqual({ signedIn: true });
+    expect(readSlotState(dir2).sessions["buyer.2"].signedIn).toBe(true);
+    // A created user's failed login: the slot's createdFailed, never run.json.
+    t.queue({ state: "failed", status429: false, lockout: false, origins: [] });
+    expect((await call2("admin.1", "login", "prospect2@example.test", "Pw-p2")).out).toEqual(["calls 4/120", "login: failed (rejected)"]);
+    expect(readSlotState(dir2).createdFailed).toEqual({ "admin/prospect2@example.test": "rejected" });
+    expect(readRun(t.main).loginFailed ?? {}).toEqual({});
+    expect(readSlotState(dir2).created["admin.1"]).toBeUndefined();
+    // Created accounts hold no allocation key, so another slot has its own too; anon and a numbering gap are refused.
+    expect((await mintSlot(t.main, { slot: 3, journey: "invite", accounts: parseAccounts("buyer.1=+") })).accounts).toEqual({ "buyer.1": "+" });
+    await expect(mintSlot(t.main, { slot: 4, journey: "invite", accounts: parseAccounts("anon.1=+") })).rejects.toThrow("refused: anon.1: anon is never signed in, so it takes no user");
+    await expect(mintSlot(t.main, { slot: 4, journey: "invite", accounts: parseAccounts("clerk.2=+") })).rejects.toThrow("refused: clerk.2 without clerk.1");
+  }, 60_000);
+
+  it("a slot sign-in refused for a lockout or a bad password is never tried again", async () => {
+    const t = await pwRun();
+    const stages = () => t.calls().filter((c) => c.argv.includes("run-code")).length;
+    t.queue({ state: "failed", status429: true, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "login", "buyer6@example.test", "Pw-6")).out).toEqual(["calls 1/120", "login: failed (rate-limited)"]);
+    expect(stages()).toBe(1);
+    t.queue({ state: "failed", status429: false, lockout: false, origins: [] });
+    expect((await t.call("buyer.1", "login", "buyer5@example.test", "Pw-5")).out).toEqual(["calls 2/120", "login: failed (rejected)"]);
+    expect(stages()).toBe(2);
+  }, 60_000);
+
   it("an explorer's login never names a configured user, and a created account's failure stays in its slot", async () => {
     const t = await pwRun();
     // Slot 2 holds buyer2, its session open and signed in.

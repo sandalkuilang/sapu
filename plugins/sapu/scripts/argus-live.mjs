@@ -40,7 +40,7 @@
 //   argus-live.mjs reap <runId>  internal: the reaper `up` starts; runs `down` at the lock's deadline
 //                                unless `renew` moved it, and exits without acting when the lock names
 //                                another run
-//   argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>,…
+//   argus-live.mjs slot <n> --journey <id> --accounts <role>.<k>=<user>|<role>.<k>|<role>.<k>=+,…
 //                                mint slot <n>'s token for an explorer: one line of JSON {slot, token,
 //                                generation, journey, accounts} (the only place a token is printed)
 //   argus-live.mjs slot <n> --map [--seed]
@@ -74,6 +74,8 @@
 //                                confirm run's exit, then minimized <ref>: steps <a> → <b>, runs <k>/<max>,
 //                                stopped fixpoint|budget|down|deadline, confirmed yes|no; min.json when
 //                                confirmed; exit 2 when the cycle went down or its deadline came too near
+//                                (repro, --once and --minimize each begin with `up --fresh`: they are refused, exit 1, nothing run,
+//                                while another slot's explorer is walking: a live token and a state written within 5 minutes)
 //   argus-live.mjs repro <slot>.<generation>.<k> --test
 //                                write the candidate's Playwright RED test (from min.json when minimize confirmed
 //                                it, else its whole repro) to red.spec.ts in its records: red test: <absolute path>;
