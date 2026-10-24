@@ -144,8 +144,8 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
       const roleOf = ({ step }) => (isObj(step) && typeof step.as === "string" ? step.as.split(".")[0] : "system");
       const last = flat.length ? roleOf(flat.at(-1)) : "system";
       const droppable = [...new Set(flat.map(roleOf))].filter((r) => r !== "system" && r !== last);
-      const nameable = flat.slice(0, -1).some(({ step, grouped }) => !grouped && isObj(step) && typeof step.do === "string");
-      if (droppable.length && nameable) err(`${at} is required: minimize may drop role ${droppable.map((r) => (/^[a-z0-9_-]{1,40}$/.test(r) ? r : "that")).join(", ")} whole; name the step the claim is about`);
+      const nameable = flat.slice(0, -1).some((x) => !x.grouped && roleOf(x) !== "system" && typeof x.step.do === "string");
+      if (droppable.length && nameable) err(`${at} is required: minimize may drop ${droppable.length > 1 ? "roles" : "role"} ${droppable.map((r) => (/^[a-z0-9_-]{1,40}$/.test(r) ? r : "that")).join(", ")} whole; name the step the claim is about`);
       return null;
     }
     if (!Number.isInteger(k) || k < 1 || k >= flat.length) err(`${at} must be a step number from 1 to ${Math.max(flat.length - 1, 1)}, before the final step`);

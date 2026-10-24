@@ -3140,7 +3140,7 @@ describe("argus-live submit and intake", () => {
     // Nothing droppable (accounts of the final's role, system), or no action outside a parallel group to name: optional.
     for (const repro of [
       [{ as: "system", do: "trigger", name: "seed" }, step("buyer.1", 1), step("buyer.2", 2), final],
-      [{ parallel: [step("seller.1", 1), step("buyer.1", 2)] }, final],
+      [{ as: "system", do: "trigger", name: "seed" }, { parallel: [step("seller.1", 1), step("buyer.1", 2)] }, final],
     ]) {
       const u = await submitRun();
       expect((await u.send(u.token, withRepro(repro))).out, JSON.stringify(repro)).toEqual(["submitted: slot 1 generation 1 status done"]);
