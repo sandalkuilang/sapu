@@ -13,6 +13,7 @@ import { loadSmoke, readKnown, SMOKE_DEFAULTS } from "./argus-live-smokecfg.mjs"
 import { fence } from "./argus-live-fence.mjs";
 import { CODE_USAGE, codeCommand, runHook } from "./argus-live-hooks.mjs";
 import { appendLedger } from "./argus-live-ledger.mjs";
+import { liveCounts } from "./argus-live-counts.mjs";
 import { LAYOUT_KINDS, pageExpression } from "./argus-live-layout.mjs";
 import { submit } from "./argus-live-return.mjs";
 import { BLOCKED_ERROR, checkUrl, originOf, shown } from "./argus-live-origin.mjs";
@@ -293,7 +294,7 @@ function pngsIn(dir) {
  * `created` for its re-logins once it worked; its failures in state.json `createdFailed`, never in run.json
  * `loginFailed`); a user of `roles.*.users` is refused, whichever slot holds it. Every write of the slot's
  * state re-checks that the run is still live (stillLive): a `down` meanwhile is refused, nothing left. `submit` is handled before
- * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. The role-free `code`, `trigger`, `facts` and `mail`
+ * the config is read (it needs only the slot); `submit --check <json>` validates as it does and prints `check: ok`, recording nothing. Both count each repro step's target on the page its account's open session stands on (argus-live-counts.mjs): more than one match, or none for an action, is refused; `--check` notes the steps it could not count. The role-free `code`, `trigger`, `facts` and `mail`
  * (argus-live-hooks.mjs) print their output in the fence, then `exit <n>` when it was not 0. Exit codes: 0 the command ran (a CLI
  * error is page data, inside the fence), 1 refused or BUDGET/LOOP/DEADLINE/HARNESS, 2 the wrapper failed.
  * A map slot's token (decision 20) takes `code` and `submit` only, also in a run with no instance (mapCall); a
@@ -355,11 +356,31 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // submit needs only the slot's record: past DEADLINE and BUDGET, never counted, and a .argus/live.json
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
   // `submit --check` is the same validation printing `check: ok`: it writes nothing, retires nothing, and is
-  // never counted either (as a refused submit is not).
+  // never counted either (as a refused submit is not). Both then count each repro step's target on the page
+  // its account stands on (liveCounts): one matching more than one element is refused, and the targets that
+  // could not be counted are noted (`--check` only: a submitted return is past fixing). Past the deadline a
+  // return goes through uncounted.
   if (word === "submit") {
     try {
       const p = parsePw(argv);
-      return { code: 0, out: [submit(main, { runId, slot, rec: slotRec }, p.positionals[0], { checks: () => returnChecks(main, slotRec), check: p.flags.includes("--check") })] };
+      const check = p.flags.includes("--check");
+      let pc;
+      const checks = () => {
+        if (pc === undefined) {
+          try {
+            pc = returnChecks(main, slotRec);
+          } catch {
+            pc = null;
+          }
+        }
+        return pc;
+      };
+      const ids = { main, runId, slot, rec: slotRec };
+      const line = submit(main, ids, p.positionals[0], { checks, check: true });
+      const run = readRun(main);
+      const counted = slotRec.mode === "map" || lockNow.deadline * 1000 <= now() ? { errors: [], notes: [] } : await liveCounts(JSON.parse(p.positionals[0]), { checks: checks(), run, runId, slot, js: cli ?? (run && run.browser && run.browser.js), cliRunner });
+      if (counted.errors.length) throw new Error(`refused: return: ${counted.errors.slice(0, 5).join("; ")}`);
+      return { code: 0, out: check ? [line, ...counted.notes] : [submit(main, ids, p.positionals[0], { checks })] };
     } catch (e) {
       if (!/^refused: /.test(e.message)) throw e;
       return { code: 1, out: [e.message] };

@@ -690,6 +690,11 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.33.0
+
+Nothing to do: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **`submit --check` and `submit` count a repro's targets on the live page.** A repro step whose target matches more than one element on the page its account stands on (or, for an action, none) is refused with the candidate, the step and how to fix it (`within`, `exact` or `nth`), instead of failing every candidate on a fresh instance as `ambiguous-target`. Only a step whose page is known to be the live one is counted (after a `goto` or a `url` expectation, until a click or key press may have navigated); `submit --check` lists the other steps in a `note:` line and never refuses them. A real `submit` past the deadline is not counted.
+
 #### Upgrading from a version before 2.32.0
 
 One step: argus's ORIENT now stops every cycle when the contract's needs-owner label (default `argus:needs-owner`) is missing from the repository, so create it if the repo lacks it (`gh label create argus:needs-owner`, or run `/sapu:init` again), then start a new session, or run `/reload-plugins` in a running one. Stop a `show --follow` you started yourself in a terminal (Ctrl-C) before the first journey on 2.32: 2.31 never writes `watch.json`, so `/journey` would start a second watcher beside it. From 2.32 on there is one watcher per repo. What behaves differently:

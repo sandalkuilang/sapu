@@ -582,7 +582,7 @@ const BUDGETS: Record<string, number> = {
   "skills/sapu/scout-brief.md": 4_800, // +when to slice (threshold, `slices` return); read by the scout only; the builder never loads it
   "skills/forge/SKILL.md": 15_800, // +batched exploration, optional §Code search
   "skills/forge/reference.md": 16_000,
-  "agents/ui-explorer.md": 20_500, // +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
+  "agents/ui-explorer.md": 20_801, // +submit counts repro targets on the live page; +a blocking false assumption ends the walk at once (2.31.0); +submit --check, code pathspecs and regex
   "agents/curator.md": 7_800,
   "skills/argus/journeys.md": 16_578, // +no visit for an aborted-on-seed journey (2.31.0), +renew keeps the cycle alive, no cap stop, +the Docker-gate refusal row, +repro exit 4 (deadline) and its rows
   "skills/argus/SKILL.md": 43_288, // +the agent-filed label check and the cycle id reserved, last in ORIENT (2.31.0); +the needs-owner label in the same check

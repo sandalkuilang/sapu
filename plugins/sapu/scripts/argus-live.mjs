@@ -54,7 +54,9 @@
 //                                nonce fence, then the wrapper's own lines; exit 0 ran, 1 refused or
 //                                BUDGET/LOOP/DEADLINE/HARNESS, 2 failed; the token is never printed;
 //                                `pw <token> submit --check <json>` validates a return and prints
-//                                `check: ok`, recording and retiring nothing
+//                                `check: ok`, recording and retiring nothing; both count each repro
+//                                step's target on the page its account stands on and refuse one that
+//                                matches more than one element (or an action's, none)
 //   argus-live.mjs intake <n>    the orchestrator's read of slot <n>'s return: per generation a summary of
 //                                enums and counts, then the return whole in a RETURN nonce fence
 //   argus-live.mjs repro <slot>.<generation>.<k>
