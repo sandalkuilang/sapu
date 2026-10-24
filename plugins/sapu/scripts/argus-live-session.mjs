@@ -164,6 +164,49 @@ export function spendTaste(main, runId, what, ms) {
   }
 }
 
+/** `ms` in words: `42 s`, `3 min 10 s`. */
+const span = (ms) => {
+  const s = Math.round(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ""}` : `${s} s`;
+};
+
+/** What a taste confirm that took `ms` says of the pass's budget: `(took 42 s, 3 min 10 s left)`; `no time left` once TASTE_BUDGET_MS is spent. */
+export function budgetNote(main, runId, ms) {
+  const left = TASTE_BUDGET_MS - tasteSpent(main, runId);
+  return `(took ${span(ms)}, ${left >= 500 ? `${span(left)} left` : "no time left"})`;
+}
+
+const failedFile = (main, runId) => path.join(tasteDir(main, runId), "replay-failed.jsonl");
+
+/** Remembers that the replay of `sha` (a path's pathSha) of `journey` ended before `screen`, saying `said`: the cycle's later rows of that screen are answered from it. Never throws. */
+export function noteReplayFailed(main, runId, journey, screen, sha, said) {
+  try {
+    privateDir(tasteDir(main, runId));
+    appendPrivate(failedFile(main, runId), { journey, screen, sha, said });
+  } catch {
+    // a cache: the next row replays
+  }
+}
+
+/** The `said` of the cycle's failed replay of `journey`'s `screen` by the path `sha`, or null. */
+export function replayFailed(main, runId, journey, screen, sha) {
+  let text = "";
+  try {
+    text = fs.readFileSync(failedFile(main, runId), "utf8");
+  } catch {
+    return null;
+  }
+  for (const l of text.split("\n")) {
+    try {
+      const e = JSON.parse(l);
+      if (isObj(e) && e.journey === journey && e.screen === screen && e.sha === sha && typeof e.said === "string") return e.said;
+    } catch {
+      // a torn line says nothing
+    }
+  }
+  return null;
+}
+
 /**
  * The route template of `pathname` (decision 17's screen key): the map's route it matches (a `:name`, `*`, `{name}`
  * or `[name]` segment matches any one segment; the most literal match wins), else the path with each id-like

@@ -37,7 +37,7 @@ import { makeHome, makeWorktree } from "../plugins/sapu/scripts/argus-live-start
 // @ts-expect-error — plain ESM script without types
 import { MEDIA_READ, PASS_OFF, readTasteState, shotName, TASTE_BUDGET_MS, TASTE_BUFFER, TASTE_DRAIN, writeTasteState } from "../plugins/sapu/scripts/argus-live-tastecfg.mjs";
 // @ts-expect-error — plain ESM script without types
-import { confirmSink, laneTokens, MEDIA_RULES, tasteConfirm, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
+import { confirmSink, laneTokens, MEDIA_RULES, tasteConfirm as confirmWithBudget, tasteJudge } from "../plugins/sapu/scripts/argus-live-tastejudge.mjs";
 // @ts-expect-error — plain ESM script without types
 import { tasteFile } from "../plugins/sapu/scripts/argus-live-tastefile.mjs";
 
@@ -593,6 +593,11 @@ const barWith = (archetypes: Obj, { width = "1440", calibrated = "2026-04" } = {
  * `screen(route, findings, over)` a recorded screen of journey `j` whose census holds `findings`; `taste(obj)` the
  * owner's .argus/taste.json; `ret(slot, journey, path)` an explorer's return holding a path; `judge()` the verb.
  */
+/** tasteConfirm without the budget note every answer line ends with (` (took 42 s, 3 min 10 s left)`), which its own test reads. */
+const tasteConfirm = async (...a: Parameters<typeof confirmWithBudget>) => {
+  const r = await confirmWithBudget(...a);
+  return { ...r, lines: r.lines.map((l: string) => l.replace(/^(taste confirm [tp][0-9]+: .*) \(took [^)]*\)$/, "$1")) };
+};
 const judgeRepo = () => {
   const main = committed();
   const runId = takeLock(main, { maxCycleMinutes: 45 }).runId as string;
@@ -1112,6 +1117,8 @@ describe("argus-live taste confirm (J2)", () => {
     const never = await tasteConfirm(t.main, "p1", { once: once(false) });
     expect(never.code).toBe(2);
     expect(never.lines.slice(0, 2)).toEqual(["taste confirm p1: not decided (the replay never reached the screen)", "harness: the replay never reached the screen"]);
+    // A new cycle forgets the failed replay (the cache is the cycle's).
+    rmSync(join(tasteDir(t.main, t.runId), "replay-failed.jsonl"));
     const r = await tasteConfirm(t.main, "p1", { once: once(true) });
     expect(runs[1].opts.path.id).toBe("taste-p1");
     expect(typeof runs[1].opts.until).toBe("function");
@@ -1132,8 +1139,58 @@ describe("argus-live taste confirm (J2)", () => {
     expect(never.code).toBe(2);
     expect(never.lines.slice(0, 2)).toEqual(["taste confirm t1: not decided (the replay never reached the screen)", "harness: the replay never reached the screen"]);
     expect(u.file().rows[0].confirmed).toBeNull();
-    const failed = await u.confirm("t1", { rows: null });
+    const w = await confirmRepo([broken]);
+    const failed = await w.confirm("t1", { rows: null });
     expect(failed.lines[0]).toBe("taste confirm t1: not decided (the rule's expression failed on the screen)");
+  }, 30_000);
+
+  it("a replay that failed before the screen is cached for the cycle by its path: the screen's next row is answered at once, another screen replays", async () => {
+    const heading = { rule: "hierarchy.heading-order", key: "h2|Profile", measured: 32, expected: "at most 24" };
+    const t = judgeRepo();
+    t.put(1, [t.screen("/a", [broken, heading]), t.screen("/b", [broken])]);
+    t.ret(1, "j", pathOf(3));
+    await t.judge();
+    const rows = t.file().rows;
+    const at = (rule: string, route: string) => rows.find((r: Obj) => r.rule === rule && r.screen === `${route}|1440|light`).row;
+    const runs: Obj[] = [];
+    const once = (reach: boolean, key: string) => async (_m: string, _r: null, opts: Obj) => {
+      runs.push(opts);
+      if (reach) activeConfirm().take({ ok: true, __taste: { rows: [{ key, measured: "undefined" }] } });
+      return { code: 2, lines: ["HARNESS: the replay failed"] };
+    };
+    const first = await tasteConfirm(t.main, at("copy.broken", "/a"), { once: once(false, "facts|undefined") });
+    expect(first.code).toBe(2);
+    expect(first.lines[0]).toBe(`taste confirm ${at("copy.broken", "/a")}: not decided (the replay failed before the screen)`);
+    // The same screen's other row: no second replay, the same answer.
+    const next = await tasteConfirm(t.main, at("hierarchy.heading-order", "/a"), { once: once(true, "h2|Profile") });
+    expect(runs).toHaveLength(1);
+    expect(next.code).toBe(2);
+    expect(next.lines[0]).toBe(`taste confirm ${at("hierarchy.heading-order", "/a")}: not decided (the replay failed before the screen)`);
+    expect(t.file().rows.map((r: Obj) => r.confirmed)).toEqual(rows.map(() => null));
+    // Another screen of the journey replays.
+    const other = await tasteConfirm(t.main, at("copy.broken", "/b"), { once: once(true, "facts|undefined") });
+    expect(runs).toHaveLength(2);
+    expect(other.lines[0]).toBe(`taste confirm ${at("copy.broken", "/b")}: confirmed (measured again)`);
+    // The explorer's path changed: the cached failure was of another path and no longer applies.
+    t.ret(1, "j", pathOf(4));
+    await tasteConfirm(t.main, at("hierarchy.heading-order", "/a"), { once: once(true, "h2|Profile") });
+    expect(runs).toHaveLength(3);
+  }, 30_000);
+
+  it("every answer line ends with the budget the confirm took and what is left of the pass's 15 minutes", async () => {
+    const t = await confirmRepo([broken]);
+    const spent = (ms: number) => writeFileSync(join(tasteDir(t.main, t.runId), "spent.jsonl"), `${JSON.stringify({ what: "record", ms })}\n`);
+    // The pass has spent 10 minutes; the replay (a clock reading 42 s later each time) takes 42 s.
+    spent(600_000);
+    let clock = 0;
+    const r = await confirmWithBudget(t.main, "t1", { once: t.once({ rows: [{ key: "facts|undefined", measured: "undefined" }] }), now: () => (clock += 42_000) });
+    expect(r.lines[0]).toBe("taste confirm t1: confirmed (measured again) (took 42 s, 4 min 18 s left)");
+    spent(TASTE_BUDGET_MS - 20_000);
+    const low = await confirmWithBudget(t.main, "t1", { once: t.once({ rows: [] }), now: () => (clock += 5_000) });
+    expect(low.lines[0]).toBe("taste confirm t1: not confirmed (not measured again: the screen holds the rule) (took 5 s, 15 s left)");
+    spent(TASTE_BUDGET_MS - 1_000);
+    const none = await confirmWithBudget(t.main, "t1", { once: t.once({ rows: [] }), now: () => (clock += 30_000) });
+    expect(none.lines[0]).toMatch(/\(took 30 s, no time left\)$/);
   }, 30_000);
 
   it("a peer-count row is confirmed only when the screen is beyond the row's expected again", async () => {
