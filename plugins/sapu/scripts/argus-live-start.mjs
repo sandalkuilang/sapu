@@ -10,7 +10,7 @@ import net from "node:net";
 import path from "node:path";
 import { expand, secretEnv } from "./argus-live-config.mjs";
 import { portHolder } from "./argus-live-egress.mjs";
-import { loopbackAliases, normHost, ownerEnvFiles, readOwner, scopeChecker } from "./argus-live-endpoints.mjs";
+import { acceptsOn, loopbackAliases, normHost, ownerEnvFiles, probeLoopback, readOwner, scopeChecker } from "./argus-live-endpoints.mjs";
 import { runIdOk } from "./argus-live-lock.mjs";
 import { killGroup, MAX_HOPS, msLeft, readFrom, redact, resolveLink, run, runAsync, sleep, startTime, tail, within } from "./argus-live-proc.mjs";
 import { liveRoot, ownDir, repoName } from "./argus-live-run.mjs";
@@ -532,8 +532,27 @@ export async function bringUpStore(ctx) {
   if (ctx.config.seed_check) await runStep("seed_check", ctx.config.seed_check, ctx);
 }
 
-/** `up` step 7: every other entry (started and healthy, one by one), then `checkStore` again. */
+const LOOPBACK_LITERALS = ["127.0.0.1", "::1"];
+
+/**
+ * Records in `upstream` (`{<port>: <address>}`) the loopback address each of the run's `ports` (`{name: port}`)
+ * accepts a connection on, for the ports with no record yet or whose recorded address no longer accepts (an
+ * `up --fresh` copies the earlier record, and the service may now listen on the other loopback family): a
+ * health `cmd` says nothing of the port a service serves, and one entry may serve several. A port nothing
+ * accepts on keeps what it had (the proxy tries the other loopback literal when a browser asks).
+ */
+export async function recordRunPorts(ports, upstream) {
+  const todo = [];
+  for (const p of Object.values(ports ?? {})) if (Number.isInteger(p) && !todo.includes(p)) todo.push(p);
+  const found = await Promise.all(todo.map(async (p) => (LOOPBACK_LITERALS.includes(upstream[String(p)]) && (await acceptsOn(upstream[String(p)], p)) ? null : probeLoopback(p))));
+  todo.forEach((p, i) => {
+    if (found[i]) upstream[String(p)] = found[i];
+  });
+}
+
+/** `up` step 7: every other entry (started and healthy, one by one), the run's ports recorded, then `checkStore` again. */
 export async function bringUpRest(ctx) {
   for (const e of ctx.config.start.filter((x) => x.phase !== "store")) await startHealthy(e, ctx);
+  if (ctx.upstream) await recordRunPorts(ctx.ports, ctx.upstream);
   await checkStore(ctx);
 }

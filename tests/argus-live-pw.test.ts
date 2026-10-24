@@ -30,7 +30,7 @@ import { base32Decode, login, loginCode, loginPlan, reserveStep, runCode, totp, 
 // @ts-expect-error — plain ESM script without types
 import { status, statusJson, up } from "../plugins/sapu/scripts/argus-live-instance.mjs";
 // @ts-expect-error — plain ESM script without types
-import { makeHome, makeWorktree, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
+import { makeHome, makeWorktree, recordRunPorts, waitHealth } from "../plugins/sapu/scripts/argus-live-start.mjs";
 // @ts-expect-error — plain ESM script without types
 import { accountOf, handoffSlot, mintSlot, parseAccounts, readSlotState, retireAll, tokenSlot, withSlotLock, writeSlotState } from "../plugins/sapu/scripts/argus-live-slots.mjs";
 // @ts-expect-error — plain ESM script without types
@@ -1263,9 +1263,123 @@ describe("argus-live proxy", () => {
     expect(upstream).toEqual({ [String(app.port)]: "127.0.0.1" });
   });
 
+  it("a run port with no recorded address is probed on 127.0.0.1 then ::1, by name over HTTP and CONNECT; the refusals stay", async () => {
+    const app = await target();
+    const other = await counter();
+    const nobody = await freePort();
+    const get = (port: number, host = "localhost") => `GET http://${host}:${port}/n HTTP/1.1\r\nHost: ${host}:${port}\r\nConnection: close\r\n\r\n`;
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`, `http://localhost:${other.port}`, `http://localhost:${nobody}`], runPorts: [app.port, nobody], upstream: () => null });
+    // A run port: reached with no record.
+    expect(await raw(p.port, get(app.port))).toContain("app /n");
+    expect(await raw(p.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\nGET /c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /c");
+    // An allowed loopback port that is not one of the run's: never probed, never reached.
+    expect(status(await raw(p.port, get(other.port)))).toBe(502);
+    expect(other.count()).toBe(0);
+    // A run port nothing listens on: 502, not a guess elsewhere.
+    expect(status(await raw(p.port, get(nobody)))).toBe(502);
+    expect(p.blocked).toEqual([[`http://localhost:${other.port}`, "no-address"], [`http://localhost:${nobody}`, "no-address"]]);
+    // A run host that resolves outside loopback stays blocked, whatever the run ports are.
+    const out = await proxyOn({ allowed: ["http://app.test:80"], runHosts: ["app.test"], runPorts: [80], lookup: async () => [{ address: "203.0.113.5", family: 4 }] });
+    expect(status(await raw(out.port, get(80, "app.test")))).toBe(403);
+    expect(out.blocked).toEqual([["http://app.test", "http"]]);
+  });
+
+  it("a recorded address wins over the probe; the 502 of an unrecorded port is logged once as no-address, on every route", async () => {
+    const app = await target();
+    const req = (path: string, extra = "") => `GET http://localhost:${app.port}${path} HTTP/1.1\r\nHost: x\r\n${extra}Connection: close\r\n\r\n`;
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [app.port], upstream: () => "127.0.0.1" });
+    expect(await raw(p.port, req("/r"))).toContain("app /r");
+    const none = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    for (let i = 0; i < 2; i++) expect(status(await raw(none.port, req("/r")))).toBe(502);
+    expect(none.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+    const ws = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    expect(status(await raw(ws.port, req("/ws", "Upgrade: websocket\r\n")))).toBe(502);
+    expect(ws.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+    const tunnel = await proxyOn({ allowed: [`http://localhost:${app.port}`], upstream: () => null });
+    expect(status(await raw(tunnel.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\n`))).toBe(502);
+    expect(tunnel.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
+  });
+
+  /** A target on `::1` only → its port, or null when this host has no IPv6 loopback. */
+  const targetV6 = async () => {
+    const s = createHttpServer((req, res) => res.end(`app6 ${req.url}`));
+    s.on("connection", (c) => c.on("error", () => {}));
+    const ok = await new Promise<boolean>((done) => (s.once("error", () => done(false)), s.listen(0, "::1", () => done(true))));
+    if (!ok) return null;
+    closers.push(() => new Promise((done) => (s.closeAllConnections(), s.close(done))));
+    return (s.address() as { port: number }).port;
+  };
+
+  it("a recorded address that no longer accepts is replaced by a run port's other loopback literal, on every route; a refusal that remains is logged once as connect-failed", async () => {
+    const app = await target();
+    const nobody = await freePort();
+    const get = (port: number, extra = "") => `GET http://localhost:${port}/s HTTP/1.1\r\nHost: x\r\n${extra}Connection: close\r\n\r\n`;
+    // The record names ::1, the service is on 127.0.0.1 now (after an up --fresh).
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [app.port], upstream: () => "::1" });
+    expect(await raw(p.port, get(app.port))).toContain("app /s");
+    expect(await raw(p.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\nGET /c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /c");
+    expect(status(await raw(p.port, get(app.port, "Upgrade: websocket\r\nConnection: Upgrade\r\n")))).toBe(101);
+    expect(p.blocked).toEqual([]);
+    const v6 = await targetV6();
+    if (v6) {
+      const q = await proxyOn({ allowed: [`http://localhost:${v6}`], runPorts: [v6], upstream: () => "127.0.0.1" });
+      expect(await raw(q.port, get(v6))).toContain("app6 /s");
+    }
+    // Nothing accepts on either literal: 502, logged once per origin.
+    const dead = await proxyOn({ allowed: [`http://localhost:${nobody}`], runPorts: [nobody], upstream: () => "127.0.0.1" });
+    for (let i = 0; i < 2; i++) expect(status(await raw(dead.port, get(nobody)))).toBe(502);
+    expect(status(await raw(dead.port, `CONNECT localhost:${nobody} HTTP/1.1\r\nHost: x\r\n\r\n`))).toBe(502);
+    expect(dead.blocked).toEqual([[`http://localhost:${nobody}`, "connect-failed"]]);
+    // Only a run port gets the other literal: a stale record on any other allowed port stays a 502.
+    const stale = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [], upstream: () => "::1" });
+    expect(status(await raw(stale.port, get(app.port)))).toBe(502);
+    expect(stale.blocked).toEqual([[`http://localhost:${app.port}`, "connect-failed"]]);
+    expect(app.hits).toEqual(["GET /s", "GET /c", "UPGRADE /s"]);
+  });
+
+  it("recordRunPorts re-probes a recorded address that no longer accepts and keeps one that does", async () => {
+    const app = await target();
+    const v6 = await targetV6();
+    const upstream: Record<string, string> = { [String(app.port)]: "127.0.0.1" };
+    if (v6) upstream[String(v6)] = "127.0.0.1";
+    const nobody = await freePort();
+    upstream[String(nobody)] = "::1";
+    await recordRunPorts({ web: app.port, ...(v6 ? { six: v6 } : {}), gone: nobody }, upstream);
+    expect(upstream[String(app.port)]).toBe("127.0.0.1");
+    if (v6) expect(upstream[String(v6)]).toBe("::1");
+    // Nothing accepts anywhere: the record is left as it was (the proxy answers its own 502).
+    expect(upstream[String(nobody)]).toBe("::1");
+  });
+
+  it("recordRunPorts records the loopback address a run port accepts on, keeps recorded ones and skips a port nothing listens on", async () => {
+    const app = await target();
+    const nobody = await freePort();
+    const upstream: Record<string, string> = { "1": "::1" };
+    await recordRunPorts({ web: app.port, gone: nobody, kept: 1 }, upstream);
+    expect(upstream).toEqual({ "1": "::1", [String(app.port)]: "127.0.0.1" });
+  });
+
   it("listens on loopback only", async () => {
     const p = await proxyOn({ allowed: [] });
     expect(p.address).toBe("127.0.0.1");
+  });
+
+  it("serveProxy reaches a run port with no upstream record and logs the 502 of an allowed port that is not the run's", async () => {
+    process.env.TMPDIR = tempDir();
+    const r = liveRun();
+    closers.push(() => down(r.main, { runId: r.runId, graceMs: 1000 }));
+    const app = await target();
+    const other = await counter();
+    writeRunFiles(r.main, { runId: r.runId, worktree: r.wt, ports: { s3: app.port }, origins: [`http://localhost:${app.port}`, `http://localhost:${other.port}`], allowOrigins: [], upstream: {}, groups: [], env: r.env });
+    const { pid, port } = await startProxy(r.main, r.runId, { groups: [] });
+    closers.push(() => killGroup(pid));
+    expect(await raw(port, `GET http://localhost:${app.port}/up HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /up");
+    expect(status(await raw(port, `GET http://localhost:${other.port}/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`))).toBe(502);
+    expect(other.count()).toBe(0);
+    const lines = readFileSync(join(logsDir(r.main, r.runId), "proxy-blocked.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => [l.origin, l.kind])).toEqual([[`http://localhost:${other.port}`, "no-address"]]);
+    // The run's own origin refused: never reported to an explorer as blocked.
+    expect(blockedSince(r.main, r.runId, 0).origins).toEqual([]);
   });
 
   it("serveProxy (through startProxy) records its group as internal, its port in run.json, logs each blocked origin once, and exits once the lock names another run", async () => {
@@ -2144,6 +2258,132 @@ describe("argus-live pw — refusals and limits", () => {
       expect((await check(t, repro())).out).toEqual(["check: ok", "note: not counted on the live page (.argus/live.json could not be read): candidates[0]"]);
     }, 30_000);
 
+    describe("--check judges each expectation on the live page", () => {
+      // goto, an intermediate expectation (step 2), then the final visible (step 3): both on the live page.
+      const expecting = (kind: string, target: Obj, value = "42") => [
+        { as: "buyer.1", do: "goto", path: "/orders" },
+        { as: "buyer.1", expect: kind, target, ...(kind === "visible" ? {} : { value }) },
+        { as: "buyer.1", expect: "visible", target: { role: "button", name: "Pay" }, final: "handoff" },
+      ];
+      const fine = { held: true, tag: "button" };
+      const noted = async (kind: string, target: Obj, judged: unknown, value?: string) => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1], judged: [judged, fine] });
+        return { t, out: await check(t, expecting(kind, target, value)) };
+      };
+      const LABEL = { label: "Amount" };
+
+      it("a text expectation on an input has no text to read: a note naming the candidate and the step", async () => {
+        const { t, out } = await noted("text-contains", LABEL, { held: false, tag: "input" });
+        expect(out).toEqual({ code: 0, out: ["check: ok", "note: cannot be judged on the live page (a text expectation's target has no text of its own, an input, a textarea, a select or an image; read a field with value-equals, or target the element that holds the text): candidates[0] step 2"] });
+        // One browser call, the repro's own judging code and locator code in it, the expectation's kind and value as data.
+        expect(sent(t)).toHaveLength(1);
+        expect(sent(t)[0]).toContain("const judgeTarget = async (P, T) =>");
+        expect(sent(t)[0]).toContain('(pg) => pg.getByLabel("Amount")');
+        expect(sent(t)[0]).toContain('{"kind":"text-contains","value":"42"}');
+        expect(existsSync(join(t.main, ".argus/live", t.runId, "returns"))).toBe(false);
+        expect((await noted("text-equals", LABEL, { held: false, tag: "img" })).out.out[1]).toContain("candidates[0] step 2");
+        // A select's innerText lists every option, not the chosen one: it has no text of its own either.
+        expect((await noted("text-equals", LABEL, { held: false, tag: "select" })).out.out[1]).toContain("candidates[0] step 2");
+      }, 30_000);
+
+      it("a label that does not hold the text is a note; one that holds it, or whose value is a placeholder, is not", async () => {
+        const text = { role: "status" };
+        expect((await noted("text-contains", text, { held: false, tag: "label" })).out.out[1]).toBe("note: cannot be judged on the live page (a text expectation's target is a label that does not hold the text now; target the element that holds it): candidates[0] step 2");
+        expect((await noted("text-contains", text, { held: true, tag: "label" })).out.out).toEqual(["check: ok"]);
+        expect((await noted("text-contains", text, { held: false, tag: "label" }, "{{marker}}")).out.out).toEqual(["check: ok"]);
+        // Not held on a plain element is not a note: the page may differ from when the step ran.
+        expect((await noted("text-contains", text, { held: false, tag: "div" })).out.out).toEqual(["check: ok"]);
+      }, 30_000);
+
+      it("a value-equals the evaluation throws on, and any other expectation it throws on, are notes", async () => {
+        const field = { role: "textbox", name: "Amount" };
+        expect((await noted("value-equals", field, { threw: true, tag: "div" })).out.out[1]).toBe("note: cannot be judged on the live page (a value-equals target is not an input, a textarea or a select): candidates[0] step 2");
+        expect((await noted("text-equals", { role: "img" }, { threw: true, tag: "svg" })).out.out[1]).toBe("note: cannot be judged on the live page (the expectation cannot be evaluated on its target; a text expectation needs an HTML element): candidates[0] step 2");
+        expect((await noted("value-equals", field, { held: false, tag: "input" })).out.out).toEqual(["check: ok"]);
+        expect((await noted("visible", { role: "dialog" }, { held: false, tag: "div" })).out.out).toEqual(["check: ok"]);
+      }, 30_000);
+
+      it("an answer without judgments, a null one or an unknown shape adds no note; a page that is not the live one is judged by nothing", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        expect((await check(t, expecting("text-contains", LABEL))).out).toEqual(["check: ok"]);
+        t.queue({ path: "/orders", counts: [1, 1], judged: [null, "x"] });
+        expect((await check(t, expecting("text-contains", LABEL))).out).toEqual(["check: ok"]);
+        t.queue({ path: "/elsewhere", counts: [1, 1], judged: [{ held: false, tag: "input" }, fine] });
+        expect((await check(t, expecting("text-contains", LABEL))).out[0]).toBe("check: ok");
+        expect((await check(t, expecting("text-contains", LABEL))).out.join("\n")).not.toContain("cannot be judged");
+      }, 30_000);
+
+      it("value-equals on a target that can never be an input is refused from its role alone, whatever page it is on", async () => {
+        const t = await pwRun();
+        const line = "refused: return: candidates[0].repro step 2: value-equals reads the value of an input, a textarea or a select, and a heading never is one; target the field itself, or use text-equals";
+        const heading = { role: "heading", name: "Total" };
+        t.queue({ path: "/orders", counts: [1, 1] });
+        expect(await check(t, expecting("value-equals", heading))).toEqual({ code: 1, out: [line] });
+        // After a click the page is unknown: the role still decides.
+        const moved = [{ as: "buyer.1", do: "goto", path: "/orders" }, { as: "buyer.1", do: "click", target: { role: "link", name: "Next" } }, ...expecting("value-equals", heading).slice(1)];
+        expect((await check(t, moved)).out).toEqual([line.replace("step 2", "step 3")]);
+        for (const role of ["img", "list", "dialog", "alert", "region"]) {
+          t.queue({ path: "/orders", counts: [1, 1] });
+          expect((await check(t, expecting("value-equals", { role }))).out).toEqual([line.replace("a heading", `a ${role}`)]);
+        }
+        // A role an input can have (an input may carry any widget role: a tab, an option, a link), a placeholder in the role, and a non-role target are not refused.
+        for (const target of [{ role: "textbox", name: "Amount" }, { role: "button", name: "Go" }, { role: "tab" }, { role: "menuitemcheckbox" }, { role: "option" }, { role: "gridcell" }, { role: "link" }, { role: "{{kind}}" }, LABEL]) {
+          t.queue({ path: "/orders", counts: [1, 1] });
+          expect((await check(t, expecting("value-equals", target))).out[0]).toBe("check: ok");
+        }
+      }, 30_000);
+
+      it("the code it sends stops judging after its time budget, counts all the same, so a long repro never loses them to the 30 s call limit", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        await check(t, expecting("value-equals", { role: "textbox", name: "Amount" }));
+        let clock = 0;
+        const loc = {
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          innerText: async () => "Pay",
+          inputValue: async () => ((clock += 16_000), "42"),
+          evaluate: async (fn: (el: Obj) => unknown) => fn({ tagName: "INPUT" }),
+        };
+        const page = { url: () => "http://localhost:41002/orders", getByRole: () => loc, getByLabel: () => loc };
+        const realNow = Date.now;
+        Date.now = () => clock;
+        try {
+          // The first expectation is judged (and slow); the second finds the budget spent: no judgment, so no note, but its count is there.
+          expect(await (0, eval)(`(${sent(t)[0]})`)(page)).toEqual({ path: "/orders", counts: [1, 1], judged: [{ held: true, tag: "input" }, null] });
+        } finally {
+          Date.now = realNow;
+        }
+      }, 30_000);
+
+      it("the code it sends is the repro's judging: run on a page it answers what the repro would see", async () => {
+        const t = await pwRun();
+        t.queue({ path: "/orders", counts: [1, 1] });
+        await check(t, expecting("value-equals", { role: "textbox", name: "Amount" }));
+        const loc = (tag: string, text: string, value: string | null) => ({
+          count: async () => 1,
+          isVisible: async () => true,
+          isEnabled: async () => true,
+          innerText: async () => text,
+          inputValue: async () => {
+            if (value === null) throw new Error("Node is not an <input>, <textarea> or <select> element");
+            return value;
+          },
+          evaluate: async (fn: (el: Obj) => unknown) => fn({ tagName: tag.toUpperCase() }),
+        });
+        const pageOf = (l: Obj) => ({ url: () => "http://localhost:41002/orders?x=1", getByRole: () => l, getByLabel: () => l });
+        const run = async (l: Obj) => (0, eval)(`(${sent(t)[0]})`)(pageOf(l));
+        // The step is a value-equals "42": an input holding 42 holds, a div throws.
+        expect(await run(loc("input", "", "42"))).toEqual({ path: "/orders", counts: [1, 1], judged: [{ held: true, tag: "input" }, { held: true, tag: "input" }] });
+        const div = await run(loc("div", "Pay", null));
+        expect(div.judged[0]).toEqual({ threw: true, tag: "div" });
+        expect(div.judged[1]).toEqual({ held: true, tag: "div" });
+      }, 30_000);
+    });
+
     it("a real submit is never counted (the page has moved on since the walk), past the deadline neither", async () => {
       const t = await pwRun();
       t.queue({ path: "/journals/new", counts: [2] });
@@ -2854,6 +3094,35 @@ describe("argus-live submit and intake", () => {
     }
     expect(returnsOf(t)).toEqual([]);
     expect((await t.send(t.token, withRepro(nest(8)))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+  }, 30_000);
+
+  it("submit takes a candidate's key_step: an action before the final step, numbered as the repro's steps are", async () => {
+    const t = await submitRun();
+    const ctx = { context: { viewport: 1440 } };
+    const act = (n: number) => ({ as: "buyer", do: "click", target: { text: `b${n}` } });
+    const see = { as: "buyer", expect: "visible", target: { text: "x" } };
+    const final = { as: "buyer", expect: "visible", target: { text: "y" }, final: "status-coherence" };
+    const withKey = (repro: unknown[], key: unknown) => JSON.stringify(good({ candidates: [{ ...good().candidates[0], repro, key_step: key }] }));
+    const refused = [
+      [withKey([ctx, act(1), see, final], 0), /^refused: return: candidates\[0\]\.key_step must be a step number from 1 to 2, before the final step$/],
+      [withKey([ctx, act(1), see, final], 3), /key_step must be a step number from 1 to 2, before the final step/],
+      [withKey([ctx, act(1), see, final], "1"), /key_step must be a step number/],
+      [withKey([ctx, act(1), see, final], 1.5), /key_step must be a step number/],
+      [withKey([ctx, act(1), see, final], 2), /^refused: return: candidates\[0\]\.key_step must name an action \(a step with "do"\), not an expectation$/],
+      // A parallel group's members each count: step 3 is the second member, the group's last, and 4 the final.
+      [withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 4), /key_step must be a step number from 1 to 3/],
+      // A member of a parallel group cannot be the key: without it the group would hold one member, which the static checks refuse.
+      [withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 3), /^refused: return: candidates\[0\]\.key_step must not be a member of a parallel group; name an action outside it$/],
+    ] as [string, RegExp][];
+    for (const [json, re] of refused) {
+      const r = await t.send(t.token, json);
+      expect(r.code, String(re)).toBe(1);
+      expect(r.out[0]).toMatch(re);
+    }
+    expect(returnsOf(t)).toEqual([]);
+    expect((await t.send(t.token, withKey([ctx, act(1), { parallel: [act(2), act(3)] }, final], 1))).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+    const saved = JSON.parse(readFileSync(join(t.main, ".argus/live", t.runId, "returns", returnsOf(t)[0]), "utf8"));
+    expect(saved.candidates[0].key_step).toBe(1);
   }, 30_000);
 
   it("submit needs only the slot: an invalid .argus/live.json does not block it", async () => {

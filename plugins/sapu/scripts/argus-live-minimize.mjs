@@ -11,9 +11,12 @@ import { redTest } from "./argus-live-redtest.mjs";
 import { nextRun, reproRef, runNeedMs, runOnce, runRecords, walkingRefusal, writePrivate } from "./argus-live-repro.mjs";
 import { readRun } from "./argus-live-run.mjs";
 import { redactIds, scrubSecrets, verdictOf } from "./argus-live-scrub.mjs";
-import { parseRepro, reductions } from "./argus-live-steps.mjs";
+import { changesState, parseRepro, provingExpect, reductions } from "./argus-live-steps.mjs";
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/** The expectation kinds of a final that assert a bad thing is absent: failing one without the key step means the bad thing shows without it. */
+const ABSENT_KINDS = ["hidden", "no-error", "layout", "taste"];
 
 /** The repo's live config, expanded with the running cycle's ports (the static checks read it). */
 function liveOf(main) {
@@ -34,9 +37,24 @@ function liveOf(main) {
  * one of them kept for a confirming run of the result; with no unit left untried it stopped at its
  * fixpoint. `min.json` (0600; the context element first) is written only when the confirm run failed the
  * same way; `minimize.json` `{runs, max, stopped, from, to, confirmed, tried: [{label, exit}]}` (`exit`
- * null for a skipped unit) always. Before each run (a try or the confirm) the lock must still name the
+ * null for a skipped unit) always.
+ *
+ * The step the claim is about (the candidate's `key_step`, a step number): a unit that drops it is skipped
+ * without a run (`skipped (it holds the key step <n>)`), so no kept reduction lacks it, and one run is kept
+ * for the negative control. After the confirm, the control: the list that will be filed (the minimized
+ * one when confirmed, else the whole) without the key step and the expect that proves it (never the final),
+ * run once. It ends the lines with one verdict. The run exits 0: `discriminating: the outcome does not show without
+ * step <n>`; it exits 3 failing the final as the reproducing run did (dynamic text aside): for a final asserting a
+ * bad thing is absent (`hidden`, `no-error`, `layout`, `taste`) `not discriminating: the outcome shows
+ * without step <n>` (the orchestrator does not file it as is), for any other kind (the final waits for an
+ * effect the key step should make) `control uninformative: the outcome is an effect step <n> should make,
+ * missing without it too` (filed as before). Else `control undecided: <why>` (no run left, stopped down or
+ * deadline, the static checks refuse the list, the run exited 2, or the final failed another way).
+ * `minimize.json` then also holds `key_step` and `control`
+ * `"shows"|"discriminates"|"uninformative"|"undecided"`. Without a `key_step` nothing of this happens. Before each run (a try, the confirm or the control) the lock must still name the
  * candidate's run (else `stopped down`) with the longest run so far, a minute at least, left before its
- * deadline (else `stopped deadline`): no confirm then, and exit 2. Lines: `try <label>: exit <k>|skipped
+ * deadline (else `stopped deadline`): a stop before or at the confirm means no confirm and exit 2; the
+ * control alone stopped leaves the confirmed result and exit 0. Lines: `try <label>: exit <k>|skipped
  * (…)`, `confirm: exit <k>`, then `minimized <ref>: steps <a> → <b>, runs <k>/<max>, stopped
  * fixpoint|budget|down|deadline, confirmed yes|no`; never a page's text. → `{code: 0|2, lines}`.
  */
@@ -66,8 +84,11 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
       return members.length ? [{ ...item, parallel: members }] : [];
     }),
   ];
-  const sameFinal = (r) => Boolean(r && r.code === 3 && isObj(r.result) && r.result.expected === base.rec.expected && r.result.observed === base.rec.observed && r.result.shownSha256 === base.rec.shownSha256);
+  /** `r` failed its final as the reproducing run did: the expectation and what was observed (dynamic text, `shownSha256`, aside). */
+  const sameOutcome = (r) => Boolean(r && r.code === 3 && isObj(r.result) && r.result.expected === base.rec.expected && r.result.observed === base.rec.observed);
+  const sameFinal = (r) => sameOutcome(r) && r.result.shownSha256 === base.rec.shownSha256;
   const changed = Array.isArray(base.rec.changed) ? base.rec.changed : [];
+  const key = parsed.steps.some((s) => s.n === candidate.key_step) ? candidate.key_step : null;
   const lines = [];
   const emit = (l) => {
     lines.push(l);
@@ -96,11 +117,16 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
   for (;;) {
     const unit = reductions(parsed.steps.filter((s) => keep.has(s.n)), { changed: changed.filter((x) => keep.has(x)) }).find((u) => !done.has(u.label));
     if (!unit) break;
-    if (runs >= budget - 1) {
+    if (runs >= budget - 1 - (key === null ? 0 : 1)) {
       stopped = "budget";
       break;
     }
     done.add(unit.label);
+    if (key !== null && unit.drop.includes(key)) {
+      tried.push({ label: unit.label, exit: null });
+      emit(`try ${unit.label}: skipped (it holds the key step ${key})`);
+      continue;
+    }
     const without = new Set([...keep].filter((x) => !unit.drop.includes(x)));
     const reduced = listOf(without);
     try {
@@ -132,12 +158,55 @@ export async function minimize(main, ref, { once = runOnce, max = null, say = ()
     confirmed = sameFinal(c);
     emit(`confirm: exit ${c.code}`);
   }
+  // Only a stop before or at the confirm is exit 2: the control stopping after it leaves the confirmed result standing.
+  const early = cutShort();
+  // The negative control: what will be filed, without the key step and the expect proving it, must no longer fail its final the same way.
+  let control = null;
+  let why = null;
+  if (key !== null) {
+    const filed = confirmed ? keep : new Set(parsed.steps.map((s) => s.n));
+    if (!cutShort() && runs < budget) stopped = cannotRun() ?? stopped;
+    const present = parsed.steps.filter((s) => filed.has(s.n));
+    const changes = new Set(changed.filter((x) => filed.has(x)));
+    const without = new Set(filed);
+    without.delete(key);
+    // The proving expect goes with the key step, never the final: a repro whose final proves the key step still runs.
+    if (changesState(present.find((s) => s.n === key), changes)) {
+      const prove = provingExpect(present, key, changes);
+      if (prove !== null && prove !== parsed.steps.at(-1).n) without.delete(prove);
+    }
+    const reduced = listOf(without);
+    let refused = false;
+    try {
+      parseRepro(reduced, at);
+    } catch (e) {
+      if (!/^refused: /.test(e.message)) throw e;
+      refused = true;
+    }
+    if (cutShort()) why = `stopped ${stopped}`;
+    else if (runs >= budget) why = "no run left";
+    else if (refused) why = `the static checks refuse the repro without step ${key}`;
+    else {
+      runs += 1;
+      const c = await once(main, ref, { ...opts, list: reduced, i: next++ });
+      emit(`control: exit ${c.code}`);
+      if (c.code === 0) control = "discriminates";
+      else if (c.code !== 3) why = `the run without step ${key} exited ${c.code}`;
+      else if (!sameOutcome(c)) why = `the final failed another way without step ${key}`;
+      else control = ABSENT_KINDS.includes(String(base.rec.expected).split(":")[0]) ? "shows" : "uninformative";
+    }
+    control ??= "undecided";
+  }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (confirmed) writePrivate(path.join(dir, "min.json"), `${JSON.stringify(result)}\n`);
   const from = parsed.steps.length;
-  writePrivate(path.join(dir, "minimize.json"), `${JSON.stringify({ runs, max: budget, stopped, from, to: keep.size, confirmed, tried })}\n`);
+  writePrivate(path.join(dir, "minimize.json"), `${JSON.stringify({ runs, max: budget, stopped, from, to: keep.size, confirmed, tried, ...(key === null ? {} : { key_step: key, control }) })}\n`);
   emit(`minimized ${ref}: steps ${from} → ${keep.size}, runs ${runs}/${budget}, stopped ${stopped}, confirmed ${confirmed ? "yes" : "no"}`);
-  return { code: cutShort() ? 2 : 0, lines };
+  if (control === "shows") emit(`not discriminating: the outcome shows without step ${key}`);
+  else if (control === "uninformative") emit(`control uninformative: the outcome is an effect step ${key} should make, missing without it too`);
+  else if (control === "discriminates") emit(`discriminating: the outcome does not show without step ${key}`);
+  else if (control !== null) emit(`control undecided: ${why}`);
+  return { code: early ? 2 : 0, lines };
 }
 
 /**

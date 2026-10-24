@@ -1,14 +1,27 @@
 // argus-live-counts.mjs — a return's repro targets counted on the explorer's live page (`submit --check` and
 // `submit`): a target that matches more than one element fails every replay as `ambiguous-target`, so the
-// explorer hears of it while it still stands on the page. Only the count of a step whose page is the live
-// one is sound; every other step is named in a note. Reads the slot's open session, opens nothing.
+// explorer hears of it while it still stands on the page. An expectation is judged there too, once and by the
+// repro's own evaluation, so one that can never be judged on its target (a text read of an input, a value of a
+// div) is told while the explorer can still fix it. Only a step whose page is the live one is sound; every
+// other step is named in a note. Reads the slot's open session, opens nothing.
 import { sessionName } from "./argus-live-cli.mjs";
 import { runCode } from "./argus-live-login.mjs";
 import { browserHome } from "./argus-live-run.mjs";
-import { CLICKS, targetFn } from "./argus-live-steps.mjs";
+import { CLICKS, JUDGE_TARGET, targetFn } from "./argus-live-steps.mjs";
 
 /** The most steps a note lists. */
 const LISTED = 8;
+/** The expectations judged on the live page: the kinds the repro judges by one read of one element. */
+const JUDGED = ["visible", "hidden", "enabled", "text-equals", "text-contains", "value-equals"];
+/** The tags whose innerText is never what they show: an input's and an image's is empty, a textarea's is not what it holds, a select's lists every option, not the chosen one. */
+const TEXTLESS = ["input", "textarea", "select", "img"];
+/** The time after which the one browser call stops judging expectations (counting goes on), so the call ends before its 30 s limit. */
+const JUDGE_BUDGET_MS = 15_000;
+/** The roles no form control is used as: an input may carry any widget role (a tab, an option, a link), so `value-equals` on these alone throws on every page. */
+const STRUCTURAL_ROLES = [
+  "heading", "img", "list", "listitem", "paragraph", "table", "row", "rowgroup", "cell", "columnheader", "rowheader", "article", "navigation", "main",
+  "banner", "contentinfo", "complementary", "region", "dialog", "alertdialog", "alert", "status", "tooltip", "figure",
+];
 /** Why a step was not counted → the note's text. */
 const WHY = {
   page: "the step's page is not the one its account stands on, or is not known",
@@ -19,6 +32,13 @@ const WHY = {
   repro: "the repro is not a valid repro",
   // The page as it stands now, not as the step met it (a form reset, a control gone): a hint, never a refusal.
   none: "an action's target matches nothing on the page as it stands now; check it still exists when the step runs",
+};
+/** Why an expectation cannot be judged where it stands → the note's text (the page now may differ from the step's: a note, never a refusal). */
+const UNJUDGED = {
+  textless: "a text expectation's target has no text of its own, an input, a textarea, a select or an image; read a field with value-equals, or target the element that holds the text",
+  label: "a text expectation's target is a label that does not hold the text now; target the element that holds it",
+  novalue: "a value-equals target is not an input, a textarea or a select",
+  error: "the expectation cannot be evaluated on its target; a text expectation needs an HTML element",
 };
 
 /** The pathname of a repro path (`/orders?x=1` → `/orders`), else null. */
@@ -49,9 +69,33 @@ export function liveTargets(steps) {
   return out;
 }
 
-/** The `run-code` text that answers `{path, counts}`: the page's pathname and each target's match count (null when it threw). */
-const countCode = (steps) =>
-  `async page => {\n  const Ts = [${steps.map(targetFn).join(", ")}];\n  const counts = [];\n  for (const T of Ts) {\n    try {\n      counts.push(await T(page).count());\n    } catch {\n      counts.push(null);\n    }\n  }\n  let path = "";\n  try {\n    path = new URL(page.url()).pathname;\n  } catch {\n    path = "";\n  }\n  return { path, counts };\n}\n`;
+/**
+ * The `run-code` text that answers `{path, counts, judged}`: the page's pathname, each target's match count (null
+ * when it threw) and, for an expectation of a kind the repro judges by one read whose target matched exactly one
+ * element, `{held}` (or `{threw: true}` when the evaluation threw) and the element's `tag`; null for the rest,
+ * and for every expectation met after JUDGE_BUDGET_MS (the counts are all returned). The evaluation is JUDGE_TARGET, the repro's own.
+ */
+const countCode = (steps) => {
+  const Ps = steps.map((s) => (JUDGED.includes(s.expect) ? { kind: s.expect, value: s.value } : null));
+  return `async page => {\n${JUDGE_TARGET}  const Ts = [${steps.map(targetFn).join(", ")}];\n  const Ps = ${JSON.stringify(Ps)};\n  const t0 = Date.now();\n  const counts = [];\n  const judged = [];\n  for (const [k, T] of Ts.entries()) {\n    let n = null;\n    try {\n      n = await T(page).count();\n    } catch {\n      n = null;\n    }\n    counts.push(n);\n    let j = null;\n    if (Ps[k] && n === 1 && Date.now() - t0 < ${JUDGE_BUDGET_MS}) {\n      j = {};\n      try {\n        j.held = (await judgeTarget(Ps[k], T)).held === true;\n      } catch {\n        j.threw = true;\n      }\n      try {\n        j.tag = await T(page).evaluate((el) => el.tagName.toLowerCase(), undefined, { timeout: 1000 });\n      } catch {\n        j.tag = null;\n      }\n    }\n    judged.push(j);\n  }\n  let path = "";\n  try {\n    path = new URL(page.url()).pathname;\n  } catch {\n    path = "";\n  }\n  return { path, counts, judged };\n}\n`;
+};
+
+/** Why expectation `s`, judged as `j` (the browser's answer for it), cannot be judged where it stands → a key of UNJUDGED, else null. */
+function unjudged(s, j) {
+  if (!j || typeof j !== "object" || !JUDGED.includes(s.expect)) return null;
+  const text = s.expect === "text-equals" || s.expect === "text-contains";
+  if (text && TEXTLESS.includes(j.tag)) return "textless";
+  if (j.threw === true) return s.expect === "value-equals" ? "novalue" : "error";
+  // A value naming a {{placeholder}} cannot hold before it is filled in.
+  if (text && j.tag === "label" && j.held === false && !JSON.stringify(s.value).includes("{{")) return "label";
+  return null;
+}
+
+/** The role of a `value-equals` target that fails on every page, else null: a structural role no form control is used as. */
+const neverField = (s) => {
+  const t = s.target;
+  return s.expect === "value-equals" && t && t.by === "role" && typeof t.role === "string" && !t.role.includes("{{") && STRUCTURAL_ROLES.includes(t.role) ? t.role : null;
+};
 
 /** Skipped steps `[{i, n}]` as one line: `candidates[0] steps 2, 3; candidates[1] step 1` (at most LISTED steps, the rest counted); a candidate as a whole (`n` null) stands alone. */
 function listed(rows) {
@@ -70,8 +114,10 @@ function listed(rows) {
  * The candidates' repro targets of a validated return `obj` counted on the page each account stands on →
  * `{errors, notes}`. `checks` is returnChecks' (null: nothing can be parsed), `run` the run record (its
  * `sessions`), `js` the browser CLI. An action's target must match exactly one element; an expectation's at
- * most one, since an absent target may be the very bug. A step whose page is not the live one, whose target
- * holds a `{{placeholder}}`, or whose account has no open page is listed in a note, never refused. Nothing
+ * most one, since an absent target may be the very bug. An expectation whose target matches one is judged once
+ * (JUDGE_TARGET): one that cannot be judged there is a note (UNJUDGED), the page now may differ from the step's.
+ * Refused from the target's role alone, on any page: a `value-equals` on a structural role (a heading, an image, a list). A step whose page
+ * is not the live one, whose target holds a `{{placeholder}}`, or whose account has no open page is listed in a note, never refused. Nothing
  * page-derived is printed: the lines hold step numbers, accounts and counts only.
  */
 export async function liveCounts(obj, { checks, run, runId, slot, js, cliRunner }) {
@@ -89,7 +135,9 @@ export async function liveCounts(obj, { checks, run, runId, slot, js, cliRunner 
     }
     if (!steps) return skip(checks ? "repro" : "config", i);
     for (const { s, page } of liveTargets(steps)) {
-      if (JSON.stringify(s.target).includes("{{")) skip("placeholder", i, s.n);
+      const role = neverField(s);
+      if (role) errors.push(`candidates[${i}].repro step ${s.n}: value-equals reads the value of an input, a textarea or a select, and a ${role} never is one; target the field itself, or use text-equals`);
+      else if (JSON.stringify(s.target).includes("{{")) skip("placeholder", i, s.n);
       else if (page === null) skip("page", i, s.n);
       else jobs.set(s.as, [...(jobs.get(s.as) ?? []), { s, page, i }]);
     }
@@ -112,12 +160,14 @@ export async function liveCounts(obj, { checks, run, runId, slot, js, cliRunner 
     }
     list.forEach((j, k) => {
       const n = answer.counts[k];
+      const why = unjudged(j.s, Array.isArray(answer.judged) ? answer.judged[k] : null);
       if (!Number.isInteger(n) || n < 0 || j.page !== answer.path) return skip(Number.isInteger(n) ? "page" : "unread", j.i, j.s.n);
       const where = `candidates[${j.i}].repro step ${j.s.n}: its target matches`;
       if (n > 1) errors.push(`${where} ${n} elements on the page ${account} stands on; make it match one (scope it with within, add exact, or choose with nth)`);
       else if (n === 0 && j.s.do) skip("none", j.i, j.s.n);
+      else if (n === 1 && why) skip(why, j.i, j.s.n);
     });
   }
-  const notes = [...skipped].map(([why, rows]) => `note: not counted on the live page (${WHY[why]}): ${listed(rows)}`);
+  const notes = [...skipped].map(([why, rows]) => (why in UNJUDGED ? `note: cannot be judged on the live page (${UNJUDGED[why]})` : `note: not counted on the live page (${WHY[why]})`) + `: ${listed(rows)}`);
   return { errors, notes };
 }

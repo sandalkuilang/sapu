@@ -3426,6 +3426,16 @@ describe("argus-live — up, up --fresh, renew, status and the CLI", () => {
   const message = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
   const opts = (over: Obj = {}) => ({ runner: noDocker, ownerHome: tempDir(), ...over });
 
+  it("up records an address for a run port whose entry has a health command, not a url", async () => {
+    const { main } = repo((c) => {
+      c.start[1].health = { cmd: `node -e "fetch('http://127.0.0.1:{port:web}/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"` };
+    });
+    await up(main, opts());
+    const rec = runJson(main);
+    reapers.push(rec.reaper);
+    expect(rec.upstream).toEqual({ [String(rec.ports.cache)]: "127.0.0.1", [String(rec.ports.web)]: "127.0.0.1" });
+  }, 60_000);
+
   it("up starts the instance in spec order and writes run.json; status, renew and up --fresh work on it; down leaves nothing", async () => {
     const { main, data } = repo();
     const lines: string[] = [];

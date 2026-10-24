@@ -897,7 +897,7 @@ const REPRO_ACCOUNTS = { "customer.1": "buyer1@example.test", "sales.1": "sales1
  * the wrapper keeps a return → the cycle, the candidates' refs (`1.1.<k>`) and `dir(ref)`, the candidate's
  * record directory.
  */
-const returned = (repros: Obj[][]) => {
+const returned = (repros: Obj[][], keySteps: Array<number | undefined> = []) => {
   const t = liveRun();
   writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(example(), null, 2)}\n`);
   writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
@@ -906,7 +906,7 @@ const returned = (repros: Obj[][]) => {
   reproRuns.push({ main: t.main, runId: t.runId });
   const returns = join(t.main, ".argus/live", t.runId, "returns");
   mkdirSync(returns, { recursive: true, mode: 0o700 });
-  const candidates = repros.map((list) => ({ claim: "a seeded defect", oracle: list.at(-1)!.final, repro: list }));
+  const candidates = repros.map((list, k) => ({ claim: "a seeded defect", oracle: list.at(-1)!.final, repro: list, ...(keySteps[k] === undefined ? {} : { key_step: keySteps[k] }) }));
   writeFileSync(join(returns, "1.1.json"), `${JSON.stringify({ journey: "order-to-cash", status: "done", candidates })}\n`);
   const dir = (ref: string) => join(t.main, ".argus/live", t.runId, "repro", ref);
   return { ...t, refs: repros.map((_, k) => `1.1.${k + 1}`), dir };
@@ -1151,9 +1151,9 @@ describe("argus-live minimize", () => {
   const FAILED = { expected: "visible", observed: "absent", shownSha256: "same" };
   const has = (list: Obj[], step: Obj) => list.some((x) => JSON.stringify(x) === JSON.stringify(step));
   /** The candidate's reproducing run (run 1, exit 3, step 4 changed state), as runOnce records it. */
-  const reproduced = (t: ReturnType<typeof returned>, ref: string, changed: number[]) => {
+  const reproduced = (t: ReturnType<typeof returned>, ref: string, changed: number[], failed: Obj = FAILED) => {
     mkdirSync(t.dir(ref), { recursive: true });
-    writeFileSync(join(t.dir(ref), "run-1.json"), JSON.stringify({ exit: 3, step: 8, ...FAILED, ms: 1, saved: {}, traces: [], changed }));
+    writeFileSync(join(t.dir(ref), "run-1.json"), JSON.stringify({ exit: 3, step: 8, ...failed, ms: 1, saved: {}, traces: [], changed }));
   };
   /** A `once` answering 3 (failed as FAILED) exactly while steps 2 and 6 are both in its list, else 0; `force` overrides call k's exit. */
   const essential = (force: Record<number, number> = {}) => {
@@ -1277,6 +1277,164 @@ describe("argus-live minimize", () => {
   it("refuses a candidate that never reproduced", async () => {
     const t = returned([EIGHT]);
     await expect(minimize(t.main, t.refs[0], { once: essential().once })).rejects.toThrow(`refused: repro: ${t.refs[0]} has no reproducing run (repro ${t.refs[0]} first)`);
+  });
+
+  describe("the step a claim is about", () => {
+    /** Reproduces (exit 3, FAILED) while steps 2 and 6 are in the list, and, when `needs` is given, that step too. */
+    const when = (needs: Obj | null, failed: Obj = FAILED) => {
+      const calls: Obj[] = [];
+      const once = async (_main: string, _ref: string, opts: Obj) => {
+        calls.push(opts);
+        const code = has(opts.list, S[2]) && has(opts.list, S[6]) && (!needs || has(opts.list, needs)) ? 3 : 0;
+        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? failed : {}) } };
+      };
+      return { once, calls };
+    };
+
+    it("never drops it; a unit that holds it costs no run", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      const m = json(t, "minimize.json");
+      expect(m.tried).toEqual([
+        { label: "role buyer", exit: null },
+        { label: "step 7", exit: 3 },
+        { label: "step 6", exit: 0 },
+        { label: "step 3", exit: 3 },
+        { label: "step 2", exit: 0 },
+        { label: "step 1", exit: 3 },
+      ]);
+      expect(r.lines).toContain("try role buyer: skipped (it holds the key step 4)");
+      expect(json(t, "min.json")).toEqual([CONTEXT, S[2], S[4], S[5], S[6], S[8]]);
+      // Every try keeps step 4; only the control, the last run, lacks it.
+      expect(s.calls.slice(0, -1).every((c) => has(c.list, S[4]))).toBe(true);
+    });
+
+    // A final asserting that a bad thing is absent: failing it without the key step means the bad thing shows without it.
+    const HIDDEN = { as: "clerk", expect: "hidden", target: { text: "ORD-1" }, final: "orphaned-work" };
+    const FAILED_HIDDEN = { expected: "hidden", observed: "present", shownSha256: "same" };
+
+    it("runs the minimized repro once without it: a final asserting something absent that still fails is not discriminating", async () => {
+      const t = returned([[...EIGHT.slice(0, 7), HIDDEN]], [4]);
+      reproduced(t, t.refs[0], [4], FAILED_HIDDEN);
+      const s = when(null, FAILED_HIDDEN);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      // The control is the last run: the minimized list without step 4 and its proving expect 5.
+      expect(s.calls.at(-1)!.list).toEqual([CONTEXT, S[2], S[6], HIDDEN]);
+      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "not discriminating: the outcome shows without step 4"]);
+      expect(r.code).toBe(0);
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "shows" });
+    });
+
+    it("a final waiting for an effect the key step should make is uninformative when it fails without it", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      expect(s.calls.at(-1)!.list).toEqual([CONTEXT, S[2], S[6], S[8]]);
+      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "control uninformative: the outcome is an effect step 4 should make, missing without it too"]);
+      expect(r.code).toBe(0);
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "uninformative" });
+    });
+
+    it("the same expectation kind is not enough: another observed outcome without the key step is undecided; the page text is not compared", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const other = (observed: string, shownSha256: string) => async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        return has(opts.list, S[4]) ? a : { ...a, result: { ...a.result, observed, shownSha256 } };
+      };
+      const a = await minimize(t.main, t.refs[0], { once: other("disabled", "same") });
+      expect(a.lines.at(-1)).toBe("control undecided: the final failed another way without step 4");
+      expect(json(t, "minimize.json")).toMatchObject({ control: "undecided" });
+      // Dynamic text (a timestamp, an id) changes the digest only: the same outcome.
+      const b = await minimize(t.main, t.refs[0], { once: other("absent", "other") });
+      expect(b.lines.at(-1)).toBe("control uninformative: the outcome is an effect step 4 should make, missing without it too");
+    });
+
+    it("never drops the final: a key step proved by the final itself is still controlled", async () => {
+      const goto = { as: "buyer", do: "goto", path: "/orders/new" };
+      const click = { as: "buyer", do: "click", target: { role: "button", name: "Place order" } };
+      const final = { as: "buyer", expect: "visible", target: { testId: "order-number" }, final: "handoff" };
+      const t = returned([[goto, click, final]], [2]);
+      reproduced(t, t.refs[0], [2]);
+      const calls: Obj[] = [];
+      const once = async (_m: string, _r: string, opts: Obj) => {
+        calls.push(opts);
+        const code = has(opts.list, goto) && has(opts.list, click) ? 3 : 0;
+        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? FAILED : {}) } };
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(calls.at(-1)!.list).toEqual([CONTEXT, goto, final]);
+      expect(r.lines.at(-1)).toBe("discriminating: the outcome does not show without step 2");
+      expect(json(t, "minimize.json")).toMatchObject({ key_step: 2, control: "discriminates" });
+    });
+
+    it("a repro the outcome needs step 4 for discriminates", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      expect(r.lines.slice(-3)).toEqual(["control: exit 0", expect.stringMatching(/^minimized /), "discriminating: the outcome does not show without step 4"]);
+      expect(json(t, "minimize.json")).toMatchObject({ key_step: 4, control: "discriminates" });
+    });
+
+    it("a control that cannot tell (a harness failure, or no run left) is undecided and says why", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const harness = async (m: string, r: string, opts: Obj) => (has(opts.list, S[4]) ? s.once(m, r, opts) : { code: 2, lines: ["HARNESS: step 2 missing target"], result: { exit: 2 } });
+      const r = await minimize(t.main, t.refs[0], { once: harness });
+      expect(r.lines.at(-1)).toBe("control undecided: the run without step 4 exited 2");
+      expect(json(t, "minimize.json")).toMatchObject({ control: "undecided" });
+      // A budget that leaves no run for it: the tries stop one earlier, and still none is left when max is small.
+      const u = returned([EIGHT], [4]);
+      reproduced(u, u.refs[0], [4]);
+      const n = when(S[4]);
+      const b = await minimize(u.main, u.refs[0], { once: n.once, max: 1 });
+      expect(json(u, "minimize.json")).toMatchObject({ runs: 1, max: 1, control: "undecided" });
+      expect(b.lines.at(-1)).toBe("control undecided: no run left");
+    });
+
+    it("a deadline too close for the control leaves it undecided and the confirmed result stands; exit 0", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const once = async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        if (a.lines[0] === "REPRODUCED step=1 expected=visible observed=absent" && s.calls.length === 6) setLock(t.main, { ...t.lock, deadline: now() + 30 });
+        return a;
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(r.code).toBe(0);
+      expect(r.lines.at(-1)).toBe("control undecided: stopped deadline");
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, control: "undecided" });
+    });
+
+    it("a stop before the confirm is still exit 2", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const once = async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        if (s.calls.length === 2) setLock(t.main, { ...t.lock, deadline: now() + 30 });
+        return a;
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(r.code).toBe(2);
+      expect(json(t, "minimize.json")).toMatchObject({ stopped: "deadline", confirmed: false });
+    });
+
+    it("a candidate with no key step is minimized as before, with no control", async () => {
+      const t = returned([EIGHT]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      expect(r.lines.some((l) => /control|discriminating/.test(l))).toBe(false);
+      expect(json(t, "minimize.json")).not.toHaveProperty("control");
+    });
   });
 });
 
@@ -3250,6 +3408,109 @@ describe("argus-live show", () => {
       if (show.exitCode === null) show.kill("SIGKILL");
     }
   }, 60_000);
+
+  it("show --follow reattaches to the restarted instance's dashboard on the same port, keeping its record, and ends only on a signal", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    const die = join(dir, "die");
+    const watch = join(t.main, ".argus/live/watch.json");
+    // Stands in for the CLI's show: the first one exits (exit 0) once `die` exists, as a dashboard does when an up --fresh closes its sessions; later ones block.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nconst first = !fs.existsSync(${JSON.stringify(log)});\nfs.appendFileSync(${JSON.stringify(log)}, process.argv[4] + "\\n");\nsetInterval(() => { if (first && fs.existsSync(${JSON.stringify(die)})) process.exit(0); }, 100);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+    const files = (instanceId: string | null) => writeRunFiles(t.main, { runId: t.runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId, browser: { js, channel: "chrome" } });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+    files("0123456789abcdef");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    try {
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      const port = Number(WATCHING.exec(out)![1]);
+      expect(starts()).toEqual([String(port)]);
+      const first = JSON.parse(readFileSync(watch, "utf8"));
+      expect(first.dashboardPgid).toBeGreaterThan(1);
+      // The instance restarts: no instance id while the up --fresh runs, the dashboard ends, the lock still holds.
+      files(null);
+      writeFileSync(die, "");
+      expect(await until(() => out.includes("show: the dashboard ended (exit 0)"), 10_000)).toBe(true);
+      let page: { status: number; marker: string | undefined } | null = null;
+      for (let i = 0; i < 100 && page?.marker !== "waiting"; i++) {
+        page = await fetchPage(port);
+        if (page?.marker !== "waiting") await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(page?.marker).toBe("waiting"); // the placeholder is back on the dashboard's port
+      expect(JSON.parse(readFileSync(watch, "utf8"))).toMatchObject({ pid: show.pid, port, dashboardPgid: null });
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(starts()).toHaveLength(1); // not before the new instance is up
+      files("fedcba9876543210");
+      expect(await until(() => starts().length === 2, 15_000)).toBe(true);
+      expect(starts()).toEqual([String(port), String(port)]);
+      const second = JSON.parse(readFileSync(watch, "utf8"));
+      expect(second).toMatchObject({ pid: show.pid, start: first.start, port });
+      expect(second.dashboardPgid).toBeGreaterThan(1);
+      expect(second.dashboardPgid).not.toBe(first.dashboardPgid);
+      expect(show.exitCode).toBeNull();
+      expect(out).not.toContain("show: stopped");
+      show.kill("SIGINT");
+      expect(await until(() => show.exitCode !== null || show.signalCode !== null, 10_000)).toBe(true);
+      expect(out.trimEnd().split("\n").pop()).toBe("show: stopped (SIGINT)");
+      expect(existsSync(watch)).toBe(false);
+    } finally {
+      if (show.exitCode === null) show.kill("SIGKILL");
+    }
+  }, 60_000);
+
+  it("show --follow waits the base pause for a restart on a new instance, backs off only while the same instance keeps ending, and a new cycle forgets the reattach", async () => {
+    const t = liveRun();
+    const dir = tempDir();
+    const log = join(dir, "starts");
+    const die = join(dir, "die");
+    // Stands in for the CLI's show: exits (exit 0) once `die` exists, taking it away, as a dashboard does when its sessions close.
+    const js = join(dir, "show-cli.cjs");
+    writeFileSync(js, `const fs = require("node:fs");\nfs.appendFileSync(${JSON.stringify(log)}, process.argv[4] + "\\n");\nsetInterval(() => { if (fs.existsSync(${JSON.stringify(die)})) { fs.unlinkSync(${JSON.stringify(die)}); process.exit(0); } }, 100);\n`);
+    const starts = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : []);
+    const files = (instanceId: string | null, runId = t.runId) => writeRunFiles(t.main, { runId, worktree: t.wt, home: t.home, origins: [], allowOrigins: [], groups: [], env: t.env, instanceId, browser: { js, channel: "chrome" } });
+    mkdirSync(join(t.main, ".argus/live", t.runId), { recursive: true });
+    files("aaaaaaaaaaaaaaaa");
+    const show = spawn(process.execPath, [ARGUS_LIVE, "show", "--follow"], { cwd: t.main, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    show.stdout.on("data", (d) => (out += d));
+    const endings = () => out.split("the dashboard ended (exit 0)").length - 1;
+    /** Ends the running dashboard → the ms from the watcher saying so to the next dashboard's start. */
+    const restart = async (n: number) => {
+      writeFileSync(die, "");
+      expect(await until(() => endings() === n, 10_000)).toBe(true);
+      const from = Date.now();
+      expect(await until(() => starts().length === n + 1, 20_000)).toBe(true);
+      return Date.now() - from;
+    };
+    try {
+      expect(await until(() => starts().length === 1, 10_000)).toBe(true);
+      // A quick restart on a new instance (the minimize loop does this every try): the base pause, every time.
+      files("bbbbbbbbbbbbbbbb");
+      expect(await restart(1)).toBeLessThan(3500);
+      expect(await restart(2)).toBeLessThan(3500);
+      // The same instance ending again within seconds cannot stay up: the pause doubles.
+      const slow = await restart(3);
+      expect(slow).toBeGreaterThanOrEqual(3000);
+      expect(slow).toBeLessThan(9000);
+      // A dashboard ended while the next instance is not up yet; then another cycle starts: it is not told that an up --fresh is under way.
+      files(null);
+      writeFileSync(die, "");
+      expect(await until(() => endings() === 4, 10_000)).toBe(true);
+      const next = "20990101000000-0000beef";
+      mkdirSync(join(t.main, ".argus/live", next), { recursive: true });
+      setLock(t.main, { ...JSON.parse(readFileSync(join(t.main, ".argus/live/lock.json"), "utf8")), runId: next });
+      files(null, next);
+      expect(await until(() => out.includes(`show: cycle ${next} on`), 30_000)).toBe(true);
+      expect(out).not.toContain(`cycle ${next} has no instance yet`);
+      expect(out).not.toContain("an up --fresh is under way");
+    } finally {
+      show.kill("SIGKILL");
+    }
+  }, 90_000);
 
   it("a second show --follow prints the live watcher's URL and exits 0; a normal exit removes the record and says why", async () => {
     const t = liveRun();
