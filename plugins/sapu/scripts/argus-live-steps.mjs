@@ -570,6 +570,30 @@ const ACTION = `  const step = async () => {
 `;
 
 /**
+ * One `url` or target expectation (`P.kind`, `P.value`; `T` the target function) judged once on `page` → `{held,
+ * observed, shown?}`, a throw when the target cannot be read that way (`value-equals` on a div, a text read of an
+ * SVG). The repro polls it (EXPECT); `submit --check` runs it once on the live page (argus-live-counts.mjs).
+ */
+export const JUDGE_TARGET = `  const judgeTarget = async (P, T) => {
+    if (P.kind === "url") {
+      const u = new URL(page.url());
+      return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
+    }
+    const L = T(page);
+    const n = await L.count();
+    if (P.kind === "count") return n === P.value ? { held: true } : { held: false, observed: "count:" + n, shown: n };
+    if (n > 1) return { held: false, observed: "ambiguous", shown: n };
+    if (P.kind === "hidden") return n === 0 || !(await L.isVisible()) ? { held: true } : { held: false, observed: "visible" };
+    if (n === 0) return { held: false, observed: "absent" };
+    const shown = await L.isVisible();
+    if (P.kind === "visible") return shown ? { held: true } : { held: false, observed: "hidden" };
+    if (P.kind === "enabled") return shown && (await L.isEnabled()) ? { held: true } : { held: false, observed: shown ? "disabled" : "hidden" };
+    const text = P.kind === "value-equals" ? await L.inputValue({ timeout: 1000 }) : (await L.innerText({ timeout: 1000 })).trim();
+    return (P.kind === "text-contains" ? text.includes(P.value) : text === P.value) ? { held: true } : { held: false, observed: "differs", shown: text.slice(0, 500) };
+  };
+`;
+
+/**
  * An expectation, polled every 200 ms in the page up to settle_ms, held at the first success (decision 11)
  * → `{held, observed, shown?, detail?}`, `observed` (decision 8) `absent`, `hidden`, `visible`, `disabled`,
  * `differs`, `count:<k>`, or `error` when the last poll threw (a strict-mode violation, a page gone): the
@@ -606,24 +630,10 @@ const EXPECT = `  const layout = async () => {
     const rows = (Array.isArray(found) ? found : []).filter((f) => f && f.rule === P.rule && f.key === P.key);
     return rows.length === 0 ? { held: true } : { held: false, observed: "rows:" + rows.length, shown: rows.slice(0, 20).map((f) => ({ key: f.key, measured: f.measured })) };
   };
-  const judge = async () => {
+${JUDGE_TARGET}  const judge = async () => {
     if (P.kind === "layout") return await layout();
     if (P.kind === "taste") return await taste();
-    if (P.kind === "url") {
-      const u = new URL(page.url());
-      return u.pathname + u.search === P.value || u.pathname === P.value ? { held: true } : { held: false, observed: "differs", shown: u.pathname + u.search };
-    }
-    const L = T(page);
-    const n = await L.count();
-    if (P.kind === "count") return n === P.value ? { held: true } : { held: false, observed: "count:" + n, shown: n };
-    if (n > 1) return { held: false, observed: "ambiguous", shown: n };
-    if (P.kind === "hidden") return n === 0 || !(await L.isVisible()) ? { held: true } : { held: false, observed: "visible" };
-    if (n === 0) return { held: false, observed: "absent" };
-    const shown = await L.isVisible();
-    if (P.kind === "visible") return shown ? { held: true } : { held: false, observed: "hidden" };
-    if (P.kind === "enabled") return shown && (await L.isEnabled()) ? { held: true } : { held: false, observed: shown ? "disabled" : "hidden" };
-    const text = P.kind === "value-equals" ? await L.inputValue({ timeout: 1000 }) : (await L.innerText({ timeout: 1000 })).trim();
-    return (P.kind === "text-contains" ? text.includes(P.value) : text === P.value) ? { held: true } : { held: false, observed: "differs", shown: text.slice(0, 500) };
+    return await judgeTarget(P, T);
   };
   const step = async () => {
     if (P.kind === "no-error") return { held: true, observed: null };

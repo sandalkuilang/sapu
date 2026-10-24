@@ -690,6 +690,11 @@ claude plugin list --json
 
 Take the `installPath` of the `sapu@sapu` entry, then compare that folder with `plugins/sapu` in the clone using `diff -rq`.
 
+#### Upgrading from a version before 2.34.0
+
+Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
+- **`submit --check` judges each expectation on the live page.** An expectation of the kinds `visible`, `hidden`, `enabled`, `text-equals`, `text-contains` and `value-equals`, on a step whose page is known to be the live one and whose target matches one element, is evaluated there once, by the same code the repro runs, in the one browser call that counts the targets. One that cannot be judged where it stands is a `note: cannot be judged on the live page (…)` line naming the candidate and the step: a text expectation on an input or an image (they have no text of their own; use `value-equals` or target the element that holds the text), a text expectation whose target is a label that does not hold the text now, a `value-equals` on an element that is not an input, a textarea or a select, and any expectation the evaluation throws on. These are notes, not refusals: the page now may differ from the page the step met. Only what is certain from the target's role alone is refused, on any page: a `value-equals` on a `{role}` target whose role no input, textarea or select has (a heading, a link). A real `submit` still counts and judges nothing.
+
 #### Upgrading from a version before 2.33.0
 
 Nothing to change in `.argus/live.json`: start a new session, or run `/reload-plugins` in a running one. What behaves differently:
