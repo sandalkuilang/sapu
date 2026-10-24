@@ -1300,6 +1300,57 @@ describe("argus-live proxy", () => {
     expect(tunnel.blocked).toEqual([[`http://localhost:${app.port}`, "no-address"]]);
   });
 
+  /** A target on `::1` only → its port, or null when this host has no IPv6 loopback. */
+  const targetV6 = async () => {
+    const s = createHttpServer((req, res) => res.end(`app6 ${req.url}`));
+    s.on("connection", (c) => c.on("error", () => {}));
+    const ok = await new Promise<boolean>((done) => (s.once("error", () => done(false)), s.listen(0, "::1", () => done(true))));
+    if (!ok) return null;
+    closers.push(() => new Promise((done) => (s.closeAllConnections(), s.close(done))));
+    return (s.address() as { port: number }).port;
+  };
+
+  it("a recorded address that no longer accepts is replaced by a run port's other loopback literal, on every route; a refusal that remains is logged once as connect-failed", async () => {
+    const app = await target();
+    const nobody = await freePort();
+    const get = (port: number, extra = "") => `GET http://localhost:${port}/s HTTP/1.1\r\nHost: x\r\n${extra}Connection: close\r\n\r\n`;
+    // The record names ::1, the service is on 127.0.0.1 now (after an up --fresh).
+    const p = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [app.port], upstream: () => "::1" });
+    expect(await raw(p.port, get(app.port))).toContain("app /s");
+    expect(await raw(p.port, `CONNECT localhost:${app.port} HTTP/1.1\r\nHost: x\r\n\r\nGET /c HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)).toContain("app /c");
+    expect(status(await raw(p.port, get(app.port, "Upgrade: websocket\r\nConnection: Upgrade\r\n")))).toBe(101);
+    expect(p.blocked).toEqual([]);
+    const v6 = await targetV6();
+    if (v6) {
+      const q = await proxyOn({ allowed: [`http://localhost:${v6}`], runPorts: [v6], upstream: () => "127.0.0.1" });
+      expect(await raw(q.port, get(v6))).toContain("app6 /s");
+    }
+    // Nothing accepts on either literal: 502, logged once per origin.
+    const dead = await proxyOn({ allowed: [`http://localhost:${nobody}`], runPorts: [nobody], upstream: () => "127.0.0.1" });
+    for (let i = 0; i < 2; i++) expect(status(await raw(dead.port, get(nobody)))).toBe(502);
+    expect(status(await raw(dead.port, `CONNECT localhost:${nobody} HTTP/1.1\r\nHost: x\r\n\r\n`))).toBe(502);
+    expect(dead.blocked).toEqual([[`http://localhost:${nobody}`, "connect-failed"]]);
+    // Only a run port gets the other literal: a stale record on any other allowed port stays a 502.
+    const stale = await proxyOn({ allowed: [`http://localhost:${app.port}`], runPorts: [], upstream: () => "::1" });
+    expect(status(await raw(stale.port, get(app.port)))).toBe(502);
+    expect(stale.blocked).toEqual([[`http://localhost:${app.port}`, "connect-failed"]]);
+    expect(app.hits).toEqual(["GET /s", "GET /c", "UPGRADE /s"]);
+  });
+
+  it("recordRunPorts re-probes a recorded address that no longer accepts and keeps one that does", async () => {
+    const app = await target();
+    const v6 = await targetV6();
+    const upstream: Record<string, string> = { [String(app.port)]: "127.0.0.1" };
+    if (v6) upstream[String(v6)] = "127.0.0.1";
+    const nobody = await freePort();
+    upstream[String(nobody)] = "::1";
+    await recordRunPorts({ web: app.port, ...(v6 ? { six: v6 } : {}), gone: nobody }, upstream);
+    expect(upstream[String(app.port)]).toBe("127.0.0.1");
+    if (v6) expect(upstream[String(v6)]).toBe("::1");
+    // Nothing accepts anywhere: the record is left as it was (the proxy answers its own 502).
+    expect(upstream[String(nobody)]).toBe("::1");
+  });
+
   it("recordRunPorts records the loopback address a run port accepts on, keeps recorded ones and skips a port nothing listens on", async () => {
     const app = await target();
     const nobody = await freePort();
@@ -1327,6 +1378,8 @@ describe("argus-live proxy", () => {
     expect(other.count()).toBe(0);
     const lines = readFileSync(join(logsDir(r.main, r.runId), "proxy-blocked.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => [l.origin, l.kind])).toEqual([[`http://localhost:${other.port}`, "no-address"]]);
+    // The run's own origin refused: never reported to an explorer as blocked.
+    expect(blockedSince(r.main, r.runId, 0).origins).toEqual([]);
   });
 
   it("serveProxy (through startProxy) records its group as internal, its port in run.json, logs each blocked origin once, and exits once the lock names another run", async () => {
