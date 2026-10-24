@@ -627,7 +627,7 @@ export function walkingRefusal(main, runId) {
     } catch {
       at = 0;
     }
-    if (Date.now() - at < WALKING_MS) return `refused: repro: slot ${n} is still walking (a call within the last ${WALKING_MS / 60_000} min); repro runs once its explorer has returned`;
+    if (Date.now() - at < WALKING_MS) return `refused: repro: slot ${n} is still walking (a call within the last ${WALKING_MS / 60_000} min); run it again once its explorer has returned, or ${WALKING_MS / 60_000} min after its last call`;
   }
   return null;
 }

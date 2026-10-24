@@ -389,7 +389,7 @@ export async function up(main, { fresh = false, runner = run, lookup = defaultLo
     // the runtime gate reads every event since, not only the daemon's last ones.
     const clock = daemonNow({ env: state.env, runner });
     state.since = clock ?? Date.now();
-    if (clock !== null && state.env.DOCKER_HOST) ({ env: state.env, upstream: state.dockerUpstream } = await throughProxy(state.env, { logs: logsDir(main, runId), groups: state.groups }));
+    if (clock !== null && state.env.DOCKER_HOST) ({ env: state.env, upstream: state.dockerUpstream } = await throughProxy(state.env, { logs: logsDir(main, runId), groups: state.groups, since: state.since }));
     if (clock !== null) state.events = (await startEventsFollower({ env: { ...state.env, DOCKER_HOST: state.dockerUpstream ?? state.env.DOCKER_HOST }, since: state.since, logs: logsDir(main, runId), cwd: state.home, groups: state.groups })).file;
     save();
     log(`step 3 environment: ports ${Object.entries(ports).map(([k, v]) => `${k}=${v}`).join(" ") || "none"}; HOME ${state.home}${state.dockerUpstream ? "; docker through the run's proxy" : ""}${state.events ? "; docker events followed" : ""}`);

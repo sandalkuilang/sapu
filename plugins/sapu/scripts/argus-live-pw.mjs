@@ -356,10 +356,10 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
   // submit needs only the slot's record: past DEADLINE and BUDGET, never counted, and a .argus/live.json
   // gone bad meanwhile never blocks the return. Its line holds enums only; a refusal leaves the token live.
   // `submit --check` is the same validation printing `check: ok`: it writes nothing, retires nothing, and is
-  // never counted either (as a refused submit is not). Both then count each repro step's target on the page
-  // its account stands on (liveCounts): one matching more than one element is refused, and the targets that
-  // could not be counted are noted (`--check` only: a submitted return is past fixing). Past the deadline a
-  // return goes through uncounted.
+  // never counted either (as a refused submit is not). `--check` then counts each repro step's target on the
+  // page its account stands on (liveCounts): one matching more than one element is refused, and the targets
+  // that could not be counted are noted. A real submit is not counted: the page has moved on since the walk
+  // (a control gone, a list grown), and a return refused for it costs the explorer more than the repro will.
   if (word === "submit") {
     try {
       const p = parsePw(argv);
@@ -378,7 +378,7 @@ async function call({ main, argv, word, runId, slot, dir, cli, now, runner, cliR
       const ids = { main, runId, slot, rec: slotRec };
       const line = submit(main, ids, p.positionals[0], { checks, check: true });
       const run = readRun(main);
-      const counted = slotRec.mode === "map" || lockNow.deadline * 1000 <= now() ? { errors: [], notes: [] } : await liveCounts(JSON.parse(p.positionals[0]), { checks: checks(), run, runId, slot, js: cli ?? (run && run.browser && run.browser.js), cliRunner });
+      const counted = !check || slotRec.mode === "map" || lockNow.deadline * 1000 <= now() ? { errors: [], notes: [] } : await liveCounts(JSON.parse(p.positionals[0]), { checks: checks(), run, runId, slot, js: cli ?? (run && run.browser && run.browser.js), cliRunner });
       if (counted.errors.length) throw new Error(`refused: return: ${counted.errors.slice(0, 5).join("; ")}`);
       return { code: 0, out: check ? [line, ...counted.notes] : [submit(main, ids, p.positionals[0], { checks })] };
     } catch (e) {

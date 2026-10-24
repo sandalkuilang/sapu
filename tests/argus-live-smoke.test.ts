@@ -514,14 +514,17 @@ describe("the explorer's return: path and heal (spec §19.4, §19.9)", () => {
     expect(validateReturn(ret({ path: [{ context: { viewport: 390 } }, ...tail] }), after).errors).toEqual([]);
   });
 
-  it("walkedPath joins a slot's generations before `below`, in order, keeping the first context only; a generation without a path adds nothing", () => {
+  it("walkedPath joins a slot's generations before `below`, in order, keeping the first context only; a generation without a path ends the join", () => {
     const dir = tempDir();
     const put = (g: number, ret: Obj) => writeFileSync(join(dir, `1.${g}.json`), JSON.stringify(ret));
     const head = PATH().slice(0, 8);
     put(1, { journey: "j1", status: "handoff", path: head });
-    put(2, { journey: "j1", status: "handoff" });
-    put(3, { journey: "j1", status: "done", path: [{ context: { viewport: 390 } }, ...PATH().slice(8)] });
+    put(2, { journey: "j1", status: "done", path: [{ context: { viewport: 390 } }, ...PATH().slice(8)] });
     expect(walkedPath(dir, 1)).toEqual({ journey: "j1", path: PATH() });
+    // A gap: the third generation went on from a page the join never reached.
+    put(2, { journey: "j1", status: "handoff" });
+    put(3, { journey: "j1", status: "done", path: PATH().slice(8) });
+    expect(walkedPath(dir, 1)).toEqual({ journey: "j1", path: head });
     expect(walkedPath(dir, 1, 3)).toEqual({ journey: "j1", path: head });
     expect(walkedPath(dir, 1, 1)).toEqual({ journey: null, path: [] });
     expect(walkedPath(dir, 2)).toEqual({ journey: null, path: [] });

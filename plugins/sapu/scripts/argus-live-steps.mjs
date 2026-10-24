@@ -338,7 +338,7 @@ export function provingExpect(steps, n, changed = new Set()) {
  * (claim race, interrupted flow), and every always-state-changing step's proving expect (decision 6). A
  * fault throws `refused: repro: step <n>: <reason>` (`refused: repro: context: <reason>` for the context).
  */
-export function parseRepro(list, { accounts, live, path = false }) {
+export function parseRepro(list, { accounts, live, path = false, max = path ? MAX_STEPS * 3 : MAX_STEPS }) {
   const at = (n, reason) => new Error(`refused: repro: ${n === null ? "context" : `step ${n}`}: ${reason}`);
   if (!Array.isArray(list)) throw new Error("refused: repro: a repro is a list of steps");
   const context = { viewport: (Array.isArray(live.viewports) && live.viewports[0]) || 1440, locale: live.locale || "en-US", timezone: live.timezone || "UTC" };
@@ -357,7 +357,7 @@ export function parseRepro(list, { accounts, live, path = false }) {
   let groups = 0;
   const one = (raw) => {
     n += 1;
-    if (n > MAX_STEPS) throw at(n, `at most ${MAX_STEPS} steps`);
+    if (n > max) throw at(n, `at most ${max} steps`);
     try {
       return stepOf(raw, n, { accounts, live, path });
     } catch (e) {

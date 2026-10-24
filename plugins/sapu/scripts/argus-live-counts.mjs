@@ -17,6 +17,8 @@ const WHY = {
   unread: "the live page could not be read",
   config: ".argus/live.json could not be read",
   repro: "the repro is not a valid repro",
+  // The page as it stands now, not as the step met it (a form reset, a control gone): a hint, never a refusal.
+  none: "an action's target matches nothing on the page as it stands now; check it still exists when the step runs",
 };
 
 /** The pathname of a repro path (`/orders?x=1` → `/orders`), else null. */
@@ -113,7 +115,7 @@ export async function liveCounts(obj, { checks, run, runId, slot, js, cliRunner 
       if (!Number.isInteger(n) || n < 0 || j.page !== answer.path) return skip(Number.isInteger(n) ? "page" : "unread", j.i, j.s.n);
       const where = `candidates[${j.i}].repro step ${j.s.n}: its target matches`;
       if (n > 1) errors.push(`${where} ${n} elements on the page ${account} stands on; make it match one (scope it with within, add exact, or choose with nth)`);
-      else if (n === 0 && j.s.do) errors.push(`${where} nothing on the page ${account} stands on; fix the target, or leave the page as the step needs it`);
+      else if (n === 0 && j.s.do) skip("none", j.i, j.s.n);
     });
   }
   const notes = [...skipped].map(([why, rows]) => `note: not counted on the live page (${WHY[why]}): ${listed(rows)}`);

@@ -60,7 +60,7 @@ Each charter is its agent's whole prompt: no URL, password, session name or othe
 | Event | Action |
 |---|---|
 | `live up` refuses or fails | quote its step and message; it ran `down` itself; the cycle ends (argus picks another lane) |
-| `live up` refused by a Docker-gate finding on an object outside the run (a container action, exec, volume mount or destroy of something the run did not make) | read the named program and time; when it is not the cycle's (other work on this machine), wait about 5 minutes once (the harness's monitor or until-loop, never a foreground sleep) and run `live up` once more; a second refusal ends the cycle, journalled with the program; never read or patch the engine to diagnose it |
+| `live up` refused by the Docker runtime gate (an object the run made touched the owner's state, an object made past the run's Docker proxy, or the proxy stopped) | quote its step and message; it ran `down` itself; the cycle ends: the instance's setup or start reaches what is not the run's, which the owner fixes. A `docker: outside the run: …` line is other work on this machine: never a reason to stop |
 | `refused: cycle <run> holds the lock until <time>` | another cycle runs: stop, naming it; never `down` a cycle you did not start |
 | `map-check` keeps no journey and no refresh is due | the cycle ends before `up`, listing the dropped journeys |
 | `map-check --merge` refused | the old map stays; the faults go to the journal |
@@ -70,7 +70,7 @@ Each charter is its agent's whole prompt: no URL, password, session name or othe
 | `live repro` exits 4 (`deadline: <n> min left, …`) | nothing ran: journal the candidate `not reproduced: deadline`, then `live renew` before the next one (at the cap the rest get the same line) |
 | `live repro` exits 2, or 3 without its `REPRODUCED` line | journalled H2 with the failing step; never filed |
 | `HARNESS: … up --fresh failed …` | the cycle is down: the remaining candidates are journalled `not reproduced: harness` |
-| `refused: repro: slot <n> is still walking …` | nothing ran: a restart would end that explorer's journey; run `repro` again once its explorer returned |
+| `refused: repro: slot <n> is still walking …` | nothing ran: a restart would end that explorer's journey; run it again once its explorer returned, or 5 min after its last call (one that died without a return) |
 | `refused: repro: …` | nothing ran; journal the reason |
 | `--minimize` stopped `down` or `deadline` | journal where it stopped; the whole list is the one filed |
 | Scrub refuses the issue (a secret hit) | not filed; rewrite each place named and scrub again, or journal the candidate with the reason |

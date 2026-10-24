@@ -283,9 +283,10 @@ export function walkedPath(dir, slot, below = Infinity) {
     try {
       r = JSON.parse(fs.readFileSync(path.join(dir, `${slot}.${g}.json`), "utf8"));
     } catch {
-      continue;
+      break;
     }
-    if (!isObj(r) || !Array.isArray(r.path) || !r.path.length) continue;
+    // A generation without a path ends the walk known so far: a later one would go on from a page the join never reached.
+    if (!isObj(r) || !Array.isArray(r.path) || !r.path.length) break;
     if (!joined.length && typeof r.journey === "string") journey = r.journey;
     joined.push(...(joined.length ? withoutContext(r.path) : r.path));
   }

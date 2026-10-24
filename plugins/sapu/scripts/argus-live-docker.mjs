@@ -6,8 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseEnvFile } from "./argus-live-config.mjs";
-import { DOCKER_PROXY, RUN_LABEL, viaDaemon, whatHappened } from "./argus-live-dockerproxy.mjs";
-export { DOCKER_PROXY, viaDaemon };
+import { DOCKER_PROXY, dropProxySocket, proxyAlive, RUN_LABEL, viaDaemon, whatHappened } from "./argus-live-dockerproxy.mjs";
+export { DOCKER_PROXY, dropProxySocket, viaDaemon };
 import { dockerHost, readOwner, scopeChecker, SOCKET_NAME } from "./argus-live-endpoints.mjs";
 import { membersOf, processTable, redact, resolveLink, run, sameGroup, startTime, tail, within } from "./argus-live-proc.mjs";
 
@@ -513,9 +513,8 @@ function linkedWorktrees(main, realMain, runner) {
  * The Docker runtime gate (spec §8 step 8, and at `renew` and `down`): what the static Compose checks
  * cannot see (a script such as `npm run docker:up`) is seen by what it left on the daemon. `since` is the
  * daemon's clock at `up` (epoch ms; `skewMs` earlier, for its whole-second volume times). The rule:
- * - The run's own objects (labelled `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`, or RUN_LABEL with
- *   that value: the run's Docker proxy puts it on all it creates; a volume may instead be a new anonymous
- *   one): a container of the run may mount only the run's volumes, join only
+ * - The run's own objects (labelled `com.docker.compose.project=<COMPOSE_PROJECT_NAME>`; a volume may
+ *   instead be a new anonymous one): a container of the run may mount only the run's volumes, join only
  *   the run's networks (or none), bind-mount nothing hostPathRefusal refuses, run unprivileged, and
  *   publish only the run's `ports` (never a random one, nor all with `-P`; asked and bound alike).
  * - An object that existed before `since` and is not the run's (the owner's state) may not be touched:
@@ -536,9 +535,11 @@ function linkedWorktrees(main, realMain, runner) {
  * daemon running, means nothing was created through it. Throws `refused: …` naming the object; one on an object
  * outside the run goes on to say what was done to it (whatHappened: an exec's program, never its arguments; when), that the
  * gate cannot tell which process did it, and where the follower's file is. With the run's Docker proxy (`dockerProxy`, its
- * run.json group; `upstream`, the daemon's socket behind it, a known socket too), the second and third rules are notes,
- * not refusals: the proxy refuses the run's own such actions before they happen (argus-live-dockerproxy.mjs), so what
- * the events show did not come through it. Returns {notes}.
+ * run.json group; `upstream`, the daemon's socket behind it, a known socket too, and the one the gate reads), the second
+ * and third rules are notes, not refusals: the proxy refuses the run's own such actions before they happen
+ * (argus-live-dockerproxy.mjs), so what the events show did not come through it. Still refused then: an object that
+ * carries RUN_LABEL (the run made it; its binds judged as the run's), an object of the run's Compose project without
+ * RUN_LABEL (made past the proxy), and a proxy that no longer runs. Returns {notes}: alike ones counted, at most 20.
  */
 export function checkDockerRuntime({ since, env, main, worktree, ports = {}, runner = run, skewMs = 1000, eventsFile = null, follower = null, upstream = null, dockerProxy = null }) {
   const project = env.COMPOSE_PROJECT_NAME;
@@ -567,14 +568,16 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   const first = docker(ps);
   if ((first.error && first.error.code === "ENOENT") || (!first.error && first.status !== 0 && /cannot connect to the docker daemon|is the docker daemon running/i.test(first.stderr || ""))) return { notes: [] };
   if (first.error || first.status !== 0) throw failed(ps, first);
-  if (follower) {
+  // A stopped follower leaves the gate blind; a stopped proxy leaves a tool with a fallback socket unseen.
+  for (const [g, what, why] of [[follower, "the docker events follower", "the Docker runtime gate cannot see the whole cycle"], [dockerProxy, "the run's Docker proxy", "what the run does to the daemon cannot be told from what others do"]]) {
+    if (!g) continue;
     let now;
     try {
-      now = membersOf(processTable(runner), follower.pgid, {});
+      now = membersOf(processTable(runner), g.pgid, {});
     } catch (e) {
-      throw new Error(`refused: the docker events follower cannot be checked (${e.message}); the Docker runtime gate cannot see the whole cycle`);
+      throw new Error(`refused: ${what} cannot be checked (${e.message}); ${why}`);
     }
-    if (!now.length || !sameGroup(follower, now)) throw new Error(`refused: the docker events follower (process group ${follower.pgid}) no longer runs; the Docker runtime gate cannot see the whole cycle`);
+    if (!now.length || !sameGroup(g, now)) throw new Error(`refused: ${what} (process group ${g.pgid}) no longer runs; ${why}`);
   }
   const recent = (t) => {
     const ms = Date.parse(t);
@@ -584,10 +587,18 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
   // Through the run's proxy, what touches the owner's state came from the run only when the object that did it
   // carries RUN_LABEL (the proxy labels what the run creates, and refuses the run's actions on the owner's
   // objects before they happen): then a refusal; else it came from outside the run, a note.
-  const notes = new Set();
+  // Notes alike but for their time are one line, with a count.
+  const notes = new Map();
   const outside = (msg, labels = null) => {
     if (!dockerProxy || (labels && labels[RUN_LABEL] === project)) throw new Error(msg);
-    notes.add(msg.replace(/^refused: /, ""));
+    const key = msg.replace(/^refused: /, "").replace(/at \d{4}-\d\d-\d\dT[\d:.]+Z/, "at …");
+    const n = notes.get(key);
+    notes.set(key, n ? { ...n, count: n.count + 1 } : { text: msg.replace(/^refused: /, ""), count: 1 });
+  };
+  // Through the proxy, every object of the run's Compose project carries RUN_LABEL: one without it was made by a
+  // process of the run that reached the daemon's socket itself.
+  const bypass = (kind, name, labels) => {
+    if (dockerProxy && ours(labels) && labels[RUN_LABEL] !== project) throw new Error(`refused: ${kind} ${name} of the run's Compose project ${project} was created without the run's Docker proxy (no ${RUN_LABEL} label): a process of the run reaches the daemon's socket itself`);
   };
   const volumes = inspect(["volume", "inspect"], list(["volume", "ls", "-q"]));
   const networks = inspect(["network", "inspect"], list(["network", "ls", "-q", "--no-trunc"]));
@@ -615,10 +626,15 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       const why = `refused: container ${name}, created during the cycle outside the run's Compose project ${project},`;
       const labels = c.Config && c.Config.Labels;
       if (host.Privileged) outside(`${why} is privileged`, labels);
+      // One the run made may publish a random host port (testcontainers does), never a fixed one not of the run's.
+      for (const [target, binds] of labels && labels[RUN_LABEL] === project ? Object.entries(host.PortBindings || {}) : []) {
+        for (const b of binds || []) if (b && b.HostPort && !String(b.HostPort).split("-").every((n) => runPorts.has(Number(n)))) outside(`${why} publishes host port ${b.HostPort} for ${target}, which is not one of this run's ports`, labels);
+      }
       for (const m of c.Mounts ?? []) {
         const v = m.Type === "volume" ? volumeByName.get(m.Name) : null;
         if (m.Type === "volume" && (!v || !recent(v.CreatedAt))) outside(`${why} mounts volume ${m.Name}, which existed before the cycle`, labels);
-        const no = m.Type === "bind" ? hostPathRefusal(m.Source, { ...forOthers(), socketsOk: testcontainersReaper(c) }) : null;
+        // One the run made (RUN_LABEL) binds as the run's own: no linked worktree of the owner's is exempt.
+        const no = m.Type === "bind" ? hostPathRefusal(m.Source, { ...(labels && labels[RUN_LABEL] === project ? at : forOthers()), socketsOk: testcontainersReaper(c) }) : null;
         if (no) outside(`${why} bind-mounts ${no}`, labels);
       }
       for (const n of Object.keys((c.NetworkSettings && c.NetworkSettings.Networks) || {})) {
@@ -628,6 +644,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       }
       continue;
     }
+    bypass("container", name, c.Config && c.Config.Labels);
     if (host.Privileged) throw new Error(`refused: container ${name} is privileged`);
     if (host.PublishAllPorts) throw new Error(`refused: container ${name} publishes every exposed port on a random host port (-P)`);
     // What was asked (PortBindings) and what the daemon bound (NetworkSettings.Ports; null = exposed, not published).
@@ -650,7 +667,9 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
       if (n !== "none" && !runNetworks.has(n)) throw new Error(`refused: container ${name} joins network ${n}, which is not the run's`);
     }
   }
+  for (const n of networks) bypass("network", n.Name, n.Labels);
   for (const v of volumes) {
+    bypass("volume", v.Name, v.Labels);
     if (!recent(v.CreatedAt) || volumeOk(v)) continue;
     const o = v.Options || {};
     const no = o.device && (/\bbind\b/.test(String(o.o ?? "")) || o.type === "none") ? hostPathRefusal(o.device, forOthers()) : null;
@@ -682,6 +701,7 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     const a = (e.Type === "container" && e.Actor && e.Actor.Attributes) || {};
     if (ours(a)) runContainers.add(e.Actor.ID);
     if (e.Type === "container" && e.Actor && !labelsOf.has(e.Actor.ID)) labelsOf.set(e.Actor.ID, a);
+    if (e.Type === "container" && e.Action === "create") bypass("container", a.name || (e.Actor && e.Actor.ID), a);
     if (a.name && !nameOf.has(e.Actor.ID)) nameOf.set(e.Actor.ID, a.name);
   }
   const what = (e, action) => whatHappened(e, action, { main, eventsFile, proxied: Boolean(dockerProxy) });
@@ -710,7 +730,8 @@ export function checkDockerRuntime({ since, env, main, worktree, ports = {}, run
     if (String(name).startsWith(`${project}_`) || createdNow.has(id)) continue;
     outside(`refused: during the cycle, docker destroy hit ${e.Type} ${name}, which existed before it and is not the run's${what(e, action)}`);
   }
-  return { notes: [...notes] };
+  const all = [...notes.values()].map((n) => (n.count > 1 ? `${n.text} (and ${n.count - 1} more like it)` : n.text));
+  return { notes: all.length > 20 ? [...all.slice(0, 20), `and ${all.length - 20} more notes; the docker events of this run are in ${eventsFile ? path.relative(main, eventsFile) : "the daemon's log"}`] : all };
 }
 
 /** checkDockerRuntime's view of a run (`rec`: run.json, or `up`'s state) whose groups are `groups`: since, env, worktree, ports, the follower's file and group. */

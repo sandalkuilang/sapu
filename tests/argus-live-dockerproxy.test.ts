@@ -4,7 +4,9 @@ import { createServer, connect, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { actionOf, RUN_LABEL, serve, viaDaemon } from "../plugins/sapu/scripts/argus-live-dockerproxy.mjs";
+import { spawn } from "node:child_process";
+import { actionOf, dropProxySocket, reachesOf, RUN_LABEL, serve, viaDaemon } from "../plugins/sapu/scripts/argus-live-dockerproxy.mjs";
+import { startTime } from "../plugins/sapu/scripts/argus-live-proc.mjs";
 
 type Obj = Record<string, any>;
 const P = "argus-run1";
@@ -72,12 +74,16 @@ describe("the run's Docker proxy", () => {
     expect(actionOf("POST", "/containers/create")).toEqual({ create: "containers" });
     expect(actionOf("POST", "/networks/create")).toEqual({ create: "networks" });
     expect(actionOf("POST", "/volumes/prune")).toEqual({ prune: "volumes" });
+    expect(actionOf("POST", "/images/prune")).toEqual({ prune: "images" });
+    expect(actionOf("POST", "/build/prune")).toEqual({ prune: "build" });
+    expect(actionOf("POST", "/libpod/containers/x/start")).toEqual({ libpod: true });
     expect(actionOf("POST", "/containers/db/exec")).toEqual({ kind: "containers", id: "db", verb: "exec" });
     expect(actionOf("DELETE", "/containers/db")).toEqual({ kind: "containers", id: "db", verb: "rm" });
-    expect(actionOf("PUT", "/containers/db/archive")).toEqual({ kind: "containers", id: "db", verb: "cp into" });
-    expect(actionOf("HEAD", "/containers/db/archive")).toEqual({ kind: "containers", id: "db", verb: "cp out of" });
-    expect(actionOf("DELETE", "/volumes/pg%20data")).toEqual({ kind: "volumes", id: "pg data", verb: "rm" });
-    expect(actionOf("POST", "/networks/n1/connect")).toEqual({ kind: "networks", id: "n1", verb: "connect" });
+    expect(actionOf("PUT", "/containers/db/archive")).toEqual({ kind: "containers", id: "db", verb: "cp into", prep: true });
+    expect(actionOf("HEAD", "/containers/db/archive")).toEqual({ kind: "containers", id: "db", verb: "cp out of", prep: true });
+    expect(actionOf("DELETE", "/volumes/pg data")).toEqual({ kind: "volumes", id: "pg data", verb: "rm" });
+    expect(actionOf("POST", "/commit", "container=owner-db&pause=1")).toEqual({ kind: "containers", id: "owner-db", verb: "commit" });
+    expect(actionOf("POST", "/networks/n1/connect")).toEqual({ kind: "networks", id: "n1", verb: "connect", member: true });
     for (const [m, p] of [["GET", "/containers/db/json"], ["GET", "/containers/db/logs"], ["POST", "/exec/e1/start"], ["POST", "/build"], ["POST", "/images/create"], ["GET", "/events"], ["GET", "/volumes/v1"]]) expect(actionOf(m, p)).toBeNull();
   });
 
@@ -93,12 +99,43 @@ describe("the run's Docker proxy", () => {
     expect(JSON.parse(no.slice(no.indexOf("\r\n\r\n") + 4)).message).toBe(`sapu: refused: docker exec on container owner-db, which is not this run's (Compose project ${P}); the journey's instance may touch only its own containers, volumes and networks`);
     expect(await ask(x.listen, req("DELETE", "/v1.47/volumes/owner_pgdata"))).toMatch(/^HTTP\/1.1 403 [\s\S]*docker rm on volume owner_pgdata/);
     expect(await ask(x.listen, req("POST", "/v1.47/containers/prune"))).toMatch(/^HTTP\/1.1 403 [\s\S]*reaches every container on this machine/);
+    expect(await ask(x.listen, req("POST", "/v1.47/build/prune"))).toMatch(/^HTTP\/1.1 403 [\s\S]*docker builder prune reaches every build cache entry/);
+    expect(await ask(x.listen, req("POST", "/v4.0.0/libpod/containers/owner-db/start"))).toMatch(/^HTTP\/1.1 403 [\s\S]*the libpod API cannot be judged/);
     expect(x.seen).toEqual([]);
     for (const id of ["mine", "db"]) expect(await ask(x.listen, req("POST", `/v1.47/containers/${id}/stop`))).toMatch(/^HTTP\/1.1 200 /);
     // One the daemon does not know is the daemon's to answer.
     expect(await ask(x.listen, req("POST", "/v1.47/containers/gone/kill"))).toMatch(/^HTTP\/1.1 200 /);
     expect(x.seen.map((s) => s.head.split("\r\n")[0])).toEqual(["POST /v1.47/containers/mine/stop HTTP/1.1", "POST /v1.47/containers/db/stop HTTP/1.1", "POST /v1.47/containers/gone/kill HTTP/1.1"]);
-    expect(x.log().map((l) => `${l.m} ${l.p} ${l.v}`)).toEqual(["POST /containers/owner-db/exec refused", "DELETE /volumes/owner_pgdata refused", "POST /containers/prune refused", "POST /containers/mine/stop passed", "POST /containers/db/stop passed", "POST /containers/gone/kill passed"]);
+    expect(x.log().map((l) => `${l.m} ${l.p} ${l.v}`)).toEqual(["POST /containers/owner-db/exec refused", "DELETE /volumes/owner_pgdata refused", "POST /containers/prune refused", "POST /build/prune refused", "POST /libpod/containers/owner-db/start refused", "POST /containers/mine/stop passed", "POST /containers/db/stop passed", "POST /containers/gone/kill passed"]);
+  });
+
+  it("judges a request as the daemon routes it: a %-encoded id is decoded once, an absolute-form or undecodable target refused, an Upgrade only where the daemon hijacks", async () => {
+    const x = await proxy({ "/containers/owner/json": { Name: "/owner", Config: { Labels: {} } } });
+    expect(await ask(x.listen, req("POST", "/v1.47/containers/%6Fwner/stop"))).toMatch(/^HTTP\/1.1 403 [\s\S]*docker stop on container owner/);
+    expect(await ask(x.listen, req("POST", "http://docker/v1.47/containers/owner/stop"))).toMatch(/^HTTP\/1.1 400 [\s\S]*only an origin-form path/);
+    expect(await ask(x.listen, req("POST", "/v1.47/containers/%E0%A4/stop"))).toMatch(/^HTTP\/1.1 400 /);
+    expect(await ask(x.listen, req("POST", "/v1.47/containers/a%2Fb/stop"))).toMatch(/^HTTP\/1.1 400 /);
+    // An Upgrade on a request that does not hijack is stripped: one request per connection, the smuggled one never sent.
+    await ask(x.listen, req("GET", "/_ping", "", "Upgrade: tcp\r\n").replace("Connection: keep-alive", "Connection: Upgrade") + req("POST", "/containers/owner/stop"));
+    expect(x.seen.map((r) => r.head.split("\r\n")[0])).toEqual(["GET /_ping HTTP/1.1"]);
+    expect(x.seen[0].head).not.toMatch(/upgrade/i);
+    expect(x.seen[0].head).toMatch(/\r\nConnection: close$/);
+  });
+
+  it("a commit of, or a network connect of, a container that is not the run's is refused; what another made during the cycle is its own", async () => {
+    const recent = new Date(Date.now() + 60_000).toISOString();
+    const x = await proxy({
+      "/containers/owner/json": { Name: "/owner", Created: "2020-01-01T00:00:00Z", Config: { Labels: {} } },
+      "/containers/side/json": { Name: "/side", Created: recent, Config: { Labels: {} } },
+      "/volumes/cache": { Name: "cache", CreatedAt: recent, Labels: {} },
+    });
+    expect(await ask(x.listen, req("POST", "/v1.47/commit?container=owner&pause=1"))).toMatch(/^HTTP\/1.1 403 [\s\S]*docker commit on container owner/);
+    expect(await ask(x.listen, req("POST", `/v1.47/networks/${P}_default/connect`, '{"Container":"owner"}'))).toMatch(/^HTTP\/1.1 403 [\s\S]*docker network connect of container owner, which is not this run's/);
+    expect(x.seen).toEqual([]);
+    expect(await ask(x.listen, req("POST", `/v1.47/networks/${P}_default/connect`, '{"Container":"side"}'))).toMatch(/^HTTP\/1.1 200 /);
+    expect(await ask(x.listen, req("DELETE", "/v1.47/volumes/cache"))).toMatch(/^HTTP\/1.1 200 /);
+    expect(await ask(x.listen, req("POST", "/v1.47/containers/side/stop"))).toMatch(/^HTTP\/1.1 200 /);
+    expect(JSON.parse(x.seen[0].body)).toEqual({ Container: "side" });
   });
 
   it("labels what it creates (its body rewritten, Content-Length with it) and forces one request per connection", async () => {
@@ -131,15 +168,48 @@ describe("the run's Docker proxy", () => {
     expect(await ask(x.listen, req("GET", "/v1.47/containers/json"))).toMatch(/^HTTP\/1.1 502 [\s\S]*Cannot connect to the Docker daemon at unix:\/\/.*d\.sock\. Is the docker daemon running\?/);
   });
 
-  it("viaDaemon: a stop whose proxy socket is gone runs against the daemon's socket; any other stays as it is", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dp-"));
+  it("a container create that takes from what is not the run's is refused before it exists; the host's namespaces always; the run's own pass", async () => {
+    const x = await proxy({
+      "/containers/owner-db/json": { Name: "/owner-db", Config: { Labels: {} } },
+      "/containers/mine/json": { Name: "/mine", Config: { Labels: { [RUN_LABEL]: P } } },
+      "/volumes/owner_pgdata": { Name: "owner_pgdata", Labels: {} },
+      [`/volumes/${P}_data`]: { Name: `${P}_data`, Labels: { "com.docker.compose.project": P } },
+      "/networks/owner_default": { Name: "owner_default", Labels: {} },
+    });
+    const create = (HostConfig: Obj, extra: Obj = {}) => ask(x.listen, req("POST", "/v1.47/containers/create", JSON.stringify({ Image: "alpine", HostConfig, ...extra })));
+    for (const [hc, extra, why] of [
+      [{ NetworkMode: "container:owner-db" }, {}, "shares the NetworkMode of container owner-db"],
+      [{ PidMode: "container:owner-db" }, {}, "shares the PidMode of container owner-db"],
+      [{ VolumesFrom: ["owner-db:ro"] }, {}, "takes the volumes of container owner-db"],
+      [{ Binds: ["owner_pgdata:/var/lib/postgresql/data"] }, {}, "mounts volume owner_pgdata"],
+      [{ Mounts: [{ Type: "volume", Source: "owner_pgdata", Target: "/d" }] }, {}, "mounts volume owner_pgdata"],
+      [{ NetworkMode: "owner_default" }, {}, "joins network owner_default"],
+      [{}, { NetworkingConfig: { EndpointsConfig: { owner_default: {} } } }, "joins network owner_default"],
+    ] as [Obj, Obj, string][]) expect(await create(hc, extra), why).toMatch(new RegExp(`^HTTP/1.1 403 [\\s\\S]*a container that ${why}, which is not this run's`));
+    expect(await create({ NetworkMode: "host" })).toMatch(/^HTTP\/1.1 403 [\s\S]*uses the host's Network namespace/);
+    expect(x.seen).toEqual([]);
+    for (const hc of [{ NetworkMode: "container:mine", Binds: [`${P}_data:/d`, "/tmp/x:/x", "fresh_vol:/f"] }, { NetworkMode: "bridge" }, {}]) expect(await create(hc)).toMatch(/^HTTP\/1.1 200 /);
+    expect(x.seen.length).toBe(3);
+    expect(reachesOf({ HostConfig: { NetworkMode: "default", Binds: ["/abs:/x"] } })).toEqual([]);
+  });
+
+  it("viaDaemon: a stop runs against the daemon's socket once the run's proxy no longer runs (its socket file left or not); dropProxySocket removes what is left", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sapu-docker-"));
     dirs.push(dir);
-    const live = join(dir, "docker.sock");
-    writeFileSync(live, "");
-    const rec = { dockerUpstream: "unix:///var/run/docker.sock" };
-    const stop = (host: string) => ({ name: "down", env: { DOCKER_HOST: host, COMPOSE_PROJECT_NAME: P } });
-    expect(viaDaemon(stop(`unix://${join(dir, "gone.sock")}`), rec).env).toEqual({ DOCKER_HOST: "unix:///var/run/docker.sock", COMPOSE_PROJECT_NAME: P });
-    expect(existsSync(live) && viaDaemon(stop(`unix://${live}`), rec).env.DOCKER_HOST).toBe(`unix://${live}`);
-    expect(viaDaemon(stop(`unix://${join(dir, "gone.sock")}`), {}).env.DOCKER_HOST).toBe(`unix://${join(dir, "gone.sock")}`);
+    const sock = join(dir, "docker.sock");
+    writeFileSync(sock, "");
+    const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+    p.unref();
+    const g = { name: "docker-proxy", internal: true, pgid: p.pid!, started: startTime(p.pid!) };
+    const rec = { dockerUpstream: "unix:///var/run/docker.sock", env: { DOCKER_HOST: `unix://${sock}` }, groups: [g] };
+    const stop = { name: "down", env: { DOCKER_HOST: `unix://${sock}`, COMPOSE_PROJECT_NAME: P } };
+    expect(viaDaemon(stop, rec).env.DOCKER_HOST).toBe(`unix://${sock}`);
+    process.kill(-g.pgid, "SIGKILL");
+    for (let i = 0; i < 50 && existsSync(`/proc/${g.pgid}`); i++) await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(viaDaemon(stop, rec).env).toEqual({ DOCKER_HOST: "unix:///var/run/docker.sock", COMPOSE_PROJECT_NAME: P });
+    expect(viaDaemon(stop, { ...rec, dockerUpstream: undefined }).env.DOCKER_HOST).toBe(`unix://${sock}`);
+    dropProxySocket(rec);
+    expect(existsSync(dir)).toBe(false);
   });
 });

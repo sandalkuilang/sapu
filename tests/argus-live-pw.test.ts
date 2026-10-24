@@ -2085,27 +2085,28 @@ describe("argus-live pw — refusals and limits", () => {
     const check = (t: Obj, r: unknown[], opts: Obj = {}) => pw(t.main, [t.token, "submit", "--check", JSON.stringify(ret(r))], { cli: t.shim, ...opts });
     const sent = (t: Obj) => t.calls().filter((c: Obj) => c.argv.includes("run-code")).map((c: Obj) => c.code as string);
 
-    it("a target matching two elements is refused by --check and by submit, with the way to fix it; nothing is written", async () => {
+    it("a target matching two elements is refused by --check, with the way to fix it; nothing is written", async () => {
       const t = await pwRun();
-      t.queue({ path: "/journals/new", counts: [2] }, { path: "/journals/new", counts: [2] });
+      t.queue({ path: "/journals/new", counts: [2] });
       const line = "refused: return: candidates[0].repro step 2: its target matches 2 elements on the page buyer.1 stands on; make it match one (scope it with within, add exact, or choose with nth)";
       expect(await check(t, repro())).toEqual({ code: 1, out: [line] });
-      expect(await pw(t.main, [t.token, "submit", JSON.stringify(ret(repro()))], { cli: t.shim })).toEqual({ code: 1, out: [line] });
-      expect(sent(t)).toHaveLength(2);
+      expect(sent(t)).toHaveLength(1);
       // The target is counted by the repro's own locator code, on the page the account stands on.
       expect(sent(t)[0]).toContain('(pg) => pg.getByRole("combobox", {"name": "Akun", "exact": true})');
       expect(existsSync(join(t.main, ".argus/live", t.runId, "returns"))).toBe(false);
       // Scoped, it matches one: --check passes, and a real submit goes through and retires the token.
-      t.queue({ path: "/journals/new", counts: [1] }, { path: "/journals/new", counts: [1] });
+      t.queue({ path: "/journals/new", counts: [1] });
       const fixed = repro({ ...AKUN, within: { role: "region", name: "Debit" } });
       expect((await check(t, fixed)).out[0]).toBe("check: ok");
       expect(await pw(t.main, [t.token, "submit", JSON.stringify(ret(fixed))], { cli: t.shim })).toEqual({ code: 0, out: ["submitted: slot 1 generation 1 status done"] });
     }, 30_000);
 
-    it("an action's target that matches nothing is refused; an expectation's may (the absent control can be the bug)", async () => {
+    it("an action's target that matches nothing on the page as it stands now is a note (the page may have moved on); an expectation's says nothing", async () => {
       const t = await pwRun();
       t.queue({ path: "/journals/new", counts: [0] });
-      expect((await check(t, repro())).out[0]).toMatch(/^refused: return: candidates\[0\]\.repro step 2: its target matches nothing on the page buyer\.1 stands on; fix the target/);
+      const out = await check(t, repro());
+      expect([out.code, out.out[0]]).toEqual([0, "check: ok"]);
+      expect(out.out).toContain("note: not counted on the live page (an action's target matches nothing on the page as it stands now; check it still exists when the step runs): candidates[0] step 2");
       const onlyExpect = [{ as: "buyer.1", do: "goto", path: "/orders" }, { as: "buyer.1", expect: "visible", target: { role: "button", name: "Pay" }, final: "handoff" }];
       t.queue({ path: "/orders", counts: [0] });
       expect(await check(t, onlyExpect)).toEqual({ code: 0, out: ["check: ok"] });
@@ -2143,10 +2144,11 @@ describe("argus-live pw — refusals and limits", () => {
       expect((await check(t, repro())).out).toEqual(["check: ok", "note: not counted on the live page (.argus/live.json could not be read): candidates[0]"]);
     }, 30_000);
 
-    it("a real submit past the deadline is not counted, and a submit's notes are not printed", async () => {
+    it("a real submit is never counted (the page has moved on since the walk), past the deadline neither", async () => {
       const t = await pwRun();
-      t.queue({ path: "/journals/new", counts: [1] });
+      t.queue({ path: "/journals/new", counts: [2] });
       expect((await pw(t.main, [t.token, "submit", JSON.stringify(ret(repro()))], { cli: t.shim })).out).toEqual(["submitted: slot 1 generation 1 status done"]);
+      expect(sent(t)).toEqual([]);
       const late = await pwRun();
       late.queue({ path: "/journals/new", counts: [2] });
       expect((await pw(late.main, [late.token, "submit", JSON.stringify(ret(repro()))], { cli: late.shim, now: () => 4e12 })).out).toEqual(["submitted: slot 1 generation 1 status done"]);

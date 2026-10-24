@@ -1203,14 +1203,14 @@ describe("argus-live taste confirm (J2)", () => {
   it("a journey that ended in a handoff replays the path walked so far: each generation's path in order, the final one's last", async () => {
     const t = await confirmRepo([broken]);
     const tail: Obj[] = [{ context: { viewport: 390 } }, { as: "buyer.1", do: "click", target: { role: "button", name: "Next 8" } }];
-    // Generation 1 handed off with its partial path, generation 2 handed off with none, generation 3 added its steps.
+    // Generation 1 handed off with its partial path, generation 2 added its steps.
     t.ret(1, "j", pathOf(3), 1, "handoff");
-    t.ret(1, "j", undefined, 2, "handoff");
-    t.ret(1, "j", tail, 3, "done");
+    t.ret(1, "j", tail, 2, "done");
     await t.confirm("t1", { rows: [{ key: "facts|undefined", measured: "undefined" }] });
     expect(t.runs[0].opts.path.list).toEqual([...pathOf(3), tail[1]]);
-    // A journey whose generations all handed off keeps the walk so far.
-    t.ret(1, "j", undefined, 3, "handoff");
+    // A generation without a path ends the walk known: generation 3 went on from a page the join never reached.
+    t.ret(1, "j", undefined, 2, "handoff");
+    t.ret(1, "j", tail, 3, "done");
     await t.confirm("t1", { rows: [{ key: "facts|undefined", measured: "undefined" }] });
     expect(t.runs[1].opts.path.list).toEqual(pathOf(3));
     // No generation with a path at all (an empty first generation): refused, as before.

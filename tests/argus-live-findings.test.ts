@@ -1027,7 +1027,7 @@ describe("argus-live repro — two of two", () => {
     const dir2 = slotDir(t.main, t.runId, 2);
     mkdirSync(dir2, { recursive: true, mode: 0o700 });
     writeSlotState(dir2, { calls: 3 });
-    const why = "refused: repro: slot 2 is still walking (a call within the last 5 min); repro runs once its explorer has returned";
+    const why = "refused: repro: slot 2 is still walking (a call within the last 5 min); run it again once its explorer has returned, or 5 min after its last call";
     slot2("a".repeat(64));
     await expect(runOnce(t.main, t.refs[0], { fresh })).rejects.toThrow(why);
     await expect(repro(t.main, t.refs[0])).rejects.toThrow(why);

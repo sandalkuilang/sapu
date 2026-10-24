@@ -15,13 +15,13 @@ import { parseTarget } from "./argus-live-targets.mjs";
 export { literalFindings, secretFinalName } from "./argus-live-literal.mjs";
 
 export const LIVE_FILE = ".argus/live.json";
-/** Role names: no `.` (`<role>.<n>` names an account). */
 /**
  * The allocation of an account the journey itself creates (`--accounts <role>.<k>=+`): no configured user and
  * no allocation key, so any number of slots hold one. Its session starts signed out (a login command's storage
  * state is never applied) and only `login <user> <password>` signs it in; its failures are the slot's `createdFailed`.
  */
 export const CREATED = "+";
+/** Role names: no `.` (`<role>.<n>` names an account). */
 export const ROLE_NAME = /^[a-z][a-z0-9_-]*$/;
 const RESERVED_ROLES = ["anon", "system"];
 /** The wrapper's commands that take no role (`pw <token> submit <json>`; `source`, a seed map slot's, spec §19.12): never a role name. */

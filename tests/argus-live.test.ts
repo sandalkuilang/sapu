@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFile
 import { createServer, type Server } from "node:net";
 import { basename, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { alive, cleanTemps, committed, example, freePort, git, homeWithCli, liveContract, liveRun, makeShim, now, setLock, tempDir, until } from "./helpers/argus-live";
 // @ts-expect-error — plain ESM script without types
 import { expand, expandConfig, loadLive, parseEnvFile, portNames, secretsIn, validateLive } from "../plugins/sapu/scripts/argus-live-config.mjs";
@@ -2374,27 +2374,63 @@ describe("argus-live instance — Compose and egress checks", () => {
     });
 
     describe("with the run's Docker proxy", () => {
-      const proxied = (s: State, calls: Obj[] = []) => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P, DOCKER_HOST: "unix:///tmp/sapu-docker-x/docker.sock" }, main: realpathSync(tempDir()), worktree: realpathSync(tempDir()), runner: fake(s, calls), upstream: "unix:///var/run/docker.sock", dockerProxy: { name: "docker-proxy", internal: true, pgid: 1 } });
+      const RUN = "sapu.run";
+      let group: Obj;
+      beforeAll(() => {
+        const p = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+        p.unref();
+        group = { name: "docker-proxy", internal: true, pgid: p.pid!, started: startTime(p.pid!) };
+      });
+      afterAll(() => {
+        try {
+          process.kill(-group.pgid, "SIGKILL");
+        } catch {
+          // gone already
+        }
+      });
+      /** `s` as the proxy leaves it: every object and create event of the run's Compose project labelled RUN. */
+      const labelled = (s: State) => {
+        for (const o of [...s.containers.map((c) => c.Config.Labels), ...s.volumes.map((v) => v.Labels), ...s.networks.map((n) => n.Labels), ...s.events.map((e) => e.Actor.Attributes)]) if (o && o[LABEL] === P) o[RUN] = P;
+        return s;
+      };
+      const proxied = (s: State, calls: Obj[] = [], g: Obj = group) => checkDockerRuntime({ since: T0, env: { COMPOSE_PROJECT_NAME: P, DOCKER_HOST: "unix:///tmp/sapu-docker-x/docker.sock" }, main: realpathSync(tempDir()), worktree: realpathSync(tempDir()), runner: (argv: string[], opts: Obj = {}) => (argv[0] === "docker" ? fake(s, calls)(argv, opts) : run(argv, opts)), upstream: "unix:///var/run/docker.sock", dockerProxy: g });
       const other = (Labels: Obj, Mounts: Obj[]) => ({ Id: "c8", Name: "/side-1", Created: at(20), State: { StartedAt: at(21) }, Config: { Labels }, HostConfig: {}, Mounts, NetworkSettings: { Networks: { bridge: {} } } });
-      it("what touched the owner's state outside the proxy is a note, not a refusal; the gate reads the daemon's socket itself", () => {
-        const s = state();
-        s.events.push(ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }), ev("volume", "destroy", "owner_pgdata", { driver: "local" }));
+      it("what touched the owner's state outside the proxy is a note, not a refusal (alike ones counted); the gate reads the daemon's socket itself", () => {
+        const s = labelled(state());
+        s.events.push(ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }, 30), ev("container", "exec_create: psql -c drop", "c0", { [LABEL]: "owner", name: "owner-db" }, 31), ev("volume", "destroy", "owner_pgdata", { driver: "local" }));
         s.containers.push(other({}, [{ Type: "volume", Name: "owner_pgdata" }]));
         const calls: Obj[] = [];
         const { notes } = proxied(s, calls);
         expect(notes).toHaveLength(3);
         expect(notes[0]).toBe("container side-1, created during the cycle outside the run's Compose project argus-run1, mounts volume owner_pgdata, which existed before the cycle");
-        expect(notes[1]).toMatch(/^during the cycle, docker exec_create hit container owner-db, .* \(exec of psql, at \S+Z\)\. It did not pass the run's Docker proxy: another process on this machine did it/);
+        expect(notes[1]).toMatch(/^during the cycle, docker exec_create hit container owner-db, .* \(exec of psql, at \S+Z\)\. It did not pass the run's Docker proxy: another process on this machine did it.* \(and 1 more like it\)$/);
         expect(notes[2]).toMatch(/^during the cycle, docker destroy hit volume owner_pgdata/);
         expect(calls.every((c) => c.env.DOCKER_HOST === "unix:///var/run/docker.sock")).toBe(true);
       });
       it("a container the run created through the proxy (RUN_LABEL) that touches the owner's state is still refused; on the bridge and its own it passes", () => {
-        const s = state();
-        s.containers.push(other({ "sapu.run": P }, [{ Type: "volume", Name: "owner_pgdata" }]));
+        const s = labelled(state());
+        s.containers.push(other({ [RUN]: P }, [{ Type: "volume", Name: "owner_pgdata" }]));
         expect(message(() => proxied(s))).toBe("refused: container side-1, created during the cycle outside the run's Compose project argus-run1, mounts volume owner_pgdata, which existed before the cycle");
-        const t = state();
-        t.containers.push(other({ "sapu.run": P }, []));
+        const t = labelled(state());
+        t.containers.push({ ...other({ [RUN]: P }, []), HostConfig: { PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "" }] } } });
         expect(proxied(t).notes).toEqual([]);
+        const u = labelled(state());
+        u.containers.push({ ...other({ [RUN]: P }, []), HostConfig: { PortBindings: { "5432/tcp": [{ HostIp: "", HostPort: "5432" }] } } });
+        expect(message(() => proxied(u))).toBe("refused: container side-1, created during the cycle outside the run's Compose project argus-run1, publishes host port 5432 for 5432/tcp, which is not one of this run's ports");
+      });
+      it("an object of the run's Compose project without RUN_LABEL was made past the proxy: refused (container, network, volume, a create event of one gone by now)", () => {
+        const bare = (f: (s: State) => void) => {
+          const s = labelled(state());
+          f(s);
+          return message(() => proxied(s));
+        };
+        expect(bare((s) => delete s.containers[0].Config.Labels[RUN])).toBe(`refused: container ${P}-db-1 of the run's Compose project ${P} was created without the run's Docker proxy (no ${RUN} label): a process of the run reaches the daemon's socket itself`);
+        expect(bare((s) => delete s.networks[0].Labels[RUN])).toMatch(/^refused: network argus-run1_default of the run's Compose project .* without the run's Docker proxy/);
+        expect(bare((s) => delete s.volumes[0].Labels[RUN])).toMatch(/^refused: volume argus-run1_pgdata of the run's Compose project .* without the run's Docker proxy/);
+        expect(bare((s) => s.events.push(ev("container", "create", "c5", { [LABEL]: P, name: `${P}-tmp-1` }, 30)))).toMatch(/^refused: container argus-run1-tmp-1 of the run's Compose project .* without the run's Docker proxy/);
+      });
+      it("a proxy that no longer runs is refused: a tool with a fallback socket would go unseen", () => {
+        expect(message(() => proxied(labelled(state()), [], { ...group, started: "Thu Jan  1 00:00:00 1970" }))).toBe(`refused: the run's Docker proxy (process group ${group.pgid}) no longer runs; what the run does to the daemon cannot be told from what others do`);
       });
       it("without the proxy, the same action is refused as before", () => {
         const s = state();
