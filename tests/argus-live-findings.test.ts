@@ -897,7 +897,7 @@ const REPRO_ACCOUNTS = { "customer.1": "buyer1@example.test", "sales.1": "sales1
  * the wrapper keeps a return → the cycle, the candidates' refs (`1.1.<k>`) and `dir(ref)`, the candidate's
  * record directory.
  */
-const returned = (repros: Obj[][]) => {
+const returned = (repros: Obj[][], keySteps: Array<number | undefined> = []) => {
   const t = liveRun();
   writeFileSync(join(t.main, ".argus/live.json"), `${JSON.stringify(example(), null, 2)}\n`);
   writeFileSync(join(t.main, ".argus/live.env"), "PW=pw-1\nSALES_TOTP=GEZDGNBVGY3TQOJQ\nDB_PW=db-now\n");
@@ -906,7 +906,7 @@ const returned = (repros: Obj[][]) => {
   reproRuns.push({ main: t.main, runId: t.runId });
   const returns = join(t.main, ".argus/live", t.runId, "returns");
   mkdirSync(returns, { recursive: true, mode: 0o700 });
-  const candidates = repros.map((list) => ({ claim: "a seeded defect", oracle: list.at(-1)!.final, repro: list }));
+  const candidates = repros.map((list, k) => ({ claim: "a seeded defect", oracle: list.at(-1)!.final, repro: list, ...(keySteps[k] === undefined ? {} : { key_step: keySteps[k] }) }));
   writeFileSync(join(returns, "1.1.json"), `${JSON.stringify({ journey: "order-to-cash", status: "done", candidates })}\n`);
   const dir = (ref: string) => join(t.main, ".argus/live", t.runId, "repro", ref);
   return { ...t, refs: repros.map((_, k) => `1.1.${k + 1}`), dir };
@@ -1277,6 +1277,100 @@ describe("argus-live minimize", () => {
   it("refuses a candidate that never reproduced", async () => {
     const t = returned([EIGHT]);
     await expect(minimize(t.main, t.refs[0], { once: essential().once })).rejects.toThrow(`refused: repro: ${t.refs[0]} has no reproducing run (repro ${t.refs[0]} first)`);
+  });
+
+  describe("the step a claim is about", () => {
+    /** Reproduces (exit 3, FAILED) while steps 2 and 6 are in the list, and, when `needs` is given, that step too. */
+    const when = (needs: Obj | null) => {
+      const calls: Obj[] = [];
+      const once = async (_main: string, _ref: string, opts: Obj) => {
+        calls.push(opts);
+        const code = has(opts.list, S[2]) && has(opts.list, S[6]) && (!needs || has(opts.list, needs)) ? 3 : 0;
+        return { code, lines: [code === 3 ? "REPRODUCED step=1 expected=visible observed=absent" : "NOT REPRODUCED"], result: { exit: code, ...(code === 3 ? FAILED : {}) } };
+      };
+      return { once, calls };
+    };
+
+    it("never drops it; a unit that holds it costs no run", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      const m = json(t, "minimize.json");
+      expect(m.tried).toEqual([
+        { label: "role buyer", exit: null },
+        { label: "step 7", exit: 3 },
+        { label: "step 6", exit: 0 },
+        { label: "step 3", exit: 3 },
+        { label: "step 2", exit: 0 },
+        { label: "step 1", exit: 3 },
+      ]);
+      expect(r.lines).toContain("try role buyer: skipped (it holds the key step 4)");
+      expect(json(t, "min.json")).toEqual([CONTEXT, S[2], S[4], S[5], S[6], S[8]]);
+      // Every try keeps step 4; only the control, the last run, lacks it.
+      expect(s.calls.slice(0, -1).every((c) => has(c.list, S[4]))).toBe(true);
+    });
+
+    it("runs the minimized repro once without it: the outcome still showing is not discriminating", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      // The control is the last run: the minimized list without step 4 and its proving expect 5.
+      expect(s.calls.at(-1)!.list).toEqual([CONTEXT, S[2], S[6], S[8]]);
+      expect(r.lines.slice(-3)).toEqual(["control: exit 3", expect.stringMatching(/^minimized /), "not discriminating: the outcome shows without step 4"]);
+      expect(r.code).toBe(0);
+      expect(json(t, "minimize.json")).toMatchObject({ confirmed: true, key_step: 4, control: "shows" });
+    });
+
+    it("a repro the outcome needs step 4 for discriminates", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      expect(r.lines.slice(-3)).toEqual(["control: exit 0", expect.stringMatching(/^minimized /), "discriminating: the outcome does not show without step 4"]);
+      expect(json(t, "minimize.json")).toMatchObject({ key_step: 4, control: "discriminates" });
+    });
+
+    it("a control that cannot tell (a harness failure, or no run left) is undecided and says why", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const harness = async (m: string, r: string, opts: Obj) => (has(opts.list, S[4]) ? s.once(m, r, opts) : { code: 2, lines: ["HARNESS: step 2 missing target"], result: { exit: 2 } });
+      const r = await minimize(t.main, t.refs[0], { once: harness });
+      expect(r.lines.at(-1)).toBe("control undecided: the run without step 4 exited 2");
+      expect(json(t, "minimize.json")).toMatchObject({ control: "undecided" });
+      // A budget that leaves no run for it: the tries stop one earlier, and still none is left when max is small.
+      const u = returned([EIGHT], [4]);
+      reproduced(u, u.refs[0], [4]);
+      const n = when(S[4]);
+      const b = await minimize(u.main, u.refs[0], { once: n.once, max: 1 });
+      expect(json(u, "minimize.json")).toMatchObject({ runs: 1, max: 1, control: "undecided" });
+      expect(b.lines.at(-1)).toBe("control undecided: no run left");
+    });
+
+    it("a deadline too close for the control leaves it undecided and the result stands; exit 2", async () => {
+      const t = returned([EIGHT], [4]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(S[4]);
+      const once = async (m: string, r: string, opts: Obj) => {
+        const a = await s.once(m, r, opts);
+        if (a.lines[0] === "REPRODUCED step=1 expected=visible observed=absent" && s.calls.length === 6) setLock(t.main, { ...t.lock, deadline: now() + 30 });
+        return a;
+      };
+      const r = await minimize(t.main, t.refs[0], { once });
+      expect(r.code).toBe(2);
+      expect(r.lines.at(-1)).toBe("control undecided: stopped deadline");
+    });
+
+    it("a candidate with no key step is minimized as before, with no control", async () => {
+      const t = returned([EIGHT]);
+      reproduced(t, t.refs[0], [4]);
+      const s = when(null);
+      const r = await minimize(t.main, t.refs[0], { once: s.once });
+      expect(r.lines.some((l) => /control|discriminating/.test(l))).toBe(false);
+      expect(json(t, "minimize.json")).not.toHaveProperty("control");
+    });
   });
 });
 

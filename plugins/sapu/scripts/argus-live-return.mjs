@@ -130,6 +130,20 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
     return null;
   };
 
+  /**
+   * A candidate's `key_step` (the step its claim is about, numbered as its repro's steps are: the context not
+   * counted, each member of a `parallel` group counted) → the number, or null when absent. It names an action
+   * (a `do`) that is not the last step: minimize keeps it and runs the repro once without it.
+   */
+  const keyStep = (k, repro, at) => {
+    if (k === undefined) return null;
+    const flat = repro.filter((s, i) => !(i === 0 && isObj(s) && Object.hasOwn(s, "context"))).flatMap((s) => (isObj(s) && Array.isArray(s.parallel) ? s.parallel : [s]));
+    if (!Number.isInteger(k) || k < 1 || k >= flat.length) err(`${at} must be a step number from 1 to ${Math.max(flat.length - 1, 1)}, before the final step`);
+    else if (!isObj(flat[k - 1]) || typeof flat[k - 1].do !== "string") err(`${at} must name an action (a step with "do"), not an expectation`);
+    else return k;
+    return null;
+  };
+
   keys(obj, ["journey", "status", "roles", "steps", "created", "values", "candidates", "cw", "trail", "coverage", "harness_events", "next", "notes", "path", "heal", "heal_reason"], "the return");
   const v = {};
   if (obj.journey !== journey) err(`journey must be ${journey}, the slot's`);
@@ -152,7 +166,7 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
     value: text(x.value, `${at}.value`),
     from: text(x.from, `${at}.from`),
   }));
-  v.candidates = objects(obj.candidates, "candidates", 20, ["claim", "oracle", "measured", "roles", "observed", "expected", "repro", "screenshots", "h2h3"], (x, at) => {
+  v.candidates = objects(obj.candidates, "candidates", 20, ["claim", "oracle", "measured", "roles", "observed", "expected", "repro", "screenshots", "h2h3", "key_step"], (x, at) => {
     if (!EXPLORER_ORACLES.includes(x.oracle)) err(`${at}.oracle must be one of ${EXPLORER_ORACLES.join(", ")}`);
     const shots = list(x.screenshots, `${at}.screenshots`, 20).map((s, i) => {
       if (typeof s !== "string" || !/^[A-Za-z0-9._-]{1,200}$/.test(s) || !outFiles.includes(s)) err(`${at}.screenshots[${i}] is not a file in this slot's out/`);
@@ -162,6 +176,7 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
       if (!isObj(s)) err(`${at}.repro[${i}] must be an object`);
       return leaves(s, `${at}.repro[${i}]`);
     });
+    const key = keyStep(x.key_step, repro, `${at}.key_step`);
     return {
       claim: text(x.claim, `${at}.claim`, { optional: false }),
       oracle: x.oracle,
@@ -172,6 +187,7 @@ export function validateReturn(obj, { journey, accounts, outFiles, checks = null
       repro,
       screenshots: shots,
       h2h3: text(x.h2h3, `${at}.h2h3`),
+      ...(key === null ? {} : { key_step: key }),
     };
   });
   v.cw = objects(obj.cw, "cw", 100, ["step", "q1", "q2", "q3", "q4"], (x, at) => Object.fromEntries(["step", "q1", "q2", "q3", "q4"].map((k) => [k, text(x[k], `${at}.${k}`)])));
