@@ -3141,6 +3141,8 @@ describe("argus-live submit and intake", () => {
     for (const repro of [
       [{ as: "system", do: "trigger", name: "seed" }, step("buyer.1", 1), step("buyer.2", 2), final],
       [{ as: "system", do: "trigger", name: "seed" }, { parallel: [step("seller.1", 1), step("buyer.1", 2)] }, final],
+      // A handoff: the seller's read feeds the buyer's step, so dropping the seller leaves {{order}} unsaved.
+      [step("seller.1", 1), { as: "seller.1", do: "read", target: { text: "o" }, save: "order" }, { as: "buyer", do: "goto", path: "/orders/{{order}}" }, final],
     ]) {
       const u = await submitRun();
       expect((await u.send(u.token, withRepro(repro))).out, JSON.stringify(repro)).toEqual(["submitted: slot 1 generation 1 status done"]);

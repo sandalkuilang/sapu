@@ -14,10 +14,10 @@ export const VOCABULARY = /^(fresh: instance [0-9a-f]+|step \d+ (system|[a-z][a-
 export const REPRODUCED = /^REPRODUCED step=\d+ expected=[a-z-]+(:\d+)? observed=[a-z-]+(:\d+)?$/;
 
 /** A repro cycle (appCycle with `repro`, its fixture processes marked `mark`) up, and its candidates' refs for `repros`, all in slot 1. */
-export const reproCycleFor = (mark: string) => async (repros: Obj[][]) => {
+export const reproCycleFor = (mark: string) => async (repros: Obj[][], keySteps: Array<number | undefined> = []) => {
   const c = appCycle({ mark, repro: true });
   const { summary } = c.up();
-  const refs = await candidate(c.main, { slot: 1, accounts: ACCOUNTS, repros });
+  const refs = await candidate(c.main, { slot: 1, accounts: ACCOUNTS, repros, keySteps });
   /** `repro <ref> --once` through the CLI → its exit, its lines outside the fence, the fence, its last line. */
   const repro = (ref: string) => {
     const r = c.cli("repro", ref, "--once");
@@ -45,8 +45,8 @@ const CANCEL: Obj[] = [
 ];
 export const WELCOME = { as: "buyer.1", expect: "visible", target: { role: "heading", name: "Welcome" }, final: "discoverability" };
 
-/** Each oracle's repro, written from §10's templates, and the defect that breaks it. */
-export const ORACLE_REPROS: [string, Obj[]][] = [
+/** Each oracle's repro, written from §10's templates, the defect that breaks it, and its key step where minimize could drop a role. */
+export const ORACLE_REPROS: [string, Obj[], number?][] = [
   ["missing-handoff", [...PLACE(), { as: "clerk.1", do: "goto", path: "/inbox" }, { as: "clerk.1", expect: "visible", target: { text: "{{order}}" }, final: "handoff" }]],
   ["dead-end", [...PLACE(), { as: "clerk.1", do: "goto", path: "/orders/{{order}}" }, { as: "clerk.1", do: "click", target: { role: "button", name: "Approve" } }, { as: "clerk.1", expect: "visible", target: { role: "button", name: "Ship" } }, { as: "clerk.1", expect: "enabled", target: { role: "button", name: "Ship" }, final: "dead-end" }]],
   ["double-release", [{ as: "buyer.1", do: "goto", path: "/stock" }, { as: "buyer.1", do: "read", target: { testId: "stock" }, save: "before" }, ...PLACE("2"), ...CANCEL, { as: "buyer.1", expect: "fact-equals", marker: "{{order}}", field: "stock", value: "{{before}}", final: "reversal" }]],
@@ -62,6 +62,7 @@ export const ORACLE_REPROS: [string, Obj[]][] = [
       { as: "clerk.1", do: "reload" },
       { as: "clerk.1", expect: "count", target: { testId: "claim" }, value: 1, final: "claim-race" },
     ],
+    3, // buyer.1's Place order: the order the clerks race for (no clerk step reads {{order}}, so buyer is droppable)
   ],
   [
     "stale-view",
