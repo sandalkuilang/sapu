@@ -2290,6 +2290,7 @@ describe("session-status: code decides continue / handoff / finish", () => {
     // A proposal card waits for a click (and shows nothing over Remote Control): the successor starts as asked, or the report says it did not.
     expect(skill).toMatch(/`start_session` with `initiation: "user_asked"`/);
     expect(skill).toMatch(/successor not started: <why>/);
+    expect(skill).toMatch(/No tool, a refusal, "Nothing was proposed", or no session id back/);
   });
 });
 
