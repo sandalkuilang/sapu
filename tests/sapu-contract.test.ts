@@ -2287,6 +2287,9 @@ describe("session-status: code decides continue / handoff / finish", () => {
     const skill = readFileSync(join(__dirname, "../plugins/sapu/skills/sapu/SKILL.md"), "utf8");
     expect(skill).toMatch(/session-status <marker>/);
     expect(skill).toMatch(/start the successor session yourself/);
+    // A proposal card waits for a click (and shows nothing over Remote Control): the successor starts as asked, or the report says it did not.
+    expect(skill).toMatch(/`start_session` with `initiation: "user_asked"`/);
+    expect(skill).toMatch(/successor not started: <why>/);
   });
 });
 
