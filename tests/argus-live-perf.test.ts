@@ -777,7 +777,8 @@ document.getElementById("b").addEventListener("click", () => { const t = perform
     await page.goto(url, { waitUntil: "load" });
     await page.waitForFunction(() => (window as any).__shifted);
     await page.click("#b");
-    await page.waitForTimeout(300);
+    // The click's event entry arrives after the next paint, late on a busy runner: wait for it, not a fixed 300 ms.
+    await expect.poll(async () => (await page.evaluate(() => (document as any).__argusPerf.snap(0))).inp, { timeout: 30_000 }).toBeGreaterThan(0);
     const snap = await page.evaluate((n: number) => (document as any).__argusPerf.snap(n), 100);
     expect(snap.lcp, JSON.stringify(snap)).toBeGreaterThan(0);
     expect(snap.cls, JSON.stringify(snap)).toBeGreaterThan(0);
