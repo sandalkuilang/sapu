@@ -744,11 +744,13 @@ describe("PERF_SCRIPT in Chrome", () => {
     for (const f of stop.splice(0).reverse()) await f();
   }, 60_000);
 
-  /** A page of text with a stylesheet and a script, that shifts its content 400 ms after load, and a button whose click blocks the thread for 140 ms. */
+  /** A page of text with a stylesheet and a script, that shifts its content 400 ms after its first painted frame, and a button whose click blocks the thread for 140 ms. */
   const site = async () => {
     const html = `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/a.css"><body><div id="top" style="height:0"></div>
 <h1>A heading with enough text to be the largest paint of this page</h1><p>${"Some paragraph text. ".repeat(40)}</p><button id="b">Busy</button><script src="/a.js"></script>
-<script>window.addEventListener("load", () => setTimeout(() => { document.getElementById("top").style.height = "180px"; }, 400));
+<script>const painted = (f) => requestAnimationFrame(() => requestAnimationFrame(f));
+// Shift only after a frame has painted (a busy runner can paint late, and a shift before the first paint is not a layout shift); __shifted once the shifted frame painted.
+window.addEventListener("load", () => painted(() => setTimeout(() => { document.getElementById("top").style.height = "180px"; painted(() => { window.__shifted = true; }); }, 400)));
 document.getElementById("b").addEventListener("click", () => { const t = performance.now(); while (performance.now() - t < 140); });</script>`;
     const server = createServer((req, res) => {
       const body = req.url === "/a.css" ? `/* ${"x".repeat(3000)} */ body { margin: 8px; }` : req.url === "/a.js" ? `/* ${"y".repeat(5000)} */` : html;
@@ -773,7 +775,7 @@ document.getElementById("b").addEventListener("click", () => { const t = perform
     await context.addInitScript(PERF_SCRIPT);
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "load" });
-    await page.waitForTimeout(1200); // the shift at 400 ms after load
+    await page.waitForFunction(() => (window as any).__shifted);
     await page.click("#b");
     await page.waitForTimeout(300);
     const snap = await page.evaluate((n: number) => (document as any).__argusPerf.snap(n), 100);
@@ -792,7 +794,7 @@ document.getElementById("b").addEventListener("click", () => { const t = perform
     const browser = await launch();
     const page = await (await browser.newContext()).newPage();
     await page.goto(url, { waitUntil: "load" });
-    await page.waitForTimeout(1200);
+    await page.waitForFunction(() => (window as any).__shifted);
     await page.evaluate(PERF_SCRIPT);
     const first = await page.evaluate(() => (document as any).__argusPerf.snap(0));
     expect(first.lcp, JSON.stringify(first)).toBeGreaterThan(0);
