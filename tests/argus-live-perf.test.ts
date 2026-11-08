@@ -797,7 +797,10 @@ document.getElementById("b").addEventListener("click", () => { const t = perform
     await page.goto(url, { waitUntil: "load" });
     await page.waitForFunction(() => (window as any).__shifted);
     await page.evaluate(PERF_SCRIPT);
-    const first = await page.evaluate(() => (document as any).__argusPerf.snap(0));
+    // The buffered entries reach a late observer asynchronously, late on a busy runner: poll, not one snapshot.
+    const snapNow = () => page.evaluate(() => (document as any).__argusPerf.snap(0));
+    await expect.poll(async () => { const s = await snapNow(); return s.lcp > 0 && s.cls > 0; }, { timeout: 30_000 }).toBe(true);
+    const first = await snapNow();
     expect(first.lcp, JSON.stringify(first)).toBeGreaterThan(0);
     expect(first.cls, JSON.stringify(first)).toBeGreaterThan(0);
     expect(first.requests).toBeGreaterThanOrEqual(3);
