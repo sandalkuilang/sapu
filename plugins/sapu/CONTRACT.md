@@ -666,6 +666,20 @@ main checkout, not the PR worktree. So a pinned file must find the tree it tests
 … finds the tree from its own location`); a helper the pinned file calls is not read (write the gate
 in that one file).
 
+**A PR that changes the pinned gate: `Gate-Change:`.** Pinning means a PR that removes or renames what
+`origin/<base>`'s gate names (a deleted step's script, a renamed directory it globs) is red against that gate
+however green its own copy is. The sanctioned path — never a merge outside `sapu-merge.sh` — is a commit in
+the PR carrying the trailer `Gate-Change: <reason, at least 20 characters>`, added once the gate diff was
+reviewed. When the base gate is red, the PR's diff against `origin/<base>` changes `gate.merge`'s protected
+file, and a commit in `origin/<base>..<gated SHA>` carries that trailer, the PR's own copy of the file runs
+once more in the same worktree (no same-run retry then). It merges only when that run is green as the base
+gate is (exit 0, a summary, no `gate.redIf` line) and no step red in the base run (its `✗`/`gate.redIf`
+summary lines) is `✗` in it: gone or green. No red step readable from the base run's summary = refused,
+fails closed (exit 2); the PR copy exiting 75 = exit 1, like the base gate's. Its gates log line, and the
+merges log line, end in ` judge=pr-copy base_red=<steps> reason=<trailer>` (spaces as `_`; never a flake
+proof), and the merge comment quotes the reason and the gate file's diff (first 300 lines). Without the
+trailer the red is today's, plus a line naming the trailer.
+
 **The main checkout must be identical to `origin/<base>`.** For `.claude/sapu.json` and every
 protected word of `gate.merge`, `mergeAfter` and `redAreas` that exists on `origin/<base>`,
 `git hash-object --no-filters <MAIN>/<path>` must equal `git rev-parse origin/<base>:<path>`.
@@ -714,7 +728,8 @@ skipping none (each failure = non-zero exit + a one-line reason):
    seconds under a run id unique per run: `<run> start <epoch> deadline <epoch>` when `up` takes its
    lock, `<run> deadline <epoch>` at each `renew` that moves it, `<run> end <epoch>` from `down` and from a failed
    `up`. A run lasts until its end line, else until its latest deadline. A `live=1` line never counts
-   toward a flake proof, and a red verdict beside a journey cycle says so;
+   toward a flake proof, and a red verdict beside a journey cycle says so. A red one whose PR changes the
+   pinned gate file with a `Gate-Change:` trailer is judged once more by the PR's own copy (above);
 10. with `gate.smokeCheck`, a smoke check the first look left open (still running, or no run yet) is
     judged now (§The smoke check), waiting up to `--smoke-wait` minutes (default 90) for a running one:
     red = exit 5, still running then = stop, either way `mergeAfter` runs and the worktree stays;

@@ -85,7 +85,10 @@ function harness({
   listedOnly = [],
   separateGitDir = false,
   originUrl = "https://github.com/owner/app.git",
+  prMessage = ["change"],
 }: {
+  /** The PR commit's message paragraphs (`git commit -m` each): the last one may hold trailers. */
+  prMessage?: string[];
   /** <MAIN>'s git directory lives outside it (`git init --separate-git-dir`): <MAIN>/.git is a file. */
   separateGitDir?: boolean;
   /** What `git remote get-url origin` answers in <MAIN>. */
@@ -141,7 +144,8 @@ if [ "$1" = api ]; then gh_api "$@"; exit $?; fi
 case "$1 $2" in
   "repo view") echo owner/app ;;
   "pr list") [ -f "$HX_API/pr_list.json" ] && jq -r '.[].number' "$HX_API/pr_list.json" ;;
-  "pr comment"|"pr edit"|"issue edit") ;;
+  "pr comment") while [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "$HX_API/last-comment.md"; shift; done ;;
+  "pr edit"|"issue edit") ;;
   "run download") d=""; while [ $# -gt 0 ]; do [ "$1" = --dir ] && d="$2"; shift; done; [ ! -d "$HX_API/artifacts" ] || cp -R "$HX_API/artifacts/." "$d/" ;;
   "pr merge")
     [ -z "\${HX_GH_MERGE_ERR:-}" ] || echo "$HX_GH_MERGE_ERR" >&2
@@ -196,7 +200,7 @@ exec "${REAL_GIT}" "$@"
   git(work, "checkout", "-q", "-b", "feat/x");
   write(work, { "src/change.txt": "x\n", ...pr });
   git(work, "add", "-A");
-  git(work, "commit", "-q", "-m", "change");
+  git(work, "commit", "-q", ...prMessage.flatMap((m) => ["-m", m]));
   git(work, "push", "-q", "origin", "feat/x");
   const headSha = git(work, "rev-parse", "HEAD").trim();
   const pj: PrSpec = {
@@ -249,6 +253,8 @@ exec "${REAL_GIT}" "$@"
     write: (files: Files) => write(MAIN, files),
     after: () => read(env.HX_AFTER_LOG).split("\n").filter(Boolean),
     gh: () => read(env.HX_GH_LOG),
+    /** The body of the last `gh pr comment`. */
+    comment: () => read(join(env.HX_API, "last-comment.md")),
     gateLog: () => {
       const f = existsSync(tmp) && readdirSync(tmp).find((n) => n.startsWith("gate-pr7."));
       return f ? read(join(tmp, f)) : read(join(tmp, "gate-pr7.none"));
@@ -1972,5 +1978,76 @@ describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs o
     expect(r.status).toBe(2);
     expect(r.err).not.toMatch(/verdict: infra/);
     expect(steps(h)).toBe("");
+  });
+});
+
+describe("sapu-merge.sh — Gate-Change: a PR that changes the pinned gate file is judged by its own copy, visibly", () => {
+  const TRAILER = "Gate-Change: hero_shots.mjs is deleted, so its gate step goes too";
+  const MSG = ["drop the hero-shots step", TRAILER];
+  /** The base gate red in one step the PR removes. */
+  const BASE_RED = { HX_GATE_RC: "1", HX_GATE_SUMMARY: "✗ hero-shots 3.1s" };
+  const prGate = (summary: string, rc = 0) => `#!/usr/bin/env bash\necho "gate ran: PR copy"; echo "Gate summary"; printf '%s\\n' "${summary}"; exit ${rc}\n`;
+  const lines = (f: string) => (existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : []);
+
+  it("gate-change: trailer + gate file changed + base-red step gone from the PR copy: merged, logged judge=pr-copy, comment quotes reason and diff", () => {
+    const h = harness({ pr: { "scripts/gate.sh": PR_GATE }, prMessage: MSG });
+    const r = h.run(BASE_RED);
+    expect(r.status).toBe(0);
+    expect(r.out).toMatch(/PR #7 merged/);
+    expect(h.gh()).toMatch(/gh pr merge 7 /);
+    const g = lines(join(h.MAIN, ".git/sapu-gates.log"));
+    expect(g).toHaveLength(2);
+    expect(g[0]).toMatch(/ red gate=\d+s .* steps=hero-shots$/);
+    expect(g[1]).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} judge=pr-copy base_red=hero-shots reason=hero_shots\.mjs_is_deleted,_so_its_gate_step_goes_too$/);
+    expect(lines(join(h.MAIN, ".git/sapu-merges.log"))).toEqual([expect.stringMatching(/ gate=\d+s judge=pr-copy base_red=hero-shots reason=hero_shots\.mjs_is_deleted/)]);
+    const c = h.comment();
+    expect(c).toContain("PR copy passed");
+    expect(c).toContain("hero_shots.mjs is deleted, so its gate step goes too");
+    expect(c).toMatch(/````diff\n[\s\S]*\+echo "gate ran: PR copy"[\s\S]*````/);
+  });
+
+  it("gate-change: no trailer: today's red, plus the line naming the sanctioned path", () => {
+    const h = harness({ pr: { "scripts/gate.sh": PR_GATE } });
+    const r = h.run(BASE_RED);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/this PR changes scripts\/gate\.sh, .*add a commit with the trailer 'Gate-Change: <why, at least 20 characters>'.*Never merge outside sapu-merge\.sh/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(lines(join(h.MAIN, ".git/sapu-gates.log")).join("\n")).not.toMatch(/judge=pr-copy/);
+  });
+
+  it("gate-change: trailer but the gate file unchanged: today's red, the PR copy never runs", () => {
+    const h = harness({ prMessage: MSG });
+    const r = h.run(BASE_RED);
+    expect(r.status).toBe(2);
+    expect(r.err).not.toMatch(/Gate-Change/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))).toHaveLength(1);
+  });
+
+  it("gate-change: the PR copy red: not merged, its red line logged judge=pr-copy", () => {
+    const h = harness({ pr: { "scripts/gate.sh": prGate("✗ lint 1.0s", 1) }, prMessage: MSG });
+    const r = h.run(BASE_RED);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/GATE RED \(the PR's own scripts\/gate\.sh: it exited 1\)/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))[1]).toMatch(/ red gate=\d+s failed=- tree=\S+ steps=lint judge=pr-copy base_red=hero-shots /);
+    expect(existsSync(join(h.MAIN, ".git/sapu-merges.log"))).toBe(false);
+  });
+
+  it("gate-change: a base-red step still red in the PR copy (which exits 0): not merged", () => {
+    const h = harness({ pr: { "scripts/gate.sh": prGate("✗ hero-shots 2.0s") }, prMessage: MSG });
+    const r = h.run(BASE_RED);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/base-red steps still red in it: hero-shots/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("gate-change: no summary in the base run: the path is refused, the PR copy never runs", () => {
+    const h = harness({ pr: { "scripts/gate.sh": PR_GATE }, prMessage: MSG });
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_LAST: "boom" });
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/Gate-Change refused: no red step can be read from the base run .*fails closed/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))).toHaveLength(1);
   });
 });
