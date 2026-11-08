@@ -516,7 +516,7 @@ function sliceTask(sl, slices, i) {
     `Of the plan read only its ## Goal and ${sl.section ? `the section "${sl.section}"` : 'your slice\'s section'}, not the other slices' sections. Do this slice only; the tests it adds or touches must pass.`,
     i ? `Earlier slices are done and committed on the branch: ${slices.slice(0, i).map((x) => x.title).join('; ')}.` : '',
     last ? 'You are the last slice: when it is done, open the PR for the WHOLE issue (it covers every slice) as the brief says.'
-      : 'Commit and push to your branch (without force) and open NO PR: a later slice does. Return status "slice_done" with branch and head_sha.',
+      : 'Commit and push to your branch (without force) and open NO PR: a later slice does. Your diff tests must pass; skip gate.fast (the last slice runs it once for the whole issue). Return status "slice_done" with branch and head_sha.',
   ].filter(Boolean).join('\n')
 }
 
@@ -917,7 +917,7 @@ async function runItem(item) {
         if (state.tier === 'red' && !WORKER_TIER) fixer = atLeast(fixer, RED_FLOOR)
         if (redesign) fixer = REDESIGN_AGENT
         const part = groups.length > 1 ? ` (group ${g + 1}/${groups.length})` : ''
-        const fixTaskOf = (asDecider) => redesign ? redesignTask(recurring, fs, state, earlier) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch).${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''}${fixGuards(state, asDecider)}\n${listFindings(fs)}`
+        const fixTaskOf = (asDecider) => redesign ? redesignTask(recurring, fs, state, earlier) : `Fix ALL of the review findings below. Each finding is one instance of a class (the rule the code broke, e.g. an unbounded read): before you return, search the lines THIS PR changed${groups.length > 1 ? ` in ${[...new Set(fs.map(fileOf))].join(', ')} (other files have their own fixer)` : ''} for every other instance of that class and fix those in the same round (never code the PR did not touch).${groups.length > 1 && g < groups.length - 1 ? ' You are not the round\'s last fixer: run your diff tests only and skip gate.fast (the last fixer runs it once for the round).' : ''}${groups.length > 1 && g === groups.length - 1 ? ` You are the last fixer: for the class of each finding, also sweep every file this PR changed that is in no fixer's group (\`git diff --name-only origin/${BASE}...HEAD\`, minus ${grouped.join(', ')}).` : ''}${fixGuards(state, asDecider)}\n${listFindings(fs)}`
         r = await runWorker(fixer, {
           cont: true, step: redesign ? `Redesign ${state.cycles}` : `Fix ${state.cycles}${part}`, phase: 'Fix', label: tag(item, effortOf(fixer), redesign ? `redesign ${state.cycles}` : `fix ${state.cycles}${part}`), task: fixTaskOf(false),
         })

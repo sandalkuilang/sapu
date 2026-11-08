@@ -1546,6 +1546,8 @@ describe("sapu-wave — sliced implementation (#84)", () => {
     expect(impl[1].prompt).toContain("open NO PR");
     expect(impl[2].prompt).toContain("open the PR for the WHOLE issue");
     expect(impl[2].prompt).not.toContain("open NO PR");
+    expect(impl[0].prompt).toContain("skip gate.fast (the last slice runs it once for the whole issue)");
+    expect(impl[2].prompt).not.toContain("skip gate.fast");
     expect(impl[0].opts.label).toContain("slice 1/3");
     expect(out[0].trail).toEqual(expect.arrayContaining([
       ["Slices", "sapu:sapu-sonnet-medium", "sonnet/medium", "3 slices"],
@@ -1840,6 +1842,9 @@ describe("sapu-wave — 2.22.0 review fixes", () => {
     expect(fixes).toHaveLength(3);
     expect(fixes[2].prompt).toContain("sweep every file this PR changed that is in no fixer's group");
     expect(fixes[0].prompt).not.toContain("sweep every file");
+    expect(fixes[0].prompt).toContain("You are not the round's last fixer: run your diff tests only and skip gate.fast");
+    expect(fixes[1].prompt).toContain("skip gate.fast");
+    expect(fixes[2].prompt).not.toContain("skip gate.fast");
   });
 
   it("a sliced plan over the cap: the builder finds its slice by heading, not limit 400", async () => {
