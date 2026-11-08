@@ -818,15 +818,20 @@ export function gateWorkers({ cpus, busy }) {
  * null = none) scales both down together until `session` is at most that: every orchestrator call re-reads its whole
  * context, so on a large window a successor session that starts small costs less than going on.
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 }, contextCap: 350_000 };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 }, contextCap: 400_000 };
 
-/** The contract's tuning with every absent key at its default; context limits in tokens. */
-export function resolveTuning(c) {
+/**
+ * The contract's tuning with every absent key at its default; context limits in tokens. Where Claude Code itself
+ * compacts the session (`CLAUDE_CODE_AUTO_COMPACT_WINDOW` in `env`: /sapu:init writes `tuning.contextCap` there), the
+ * cap no longer ends the session for a successor: the limits are the window's own, a backstop compaction keeps out of reach.
+ */
+export function resolveTuning(c, env = process.env) {
   const t = (c && c.tuning) || {};
   const window = t.contextWindow ?? DEFAULT_TUNING.contextWindow;
   const frac = { ...DEFAULT_TUNING.contextLimits, ...(t.contextLimits || {}) };
   const cap = (t.contextCap === undefined ? DEFAULT_TUNING.contextCap : t.contextCap) ?? Infinity;
-  const scale = Math.min(1, cap / (window * frac.session));
+  const compacts = Number(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW) > 0;
+  const scale = compacts ? 1 : Math.min(1, cap / (window * frac.session));
   return {
     stepBudget: { ...DEFAULT_TUNING.stepBudget, ...(t.stepBudget || {}) },
     contextBudget: { ...DEFAULT_TUNING.contextBudget, ...(t.contextBudget || {}) },
@@ -1656,7 +1661,7 @@ export function sessionVerdict({ context, limit, backlog }) {
 /** sessionVerdict for run `marker` in checkout `main`, measured: {verdict, context, limit, backlog, transcript}. */
 export function sessionStatus(main, marker, { phaseA = false, env = process.env, gh = ghJson } = {}) {
   const { contract } = loadContract(main);
-  const limits = resolveTuning(contract).contextLimits;
+  const limits = resolveTuning(contract, env).contextLimits;
   const limit = phaseA ? limits.phaseA : limits.session;
   const transcript = findTranscript(main, marker, env);
   const context = transcript ? contextTokens(transcript) : null;
