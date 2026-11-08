@@ -818,7 +818,7 @@ export function gateWorkers({ cpus, busy }) {
  * null = none) scales both down together until `session` is at most that: every orchestrator call re-reads its whole
  * context, so on a large window a successor session that starts small costs less than going on.
  */
-export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 }, contextCap: 350_000 };
+export const DEFAULT_TUNING = { stepBudget: { soft: 120, every: 15, hard: 170, everyLate: 5 }, contextBudget: { soft: 200_000, every: 10 }, codeSearchFirst: { refusals: 0 }, reviewEffort: "medium", workerTier: null, workerCeiling: "sonnet-high", scoutTier: "sonnet-high", riskScoutTier: "opus-medium", ceilingDecider: "opus-high", contextWindow: 1_000_000, contextLimits: { session: 0.95, phaseA: 0.6 }, contextCap: 350_000 };
 
 /** The contract's tuning with every absent key at its default; context limits in tokens. */
 export function resolveTuning(c) {
@@ -836,6 +836,7 @@ export function resolveTuning(c) {
     workerCeiling: t.workerCeiling ?? DEFAULT_TUNING.workerCeiling,
     scoutTier: t.scoutTier ?? DEFAULT_TUNING.scoutTier,
     riskScoutTier: t.riskScoutTier ?? DEFAULT_TUNING.riskScoutTier,
+    ceilingDecider: t.ceilingDecider ?? DEFAULT_TUNING.ceilingDecider,
     contextWindow: window,
     contextLimits: { session: Math.round(window * frac.session * scale), phaseA: Math.round(window * frac.phaseA * scale) },
     contextCap: cap === Infinity ? null : cap,
@@ -862,6 +863,7 @@ function tuningProblems(t) {
   if ("workerCeiling" in t && t.workerCeiling !== null && !["sonnet-high", "opus-medium", "opus-high"].includes(t.workerCeiling)) errs.push('tuning.workerCeiling must be "sonnet-high" (default), "opus-medium" or "opus-high" (or absent; the 🔴 floor is Sonnet/high)');
   if ("scoutTier" in t && t.scoutTier !== null && !["sonnet-high", "haiku", "off"].includes(t.scoutTier)) errs.push('tuning.scoutTier must be "sonnet-high" (default), "haiku" or "off" (or absent)');
   if ("riskScoutTier" in t && t.riskScoutTier !== null && !["opus-medium", "off"].includes(t.riskScoutTier)) errs.push('tuning.riskScoutTier must be "opus-medium" (default) or "off" (or absent)');
+  if ("ceilingDecider" in t && t.ceilingDecider !== null && !["opus-high", "off"].includes(t.ceilingDecider)) errs.push('tuning.ceilingDecider must be "opus-high" (default) or "off" (or absent)');
   if ("reviewEffort" in t && !["medium", "high"].includes(t.reviewEffort)) errs.push('tuning.reviewEffort must be "medium" or "high" (the reviewers always run on Opus)');
   if ("codeSearchFirst" in t) {
     const g = t.codeSearchFirst;
@@ -2282,7 +2284,7 @@ function main(argv) {
     }
     const { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels } = contract;
     const specialists = resolveSpecialists(contract);
-    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, workerCeiling: resolveTuning(contract).workerCeiling, scoutTier: resolveTuning(contract).scoutTier, riskScoutTier: resolveTuning(contract).riskScoutTier, ...(process.argv.includes("--opus") ? { modelFloor: "opus" } : {}), policy: resolvePolicy(contract) } };
+    const out = { main: mainDir, pluginRoot: PLUGIN_ROOT, profiles: contractHome(mainDir).dir, contract: { repo, baseBranch, securityEpic, invariantDomains, testResources, redAreas, redAreaSpecialists, labels, specialists, reviewEffort: resolveTuning(contract).reviewEffort, workerTier: resolveTuning(contract).workerTier, workerCeiling: resolveTuning(contract).workerCeiling, scoutTier: resolveTuning(contract).scoutTier, riskScoutTier: resolveTuning(contract).riskScoutTier, ceilingDecider: resolveTuning(contract).ceilingDecider, ...(process.argv.includes("--opus") ? { modelFloor: "opus" } : {}), policy: resolvePolicy(contract) } };
     process.stdout.write(`${JSON.stringify(out)}\n`);
     return;
   }

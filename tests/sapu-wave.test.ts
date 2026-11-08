@@ -784,7 +784,7 @@ describe("sapu-wave — scout, then a fresh builder", () => {
     expect(out[0].trail[0]).toEqual(["Scout", "sapu:sapu-sonnet-medium", "sonnet/medium", "planned, plan 1 KB, trivial"]);
   });
 
-  it("a 🟡 Opus scout's ESCALATE is answered by ONE Opus/high run above the ceiling, never a weaker rung; 🔴 still blocks for the owner; fixers stay on the ladder", async () => {
+  it("a 🟡 Opus scout's ESCALATE is answered by ONE Opus/high run above the ceiling, never a weaker rung; 🔴 at the ceiling too (tuning.ceilingDecider), \"off\" blocks it for the owner; fixers stay on the ladder", async () => {
     const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
     const esc = (c: Call) => planned(c, { status: "escalate", escalate_question: "which rounding?", escalate_at: "x.ts:9" });
     const lane = (it: Item, scout = esc, builderEsc = false) =>
@@ -803,8 +803,13 @@ describe("sapu-wave — scout, then a fresh builder", () => {
       expect(out[0], worker).toMatchObject({ status: "ready", escalated: true, worker: "sapu:sapu-sonnet-high" });
     }
     const red = await lane(item(71, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" }));
-    expect(red.calls).toHaveLength(0);
-    expect(String(red.out[0].reason)).toContain("ESCALATE from the top of the ladder (tuning.workerCeiling): which rounding?");
+    const redDecider = red.calls.find((c) => c.opts.label === "#71 · High · escalated")!;
+    expect(redDecider.opts).toMatchObject({ agentType: "sapu:sapu-opus-high", phase: "Implement" });
+    expect(redDecider.prompt).toContain("stopped with ESCALATE: which rounding? — x.ts:9");
+    expect(red.out[0]).toMatchObject({ status: "ready", escalated: true, worker: "sapu:sapu-sonnet-high" });
+    const off = await runWave({ main: MAIN, contract: { ...bare, ceilingDecider: "off" }, items: [item(74, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, () => clean, esc);
+    expect(off.calls).toHaveLength(0);
+    expect(String(off.out[0].reason)).toContain("ESCALATE from the top of the ladder (tuning.workerCeiling): which rounding?");
     // a 🟢 Sonnet scout and a 🟡 builder's own ESCALATE keep the ladder: the next rung up answers
     const green = await lane(item(72));
     expect(green.calls.find((c) => c.opts.label === "#72 · High · escalated")!.opts.agentType).toBe("sapu:sapu-sonnet-high");
@@ -1122,6 +1127,38 @@ describe("sapu-wave — fix cycles", () => {
     );
     expect(out[0]).toMatchObject({ status: "blocked" });
     expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
+  });
+
+  it("a fixer's ESCALATE goes to ONE Opus/high run that decides and fixes; its own ESCALATE blocks; ceilingDecider \"off\" blocks at once", async () => {
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
+    const lane = (issue: number, contract: object, decider: (c: Call) => object) =>
+      runWave({ main: MAIN, contract, items: [item(issue)] }, (c, n) => {
+        if (c.opts.phase === "Review") return n === 1 ? finding(false) : clean;
+        if (c.opts.phase !== "Fix") return opened(issue);
+        if (c.opts.agentType === "sapu:sapu-opus-high") return decider(c);
+        return opened(issue, { status: "escalate", escalate_question: "cut or raise the budget?", escalate_at: "size.ts:12" });
+      });
+    const ok = await lane(21, bare, () => opened(21, { head_sha: "sha-decided" }));
+    const fixes = ok.calls.filter((c) => c.opts.phase === "Fix");
+    expect(fixes.map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-opus-high"]);
+    expect(fixes[1].opts.label).toBe("#21 · High · fix 1 decided");
+    expect(fixes[1].prompt).toContain("stopped with ESCALATE: cut or raise the budget? — size.ts:12");
+    expect(fixes[1].prompt).toContain("Fix ALL of the review findings below");
+    expect(fixes[0].prompt).toContain('return status "escalate" with escalate_question = the one question (one Opus/high run decides it)');
+    expect(ok.out[0]).toMatchObject({ status: "ready" });
+    const twice = await lane(22, bare, () => opened(22, { status: "escalate", head_sha: "sha-a", escalate_question: "still?" }));
+    expect(String(twice.out[0].reason)).toContain("second ESCALATE in cycle 1: still?");
+    const off = await lane(23, { ...bare, ceilingDecider: "off" }, () => opened(23));
+    expect(off.calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium"]);
+    expect(String(off.out[0].reason)).toContain("fixer stopped (escalate) in cycle 1");
+  });
+
+  it("an empty pr_trust or untrusted written as a literal pair of quotes is empty, never a refusal", async () => {
+    for (const q of ['""', "''", ' "" ']) {
+      const { out, calls } = await runWave({ main: MAIN, items: [item(24)] }, (c) => (c.opts.phase === "Review" ? { ...clean, untrusted: q } : opened(24, { pr_trust: q })));
+      expect(calls.map((c) => c.opts.phase), q).toEqual(["Implement", "Review"]);
+      expect(out[0], q).toMatchObject({ status: "ready" });
+    }
   });
 
   it("a fixer whose PR body now fails pr-trust is blocked, not re-reviewed", async () => {
