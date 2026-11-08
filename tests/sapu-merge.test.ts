@@ -37,6 +37,7 @@ const A_ROW = `apps/a.test.ts@${A_SIG}`;
 
 const GATE = `#!/usr/bin/env bash
 echo "gate ran: $0 in $PWD"
+[ -z "\${HX_GATE_SLEEP:-}" ] || sleep "$HX_GATE_SLEEP"
 # a journey run that starts and ends while the gate runs
 if [ -n "\${HX_GATE_LIVE:-}" ]; then t=$(date +%s); printf '%s start %s deadline %s\\n%s end %s\\n' "$HX_GATE_LIVE" "$t" "$((t + 600))" "$HX_GATE_LIVE" "$t" >> "$SAPU_MAIN/.git/sapu-live.log"; fi
 [ -z "\${HX_GATE_OUT:-}" ] || printf '%s\\n' "$HX_GATE_OUT"
@@ -1981,73 +1982,172 @@ describe("sapu-merge.sh infra re-run — a red gate on a network error re-runs o
   });
 });
 
-describe("sapu-merge.sh — Gate-Change: a PR that changes the pinned gate file is judged by its own copy, visibly", () => {
-  const TRAILER = "Gate-Change: hero_shots.mjs is deleted, so its gate step goes too";
-  const MSG = ["drop the hero-shots step", TRAILER];
-  /** The base gate red in one step the PR removes. */
+describe("sapu-merge.sh — --gate-change: the orchestrator lets a PR that changes the pinned gate file be judged by its own copy", () => {
+  const WHY = "hero_shots.mjs is deleted, so its gate step goes too";
+  const GC = ["--gate-change", `hero-shots: ${WHY}`];
+  /** The base gate red in one step the PR removes (GATE always prints `✓ 3 passed` too). */
   const BASE_RED = { HX_GATE_RC: "1", HX_GATE_SUMMARY: "✗ hero-shots 3.1s" };
-  const prGate = (summary: string, rc = 0) => `#!/usr/bin/env bash\necho "gate ran: PR copy"; echo "Gate summary"; printf '%s\\n' "${summary}"; exit ${rc}\n`;
+  const prGate = (summary: string, rc = 0, extra = "") => `#!/usr/bin/env bash\n${extra}echo "gate ran: PR copy"; echo "Gate summary"; printf '%s\\n' "${summary}"; exit ${rc}\n`;
+  /** The PR's gate: hero-shots gone, every other base step still green. */
+  const KEEPS = prGate("✓ 3 passed");
   const lines = (f: string) => (existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean) : []);
+  const gates = (h: ReturnType<typeof harness>) => lines(join(h.MAIN, ".git/sapu-gates.log"));
+  /** The 🔴 pair's review record (line 1, as sapu-wave.js writes it). */
+  const redReview = (h: ReturnType<typeof harness>) => writeFileSync(join(h.dir, "review.md"), "Review tier: red\n\nclean\n\n## Notes (recorded, not filed)\n- none\n");
+  const gcHarness = (pr: Files = { "scripts/gate.sh": KEEPS }) => {
+    const h = harness({ pr });
+    redReview(h);
+    return h;
+  };
 
-  it("gate-change: trailer + gate file changed + base-red step gone from the PR copy: merged, logged judge=pr-copy, comment quotes reason and diff", () => {
-    const h = harness({ pr: { "scripts/gate.sh": PR_GATE }, prMessage: MSG });
-    const r = h.run(BASE_RED);
-    expect(r.status).toBe(0);
-    expect(r.out).toMatch(/PR #7 merged/);
+  it("gate-change: everything holds: merged, logged judge=pr-copy with the base run's seconds, comment quotes reason and diff", () => {
+    const h = gcHarness();
+    const r = h.run({ ...BASE_RED, HX_GATE_SLEEP: "2" }, GC);
+    expect(r.status, r.err).toBe(0);
+    expect(r.out).toMatch(/PR #7 merged .*judged by the PR copy of scripts\/gate\.sh/s);
     expect(h.gh()).toMatch(/gh pr merge 7 /);
-    const g = lines(join(h.MAIN, ".git/sapu-gates.log"));
+    const g = gates(h);
     expect(g).toHaveLength(2);
     expect(g[0]).toMatch(/ red gate=\d+s .* steps=hero-shots$/);
-    expect(g[1]).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} judge=pr-copy base_red=hero-shots reason=hero_shots\.mjs_is_deleted,_so_its_gate_step_goes_too$/);
-    expect(lines(join(h.MAIN, ".git/sapu-merges.log"))).toEqual([expect.stringMatching(/ gate=\d+s judge=pr-copy base_red=hero-shots reason=hero_shots\.mjs_is_deleted/)]);
+    expect(g[1]).toMatch(/ green gate=\d+s failed=- tree=[0-9a-f]{40} judge=pr-copy base_red=hero-shots named=hero-shots reason=hero_shots\.mjs_is_deleted,_so_its_gate_step_goes_too$/);
+    const m = lines(join(h.MAIN, ".git/sapu-merges.log"));
+    expect(m).toEqual([expect.stringMatching(/ gate=\d+s pr_copy_gate=\d+s judge=pr-copy base_red=hero-shots named=hero-shots reason=hero_shots\.mjs_is_deleted/)]);
+    const base = Number(/ gate=(\d+)s/.exec(g[0])![1]);
+    expect(base).toBeGreaterThanOrEqual(2);
+    expect(Number(/ gate=(\d+)s/.exec(m[0])![1])).toBe(base);
+    expect(Number(/ pr_copy_gate=(\d+)s/.exec(m[0])![1])).toBeLessThan(base);
     const c = h.comment();
-    expect(c).toContain("PR copy passed");
-    expect(c).toContain("hero_shots.mjs is deleted, so its gate step goes too");
-    expect(c).toMatch(/````diff\n[\s\S]*\+echo "gate ran: PR copy"[\s\S]*````/);
+    expect(c).toContain(WHY);
+    expect(c).toMatch(/(`{3,})diff\n[\s\S]*\+echo "gate ran: PR copy"[\s\S]*\n\1\n/);
   });
 
-  it("gate-change: no trailer: today's red, plus the line naming the sanctioned path", () => {
-    const h = harness({ pr: { "scripts/gate.sh": PR_GATE } });
+  it("gate-change: no flag: today's red, a Gate-Change trailer is ignored, the line names --gate-change and the base-red steps", () => {
+    const h = harness({ pr: { "scripts/gate.sh": KEEPS }, prMessage: ["drop the hero-shots step", `Gate-Change: ${WHY}`] });
+    redReview(h);
     const r = h.run(BASE_RED);
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/this PR changes scripts\/gate\.sh, .*add a commit with the trailer 'Gate-Change: <why, at least 20 characters>'.*Never merge outside sapu-merge\.sh/);
+    expect(r.err).toMatch(/this PR changes scripts\/gate\.sh, .*--gate-change "<steps>: <why, at least 20 characters>".*name: hero-shots.*Never merge outside sapu-merge\.sh\./s);
     expect(h.gh()).not.toMatch(/pr merge/);
-    expect(lines(join(h.MAIN, ".git/sapu-gates.log")).join("\n")).not.toMatch(/judge=pr-copy/);
+    expect(gates(h).join("\n")).not.toMatch(/judge=pr-copy/);
   });
 
-  it("gate-change: trailer but the gate file unchanged: today's red, the PR copy never runs", () => {
-    const h = harness({ prMessage: MSG });
+  it("gate-change: no flag, gate file unchanged: today's red, no --gate-change suggestion", () => {
+    const h = harness();
     const r = h.run(BASE_RED);
     expect(r.status).toBe(2);
-    expect(r.err).not.toMatch(/Gate-Change/);
+    expect(r.err).not.toMatch(/--gate-change/);
+  });
+
+  it("gate-change: env PR_COPY=1 from the caller is ignored: the base gate judges, the PR copy never runs", () => {
+    const h = harness({ pr: { "scripts/gate.sh": KEEPS } });
+    const r = h.run({ ...BASE_RED, PR_COPY: "1" });
+    expect(r.status).toBe(2);
+    expect(h.gateLog()).not.toMatch(/gate ran: PR copy/);
+    expect(gates(h)).toHaveLength(1);
+    expect(h.after()).toEqual([`not-merged wt=present src=${h.MAIN}/scripts/after.sh`]);
+  });
+
+  it("gate-change: the flag without a gate-file change: refused, the gate never runs", () => {
+    const h = harness();
+    redReview(h);
+    const r = h.run(BASE_RED, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/--gate-change refused: the PR does not change scripts\/gate\.sh/);
     expect(h.gh()).not.toMatch(/pr merge/);
-    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))).toHaveLength(1);
+    expect(gates(h)).toHaveLength(0);
+  });
+
+  it("gate-change: no 🔴 review evidence: refused, the gate never runs", () => {
+    const h = harness({ pr: { "scripts/gate.sh": KEEPS } });
+    const r = h.run(BASE_RED, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/--gate-change refused: the review comment's first line is not 'Review tier: red'/);
+    expect(gates(h)).toHaveLength(0);
+  });
+
+  it.each([
+    ["the PR deletes the gate file", { "scripts/gate.sh": null }, /--gate-change refused: the PR deletes or renames scripts\/gate\.sh itself/],
+    ["the PR changes gate.merge in .claude/sapu.json", "contract", /--gate-change refused: the PR changes gate\.merge in \.claude\/sapu\.json/],
+  ] as const)("gate-change: %s: refused (fails closed)", (_what, pr, msg) => {
+    const files: Files = pr === "contract" ? { "scripts/gate.sh": KEEPS } : { ...pr };
+    if (pr === "contract") {
+      const c = JSON.parse(readFileSync(join(harness().MAIN, ".claude/sapu.json"), "utf8"));
+      files[".claude/sapu.json"] = JSON.stringify({ ...c, gate: { ...c.gate, merge: "scripts/gate-v2.sh" } }, null, 2);
+    }
+    const h = gcHarness(files);
+    const r = h.run(BASE_RED, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(msg);
+    expect(gates(h)).toHaveLength(0);
+  });
+
+  it("gate-change: an unnamed base-red step: refused, the PR copy never runs", () => {
+    const h = gcHarness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_SUMMARY: "✗ hero-shots 3.1s\n✗ lint 1.0s" }, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/--gate-change refused: base-red steps not named in it: lint/);
+    expect(gates(h)).toHaveLength(1);
+  });
+
+  it("gate-change: a base-green step dropped silently from the PR copy: refused", () => {
+    const h = gcHarness({ "scripts/gate.sh": PR_GATE });
+    const r = h.run(BASE_RED, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/base-green steps gone from it and not named: 3 passed/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+    expect(gates(h)[1]).toMatch(/ red gate=\d+s .* judge=pr-copy base_red=hero-shots named=hero-shots /);
   });
 
   it("gate-change: the PR copy red: not merged, its red line logged judge=pr-copy", () => {
-    const h = harness({ pr: { "scripts/gate.sh": prGate("✗ lint 1.0s", 1) }, prMessage: MSG });
-    const r = h.run(BASE_RED);
+    const h = gcHarness({ "scripts/gate.sh": prGate("✓ 3 passed\n✗ lint 1.0s", 1) });
+    const r = h.run(BASE_RED, GC);
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/GATE RED \(the PR's own scripts\/gate\.sh: it exited 1\)/);
+    expect(r.err).toMatch(/GATE RED \(the PR's own scripts\/gate\.sh: it exited 1; ✗ steps in it: lint\)/);
     expect(h.gh()).not.toMatch(/pr merge/);
-    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))[1]).toMatch(/ red gate=\d+s failed=- tree=\S+ steps=lint judge=pr-copy base_red=hero-shots /);
+    expect(gates(h)[1]).toMatch(/ red gate=\d+s failed=- tree=\S+ steps=lint judge=pr-copy base_red=hero-shots /);
     expect(existsSync(join(h.MAIN, ".git/sapu-merges.log"))).toBe(false);
   });
 
-  it("gate-change: a base-red step still red in the PR copy (which exits 0): not merged", () => {
-    const h = harness({ pr: { "scripts/gate.sh": prGate("✗ hero-shots 2.0s") }, prMessage: MSG });
-    const r = h.run(BASE_RED);
+  it("gate-change: a base-red step still ✗ in the PR copy (which exits 0): not merged", () => {
+    const h = gcHarness({ "scripts/gate.sh": prGate("✓ 3 passed\n✗ hero-shots 2.0s") });
+    const r = h.run(BASE_RED, GC);
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/base-red steps still red in it: hero-shots/);
+    expect(r.err).toMatch(/✗ steps in it: hero-shots/);
     expect(h.gh()).not.toMatch(/pr merge/);
   });
 
-  it("gate-change: no summary in the base run: the path is refused, the PR copy never runs", () => {
-    const h = harness({ pr: { "scripts/gate.sh": PR_GATE }, prMessage: MSG });
-    const r = h.run({ HX_GATE_RC: "1", HX_GATE_LAST: "boom" });
+  it("gate-change: no summary in the base run: refused, the PR copy never runs", () => {
+    const h = gcHarness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_LAST: "boom" }, GC);
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/Gate-Change refused: no red step can be read from the base run .*fails closed/);
-    expect(h.gh()).not.toMatch(/pr merge/);
-    expect(lines(join(h.MAIN, ".git/sapu-gates.log"))).toHaveLength(1);
+    expect(r.err).toMatch(/--gate-change refused: no red step can be read from the base run .*fails closed/);
+    expect(gates(h)).toHaveLength(1);
+  });
+
+  it("gate-change: an @mention in the reason is neutralized, a backtick run in the diff stays inside a longer fence", () => {
+    const h = gcHarness({ "scripts/gate.sh": prGate("✓ 3 passed", 0, "# ``````\n") });
+    const r = h.run(BASE_RED, ["--gate-change", "hero-shots: @alice asked: hero_shots.mjs goes, and its step"]);
+    expect(r.status, r.err).toBe(0);
+    const c = h.comment();
+    expect(c).toContain("`@alice` asked: hero_shots.mjs goes");
+    expect(c).not.toMatch(/(^|[^`])@alice/m);
+    expect(c).toMatch(/(`{7,})diff\n[\s\S]*\+# ``````\n[\s\S]*\n\1\n/);
+  });
+
+  it("gate-change: merge: human + traces: none: handed off, the handoff line logged judge=pr-copy, the comment kept locally", () => {
+    const h = harness({ contract: { policy: { merge: "human", traces: "none" } }, pr: { "scripts/gate.sh": KEEPS } });
+    redReview(h);
+    const r = h.run(BASE_RED, GC);
+    expect(r.status, r.err).toBe(4);
+    expect(lines(join(h.MAIN, ".git/sapu-handoffs.log"))).toEqual([expect.stringMatching(/ gate=\d+s handoff pr_copy_gate=\d+s judge=pr-copy base_red=hero-shots named=hero-shots reason=/)]);
+    expect(readFileSync(join(h.MAIN, ".git/sapu-review-pr7.md"), "utf8")).toMatch(/\*\*Gate change\*\*[\s\S]*hero_shots\.mjs is deleted/);
+    expect(h.gh()).not.toMatch(/pr comment|pr merge/);
+  });
+
+  it("gate-change: exit 75 says --gate-change cannot help a gate that does not start", () => {
+    const h = gcHarness();
+    const r = h.run({ HX_GATE_RC: "75", HX_GATE_LAST: "scripts/setup.sh: No such file" }, GC);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/gate setup failed \(not a PR defect\): .*--gate-change cannot help a gate that does not start/);
   });
 });
