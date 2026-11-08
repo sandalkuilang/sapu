@@ -202,7 +202,7 @@ whose program is on `PATH`), `workerTier` (absent by default: a ladder entry suc
 A hands over to a new session) and `contextCap` (plugin ≥ 2.29.0; `400000` default since 2.36.2, at least `200000`, or `null` for none: both limits scale down
 together until `session` is at most that many tokens, whatever the window, since every orchestrator call re-reads its
 whole context and a fresh successor session costs less than a long one; the guard's reminder applies the cap only in the
-session holding the sweep marker). Since 2.36.2, where `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set in the session's environment (`/sapu:init` writes `tuning.contextCap` into it, in `.claude/settings.local.json`), Claude Code compacts the session at that size and the cap no longer hands the sweep over: `contextLimits` are the window's own (950k / 600k), a backstop compaction keeps out of reach. `sapu-contract.mjs tuning` prints them resolved, the limits in
+session holding the sweep marker). Since 2.36.2, where `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set in the session's environment (`/sapu:init` writes `tuning.contextCap` into it, in `.claude/settings.local.json`), Claude Code compacts the session at that size and the cap no longer hands the sweep over: `contextLimits` are the window's own fractions, a backstop compaction keeps out of reach. `sapu-contract.mjs tuning` prints them resolved, the limits in
 tokens, with the defaults for every key the contract leaves out.
 
 The one redesign step of a lane is the exception: it always runs on `sapu:sapu-opus-high`, above `workerTier` and `workerCeiling` (deliberate: one Opus/high run per lane at most costs less than repeated patch rounds on a recurring finding class).

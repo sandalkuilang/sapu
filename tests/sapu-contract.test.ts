@@ -2061,7 +2061,7 @@ describe("one sweep per repo: the sweep marker (<MAIN>/.git/sapu-sweep.json)", (
     // No contract, no transcript: nothing proves the session may end, so release needs --force and logs it.
     const kept = cli(repo, ["sweep", "release", "sapu-run-a"]);
     expect(kept.status).toBe(1);
-    expect(kept.err).toMatch(/session-status says continue \(context unmeasured of 350k, backlog unreadable\).*--force/);
+    expect(kept.err).toMatch(/session-status says continue \(context unmeasured of 400k, backlog unreadable\).*--force/);
     expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force"]).status).toBe(1); // a reason is required
     expect(cli(repo, ["sweep", "release", "sapu-run-a", "--force", "owner stopped the sweep"]).status).toBe(0);
     expect(readFileSync(join(repo, ".git/sapu-sweep.log"), "utf8")).toMatch(/forced release sapu-run-a verdict=continue context unmeasured.*reason: owner stopped the sweep\n$/);
