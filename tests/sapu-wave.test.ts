@@ -245,8 +245,11 @@ describe("sapu-wave — happy path and reviewer by tier", () => {
     }
   });
 
-  it("tuning.workerCeiling clamps an Opus item to the ceiling, escalation stops there and blocks, reviewers stay Opus", async () => {
-    const cap = { ...CONTRACT, workerCeiling: "sonnet-high" };
+  it("tuning.workerCeiling clamps an Opus item to the ceiling, escalation stops there and blocks (ceilingDecider off; on, its one Opus/high decider is the only Opus author), reviewers stay Opus", async () => {
+    const on = await runWave({ main: MAIN, contract: { ...CONTRACT, workerCeiling: "sonnet-high" }, items: [item(51, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) =>
+      c.opts.phase === "Review" ? clean : opened(51, { status: "escalate", pr_number: 0, escalate_question: "q", escalate_at: "a.ts:1" }));
+    expect(on.calls.filter((c) => c.opts.phase === "Implement").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high"]);
+    const cap = { ...CONTRACT, workerCeiling: "sonnet-high", ceilingDecider: "off" };
     const { calls } = await runWave({ main: MAIN, contract: cap, items: [item(52, { tier: "red", worker: "sapu:sapu-opus-high", domainReviewer: "db" })] }, (c) => {
       if (c.opts.phase === "Review") return clean;
       return opened(52, { status: "escalate", pr_number: 0, escalate_question: "q", escalate_at: "a.ts:1" });
@@ -686,7 +689,9 @@ describe("sapu-wave — escalation and continuing agents", () => {
     const esc = (n: number) => opened(n, { status: "escalate", pr_number: 0, escalate_question: "q" });
     const twice = await runWave({ main: MAIN, items: [item(13)] }, () => esc(13));
     expect(twice.out[0]).toMatchObject({ status: "blocked" });
-    expect(workers(twice.calls)).toHaveLength(2);
+    expect(workers(twice.calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high", "sapu:sapu-opus-high"]);
+    const off = await runWave({ main: MAIN, contract: { ...CONTRACT, ceilingDecider: "off" }, items: [item(12)] }, () => esc(12));
+    expect(workers(off.calls)).toHaveLength(2);
     const top = await runWave({ main: MAIN, items: [item(14, { worker: "sapu:sapu-opus-high" })] }, () => esc(14));
     expect(top.out[0].status).toBe("blocked");
     expect(top.calls).toHaveLength(1);
@@ -832,9 +837,9 @@ describe("sapu-wave — scout, then a fresh builder", () => {
     expect(top.calls).toHaveLength(0);
     expect(top.out[0]).toMatchObject({ status: "blocked" });
     expect(String(top.out[0].reason)).toContain("ESCALATE from the top of the ladder: which rounding? — x.ts:9");
-    // the escalated worker escalating again is the second ESCALATE: blocked
+    // the escalated worker escalating again goes to the lane's one ceiling decider; the decider escalating too is the second ESCALATE: blocked
     const twice = await runWave({ main: MAIN, items: [item(44)] }, () => opened(44, { status: "escalate", pr_number: 0, escalate_question: "q2" }), esc);
-    expect(workers(twice.calls)).toEqual(["sapu:sapu-sonnet-high"]);
+    expect(workers(twice.calls)).toEqual(["sapu:sapu-sonnet-high", "sapu:sapu-opus-high"]);
     expect(String(twice.out[0].reason)).toContain("second ESCALATE: q2");
   });
 
@@ -1129,7 +1134,7 @@ describe("sapu-wave — fix cycles", () => {
     expect(calls.map((c) => c.opts.phase)).toEqual(["Implement", "Review", "Fix"]);
   });
 
-  it("a fixer's ESCALATE goes to ONE Opus/high run that decides and fixes; its own ESCALATE blocks; ceilingDecider \"off\" blocks at once", async () => {
+  it("a fixer's ESCALATE goes to ONE Opus/high run that decides and fixes, once per lane; its own ESCALATE blocks with the question; ceilingDecider \"off\" blocks at once with it", async () => {
     const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
     const lane = (issue: number, contract: object, decider: (c: Call) => object) =>
       runWave({ main: MAIN, contract, items: [item(issue)] }, (c, n) => {
@@ -1144,13 +1149,51 @@ describe("sapu-wave — fix cycles", () => {
     expect(fixes[1].opts.label).toBe("#21 · High · fix 1 decided");
     expect(fixes[1].prompt).toContain("stopped with ESCALATE: cut or raise the budget? — size.ts:12");
     expect(fixes[1].prompt).toContain("Fix ALL of the review findings below");
+    expect(fixes[1].prompt).toContain("business-policy choice");
+    expect(fixes[1].prompt).not.toContain("(one Opus/high run decides it)");
+    // the escalating fixer's WIP commit is not the decider's work: a decider that adds nothing blocks
+    const wip = await runWave({ main: MAIN, contract: bare, items: [item(28)] }, (c, n) => {
+      if (c.opts.phase === "Review") return finding(false);
+      if (c.opts.phase !== "Fix") return opened(28);
+      if (c.opts.agentType === "sapu:sapu-opus-high") return opened(28, { head_sha: "sha-wip" });
+      return opened(28, { status: "escalate", head_sha: "sha-wip", escalate_question: "q", escalate_at: "a.ts:1" });
+    });
+    expect(String(wip.out[0].reason)).toContain("deciding fixer pushed no new commit in cycle 1");
     expect(fixes[0].prompt).toContain('return status "escalate" with escalate_question = the one question (one Opus/high run decides it)');
     expect(ok.out[0]).toMatchObject({ status: "ready" });
     const twice = await lane(22, bare, () => opened(22, { status: "escalate", head_sha: "sha-a", escalate_question: "still?" }));
-    expect(String(twice.out[0].reason)).toContain("second ESCALATE in cycle 1: still?");
+    expect(String(twice.out[0].reason)).toContain("ESCALATE in cycle 1: still?");
     const off = await lane(23, { ...bare, ceilingDecider: "off" }, () => opened(23));
     expect(off.calls.filter((c) => c.opts.phase === "Fix").map((c) => c.opts.agentType)).toEqual(["sapu:sapu-sonnet-medium"]);
-    expect(String(off.out[0].reason)).toContain("fixer stopped (escalate) in cycle 1");
+    expect(String(off.out[0].reason)).toContain("ESCALATE in cycle 1: cut or raise the budget? — size.ts:12");
+    // the lane's one decider already answered the builder: the fixer's question blocks, no second Opus/high run
+    const capped = await runWave({ main: MAIN, contract: bare, items: [item(25, { tier: "red", worker: "sapu:sapu-sonnet-high", domainReviewer: "db" })] }, (c, n) => {
+      if (c.opts.phase === "Review") return finding(false);
+      if (c.opts.phase === "Implement" && c.opts.agentType !== "sapu:sapu-opus-high") return opened(25, { status: "escalate", pr_number: 0, escalate_question: "scope?", escalate_at: "a.ts:1" });
+      if (c.opts.phase === "Implement") return opened(25);
+      return opened(25, { status: "escalate", escalate_question: "budget?", escalate_at: "b.ts:2" });
+    });
+    expect(capped.calls.filter((c) => c.opts.agentType === "sapu:sapu-opus-high" && c.opts.phase !== "Review")).toHaveLength(1);
+    expect(String(capped.out[0].reason)).toContain("ESCALATE in cycle 1: budget? — b.ts:2");
+  });
+
+  it("the rung an ESCALATE climbed to asks again: the ceiling decider answers once; \"off\" keeps it a second ESCALATE", async () => {
+    const { workerCeiling, scoutTier, riskScoutTier, reviewEffort, ...bare } = CONTRACT;
+    const lane = (issue: number, contract: object) =>
+      runWave({ main: MAIN, contract, items: [item(issue)] }, (c) => {
+        if (c.opts.phase === "Review") return clean;
+        if (c.opts.agentType === "sapu:sapu-opus-high") return opened(issue);
+        return opened(issue, { status: "escalate", pr_number: 0, escalate_question: c.opts.agentType === "sapu:sapu-sonnet-high" ? "still?" : "which?", escalate_at: "a.ts:1" });
+      }, (c) => planned(c));
+    const on = await lane(26, bare);
+    expect(workers(on.calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high", "sapu:sapu-opus-high"]);
+    expect(on.calls[2].opts.label).toBe("#26 · High · decided");
+    expect(on.calls[2].prompt).toContain("stopped with ESCALATE: still? — a.ts:1");
+    expect(on.calls[2].prompt).toContain("business-policy choice the issue leaves open");
+    expect(on.out[0]).toMatchObject({ status: "ready", escalated: true });
+    const off = await lane(27, { ...bare, ceilingDecider: "off" });
+    expect(workers(off.calls)).toEqual(["sapu:sapu-sonnet-medium", "sapu:sapu-sonnet-high"]);
+    expect(String(off.out[0].reason)).toContain("second ESCALATE: still?");
   });
 
   it("an empty pr_trust or untrusted written as a literal pair of quotes is empty, never a refusal", async () => {
