@@ -1159,6 +1159,9 @@ describe("sapu-wave — fix cycles", () => {
       return opened(28, { status: "escalate", head_sha: "sha-wip", escalate_question: "q", escalate_at: "a.ts:1" });
     });
     expect(String(wip.out[0].reason)).toContain("deciding fixer pushed no new commit in cycle 1");
+    // a decider that hands a business-policy question back to the owner keeps it in the reason
+    const policy = await lane(29, bare, () => opened(29, { status: "blocked", head_sha: "sha-a", blocked_reason: "keep closed periods as they are?" }));
+    expect(String(policy.out[0].reason)).toBe("keep closed periods as they are?");
     expect(fixes[0].prompt).toContain('return status "escalate" with escalate_question = the one question (one Opus/high run decides it)');
     expect(ok.out[0]).toMatchObject({ status: "ready" });
     const twice = await lane(22, bare, () => opened(22, { status: "escalate", head_sha: "sha-a", escalate_question: "still?" }));

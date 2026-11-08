@@ -679,9 +679,10 @@ PR that renames the gate file itself, or changes `gate.merge` in the contract, c
 closed). Then, when the base gate is red, the PR's own copy of the file runs once more in the same worktree
 (no same-run retry then). It merges only when every step red in the base run (its `✗`/`gate.redIf` summary
 lines) is named in the flag and none is `✗` in the PR copy; every step green in the base run and gone from the
-PR copy (no `✓` line of that name) is named too, so no step drops silently; and the PR copy is green as the
+PR copy (no `✓` line of that name) is named too; every named step gone from the PR copy must be named by a
+removed line of the gate file's diff (so an unrelated red step cannot be named away); and the PR copy is green as the
 base gate is (exit 0, a summary, no `gate.redIf` line) with no `✗` line. Step names match exactly. No red step
-readable from the base run = refused (fails closed); the PR copy exiting 75 = exit 1, like the base gate's,
+readable from the base run = refused (fails closed); the PR copy exiting 75 = exit 2 (its own code: a PR defect),
 and `--gate-change` cannot help a gate that does not start at all. **The per-step check binds only what the
 flag names:** the PR owns its copy's step names and exit code, so the named list and the reviewed gate diff are
 the authorization, not the PR copy's word. Its gates log line, and the merges and handoffs log lines, end in

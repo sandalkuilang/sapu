@@ -36,6 +36,7 @@ const A_FAIL = " FAIL  apps/a.test.ts > t\nAssertionError: expected 1 to be 2";
 const A_ROW = `apps/a.test.ts@${A_SIG}`;
 
 const GATE = `#!/usr/bin/env bash
+# steps: hero-shots, lint
 echo "gate ran: $0 in $PWD"
 [ -z "\${HX_GATE_SLEEP:-}" ] || sleep "$HX_GATE_SLEEP"
 # a journey run that starts and ends while the gate runs
@@ -2026,7 +2027,7 @@ describe("sapu-merge.sh — --gate-change: the orchestrator lets a PR that chang
     redReview(h);
     const r = h.run(BASE_RED);
     expect(r.status).toBe(2);
-    expect(r.err).toMatch(/this PR changes scripts\/gate\.sh, .*--gate-change "<steps>: <why, at least 20 characters>".*name: hero-shots.*Never merge outside sapu-merge\.sh\./s);
+    expect(r.err).toMatch(/this PR changes scripts\/gate\.sh, .*--gate-change "<steps>: <why, at least 20 characters>".*name only the steps the gate diff removes or renames \(base-red here: hero-shots\).*a PR defect \(NEEDS-FIX\).*Never merge outside sapu-merge\.sh\./s);
     expect(h.gh()).not.toMatch(/pr merge/);
     expect(gates(h).join("\n")).not.toMatch(/judge=pr-copy/);
   });
@@ -2113,6 +2114,22 @@ describe("sapu-merge.sh — --gate-change: the orchestrator lets a PR that chang
     const r = h.run(BASE_RED, GC);
     expect(r.status).toBe(2);
     expect(r.err).toMatch(/✗ steps in it: hero-shots/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("gate-change: a named step gone from the PR copy that no removed line of the gate diff names (an unrelated red): not merged", () => {
+    const h = gcHarness();
+    const r = h.run({ HX_GATE_RC: "1", HX_GATE_SUMMARY: "✗ hero-shots 3.1s\n✗ typecheck 2.0s" }, ["--gate-change", `hero-shots,typecheck: ${WHY}`]);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/named steps gone from it that no removed line of the gate diff names: typecheck/);
+    expect(h.gh()).not.toMatch(/pr merge/);
+  });
+
+  it("gate-change: the PR's own gate cannot start (exit 75): a PR defect, exit 2, not infra", () => {
+    const h = gcHarness({ "scripts/gate.sh": prGate("✓ 3 passed", 75) });
+    const r = h.run(BASE_RED, GC);
+    expect(r.status).toBe(2);
+    expect(r.err).toMatch(/the PR's own gate could not start; it is the PR's code, so this is a PR defect \(NEEDS-FIX\), not infra/);
     expect(h.gh()).not.toMatch(/pr merge/);
   });
 

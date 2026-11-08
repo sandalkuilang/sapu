@@ -84,7 +84,8 @@
 # path: fails closed); and the review comment's first line must be `Review tier: red` (the 🔴 pair, A3; the same check
 # as red areas). Then, if the base gate is red, the PR's own copy of that file runs once more in the same worktree. It
 # merges only when every step red in the base run is named in the flag (no red step readable = refused), every step
-# green in the base run and gone from the PR copy is named too, and the PR copy is green as the base gate is (exit 0,
+# green in the base run and gone from the PR copy is named too, every named step gone from the PR copy is named by a
+# removed line of the gate file's diff (an unrelated red cannot be named away), and the PR copy is green as the base gate is (exit 0,
 # a summary, no gate.redIf line) with no ✗ line. Step names match exactly. That check binds only what the flag names:
 # the PR owns its copy's step names and exit code, so the named list and the reviewed gate diff are the authorization.
 # Any unmet condition = exit 2 naming it. Both runs are gates log lines; the PR copy's, and the merges and handoffs log
@@ -719,7 +720,7 @@ MISMATCH="$(main_mismatch)"
 [ -z "$MISMATCH" ] || die "$(mismatch_msg "$MISMATCH")"
 # Line 1 only: sapu-wave.js writes it there, and reviewer text further down must not satisfy it.
 # Here-strings, not pipes into `grep -q`: an early-exiting reader SIGPIPEs the writer under pipefail.
-review_red() { grep -q '^Review tier: red' <<<"$(head -n 1 "$COMMENT_FILE")"; }
+review_red() { grep -qE '^Review tier: red( |$)' <<<"$(head -n 1 "$COMMENT_FILE")"; }
 if [ -n "$RED_AREAS" ]; then
   # No fallback to the PR's copy: a classifier origin/<base> lacks means the red areas are unknown.
   RED="$(run_contract "$MAIN" "" "$P_RED" --ref "$SHA" 2>/dev/null | jq -er '.redAreas | join(", ")')" \
@@ -990,7 +991,7 @@ if [ -n "$RED" ]; then
     BASE_RED="$(printf '%s\n' "$SUMMARY" | grep -E "^✗${RED_IF:+|$RED_IF}" | step_names | grep . || true)"
     GC_BASE="$(paste -sd, - <<<"$BASE_RED")"
     if [ "$GC_SET" = 0 ]; then
-      say "this PR changes $GC_FILE, the gate this red ran from origin/$BASE's copy (a PR that removes or renames what that gate names can never pass it). If that is the cause: read the gate diff, confirm the 🔴 pair review covered it, and run sapu-merge.sh again with --gate-change \"<steps>: <why, at least 20 characters>\" — the base-red steps it must name: ${GC_BASE:-none readable (then it is refused)}, plus every green step the PR's copy drops. Never merge outside sapu-merge.sh."
+      say "this PR changes $GC_FILE, the gate this red ran from origin/$BASE's copy (a PR that removes or renames what that gate names can never pass it). If that is the cause: read the gate diff, confirm the 🔴 pair review covered it, and run sapu-merge.sh again with --gate-change \"<steps>: <why, at least 20 characters>\" — name only the steps the gate diff removes or renames (base-red here: ${GC_BASE:-none readable, so it is refused}), plus every green step the PR's copy drops; a base-red step the gate diff does not remove is a PR defect (NEEDS-FIX), not a gate change. Never merge outside sapu-merge.sh."
     else
       [ -n "$BASE_RED" ] || gc_refuse "no red step can be read from the base run (no ✗ line after gate.summaryStart '$SUMMARY_START'), so what the PR's copy must account for is unknown — it does not judge (fails closed)"
       GC_UNNAMED="$(grep -vxF -f <(printf '%s\n' "$GC_STEPS") <<<"$BASE_RED" | paste -sd, - || true)"
@@ -999,11 +1000,12 @@ if [ -n "$RED" ]; then
       GC_NOTE=" judge=pr-copy base_red=${GC_BASE// /_} named=${GC_NAMED// /_} reason=$(cut -c1-200 <<<"$GC_REASON" | tr ' ' '_')"
       GC_LOG="$(mktemp "${TMPDIR:-/tmp}/gate-prcopy-pr$PR.XXXXXX")" || die "cannot create the PR-copy gate log in ${TMPDIR:-/tmp}"
       say "--gate-change: $GC_REASON — the base gate is red in $GC_BASE; running the PR's own $GC_FILE — log: $GC_LOG"
+      GC_DIFF="$(git -C "$WT" -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv "refs/remotes/origin/$BASE" "$SHA" -- "$GC_FILE" 2>/dev/null || true)"
       GC_RC=0; BASE_SECS=$GATE_SECS; GATE_START=$SECONDS
       PR_COPY=1 SAPU_PR="$PR" SAPU_MAIN="$MAIN" SAPU_WT="$WT" SAPU_WORKERS="$WORKERS" SAPU_BASE="$BASE" \
         run_contract "$WT" "$WT" "$P_GATE" >"$GC_LOG" 2>&1 || GC_RC=$?
       GC_SECS=$((SECONDS - GATE_START)); GATE_SECS=$GC_SECS # its own gates log line; the merges log keeps the base run's
-      if [ "$GC_RC" = 75 ]; then gate_record setup-failed - "" "" "$GC_NOTE"; die "the PR's own gate could not start (not a PR defect; --gate-change cannot help a gate that does not start) — log: $GC_LOG — worktree $WT kept"; fi
+      if [ "$GC_RC" = 75 ]; then gate_record setup-failed - "" "" "$GC_NOTE"; say "GATE RED: the PR's own gate could not start; it is the PR's code, so this is a PR defect (NEEDS-FIX), not infra — log: $GC_LOG — worktree $WT kept"; exit 2; fi
       # Green as the base gate is (exit 0, a summary, no gate.redIf line), no ✗ line, and no base-green step dropped
       # unless named (absent = not a ✓ line in it).
       GC_START="$(grep -nE -m1 "$SUMMARY_START" "$GC_LOG" | cut -d: -f1 || true)"
@@ -1017,6 +1019,11 @@ if [ -n "$RED" ]; then
       if [ -n "$RED_IF" ] && grep -qE "$RED_IF" <<<"$GC_SUM"; then GC_RED="${GC_RED:+$GC_RED; }a summary line matches gate.redIf"; fi
       [ -n "$GC_SUM" ] || GC_RED="${GC_RED:+$GC_RED; }no gate summary in its log"
       [ -z "$GC_DROPPED" ] || GC_RED="${GC_RED:+$GC_RED; }base-green steps gone from it and not named: $GC_DROPPED"
+      # A named step gone from the PR's copy must be one the gate diff removes: a removed line of it holds the step's name.
+      GC_REMOVED="$(grep -E '^-' <<<"$GC_DIFF" | grep -vE '^---' || true)"
+      GC_UNBACKED="$(printf '%s\n' "$GC_STEPS" | grep . | grep -vxF -f <(grep -E '^✓' <<<"$GC_SUM" | step_names | grep .) \
+        | while IFS= read -r st; do grep -qF -- "$st" <<<"$GC_REMOVED" || printf '%s\n' "$st"; done | paste -sd, - || true)"
+      [ -z "$GC_UNBACKED" ] || GC_RED="${GC_RED:+$GC_RED; }named steps gone from it that no removed line of the gate diff names: $GC_UNBACKED"
       if [ -n "$GC_RED" ]; then
         gate_record red - "" "$(paste -sd, - <<<"$GC_X")" "$GC_NOTE"
         say "GATE RED (the PR's own $GC_FILE: $GC_RED): not merged — log: $GC_LOG — worktree $WT kept"
@@ -1024,7 +1031,6 @@ if [ -n "$RED" ]; then
       fi
       gate_record green - "" "" "$GC_NOTE"
       GATE_SECS=$BASE_SECS; GC_JUDGED=1; SUMMARY="$GC_SUM"
-      GC_DIFF="$(git -C "$WT" -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv "refs/remotes/origin/$BASE" "$SHA" -- "$GC_FILE" 2>/dev/null || true)"
       GC_N="$(grep -c '' <<<"$GC_DIFF" || true)"
       [ "$GC_N" -le 300 ] || GC_DIFF="$(head -n 300 <<<"$GC_DIFF")"$'\n'"… $((GC_N - 300)) more lines: git diff origin/$BASE $SHA -- $GC_FILE"
       say "--gate-change: the PR's own $GC_FILE is green, each base-red step ($GC_BASE) is gone from it or green in it, and every dropped step is named: merging"
